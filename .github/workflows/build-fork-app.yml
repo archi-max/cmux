@@ -40,6 +40,23 @@ jobs:
       - name: Setup
         run: ./scripts/setup.sh
 
+      # Fork commits have no published cmux-tui client, so borrow the newest
+      # one published for an upstream main commit.
+      - name: Find published cmux-tui client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for sha in $(gh api 'repos/manaflow-ai/cmux/commits?sha=main&per_page=100' -q '.[].sha'); do
+            url="https://files.cmux.com/cmux-tui/$sha/manifest.json"
+            if curl -fsI "$url" >/dev/null 2>&1; then
+              echo "CMUX_TUI_CLIENT_MANIFEST_URL=$url" >> "$GITHUB_ENV"
+              echo "using $url"
+              exit 0
+            fi
+          done
+          echo "::error::no published cmux-tui client in the last 100 upstream main commits"
+          exit 1
+
       - name: Build app
         run: ./scripts/reload.sh --tag svedit --build-only
 
