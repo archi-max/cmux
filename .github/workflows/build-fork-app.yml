@@ -80,7 +80,10 @@ jobs:
           ) &
           hb=$!
           trap 'kill $hb 2>/dev/null' EXIT
-          ./scripts/reload.sh --tag svedit --no-global-cli-links 2>&1 | tee "$RUNNER_TEMP/reload.out"
+          # reload.sh can exit 1 from its trailing tag-cleanup reminder after a
+          # successful build, so judge success by its own summary line.
+          ./scripts/reload.sh --tag svedit --no-global-cli-links 2>&1 | tee "$RUNNER_TEMP/reload.out" || true
+          grep -q '^==> reload succeeded' "$RUNNER_TEMP/reload.out"
 
       - name: Package app
         run: |
