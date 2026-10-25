@@ -38,6 +38,11 @@ final class SidebarBridge {
     lazy var selectionHold = SidebarSelectionHold(model: model)
     /// The saved space bar, shown until the local daemon reports its spaces.
     private var seededProfiles: (profiles: [SidebarProfile], active: SidebarProfileKey?)?
+    /// Cloud sessions migrated by the sidebar document. Keeping this client
+    /// set also preserves an intentional Remove Remote Group until the app
+    /// restarts; a confirmed false flag is otherwise indistinguishable from
+    /// an old Cloud section that still needs migration.
+    private var markedCloudSessions = Set<String>()
     /// Saves what the sidebar shows (`SidebarSnapshotStore`).
     private var snapshotRecorder = SidebarSnapshotRecorder()
     /// Organization intents waiting for the home session's personal state.
@@ -237,6 +242,7 @@ final class SidebarBridge {
         if !model.groupsByComputer { sections = SSHConnectingRows.adding(services.machines, to: sections) }
         let hadDocDrag = model.docDrag != nil
         model.docDrag = SidebarDocWiring.docMachines(services.machines).drag() // the sidebar document's drag half, nil keeps the older resolver
+        markCloudMachineGroups()
         model.ungroupedFirst = model.docDrag == nil && !usesMixedOrder
         if model.layout != layout { model.layout = layout }
         // A pass that lists what the rows show already (a daemon reorder the personal or document order hides, a store
@@ -247,6 +253,31 @@ final class SidebarBridge {
         groupFlow.openPendingEditor()
         if seed.isReadyForReveal(sections, launching: launching) { markReadyForReveal() }
         recordSnapshot()
+    }
+
+    /// Ensures every Cloud machine already present when the app starts (or
+    /// restored later from the account list) gets the same host-group header
+    /// as a machine created through `newCloudWorkspace`. A machine section
+    /// must already exist in the confirmed document: a fresh Cloud creation
+    /// owns its first `section.add` in the creation action, and this migration
+    /// takes over after that echo so the two paths cannot race.
+    private func markCloudMachineGroups() {
+        guard model.docDrag != nil, let store = SidebarDocStore.current else { return }
+        let sessions = services.machines.cloud.compactMap { $0.daemon.store.registryID }
+        markedCloudSessions.formIntersection(sessions)
+        for session in Self.cloudSessionsWithConfirmedSections(sessions, records: store.records,
+                                                               alreadyMarked: markedCloudSessions) {
+            RemoteGroupHandlers.mark(session: session)
+            markedCloudSessions.insert(session)
+        }
+    }
+
+    /// A fresh Cloud machine's first workspace action owns the missing
+    /// machine-section add. The sidebar migration only handles sections that
+    /// the document has confirmed, preventing two `section.add` intents.
+    static func cloudSessionsWithConfirmedSections(_ sessions: [String], records: SidebarDocRecords,
+                                                   alreadyMarked: Set<String> = []) -> [String] {
+        sessions.filter { records.sections["sec_m_\($0)"] != nil && !alreadyMarked.contains($0) }
     }
 
     private func showProfiles(_ profiles: [SidebarProfile], active: SidebarProfileKey?, launching: Bool) {

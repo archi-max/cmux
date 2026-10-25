@@ -62,4 +62,18 @@ struct SidebarDocHostGroupPlanTests {
         #expect(SidebarDocHostGroupPlan(session: "mini", records: records(hostGroup: false), on: false).ops.isEmpty)
         #expect(SidebarDocHostGroupPlan(session: "mini", records: records(hostGroup: nil), on: false).ops.isEmpty)
     }
+
+    @Test func markingAnExistingMachineSetsItsHostGroupFlag() throws {
+        let ops = SidebarDocHostGroupPlan(session: "mini", records: records(hostGroup: false), on: true).ops
+        let op = try #require(ops.first)
+        #expect(ops.count == 1)
+        #expect(op["op"] as? String == "section.update")
+        #expect((op["patch"] as? [String: Any])?["host_group"] as? Bool == true)
+    }
+
+    @Test func aFreshCloudMachineWaitsForItsCreationSection() {
+        #expect(SidebarBridge.cloudSessionsWithConfirmedSections(["cloud-vm"], records: SidebarDocRecords()).isEmpty)
+        #expect(SidebarBridge.cloudSessionsWithConfirmedSections(["mini"], records: records(hostGroup: false)) == ["mini"])
+        #expect(SidebarBridge.cloudSessionsWithConfirmedSections(["mini"], records: records(hostGroup: false), alreadyMarked: ["mini"]).isEmpty)
+    }
 }
