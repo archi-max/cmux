@@ -65,6 +65,26 @@ jobs:
           key: deriveddata-svedit-${{ github.sha }}
           restore-keys: deriveddata-svedit-
 
+      # A fresh checkout gives every file a new mtime and inode, which makes
+      # Xcode rebuild everything. Pin all files to one fixed mtime, mark only
+      # files changed since the cached build as new, and ignore inode changes.
+      - name: Stabilize source timestamps
+        run: |
+          defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+          marker="$HOME/Library/Developer/Xcode/DerivedData/cmux-svedit/.cmux-src-sha"
+          git ls-files -z | xargs -0 touch -h -t 202601010000
+          git submodule foreach --quiet --recursive 'git ls-files -z | xargs -0 touch -h -t 202601010000'
+          if [ -f "$marker" ]; then
+            cached="$(cat "$marker")"
+            echo "cached build from $cached"
+            if git fetch -q --depth=1 origin "$cached" 2>/dev/null; then
+              git diff --name-only "$cached" HEAD | while read -r f; do [ -e "$f" ] && touch "$f" && echo "changed: $f"; done
+            else
+              echo "cached commit unavailable; touching all files"
+              git ls-files -z | xargs -0 touch
+            fi
+          fi
+
       # reload.sh hides build output until it fails, so print a heartbeat from
       # its log to show the compile is still moving.
       - name: Build app
@@ -91,6 +111,12 @@ jobs:
           test -n "$app" || { echo "::error::built app not found"; exit 1; }
           echo "app=$app"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/cmux-svedit.zip"
+
+      - name: Record cached source commit
+        if: always()
+        run: |
+          d="$HOME/Library/Developer/Xcode/DerivedData/cmux-svedit"
+          [ -d "$d" ] && git rev-parse HEAD > "$d/.cmux-src-sha" || true
 
       - name: Save DerivedData
         if: always()
