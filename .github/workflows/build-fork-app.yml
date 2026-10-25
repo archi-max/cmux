@@ -1,0 +1,58 @@
+name: Build fork app
+
+# Builds an ad-hoc-signed cmux DEV app on a GitHub-hosted macOS runner and
+# uploads it as an artifact. Manual or on push to sv-editor only.
+on:
+  workflow_dispatch:
+  push:
+    branches: [sv-editor]
+
+concurrency:
+  group: build-fork-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      CMUX_DEV_BACKEND_MODE: local
+      CMUX_ALLOW_UNSIGNED_DEV_APP: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select Xcode
+        run: ./scripts/select-ci-xcode.sh
+
+      - name: Metal toolchain
+        run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Install zig
+        run: ./scripts/install-zig-ci.sh
+
+      - name: Install Rust
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Setup
+        run: ./scripts/setup.sh
+
+      - name: Build app
+        run: ./scripts/reload.sh --tag svedit --build-only
+
+      - name: Package app
+        run: |
+          app="$(find "$HOME/Library/Developer/Xcode/DerivedData" /tmp -maxdepth 6 -name 'cmux DEV svedit.app' -type d 2>/dev/null | head -1)"
+          test -n "$app" || { echo "::error::built app not found"; exit 1; }
+          echo "app=$app"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/cmux-svedit.zip"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmux-svedit-${{ github.sha }}
+          path: ${{ runner.temp }}/cmux-svedit.zip
+          retention-days: 14
