@@ -8,17 +8,22 @@ public enum LanguageToolLaunch: Sendable, Equatable, Hashable {
     ///
     /// `remoteCommand` is interpreted by the remote login shell.
     case ssh(destination: String, sshOptions: [String], remoteCommand: String)
+    /// Runs a caller-built local command (such as `ssh` with a workspace's own
+    /// options) that starts the tool on another host, so paths are remote paths.
+    case remote(executablePath: String, arguments: [String])
 
     /// Whether this launch runs on another host, so document paths are remote paths.
     public var isRemote: Bool {
-        if case .ssh = self { return true }
-        return false
+        switch self {
+        case .local: return false
+        case .ssh, .remote: return true
+        }
     }
 
     /// Executable and argument vector to spawn locally.
     var commandLine: (executable: String, arguments: [String]) {
         switch self {
-        case .local(let executablePath, let arguments):
+        case .local(let executablePath, let arguments), .remote(let executablePath, let arguments):
             return (executablePath, arguments)
         case .ssh(let destination, let sshOptions, let remoteCommand):
             return ("/usr/bin/ssh", ["-o", "BatchMode=yes", "-T"] + sshOptions + [destination, remoteCommand])
