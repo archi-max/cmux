@@ -343,4 +343,50 @@ struct RemoteLanguageToolTests {
         #expect(formatted.contains("assign y = a;"))
     }
 }
+
+@Suite("Local completion mirror (slang-server)", .serialized, .enabled(if: hasSlangServer))
+struct LanguageCompletionMirrorTests {
+    @Test("Mirror directories are private, named after the remote file, and unique")
+    func mirrorLayout() {
+        let launch = LanguageToolLaunch.local(executablePath: slangServerPath, arguments: [])
+        let remote = URL(fileURLWithPath: "/home/user/proj/top.sv")
+        let first = LanguageCompletionMirror(remoteURI: remote, identity: "ssh:host", languageId: "verilog", launch: launch)
+        let second = LanguageCompletionMirror(remoteURI: remote, identity: "ssh:host", languageId: "verilog", launch: launch)
+        #expect(first.mirrorURI.lastPathComponent == "top.sv")
+        #expect(first.directory.deletingLastPathComponent().lastPathComponent == "cmux-sv-completion")
+        #expect(first.directory.path.hasPrefix(URL(fileURLWithPath: NSTemporaryDirectory()).path))
+        #expect(first.directory != second.directory)
+        let hash = LanguageCompletionMirror.stableHash("ssh:host\n/home/user/proj/top.sv")
+        #expect(first.directory.lastPathComponent.hasPrefix(hash + "-"))
+        #expect(hash != LanguageCompletionMirror.stableHash("ssh:other\n/home/user/proj/top.sv"))
+    }
+
+    @Test("Completes from the edited buffer, survives a crash, and cleans up")
+    func completesFromBuffer() async throws {
+        let launch = LanguageToolLaunch.local(executablePath: slangServerPath, arguments: [])
+        let remote = URL(fileURLWithPath: "/nonexistent-remote/proj/top.sv")
+        let mirror = LanguageCompletionMirror(remoteURI: remote, identity: "ssh:test", languageId: "verilog", launch: launch)
+        try await mirror.open(text: topSource)
+        #expect(FileManager.default.fileExists(atPath: mirror.mirrorURI.path))
+
+        let initial = try await mirror.completion(position: LSPPosition(line: 6, character: 16))
+        #expect(initial.contains { $0.label == "din" })
+
+        // A signal that exists only in the unsaved buffer.
+        let edited = topSource.replacingOccurrences(of: "logic [7:0] mid;", with: "logic [7:0] mid;\n  logic fresh_sig;")
+        await mirror.change(text: edited)
+        let afterEdit = try await mirror.completion(position: LSPPosition(line: 7, character: 16))
+        #expect(afterEdit.contains { $0.label == "fresh_sig" })
+
+        await mirror.simulateCrashForTesting()
+        let afterCrash = try await mirror.completion(position: LSPPosition(line: 7, character: 16))
+        #expect(afterCrash.contains { $0.label == "fresh_sig" })
+
+        await mirror.shutdown()
+        #expect(!FileManager.default.fileExists(atPath: mirror.directory.path))
+        await #expect(throws: LanguageServerError.notRunning) {
+            try await mirror.completion(position: LSPPosition(line: 0, character: 0))
+        }
+    }
+}
 #endif
