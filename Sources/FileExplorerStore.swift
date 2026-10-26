@@ -297,6 +297,26 @@ struct SSHFileExplorerConnection: Equatable, Sendable {
     let sshOptions: [String]
 }
 
+/// A remote file's modification time and size, recorded when a preview is
+/// downloaded so a save can tell whether someone else changed the file since.
+struct SSHRemoteFileStamp: Equatable, Sendable {
+    let modificationTime: Int64
+    let size: Int64
+
+    /// Parses the last line of `stat` output of the form `<mtime> <size>`.
+    init?(statOutput: String) {
+        guard let line = statOutput.split(whereSeparator: \.isNewline).last else { return nil }
+        let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+        guard fields.count == 2,
+              let modificationTime = Int64(fields[0]),
+              let size = Int64(fields[1]) else { return nil }
+        self.modificationTime = modificationTime
+        self.size = size
+    }
+
+    var statOutput: String { "\(modificationTime) \(size)" }
+}
+
 protocol SSHFileExplorerTransport: AnyObject {
     nonisolated func resolveHomePath(connection: SSHFileExplorerConnection) async throws -> String
     nonisolated func listDirectory(
@@ -356,6 +376,26 @@ protocol SSHFileExplorerTransport: AnyObject {
         to destinationPath: String,
         connection: SSHFileExplorerConnection
     ) async throws
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func fileStamp(
+        path: String,
+        connection: SSHFileExplorerConnection
+    ) async throws -> SSHRemoteFileStamp
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func writeFile(
+        path: String,
+        contents: Data,
+        expectedStamp: SSHRemoteFileStamp?,
+        connection: SSHFileExplorerConnection
+    ) async throws -> SSHRemoteFileStamp
 }
 
 extension SSHFileExplorerTransport {
@@ -393,6 +433,22 @@ extension SSHFileExplorerTransport {
         to destinationPath: String,
         connection: SSHFileExplorerConnection
     ) async throws {
+        throw FileExplorerError.mutationFailed
+    }
+
+    nonisolated func fileStamp(
+        path: String,
+        connection: SSHFileExplorerConnection
+    ) async throws -> SSHRemoteFileStamp {
+        throw FileExplorerError.mutationFailed
+    }
+
+    nonisolated func writeFile(
+        path: String,
+        contents: Data,
+        expectedStamp: SSHRemoteFileStamp?,
+        connection: SSHFileExplorerConnection
+    ) async throws -> SSHRemoteFileStamp {
         throw FileExplorerError.mutationFailed
     }
 }
@@ -691,6 +747,27 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         }
         try await transport.copy(path: path, to: destinationPath, connection: connection)
     }
+
+    func fileStamp(path: String) async throws -> SSHRemoteFileStamp {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.fileStamp(path: path, connection: connection)
+    }
+
+    /// Atomically replaces the remote file with `contents` and returns its new stamp.
+    /// Throws ``FileExplorerError/remoteFileChanged`` when `expectedStamp` no longer matches.
+    func writeFile(path: String, contents: Data, expectedStamp: SSHRemoteFileStamp?) async throws -> SSHRemoteFileStamp {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.writeFile(
+            path: path,
+            contents: contents,
+            expectedStamp: expectedStamp,
+            connection: connection
+        )
+    }
 }
 
 final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
@@ -807,6 +884,68 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         )
     }
 
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func fileStamp(
+        path: String,
+        connection: SSHFileExplorerConnection
+    ) async throws -> SSHRemoteFileStamp {
+        let output = try await Self.runSSHCommand(
+            connection: connection,
+            command: SSHFileExplorerMutationCommand.fileStamp(path: path).command
+        )
+        guard let stamp = SSHRemoteFileStamp(statOutput: output) else {
+            throw FileExplorerError.sshCommandFailed("unexpected stat output")
+        }
+        return stamp
+    }
+
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func writeFile(
+        path: String,
+        contents: Data,
+        expectedStamp: SSHRemoteFileStamp?,
+        connection: SSHFileExplorerConnection
+    ) async throws -> SSHRemoteFileStamp {
+        let command = SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: expectedStamp).command
+        let timeout = Self.writeFileTimeout
+        let result = try await withThrowingTaskGroup(of: SSHCommandResult.self) { group in
+            group.addTask {
+                try await Self.runSSHProcess(connection: connection, command: command, input: contents)
+            }
+            group.addTask {
+                // A genuine transfer deadline; cancelling the upload terminates ssh.
+                try await Task.sleep(for: timeout)
+                throw FileExplorerError.sshCommandFailed("timed out")
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+        switch result.terminationStatus {
+        case 0:
+            guard let stamp = SSHRemoteFileStamp(statOutput: result.stdout) else {
+                throw FileExplorerError.sshCommandFailed("unexpected stat output")
+            }
+            return stamp
+        case SSHFileExplorerMutationCommand.remoteChangedStatus:
+            throw FileExplorerError.remoteFileChanged
+        case 255:
+            // ssh itself failed (connection, auth); keep its diagnostics.
+            throw FileExplorerError.sshCommandFailed(result.stderr)
+        default:
+            throw FileExplorerError.mutationError(exitStatus: result.terminationStatus)
+        }
+    }
+
+    private static let writeFileTimeout: Duration = .seconds(20)
+
     private struct SSHCommandResult: Sendable {
         let stdout: String
         let stderr: String
@@ -819,15 +958,23 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         private let process = Process()
         private let outPipe = Pipe()
         private let errPipe = Pipe()
+        private let inPipe: Pipe?
+        private let input: Data?
         private let lock = NSLock()
         private var terminationGate = ProcessTerminationGate()
         private var cancelled = false
 
-        init(connection: SSHFileExplorerConnection, command: String) {
+        /// - Parameter input: Bytes fed to the remote command's stdin, which is closed after them.
+        init(connection: SSHFileExplorerConnection, command: String, input: Data? = nil) {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command)
             process.standardOutput = outPipe
             process.standardError = errPipe
+            self.input = input
+            inPipe = input == nil ? nil : Pipe()
+            if let inPipe {
+                process.standardInput = inPipe
+            }
         }
 
         func run() throws -> SSHCommandResult {
@@ -860,6 +1007,17 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                     throw CancellationError()
                 }
                 process.terminate()
+            }
+
+            if let inPipe, let input {
+                // Written off this thread so a full stdout or stderr pipe can't deadlock the
+                // upload; an early ssh exit surfaces as EPIPE instead of SIGPIPE.
+                let inputHandle = inPipe.fileHandleForWriting
+                _ = fcntl(inputHandle.fileDescriptor, F_SETNOSIGPIPE, 1)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    try? inputHandle.write(contentsOf: input)
+                    try? inputHandle.close()
+                }
             }
 
             let data = outPipe.fileHandleForReading.readDataToEndOfFileOrEmpty()
@@ -997,9 +1155,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
 
     private static func runSSHProcess(
         connection: SSHFileExplorerConnection,
-        command: String
+        command: String,
+        input: Data? = nil
     ) async throws -> SSHCommandResult {
-        let commandProcess = SSHCommandProcess(connection: connection, command: command)
+        let commandProcess = SSHCommandProcess(connection: connection, command: command, input: input)
         let result = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -1114,6 +1273,8 @@ enum FileExplorerError: LocalizedError, Equatable {
     case mutationPermissionDenied
     case previewCapacity
     case remoteFileTooLarge
+    /// The remote file changed after its preview was downloaded.
+    case remoteFileChanged
 
     var errorDescription: String? {
         switch self {
@@ -1125,6 +1286,8 @@ enum FileExplorerError: LocalizedError, Equatable {
             return String(localized: "fileExplorer.preview.capacity", defaultValue: "Close a Cloud file preview and try again.")
         case .remoteFileTooLarge:
             return String(localized: "fileExplorer.error.cloudPreviewTooLarge", defaultValue: "Cloud file previews are limited to 1 MB.")
+        case .remoteFileChanged:
+            return String(localized: "fileExplorer.error.remoteFileChanged", defaultValue: "The file changed on the remote host since it was opened.")
         case .remoteCommandFailed:
             return String(localized: "fileExplorer.error.remoteFailed", defaultValue: "Remote command failed")
         case .mutationFailed:

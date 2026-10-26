@@ -46,7 +46,8 @@ actor CloudFilePreviewCache {
         }
     }
 
-    /// Downloads a read-only preview held by a lease and starts this cache's one-time stale-file cleanup.
+    /// Downloads a preview held by a lease and starts this cache's one-time stale-file cleanup.
+    /// SSH previews stay writable and record the remote stamp for the save-time conflict check.
     func materialize(path: String, provider: any RemoteFileExplorerProvider) async throws -> CloudFilePreviewLease {
         guard !ManagedFileTransferPolicy.isDisabled else {
             throw ManagedFileTransferPolicy.refusalError()
@@ -68,10 +69,15 @@ actor CloudFilePreviewCache {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
+            let sshProvider = provider as? SSHFileExplorerProvider
+            // Read before downloading: a write in between then shows up as a conflict.
+            let stamp = try? await sshProvider?.fileStamp(path: path)
             try await provider.downloadFile(path: path, to: url)
             try Task.checkCancellation()
-            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: url.path)
-            return CloudFilePreviewLease(url: url, remotePath: path, remoteIdentity: provider.remoteIdentity, cache: self)
+            try FileManager.default.setAttributes([.posixPermissions: Self.previewPermissions(for: provider)],
+                                                  ofItemAtPath: url.path)
+            return CloudFilePreviewLease(url: url, remotePath: path, remoteIdentity: provider.remoteIdentity,
+                                         cache: self, sshProvider: sshProvider, remoteStamp: stamp)
         } catch {
             release(url)
             throw error
@@ -86,18 +92,22 @@ actor CloudFilePreviewCache {
         guard lease.remoteIdentity == provider.remoteIdentity else { throw FileExplorerError.providerUnavailable }
         if let task = refreshTasks[lease.url] { return try await task.value }
         let path = lease.remotePath, destination = lease.url
+        let permissions = Self.previewPermissions(for: provider)
         let task = Task<Void, Error> {
             let temporary = destination.deletingLastPathComponent()
                 .appendingPathComponent(".cmux-refresh-" + UUID().uuidString, isDirectory: false)
             defer { try? FileManager.default.removeItem(at: temporary) }
+            let sshProvider = provider as? SSHFileExplorerProvider
+            let stamp = try? await sshProvider?.fileStamp(path: path)
             try await provider.downloadFile(path: path, to: temporary)
             try Task.checkCancellation()
-            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: temporary.path)
+            try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: temporary.path)
             if FileManager.default.fileExists(atPath: destination.path) {
                 _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
             } else {
                 try FileManager.default.moveItem(at: temporary, to: destination)
             }
+            if sshProvider != nil { lease.remoteStamp = stamp }
         }
         refreshTasks[destination] = task
         do {
@@ -107,6 +117,11 @@ actor CloudFilePreviewCache {
             refreshTasks[destination] = nil
             throw error
         }
+    }
+
+    /// SSH previews are editable and saved back; Cloud VM previews stay read-only.
+    private static func previewPermissions(for provider: any RemoteFileExplorerProvider) -> Int {
+        provider is SSHFileExplorerProvider ? 0o600 : 0o400
     }
 
     func release(_ url: URL) {
