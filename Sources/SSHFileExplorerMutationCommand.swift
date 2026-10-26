@@ -16,6 +16,8 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
     static let alreadyExistsStatus: Int32 = 73
     /// Exit status for "the parent directory is not writable" (`EX_NOPERM`).
     static let permissionDeniedStatus: Int32 = 77
+    /// Exit status for "the file changed since its stamp was read" (`EX_TEMPFAIL`).
+    static let remoteChangedStatus: Int32 = 75
 
     /// The command line handed to `ssh`, parsed by the remote login shell.
     let command: String
@@ -123,6 +125,53 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
             "cp -R -p -- \"$s\" \"$t\"",
         ].joined(separator: "; "))
     }
+
+    /// Prints a regular file's modification time and size as `<mtime> <size>`.
+    static func fileStamp(path: String) -> Self {
+        Self(script: [
+            decoder,
+            statHelpers,
+            assign("t", path),
+            "[ -f \"$t\" ] || exit 74",
+            "st \"$t\"",
+        ].joined(separator: "; "))
+    }
+
+    /// Replaces a file's contents with stdin, then prints its new stamp.
+    ///
+    /// The data goes to a temporary file in the same directory that is renamed
+    /// over the target, so readers never see a partial file; the target's mode
+    /// is copied first. A symlink is written through to the file it names.
+    /// When `expectedStamp` is set and the file's stamp differs, or the file is
+    /// gone, nothing is written and the script exits with ``remoteChangedStatus``.
+    static func writeFile(path: String, expectedStamp: SSHRemoteFileStamp?) -> Self {
+        Self(script: [
+            decoder,
+            statHelpers,
+            assign("t", path),
+            "if [ -L \"$t\" ]; then t=$(readlink -f -- \"$t\"); [ -n \"$t\" ] || exit 1; fi",
+            "dir=$(dirname -- \"$t\")",
+            "e=\"\(expectedStamp?.statOutput ?? "")\"",
+            "m=",
+            "if [ -e \"$t\" ]; then [ -f \"$t\" ] || exit 1; [ -w \"$t\" ] || exit \(permissionDeniedStatus); "
+                + "c=$(st \"$t\") || exit 1; if [ -n \"$e\" ]; then [ \"$c\" = \"$e\" ] || exit \(remoteChangedStatus); fi; "
+                + "m=$(md \"$t\") || exit 1; "
+                + "elif [ -n \"$e\" ]; then exit \(remoteChangedStatus); "
+                + "else m=$(printf %o $(( 0666 & ~0$(umask) ))); fi",
+            // A read-only directory still allows rewriting a writable file in place.
+            "if [ -w \"$dir\" ]; then tmp=$(mktemp \"$dir/.cmux-save.XXXXXX\") || exit 1; "
+                + "if cat > \"$tmp\" && chmod \"$m\" \"$tmp\" && mv -f -- \"$tmp\" \"$t\"; then :; "
+                + "else rm -f -- \"$tmp\"; exit 1; fi; "
+                + "elif [ -e \"$t\" ]; then cat > \"$t\" || exit 1; "
+                + "else exit \(permissionDeniedStatus); fi",
+            "st \"$t\"",
+        ].joined(separator: "; "))
+    }
+
+    /// `st` prints `<mtime> <size>` and `md` the octal mode, with GNU `stat`
+    /// first and BSD `stat` as the fallback.
+    private static let statHelpers = "st() { stat -L -c \"%Y %s\" -- \"$1\" 2>/dev/null || stat -L -f \"%m %z\" -- \"$1\"; }; "
+        + "md() { stat -L -c %a -- \"$1\" 2>/dev/null || stat -L -f %Lp -- \"$1\"; }"
 
     /// GNU coreutils and macOS accept --decode, BusyBox (Alpine) only -d;
     /// -D is the older macOS short flag.
