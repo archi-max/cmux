@@ -213,7 +213,8 @@ extension Workspace {
             },
             surfaceProjections: surfaceProjectionRecordsForSession,
             cloudMachineTeams: cloudMachineTeamsForSession,
-            environment: workspaceEnvironment.isEmpty ? nil : workspaceEnvironment
+            environment: workspaceEnvironment.isEmpty ? nil : workspaceEnvironment,
+            fileExplorerPinnedRootPath: fileExplorerPinnedRootPath
         )
         snapshot.captureTodoState(from: self)
         snapshot.dock = _dockSplit?.sessionSnapshot(
@@ -376,6 +377,7 @@ extension Workspace {
         restoreTitleState(from: snapshot, restoredPanelIds: oldToNewPanelIds)
         setCustomDescription(snapshot.customDescription)
         setCustomColor(snapshot.customColor)
+        setFileExplorerPinnedRootPath(snapshot.fileExplorerPinnedRootPath)
         isPinned = snapshot.isPinned
         isMuted = snapshot.isMuted ?? false
         groupId = snapshot.groupId
@@ -2888,6 +2890,21 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
     @Published var customTitleSource: CustomTitleSource?
     @Published var customDescription: String?
     private(set) var customDescriptionRevision: UInt64 = 0
+    /// User-pinned Files explorer root. Overrides the cwd-derived root for
+    /// local and remote roots alike; `nil` follows the terminal directory.
+    private(set) var fileExplorerPinnedRootPath: String?
+
+    func setFileExplorerPinnedRootPath(_ path: String?) {
+        let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        guard fileExplorerPinnedRootPath != next else { return }
+        fileExplorerPinnedRootPath = next
+        NotificationCenter.default.post(
+            name: .workspaceFileExplorerRootPinDidChange,
+            object: self,
+            userInfo: ["workspaceId": id]
+        )
+    }
 
     func bumpCustomDescriptionRevision() {
         customDescriptionRevision &+= 1
