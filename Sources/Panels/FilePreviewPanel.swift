@@ -946,8 +946,8 @@ enum FilePreviewKindResolver {
         "erl", "ex", "exs", "fish", "go", "h", "hpp", "hrl", "htm", "html", "ini",
         "java", "js", "json",
         "jsx", "kt", "log", "m", "markdown", "md", "mdx", "mm", "mts", "plist",
-        "py", "rb", "rs", "sh", "sql", "swift", "toml", "ts", "tsx", "tsv", "txt",
-        "xml", "yaml", "yml", "zsh"
+        "py", "rb", "rs", "sh", "sql", "sv", "svh", "swift", "toml", "ts", "tsx", "tsv", "txt",
+        "v", "vh", "xml", "yaml", "yml", "zsh"
     ]
 
     static func mode(for url: URL) -> FilePreviewMode {

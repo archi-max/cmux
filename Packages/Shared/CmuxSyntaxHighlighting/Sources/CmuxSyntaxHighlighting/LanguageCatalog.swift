@@ -74,5 +74,9 @@ public struct LanguageCatalog: Sendable {
         "htm": "xml",
         "xml": "xml",
         "sql": "sql",
+        "sv": "verilog",
+        "svh": "verilog",
+        "v": "verilog",
+        "vh": "verilog",
     ]
 }
