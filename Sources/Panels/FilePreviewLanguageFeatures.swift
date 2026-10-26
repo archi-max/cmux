@@ -29,6 +29,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     private weak var textView: SavingTextView?
     private var context: FilePreviewLanguageDocumentContext?
     private var session: LanguageServerSession?
+    /// Local completion server for a remote document.
+    private var completionMirror: LanguageCompletionMirror?
     private var documentURI: URL?
     private var documentVersion = 0
     private var lastSentText: String?
@@ -70,6 +72,9 @@ final class FilePreviewLanguageFeatures: NSObject {
         if let session, let documentURI {
             Task { await session.close(uri: documentURI) }
         }
+        if let completionMirror {
+            Task { await completionMirror.shutdown() }
+        }
     }
 
     static func isSupported(filePath: String) -> Bool {
@@ -109,8 +114,12 @@ final class FilePreviewLanguageFeatures: NSObject {
         if let session, let documentURI {
             Task { await session.close(uri: documentURI) }
         }
+        if let completionMirror {
+            Task { await completionMirror.shutdown() }
+        }
         session = nil
         documentURI = nil
+        completionMirror = nil
     }
 
     // MARK: - Document sync
@@ -164,6 +173,9 @@ final class FilePreviewLanguageFeatures: NSObject {
             return
         }
         self.context = context
+        if let remote = context.remote {
+            await startCompletionMirror(documentURI: context.documentURI, remote: remote)
+        }
         let session: LanguageServerSession
         do {
             session = try await LanguageServerPool.shared.session(
@@ -172,7 +184,8 @@ final class FilePreviewLanguageFeatures: NSObject {
                 languageId: Self.languageId
             )
         } catch {
-            isUnavailable = true
+            // Keep feeding the local completion server.
+            isUnavailable = completionMirror == nil
             Self.logOnce(key: "server:\(context.serverLaunch)", "language server unavailable: \(error)")
             return
         }
@@ -196,8 +209,38 @@ final class FilePreviewLanguageFeatures: NSObject {
         await sendCurrentText()
     }
 
+    /// Remote slang-server builds can hang on completion, so a remote document
+    /// completes from a local server fed only this buffer.
+    private func startCompletionMirror(
+        documentURI: URL,
+        remote: FilePreviewLanguageDocumentContext.RemoteRoute
+    ) async {
+        guard let launch = LanguageToolRegistry.languageServer(forLanguage: Self.languageId, remoteDestination: nil),
+              let text = textView?.string else { return }
+        let mirror = LanguageCompletionMirror(
+            remoteURI: documentURI,
+            identity: remote.providerIdentity,
+            languageId: Self.languageId,
+            launch: launch
+        )
+        do {
+            try await mirror.open(text: text)
+        } catch {
+            Self.logOnce(key: "completion-mirror", "local completion server unavailable: \(error)")
+            await mirror.shutdown()
+            return
+        }
+        guard !Task.isCancelled, !isDetached else {
+            await mirror.shutdown()
+            return
+        }
+        completionMirror = mirror
+    }
+
     private func sendCurrentText() async {
-        guard let session, let documentURI, let text = textView?.string, text != lastSentText else { return }
+        guard let text = textView?.string else { return }
+        await completionMirror?.change(text: text)
+        guard let session, let documentURI, text != lastSentText else { return }
         documentVersion += 1
         lastSentText = text
         await session.change(uri: documentURI, text: text, version: documentVersion)
@@ -661,9 +704,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     }
 
     private func requestCompletion(isExplicit: Bool) {
-        // Local only: remote slang-server builds can hang on completion.
-        guard context?.remote == nil,
-              let session, let documentURI, let textView, textView.isEditable else {
+        guard completionMirror != nil || (context?.remote == nil && session != nil),
+              let textView, textView.isEditable else {
             if isExplicit { NSSound.beep() }
             return
         }
@@ -678,16 +720,28 @@ final class FilePreviewLanguageFeatures: NSObject {
             let position = FilePreviewLSPLineIndex(text).position(at: selection.location)
             let items: [LSPCompletionItem]
             do {
-                items = try await session.completion(uri: documentURI, position: position)
+                items = try await self.completionItems(at: position)
             } catch {
                 filePreviewLanguageLogger.error("completion failed: \(String(describing: error), privacy: .public)")
-                self.recoverSessionIfStopped(after: error)
+                // The mirror relaunches its own server on the next request.
+                if self.completionMirror == nil {
+                    self.recoverSessionIfStopped(after: error)
+                }
                 items = []
             }
             guard !Task.isCancelled, let textView = self.textView,
                   textView.string == text, textView.selectedRange() == selection else { return }
             self.presentCompletions(items, isExplicit: isExplicit)
         }
+    }
+
+    /// Remote documents complete from the local mirror, never the remote server.
+    private func completionItems(at position: LSPPosition) async throws -> [LSPCompletionItem] {
+        if let completionMirror {
+            return try await completionMirror.completion(position: position)
+        }
+        guard context?.remote == nil, let session, let documentURI else { return [] }
+        return try await session.completion(uri: documentURI, position: position)
     }
 
     private func presentCompletions(_ items: [LSPCompletionItem], isExplicit: Bool) {
