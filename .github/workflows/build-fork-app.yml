@@ -74,6 +74,11 @@ jobs:
           marker="$HOME/Library/Developer/Xcode/DerivedData/cmux-svedit/.cmux-src-sha"
           git ls-files -z | xargs -0 touch -h -t 202601010000
           git submodule foreach --quiet --recursive 'git ls-files -z | xargs -0 touch -h -t 202601010000'
+          # setup.sh re-downloads GhosttyKit.xcframework into ~/.cache/cmux and
+          # generates untracked files; fresh mtimes there invalidate every
+          # target that imports them, so pin those too.
+          git ls-files -z --others | xargs -0 touch -h -t 202601010000
+          [ -d "$HOME/.cache/cmux" ] && find "$HOME/.cache/cmux" -exec touch -h -t 202601010000 {} +
           if [ -f "$marker" ]; then
             cached="$(cat "$marker")"
             echo "cached build from $cached"
