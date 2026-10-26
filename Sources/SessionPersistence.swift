@@ -1888,6 +1888,8 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var cloudMachineTeams: [String: String]? = nil
     /// Optional so manifests written before this field decode cleanly.
     var environment: [String: String]? = nil
+    /// User-pinned Files explorer root; absent when Files follows the terminal directory.
+    var fileExplorerPinnedRootPath: String? = nil
     /// Manual task-status override raw values and the persisted checklist. Optional-with-nil-default
     /// (the `groupId` back-compat pattern); bridging to/from live `WorkspaceTodoState` lives in `SessionPersistence+Todos.swift`.
     var taskStatusOverride: String? = nil

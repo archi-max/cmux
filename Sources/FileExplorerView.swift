@@ -863,6 +863,8 @@ struct FileExplorerPanelView: NSViewRepresentable {
                 }
             }
 
+            addRootPinMenuItems(for: clickedRow >= 0 ? node : nil, to: menu)
+
             guard clickedRow >= 0 else { return }
 
             if !node.isDirectory && isLocal {
@@ -905,6 +907,49 @@ struct FileExplorerPanelView: NSViewRepresentable {
             copyRelItem.target = self
             copyRelItem.representedObject = node
             menu.addItem(copyRelItem)
+        }
+
+        /// `node` is the clicked row, or `nil` for the blank tree area.
+        private func addRootPinMenuItems(for node: FileExplorerNode?, to menu: NSMenu) {
+            guard store.canPinWorkspaceRoot else { return }
+            let pinnedPath = store.pinnedWorkspaceRootPath
+            var added = false
+            if let node, node.isDirectory, node.path != pinnedPath {
+                let pinItem = NSMenuItem(
+                    title: String(localized: "fileExplorer.contextMenu.setAsFilesRoot", defaultValue: "Set as Files Root"),
+                    action: #selector(contextMenuSetAsFilesRoot(_:)),
+                    keyEquivalent: ""
+                )
+                pinItem.target = self
+                pinItem.representedObject = node
+                menu.addItem(pinItem)
+                added = true
+            }
+            if pinnedPath != nil {
+                if node == nil, !menu.items.isEmpty {
+                    menu.addItem(.separator())
+                }
+                let unpinItem = NSMenuItem(
+                    title: String(localized: "fileExplorer.contextMenu.followTerminalDirectory", defaultValue: "Follow Terminal Directory"),
+                    action: #selector(contextMenuFollowTerminalDirectory(_:)),
+                    keyEquivalent: ""
+                )
+                unpinItem.target = self
+                menu.addItem(unpinItem)
+                added = true
+            }
+            if added, node != nil {
+                menu.addItem(.separator())
+            }
+        }
+
+        @objc private func contextMenuSetAsFilesRoot(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? FileExplorerNode, node.isDirectory else { return }
+            store.setWorkspaceRootPin(node.path)
+        }
+
+        @objc private func contextMenuFollowTerminalDirectory(_ sender: NSMenuItem) {
+            store.setWorkspaceRootPin(nil)
         }
 
         private func addCreationMenuItems(for node: FileExplorerNode, to menu: NSMenu) {
@@ -1467,7 +1512,8 @@ final class FileExplorerContainerView: NSView {
         currentResourceContextID = store.resourceContextID
         currentWorkspaceRootIdentity = nextWorkspaceRootIdentity; currentContentRevision = nextContentRevision
         headerView.update(displayPath: store.displayRootPath,
-            retry: store.provider is CloudVMFileExplorerProvider ? { [weak store] in store?.retryRemoteRoot() } : nil)
+            retry: store.provider is CloudVMFileExplorerProvider ? { [weak store] in store?.retryRemoteRoot() } : nil,
+            unpin: store.pinnedWorkspaceRootPath == nil ? nil : { [weak store] in store?.setWorkspaceRootPin(nil) })
         if workspaceRootChanged { cancelPendingSearchRefresh(); pendingSearchRefreshAfterSettled = false; searchController.cancel(clear: true); searchField.stringValue = ""; applySearchSnapshot(.empty) }
         if searchScopeChanged {
             pendingSearchRefreshAfterSettled = false

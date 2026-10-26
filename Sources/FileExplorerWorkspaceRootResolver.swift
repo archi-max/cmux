@@ -39,7 +39,7 @@ struct FileExplorerWorkspaceRootResolver {
                     connection: SSHFileExplorerConnection(destination: configuration.destination,
                         port: configuration.port, identityFile: configuration.identityFile, sshOptions: configuration.fileOperationSSHOptions),
                     displayTarget: configuration.displayTarget,
-                    rootPath: workspace.trustedRemoteCurrentDirectory,
+                    rootPath: workspace.fileExplorerPinnedRootPath ?? workspace.trustedRemoteCurrentDirectory,
                     isAvailable: workspace.remoteConnectionState == .connected,
                     unavailableDetail: workspace.remoteConnectionDetail ?? workspace.remoteDaemonStatus.detail
                 )
@@ -89,7 +89,7 @@ struct FileExplorerWorkspaceRootResolver {
             return .remoteCloud(
                 workspaceId: workspace.id, vmID: vmID,
                 displayTarget: catalog.machines[machine]?.name ?? vmID,
-                rootPath: target == nil ? nil : workspace.trustedRemoteCurrentDirectory,
+                rootPath: target == nil ? nil : workspace.fileExplorerPinnedRootPath ?? workspace.trustedRemoteCurrentDirectory,
                 isAvailable: target != nil,
                 unavailableDetail: detail,
                 target: target
@@ -109,10 +109,13 @@ struct FileExplorerWorkspaceRootResolver {
                 connection: SSHFileExplorerConnection(destination: configuration.destination,
                     port: configuration.port, identityFile: configuration.identityFile, sshOptions: configuration.fileOperationSSHOptions),
                 displayTarget: configuration.displayTarget,
-                rootPath: workspace.trustedRemoteCurrentDirectory,
+                rootPath: workspace.fileExplorerPinnedRootPath ?? workspace.trustedRemoteCurrentDirectory,
                 isAvailable: workspace.remoteConnectionState == .connected,
                 unavailableDetail: workspace.remoteConnectionDetail ?? workspace.remoteDaemonStatus.detail
             )
+        }
+        if let pinnedPath = workspace.fileExplorerPinnedRootPath {
+            return .local(workspaceId: workspace.id, path: pinnedPath)
         }
         let path = workspace.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         // A local workspace may not have reported a cwd yet (fresh and
