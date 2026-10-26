@@ -43,6 +43,27 @@ struct HighlightrSyntaxEngineTests {
             HighlightColorRemapper(theme: .dark).hexKey(from: color as Any) == "0091FF"
         )
     }
+
+    @Test("SystemVerilog keywords are colored by the bundled verilog grammar")
+    func systemVerilogKeywordsAreColored() async throws {
+        let engine = HighlightrSyntaxEngine()
+        let source = """
+        module top (input logic clk);
+          always_ff @(posedge clk) begin end
+        endmodule
+        """
+        let highlighted = try #require(
+            await engine.highlight(text: source, language: "verilog", theme: .dark)
+        )
+        let text = highlighted.value.string as NSString
+        let keyword = text.range(of: "module")
+        let identifier = text.range(of: "top")
+        let keywordColor = highlighted.value.attribute(.foregroundColor, at: keyword.location, effectiveRange: nil)
+        let identifierColor = highlighted.value.attribute(.foregroundColor, at: identifier.location, effectiveRange: nil)
+        let remapper = HighlightColorRemapper(theme: .dark)
+        #expect(keywordColor != nil)
+        #expect(remapper.hexKey(from: keywordColor as Any) != remapper.hexKey(from: identifierColor as Any))
+    }
 #endif
 
 }

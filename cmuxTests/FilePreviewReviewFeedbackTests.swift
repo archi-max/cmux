@@ -121,6 +121,14 @@ struct FilePreviewReviewFeedbackTests {
     }
 
     @Test
+    func verilogSourceFilesOpenInTheTextEditor() {
+        for ext in ["sv", "svh", "v", "vh"] {
+            let url = URL(fileURLWithPath: "/tmp/cmux-preview-kind/top").appendingPathExtension(ext)
+            #expect(FilePreviewKindResolver.initialMode(for: url) == .text)
+        }
+    }
+
+    @Test
     func utf8BOMTypeScriptFileResolvesAsText() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)

@@ -24,6 +24,13 @@ struct LanguageCatalogTests {
         #expect(catalog.language(forExtension: "hrl") == "erlang")
     }
 
+    @Test("Maps SystemVerilog and Verilog extensions to the verilog grammar")
+    func mapsVerilogExtensions() {
+        for ext in ["sv", "svh", "v", "vh", "SV"] {
+            #expect(catalog.language(forExtension: ext) == "verilog")
+        }
+    }
+
     @Test("Unknown extensions return nil")
     func unknownExtensionIsNil() {
         #expect(catalog.language(forExtension: "bin") == nil)
