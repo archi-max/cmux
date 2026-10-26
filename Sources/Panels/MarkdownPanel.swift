@@ -22,11 +22,6 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
     /// Absolute path to the markdown file being displayed.
     let filePath: String
 
-    /// Set when `filePath` is a downloaded copy of an SSH file. The viewer then
-    /// stays in preview mode; editing goes through the remote file preview,
-    /// which saves back to the host.
-    let remoteDocument: MarkdownRemoteDocument?
-
     /// The workspace this panel belongs to.
     private(set) var workspaceId: UUID
 
@@ -151,7 +146,6 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
         filePath: String,
         fontSize: Double? = nil,
         fileContentChangeCoordinator: FileContentChangeCoordinator? = nil,
-        remoteDocument: MarkdownRemoteDocument? = nil,
         textLoader: @escaping @Sendable (URL) async -> FilePreviewTextLoader.Result = { url in
             await FilePreviewTextLoader.load(
                 url: url,
@@ -166,7 +160,6 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
         self.id = UUID()
         self.workspaceId = workspaceId
         self.filePath = filePath
-        self.remoteDocument = remoteDocument
         self.fontSize = MarkdownFontSizeSettings.clamp(fontSize ?? defaultSize)
         self.fontFamily = defaultFamily
         self.maxContentWidth = defaultMaxWidth
@@ -185,7 +178,6 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
         // coordinator's initial reconciliation does not enqueue a duplicate
         // full-file read when the file has not changed.
         lastObservedFileState = .capture(path: filePath)
-        rendererSession.remoteDocument = remoteDocument
         _ = loadFileContent(replacingDirtyContent: false)
         startWatchingForFileChanges()
         observeTypographyDefaults()
@@ -455,11 +447,6 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
     }
 
     func setDisplayMode(_ mode: MarkdownPanelDisplayMode) {
-        if mode == .text, let remoteDocument {
-            // Saving this copy would not reach the host; edit in the remote file preview.
-            remoteDocument.editSource?()
-            return
-        }
         guard displayMode != mode else { return }
         displayMode = mode
         if mode == .text {
@@ -489,15 +476,6 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
         loadFileContent(replacingDirtyContent: false)
     }
 
-    /// Reloads the preview; a remote document downloads the remote file again first.
-    func refreshPreview() {
-        if let refresh = remoteDocument?.refresh {
-            refresh()
-        } else {
-            _ = reloadFromDisk()
-        }
-    }
-
     func attachTextView(_ textView: NSTextView) {
         self.textView = textView
     }
@@ -508,7 +486,7 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
 
     func applySearchNeedle(_ needle: String) {
         let trimmed = needle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, remoteDocument == nil else { return }
+        guard !trimmed.isEmpty else { return }
         pendingSearchNeedle = trimmed
         setDisplayMode(.text)
         applyPendingSearchNeedleIfPossible()
@@ -530,7 +508,7 @@ final class MarkdownPanel: Panel, ObservableObject, FilePreviewTextEditingPanel 
 
     @discardableResult
     func saveTextContent() -> Task<Void, Never>? {
-        guard !isSaving, remoteDocument == nil else { return nil }
+        guard !isSaving else { return nil }
         let currentContent = textView?.string ?? textContent
         guard currentContent != originalTextContent else {
             textContent = currentContent

@@ -7,6 +7,7 @@ import PDFKit
 import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 enum FilePreviewInteraction {
     static let zoomStep: CGFloat = 1.25
@@ -1287,8 +1288,18 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
             cloudPreviewRemotePath = cloudPreviewLease?.remotePath
             cloudPreviewProviderIdentity = cloudPreviewLease?.remoteIdentity
             if isReadOnlyPreview { textView?.isEditable = false }
+            // A renderer built for the previous origin would resolve links against it.
+            closeMarkdownPreview()
         }
     }
+    /// Opens a remote Markdown link target through the Files preview path.
+    var remoteLinkOpener: (@MainActor (String) -> Void)?
+    /// Whether a Markdown file shows its rendered buffer instead of the
+    /// editable source. Per panel; not persisted.
+    @Published private(set) var isShowingMarkdownPreview = false
+    /// Created when the preview is first shown, for the current lease.
+    private(set) var markdownRendererSession: MarkdownRendererSession?
+    var isMarkdownFile: Bool { MarkdownPanelFileLinkResolver.isMarkdownPathLike(filePath) }
     /// Cloud VM previews are read-only; SSH previews save back to the remote host.
     private var isReadOnlyPreview: Bool { cloudPreviewLease.map { !$0.isEditable } ?? false }
     let focusCoordinator: FilePreviewFocusCoordinator
@@ -1353,7 +1364,45 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     }
 
     func focus() {
+        if isShowingMarkdownPreview, previewMode == .text {
+            // The hidden source editor must not take keystrokes.
+            if let webView = markdownRendererSession?.webView, let window = webView.window {
+                _ = window.makeFirstResponder(webView)
+            }
+            return
+        }
         _ = restoreFocusIntent(preferredFocusIntentForActivation())
+    }
+
+    /// Switches a Markdown text preview between its editable source and the
+    /// rendered buffer, unsaved edits included. A remote file renders with
+    /// links and images resolved on its host.
+    func toggleMarkdownPreview() {
+        guard isShowingMarkdownPreview || (previewMode == .text && isMarkdownFile) else { return }
+        if isShowingMarkdownPreview {
+            isShowingMarkdownPreview = false
+            focus()
+            return
+        }
+        if markdownRendererSession == nil {
+            let session = MarkdownRendererSession()
+            if let lease = cloudPreviewLease {
+                let document = MarkdownRemoteDocument(lease: lease)
+                document.openRemoteFile = { [weak self] remotePath in self?.remoteLinkOpener?(remotePath) }
+                session.remoteDocument = document
+            }
+            markdownRendererSession = session
+        }
+        isShowingMarkdownPreview = true
+        if let textView, let window = textView.window, window.firstResponder === textView {
+            _ = window.makeFirstResponder(markdownRendererSession?.webView)
+        }
+    }
+
+    private func closeMarkdownPreview() {
+        isShowingMarkdownPreview = false
+        markdownRendererSession?.close()
+        markdownRendererSession = nil
     }
 
     func unfocus() {
@@ -1363,6 +1412,8 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     func close() {
         cloudPreviewLease = nil
         remotePreviewRefresh = nil
+        remoteLinkOpener = nil
+        closeMarkdownPreview()
         cloudPreviewProviderIdentity = nil
         isClosed = true
         unbindTabMetadata()
@@ -1942,8 +1993,22 @@ struct FilePreviewPanelView: View {
                 action: { panel.refreshRemotePreview() }
             )
 
+            if panel.previewMode == .text, panel.isMarkdownFile {
+                markdownPreviewToggle
+            }
+
             FileExternalOpenMenu(fileURL: panel.fileURL, isDisabled: panel.isFileUnavailable)
         }
+    }
+
+    private var markdownPreviewToggle: some View {
+        PanelHeaderIconButton(
+            systemName: panel.isShowingMarkdownPreview ? "doc.plaintext" : "eye",
+            label: panel.isShowingMarkdownPreview
+                ? String(localized: "filePreview.markdown.showSource", defaultValue: "Show Source")
+                : String(localized: "markdown.mode.showPreview", defaultValue: "Show Preview"),
+            action: { panel.toggleMarkdownPreview() }
+        )
     }
 
     @ViewBuilder
@@ -1953,16 +2018,41 @@ struct FilePreviewPanelView: View {
         } else {
             switch panel.previewMode {
             case .text:
-                FilePreviewTextEditor(
-                    panel: panel,
-                    isVisibleInUI: isVisibleInUI,
-                    themeBackgroundColor: contentBackgroundColor,
-                    themeForegroundColor: themeForegroundColor,
-                    drawsBackground: appearance.drawsContentBackground,
-                    gutterBackgroundColor: appearance.backgroundColor,
-                    wordWrap: fileEditorWordWrap,
-                    filePath: panel.filePath
-                )
+                // The source editor stays mounted under the preview so its undo
+                // history, language features, and unsaved edits survive a toggle.
+                ZStack {
+                    FilePreviewTextEditor(
+                        panel: panel,
+                        isVisibleInUI: isVisibleInUI && !panel.isShowingMarkdownPreview,
+                        themeBackgroundColor: contentBackgroundColor,
+                        themeForegroundColor: themeForegroundColor,
+                        drawsBackground: appearance.drawsContentBackground,
+                        gutterBackgroundColor: appearance.backgroundColor,
+                        wordWrap: fileEditorWordWrap,
+                        filePath: panel.filePath
+                    )
+                    .opacity(panel.isShowingMarkdownPreview ? 0 : 1)
+                    .allowsHitTesting(!panel.isShowingMarkdownPreview)
+                    .accessibilityHidden(panel.isShowingMarkdownPreview)
+
+                    if panel.isShowingMarkdownPreview, let session = panel.markdownRendererSession {
+                        MarkdownWebRenderer(
+                            markdown: panel.textContent,
+                            theme: MarkdownWebTheme.resolve(backgroundColor: appearance.backgroundColor),
+                            backgroundColor: contentBackgroundColor,
+                            isVisibleInUI: isVisibleInUI,
+                            panelId: panel.id,
+                            workspaceId: panel.workspaceId,
+                            filePath: panel.filePath,
+                            fontSize: MarkdownFontSizeSettings.resolvedDefault(),
+                            fontFamily: MarkdownFontFamily.resolvedDefault(),
+                            maxContentWidth: MarkdownMaxWidthSettings.resolvedDefault(),
+                            session: session,
+                            onRequestPanelFocus: onRequestPanelFocus
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             case .pdf:
                 FilePreviewPDFView(
                     panel: panel,
