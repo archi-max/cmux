@@ -71,6 +71,7 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
         context.coordinator.lastAppliedContentRevision = panel.textContentRevision
         context.coordinator.isHighlightingVisible = isVisibleInUI
         panel.attachTextView(textView)
+        FilePreviewLanguageFeatures.sync(textView, filePath: filePath)
 
         scrollView.documentView = textView
         textView.applyFilePreviewWordWrap(wordWrap, scrollView: scrollView)
@@ -122,6 +123,7 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
         textView.applyFilePreviewTextEditorInsets()
         textView.applyFilePreviewWordWrap(wordWrap, scrollView: scrollView)
         panel.attachTextView(textView)
+        FilePreviewLanguageFeatures.sync(textView, filePath: filePath)
         Self.applyChromeSettings(
             to: scrollView,
             lineNumbers: lineNumbers,
@@ -155,6 +157,7 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
             )
             clipView.scroll(to: constrained.origin)
             scrollView.reflectScrolledClipView(clipView)
+            textView.languageFeatures?.textDidChange(isUserEdit: false)
         }
         if isVisibleInUI {
             context.coordinator.scheduleHighlight(
@@ -290,6 +293,7 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
                   let textView = notification.object as? NSTextView else { return }
             panel.updateTextContent(textView.string)
             lastAppliedContentRevision = panel.textContentRevision
+            (textView as? SavingTextView)?.languageFeatures?.textDidChange(isUserEdit: true)
             guard isHighlightingVisible else { return }
             scheduleHighlight(
                 for: textView,
@@ -406,6 +410,7 @@ extension SavingTextView {
         textView.isSelectable = true
         textView.allowsUndo = true
         textView.isRichText = false
+        textView.disableFilePreviewTypingSubstitutions()
         textView.importsGraphics = false
         textView.usesFindPanel = true
         textView.usesFindBar = true
@@ -418,6 +423,23 @@ extension SavingTextView {
         textView.autoresizingMask = [.width]
         textView.applyFilePreviewTextEditorInsets()
         return textView
+    }
+}
+
+extension NSTextView {
+    /// Saves exactly the characters that were typed. macOS text input
+    /// settings otherwise turn `'` into a curly quote, which corrupts
+    /// SystemVerilog literals such as `1'b1` and `'0`, and `--` into a dash
+    /// (manaflow-ai/cmux#16738). Edit > Substitutions can still turn one back on.
+    func disableFilePreviewTypingSubstitutions() {
+        isAutomaticQuoteSubstitutionEnabled = false
+        isAutomaticDashSubstitutionEnabled = false
+        isAutomaticTextReplacementEnabled = false
+        isAutomaticSpellingCorrectionEnabled = false
+        isAutomaticDataDetectionEnabled = false
+        isAutomaticLinkDetectionEnabled = false
+        isAutomaticTextCompletionEnabled = false
+        smartInsertDeleteEnabled = false
     }
 }
 
@@ -439,6 +461,8 @@ final class SavingTextView: NSTextView {
     /// `.font` across storage; without a forced restyle, keywords stay
     /// regular weight until the text or theme changes.
     var onPreviewFontDidChange: (() -> Void)?
+    /// Language-server features; set only for languages that have them.
+    var languageFeatures: FilePreviewLanguageFeatures?
     var appliedFilePreviewTabWidth: Int?
     var appliedFilePreviewTabStopInterval: CGFloat?
     private var previewFontSize: CGFloat = 13
@@ -498,7 +522,74 @@ final class SavingTextView: NSTextView {
         if handleEditorShortcut(event) {
             return true
         }
+        if window?.firstResponder === self, languageFeatures?.handleKeyDown(event) == true {
+            return true
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        languageFeatures?.hideHover()
+        if languageFeatures?.handleKeyDown(event) == true {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if languageFeatures?.handleMouseDown(event) == true {
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        languageFeatures?.mouseMoved(event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        languageFeatures?.mouseExited(event)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        languageFeatures?.updateTrackingAreas()
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        if let menu {
+            languageFeatures?.addContextMenuItems(to: menu, for: event)
+        }
+        return menu
+    }
+
+    override var rangeForUserCompletion: NSRange {
+        languageFeatures?.userCompletionRange ?? super.rangeForUserCompletion
+    }
+
+    override func completions(
+        forPartialWordRange charRange: NSRange,
+        indexOfSelectedItem index: UnsafeMutablePointer<Int>
+    ) -> [String]? {
+        if let words = languageFeatures?.completions(forPartialWordRange: charRange) {
+            return words
+        }
+        return super.completions(forPartialWordRange: charRange, indexOfSelectedItem: index)
+    }
+
+    override func insertCompletion(
+        _ word: String,
+        forPartialWordRange charRange: NSRange,
+        movement: Int,
+        isFinal flag: Bool
+    ) {
+        super.insertCompletion(word, forPartialWordRange: charRange, movement: movement, isFinal: flag)
+        if flag {
+            languageFeatures?.completionDidFinish()
+        }
     }
 
     override func magnify(with event: NSEvent) {
@@ -508,6 +599,7 @@ final class SavingTextView: NSTextView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        languageFeatures?.hideHover()
         guard FilePreviewInteraction.hasZoomModifier(event) else {
             super.scrollWheel(with: event)
             return
