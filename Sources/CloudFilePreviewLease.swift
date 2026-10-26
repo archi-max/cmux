@@ -1,3 +1,4 @@
+import CmuxCloud
 import Foundation
 
 /// Transferred from a completed download to its preview panel. Cloud VM
