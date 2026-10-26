@@ -10,6 +10,7 @@ final class FileExplorerWorkspaceObservation {
     private var previous: FileExplorerWorkspaceRoot?
     private var catalogObserver: NSObjectProtocol?
     private var directoryObserver: NSObjectProtocol?
+    private var rootPinObserver: NSObjectProtocol?
     private var bindingChangesTask: Task<Void, Never>?
 
     init(workspace: Workspace, resolver: FileExplorerWorkspaceRootResolver,
@@ -27,6 +28,17 @@ final class FileExplorerWorkspaceObservation {
                       (notification.object as? Workspace) === workspace ||
                         (notification.userInfo?["workspaceId"] as? UUID) == workspace.id else { return }
                 self.refresh()
+            }
+        }
+        rootPinObserver = NotificationCenter.default.addObserver(
+            forName: .workspaceFileExplorerRootPinDidChange,
+            object: workspace,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Forced so the pin indicator updates even when the root is unchanged.
+                self.refresh(force: true)
             }
         }
         catalogObserver = NotificationCenter.default.addObserver(
@@ -70,6 +82,10 @@ final class FileExplorerWorkspaceObservation {
             NotificationCenter.default.removeObserver(catalogObserver)
             self.catalogObserver = nil
         }
+        if let rootPinObserver {
+            NotificationCenter.default.removeObserver(rootPinObserver)
+            self.rootPinObserver = nil
+        }
         workspace = nil
     }
 
@@ -77,5 +93,6 @@ final class FileExplorerWorkspaceObservation {
         bindingChangesTask?.cancel()
         if let directoryObserver { NotificationCenter.default.removeObserver(directoryObserver) }
         if let catalogObserver { NotificationCenter.default.removeObserver(catalogObserver) }
+        if let rootPinObserver { NotificationCenter.default.removeObserver(rootPinObserver) }
     }
 }

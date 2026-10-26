@@ -7,6 +7,10 @@ final class FileExplorerHeaderView: NSView {
     private let iconView = CmuxResolvedIconImageView()
     private let retryButton = NSButton()
     private var retry: (() -> Void)?
+    /// Shown while the Files root is pinned; clicking it unpins.
+    private let unpinButton = NSButton()
+    private var unpin: (() -> Void)?
+    private let trailingButtons = NSStackView()
     private let pathLabel = NSTextField(labelWithString: "")
     private var pathTrailingToRetryConstraint: NSLayoutConstraint?
     private var pathTrailingToEdgeConstraint: NSLayoutConstraint?
@@ -43,12 +47,31 @@ final class FileExplorerHeaderView: NSView {
         retryButton.action = #selector(retryFiles)
         retryButton.toolTip = String(localized: "common.retry", defaultValue: "Retry")
         retryButton.setAccessibilityLabel(retryButton.toolTip)
-        addSubview(retryButton)
+        unpinButton.translatesAutoresizingMaskIntoConstraints = false
+        unpinButton.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
+        unpinButton.contentTintColor = .secondaryLabelColor
+        unpinButton.bezelStyle = .inline
+        unpinButton.isBordered = false
+        unpinButton.target = self
+        unpinButton.action = #selector(unpinFilesRoot)
+        unpinButton.toolTip = String(
+            localized: "fileExplorer.header.unpinFilesRoot",
+            defaultValue: "Files root is pinned. Click to follow the terminal directory."
+        )
+        unpinButton.setAccessibilityLabel(
+            String(localized: "fileExplorer.contextMenu.followTerminalDirectory", defaultValue: "Follow Terminal Directory")
+        )
+        trailingButtons.translatesAutoresizingMaskIntoConstraints = false
+        trailingButtons.orientation = .horizontal
+        trailingButtons.spacing = 4
+        trailingButtons.addArrangedSubview(unpinButton)
+        trailingButtons.addArrangedSubview(retryButton)
+        addSubview(trailingButtons)
 
         let heightConstraint = heightAnchor.constraint(equalToConstant: RightSidebarChromeMetrics.secondaryBarHeight)
         self.heightConstraint = heightConstraint
 
-        let pathTrailingToRetryConstraint = pathLabel.trailingAnchor.constraint(equalTo: retryButton.leadingAnchor, constant: -8)
+        let pathTrailingToRetryConstraint = pathLabel.trailingAnchor.constraint(equalTo: trailingButtons.leadingAnchor, constant: -8)
         let pathTrailingToEdgeConstraint = pathLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
         self.pathTrailingToRetryConstraint = pathTrailingToRetryConstraint
         self.pathTrailingToEdgeConstraint = pathTrailingToEdgeConstraint
@@ -63,12 +86,15 @@ final class FileExplorerHeaderView: NSView {
 
             pathLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: RightSidebarChromeMetrics.contentIconTextSpacing),
             pathLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            retryButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            retryButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailingButtons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            trailingButtons.centerYAnchor.constraint(equalTo: centerYAnchor),
             retryButton.widthAnchor.constraint(equalToConstant: 18),
+            unpinButton.widthAnchor.constraint(equalToConstant: 18),
         ])
         pathTrailingToRetryConstraint.isActive = false
         pathTrailingToEdgeConstraint.isActive = true
+        retryButton.isHidden = true
+        unpinButton.isHidden = true
         applyHeaderState()
     }
 
@@ -79,11 +105,15 @@ final class FileExplorerHeaderView: NSView {
 
     @objc private func retryFiles() { retry?() }
 
-    func update(displayPath: String, retry: (() -> Void)? = nil) {
+    @objc private func unpinFilesRoot() { unpin?() }
+
+    func update(displayPath: String, retry: (() -> Void)? = nil, unpin: (() -> Void)? = nil) {
         self.retry = retry
+        self.unpin = unpin
         retryButton.isHidden = retry == nil
+        unpinButton.isHidden = unpin == nil
         // Deactivate first so the two required trailing constraints are never active together.
-        let showsRetry = retry != nil
+        let showsRetry = retry != nil || unpin != nil
         let inactive = showsRetry ? pathTrailingToEdgeConstraint : pathTrailingToRetryConstraint
         let active = showsRetry ? pathTrailingToRetryConstraint : pathTrailingToEdgeConstraint
         inactive?.isActive = false

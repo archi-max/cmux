@@ -7,10 +7,27 @@ extension FileExplorerStore {
             workspaceRootObservation?.stop()
             workspaceRootObservation = FileExplorerWorkspaceObservation(
                 workspace: workspace, resolver: FileExplorerWorkspaceRootResolver(),
-                apply: { [weak self] in self?.applyWorkspaceRoot($0) }
+                apply: { [weak self, weak workspace] root in
+                    guard let self else { return }
+                    if case .none = root {
+                        self.setPinnedWorkspaceRootPath(nil)
+                    } else {
+                        self.setPinnedWorkspaceRootPath(workspace?.fileExplorerPinnedRootPath)
+                    }
+                    self.applyWorkspaceRoot(root)
+                }
             )
         }
         workspaceRootObservation?.refresh()
+    }
+
+    /// Pins (or with `nil`, unpins) the observed workspace's Files root.
+    func setWorkspaceRootPin(_ path: String?) {
+        workspaceRootObservation?.workspace?.setFileExplorerPinnedRootPath(path)
+    }
+
+    var canPinWorkspaceRoot: Bool {
+        workspaceRootObservation?.workspace != nil
     }
 
     func retryRemoteRoot() {
