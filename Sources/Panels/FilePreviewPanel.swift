@@ -1277,7 +1277,7 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     var lastObservedFileState: FilePreviewFileState?
     var isClosed = false
     weak var textView: NSTextView? {
-        didSet { if cloudPreviewLease != nil { textView?.isEditable = false } }
+        didSet { if isReadOnlyPreview { textView?.isEditable = false } }
     }
     var cloudPreviewRemotePath: String?
     var cloudPreviewProviderIdentity: String?
@@ -1286,9 +1286,11 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
         didSet {
             cloudPreviewRemotePath = cloudPreviewLease?.remotePath
             cloudPreviewProviderIdentity = cloudPreviewLease?.remoteIdentity
-            if cloudPreviewLease != nil { textView?.isEditable = false }
+            if isReadOnlyPreview { textView?.isEditable = false }
         }
     }
+    /// Cloud VM previews are read-only; SSH previews save back to the remote host.
+    private var isReadOnlyPreview: Bool { cloudPreviewLease.map { !$0.isEditable } ?? false }
     let focusCoordinator: FilePreviewFocusCoordinator
     private let selectionReader = NativeTextSurfaceSelectionReader()
     private let textLoader: @Sendable (URL) async -> FilePreviewTextLoader.Result
@@ -1373,7 +1375,28 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
         focusCoordinator.unregisterAll()
     }
 
-    func refreshRemotePreview() { if let remotePreviewRefresh { remotePreviewRefresh() } else { _ = reloadFromDisk() } }
+    func refreshRemotePreview() {
+        if let remotePreviewRefresh {
+            remotePreviewRefresh()
+        } else if let lease = cloudPreviewLease, lease.isEditable {
+            // SSH previews opened without the Files sidebar (go to definition) refresh through their lease.
+            Task { @MainActor [weak self, lease] in
+                do {
+                    try await lease.refreshFromRemote()
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard let self, !self.isClosed else { return }
+                    self.presentRemoteReloadFailure(error)
+                    return
+                }
+                guard let self, !self.isClosed, self.cloudPreviewLease === lease else { return }
+                _ = self.reloadFromDisk()
+            }
+        } else {
+            _ = reloadFromDisk()
+        }
+    }
 
     func readSurfaceSelection() async -> SurfaceSelectionReadResult {
         guard previewMode == .text else { return .unsupported }
@@ -1417,7 +1440,7 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     }
 
     func handleDroppedFileURLsAsText(_ urls: [URL]) -> Bool {
-        guard cloudPreviewLease == nil, previewMode == .text, let textView else { return false }
+        guard !isReadOnlyPreview, previewMode == .text, let textView else { return false }
         let text = TerminalImageTransferPlanner.insertedText(forFileURLs: urls)
         guard !text.isEmpty else { return false }
         textView.window?.makeFirstResponder(textView)
@@ -1502,7 +1525,7 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     }
 
     func updateTextContent(_ nextContent: String) {
-        guard cloudPreviewLease == nil else { return }
+        guard !isReadOnlyPreview else { return }
         guard replaceTextContentIfChanged(nextContent) else { return }
         setTabMetadataDirtyState(nextContent != originalTextContent)
     }
@@ -1639,7 +1662,7 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
 
     @discardableResult
     func saveTextContent() -> Task<Void, Never>? {
-        guard cloudPreviewLease == nil else { return nil }
+        guard !isReadOnlyPreview else { return nil }
         guard previewMode == .text else { return nil }
         guard !isSaving else { return nil }
         let currentContent = textView?.string ?? textContent
@@ -1665,9 +1688,24 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
         let textSaver = textSaver
         let fileContentChangeCoordinator = fileContentChangeCoordinator
         let fileContentObservationID = fileContentObservationID
+        let remoteLease = cloudPreviewLease.flatMap { $0.isEditable ? $0 : nil }
         return Task {
             [weak self, currentContent, fileURL, encoding, generation,
-             textSaver, fileContentChangeCoordinator, fileContentObservationID] in
+             textSaver, fileContentChangeCoordinator, fileContentObservationID, remoteLease] in
+            // An SSH preview uploads first and rewrites its local copy only after
+            // the remote write succeeded, so a failed upload leaves the buffer dirty.
+            if let remoteLease {
+                let outcome = await self?.uploadRemotePreview(currentContent, encoding: encoding, lease: remoteLease)
+                guard outcome == .uploaded else {
+                    guard let self, self.activeSaveGeneration == generation else { return }
+                    self.activeSaveGeneration = nil
+                    self.isSaving = false
+                    if outcome == .reloadRequested {
+                        await self.reloadRemotePreviewDiscardingChanges(lease: remoteLease)
+                    }
+                    return
+                }
+            }
             let result = await fileContentChangeCoordinator.saveTextContent(
                 currentContent,
                 to: fileURL,
@@ -1700,6 +1738,105 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
             }
             await reconciliationTask?.value
         }
+    }
+
+    private enum RemoteUploadOutcome {
+        case uploaded
+        case failed
+        case reloadRequested
+    }
+
+    /// Uploads an SSH preview's text, asking before it replaces a file that changed remotely.
+    private func uploadRemotePreview(
+        _ content: String,
+        encoding: String.Encoding,
+        lease: CloudFilePreviewLease
+    ) async -> RemoteUploadOutcome {
+        guard let data = content.data(using: encoding) else {
+            presentRemoteSaveFailure(nil)
+            return .failed
+        }
+        var overwrite = false
+        while true {
+            do {
+                try await lease.upload(data, overwrite: overwrite)
+                return .uploaded
+            } catch FileExplorerError.remoteFileChanged {
+                guard !isClosed else { return .failed }
+                switch presentRemoteConflictAlert() {
+                case .alertFirstButtonReturn:
+                    overwrite = true
+                case .alertSecondButtonReturn:
+                    return .reloadRequested
+                default:
+                    return .failed
+                }
+            } catch is CancellationError {
+                return .failed
+            } catch {
+                guard !isClosed else { return .failed }
+                presentRemoteSaveFailure(error)
+                return .failed
+            }
+        }
+    }
+
+    /// Replaces the buffer, unsaved edits included, with a fresh remote download.
+    private func reloadRemotePreviewDiscardingChanges(lease: CloudFilePreviewLease) async {
+        do {
+            try await lease.refreshFromRemote()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !isClosed else { return }
+            presentRemoteReloadFailure(error)
+            return
+        }
+        guard !isClosed, cloudPreviewLease === lease else { return }
+        lastObservedFileState = .capture(path: filePath)
+        await loadTextContent(replacingDirtyContent: true).value
+    }
+
+    private func presentRemoteConflictAlert() -> NSApplication.ModalResponse {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(
+            localized: "filePreview.remoteConflict.title",
+            defaultValue: "This file changed on the remote host"
+        )
+        alert.informativeText = String(
+            localized: "filePreview.remoteConflict.message",
+            defaultValue: "It was modified after you opened it. Overwrite it with your version, or reload the remote version and discard your changes."
+        )
+        alert.addButton(withTitle: String(localized: "filePreview.remoteConflict.overwrite", defaultValue: "Overwrite"))
+        alert.addButton(withTitle: String(localized: "filePreview.remoteConflict.reload", defaultValue: "Reload from Remote"))
+        alert.addButton(withTitle: String(localized: "filePreview.remoteConflict.cancel", defaultValue: "Cancel"))
+        return alert.runCmuxModal(presentingWindow: textView?.window)
+    }
+
+    private func presentRemoteSaveFailure(_ error: Error?) {
+        presentRemoteFailure(
+            error,
+            title: String(localized: "filePreview.remoteSave.failedTitle", defaultValue: "Unable to save remote file"),
+            fallback: String(localized: "filePreview.remoteSave.genericFailure", defaultValue: "Your changes were not saved to the remote host. Reconnect and try again.")
+        )
+    }
+
+    private func presentRemoteReloadFailure(_ error: Error) {
+        presentRemoteFailure(
+            error,
+            title: String(localized: "filePreview.remoteReload.failedTitle", defaultValue: "Unable to reload remote file"),
+            fallback: String(localized: "filePreview.remoteReload.genericFailure", defaultValue: "The remote file could not be downloaded. Reconnect and try again.")
+        )
+    }
+
+    private func presentRemoteFailure(_ error: Error?, title: String, fallback: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = (error as? FileExplorerError)?.localizedDescription ?? fallback
+        alert.addButton(withTitle: String(localized: "filePreview.remoteSave.ok", defaultValue: "OK"))
+        _ = alert.runCmuxModal(presentingWindow: textView?.window)
     }
 
     /// Updates dirty state and emits only when the tab-facing value changes.
