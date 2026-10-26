@@ -605,7 +605,7 @@ struct MarkdownWebRenderer: NSViewRepresentable {
                 let mimeType = remotePath.flatMap { MarkdownRemoteDocumentPaths.imageMimeType(forPath: $0) } ?? "image/png"
                 let loader = remoteDocument.imageLoader
                 return Task.detached(priority: .userInitiated) {
-                    guard let remotePath, let data = await loader.load(remotePath: remotePath) else {
+                    guard let remotePath, let loader, let data = await loader.load(remotePath: remotePath) else {
                         return ImageLoadResult(data: Data(), mimeType: mimeType)
                     }
                     return ImageLoadResult(data: data, mimeType: mimeType)

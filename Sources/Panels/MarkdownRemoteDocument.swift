@@ -124,30 +124,22 @@ struct MarkdownRemoteImageLoader: Sendable {
     }
 }
 
-/// Ties a Markdown viewer to the SSH file its local copy was downloaded from.
-/// The viewer renders the copy; links, images, editing, and refresh go back
-/// through the remote host and never resolve against this Mac's filesystem.
+/// Ties a Markdown preview to the remote file its local copy was downloaded
+/// from. Links and images resolve against the remote path and never against
+/// this Mac's filesystem.
 @MainActor
 final class MarkdownRemoteDocument {
-    let lease: CloudFilePreviewLease
-    let imageLoader: MarkdownRemoteImageLoader
+    let remotePath: String
+    /// Loads relative images over SSH. `nil` for Cloud VM previews, whose
+    /// provider cannot check a file's size first, so their images stay blank.
+    let imageLoader: MarkdownRemoteImageLoader?
     /// Opens a link target on the remote host through the Files preview path.
     var openRemoteFile: (@MainActor (String) -> Void)?
-    /// Opens or focuses the editable source preview, which saves back over SSH.
-    var editSource: (@MainActor () -> Void)?
-    /// Downloads the remote file again and reloads the viewer.
-    var refresh: (@MainActor () -> Void)?
 
-    var remotePath: String { lease.remotePath }
-    var remoteIdentity: String { lease.remoteIdentity }
-
-    /// Only editable SSH previews qualify; Cloud VM previews stay in the file preview.
-    init?(lease: CloudFilePreviewLease) {
-        guard let provider = lease.sshProvider else { return nil }
-        self.lease = lease
-        self.imageLoader = MarkdownRemoteImageLoader(
-            provider: provider,
-            cacheDirectory: lease.url.deletingLastPathComponent()
-        )
+    init(lease: CloudFilePreviewLease) {
+        remotePath = lease.remotePath
+        imageLoader = lease.sshProvider.map {
+            MarkdownRemoteImageLoader(provider: $0, cacheDirectory: lease.url.deletingLastPathComponent())
+        }
     }
 }
