@@ -1,0 +1,204 @@
+name: Build fork app
+
+# Test branch only: builds the combined upstream PR branches as an
+# ad-hoc-signed cmux DEV app, and in parallel builds cmuxTests and runs the
+# suites those branches touch.
+on:
+  workflow_dispatch:
+  push:
+    branches: [upstream-test]
+
+concurrency:
+  group: build-fork-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      CMUX_DEV_BACKEND_MODE: local
+      CMUX_ALLOW_UNSIGNED_DEV_APP: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select Xcode
+        run: ./scripts/select-ci-xcode.sh
+
+      - name: Metal toolchain
+        run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Install zig
+        run: ./scripts/install-zig-ci.sh
+
+      - name: Install Rust
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Setup
+        run: ./scripts/setup.sh
+
+      # Fork commits have no published cmux-tui client, so borrow the newest
+      # one published for an upstream main commit.
+      - name: Find published cmux-tui client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for sha in $(gh api 'repos/manaflow-ai/cmux/commits?sha=main&per_page=100' -q '.[].sha'); do
+            url="https://files.cmux.com/cmux-tui/$sha/manifest.json"
+            if curl -fsI "$url" >/dev/null 2>&1; then
+              echo "CMUX_TUI_CLIENT_MANIFEST_URL=$url" >> "$GITHUB_ENV"
+              echo "using $url"
+              exit 0
+            fi
+          done
+          echo "::error::no published cmux-tui client in the last 100 upstream main commits"
+          exit 1
+
+      # Incremental builds: reload.sh builds into this per-tag DerivedData.
+      - name: Restore DerivedData
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/cmux-uptest
+          key: deriveddata-uptest-${{ github.sha }}
+          restore-keys: deriveddata-uptest-
+
+      # A fresh checkout gives every file a new mtime and inode, which makes
+      # Xcode rebuild everything. Pin all files to one fixed mtime, mark only
+      # files changed since the cached build as new, and ignore inode changes.
+      - name: Stabilize source timestamps
+        run: |
+          defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+          marker="$HOME/Library/Developer/Xcode/DerivedData/cmux-uptest/.cmux-src-sha"
+          git ls-files -z | xargs -0 touch -h -t 202601010000
+          git submodule foreach --quiet --recursive 'git ls-files -z | xargs -0 touch -h -t 202601010000'
+          # setup.sh re-downloads GhosttyKit.xcframework into ~/.cache/cmux and
+          # generates untracked files; fresh mtimes there invalidate every
+          # target that imports them, so pin those too.
+          git ls-files -z --others | xargs -0 touch -h -t 202601010000
+          [ -d "$HOME/.cache/cmux" ] && find "$HOME/.cache/cmux" -exec touch -h -t 202601010000 {} +
+          if [ -f "$marker" ]; then
+            cached="$(cat "$marker")"
+            echo "cached build from $cached"
+            if git fetch -q --depth=1 origin "$cached" 2>/dev/null; then
+              git diff --name-only "$cached" HEAD | while read -r f; do [ -e "$f" ] && touch "$f" && echo "changed: $f"; done
+            else
+              echo "cached commit unavailable; touching all files"
+              git ls-files -z | xargs -0 touch
+            fi
+          fi
+
+      # reload.sh hides build output until it fails, so print a heartbeat from
+      # its log to show the compile is still moving.
+      - name: Build app
+        run: |
+          set -o pipefail
+          log=/tmp/cmux-reload-uptest.log
+          (
+            start=$(date +%s)
+            while sleep 120; do
+              last=$(grep -E '^(CompileSwift|SwiftCompile|SwiftDriver|Ld |CompileC|PhaseScriptExecution|CodeSign|Compiling|Building)' "$log" 2>/dev/null | tail -1 | cut -c1-160 || true)
+              echo "[heartbeat $(( ($(date +%s) - start) / 60 ))m] log=$(wc -l < "$log" 2>/dev/null || echo 0) lines; last: ${last:-none}"
+            done
+          ) &
+          hb=$!
+          # The loop inherits errexit and pipefail; never let it or its cleanup fail the step.
+          trap 'kill $hb 2>/dev/null || true' EXIT
+          # reload.sh can exit 1 from its trailing tag-cleanup reminder after a
+          # successful build, so judge success by its own summary line.
+          ./scripts/reload.sh --tag uptest --no-global-cli-links 2>&1 | tee "$RUNNER_TEMP/reload.out" || true
+          grep -q '^==> reload succeeded' "$RUNNER_TEMP/reload.out"
+
+      - name: Package app
+        run: |
+          app="$(find "$HOME/Library/Developer/Xcode/DerivedData/cmux-uptest/Build/Products" -maxdepth 2 -name '*uptest*.app' -type d 2>/dev/null | head -1)"
+          test -n "$app" || { echo "::error::built app not found"; exit 1; }
+          echo "app=$app"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/cmux-uptest.zip"
+
+      - name: Record cached source commit
+        if: always()
+        run: |
+          d="$HOME/Library/Developer/Xcode/DerivedData/cmux-uptest"
+          [ -d "$d" ] && git rev-parse HEAD > "$d/.cmux-src-sha" || true
+
+      - name: Save DerivedData
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/cmux-uptest
+          key: deriveddata-uptest-${{ github.sha }}
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmux-uptest-${{ github.sha }}
+          path: ${{ runner.temp }}/cmux-uptest.zip
+          retention-days: 14
+
+  unit-tests:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      CMUX_DEV_BACKEND_MODE: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select Xcode
+        run: ./scripts/select-ci-xcode.sh
+
+      - name: Metal toolchain
+        run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Install zig
+        run: ./scripts/install-zig-ci.sh
+
+      - name: Install Rust
+        run: ./scripts/install-rust-ci.sh
+
+      - name: Setup
+        run: ./scripts/setup.sh
+
+      - name: Find published cmux-tui client
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for sha in $(gh api 'repos/manaflow-ai/cmux/commits?sha=main&per_page=100' -q '.[].sha'); do
+            url="https://files.cmux.com/cmux-tui/$sha/manifest.json"
+            if curl -fsI "$url" >/dev/null 2>&1; then
+              echo "CMUX_TUI_CLIENT_MANIFEST_URL=$url" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          exit 1
+
+      - name: Build cmuxTests and run the touched suites
+        run: |
+          log="$RUNNER_TEMP/unit.log"
+          set +e
+          xcodebuild -project cmux.xcodeproj -scheme cmux-unit -configuration Debug \
+            -destination platform=macOS -derivedDataPath "$RUNNER_TEMP/dd" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            -only-testing:cmuxTests/SSHFileExplorerMutationCommandTests \
+            -only-testing:cmuxTests/FileExplorerWorkspaceRootPinTests \
+            -only-testing:cmuxTests/FilePreviewReviewFeedbackTests \
+            test > "$log" 2>&1
+          status=$?
+          set -e
+          grep -E 'error:|✘|✔|Test run with|Executed|\*\* TEST|\*\* BUILD' "$log" | tail -300 || true
+          exit $status
+
+      - name: Upload unit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-log-${{ github.sha }}
+          path: ${{ runner.temp }}/unit.log
+          retention-days: 7
