@@ -203,6 +203,23 @@ final class FilePreviewLanguageFeatures: NSObject {
         await session.change(uri: documentURI, text: text, version: documentVersion)
     }
 
+    /// The pool restarts a dead server in place and re-opens its documents.
+    private func recoverSessionIfStopped(after error: Error) {
+        guard let serverError = error as? LanguageServerError, let context, !isDetached else { return }
+        switch serverError {
+        case .notRunning, .processExited:
+            Task {
+                _ = try? await LanguageServerPool.shared.session(
+                    launch: context.serverLaunch,
+                    rootURI: context.rootURI,
+                    languageId: Self.languageId
+                )
+            }
+        default:
+            break
+        }
+    }
+
     private static func logOnce(key: String, _ message: String) {
         guard loggedFailures.insert(key).inserted else { return }
         filePreviewLanguageLogger.error("\(message, privacy: .public)")
@@ -323,7 +340,11 @@ final class FilePreviewLanguageFeatures: NSObject {
         let wordRange = FilePreviewLanguageIdentifier.range(containing: index, in: text)
         var hoverText: String?
         if wordRange != nil, let session, let documentURI {
-            hoverText = try? await session.hover(uri: documentURI, position: lineIndex.position(at: index))
+            do {
+                hoverText = try await session.hover(uri: documentURI, position: lineIndex.position(at: index))
+            } catch {
+                recoverSessionIfStopped(after: error)
+            }
         }
         guard !Task.isCancelled, let textView = self.textView,
               textView.textStorage?.string == snapshot else { return }
@@ -437,6 +458,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                 locations = try await session.definition(uri: documentURI, position: position)
             } catch {
                 filePreviewLanguageLogger.error("definition failed: \(String(describing: error), privacy: .public)")
+                self?.recoverSessionIfStopped(after: error)
                 locations = []
             }
             guard !Task.isCancelled, let self else { return }
@@ -461,6 +483,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                 locations = try await session.references(uri: documentURI, position: position, includeDeclaration: true)
             } catch {
                 filePreviewLanguageLogger.error("references failed: \(String(describing: error), privacy: .public)")
+                self?.recoverSessionIfStopped(after: error)
                 locations = []
             }
             guard !Task.isCancelled, let self else { return }
@@ -638,7 +661,9 @@ final class FilePreviewLanguageFeatures: NSObject {
     }
 
     private func requestCompletion(isExplicit: Bool) {
-        guard let session, let documentURI, let textView, textView.isEditable else {
+        // Local only: remote slang-server builds can hang on completion.
+        guard context?.remote == nil,
+              let session, let documentURI, let textView, textView.isEditable else {
             if isExplicit { NSSound.beep() }
             return
         }
@@ -656,6 +681,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                 items = try await session.completion(uri: documentURI, position: position)
             } catch {
                 filePreviewLanguageLogger.error("completion failed: \(String(describing: error), privacy: .public)")
+                self.recoverSessionIfStopped(after: error)
                 items = []
             }
             guard !Task.isCancelled, let textView = self.textView,
