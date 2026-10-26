@@ -265,6 +265,77 @@ struct SourceFormatterIntegrationTests {
             _ = try await SourceFormatter.format("module m(; endmodule garbage ((\n", using: launch)
         }
     }
+
+    @Test("An include fragment formats inside a temporary module and is unwrapped")
+    func fragment() async throws {
+        let launch = try #require(LanguageToolRegistry.formatter(forLanguage: "verilog", remoteDestination: nil))
+        let fragment = "logic clk;\nadapter dut(.clk(clk),.a(a));\ninitial begin\n$display(\"x\");\nend\n"
+        let formatted = try await SourceFormatter.format(fragment, using: launch)
+        #expect(!formatted.contains("__cmux_fmt_wrap"))
+        #expect(!formatted.contains("endmodule"))
+        #expect(formatted.hasPrefix("logic clk;\n"))
+        #expect(formatted.contains("\nadapter dut ("))
+        #expect(formatted.contains("\ninitial begin\n  $display(\"x\");\nend\n"))
+        #expect(formatted.hasSuffix("end\n"))
+    }
+
+    @Test("A fragment honors --indentation_spaces")
+    func fragmentIndentation() async throws {
+        let launch = LanguageToolLaunch.local(
+            executablePath: veriblePath,
+            arguments: ["--failsafe_success=false", "--indentation_spaces=4", "-"]
+        )
+        let formatted = try await SourceFormatter.format("adapter dut(.a(a));\ninitial begin\nx=1;\nend\n", using: launch)
+        #expect(formatted.contains("\ninitial begin\n    x = 1;\nend\n"))
+    }
+
+    @Test("A real syntax error reports the unwrapped run's error")
+    func fragmentSyntaxError() async throws {
+        let launch = try #require(LanguageToolRegistry.formatter(forLanguage: "verilog", remoteDestination: nil))
+        let broken = "logic clk;\nadapter dut(.clk(clk);\n"
+        do {
+            _ = try await SourceFormatter.format(broken, using: launch)
+            Issue.record("expected a syntax error")
+        } catch SourceFormatterError.failed(_, let stderr) {
+            #expect(!stderr.contains("__cmux_fmt_wrap"))
+            // The first run's line numbers: the wrapper would shift them by one.
+            #expect(stderr.contains(":2:"))
+        }
+    }
+
+    @Test("A full module takes the first path unchanged")
+    func fullModuleNotWrapped() async throws {
+        let launch = try #require(LanguageToolRegistry.formatter(forLanguage: "verilog", remoteDestination: nil))
+        let text = "module m;\nadapter dut(.a(a));\nendmodule\n"
+        let formatted = try await SourceFormatter.format(text, using: launch)
+        #expect(formatted.hasPrefix("module m;\n  adapter dut ("))
+        #expect(formatted.hasSuffix("endmodule\n"))
+        #expect(!formatted.contains("__cmux_fmt_wrap"))
+    }
+}
+
+@Suite("Verible fragment wrapping")
+struct VeribleFragmentTests {
+    @Test("Finds Verible and its indentation in local, remote and ssh launches")
+    func indentation() {
+        #expect(VeribleFragment.indentation(for: .local(executablePath: "/x/verible-verilog-format", arguments: ["-"])) == 2)
+        #expect(VeribleFragment.indentation(for: .local(executablePath: "/bin/cat", arguments: [])) == nil)
+        #expect(VeribleFragment.indentation(for: .ssh(
+            destination: "h", sshOptions: [],
+            remoteCommand: "PATH=\"$HOME/.local/bin:$PATH\" exec verible-verilog-format --indentation_spaces 3 -"
+        )) == 3)
+        #expect(VeribleFragment.indentation(for: .remote(
+            executablePath: "/usr/bin/ssh",
+            arguments: ["-o", "BatchMode=yes", "host", "exec verible-verilog-format --indentation_spaces=4 -"]
+        )) == 4)
+    }
+
+    @Test("Unwraps only the wrapper module")
+    func unwrap() {
+        let formatted = "module __cmux_fmt_wrap;\n  logic a;\n`ifdef X\n    if (a) b = 1;\n\nendmodule\n"
+        #expect(VeribleFragment.unwrap(formatted, indentation: 2) == "logic a;\n`ifdef X\n  if (a) b = 1;\n")
+        #expect(VeribleFragment.unwrap("module other;\nendmodule\n", indentation: 2) == nil)
+    }
 }
 
 @Suite("Source formatter failures")
