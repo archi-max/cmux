@@ -154,7 +154,9 @@ struct FilePreviewLanguageDocumentContext {
                   let launch = remoteServerLaunch(languageId: languageId, configuration: configuration) else {
                 return nil
             }
-            let root = rootDirectory(for: remotePath, workspaceDirectory: workspace?.trustedRemoteCurrentDirectory)
+            // The terminal directory is often the remote home, where the server
+            // would index every checkout; use the pinned Files root or the file's folder.
+            let root = rootDirectory(for: remotePath, workspaceDirectory: workspace?.fileExplorerPinnedRootPath)
             return FilePreviewLanguageDocumentContext(
                 documentURI: URL(fileURLWithPath: remotePath),
                 rootURI: URL(fileURLWithPath: root, isDirectory: true),
@@ -191,7 +193,7 @@ struct FilePreviewLanguageDocumentContext {
             command: remoteCommand,
             effectiveSSHOptions: configuration.fileOperationSSHOptions
         )
-        return .local(executablePath: "/usr/bin/ssh", arguments: arguments)
+        return .remote(executablePath: "/usr/bin/ssh", arguments: arguments)
     }
 
     /// The workspace directory when it contains the file, else the file's parent.
