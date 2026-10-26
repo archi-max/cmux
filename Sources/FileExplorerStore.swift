@@ -1166,6 +1166,8 @@ final class FileExplorerStore: ObservableObject {
     @Published private(set) var gitStatusByPath: [String: GitFileStatus] = [:]
     @Published private(set) var contentRevision = 0
     @Published private(set) var rootStatusMessage: String?
+    /// The observed workspace's pinned Files root, mirrored for header and menu chrome.
+    @Published private(set) var pinnedWorkspaceRootPath: String?
     private(set) var workspaceRootIdentity: UUID?
 
     var provider: FileExplorerProvider?
@@ -1274,6 +1276,11 @@ final class FileExplorerStore: ObservableObject {
         resetResourceContext()
         rootPath = ""
         updateDirectoryWatcher()
+    }
+
+    func setPinnedWorkspaceRootPath(_ path: String?) {
+        guard pinnedWorkspaceRootPath != path else { return }
+        pinnedWorkspaceRootPath = path
     }
 
     func setRootStatusMessage(_ message: String?) {
