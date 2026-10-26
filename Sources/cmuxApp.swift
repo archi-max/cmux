@@ -1211,6 +1211,11 @@ struct cmuxApp: App {
                 }
             }
             FilePreviewWordWrapMenu(shortcut: menuShortcut(for: .toggleFileEditorWordWrap), target: { appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow) })
+            Button(String(localized: "menu.view.toggleMarkdownPreview", defaultValue: "Toggle Markdown Preview")) {
+                activeMarkdownFilePreview?.toggleMarkdownPreview()
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+            .disabled(activeMarkdownFilePreview == nil)
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {
                 BrowserHistoryStore.shared.clearHistory()
             }
@@ -1430,6 +1435,15 @@ struct cmuxApp: App {
         guard let target = activeBrowserActionTarget else { return false }
         return BrowserActionDispatcher(appDelegate: appDelegate)
             .perform(action, on: target)
+    }
+
+    /// The focused file preview of a Markdown file, which can toggle its rendered preview.
+    private var activeMarkdownFilePreview: FilePreviewPanel? {
+        guard let workspace = activeTabManager.selectedWorkspace,
+              let panelId = workspace.focusedPanelId,
+              let preview = workspace.panels[panelId] as? FilePreviewPanel,
+              preview.previewMode == .text, preview.isMarkdownFile else { return nil }
+        return preview
     }
 
     private var activeFindIsVisible: Bool {
