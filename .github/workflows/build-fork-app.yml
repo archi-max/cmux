@@ -99,12 +99,13 @@ jobs:
           (
             start=$(date +%s)
             while sleep 120; do
-              last=$(grep -E '^(CompileSwift|SwiftCompile|SwiftDriver|Ld |CompileC|PhaseScriptExecution|CodeSign|Compiling|Building)' "$log" 2>/dev/null | tail -1 | cut -c1-160)
+              last=$(grep -E '^(CompileSwift|SwiftCompile|SwiftDriver|Ld |CompileC|PhaseScriptExecution|CodeSign|Compiling|Building)' "$log" 2>/dev/null | tail -1 | cut -c1-160 || true)
               echo "[heartbeat $(( ($(date +%s) - start) / 60 ))m] log=$(wc -l < "$log" 2>/dev/null || echo 0) lines; last: ${last:-none}"
             done
           ) &
           hb=$!
-          trap 'kill $hb 2>/dev/null' EXIT
+          # The loop inherits errexit and pipefail; never let it or its cleanup fail the step.
+          trap 'kill $hb 2>/dev/null || true' EXIT
           # reload.sh can exit 1 from its trailing tag-cleanup reminder after a
           # successful build, so judge success by its own summary line.
           ./scripts/reload.sh --tag svedit --no-global-cli-links 2>&1 | tee "$RUNNER_TEMP/reload.out" || true
