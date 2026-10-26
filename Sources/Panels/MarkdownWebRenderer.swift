@@ -161,6 +161,9 @@ struct MarkdownWebRenderer: NSViewRepresentable {
         var panelId: UUID = UUID()
         var workspaceId: UUID = UUID()
         var filePath: String = ""
+        /// Set for a viewer of a downloaded remote file. Links and images then
+        /// resolve against the remote path and never read this Mac's files.
+        var remoteDocument: MarkdownRemoteDocument?
         private var pendingMarkdown: String = ""
         private var pendingTheme: MarkdownWebTheme = .resolve(backgroundColor: GhosttyBackgroundTheme.currentColor())
         private var lastMarkdown: String? = nil
@@ -309,7 +312,9 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             isShellLoading = true
             remoteImageApprovals.revokeAll()
             let html = MarkdownViewerAssets.shared.shellHTML(isDark: theme.isDark)
-            let baseURL = URL(fileURLWithPath: filePath)
+            let baseURL = remoteDocument.map {
+                MarkdownRemoteDocumentPaths.shellBaseURL(forRemotePath: $0.remotePath)
+            } ?? URL(fileURLWithPath: filePath)
             pendingShellBaseURL = baseURL
 #if DEBUG
             NSLog("MarkdownPanel.loadShell filePath=\(filePath) baseURL=\(baseURL.absoluteString) htmlBytes=\(html.utf8.count)")
@@ -499,7 +504,11 @@ struct MarkdownWebRenderer: NSViewRepresentable {
                     resolveMarkdownFile(rawPath, requestId: requestId)
                 case "openMarkdownFile":
                     guard let rawPath = body["path"] as? String else { return }
-                    if let resolved = resolvedMarkdownFilePath(rawPath) {
+                    if let remoteDocument {
+                        if let remotePath = resolvedRemoteMarkdownPath(rawPath, in: remoteDocument) {
+                            remoteDocument.openRemoteFile?(remotePath)
+                        }
+                    } else if let resolved = resolvedMarkdownFilePath(rawPath) {
                         openMarkdownFile(resolved)
                     }
                 case "approveRemoteImage":
@@ -587,6 +596,21 @@ struct MarkdownWebRenderer: NSViewRepresentable {
 
         private func imageLoadTask(for requestURL: URL) -> Task<ImageLoadResult, Never> {
             let scheme = requestURL.scheme?.lowercased()
+            if scheme == MarkdownWebRenderer.localImageURLScheme, let remoteDocument {
+                // Relative images of a remote document load from the remote host.
+                let remotePath = MarkdownRemoteDocumentPaths.remoteImagePath(
+                    fromImageRequest: requestURL,
+                    scheme: MarkdownWebRenderer.localImageURLScheme
+                )
+                let mimeType = remotePath.flatMap { MarkdownRemoteDocumentPaths.imageMimeType(forPath: $0) } ?? "image/png"
+                let loader = remoteDocument.imageLoader
+                return Task.detached(priority: .userInitiated) {
+                    guard let remotePath, let data = await loader.load(remotePath: remotePath) else {
+                        return ImageLoadResult(data: Data(), mimeType: mimeType)
+                    }
+                    return ImageLoadResult(data: data, mimeType: mimeType)
+                }
+            }
             if scheme == MarkdownWebRenderer.localImageURLScheme {
                 let fileURL = localImageFileURL(from: requestURL)
                 let mimeType = fileURL
@@ -671,7 +695,13 @@ struct MarkdownWebRenderer: NSViewRepresentable {
 
         private func resolveMarkdownFile(_ rawPath: String, requestId: String) {
             guard let webView else { return }
-            let resolved = resolvedMarkdownFilePath(rawPath)
+            // A remote link is not checked for existence; opening a missing one reports the failure.
+            let resolved: String?
+            if let remoteDocument {
+                resolved = resolvedRemoteMarkdownPath(rawPath, in: remoteDocument)
+            } else {
+                resolved = resolvedMarkdownFilePath(rawPath)
+            }
 #if DEBUG
             NSLog("MarkdownPanel.resolve raw=\(rawPath) resolved=\(resolved ?? "nil")")
 #endif
@@ -690,6 +720,12 @@ struct MarkdownWebRenderer: NSViewRepresentable {
             guard !trimmed.isEmpty else { return nil }
             guard MarkdownPanelFileLinkResolver.isMarkdownPathLike(trimmed) else { return nil }
             return MarkdownPanelFileLinkResolver.resolve(rawPath: trimmed, relativeToMarkdownFile: filePath)
+        }
+
+        private func resolvedRemoteMarkdownPath(_ rawPath: String, in document: MarkdownRemoteDocument) -> String? {
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard MarkdownPanelFileLinkResolver.isMarkdownPathLike(trimmed) else { return nil }
+            return MarkdownRemoteDocumentPaths.resolveLink(trimmed, relativeToRemoteFile: document.remotePath)
         }
 
         private func openMarkdownFile(_ path: String) {
@@ -932,12 +968,23 @@ struct MarkdownWebRenderer: NSViewRepresentable {
 #if DEBUG
             NSLog("MarkdownPanel.handleExternalLink url=\(url.absoluteString)")
 #endif
-            // First preference: links that resolve to local markdown files
-            // open as markdown tabs in cmux, not in the browser.
-            let fileCandidate = url.scheme == "file" ? url.path : url.absoluteString
-            if let markdownPath = resolvedMarkdownFilePath(fileCandidate) {
-                openMarkdownFile(markdownPath)
-                return
+            // A remote document's file links name remote files: open them
+            // through the remote preview, never through this Mac.
+            if let remoteDocument {
+                if url.scheme?.lowercased() == "file" {
+                    if let remotePath = MarkdownRemoteDocumentPaths.remotePath(forShellURL: url) {
+                        remoteDocument.openRemoteFile?(remotePath)
+                    }
+                    return
+                }
+            } else {
+                // First preference: links that resolve to local markdown files
+                // open as markdown tabs in cmux, not in the browser.
+                let fileCandidate = url.scheme == "file" ? url.path : url.absoluteString
+                if let markdownPath = resolvedMarkdownFilePath(fileCandidate) {
+                    openMarkdownFile(markdownPath)
+                    return
+                }
             }
 
             // Schemes the in-app browser doesn't (and shouldn't) handle:
@@ -984,9 +1031,12 @@ struct MarkdownWebRenderer: NSViewRepresentable {
                 return true
             }
             if url.isFileURL {
+                let documentPath = remoteDocument.map {
+                    MarkdownRemoteDocumentPaths.shellBaseURL(forRemotePath: $0.remotePath).path
+                } ?? filePath
                 let targetPath = (url.path as NSString).standardizingPath
-                let currentPath = (filePath as NSString).standardizingPath
-                let currentDirectory = ((filePath as NSString).deletingLastPathComponent as NSString).standardizingPath
+                let currentPath = (documentPath as NSString).standardizingPath
+                let currentDirectory = ((documentPath as NSString).deletingLastPathComponent as NSString).standardizingPath
                 return targetPath == currentPath || targetPath == currentDirectory
             }
             return false
