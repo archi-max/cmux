@@ -2279,6 +2279,8 @@
 		C0DE31390000000000000103 /* FilePreviewReviewFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE31390000000000000104 /* FilePreviewReviewFeedbackTests.swift */; };
 		C0DE86520000000000000111 /* FilePreviewRevision.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE86520000000000000112 /* FilePreviewRevision.swift */; };
 		C01E00040000000000000001 /* FilePreviewSyntaxStyler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00040000000000000002 /* FilePreviewSyntaxStyler.swift */; };
+		C01E00B10000000000000001 /* FilePreviewLanguageFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00B10000000000000002 /* FilePreviewLanguageFeatures.swift */; };
+		C01E00B20000000000000001 /* FilePreviewLanguageSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00B20000000000000002 /* FilePreviewLanguageSupport.swift */; };
 		C01E00090000000000000001 /* FilePreviewSyntaxTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00090000000000000002 /* FilePreviewSyntaxTestSupport.swift */; };
 		C0DE97470000000000000001 /* FilePreviewTabMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE97470000000000000002 /* FilePreviewTabMetadata.swift */; };
 		C0DE97470000000000000003 /* FilePreviewTabMetadataHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE97470000000000000004 /* FilePreviewTabMetadataHost.swift */; };
@@ -6961,6 +6963,8 @@
 		C0DE31390000000000000104 /* FilePreviewReviewFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewReviewFeedbackTests.swift; sourceTree = "<group>"; };
 		C0DE86520000000000000112 /* FilePreviewRevision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewRevision.swift; sourceTree = "<group>"; };
 		C01E00040000000000000002 /* FilePreviewSyntaxStyler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewSyntaxStyler.swift; sourceTree = "<group>"; };
+		C01E00B10000000000000002 /* FilePreviewLanguageFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewLanguageFeatures.swift; sourceTree = "<group>"; };
+		C01E00B20000000000000002 /* FilePreviewLanguageSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewLanguageSupport.swift; sourceTree = "<group>"; };
 		C01E00090000000000000002 /* FilePreviewSyntaxTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewSyntaxTestSupport.swift; sourceTree = "<group>"; };
 		C0DE97470000000000000002 /* FilePreviewTabMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewTabMetadata.swift; sourceTree = "<group>"; };
 		C0DE97470000000000000004 /* FilePreviewTabMetadataHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewTabMetadataHost.swift; sourceTree = "<group>"; };
@@ -11916,6 +11920,8 @@
 				C01E00010000000000000002 /* FilePreviewEditorSettings.swift */,
 				C01E00020000000000000002 /* TokenTheme+AppKit.swift */,
 				C01E00040000000000000002 /* FilePreviewSyntaxStyler.swift */,
+				C01E00B10000000000000002 /* FilePreviewLanguageFeatures.swift */,
+				C01E00B20000000000000002 /* FilePreviewLanguageSupport.swift */,
 				C01E00050000000000000002 /* FilePreviewLineNumberGutterView.swift */,
 				C01E00060000000000000002 /* FilePreviewEditorChromeOverlay.swift */,
 				F5168A060000000000000002 /* MarkdownTypographyDefaults.swift */,
@@ -16239,6 +16245,8 @@
 				C0DE8652000000000000010F /* FilePreviewQuickLookViewCoordinator.swift in Sources */,
 				C0DE86520000000000000111 /* FilePreviewRevision.swift in Sources */,
 					C01E00040000000000000001 /* FilePreviewSyntaxStyler.swift in Sources */,
+				C01E00B10000000000000001 /* FilePreviewLanguageFeatures.swift in Sources */,
+				C01E00B20000000000000001 /* FilePreviewLanguageSupport.swift in Sources */,
 				C0DE97470000000000000001 /* FilePreviewTabMetadata.swift in Sources */,
 				C0DE97470000000000000003 /* FilePreviewTabMetadataHost.swift in Sources */,
 				D0B10016A1B2C3D4E5F60001 /* FilePreviewTextEditor.swift in Sources */,

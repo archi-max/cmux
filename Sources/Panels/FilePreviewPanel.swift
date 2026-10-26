@@ -1671,6 +1671,11 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
             setTabMetadataDirtyState(false)
             return nil
         }
+        // Format on save formats the buffer first, then calls back here to write it.
+        let languageFeatures = (textView as? SavingTextView)?.languageFeatures
+        if let formatThenSave = languageFeatures?.formatThenSave({ [weak self] in self?.saveTextContent() }) {
+            return formatThenSave
+        }
 
         textLoadCoordinator.cancel()
         saveGeneration += 1
@@ -1725,6 +1730,7 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
                 self.originalTextContent = currentContent
                 self.setTabMetadataDirtyState(self.textContent != currentContent)
                 self.isFileUnavailable = false
+                languageFeatures?.documentDidSave(currentContent)
                 reconciliationTask = self.reloadFromDisk()
             case .failed(let fileExists):
                 self.isFileUnavailable = !fileExists
