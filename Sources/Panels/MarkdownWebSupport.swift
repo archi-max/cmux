@@ -447,6 +447,13 @@ final class MarkdownRendererSession {
         set { ownedCoordinator.onMarkdownRendered = newValue }
     }
 
+    /// The remote file a downloaded-copy viewer shows. Set before the renderer
+    /// mounts, since the shell's base URL depends on it.
+    var remoteDocument: MarkdownRemoteDocument? {
+        get { ownedCoordinator.remoteDocument }
+        set { ownedCoordinator.remoteDocument = newValue }
+    }
+
     func coordinator(
         panelId: UUID,
         workspaceId: UUID,

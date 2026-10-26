@@ -761,7 +761,8 @@ extension Workspace {
             agentSessionSnapshot = nil
             projectSnapshot = nil
         case .markdown:
-            guard let markdownPanel = panel as? MarkdownPanel else { return nil }
+            // A remote document's downloaded copy does not outlive the session.
+            guard let markdownPanel = panel as? MarkdownPanel, markdownPanel.remoteDocument == nil else { return nil }
             terminalSnapshot = nil
             browserSnapshot = nil
             markdownSnapshot = SessionMarkdownPanelSnapshot(filePath: markdownPanel.filePath)
@@ -10698,7 +10699,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         inPane paneId: PaneID,
         filePath: String,
         focus: Bool? = nil,
-        targetIndex: Int? = nil
+        targetIndex: Int? = nil,
+        remoteDocument: MarkdownRemoteDocument? = nil
     ) -> MarkdownPanel? {
         guard !isRetiredFromOwningTabManager else { return nil }
         let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
@@ -10708,7 +10710,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         let markdownPanel = MarkdownPanel(
             workspaceId: id,
             filePath: filePath,
-            fileContentChangeCoordinator: fileContentChangeCoordinator
+            fileContentChangeCoordinator: fileContentChangeCoordinator,
+            remoteDocument: remoteDocument
         )
         panels[markdownPanel.id] = markdownPanel
         panelTitles[markdownPanel.id] = markdownPanel.displayTitle

@@ -129,7 +129,7 @@ struct MarkdownPanelView: View {
     private var filePathHeader: some View {
         PanelFilePathHeader(
             iconSystemName: panel.displayIcon ?? "doc.richtext",
-            filePath: panel.filePath,
+            filePath: panel.remoteDocument?.remotePath ?? panel.filePath,
             foregroundColor: themeForegroundColor
         ) {
             if panel.displayMode == .text {
@@ -152,7 +152,7 @@ struct MarkdownPanelView: View {
                 PanelHeaderIconButton(
                     systemName: "arrow.clockwise",
                     label: String(localized: "filePreview.refresh", defaultValue: "Refresh"),
-                    action: { panel.reloadFromDisk() }
+                    action: { panel.refreshPreview() }
                 )
             }
             markdownModeButton
@@ -168,7 +168,21 @@ struct MarkdownPanelView: View {
         }
     }
 
+    @ViewBuilder
     private var markdownModeButton: some View {
+        if panel.remoteDocument != nil {
+            // A remote document is edited in the file preview, which saves back to the host.
+            PanelHeaderIconButton(
+                systemName: "pencil",
+                label: String(localized: "markdown.mode.editRemoteSource", defaultValue: "Edit Source"),
+                action: { panel.setDisplayMode(.text) }
+            )
+        } else {
+            localMarkdownModeButton
+        }
+    }
+
+    private var localMarkdownModeButton: some View {
         switch panel.displayMode {
         case .preview:
             PanelHeaderIconButton(
