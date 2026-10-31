@@ -617,7 +617,8 @@ enum WaveformSourceLink {
         state: TopLevelState,
         progress: @MainActor @Sendable (String) -> Void
     ) async -> Bool {
-        guard let tops = try? await session.slangScopeChildren(""), tops.isEmpty else { return false }
+        // getScope("") also lists packages; only instances are tops.
+        guard let tops = try? await session.slangScopeChildren(""), tops.allSatisfy({ $0.kind == "Package" }) else { return false }
         var candidate: (module: String, file: String)?
         search: for top in await Self.dumpChildren([], in: waveform) ?? [] where top.isScope {
             if let file = (try? await session.slangFilesContainingModule(top.name))?.first {
@@ -653,7 +654,7 @@ enum WaveformSourceLink {
         ))
         do {
             try await session.slangSetTopLevel(candidate.file)
-            if let roots = try? await session.slangScopeChildren(""), !roots.isEmpty {
+            if let roots = try? await session.slangScopeChildren(""), roots.contains(where: { $0.kind != "Package" }) {
                 waveformSourceLinkLogger.info("set slang top level to \(candidate.module, privacy: .public)")
                 state.setByLink = true
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
@@ -775,9 +776,9 @@ enum WaveformSourceLink {
         if let location = await Self.location(ofDesignPath: mapping.designPath(forDumpPath: dumpPath), session: session) {
             return location
         }
-        var roots = (try? await session.slangScopeChildren("")) ?? []
+        var roots = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }
         if roots.isEmpty, await Self.elaborateDesign(session: session, waveform: waveform, progress: progress) {
-            roots = (try? await session.slangScopeChildren("")) ?? []
+            roots = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }
             if let location = await Self.location(ofDesignPath: mapping.designPath(forDumpPath: dumpPath), session: session) {
                 return location
             }
