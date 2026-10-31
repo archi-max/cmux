@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A remote preview download in the cache.
@@ -6,6 +7,15 @@ struct RemotePreviewDownload: Equatable, Sendable {
     /// This download created the cache file. Otherwise it replaced the file
     /// an earlier open of the same host file made, which may still be shown.
     let isNew: Bool
+    /// The file number (inode) this download published, so a later discard
+    /// leaves a file a newer download of the same host file put in its place.
+    var fileNumber: UInt64? = nil
+
+    static func fileNumber(of url: URL) -> UInt64? {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return nil }
+        return UInt64(info.st_ino)
+    }
 }
 
 /// Keeps the remote preview cache (⌘-click and `cmux open` downloads, one
@@ -81,6 +91,7 @@ enum RemotePreviewCacheBudget {
         fileManager: FileManager = .default
     ) {
         guard download.isNew else { return }
+        if let published = download.fileNumber, RemotePreviewDownload.fileNumber(of: download.url) != published { return }
         discard(download.url, cacheRoot: cacheRoot, keeping: keeping, fileManager: fileManager)
     }
 

@@ -89,6 +89,7 @@ actor RemoteTerminalFilePreviewLoader {
                 guard rename(staging.path, destination.path) == 0 else {
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
                 }
+                let published = RemotePreviewDownload.fileNumber(of: destination)
                 let shown = await shownPaths()
                 RemotePreviewCacheBudget.evict(
                     in: cacheDirectory,
@@ -97,7 +98,7 @@ actor RemoteTerminalFilePreviewLoader {
                     recentUseGrace: RemotePreviewCacheBudget.defaultRecentUseGrace,
                     fileManager: fileManager
                 )
-                return RemotePreviewDownload(url: destination, isNew: isNew)
+                return RemotePreviewDownload(url: destination, isNew: isNew, fileNumber: published)
             } catch let error as RemoteTerminalFilePreviewError {
                 throw error
             } catch {
