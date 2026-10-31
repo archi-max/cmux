@@ -211,25 +211,31 @@ public enum HierarchyPrefixInference {
         max(min(2, count), (count + 1) / 2)
     }
 
-    /// Instance names are far more telling than `clk` or `rst`, so a shared scope child counts twice.
     /// A dump item's name as the design names it: a signal's trailing range dropped (FSDB names a
     /// 1-bit vector declared `[N-1:0]` with it, as `dfp_wdone[0:0]`). The same rule as the
     /// viewer's `findLinkItem` in host.js; a scope's index (`gen[0]`) is part of its name.
     public static func signalName(_ node: HierarchyNode) -> String {
-        guard !node.isScope, node.name.hasSuffix("]"), let open = node.name.lastIndex(of: "[") else { return node.name }
-        let range = node.name[node.name.index(after: open)..<node.name.index(before: node.name.endIndex)]
-        let parts = range.split(separator: ":", omittingEmptySubsequences: false)
-        guard open > node.name.startIndex, (1...2).contains(parts.count),
-              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) else { return node.name }
-        return String(node.name[..<open])
+        node.isScope ? node.name : signalName(ofName: node.name)
     }
 
+    /// `name` without a trailing `[N]` or `[N:M]`.
+    static func signalName(ofName name: String) -> String {
+        guard name.hasSuffix("]"), let open = name.lastIndex(of: "[") else { return name }
+        let range = name[name.index(after: open)..<name.index(before: name.endIndex)]
+        let parts = range.split(separator: ":", omittingEmptySubsequences: false)
+        guard open > name.startIndex, (1...2).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) else { return name }
+        return String(name[..<open])
+    }
+
+    /// Instance names are far more telling than `clk` or `rst`, so a shared scope child counts twice.
+    /// A dump child matches by its name or its signal name.
     static func score(_ kids: [HierarchyNode], against rootChildren: [HierarchyNode]) -> (overlap: Int, score: Int) {
         let rootScopes = Set(rootChildren.filter(\.isScope).map(\.name))
-        let rootNames = Set(rootChildren.map(\.name))
+        let names = Set(kids.map(\.name)).union(kids.map(signalName))
         var overlap = 0
         var score = 0
-        for name in Set(kids.map(signalName)) where rootNames.contains(name) {
+        for name in Set(rootChildren.map(\.name)) where names.contains(name) {
             overlap += 1
             score += rootScopes.contains(name) ? 2 : 1
         }
@@ -263,7 +269,7 @@ public enum HierarchyPrefixInference {
             if !scope.isEmpty {
                 let match = score(kids, against: designRootChildren)
                 if match.overlap >= required {
-                    if kids.contains(where: { signalName($0) == rest[0] }), await exists(scope + rest, dumpChildren: dumpChildren) {
+                    if kids.contains(where: { $0.name == rest[0] || signalName($0) == rest[0] }), await exists(scope + rest, dumpChildren: dumpChildren) {
                         found.append((match.score, scope))
                         // The root's own subtree does not hold another copy of the root.
                         continue
@@ -304,8 +310,11 @@ public enum HierarchyPrefixInference {
         for length in 1..<path.count {
             let prefix = Array(path.prefix(length))
             guard let kids = await dumpChildren(prefix) else { break }
+            // The design names the signal without the range a dump may give it (`pc[0:0]`).
+            let name = path[length]
+            let designName = length == path.count - 1 ? signalName(ofName: name) : name
             for (root, rootChildren) in designRoots.sorted(by: { $0.key < $1.key })
-            where rootChildren.contains(where: { $0.name == path[length] }) {
+            where rootChildren.contains(where: { $0.name == name || $0.name == designName }) {
                 let match = score(kids, against: rootChildren)
                 guard match.overlap >= requiredOverlap(childCount: Set(rootChildren.map(\.name)).count) else { continue }
                 if best == nil || match.score > best!.score {
