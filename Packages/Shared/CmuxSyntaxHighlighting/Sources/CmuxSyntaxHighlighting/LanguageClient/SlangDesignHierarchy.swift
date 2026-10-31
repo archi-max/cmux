@@ -183,7 +183,7 @@ extension LanguageServerSession {
     /// A variable's or port's width as its declaration gives it, from slang-server's hover; nil
     /// when the server has no hover there, or when the width may differ between instances while
     /// the hover shows one of them: a range that is not plain numbers, a type parameter, or a
-    /// typedef outside a package whose own declaration is not plain numbers. Cancellation and
+    /// typedef outside a package. Cancellation and
     /// server failures are thrown.
     private func declaredWidth(of item: SlangHierarchyItem, texts: inout [URL: [UInt16]]) async throws -> Int? {
         guard let location = item.location else { return nil }
@@ -262,8 +262,8 @@ extension LanguageServerSession {
         return true
     }
 
-    /// Whether the typedef on 0-based `line` of `text` has one width for every instance: it is in
-    /// a package, or it is a one-line `typedef <built-in type> [N:M]... name;`.
+    /// Whether the typedef on 0-based `line` of `text` has one width for every instance: only
+    /// when it is in a package (a module's typedef can depend on its parameters).
     static func typedefIsFixed(in text: String, line: Int) -> Bool {
         let units = blankingCommentsAndStrings(Array(text.utf16))
         guard let lineStart = utf16Offset(of: LSPPosition(line: line, character: 0), inUnits: units) else { return false }
@@ -283,16 +283,7 @@ extension LanguageServerSession {
             }
             index = end
         }
-        if containers.last == "package" { return true }
-        var lineEnd = lineStart
-        while lineEnd < units.count, units[lineEnd] != newlineUnit { lineEnd += 1 }
-        let statement = String(decoding: units[lineStart..<lineEnd], as: UTF16.self).trimmingCharacters(in: .whitespaces)
-        guard statement.hasPrefix("typedef "), statement.hasSuffix(";"), rangesArePlain(statement) else { return false }
-        var words = statement.dropLast().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "$" }).map(String.init)
-        words = words.filter { !$0.allSatisfy(\.isNumber) }
-        let builtIn: Set<String> = ["logic", "bit", "reg", "wire", "signed", "unsigned", "byte", "shortint", "int", "longint", "integer"]
-        guard words.count >= 3, words.first == "typedef" else { return false }
-        return words.dropFirst().dropLast().allSatisfy(builtIn.contains)
+        return containers.last == "package"
     }
 
     /// The named port connections of an instance, read from its instantiation's text (`texts`
