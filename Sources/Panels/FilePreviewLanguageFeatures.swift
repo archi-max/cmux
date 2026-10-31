@@ -1052,8 +1052,9 @@ final class FilePreviewLanguageFeatures: NSObject {
                 guard let dumps = await WaveformSourceLink.dumpInstances(
                     ofDesignInstance: designInstance, rootKey: rootKey, waveform: waveform
                 ) else {
-                    // The viewer is loading; its open will refresh.
+                    // The viewer is loading; its open will refresh. Play needn't wait for this editor meanwhile.
                     inlineValueOverlay?.clear()
+                    WaveformDebuggerRTLStatus.editorDone(self, waveform: waveform, time: time, drew: false, reasons: [:])
                     return
                 }
                 for dump in dumps where !candidates.contains(dump) {

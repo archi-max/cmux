@@ -270,6 +270,9 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(page.highlightCalls.last == [["tb_wrapper", "dfp_ready"]], "its row lights up: \(String(describing: page.highlightCalls.last))")
 
     // The RTL item in the debugger's strip: what the editors did with this cycle, or why not.
+    // (The harness's settles would make reports stale, which only matters while playing: time stands still.)
+    let frozen = Date()
+    WaveformDebuggerRTLStatus.now = { frozen }
     page.rtlStatuses.removeAll()
     page.rtlShownTimes.removeAll()
     FilePreviewLanguageFeatures.all = []

@@ -19,23 +19,30 @@ enum WaveformDebuggerRTLStatus {
     static let waitForEditorKey = "waveformDebugger.waitForEditor"
     static var waitsForEditor: Bool { UserDefaults.standard.object(forKey: waitForEditorKey) as? Bool ?? true }
 
-    /// The clock reports are timed by. (Not yet used.)
+    /// The clock reports are timed by (the checks set it).
     static var now: () -> Date = { Date() }
+    /// Seconds without a report after which play no longer waits for an editor (its refreshes
+    /// stalled, or it can't draw this cycle): the page's 250 ms cap would otherwise pace every cycle.
+    static let staleAfter: TimeInterval = 1
 
     private final class Report {
         let time: Int64
         let drew: Bool
         let reasons: [String: Reason]
+        let at: Date
 
-        init(time: Int64, drew: Bool, reasons: [String: Reason]) {
+        init(time: Int64, drew: Bool, reasons: [String: Reason], at: Date) {
             self.time = time
             self.drew = drew
             self.reasons = reasons
+            self.at = at
         }
     }
 
     private final class Sent {
         var status: [String: AnyHashable]?
+        /// When play last started: an editor yet to report is waited for until `staleAfter` after it.
+        var playStartedAt: Date?
     }
 
     private static let reports = NSMapTable<FilePreviewLanguageFeatures, Report>.weakToStrongObjects()
@@ -50,16 +57,25 @@ enum WaveformDebuggerRTLStatus {
 
     /// `editor` finished with the cycle at `time`: it showed values (`drew`), or not, for `reasons`.
     static func editorDone(_ editor: FilePreviewLanguageFeatures, waveform: FilePreviewPanel, time: Int64, drew: Bool, reasons: [String: Reason]) {
-        reports.setObject(Report(time: time, drew: drew, reasons: reasons), forKey: editor)
+        reports.setObject(Report(time: time, drew: drew, reasons: reasons, at: now()), forKey: editor)
         report(waveform)
         ackIfAllShown(waveform)
     }
 
-    /// Every editor that follows `waveform` is at the same cycle: the page may move on
-    /// (it ignores an ack for a cycle it isn't waiting on).
+    /// Every editor that follows `waveform` and still reports is at the same cycle: the page
+    /// may move on (it ignores an ack for a cycle it isn't waiting on).
     private static func ackIfAllShown(_ waveform: FilePreviewPanel) {
         guard WaveformDebugger.isStepping(waveform) else { return }
-        let times = editors(of: waveform).map { reports.object(forKey: $0)?.time }
+        let clock = now()
+        // Not played yet (stepped by hand): an editor yet to report is waited for.
+        let startedAt = sent.object(forKey: waveform)?.playStartedAt ?? clock
+        var times: [Int64?] = []
+        for editor in editors(of: waveform) {
+            let report = reports.object(forKey: editor)
+            let since = report?.at ?? startedAt
+            guard clock.timeIntervalSince(since) < staleAfter else { continue }
+            times.append(report?.time)
+        }
         guard let first = times.first, let time = first, times.allSatisfy({ $0 == time }) else { return }
         let page = waveform.nativeViewSessions.waveform
         Task { _ = await page.callDebugger("rtlShown", argument: ["time": NSNumber(value: time)]) }
@@ -68,6 +84,9 @@ enum WaveformDebuggerRTLStatus {
     /// Play started on `waveform`: what its editors drew before doesn't count for the cycles to come.
     static func playStarted(_ waveform: FilePreviewPanel) {
         for editor in editors(of: waveform) { reports.removeObject(forKey: editor) }
+        let mine = sent.object(forKey: waveform) ?? Sent()
+        mine.playStartedAt = now()
+        sent.setObject(mine, forKey: waveform)
         report(waveform)
     }
 
@@ -130,7 +149,7 @@ enum WaveformDebuggerRTLStatus {
         if drawn.count == 1 {
             text = rtl(drawn[0])
         } else if drawn.count > 1 {
-            text = String(format: String(localized: "waveformDebugger.rtl.files", defaultValue: "RTL: %@ files"), String(drawn.count))
+            text = String(localized: "waveformDebugger.rtl.files", defaultValue: "RTL: \(drawn.count) files")
         } else if !anyReported {
             text = rtl(waiting)
         } else {
