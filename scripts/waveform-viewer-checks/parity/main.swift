@@ -1281,6 +1281,49 @@ extension Harness {
         """) { r in
           check(r["afterFailed"] as? Int == 1, "an Undo waiting on a reload that failed is forgotten (rows drawn \(r["afterFailed"] ?? "nil"))")
           check(r["afterPath"] as? Int == 1, "and one overtaken by a reload of another path (rows drawn \(r["afterPath"] ?? "nil"))")
+          self.phaseAI()
+        }
+      }
+    }
+  }
+
+  // Two Undos waiting on a reload, with other contexts from the viewer in
+  // between (a debugger tick, a quiet Locals edit): the second runs only after
+  // the viewer answered the first, so the redo history stays right.
+  func phaseAI() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.core.acc' });
+        await sleep(600);
+        let pokes = 0;
+        const onContextUpdate = C.onContextUpdate;
+        C.onContextUpdate = (m) => {
+          const out = onContextUpdate(m);
+          if (pokes < 4 && m.stateChangeType !== 0 && C.isRestoring && !C.isRestoring()) { pokes++; H.toWebview({ command: 'getContext' }); }
+          return out;
+        };
+        window.cmuxWaveform.reload({});
+        await C.run('cmux.undo');
+        await C.run('cmux.undo');
+        await reloaded();
+        await sleep(1500);
+        C.onContextUpdate = onContextUpdate;
+        R.afterUndos = drawn();
+        await C.run('cmux.redo');
+        await sleep(800);
+        await C.run('cmux.redo');
+        await sleep(800);
+        R.afterRedos = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undoAgain = drawn();
+        """) { r in
+          check(r["afterUndos"] as? Int == 0, "both waiting Undos apply after the reload (rows drawn \(r["afterUndos"] ?? "nil"))")
+          check(r["afterRedos"] as? Int == 2, "two Redos bring both rows back (rows drawn \(r["afterRedos"] ?? "nil"))")
+          check(r["undoAgain"] as? Int == 1, "and the redo history held each view once (rows drawn \(r["undoAgain"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
