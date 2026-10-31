@@ -212,12 +212,24 @@ public enum HierarchyPrefixInference {
     }
 
     /// Instance names are far more telling than `clk` or `rst`, so a shared scope child counts twice.
+    /// A dump item's name as the design names it: a signal's trailing range dropped (FSDB names a
+    /// 1-bit vector declared `[N-1:0]` with it, as `dfp_wdone[0:0]`). The same rule as the
+    /// viewer's `findLinkItem` in host.js; a scope's index (`gen[0]`) is part of its name.
+    public static func signalName(_ node: HierarchyNode) -> String {
+        guard !node.isScope, node.name.hasSuffix("]"), let open = node.name.lastIndex(of: "[") else { return node.name }
+        let range = node.name[node.name.index(after: open)..<node.name.index(before: node.name.endIndex)]
+        let parts = range.split(separator: ":", omittingEmptySubsequences: false)
+        guard open > node.name.startIndex, (1...2).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) else { return node.name }
+        return String(node.name[..<open])
+    }
+
     static func score(_ kids: [HierarchyNode], against rootChildren: [HierarchyNode]) -> (overlap: Int, score: Int) {
         let rootScopes = Set(rootChildren.filter(\.isScope).map(\.name))
         let rootNames = Set(rootChildren.map(\.name))
         var overlap = 0
         var score = 0
-        for name in Set(kids.map(\.name)) where rootNames.contains(name) {
+        for name in Set(kids.map(signalName)) where rootNames.contains(name) {
             overlap += 1
             score += rootScopes.contains(name) ? 2 : 1
         }
@@ -251,7 +263,7 @@ public enum HierarchyPrefixInference {
             if !scope.isEmpty {
                 let match = score(kids, against: designRootChildren)
                 if match.overlap >= required {
-                    if kids.contains(where: { $0.name == rest[0] }), await exists(scope + rest, dumpChildren: dumpChildren) {
+                    if kids.contains(where: { signalName($0) == rest[0] }), await exists(scope + rest, dumpChildren: dumpChildren) {
                         found.append((match.score, scope))
                         // The root's own subtree does not hold another copy of the root.
                         continue
@@ -312,7 +324,7 @@ public enum HierarchyPrefixInference {
     ) async -> Bool {
         guard let last = path.last else { return false }
         guard let kids = await dumpChildren(Array(path.dropLast())) else { return false }
-        return kids.contains { $0.name == last }
+        return kids.contains { $0.name == last || signalName($0) == last }
     }
 }
 
