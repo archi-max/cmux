@@ -408,8 +408,11 @@ enum WaveformDebuggerLineBreakpoints {
         refreshPositions(in: workspace)
         let lines = marks[workspace] ?? []
         let signals = self.signals[workspace] ?? []
-        guard !lines.isEmpty || !signals.isEmpty else { return nil }
-        return SessionWaveformBreakpointsSnapshot(lines: lines.isEmpty ? nil : lines, signals: signals.isEmpty ? nil : signals)
+        let watches = WaveformDebuggerEvaluate.snapshot(of: workspace)
+        guard !lines.isEmpty || !signals.isEmpty || watches != nil else { return nil }
+        return SessionWaveformBreakpointsSnapshot(
+            lines: lines.isEmpty ? nil : lines, signals: signals.isEmpty ? nil : signals, watches: watches
+        )
     }
 
     /// Breakpoints from a restored session: lines are placed by text when their files open,
@@ -421,12 +424,14 @@ enum WaveformDebuggerLineBreakpoints {
             changed(workspace)
         }
         if let restored = snapshot.signals, !restored.isEmpty { signals[workspace] = restored }
+        WaveformDebuggerEvaluate.restore(snapshot.watches, in: workspace)
     }
 }
 
-/// A workspace's waveform debugger breakpoints in its session; absent in older manifests and
-/// for workspaces without any.
+/// A workspace's waveform debugger breakpoints (and watch expressions) in its session; absent in
+/// older manifests and for workspaces without any.
 struct SessionWaveformBreakpointsSnapshot: Codable, Sendable, Equatable {
     var lines: [WaveformDebuggerLineBreakpoints.Mark]?
     var signals: [WaveformDebuggerLineBreakpoints.SignalBreakpoint]?
+    var watches: [String]? = nil
 }

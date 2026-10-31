@@ -1113,6 +1113,10 @@
     iframe.addEventListener('load', attachToFrame);
     hostApi.findLinkItem = findLinkItem;
     hostApi.pathOf = pathOf;
+    // cmux-debugger.js (Evaluate, watches): the bits in effect at `time` (netlistId -> bits), signals
+    // not shown too; and the shown rows' number formats (netlistId -> numberFormat).
+    hostApi.rawValuesAt = (time, vars) => (backend && backend.changes ? fsdbValues(Number(time), vars, true) : wellenValues(Number(time), vars));
+    hostApi.shownFormats = shownFormats;
 
     return Object.freeze({
       scopeChildren,
