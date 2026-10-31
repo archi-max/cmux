@@ -59,6 +59,11 @@ func makeHome(_ name: String, installs: [InstallSpec]) throws -> URL {
   return home
 }
 
+func installDir(home: URL, _ i: InstallSpec) -> URL {
+  home.appendingPathComponent(".cache/cmux/\(i.cache)/\(WaveformFSDBHelper.cachedVersion(of: i.root))-\(machine())", isDirectory: true)
+}
+func setMode(_ url: URL, _ mode: Int) throws { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path) }
+
 let v2Install = InstallSpec(cache: "fsdb-helper-v2", root: v2Root, files: ["addon/build/Release/fsdb_reader.node"], launcher: "cmux-helper-v2.sh")
 let v1Install = InstallSpec(cache: "fsdb-helper", root: v1Root, files: ["fsdb_reader.node"], launcher: "fsdb-helper.sh", asV1: true)
 func v2Launching(_ script: String) -> InstallSpec {
@@ -66,9 +71,9 @@ func v2Launching(_ script: String) -> InstallSpec {
 }
 
 /// `/bin/sh -c` stands in for `ssh host`: same remote command, run here with HOME set.
-func localShell(home: URL) -> WaveformFSDBHelper.SSHArguments {
+func localShell(home: URL, env: String = "") -> WaveformFSDBHelper.SSHArguments {
   let h = home.path
-  return { command in ["-c", "HOME=\(shellQuoted(h)); export HOME; \(command)"] }
+  return { command in ["-c", "HOME=\(shellQuoted(h)); export HOME; \(env)\(command)"] }
 }
 
 /// Statuses a helper reported, for the fallback checks.
@@ -81,11 +86,11 @@ final class StatusLog: @unchecked Sendable {
   }
 }
 
-let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll"])
+let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats"])
 
 func makeHelper(home: URL, loading: WaveformFSDBHelper.Loading, v2Root: URL = v2Root, hostKey: String = "local",
-                allowedFile: String? = nil, readyTimeout: TimeInterval = 20, log: StatusLog? = nil) -> WaveformFSDBHelper {
-  WaveformFSDBHelper(sshArguments: localShell(home: home),
+                allowedFile: String? = nil, readyTimeout: TimeInterval = 20, log: StatusLog? = nil, env: String = "") -> WaveformFSDBHelper {
+  WaveformFSDBHelper(sshArguments: localShell(home: home, env: env),
                      installs: WaveformFSDBHelper.installs(v2Root: v2Root, v1Root: v1Root, loading: loading),
                      executable: URL(fileURLWithPath: "/bin/sh"), hostKey: hostKey, allowedCommands: testCommands,
                      allowedFile: allowedFile, readyTimeout: readyTimeout) { status in log?.add(status); print("[status]", String(format: "%.1f", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1000)), status) }
@@ -187,6 +192,12 @@ func relayChecks() async throws {
   expect(outcomes.count == 60 && outcomes.allSatisfy { $0 == "cancelled" || $0 == "answered" } && cancelledCount >= 50 && raceMs < 3000,
          "60 racing request/cancel pairs: \(cancelledCount) cancelled, the rest answered, in \(raceMs) ms: \(Set(outcomes))")
 
+  // No cancel reached the helper ahead of its request (the request is written before its
+  // id is published): the mock counts requests that arrive after their own cancel.
+  let order = header(await helper.response(for: json(["cmd": "stats"]), failureMessage: fail))
+  expect((order["result"] as? [String: Any])?["requestsAfterCancel"] as? Int == 0,
+         "no cancel overtook its request on the way to the helper: \(order)")
+
   // The relay passes only the page's commands, and an open only of the panel's file.
   let warm = await helper.response(for: json(["cmd": "warm", "on": true]), failureMessage: fail)
   expect((header(warm)["error"] as? String ?? "").contains("notAllowed"), "a command the page doesn't use is refused: \(header(warm))")
@@ -230,6 +241,22 @@ func fallbackChecks() async throws {
   _ = await open(retried); retried.stop()
   expect(lines(counter) == 3, "Retry windowed (forgetV2Failure) builds v2 again: \(lines(counter)) runs")
 
+  // Remembered per machine type: the same host name reaching another kind of machine
+  // (a round-robin alias) builds there.
+  let cm = scratch.appendingPathComponent("builds-13m.txt")
+  let brokenM = try failingV2Root("broken-13m", code: 13, counter: cm)
+  let here = makeHelper(home: fbHome, loading: .auto, v2Root: brokenM, hostKey: "host-m")
+  _ = await open(here); here.stop()
+  let fakeBin = scratch.appendingPathComponent("fake-uname", isDirectory: true)
+  try FileManager.default.createDirectory(at: fakeBin, withIntermediateDirectories: true)
+  try Data("#!/bin/sh\n[ \"$1\" = -m ] && { echo riscv64; exit 0; }\nexec /usr/bin/uname \"$@\"\n".utf8).write(to: fakeBin.appendingPathComponent("uname"))
+  try setMode(fakeBin.appendingPathComponent("uname"), 0o755)
+  let elsewhere = makeHelper(home: fbHome, loading: .auto, v2Root: brokenM, hostKey: "host-m", env: "PATH=\(shellQuoted(fakeBin.path)):$PATH; export PATH; ")
+  _ = await open(elsewhere); elsewhere.stop()
+  let again = makeHelper(home: fbHome, loading: .auto, v2Root: brokenM, hostKey: "host-m")
+  _ = await open(again); again.stop()
+  expect(lines(cm) == 2, "a failed build is remembered per machine type: another machine builds, this one doesn't again (\(lines(cm)) builds, want 2)")
+
   // No Node.js (11): v1 would fail the same way: an error, not a fallback.
   let c11 = scratch.appendingPathComponent("builds-11.txt")
   let noNode = makeHelper(home: fbHome, loading: .auto, v2Root: try failingV2Root("broken-11", code: 11, counter: c11), hostKey: "host-c")
@@ -252,6 +279,28 @@ func fallbackChecks() async throws {
   expect(proto(re) == "1" && errLog.fellBack.first?.detail.contains("worker failed to open") == true,
          "a v2 startup error falls back to v1: \(errLog.fellBack)")
 
+  // ... with nothing on stderr: the notice still says why.
+  let quietLog = StatusLog()
+  let quietHome = try makeHome("exit1-quiet", installs: [v2Launching("exit 1"), v1Install])
+  let quiet = makeHelper(home: quietHome, loading: .auto, hostKey: "host-d2", log: quietLog)
+  _ = await open(quiet); quiet.stop()
+  expect(quietLog.fellBack.count == 1 && !(quietLog.fellBack.first?.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+         "a silent v2 exit still gives the notice a reason: \(quietLog.fellBack)")
+
+  // An install others can write is refused before its launcher runs (a changed launcher
+  // can't skip the check): group-writable launcher, then a group-writable ~/.cache/cmux.
+  for (name, makeOpen) in [("launcher", { (dir: URL, home: URL) in try setMode(dir.appendingPathComponent("cmux-helper-v2.sh"), 0o775) }),
+                           ("cache", { (dir: URL, home: URL) in try setMode(home.appendingPathComponent(".cache/cmux"), 0o775) })] {
+    let ran = scratch.appendingPathComponent("tampered-\(name).txt")
+    let pLog = StatusLog()
+    let pHome = try makeHome("tampered-\(name)", installs: [v2Launching("echo ran >> \(shellQuoted(ran.path)); exit 0"), v1Install])
+    try makeOpen(installDir(home: pHome, v2Install), pHome)
+    let tampered = makeHelper(home: pHome, loading: .auto, hostKey: "host-p-\(name)", log: pLog)
+    let rp = await open(tampered); tampered.stop()
+    expect(proto(rp) == "none" && pLog.fellBack.isEmpty && lines(ran) == 0 && (header(rp)["error"] as? String ?? "").contains("refused"),
+           "a group-writable \(name) is refused before the launcher runs: ran \(lines(ran)), \(header(rp))")
+  }
+
   // ssh can't connect (255): an error, no fallback.
   let sshLog = StatusLog()
   let sshHome = try makeHome("exit255", installs: [v2Launching("echo 'ssh: connect to host: Connection refused' >&2; exit 255"), v1Install])
@@ -272,6 +321,8 @@ func fallbackChecks() async throws {
   let tLog = StatusLog()
   let tCount = scratch.appendingPathComponent("slow-launches.txt")
   let tHome = try makeHome("timeout", installs: [v2Launching("echo run >> \(shellQuoted(tCount.path)); sleep 30"), v1Install])
+  WaveformFSDBHelper.timeoutMemory = 4
+  defer { WaveformFSDBHelper.timeoutMemory = 600 }
   let slow = makeHelper(home: tHome, loading: .auto, hostKey: "host-h", readyTimeout: 2, log: tLog)
   let t0 = Date()
   let rt = await open(slow); slow.stop()
@@ -280,6 +331,10 @@ func fallbackChecks() async throws {
   let slow2 = makeHelper(home: tHome, loading: .auto, hostKey: "host-h", readyTimeout: 2)
   let rt2 = await open(slow2); slow2.stop()
   expect(proto(rt2) == "1" && lines(tCount) == 1, "the next viewer of that host doesn't wait for v2 again: \(lines(tCount)) launches")
+  try await Task.sleep(nanoseconds: 4_500_000_000)
+  let slow3 = makeHelper(home: tHome, loading: .auto, hostKey: "host-h", readyTimeout: 1)
+  _ = await open(slow3); slow3.stop()
+  expect(lines(tCount) == 2, "a remembered timeout expires: v2 is tried again later (\(lines(tCount)) launches, want 2)")
 
   // loading = whole: the v1 helper only, even with v2 installed.
   let wHome = try makeHome("whole", installs: [v2Install, v1Install])
@@ -299,7 +354,12 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var helper: WaveformFSDBHelper!
   var opened: CheckedContinuation<Bool, Never>?
 
-  init(loading: WaveformFSDBHelper.Loading) { self.loading = loading }
+  /// A VCD to open instead of the FSDB (no helper, no windowing).
+  let vcd: URL?
+  /// Message types the page posted to native.
+  var nativeTypes: [String] = []
+
+  init(loading: WaveformFSDBHelper.Loading, vcd: URL? = nil) { self.loading = loading; self.vcd = vcd }
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -323,7 +383,12 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     cfg.userContentController.addUserScript(WKUserScript(source: """
       if (location.pathname.endsWith('viewer.html')) {
         window.__msgOrder = [];
-        window.addEventListener('message', (e) => { const c = e.data && e.data.command; if (c) { window.__msgOrder.push(c); } }, true);
+        window.__v2Replies = {};
+        window.addEventListener('message', (e) => {
+          const c = e.data && e.data.command;
+          if (c) { window.__msgOrder.push(c); }
+          if (c === 'v2-reply' && e.data.reply && e.data.reply.id >= 900000) { window.__v2Replies[e.data.reply.id] = e.data.reply; }
+        }, true);
       }
       """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
     web = WKWebView(frame: window.contentView!.bounds, configuration: cfg)
@@ -343,7 +408,12 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
     guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
-    if type == "ready" {
+    nativeTypes.append(type)
+    if type == "ready", let vcd {
+      let fileURL = scheme.serve(fileURL: vcd)
+      let size = (try? FileManager.default.attributesOfItem(atPath: vcd.path)[.size] as? Int) ?? 0
+      web.evaluateJavaScript("cmuxWaveform.setTheme({kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:{netlist:'Netlist', loading:'Loading…', openFailed:'Could not open', addSignal:'Add'}})")
+    } else if type == "ready" {
       let helper = self.helper!
       let relayURL = scheme.serve(fsdbRelay: { body in await helper.response(for: body) { "\($0)" } })
       web.evaluateJavaScript("""
@@ -449,6 +519,47 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("return await cmuxWaveform.debugger.stop()")
   }
 
+  /// The page side of the fallback notice, and what host.js relays.
+  func hostChecks() async {
+    // The notice: shown with its reason and a Retry that asks native to retry windowed.
+    _ = await call("cmuxWaveform.setFallbackNotice({message: 'Using the classic viewer: build failed', detail: 'g++: error', retry: 'Retry Windowed'}); return null")
+    let shown = await call("""
+      const el = document.getElementById('status-fallback');
+      return el && !el.hidden && el.offsetParent !== null ? el.querySelector('.text').textContent + '|' + el.querySelector('button').textContent + '|' + el.title : null
+      """) as? String
+    expect(shown == "Using the classic viewer: build failed|Retry Windowed|g++: error", "the fallback notice shows its reason and Retry: \(shown ?? "hidden")")
+    nativeTypes.removeAll()
+    _ = await call("document.querySelector('#status-fallback button').click(); return null")
+    let retried = await waitFor(2000) { self.nativeTypes.contains("retryWindowed") }
+    let hidden = await call("return document.getElementById('status-fallback').hidden") as? Bool
+    expect(retried && hidden == true, "Retry Windowed asks native to retry and hides the notice: \(nativeTypes), hidden \(String(describing: hidden))")
+    _ = await call("cmuxWaveform.setFallbackNotice({message: 'x', retry: 'r'}); cmuxWaveform.setFallbackNotice({}); return null")
+    expect(await call("return document.getElementById('status-fallback').hidden") as? Bool == true, "an empty notice hides it")
+
+    // host.js relays only the viewer's v2 commands.
+    _ = await call("await cmuxWaveform.fromWebview({command: 'v2', req: {id: 900001, cmd: 'warm', on: true}}); return null")
+    _ = await waitFor(3000) { await self.call("return !!document.getElementById('viewer').contentWindow.__v2Replies[900001]") as? Bool == true }
+    let refused = await call("return JSON.stringify(document.getElementById('viewer').contentWindow.__v2Replies[900001] || null)") as? String ?? ""
+    expect(refused.contains("not relayed: warm"), "host.js doesn't relay a command the viewer doesn't send: \(refused)")
+
+    // An unreadable relay reply answers the viewer with an error (it never waits on it).
+    _ = await call("""
+      const real = window.fetch;
+      window.fetch = async () => new Response(new Uint8Array([255, 255, 255, 127, 1, 2]), { headers: { 'Content-Type': 'application/octet-stream' } });
+      try { await cmuxWaveform.fromWebview({command: 'v2', req: {id: 900002, cmd: 'valueAt', signalIds: [0], t: 0}}); } finally { window.fetch = real; }
+      return null
+      """)
+    _ = await waitFor(3000) { await self.call("return !!document.getElementById('viewer').contentWindow.__v2Replies[900002]") as? Bool == true }
+    let bad = await call("return JSON.stringify(document.getElementById('viewer').contentWindow.__v2Replies[900002] || null)") as? String ?? ""
+    expect(bad.contains("\"error\"") && bad.contains("900002"), "an unreadable relay reply becomes an error reply for the viewer: \(bad)")
+  }
+
+  /// A VCD: no set-windowing message, and no helper.
+  func vcdChecks() async {
+    let order = await messageOrder()
+    expect(order.contains("initViewport") && !order.contains("set-windowing"), "a VCD gets no set-windowing: \(order.prefix(6))")
+  }
+
   /// tb.dut's vars in the mock: bus0, bus1, state, spike_rvfi after clk, rst.
   var stateId: Int { 4 }
 
@@ -493,7 +604,7 @@ func run() async {
     let page = Page(loading: .auto)
     let ok = await page.open(home: home)
     expect(ok, "v2 page opened the synthetic dump")
-    if ok { await page.windowedChecks() }
+    if ok { await page.windowedChecks(); await page.hostChecks() }
     await page.snapshot()
     page.close()
     let whole = Page(loading: .whole)
@@ -501,6 +612,14 @@ func run() async {
     expect(ok2, "loading whole page opened")
     if ok2 { await whole.wholeChecks() }
     whole.close()
+    let vcdURL = scratch.appendingPathComponent("small.vcd")
+    try Data("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n#20\n0!\n".utf8)
+      .write(to: vcdURL)
+    let vcdPage = Page(loading: .auto, vcd: vcdURL)
+    let ok3 = await vcdPage.open(home: home)
+    expect(ok3, "a VCD page opened")
+    if ok3 { await vcdPage.vcdChecks() }
+    vcdPage.close()
   } catch { expect(false, "page checks ran: \(error)") }
   print(failures == 0 ? "WINDOWED CHECKS PASSED" : "WINDOWED CHECKS FAILED: \(failures)")
   exit(failures == 0 ? 0 : 1)

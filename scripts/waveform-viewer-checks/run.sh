@@ -97,6 +97,8 @@ case "${1:-}" in
     "$OUT/windowed" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/windowed/mock-helper-v2.cjs" \
       "$OUT" "$OUT/windowed.png" | grep -v '^\[log\]' | tee "$OUT/windowed.log"
     grep -q '^WINDOWED CHECKS PASSED' "$OUT/windowed.log"
+    # The real build.sh and cmux-helper-v2.sh, against the mock, on a scratch HOME.
+    bash "$HERE/windowed/scripts-check.sh" "$ASSETS/fsdb-helper-v2" "$HERE/windowed/mock-helper-v2.cjs" "$OUT/scripts-check"
     ;;
   windowed-launcher)
     shift
