@@ -151,7 +151,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aSignalTheIncluderDeclaresIsPlaced() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // `.clk (clk)`: the second clk, declared in tb_wrapper.
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 15), identifier: "clk")
             #expect(paths == ["tb_wrapper.clk"])
@@ -159,21 +159,21 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aSignalTheFragmentDeclaresIsPlaced() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 0, character: 12), identifier: "frag_sig")
             #expect(paths == ["tb_wrapper.frag_sig"])
         }
     }
 
     @Test func anInstanceTheFragmentDeclaresIsPlaced() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 1, character: 9), identifier: "dut")
             #expect(paths == ["tb_wrapper.dut"])
         }
     }
 
     @Test func aFragmentThatDeclaresNothingIsPlacedThroughItsIncluder() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.body, position: LSPPosition(line: 0, character: 26), identifier: "count")
             #expect(paths == ["tb_wrapper.count"])
         }
@@ -227,7 +227,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aFragmentWithItsOwnMacroIncludeIsStillPlaced() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // `.q (frag_sig)`: declared at the top of this fragment, which has a macro include of its own.
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 3, character: 16), identifier: "frag_sig")
             #expect(paths == ["tb_wrapper.frag_sig"])
@@ -235,7 +235,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aPortNameInAFragmentIsTheChildInstancesPort() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // `.clk` of `.clk (clk)` in the fragment: dut's port, not the includer's clk.
             let port = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 10), identifier: "clk")
             #expect(port == ["tb_wrapper.dut.clk"])
@@ -249,7 +249,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aPortNameInAModuleIsTheChildInstancesPort() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // `sub w (.clk (clk), .q (spare[1]));` in tb_wrapper.
             let port = try await fixture.session.slangDesignPaths(uri: fixture.wrapper, position: LSPPosition(line: 7, character: 12), identifier: "clk")
             #expect(port == ["tb_wrapper.w.clk"])
@@ -346,7 +346,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aHoverFailureOtherThanTheServersAnswerIsThrown() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             await fixture.session.setDeclarationHoverErrorForTesting(.timeout(method: "textDocument/hover"))
             await #expect(throws: LanguageServerError.self) {
                 _ = try await fixture.session.slangPortAliases(of: "tb_wrapper.frag_sig")
@@ -360,7 +360,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // sub `include`s `SUB_DEFS (defs.svh), not the fragment; tb_wrapper includes body.sv through `BODY_FILE.
             let sub = fixture.root.appendingPathComponent("sub.sv")
             #expect(try await fixture.session.includeMatch(of: fixture.fragment, inDeclaringFile: sub) == nil)
@@ -369,7 +369,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aNetsPortAliasesArePlainWholeNetConnections() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // Down: the instance ports a signal is connected to.
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.frag_sig") == ["tb_wrapper.dut.q"])
             #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.clk")) == ["tb_wrapper.dut.clk", "tb_wrapper.w.clk"])
@@ -399,14 +399,14 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aModuleFileStillUsesGetInstances() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.wrapper, position: LSPPosition(line: 1, character: 9), identifier: "clk")
             #expect(paths == ["tb_wrapper.clk"])
         }
     }
 
     @Test func aModuleNotUnderTheTopIsNotPlacedThroughItsPorts() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // `.clk` and `sub` in `sub u (.clk (x), ...)` of the uninstantiated module: their
             // declarations (sub's port, sub itself) are in the design, but this use is not.
             let port = try await fixture.session.slangDesignPaths(uri: fixture.unused, position: LSPPosition(line: 2, character: 12), identifier: "clk")
@@ -419,7 +419,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aStoppedServerIsAnErrorNotAnEmptyAnswer() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             await fixture.session.shutdown()
             await #expect(throws: LanguageServerError.self) {
                 _ = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 0, character: 12), identifier: "frag_sig")
