@@ -120,7 +120,9 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     let askedBefore = editor.session.asked.count
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
-    expect(editor.session.asked.count == askedBefore + 2, "answers from before a recompile aren't cached: \(editor.session.asked.count - askedBefore) asked again")
+    // Lookups run one after another: only the first (ex_mem) was out across the recompile; pc_next's
+    // failure came after it and is kept for its wait.
+    expect(editor.session.asked.suffix(from: askedBefore) == ["tb.dut.ex_mem"], "an answer from before a recompile isn't cached: \(editor.session.asked.suffix(from: askedBefore))")
 
     // Typing above the highlights moves them with the text; clearing must still take them all away.
     textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "// x\n")

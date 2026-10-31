@@ -36,6 +36,7 @@
     clockChosen: false, // set by the user (not the default)
     edges: null,        // Float64Array of posedge times, ascending
     edgesFor: null,     // [clock, backend] the edges were read for
+    clockFor: null,     // the backend whose netlist state.clock is from
     loading: null,
     loadingFor: null,   // the backend a load in progress reads from
     stepping: false,
@@ -93,11 +94,12 @@
     state.loadingFor = backend;
     const load = state.loading = (async () => {
       try {
-        if (!state.clock || state.edgesFor && state.edgesFor[1] !== backend) {
+        if (!state.clock || state.clockFor !== backend) {
           // A reload brings a new netlist: find the clock again by path.
           const path = state.clock ? host.pathOf(state.clock) : null;
           state.clock = (path && await host.findLinkItem(path, true)) || (state.clockChosen ? null : await defaultClock());
           if (!state.clock) { state.clockChosen = false; state.clock = await defaultClock(); }
+          state.clockFor = backend;
         }
         for (;;) {
           if (!state.clock) { state.edges = null; return null; }
@@ -319,9 +321,11 @@
   // ---- clock choice ----
   async function setClock(query) {
     const path = (query || {}).path;
+    const backend = host.currentBackend;
     const v = path ? await host.findLinkItem(path, true) : await defaultClock();
     if (path && (!v || Number(v.width) !== 1)) { return null; }
     state.clock = v;
+    state.clockFor = backend;
     state.clockChosen = !!path;
     state.edges = null;
     state.edgesFor = null;
