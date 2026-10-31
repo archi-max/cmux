@@ -145,9 +145,9 @@ extension LanguageServerSession {
         let name = String(path.dropFirst(parent.isEmpty ? 0 : parent.count + 1))
         guard !parent.isEmpty, Self.isPlainIdentifier(name) else { return [] }
         let scope = try await scopeChildrenSkippingUnresolved(parent)
-        guard let item = scope.first(where: { $0.name == name && !$0.isScope }),
-              let width = await declaredWidth(of: item) else { return [] }
         var texts: [URL: [UInt16]] = [:]
+        guard let item = scope.first(where: { $0.name == name && !$0.isScope }),
+              let width = try await declaredWidth(of: item, texts: &texts) else { return [] }
         var aliases: [String] = []
         for child in scope where child.kind == "Instance" {
             guard let connections = instanceConnections(child, texts: &texts) else { continue }
@@ -157,7 +157,7 @@ extension LanguageServerSession {
             let childScope = try await scopeChildrenSkippingUnresolved(childPath)
             for connection in ports {
                 guard let port = childScope.first(where: { $0.name == connection.port && $0.kind == "Port" }),
-                      await declaredWidth(of: port) == width else { continue }
+                      try await declaredWidth(of: port, texts: &texts) == width else { continue }
                 aliases.append(childPath + "." + connection.port)
             }
         }
@@ -171,7 +171,7 @@ extension LanguageServerSession {
                     // Declared in this scope (not further up, as from inside a generate block).
                     guard let signal = connection.signal,
                           let declaration = siblings.first(where: { $0.name == signal && !$0.isScope }),
-                          await declaredWidth(of: declaration) == width else { continue }
+                          try await declaredWidth(of: declaration, texts: &texts) == width else { continue }
                     aliases.append(grandparent + "." + signal)
                 }
             }
@@ -181,39 +181,118 @@ extension LanguageServerSession {
     }
 
     /// A variable's or port's width as its declaration gives it, from slang-server's hover; nil
-    /// when the hover fails or the declaration's ranges are not plain numbers (a parameter's
-    /// width differs between instances while the hover shows one of them).
-    private func declaredWidth(of item: SlangHierarchyItem) async -> Int? {
-        guard let location = item.location,
-              let hover = try? await hover(uri: location.uri, position: location.range.start) else { return nil }
-        return Self.declaredWidth(fromHover: hover)
+    /// when the server has no hover there, or when the width may differ between instances while
+    /// the hover shows one of them: a range that is not plain numbers, a type parameter, or a
+    /// typedef outside a package whose own declaration is not plain numbers. Cancellation and
+    /// server failures are thrown.
+    private func declaredWidth(of item: SlangHierarchyItem, texts: inout [URL: [UInt16]]) async throws -> Int? {
+        guard let location = item.location else { return nil }
+        let hover: String?
+        do {
+            hover = try await self.hover(uri: location.uri, position: location.range.start)
+        } catch LanguageServerError.responseError {
+            return nil
+        }
+        guard let hover else { return nil }
+        if let width = Self.declaredWidth(fromHover: hover) { return width }
+        guard Self.declarationRangesArePlain(inHover: hover), let link = Self.typeLink(inHover: hover), let width = link.width else { return nil }
+        if texts[link.uri] == nil, let text = sourceText(of: link.uri) { texts[link.uri] = Array(text.utf16) }
+        guard let units = texts[link.uri] else { return nil }
+        return Self.typedefIsFixed(in: String(decoding: units, as: UTF16.self), line: link.line) ? width : nil
     }
 
     /// The width in slang-server's hover on a declaration (`Width: `4``; none for one bit), when
-    /// the declaration it quotes has only number ranges.
+    /// its type is a plain one (not a typedef or type parameter) and the declaration it quotes has
+    /// only number ranges.
     static func declaredWidth(fromHover hover: String) -> Int? {
-        let lines = hover.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let fence = lines.firstIndex(where: { $0.hasPrefix("```") }),
-              let close = lines[(fence + 1)...].firstIndex(where: { $0.hasPrefix("```") }) else { return nil }
-        let declaration = lines[(fence + 1)..<close].joined(separator: "\n")
-        var inRange = false
-        for character in declaration {
-            if character == "[" { inRange = true } else if character == "]" { inRange = false }
-            else if inRange, !(character.isASCII && (character.isNumber || character == ":" || character == " ")) { return nil }
+        guard declarationRangesArePlain(inHover: hover), let type = hoverField("Type:", in: hover),
+              type.hasPrefix("`"), type.hasSuffix("`"), type.count >= 2 else { return nil }
+        return width(ofHover: hover, type: String(type.dropFirst().dropLast()))
+    }
+
+    /// A hover's declared type that is a link to a typedef or type parameter (`` [`t (aka logic[3:0])`](<file:///f.sv#L6,25>) ``):
+    /// the declaration's file and 0-based line, and the width of the type it stands for.
+    static func typeLink(inHover hover: String) -> (uri: URL, line: Int, width: Int?)? {
+        guard let type = hoverField("Type:", in: hover), type.hasPrefix("[`"),
+              let nameEnd = type.range(of: "`](<"), type.hasSuffix(">)") else { return nil }
+        let shown = type[type.index(type.startIndex, offsetBy: 2)..<nameEnd.lowerBound]
+        guard let aka = shown.range(of: " (aka "), shown.hasSuffix(")") else { return nil }
+        let base = String(shown[aka.upperBound..<shown.index(before: shown.endIndex)])
+        let target = type[nameEnd.upperBound..<type.index(type.endIndex, offsetBy: -2)]
+        guard let hash = target.lastIndex(of: "#"), let url = URL(string: String(target[..<hash])), url.isFileURL else { return nil }
+        let anchor = target[target.index(after: hash)...]
+        guard anchor.hasPrefix("L"), let line = Int(anchor.dropFirst().prefix { $0.isNumber }), line >= 1 else { return nil }
+        return (url, line - 1, width(ofHover: hover, type: base))
+    }
+
+    /// `Width:` from a hover, else 1 for a one-bit `type`.
+    private static func width(ofHover hover: String, type: String) -> Int? {
+        if let width = hoverField("Width:", in: hover) {
+            guard width.hasPrefix("`"), width.hasSuffix("`") else { return nil }
+            return Int(width.dropFirst().dropLast())
         }
-        func field(_ label: String) -> String? {
-            for line in lines[..<fence] {
-                let text = line.trimmingCharacters(in: .whitespaces)
-                guard text.hasPrefix(label + " `"), let last = text.lastIndex(of: "`"),
-                      last > text.index(text.startIndex, offsetBy: label.count + 1) else { continue }
-                return String(text[text.index(text.startIndex, offsetBy: label.count + 2)..<last])
-            }
-            return nil
-        }
-        if let width = field("Width:") { return Int(width) }
-        guard let type = field("Type:") else { return nil }
         let oneBit = ["logic", "bit", "reg", "wire", "logic[0:0]", "bit[0:0]", "reg[0:0]"]
         return oneBit.contains(type.replacingOccurrences(of: " signed", with: "")) ? 1 : nil
+    }
+
+    /// A `Label: value` line of a hover's header (before its first code block).
+    private static func hoverField(_ label: String, in hover: String) -> String? {
+        for line in hover.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("```") { return nil }
+            let text = line.trimmingCharacters(in: .whitespaces)
+            if text.hasPrefix(label + " ") { return String(text.dropFirst(label.count + 1)) }
+        }
+        return nil
+    }
+
+    /// Whether the declaration a hover quotes (its first code block) has only number ranges.
+    private static func declarationRangesArePlain(inHover hover: String) -> Bool {
+        let lines = hover.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let fence = lines.firstIndex(where: { $0.hasPrefix("```") }),
+              let close = lines[(fence + 1)...].firstIndex(where: { $0.hasPrefix("```") }) else { return false }
+        return rangesArePlain(lines[(fence + 1)..<close].joined(separator: "\n"))
+    }
+
+    private static func rangesArePlain(_ text: String) -> Bool {
+        var inRange = false
+        for character in text {
+            if character == "[" { inRange = true } else if character == "]" { inRange = false }
+            else if inRange, !(character.isASCII && (character.isNumber || character == ":" || character == " ")) { return false }
+        }
+        return true
+    }
+
+    /// Whether the typedef on 0-based `line` of `text` has one width for every instance: it is in
+    /// a package, or it is a one-line `typedef <built-in type> [N:M]... name;`.
+    static func typedefIsFixed(in text: String, line: Int) -> Bool {
+        let units = blankingCommentsAndStrings(Array(text.utf16))
+        guard let lineStart = utf16Offset(of: LSPPosition(line: line, character: 0), inUnits: units) else { return false }
+        // The innermost design element the line is in.
+        var containers: [String] = []
+        let opens: Set<String> = ["package", "module", "macromodule", "interface", "program", "class", "checker"]
+        var index = 0
+        while index < lineStart {
+            guard isIdentifierUnit(units[index]), index == 0 || !isIdentifierUnit(units[index - 1]) else { index += 1; continue }
+            var end = index
+            while end < units.count, isIdentifierUnit(units[end]) { end += 1 }
+            let word = String(decoding: units[index..<end], as: UTF16.self)
+            if opens.contains(word) {
+                containers.append(word)
+            } else if word.hasPrefix("end"), opens.contains(String(word.dropFirst(3))), !containers.isEmpty {
+                containers.removeLast()
+            }
+            index = end
+        }
+        if containers.last == "package" { return true }
+        var lineEnd = lineStart
+        while lineEnd < units.count, units[lineEnd] != newlineUnit { lineEnd += 1 }
+        let statement = String(decoding: units[lineStart..<lineEnd], as: UTF16.self).trimmingCharacters(in: .whitespaces)
+        guard statement.hasPrefix("typedef "), statement.hasSuffix(";"), rangesArePlain(statement) else { return false }
+        var words = statement.dropLast().split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" && $0 != "$" }).map(String.init)
+        words = words.filter { !$0.allSatisfy(\.isNumber) }
+        let builtIn: Set<String> = ["logic", "bit", "reg", "wire", "signed", "unsigned", "byte", "shortint", "int", "longint", "integer"]
+        guard words.count >= 3, words.first == "typedef" else { return false }
+        return words.dropFirst().dropLast().allSatisfy(builtIn.contains)
     }
 
     /// The named port connections of an instance, read from its instantiation's text (`texts`
@@ -329,6 +408,8 @@ extension LanguageServerSession {
             while typeStart > 0, isIdentifierUnit(units[typeStart - 1]) { typeStart -= 1 }
             let type = String(decoding: units[typeStart..<typeEnd], as: UTF16.self)
             guard !isDigitUnit(units[typeStart]), !statementKeywords.contains(type) else { return nil }
+            // A statement label (`begin : blk foo(...)`) or a delay (`#d foo(...)`).
+            if let before = previousCode(units, before: typeStart), before == colonUnit || before == hashUnit { return nil }
         } else if previous == closeUnit {
             // A parameter list `#(...)`, not a condition (`if (c) foo(.a(x))`).
             var open = typeEnd - 2
@@ -351,6 +432,7 @@ extension LanguageServerSession {
     private static let dotUnit = UInt16(UInt8(ascii: ".")), commaUnit = UInt16(UInt8(ascii: ","))
     private static let openUnit = UInt16(UInt8(ascii: "(")), closeUnit = UInt16(UInt8(ascii: ")"))
     private static let semicolonUnit = UInt16(UInt8(ascii: ";")), hashUnit = UInt16(UInt8(ascii: "#"))
+    private static let colonUnit = UInt16(UInt8(ascii: ":"))
 
     /// Keywords a task call can follow where a module type would stand.
     private static let statementKeywords: Set<String> = [
