@@ -144,6 +144,9 @@ enum WaveformDebuggerRTLStatus {
         ackIfAllShown(waveform)
     }
 
+    /// Play stopped. (Not yet implemented.)
+    static func playStopped(_ waveform: FilePreviewPanel) {}
+
     /// "Play Waits for the Editor" changed: every editor is waited for again.
     static func waitSettingChanged(_ waveform: FilePreviewPanel) {
         state(waveform).behind.removeAllObjects()

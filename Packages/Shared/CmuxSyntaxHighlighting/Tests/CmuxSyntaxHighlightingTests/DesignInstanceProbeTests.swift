@@ -18,6 +18,19 @@ import CmuxSyntaxHighlighting
         #expect(asked == ["a"])
     }
 
+    @Test func anUnresolvedPathAnswerGoesOnToTheNextProbe() async {
+        // slang answers some positions (a macro, a type, a package name) with -32603: that probe
+        // found nothing, the next may place the module.
+        var asked: [String] = []
+        let found = await DesignInstanceProbe.firstFound(["a", "b"]) { probe -> [String] in
+            asked.append(probe)
+            if probe == "a" { throw LanguageServerError.responseError(code: -32603, message: "cannot resolve") }
+            return ["top.dut"]
+        }
+        #expect(found == ["top.dut"])
+        #expect(asked == ["a", "b"])
+    }
+
     @Test func probesThatFindNothingGoOnToTheNext() async {
         var asked: [String] = []
         let found = await DesignInstanceProbe.firstFound(["a", "b", "c"]) { probe -> [String] in
@@ -42,8 +55,11 @@ import CmuxSyntaxHighlighting
         // shows an includer, a lookup is short and finding none says nothing.
         #expect(DesignInstanceProbe.fragmentProbeLimit == 2)
         #expect(DesignInstanceProbe.fragmentSearchTimeLimit == 2)
-        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: true) == false)
-        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: false) == true)
+        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: true, designHasTops: true) == false)
+        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: true, designHasTops: nil) == false)
+        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: false, designHasTops: true) == true)
+        // No top level at all: nothing can be placed, and the hint says how to set one up.
+        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: true, designHasTops: false) == true)
     }
 
     @Test func noneFoundIsEmpty() async {

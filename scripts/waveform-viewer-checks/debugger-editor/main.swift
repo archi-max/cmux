@@ -511,6 +511,17 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(page.rtlShownTimes.isEmpty, "it drew 105 within 100 ms of its move: waited for again: \(page.rtlShownTimes)")
     WaveformDebuggerRTLStatus.now = { Date() }
 
+    // Play paused while an editor was behind: the next play doesn't start out not waiting.
+    FilePreviewLanguageFeatures.all = [otherEditor]
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75, left: 65, missed: false)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85, left: 75, missed: true)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == false, "(behind: no wait) \(lastStatus())")
+    WaveformDebuggerRTLStatus.playStopped(waveform)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == true, "paused: play waits again next time: \(lastStatus())")
+
     // The setting turned on mid-play: every editor is waited for again.
     FilePreviewLanguageFeatures.all = [otherEditor]
     WaveformDebuggerRTLStatus.playStarted(waveform)
