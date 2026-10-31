@@ -104,6 +104,54 @@ struct SSHTuiHostOpenIngressTests {
         #expect(opened == [.open(rowID: row.id, path: "/home/u/top.sv", workspaceID: Self.workspaceID, panelID: Self.panelID)])
     }
 
+    @Test("A Mac with no pane for the terminal stays silent, so another Mac that has one can answer")
+    func noProjectionStaysSilent() {
+        var ingress = SSHTuiHostOpenIngress(machineID: Self.machineID)
+        _ = plan(&ingress, rows: [])
+        let row = Self.row("notification_00000000000000000000000000000010")
+        let none: (String) -> [SSHTuiHostOpenPlacement] = { _ in [] }
+        #expect(ingress.plan(requests: [row], now: Self.now, placements: none, pathIsAcceptable: { _ in true })
+                == [.recheck(after: SSHTuiHostOpenIngress.placementGrace)])
+        let later = Self.now.addingTimeInterval(SSHTuiHostOpenIngress.placementGrace)
+        #expect(ingress.plan(requests: [row], now: later, placements: none, pathIsAcceptable: { _ in true }).isEmpty)
+        #expect(ingress.plan(requests: [row], now: later.addingTimeInterval(1), placements: none,
+                             pathIsAcceptable: { _ in true }).isEmpty)
+    }
+
+    @Test("Another Mac's not-open-here is not an answer: this Mac still opens the row")
+    func otherMacsSoftRefusalDoesNotStopThisOne() {
+        var ingress = SSHTuiHostOpenIngress(machineID: Self.machineID)
+        _ = plan(&ingress, rows: [])
+        let row = Self.row("notification_00000000000000000000000000000011",
+                           readBy: ["mac-2", SSHTuiHostOpenAnswer.notOpenHere.clientID])
+        #expect(plan(&ingress, rows: [row]).first?.isOpen == true)
+    }
+
+    @Test("After a reconnect, rows posted during the outage get the host-time replay check")
+    func resetBaselineChecksOutageRows() {
+        var ingress = SSHTuiHostOpenIngress(machineID: Self.machineID)
+        _ = plan(&ingress, rows: [])
+        ingress.resetBaseline()
+        let old = Self.row("notification_00000000000000000000000000000012", hostAge: SSHTuiHostOpenIngress.replayWindow + 1)
+        #expect(plan(&ingress, rows: [old]) == [.answer(rowID: old.id, .stale)])
+        // A row first seen after the new baseline is live again.
+        let skewed = Self.row("notification_00000000000000000000000000000013", hostAge: 3_600)
+        #expect(plan(&ingress, rows: [old, skewed]).first?.isOpen == true)
+    }
+
+    @Test("A handled row that vanishes and comes back is never opened twice, across a reconnect too")
+    func handledSurvivesVanishAndReset() {
+        var ingress = SSHTuiHostOpenIngress(machineID: Self.machineID)
+        _ = plan(&ingress, rows: [])
+        let row = Self.row("notification_00000000000000000000000000000014")
+        #expect(plan(&ingress, rows: [row]).first?.isOpen == true)
+        #expect(plan(&ingress, rows: []).isEmpty)
+        #expect(plan(&ingress, rows: [row]).isEmpty)
+        ingress.resetBaseline()
+        #expect(plan(&ingress, rows: []).isEmpty)
+        #expect(plan(&ingress, rows: [row]).isEmpty)
+    }
+
     @Test("A malformed body or a refused path is answered without opening")
     func refusedBodies() {
         var ingress = SSHTuiHostOpenIngress(machineID: Self.machineID)
