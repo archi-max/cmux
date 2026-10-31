@@ -1016,6 +1016,133 @@ extension Harness {
         """) { r in
           check(r["saved"] as? Int == 0, "a remove-all just before a reload is kept through it (rows saved \(r["saved"] ?? "nil"))")
           check(r["rows"] as? Int == 0, "and the reload shows no rows (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseAA()
+        }
+      }
+    }
+  }
+
+  // What the emptied viewer does during a reload (a marker set, Auto Reload
+  // switched) also goes into its own saved state. The reload must still bring
+  // back the view from before it, also after a failed reload.
+  func phaseAA() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        if (vd().getElementById('autoReload').checked) { vd().getElementById('autoReload').click(); await sleep(300); }
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const frameUnloaded = C.frameUnloaded;
+        C.frameUnloaded = () => {
+          C.frameUnloaded = frameUnloaded;
+          frameUnloaded();
+          H.toWebview({ command: 'setMarker', time: 20, markerType: 0 });
+        };
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        R.afterMarker = drawn();
+        const good = H.config.url, goodSize = H.config.size;
+        window.cmuxWaveform.reload({ url: 'cmux-waveform://local/missing.vcd', size: 10 });
+        await sleep(1500);
+        vd().getElementById('autoReload').click();
+        await sleep(300);
+        window.cmuxWaveform.reload({ url: good, size: goodSize });
+        await reloaded();
+        R.afterFailed = drawn();
+        """) { r in
+          check(r["afterMarker"] as? Int == 1, "a marker set in the emptied viewer doesn't empty the reload (rows drawn \(r["afterMarker"] ?? "nil"))")
+          check(r["afterFailed"] as? Int == 1, "Auto Reload switched after a failed reload doesn't empty the next one (rows drawn \(r["afterFailed"] ?? "nil"))")
+          self.phaseAB()
+        }
+      }
+    }
+  }
+
+  // A restoreState from a viewer that a newer reload superseded is dropped:
+  // it would end the reload's gap early and resolve rows against a cleared
+  // netlist ("missing signals").
+  func phaseAB() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const logs = () => sent.filter((m) => m.type === 'log' && /top\\.clk/.test(m.message)).length;
+        const toastsBefore = toasts(), logsBefore = logs();
+        window.cmuxWaveform.reload({});
+        window.cmuxWaveform.fromWebview({ command: 'restoreState', state: { displayedSignals: [{ dataType: 'netlist-variable', name: 'top.clk' }] } });
+        await reloaded();
+        R.toasts = toasts() - toastsBefore;
+        R.logs = logs() - logsBefore;
+        R.rows = drawn();
+        """) { r in
+          check(r["toasts"] as? Int == 0 && r["logs"] as? Int == 0,
+                "a superseded restoreState is dropped (toasts \(r["toasts"] ?? "nil"), logs \(r["logs"] ?? "nil"))")
+          check(r["rows"] as? Int == 1, "and the reload brings the row back (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseAC()
+        }
+      }
+    }
+  }
+
+  // A netlist search typed before a reload shows its results again after it.
+  func phaseAC() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const input = document.querySelector('#netlist-search input');
+        const results = () => document.getElementById('netlist-results').textContent;
+        input.value = 'clk';
+        input.dispatchEvent(new Event('input'));
+        await sleep(500);
+        R.before = results().includes('clk');
+        window.cmuxWaveform.reload({});
+        await sleep(1500);
+        R.after = results().includes('clk');
+        input.value = '';
+        input.dispatchEvent(new Event('input'));
+        """) { r in
+          check(r["before"] as? Bool == true, "the search finds top.clk")
+          check(r["after"] as? Bool == true, "and shows it again after a reload")
+          self.phaseAD()
+        }
+      }
+    }
+  }
+
+  // Each gate on its own: the host's netlist gate during a reload, and the
+  // wellen worker's "not open" before a file is loaded.
+  func phaseAD() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        let errorsBefore = self.errors.count
+        self.js("""
+        const quiet = (p) => Promise.resolve().then(p).then(() => 'ok', (e) => (e && e.cmuxClosed) ? 'closed' : String((e && e.message) || e));
+        const top = H.doc.netlist[0];
+        window.cmuxWaveform.reload({});
+        R.children = await quiet(() => H.getChildren({ kind: 'scope', name: top.name, id: top.id, type: top.type, scopePath: [] }));
+        await reloaded();
+        const worker = new Worker('wellen-worker.js');
+        let next = 1;
+        const call = (method, args) => new Promise((resolve) => {
+          const id = next++;
+          const onMessage = (e) => { if (e.data.type === 'result' && e.data.id === id) { worker.removeEventListener('message', onMessage); resolve(e.data.error || 'ok'); } };
+          worker.addEventListener('message', onMessage);
+          worker.postMessage({ id, method, args });
+        });
+        const early = call('getchildren', { id: 0, startIndex: 0 });
+        const init = call('init', { wasmUrl: 'filehandler.wasm' });
+        R.beforeInit = await early;
+        R.init = await init;
+        R.beforeLoad = await call('searchnetlist', { query: 'clk', scopeId: 0xFFFFFFFF });
+        R.values = await call('getvaluesattime', { time: 0, paths: 'top.clk' });
+        worker.terminate();
+        """) { r in
+          check(r["children"] as? String == "closed", "the netlist is closed while a reload opens the file (\(r["children"] ?? "nil"))")
+          check(self.errors.count == errorsBefore, "with no error (\(self.errors.suffix(from: errorsBefore)))")
+          check(r["init"] as? String == "ok", "the worker starts")
+          check(r["beforeInit"] as? String == "not open" && r["beforeLoad"] as? String == "not open" && r["values"] as? String == "not open",
+                "and answers \"not open\" before a file is loaded (\(r["beforeInit"] ?? "nil"), \(r["beforeLoad"] ?? "nil"), \(r["values"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
@@ -1032,5 +1159,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let harness = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { harness.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 180) { print("CHECK FAILED: timeout"); exit(2) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 240) { print("CHECK FAILED: timeout"); exit(2) }
 app.run()
