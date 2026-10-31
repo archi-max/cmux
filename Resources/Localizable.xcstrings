@@ -228558,6 +228558,183 @@
         }
       }
     },
+    "filePreview.waveform.fsdbConnectionFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux could not connect to %@ to start the FSDB reader."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB リーダーを起動するために %@ に接続できませんでした。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux konnte keine Verbindung zu %@ herstellen, um den FSDB-Leser zu starten."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux n’a pas pu se connecter à %@ pour démarrer le lecteur FSDB."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر على cmux الاتصال بـ %@ لتشغيل قارئ FSDB."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux no pudo conectarse a %@ para iniciar el lector de FSDB."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 無法連線到 %@ 以啟動 FSDB 讀取器。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 无法连接到 %@ 以启动 FSDB 读取器。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux가 FSDB 리더를 시작하기 위해 %@에 연결할 수 없습니다."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbTimedOut": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The FSDB reader on %@ did not respond in time."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ の FSDB リーダーが時間内に応答しませんでした。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der FSDB-Leser auf %@ hat nicht rechtzeitig geantwortet."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le lecteur FSDB sur %@ n’a pas répondu à temps."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يستجب قارئ FSDB على %@ في الوقت المحدد."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El lector de FSDB en %@ no respondió a tiempo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 FSDB 讀取器未及時回應。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 FSDB 读取器未及时响应。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 FSDB 리더가 제시간에 응답하지 않았습니다."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbProtocolError": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The FSDB reader on %@ sent output cmux could not read."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ の FSDB リーダーから cmux が読み取れない出力が送られました。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der FSDB-Leser auf %@ hat eine Ausgabe gesendet, die cmux nicht lesen konnte."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le lecteur FSDB sur %@ a envoyé une sortie que cmux n’a pas pu lire."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أرسل قارئ FSDB على %@ مخرجات تعذّر على cmux قراءتها."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El lector de FSDB en %@ envió una salida que cmux no pudo leer."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 FSDB 讀取器傳送了 cmux 無法讀取的輸出。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 FSDB 读取器发送了 cmux 无法读取的输出。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 FSDB 리더가 cmux가 읽을 수 없는 출력을 보냈습니다."
+          }
+        }
+      }
+    },
     "filePreview.revert": {
       "extractionState": "manual",
       "localizations": {

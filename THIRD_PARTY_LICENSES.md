@@ -414,7 +414,7 @@ library code is copied.
 
 cmux bundles a build of VaporView's waveform viewer under `Resources/vaporview/`
 (see its `README.md` for the build command and the local modifications) and
-shows it for `.vcd`, `.fst` and `.ghw` files.
+shows it for `.vcd`, `.fst`, `.ghw` and `.fsdb` files.
 
 ### VaporView
 
@@ -423,8 +423,9 @@ shows it for `.vcd`, `.fst` and `.ghw` files.
 - **Copyright:** Lloyd Ramseyer (GitHub `Lramseyer`) and VaporView contributors; the repository carries no separate copyright notice
 - **Source:** https://github.com/Lramseyer/vaporview/tree/59107c60c9ee5eefa95750b95369753736b77ca4
 
-The minified webview (`src/webview/`), its stylesheet, and the wellen parser
-compiled to WebAssembly (`src/wellen_parser/`) are bundled. The host page,
+The minified webview (`src/webview/`, with cmux's HTML-escaping patch), its
+stylesheet, and the wellen parser compiled to WebAssembly
+(`src/wellen_parser/`) are bundled. The host page,
 VS Code API shim and Web Worker in that folder are adapted from VaporView's
 extension code and carry the same license.
 

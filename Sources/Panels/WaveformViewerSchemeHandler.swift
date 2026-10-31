@@ -191,12 +191,30 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
         "svg": "image/svg+xml",
     ]
 
+    /// The viewer only loads its own bundled assets and talks only to this
+    /// handler. Waveform files are untrusted input that VaporView turns into
+    /// HTML (signal names, string values), so inline script and every other
+    /// origin are off. The pages carry the same policy in a `<meta>` tag.
+    nonisolated static let contentSecurityPolicy = [
+        "default-src 'none'",
+        "script-src 'self' cmux-waveform: 'wasm-unsafe-eval'",
+        "worker-src 'self' cmux-waveform:",
+        "connect-src 'self' cmux-waveform:",
+        "style-src 'self' cmux-waveform: 'unsafe-inline'",
+        "font-src 'self' cmux-waveform:",
+        "img-src 'self' cmux-waveform: data:",
+        "frame-src 'self' cmux-waveform:",
+        "base-uri 'none'",
+        "form-action 'none'",
+    ].joined(separator: "; ")
+
     nonisolated static func assetResponse(fileURL: URL, isHead: Bool) -> WaveformSchemeResponse {
         guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else { return .status(404) }
         let headers = [
             "Content-Type": mimeTypes[fileURL.pathExtension.lowercased()] ?? "application/octet-stream",
             "Content-Length": String(data.count),
             "Cache-Control": "no-store",
+            "Content-Security-Policy": contentSecurityPolicy,
         ]
         return WaveformSchemeResponse(status: 200, headers: headers, body: isHead ? Data() : data)
     }
@@ -238,9 +256,14 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         guard let body = source.read(range: range) else { return .status(500) }
+        if status == 206, body.isEmpty {
+            // The file shrank since its size was read.
+            headers["Content-Range"] = "bytes */\(size)"
+            return WaveformSchemeResponse(status: 416, headers: headers, body: Data())
+        }
         headers["Content-Length"] = String(body.count)
         if status == 206 {
-            let end = range.lowerBound + UInt64(max(body.count, 1)) - 1
+            let end = range.lowerBound + UInt64(body.count) - 1
             headers["Content-Range"] = "bytes \(range.lowerBound)-\(end)/\(size)"
         }
         return WaveformSchemeResponse(status: status, headers: headers, body: body)

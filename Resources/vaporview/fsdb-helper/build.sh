@@ -76,7 +76,7 @@ trap 'rm -rf "$WORK"' EXIT
   if (!s.includes(anchor)) { console.error("fsdb_reader.cpp: Init() not found"); process.exit(1); }
   s = s.replace(anchor, fs.readFileSync(inc, "utf8") + "\n" + anchor +
     "\n  exports.Set(Napi::String::New(env, \"getValueChangesPacked\"), Napi::Function::New(env, getValueChangesPacked));");
-  fs.writeFileSync(out, "#include <cstring>\n#include <vector>\n" + s);
+  fs.writeFileSync(out, "#include <cstring>\n#include <new>\n#include <vector>\n" + s);
 ' "$SRC/fsdb_reader.cpp" "$SRC/packed.cpp.inc" "$WORK/fsdb_reader.cpp" || exit 13
 
 say "compiling the FSDB reader (about a minute, first open only)"
@@ -99,11 +99,21 @@ PARENT=$(dirname "$DEST")
 mkdir -p "$PARENT" && chmod 700 "$PARENT" 2>/dev/null
 STAGE=$(mktemp -d "$PARENT/.install.XXXXXX") || exit 15
 cp "$WORK/fsdb_reader.node" "$SRC/fsdb-helper.js" "$SRC/fsdb-helper.sh" "$STAGE/" || { rm -rf "$STAGE"; exit 15; }
-printf "NODE='%s'\nVERDI_HOME='%s'\n" "$NODE" "$VERDI" > "$STAGE/helper.env"
+# Single-quoted for the shell that sources it; a ' in a path becomes '\''.
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+printf 'NODE=%s\nVERDI_HOME=%s\n' "$(quote "$NODE")" "$(quote "$VERDI")" > "$STAGE/helper.env"
 chmod 755 "$STAGE/fsdb-helper.sh"
 chmod 700 "$STAGE"
-if ! mv "$STAGE" "$DEST" 2>/dev/null; then
+# A DEST left from an earlier install is broken (the launcher found it
+# unusable), so it is moved aside rather than built into. mv -T never moves
+# STAGE inside an existing DEST.
+if [ -e "$DEST" ]; then
+  OLD=$(mktemp -d "$PARENT/.stale.XXXXXX") && mv -T "$DEST" "$OLD/old" 2>/dev/null
+  rm -rf "${OLD:-/nonexistent}"
+fi
+if ! mv -T "$STAGE" "$DEST" 2>/dev/null; then
   rm -rf "$STAGE"
+  # A concurrent build that got there first wins.
   [ -f "$DEST/fsdb_reader.node" ] || { say "could not install into $DEST"; exit 15; }
 fi
 say "installed in $DEST"
