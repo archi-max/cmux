@@ -481628,6 +481628,65 @@
         }
       }
     },
+    "waveformLink.addScope.busy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing was added: another Waveform Link dialog is open. Close it and choose Add All Signals in Scope again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "何も追加されませんでした: 別の「波形リンク」ダイアログが開いています。閉じてから「スコープ内のすべての信号を波形に追加」をもう一度選択してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Es wurde nichts hinzugefügt: Ein anderer Dialog „Wellenform-Verknüpfung“ ist geöffnet. Schließen Sie ihn und wählen Sie „Alle Signale im Bereich zur Wellenform hinzufügen“ erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rien n’a été ajouté : une autre boîte de dialogue « Lien avec le chronogramme » est ouverte. Fermez-la et choisissez à nouveau « Ajouter tous les signaux de la portée au chronogramme »."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم تتم إضافة أي شيء: هناك مربع حوار آخر لـ«ربط الشكل الموجي» مفتوح. أغلقه واختر «إضافة كل إشارات النطاق إلى الشكل الموجي» مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se añadió nada: hay otro cuadro de diálogo de Vínculo con la forma de onda abierto. Ciérralo y vuelve a elegir «Añadir todas las señales del ámbito a la forma de onda»."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未加入任何項目：另一個「波形連結」對話框已開啟。請關閉它後再次選擇「將範圍內所有訊號加入波形」。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未添加任何内容：另一个“波形链接”对话框已打开。请关闭它后再次选择“将作用域内所有信号添加到波形”。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "아무것도 추가되지 않았습니다: 다른 파형 연결 대화상자가 열려 있습니다. 닫은 후 범위의 모든 신호를 파형에 추가를 다시 선택하세요."
+          }
+        }
+      }
+    },
     "waveformLink.addScope.confirm.add": {
       "extractionState": "manual",
       "localizations": {
