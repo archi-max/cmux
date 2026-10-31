@@ -16818,6 +16818,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         if matchConfiguredShortcut(event: event, action: .browserZoomReset) { return performBrowserOrTextPreviewZoomShortcut(event: event, action: .browserZoomReset) }
         if matchConfiguredShortcut(event: event, action: .toggleFileEditorWordWrap) { return shortcutFocusedSavingTextView(in: resolvedShortcutEventWindow(event))?.toggleFilePreviewWordWrap() ?? false }
+        if matchConfiguredShortcut(event: event, action: .addSignalToWaveform) {
+            return shortcutFocusedSavingTextView(in: resolvedShortcutEventWindow(event))?.languageFeatures?.addSignalUnderCaretToWaveform() ?? false
+        }
+        if matchConfiguredShortcut(event: event, action: .revealWaveformSignalInSource) {
+            return WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel())
+        }
         if matchConfiguredShortcut(event: event, action: .markdownZoomIn) {
             return shortcutEventMarkdownPanel(event)?.zoomIn() ?? false
         }

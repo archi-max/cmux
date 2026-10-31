@@ -237,6 +237,360 @@
         }
       }
     },
+    "filePreview.language.addAllInstances": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Instances"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてのインスタンス"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Instanzen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toutes les instances"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "كل النسخ"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todas las instancias"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有實例"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所有实例"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "모든 인스턴스"
+          }
+        }
+      }
+    },
+    "filePreview.language.addToWaveform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add to Waveform"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形に追加"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zur Wellenform hinzufügen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter au chronogramme"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة إلى الشكل الموجي"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir a la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加入波形"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加到波形"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형에 추가"
+          }
+        }
+      }
+    },
+    "filePreview.language.chooseInstance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Which Instance?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "どのインスタンスを追加しますか？"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welche Instanz hinzufügen?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quelle instance ajouter ?"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أي نسخة تريد إضافتها؟"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué instancia añadir?"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要加入哪個實例？"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要添加哪个实例？"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "어떤 인스턴스를 추가할까요?"
+          }
+        }
+      }
+    },
+    "menu.view.addSignalToWaveform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Signal to Waveform"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号を波形に追加"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signal zur Wellenform hinzufügen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter le signal au chronogramme"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة الإشارة إلى الشكل الموجي"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir la señal a la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將訊號加入波形"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将信号添加到波形"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "신호를 파형에 추가"
+          }
+        }
+      }
+    },
+    "menu.view.revealWaveformSignalInSource": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Waveform Signal in Source"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の信号をソースで表示"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenformsignal im Quellcode anzeigen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le signal du chronogramme dans la source"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عرض إشارة الشكل الموجي في المصدر"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar la señal de la forma de onda en el código fuente"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在原始碼中顯示波形訊號"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在源代码中显示波形信号"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 신호를 소스에서 보기"
+          }
+        }
+      }
+    },
+    "menu.view.waveformPathMapping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waveform Path Mapping…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形パスの対応付け…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenform-Pfadzuordnung …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correspondance des chemins du chronogramme…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ربط مسارات الشكل الموجي…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correspondencia de rutas de la forma de onda…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形路徑對應…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形路径映射…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 경로 매핑…"
+          }
+        }
+      }
+    },
     "projectPanel.reload": {
       "extractionState": "manual",
       "localizations": {
@@ -5829,6 +6183,124 @@
           "stringUnit": {
             "state": "translated",
             "value": "無法完成配對。請檢查連線後再試一次。"
+          }
+        }
+      }
+    },
+    "shortcut.addSignalToWaveform.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Signal to Waveform"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号を波形に追加"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signal zur Wellenform hinzufügen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter le signal au chronogramme"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة الإشارة إلى الشكل الموجي"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir la señal a la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將訊號加入波形"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将信号添加到波形"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "신호를 파형에 추가"
+          }
+        }
+      }
+    },
+    "shortcut.revealWaveformSignalInSource.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Waveform Signal in Source"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の信号をソースで表示"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenformsignal im Quellcode anzeigen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le signal du chronogramme dans la source"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عرض إشارة الشكل الموجي في المصدر"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar la señal de la forma de onda en el código fuente"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在原始碼中顯示波形訊號"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在源代码中显示波形信号"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 신호를 소스에서 보기"
           }
         }
       }
@@ -470355,6 +470827,714 @@
           "stringUnit": {
             "state": "translated",
             "value": "檢視版本說明"
+          }
+        }
+      }
+    },
+    "waveformLink.alertTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waveform Link"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形リンク"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenform-Verknüpfung"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lien avec le chronogramme"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ربط الشكل الموجي"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vínculo con la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形連結"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形链接"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 연결"
+          }
+        }
+      }
+    },
+    "waveformLink.mapping.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャンセル"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abbrechen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annuler"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إلغاء"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "취소"
+          }
+        }
+      }
+    },
+    "waveformLink.mapping.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One rule per line: design prefix = waveform prefix, for example “cpu = top_tb.dut”. cmux fills this in when it finds a signal under a different prefix. Leave it empty to use the same paths."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 行に 1 つのルール: 設計のプレフィックス = 波形のプレフィックス（例:「cpu = top_tb.dut」）。別のプレフィックスの下で信号が見つかると cmux が自動で記入します。同じパスを使う場合は空のままにしてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eine Regel pro Zeile: Design-Präfix = Wellenform-Präfix, zum Beispiel „cpu = top_tb.dut“. cmux trägt sie ein, wenn es ein Signal unter einem anderen Präfix findet. Leer lassen, um dieselben Pfade zu verwenden."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une règle par ligne : préfixe de la conception = préfixe du chronogramme, par exemple « cpu = top_tb.dut ». cmux la remplit lorsqu’il trouve un signal sous un autre préfixe. Laissez vide pour utiliser les mêmes chemins."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "قاعدة واحدة في كل سطر: بادئة التصميم = بادئة الشكل الموجي، مثل «cpu = top_tb.dut». يملؤها cmux عندما يجد إشارة تحت بادئة مختلفة. اتركها فارغة لاستخدام المسارات نفسها."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una regla por línea: prefijo del diseño = prefijo de la forma de onda, por ejemplo «cpu = top_tb.dut». cmux la rellena cuando encuentra una señal bajo otro prefijo. Déjalo vacío para usar las mismas rutas."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每行一條規則：設計前綴 = 波形前綴，例如「cpu = top_tb.dut」。cmux 在不同前綴下找到訊號時會自動填入。保持空白即使用相同路徑。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每行一条规则：设计前缀 = 波形前缀，例如“cpu = top_tb.dut”。cmux 在不同前缀下找到信号时会自动填入。保持空白即使用相同路径。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "한 줄에 규칙 하나: 설계 접두사 = 파형 접두사, 예: “cpu = top_tb.dut”. 다른 접두사 아래에서 신호를 찾으면 cmux가 자동으로 채웁니다. 같은 경로를 쓰려면 비워 두세요."
+          }
+        }
+      }
+    },
+    "waveformLink.mapping.invalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Each line must look like “design prefix = waveform prefix”. The mapping was not changed."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "各行は「設計のプレフィックス = 波形のプレフィックス」の形式にしてください。対応付けは変更されていません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jede Zeile muss die Form „Design-Präfix = Wellenform-Präfix“ haben. Die Zuordnung wurde nicht geändert."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chaque ligne doit avoir la forme « préfixe de la conception = préfixe du chronogramme ». La correspondance n’a pas été modifiée."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يجب أن يكون كل سطر بالشكل «بادئة التصميم = بادئة الشكل الموجي». لم يتغير الربط."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cada línea debe tener la forma «prefijo del diseño = prefijo de la forma de onda». La correspondencia no se modificó."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每一行都必須是「設計前綴 = 波形前綴」的格式。對應未變更。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每一行都必须是“设计前缀 = 波形前缀”的格式。映射未更改。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "각 줄은 “설계 접두사 = 파형 접두사” 형식이어야 합니다. 매핑은 변경되지 않았습니다."
+          }
+        }
+      }
+    },
+    "waveformLink.mapping.save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sichern"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enregistrer"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "حفظ"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "儲存"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "저장"
+          }
+        }
+      }
+    },
+    "waveformLink.mapping.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waveform Path Mapping"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形パスの対応付け"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenform-Pfadzuordnung"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correspondance des chemins du chronogramme"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ربط مسارات الشكل الموجي"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Correspondencia de rutas de la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形路徑對應"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形路径映射"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 경로 매핑"
+          }
+        }
+      }
+    },
+    "waveformLink.noEditor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a SystemVerilog file of this design in the editor first, so cmux can ask slang-server where the signal is declared."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先にこの設計の SystemVerilog ファイルをエディタで開いてください。cmux が slang-server に信号の宣言場所を問い合わせるために必要です。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Öffne zuerst eine SystemVerilog-Datei dieses Designs im Editor, damit cmux slang-server fragen kann, wo das Signal deklariert ist."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrez d’abord un fichier SystemVerilog de cette conception dans l’éditeur, afin que cmux puisse demander à slang-server où le signal est déclaré."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "افتح أولًا ملف SystemVerilog من هذا التصميم في المحرر، حتى يتمكن cmux من سؤال slang-server عن مكان تعريف الإشارة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre primero un archivo SystemVerilog de este diseño en el editor para que cmux pueda preguntar a slang-server dónde se declara la señal."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "請先在編輯器中開啟此設計的 SystemVerilog 檔案，cmux 才能向 slang-server 查詢訊號的宣告位置。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在编辑器中打开此设计的 SystemVerilog 文件，cmux 才能向 slang-server 查询信号的声明位置。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "먼저 이 설계의 SystemVerilog 파일을 편집기에서 여세요. 그래야 cmux가 slang-server에 신호가 선언된 위치를 물어볼 수 있습니다."
+          }
+        }
+      }
+    },
+    "waveformLink.noWaveform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a waveform (VCD, FST, GHW or FSDB) in this workspace first."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先にこのワークスペースで波形（VCD、FST、GHW、FSDB）を開いてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Öffne zuerst eine Wellenform (VCD, FST, GHW oder FSDB) in diesem Workspace."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrez d’abord un chronogramme (VCD, FST, GHW ou FSDB) dans cet espace de travail."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "افتح أولًا شكلًا موجيًا (VCD أو FST أو GHW أو FSDB) في مساحة العمل هذه."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre primero una forma de onda (VCD, FST, GHW o FSDB) en este espacio de trabajo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "請先在此工作區開啟波形（VCD、FST、GHW 或 FSDB）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在此工作区打开波形（VCD、FST、GHW 或 FSDB）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "먼저 이 워크스페이스에서 파형(VCD, FST, GHW 또는 FSDB)을 여세요."
+          }
+        }
+      }
+    },
+    "waveformLink.notFoundInDesign": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ was not found in the design slang-server compiled. If the dump names the design differently, edit View > Waveform Path Mapping…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server がコンパイルした設計に %@ が見つかりませんでした。ダンプでの設計の名前が異なる場合は、表示 > 波形パスの対応付け… を編集してください"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ wurde im von slang-server kompilierten Design nicht gefunden. Wenn der Dump das Design anders benennt, bearbeite Darstellung > Wellenform-Pfadzuordnung …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ est introuvable dans la conception compilée par slang-server. Si le dump nomme la conception autrement, modifiez Présentation > Correspondance des chemins du chronogramme…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُعثر على %@ في التصميم الذي ترجمه slang-server. إذا كان التفريغ يسمّي التصميم بشكل مختلف، فعدّل عرض > ربط مسارات الشكل الموجي…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontró %@ en el diseño que compiló slang-server. Si el volcado nombra el diseño de otra forma, edita Visualización > Correspondencia de rutas de la forma de onda…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 slang-server 編譯的設計中找不到 %@。如果傾印檔以不同名稱稱呼設計，請編輯「顯示方式」>「波形路徑對應…」"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 slang-server 编译的设计中找不到 %@。如果转储文件以不同名称称呼设计，请编辑“显示”>“波形路径映射…”"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server가 컴파일한 설계에서 %@을(를) 찾지 못했습니다. 덤프에서 설계 이름이 다르다면 보기 > 파형 경로 매핑…을 편집하세요"
+          }
+        }
+      }
+    },
+    "waveformLink.notInDesign": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server could not place this signal in the design. Set a top level or a build file in .slang/server.json if the waveform’s top module is not in this folder."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server はこの信号を設計内で特定できませんでした。波形のトップモジュールがこのフォルダにない場合は、.slang/server.json でトップレベルかビルドファイルを設定してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server konnte dieses Signal im Design nicht zuordnen. Lege in .slang/server.json eine Top-Ebene oder eine Build-Datei fest, wenn das Top-Modul der Wellenform nicht in diesem Ordner liegt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server n’a pas pu situer ce signal dans la conception. Définissez un niveau supérieur ou un fichier de build dans .slang/server.json si le module supérieur du chronogramme n’est pas dans ce dossier."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر على slang-server تحديد موضع هذه الإشارة في التصميم. اضبط مستوى أعلى أو ملف بناء في .slang/server.json إذا لم تكن الوحدة العليا للشكل الموجي في هذا المجلد."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server no pudo ubicar esta señal en el diseño. Define un nivel superior o un archivo de compilación en .slang/server.json si el módulo superior de la forma de onda no está en esta carpeta."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 無法在設計中找到此訊號的位置。如果波形的頂層模組不在此資料夾中，請在 .slang/server.json 中設定頂層或建置檔。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 无法在设计中定位此信号。如果波形的顶层模块不在此文件夹中，请在 .slang/server.json 中设置顶层或构建文件。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server가 설계에서 이 신호의 위치를 찾지 못했습니다. 파형의 최상위 모듈이 이 폴더에 없다면 .slang/server.json에서 최상위 수준이나 빌드 파일을 설정하세요."
+          }
+        }
+      }
+    },
+    "waveformLink.notInWaveform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not in this waveform. If the dump names the design differently, edit View > Waveform Path Mapping…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ はこの波形にありません。ダンプでの設計の名前が異なる場合は、表示 > 波形パスの対応付け… を編集してください"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht in dieser Wellenform. Wenn der Dump das Design anders benennt, bearbeite Darstellung > Wellenform-Pfadzuordnung …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ne figure pas dans ce chronogramme. Si le dump nomme la conception autrement, modifiez Présentation > Correspondance des chemins du chronogramme…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ غير موجودة في هذا الشكل الموجي. إذا كان التفريغ يسمّي التصميم بشكل مختلف، فعدّل عرض > ربط مسارات الشكل الموجي…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está en esta forma de onda. Si el volcado nombra el diseño de otra forma, edita Visualización > Correspondencia de rutas de la forma de onda…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在此波形中。如果傾印檔以不同名稱稱呼設計，請編輯「顯示方式」>「波形路徑對應…」"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在此波形中。如果转储文件以不同名称称呼设计，请编辑“显示”>“波形路径映射…”"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@이(가) 이 파형에 없습니다. 덤프에서 설계 이름이 다르다면 보기 > 파형 경로 매핑…을 편집하세요"
+          }
+        }
+      }
+    },
+    "waveformLink.serverFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The language server did not answer. Try again in a moment."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語サーバーが応答しませんでした。しばらくしてからもう一度お試しください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Sprachserver hat nicht geantwortet. Versuche es gleich noch einmal."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le serveur de langage n’a pas répondu. Réessayez dans un instant."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يستجب خادم اللغة. حاول مرة أخرى بعد قليل."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El servidor de lenguaje no respondió. Inténtalo de nuevo en un momento."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "語言伺服器沒有回應。請稍後再試。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "语言服务器没有响应。请稍后再试。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "언어 서버가 응답하지 않았습니다. 잠시 후 다시 시도하세요."
           }
         }
       }

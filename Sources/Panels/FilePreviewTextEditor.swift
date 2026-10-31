@@ -720,6 +720,16 @@ final class SavingTextView: NSTextView {
                 { [weak self] in self?.performPreviewFontZoomShortcutAction(action) }
             ))
         }
+        let addToWaveform = KeyboardShortcutSettings.shortcut(for: .addSignalToWaveform)
+        if languageFeatures?.canAddToWaveform == true, !addToWaveform.isUnbound {
+            candidates.append((
+                addToWaveform,
+                { [weak self] event in
+                    self?.previewFontZoomShortcutWhenClauseAllows(action: .addSignalToWaveform, event: event) ?? false
+                },
+                { [weak self] in _ = self?.languageFeatures?.addSignalUnderCaretToWaveform() }
+            ))
+        }
         return candidates + filePreviewWordWrapShortcutCandidates()
     }
 

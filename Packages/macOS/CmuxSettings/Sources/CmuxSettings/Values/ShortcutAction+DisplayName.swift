@@ -196,6 +196,10 @@ extension ShortcutAction {
         case .saveFilePreview: return "Save File Preview"
         case .toggleFileEditorWordWrap:
             return String(localized: "shortcut.toggleFileEditorWordWrap.label", defaultValue: "Toggle File Editor Word Wrap")
+        case .addSignalToWaveform:
+            return String(localized: "shortcut.addSignalToWaveform.label", defaultValue: "Add Signal to Waveform")
+        case .revealWaveformSignalInSource:
+            return String(localized: "shortcut.revealWaveformSignalInSource.label", defaultValue: "Show Waveform Signal in Source")
         case .openBrowser: return "Open Browser"
         case .focusBrowserAddressBar: return "Focus Address Bar"
         case .browserBack: return "Back"
