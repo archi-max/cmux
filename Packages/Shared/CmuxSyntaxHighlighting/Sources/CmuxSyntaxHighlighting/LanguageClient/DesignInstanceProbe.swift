@@ -14,7 +14,7 @@ public enum DesignInstanceProbe {
     public static let fragmentSearchTimeLimit: TimeInterval = 2
 
     /// Whether finding no instance is shown as "isn't placed in the design" (with its fix).
-    public static func reportsNotPlaced(isFragment: Bool) -> Bool { !isFragment }
+    public static func reportsNotPlaced(isFragment: Bool, designHasTops: Bool? = nil) -> Bool { !isFragment }
 
     /// Seconds before a module's instances are asked again: after `failures` lookups in a row
     /// no probe answered (the server busy), 2 s doubling to 30 s; else after `misses` lookups
