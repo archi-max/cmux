@@ -245,10 +245,20 @@ function decodeRecords(raw, width) {
   return out;
 }
 
+// init is the one async call: the calls posted behind it wait for the wasm.
+let initialized = null;
 self.onmessage = async (e) => {
   const { id, method, args } = e.data;
   try {
-    self.postMessage({ type: 'result', id, result: await api[method](args || {}) });
+    let result;
+    if (method === 'init') {
+      initialized = api.init(args || {});
+      result = await initialized;
+    } else {
+      if (initialized) { await initialized; }
+      result = await api[method](args || {});
+    }
+    self.postMessage({ type: 'result', id, result });
   } catch (err) {
     self.postMessage({ type: 'result', id, error: String((err && err.message) || err) });
   }
