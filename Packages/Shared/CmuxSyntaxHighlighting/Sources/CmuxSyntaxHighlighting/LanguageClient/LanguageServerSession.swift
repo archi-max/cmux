@@ -37,6 +37,11 @@ import Foundation
 /// timeouts in a row the server is considered wedged and its process is
 /// killed, so it reports `isRunning == false` and the pool restarts it.
 ///
+/// A server left with no open documents is shut down after `idleShutdownDelay`
+/// (default 60 s), so closing a folder's last editor frees its process. The
+/// session stays in the pool: the next `start()` relaunches it, and a top level
+/// or build file set through it is sent again.
+///
 /// Positions are zero-based, with `character` in UTF-16 code units.
 public actor LanguageServerSession {
     /// How the server is launched.
@@ -49,6 +54,8 @@ public actor LanguageServerSession {
     public nonisolated let requestTimeout: TimeInterval
     /// Timeout for the `initialize` request (covers ssh connection and indexing).
     public nonisolated let initializeTimeout: TimeInterval
+    /// How long a running server with no open documents is kept; nil keeps it until `shutdown()`.
+    public nonisolated let idleShutdownDelay: TimeInterval?
 
     private enum State {
         case stopped
@@ -89,6 +96,9 @@ public actor LanguageServerSession {
     private(set) var recentErrorMessages: [String] = []
     private static let recentErrorMessageLimit = 5
     private var consecutiveTimeouts = 0
+    private var idleShutdownTask: Task<Void, Never>?
+    /// The server was stopped for having no documents; a command relaunches it.
+    private var stoppedWhileIdle = false
     /// After this many back-to-back request timeouts the server is assumed wedged and is killed.
     private static let wedgedTimeoutLimit = 2
 
@@ -98,13 +108,15 @@ public actor LanguageServerSession {
         rootURI: URL?,
         languageId: String,
         requestTimeout: TimeInterval = 10,
-        initializeTimeout: TimeInterval = 30
+        initializeTimeout: TimeInterval = 30,
+        idleShutdownDelay: TimeInterval? = 60
     ) {
         self.launch = launch
         self.rootURI = rootURI
         self.languageId = languageId
         self.requestTimeout = requestTimeout
         self.initializeTimeout = initializeTimeout
+        self.idleShutdownDelay = idleShutdownDelay
     }
 
     /// Whether the server has completed the handshake and its process is alive.
@@ -135,6 +147,7 @@ public actor LanguageServerSession {
     }
 
     private func launchAndInitialize() async throws {
+        stoppedWhileIdle = false
         generation += 1
         let generation = generation
         framer = LSPMessageFramer()
@@ -180,6 +193,33 @@ public actor LanguageServerSession {
             dropStaleDiagnostics()
             _ = try? await sendCommand(compilationCommand.command, argument: compilationCommand.argument, timeout: 120)
         }
+        // Started for a command (the Files explorer's build file) with no editor open.
+        scheduleIdleShutdown()
+    }
+
+    /// The number of documents open on this server.
+    public var openDocumentCount: Int {
+        documents.count
+    }
+
+    /// Starts (or restarts) the countdown to shutting down a server with no open documents.
+    private func scheduleIdleShutdown() {
+        idleShutdownTask?.cancel()
+        idleShutdownTask = nil
+        guard let idleShutdownDelay, documents.isEmpty, state != .stopped else { return }
+        let generation = generation
+        idleShutdownTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, idleShutdownDelay) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.shutdownIfIdle(generation: generation)
+        }
+    }
+
+    private func shutdownIfIdle(generation: Int) async {
+        guard self.generation == generation, documents.isEmpty, state == .running, pending.isEmpty, startTask == nil else { return }
+        // Set first: the process's exit is noticed while shutdown() still waits.
+        stoppedWhileIdle = true
+        await shutdown()
     }
 
     /// Relaunches the server, keeping its open documents, so it rereads its config files.
@@ -239,6 +279,8 @@ public actor LanguageServerSession {
     /// Sends `textDocument/didOpen` and remembers the document for restarts.
     public func open(uri: URL, text: String, version: Int) async {
         documents[uri] = OpenDocument(text: text, version: version)
+        idleShutdownTask?.cancel()
+        idleShutdownTask = nil
         if state == .running {
             sendDidOpen(url: uri, text: text, version: version)
         }
@@ -277,6 +319,7 @@ public actor LanguageServerSession {
     public func close(uri: URL) async {
         documents[uri] = nil
         latestDiagnostics[uri] = nil
+        if documents.isEmpty { scheduleIdleShutdown() }
         guard state == .running else { return }
         notify("textDocument/didClose", params: .object([
             "textDocument": .object(["uri": .string(serverURI(for: uri))]),
@@ -316,7 +359,9 @@ public actor LanguageServerSession {
     /// says the request was too big, not that the server hangs.
     func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil, countsTowardWedged: Bool = true) async throws -> JSONValue {
         let isCompilationCommand = command == "slang.setTopLevel" || command == "slang.setBuildFile"
+        if stoppedWhileIdle, state == .stopped { try await start() }
         if isCompilationCommand { dropStaleDiagnostics() }
+        defer { if documents.isEmpty { scheduleIdleShutdown() } }
         let result = try await sendCommand(command, argument: argument, timeout: timeout, countsTowardWedged: countsTowardWedged)
         // Remember what the server compiles (once it accepted it), cleared by the commands' empty argument.
         if isCompilationCommand {
