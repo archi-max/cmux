@@ -151,7 +151,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       + "const toasts = () => document.querySelectorAll('.cmux-toast').length;\n"
       // A reload is done once the viewer's context is back (its Restore answer);
       // a fixed wait is not enough on a loaded machine.
-      + "const reloaded = async () => { const t = Date.now(); while (!C.sessionSnapshot().state && Date.now() - t < 8000) { await sleep(50); } await sleep(300); };\n"
+      // isRestoring (newer pages): until the restore itself has come back, which a
+      // first non-Restore context can precede on a loaded machine.
+      + "const reloaded = async () => { const t = Date.now(); const busy = () => !C.sessionSnapshot().state || (C.isRestoring && C.isRestoring()); while (busy() && Date.now() - t < 8000) { await sleep(50); } await sleep(300); };\n"
       + body + "\nreturn JSON.stringify(R);"
     web.callAsyncJavaScript(wrapped, arguments: [:], in: nil, in: .page) { result in
       switch result {
@@ -1052,6 +1054,39 @@ extension Harness {
         """) { r in
           check(r["afterMarker"] as? Int == 1, "a marker set in the emptied viewer doesn't empty the reload (rows drawn \(r["afterMarker"] ?? "nil"))")
           check(r["afterFailed"] as? Int == 1, "Auto Reload switched after a failed reload doesn't empty the next one (rows drawn \(r["afterFailed"] ?? "nil"))")
+          self.phaseAE()
+        }
+      }
+    }
+  }
+
+  // A second reload while the first one's kept view is being restored keeps
+  // that view: here a remove-all the old viewer handled just before the first
+  // reload, so no rows come back.
+  func phaseAE() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.core.acc' });
+        await sleep(600);
+        const restoreState = C.restoreState;
+        C.restoreState = (m) => {
+          C.restoreState = restoreState;
+          const p = restoreState(m);
+          window.cmuxWaveform.reload({});
+          return p;
+        };
+        H.toWebview({ command: 'apply-state', stateChangeType: 5, state: { displayedSignals: [] } });
+        window.cmuxWaveform.reload({});
+        await sleep(300);
+        await reloaded();
+        R.rows = drawn();
+        R.kept = rows();
+        """) { r in
+          check(r["rows"] as? Int == 0 && r["kept"] as? Int == 0,
+                "a second reload during the first one's restore keeps the remove-all (rows drawn \(r["rows"] ?? "nil"), kept \(r["kept"] ?? "nil"))")
           self.phaseAB()
         }
       }
