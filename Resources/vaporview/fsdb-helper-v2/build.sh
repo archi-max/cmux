@@ -75,10 +75,14 @@ trap 'rm -rf "$WORK"' EXIT
 # A build whose cmux went away (the viewer closed, the loading setting changed)
 # stops: once the ssh channel is gone, writing to stderr fails, and the
 # heartbeat (an empty line every 5 s, which cmux's log ignores) ends the build.
-trap 'kill "$CC" 2>/dev/null; exit 1' TERM HUP
+# The compiler runs in its own session (setsid, util-linux), so stopping it
+# stops cc1plus and the linker too, not only the g++ driver.
+trap 'kill -TERM -- "-$CC" 2>/dev/null || kill "$CC" 2>/dev/null; exit 1' TERM HUP
 CC=
 BUILD=$$
-( trap '' PIPE; while sleep 5; do printf '\n' >&2 2>/dev/null || { kill -TERM "$BUILD" 2>/dev/null; exit 0; }; done ) &
+# The sleep gets its own descriptors: when the build ends it is orphaned, and
+# holding stderr would keep the ssh channel (and cmux's wait) open up to 5 s.
+( trap '' PIPE; while sleep 5 </dev/null >/dev/null 2>&1; do printf '\n' >&2 2>/dev/null || { kill -TERM "$BUILD" 2>/dev/null; exit 0; }; done ) &
 WATCH=$!
 trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"' EXIT
 
@@ -104,7 +108,8 @@ trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"' EXIT
 say "compiling the FSDB reader (one or two minutes, first open only)"
 # The flags node-gyp uses for this addon, without -static-libstdc++.
 # In the background, so the TERM trap above runs (and ends the compiler) at once.
-nice -n 10 "$CXX" -std=gnu++17 -O2 -fPIC -shared -pthread \
+SETSID=$(command -v setsid 2>/dev/null) || SETSID=
+$SETSID nice -n 10 "$CXX" -std=gnu++17 -O2 -fPIC -shared -pthread \
   -DNAPI_VERSION=8 -DNAPI_DISABLE_CPP_EXCEPTIONS -DBUILDING_NODE_EXTENSION \
   -I"$SRC/third_party/node-addon-api" -I"$SRC/third_party/node-api-headers" -I"$SRC/addon" -I"$VERDI/share/FsdbReader" \
   "$WORK/fsdb_reader.cpp" -o "$WORK/fsdb_reader.node" \
