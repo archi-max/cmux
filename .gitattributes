@@ -6,6 +6,10 @@
 Resources/markdown-viewer/** linguist-vendored
 Resources/markdown-viewer/webviews-app/** linguist-generated
 
+# Resources/vaporview holds the vendored VaporView waveform viewer build
+# (minified webview.js, wellen compiled to WebAssembly) and its host page.
+Resources/vaporview/** linguist-vendored
+
 # Xcode string catalogs are one large JSON object keyed by string id. Two
 # branches that each add a different key collide positionally, producing dozens
 # of conflict hunks with no semantic disagreement. scripts/merge-xcstrings.py

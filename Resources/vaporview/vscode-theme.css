@@ -1,0 +1,126 @@
+/*
+ * The --vscode-* variables VS Code injects into webviews, which VaporView's
+ * style.css and canvas renderer read. Values follow VS Code's Dark Modern and
+ * Light Modern themes. cmux sets data-cmux-theme on the root element and
+ * overrides the background and foreground with the panel's own colors.
+ */
+:root {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-font-weight: normal;
+  --vscode-editor-font-family: Menlo, Monaco, "Courier New", monospace;
+  --vscode-editor-font-size: 12px;
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-disabledForeground: rgba(204, 204, 204, 0.5);
+  --vscode-focusBorder: #0078d4;
+  --vscode-contrastActiveBorder: transparent;
+  --vscode-icon-foreground: #cccccc;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-editor-foreground: #cccccc;
+  --vscode-editor-selectionBackground: #264f78;
+  --vscode-editor-inactiveSelectionBackground: #3a3d41;
+  --vscode-editorCursor-foreground: #aeafad;
+  --vscode-editorLineNumber-foreground: #6e7681;
+  --vscode-editorLineNumber-activeForeground: #cccccc;
+  --vscode-editorActiveLineNumber-foreground: #cccccc;
+  --vscode-editorIndentGuide-background: #404040;
+  --vscode-editorIndentGuide-background1: #404040;
+  --vscode-editorOverviewRuler-selectionHighlightForeground: rgba(160, 160, 160, 0.8);
+  --vscode-editorHoverWidget-background: #202020;
+  --vscode-editorHoverWidget-foreground: #cccccc;
+  --vscode-editorHoverWidget-border: #454545;
+  --vscode-editorWidget-background: #202020;
+  --vscode-widget-border: #313131;
+  --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-errorForeground: #f88070;
+  --vscode-list-dropBackground: #383b3d;
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-inputOption-activeBackground: rgba(36, 137, 219, 0.51);
+  --vscode-inputOption-activeBorder: #2488db;
+  --vscode-inputOption-activeForeground: #ffffff;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+  --vscode-sash-hoverBorder: #0078d4;
+  --vscode-scrollbarSlider-background: rgba(121, 121, 121, 0.4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100, 100, 100, 0.7);
+  --vscode-scrollbarSlider-activeBackground: rgba(191, 191, 191, 0.4);
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-symbolIcon-variableForeground: #75beff;
+  --vscode-terminal-findMatchBackground: #515c6a;
+  --vscode-terminalOverviewRuler-findMatchForeground: rgba(209, 134, 22, 0.49);
+  --vscode-debugTokenExpression-name: #c586c0;
+  --vscode-debugTokenExpression-value: rgba(204, 204, 204, 0.6);
+  --vscode-debugTokenExpression-string: #ce9178;
+  --vscode-debugTokenExpression-number: #b5cea8;
+  --vscode-debugTokenExpression-type: #4a90e2;
+  --vscode-debugTokenExpression-error: #f48771;
+  color-scheme: dark;
+}
+
+:root[data-cmux-theme="light"] {
+  --vscode-foreground: #3b3b3b;
+  --vscode-descriptionForeground: #3b3b3b;
+  --vscode-disabledForeground: rgba(97, 97, 97, 0.5);
+  --vscode-focusBorder: #005fb8;
+  --vscode-icon-foreground: #3b3b3b;
+  --vscode-editor-background: #ffffff;
+  --vscode-editor-foreground: #3b3b3b;
+  --vscode-editor-selectionBackground: #add6ff;
+  --vscode-editor-inactiveSelectionBackground: #e5ebf1;
+  --vscode-editorCursor-foreground: #000000;
+  --vscode-editorLineNumber-foreground: #6e7681;
+  --vscode-editorLineNumber-activeForeground: #171184;
+  --vscode-editorActiveLineNumber-foreground: #171184;
+  --vscode-editorIndentGuide-background: #d3d3d3;
+  --vscode-editorIndentGuide-background1: #d3d3d3;
+  --vscode-editorOverviewRuler-selectionHighlightForeground: rgba(160, 160, 160, 0.8);
+  --vscode-editorHoverWidget-background: #f8f8f8;
+  --vscode-editorHoverWidget-foreground: #3b3b3b;
+  --vscode-editorHoverWidget-border: #c8c8c8;
+  --vscode-editorWidget-background: #f8f8f8;
+  --vscode-widget-border: #e5e5e5;
+  --vscode-widget-shadow: rgba(0, 0, 0, 0.16);
+  --vscode-list-activeSelectionBackground: #e8e8e8;
+  --vscode-list-activeSelectionForeground: #000000;
+  --vscode-list-hoverBackground: #f2f2f2;
+  --vscode-list-errorForeground: #b01011;
+  --vscode-list-dropBackground: #d6ebff;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #3b3b3b;
+  --vscode-input-border: #cecece;
+  --vscode-inputOption-activeBackground: #bed6ed;
+  --vscode-inputOption-activeBorder: #005fb8;
+  --vscode-inputOption-activeForeground: #000000;
+  --vscode-inputValidation-errorBorder: #be1100;
+  --vscode-toolbar-hoverBackground: rgba(184, 184, 184, 0.31);
+  --vscode-sash-hoverBorder: #005fb8;
+  --vscode-scrollbarSlider-background: rgba(100, 100, 100, 0.4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100, 100, 100, 0.7);
+  --vscode-scrollbarSlider-activeBackground: rgba(0, 0, 0, 0.6);
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-symbolIcon-variableForeground: #007acc;
+  --vscode-terminal-findMatchBackground: #a8ac94;
+  --vscode-terminalOverviewRuler-findMatchForeground: rgba(209, 134, 22, 0.49);
+  --vscode-debugTokenExpression-name: #9b46b0;
+  --vscode-debugTokenExpression-value: rgba(108, 108, 108, 0.8);
+  --vscode-debugTokenExpression-string: #a31515;
+  --vscode-debugTokenExpression-number: #098658;
+  --vscode-debugTokenExpression-type: #4a90e2;
+  --vscode-debugTokenExpression-error: #e51400;
+  color-scheme: light;
+}
+
+body {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  font-weight: var(--vscode-font-weight);
+  margin: 0;
+}

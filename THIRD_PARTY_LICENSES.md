@@ -410,6 +410,128 @@ library code is copied.
 
 ---
 
+## Waveform Viewer Assets
+
+cmux bundles a build of VaporView's waveform viewer under `Resources/vaporview/`
+(see its `README.md` for the build command and the local modifications) and
+shows it for `.vcd`, `.fst` and `.ghw` files.
+
+### VaporView
+
+- **Version:** 1.6.1-beta, commit `59107c60c9ee5eefa95750b95369753736b77ca4`
+- **License:** GNU General Public License v3.0 (full text in `Resources/vaporview/LICENSE`)
+- **Copyright:** Lloyd Ramseyer (GitHub `Lramseyer`) and VaporView contributors; the repository carries no separate copyright notice
+- **Source:** https://github.com/Lramseyer/vaporview/tree/59107c60c9ee5eefa95750b95369753736b77ca4
+
+The minified webview (`src/webview/`), its stylesheet, and the wellen parser
+compiled to WebAssembly (`src/wellen_parser/`) are bundled. The host page,
+VS Code API shim and Web Worker in that folder are adapted from VaporView's
+extension code and carry the same license.
+
+### wellen
+
+- **Version:** 0.25.7
+- **License:** BSD 3-Clause License
+- **Copyright:** Copyright (c) 2023-2024, The Regents of the University of California
+- **Source:** https://github.com/ekiwi/wellen
+
+The waveform parser (VCD, FST, GHW), by Kevin Laeufer. Compiled into `filehandler.wasm`.
+
+### fst-reader
+
+- **Version:** 0.17.1
+- **License:** BSD 3-Clause License
+- **Copyright:** Copyright (c) 2023, The Regents of the University of California
+- **Source:** https://github.com/ekiwi/fst-reader
+
+FST reading for wellen, by Kevin Laeufer. Compiled into `filehandler.wasm`.
+
+### Other Rust crates compiled into `filehandler.wasm`
+
+From `cargo tree --target wasm32-unknown-unknown -e normal,no-proc-macro` at the
+commit above (license as declared in each crate's `Cargo.toml`):
+
+- **adler2** 2.0.1: 0BSD OR MIT OR Apache-2.0; Copyright (C) Jonas Schievink; https://github.com/oyvindln/adler2
+- **bincode** 1.3.3: MIT; Copyright (c) 2014 Ty Overby; https://github.com/servo/bincode
+- **bitflags** 2.13.2: MIT OR Apache-2.0; Copyright (c) 2014 The Rust Project Developers; https://github.com/bitflags/bitflags
+- **crossbeam-deque** 0.8.6: MIT OR Apache-2.0; Copyright (c) 2019 The Crossbeam Project Developers; https://github.com/crossbeam-rs/crossbeam
+- **crossbeam-epoch** 0.9.18: MIT OR Apache-2.0; Copyright (c) 2019 The Crossbeam Project Developers; https://github.com/crossbeam-rs/crossbeam
+- **crossbeam-utils** 0.8.21: MIT OR Apache-2.0; Copyright (c) 2019 The Crossbeam Project Developers; https://github.com/crossbeam-rs/crossbeam
+- **either** 1.15.0: MIT OR Apache-2.0; Copyright (c) 2015 bluss; https://github.com/rayon-rs/either
+- **equivalent** 1.0.2: Apache-2.0 OR MIT; Copyright (c) 2016--2023 the equivalent authors; https://github.com/indexmap-rs/equivalent
+- **hashbrown** 0.17.1: MIT OR Apache-2.0; Copyright (c) 2016 Amanieu d'Antras; https://github.com/rust-lang/hashbrown
+- **indexmap** 2.14.2: Apache-2.0 OR MIT; Copyright (c) 2016--2017 the indexmap authors; https://github.com/indexmap-rs/indexmap
+- **itoa** 1.0.15: MIT OR Apache-2.0; Copyright David Tolnay; https://github.com/dtolnay/itoa
+- **lazy_static** 1.5.0: MIT OR Apache-2.0; Copyright (c) 2010 The Rust Project Developers; https://github.com/rust-lang-nursery/lazy-static.rs
+- **leb128** 0.2.7: MIT OR Apache-2.0; Copyright (c) 2015 The Rust Project Developers; https://github.com/gimli-rs/leb128
+- **lz4_flex** 0.13.0 and 0.14.0: MIT; Copyright (c) 2020 Pascal Seitz; https://github.com/pseitz/lz4_flex
+- **memchr** 2.7.5: Unlicense OR MIT; Copyright (c) 2015 Andrew Gallant; https://github.com/BurntSushi/memchr
+- **memmap2** 0.9.10: MIT OR Apache-2.0; Copyright (c) 2020 Yevhenii Reizner; https://github.com/RazrFalcon/memmap2-rs
+- **miniz_oxide** 0.9.1: MIT OR Zlib OR Apache-2.0; Copyright 2013-2014 RAD Game Tools and Valve Software; Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC; https://github.com/Frommi/miniz_oxide
+- **num_enum** 0.7.6: BSD-3-Clause OR MIT OR Apache-2.0; Copyright Daniel Wagner-Hall, Daniel Henry-Mantilla and Vincent Esche; https://github.com/illicitonion/num_enum
+- **rayon, rayon-core** 1.11.0, 1.13.0: MIT OR Apache-2.0; Copyright (c) 2010 The Rust Project Developers; https://github.com/rayon-rs/rayon
+- **rustc-hash** 2.1.1: Apache-2.0 OR MIT; Copyright The Rust Project Developers; https://github.com/rust-lang/rustc-hash
+- **serde, serde_core, serde_json** 1.0.228, 1.0.228, 1.0.151: MIT OR Apache-2.0; Copyright Erick Tryzelaar and David Tolnay; https://github.com/serde-rs/serde
+- **smallvec** 1.15.1: MIT OR Apache-2.0; Copyright (c) 2018 The Servo Project Developers; https://github.com/servo/rust-smallvec
+- **thiserror** 2.0.12: MIT OR Apache-2.0; Copyright David Tolnay; https://github.com/dtolnay/thiserror
+- **twox-hash** 2.1.1: MIT; Copyright (c) 2015 Jake Goulding; https://github.com/shepmaster/twox-hash
+- **wit-bindgen** 0.62.0: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; Copyright Alex Crichton and the wit-bindgen contributors; https://github.com/bytecodealliance/wit-bindgen
+- **zmij** 1.0.23: MIT; Copyright David Tolnay; https://github.com/dtolnay/zmij
+
+### npm packages bundled into `webview.js`
+
+From esbuild's metafile for the production `webview.js`:
+
+- **@js-temporal/polyfill** 0.5.1: ISC License; Copyright 2017, 2018, 2019, 2020 ECMA International; https://github.com/js-temporal/temporal-polyfill
+- **culori** 4.0.2: MIT License; Copyright (c) 2018 Dan Burzo; https://github.com/Evercoder/culori
+- **jsbi** 4.3.2: Apache License 2.0; Copyright 2018 Google Inc.; https://github.com/GoogleChromeLabs/jsbi
+- **lz4js** 0.2.0: ISC License (declared in package.json, no license file shipped); Copyright John Chadwick; https://github.com/Benzinga/lz4js
+
+### Codicons
+
+- **Version:** 0.0.35 (`@vscode/codicons`)
+- **License:** Creative Commons Attribution 4.0 International (icon font); MIT License (code)
+- **Copyright:** Copyright (c) Microsoft Corporation
+- **Source:** https://github.com/microsoft/vscode-codicons
+
+`codicon.css` and `codicon.ttf` are bundled unmodified in
+`Resources/vaporview/codicons/` with both license files.
+
+ISC License (for the ISC components above):
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+MIT, BSD 3-Clause and Apache-2.0 components use the license texts in this
+document. For dual- or multi-licensed crates cmux uses them under the MIT
+License.
+
+---
+
+## Waveform Viewer Tools (not bundled)
+
+### Verdi FSDB Reader
+
+- **License:** Proprietary (Synopsys end-user license)
+- **Copyright:** Copyright (c) Synopsys, Inc.
+- **Source:** Ships with Synopsys Verdi (`$VERDI_HOME/share/FsdbReader/`); not publicly available
+
+Reading `.fsdb` waveforms needs Verdi's FSDB reader libraries on the machine
+that holds the file. cmux does not bundle, link against, or redistribute them;
+any FSDB support builds against the user's own Verdi installation on that
+machine.
+
+---
+
 ## Diff Viewer Highlighting Assets
 
 cmux bundles compiled syntax-highlighting code and grammars (shiki and its
