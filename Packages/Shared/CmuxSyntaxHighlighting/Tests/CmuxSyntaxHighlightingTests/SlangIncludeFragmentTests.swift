@@ -39,6 +39,8 @@ struct SlangIncludeFragmentTests {
         `include `TB_FILE
         logic [3:0] count;
         `include `BODY_FILE
+        logic [1:0] spare;
+        sub w (.clk (clk), .q (spare[1]));
     endmodule
 
     """
@@ -178,12 +180,60 @@ struct SlangIncludeFragmentTests {
         }
     }
 
-    @Test func aModuleWithAMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
+    @Test func aPortNameInAFragmentIsTheChildInstancesPort() async throws {
         try await Self.withFixture { fixture in
-            // `.clk` of `dut`: sub's port. sub has a macro include, but of defs.svh, not of this fragment.
-            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 10), identifier: "clk")
-            // Not dut's port: the walk finds the includer's clk.
-            #expect(paths == ["tb_wrapper.clk"])
+            // `.clk` of `.clk (clk)` in the fragment: dut's port, not the includer's clk.
+            let port = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 10), identifier: "clk")
+            #expect(port == ["tb_wrapper.dut.clk"])
+            // `.q` of `.q   (frag_sig)`: no signal of that name outside dut.
+            let q = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 3, character: 9), identifier: "q")
+            #expect(q == ["tb_wrapper.dut.q"])
+            // The expression in the parentheses stays the local signal.
+            let local = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 15), identifier: "clk")
+            #expect(local == ["tb_wrapper.clk"])
+        }
+    }
+
+    @Test func aPortNameInAModuleIsTheChildInstancesPort() async throws {
+        try await Self.withFixture { fixture in
+            // `sub w (.clk (clk), .q (spare[1]));` in tb_wrapper.
+            let port = try await fixture.session.slangDesignPaths(uri: fixture.wrapper, position: LSPPosition(line: 7, character: 12), identifier: "clk")
+            #expect(port == ["tb_wrapper.w.clk"])
+            let local = try await fixture.session.slangDesignPaths(uri: fixture.wrapper, position: LSPPosition(line: 7, character: 18), identifier: "clk")
+            #expect(local == ["tb_wrapper.clk"])
+        }
+    }
+
+    @Test func portConnectionsAreFoundInText() {
+        typealias S = LanguageServerSession
+        let text = "sub #(.W(2)) u0 (\n  .a (x), // .z (no)\n  .b(y[1]),\n  .c\n);\nfoo(.a(1));\n"
+        let units = Array(text.utf16)
+        func offset(of needle: String, plus: Int = 1) -> Int {
+            units.count - Array(text[text.range(of: needle)!.lowerBound...].utf16).count + plus
+        }
+        #expect(S.portConnection(in: text, at: offset(of: ".a (x)"))?.port == "a")
+        #expect(S.portConnection(in: text, at: offset(of: ".a (x)"))?.instance == "u0")
+        #expect(S.portConnection(in: text, at: offset(of: ".b(y[1])"))?.port == "b")
+        #expect(S.portConnection(in: text, at: offset(of: ".c\n"))?.port == "c")
+        // The expression, a parameter override and a function's named argument are not port names.
+        #expect(S.portConnection(in: text, at: offset(of: "(x)", plus: 1)) == nil)
+        #expect(S.portConnection(in: text, at: offset(of: ".W(2)")) == nil)
+        #expect(S.portConnection(in: text, at: offset(of: ".a(1)")) == nil)
+        let connections = S.portConnections(inInstanceText: "u0 (\n  .a (x), // .z (no)\n  .b(y[1]),\n  .c, .*\n)")
+        #expect(connections.map(\.port) == ["a", "b", "c"])
+        #expect(connections.map(\.signal) == ["x", nil, "c"])
+    }
+
+    @Test func aNetsPortAliasesArePlainWholeNetConnections() async throws {
+        try await Self.withFixture { fixture in
+            // Down: the instance ports a signal is connected to.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.frag_sig") == ["tb_wrapper.dut.q"])
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.clk")) == ["tb_wrapper.dut.clk", "tb_wrapper.w.clk"])
+            // Up: what the parent connects a port to.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.dut.q") == ["tb_wrapper.frag_sig"])
+            // A slice is not the same net.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.w.q").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.spare").isEmpty)
         }
     }
 
