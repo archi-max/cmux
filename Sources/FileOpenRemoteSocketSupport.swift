@@ -9,9 +9,10 @@ extension TerminalController {
     /// The path is a canonical host path, resolved by the remote CLI. It is
     /// only ever fetched through the workspace's own SSH connection
     /// (`RemoteTerminalFilePreviewCoordinator.openFromCommandLine`), never
-    /// read on this Mac; the download is size-capped, and the result opens
+    /// read on this Mac. A download is size-capped, and the result opens
     /// only in the native file preview, never in the browser or markdown
-    /// viewer. The terminal must be an SSH terminal of that workspace. The relay
+    /// viewer; an FSDB dump is read in place on the host by the waveform
+    /// viewer, as from the Files panel. The terminal must be an SSH terminal of that workspace. The relay
     /// gates have already limited relay callers to their own workspace and
     /// terminal; the reply carries nothing beyond the request.
     func v2FileOpenRemote(params: [String: Any]) -> V2CallResult {
@@ -42,8 +43,9 @@ extension TerminalController {
             // Mac), and only while file previews are on.
             switch workspace.openRemoteFileFromCommandLine(sourcePanelId: surfaceID, path: path) {
             case .started:
-                // The preview opens when the download lands; a notice on the
-                // terminal says so if it can't (too large, failed, wrong type).
+                // Queued: the preview opens when the download lands, or the
+                // waveform viewer opens the dump on the host. Failures show on
+                // the terminal (a notice) or, in place, as the Files panel's alert.
                 return .ok(["queued": true, "path": path])
             case .unavailable:
                 return .err(code: "unsupported", message: String(
