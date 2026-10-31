@@ -44,6 +44,16 @@ struct SSHFileSearchTests {
         #expect(content.contains("rg --json"))
         #expect(content.contains("grep -rnIsF --null"))
         #expect(content.contains("--exclude-dir=node_modules"))
+        // No rg but a Git work tree: git grep, which honours .gitignore (a
+        // gitignored .venv must not fill the result cap before the sources).
+        #expect(content.contains(SSHFileSearchCommand.gitGrepMarker))
+        #expect(content.contains("grep -nIF -z --untracked --exclude-standard"))
+        #expect(content.contains("-c core.fsmonitor=false -c core.untrackedCache=false"))
+        #expect(content.contains("\":(exclude,glob)**/node_modules/**\""))
+        // Outside a work tree, plain grep also skips virtualenvs and caches.
+        for name in [".venv", "venv", "__pycache__", ".cache"] {
+            #expect(content.contains("--exclude-dir=\(name)"), "\(name)")
+        }
         #expect(content.contains("nice -n 10"))
         #expect(content.contains("timeout 27"))
     }
@@ -54,6 +64,8 @@ struct SSHFileSearchTests {
         #expect(!SSHFileSearchCommand.isCaseInsensitive(query: "Hello"))
         #expect(SSHFileSearchCommand.contentSearch(query: "abc", rootPath: "/r", remoteTimeoutSeconds: 5)
             .command.contains("grep -rnIsF --null $lb -i "))
+        #expect(SSHFileSearchCommand.contentSearch(query: "abc", rootPath: "/r", remoteTimeoutSeconds: 5)
+            .command.contains("--exclude-standard -i "))
         #expect(!SSHFileSearchCommand.contentSearch(query: "aBc", rootPath: "/r", remoteTimeoutSeconds: 5)
             .command.contains(" -i "))
     }
@@ -253,7 +265,81 @@ struct SSHFileSearchTests {
         #expect(accumulator.finish(status: 0).results.map(\.relativePath) == ["ok"])
     }
 
+    @Test
+    func testGitWorkTreesSearchWithGitGrepAndSkipIgnoredTrees() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        let root = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for shell in Self.availableShells {
+            let found = try Self.search("hello", root: root.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(found.format == .gitGrep, "shell \(shell)")
+            #expect(found.status == .matches, "shell \(shell)")
+            // Tracked and untracked files; not the gitignored .venv, not node_modules.
+            #expect(found.relativePaths == ["dir/a:b.sv", "new.sv", "r\u{E9}sum\u{E9}.sv", "Upper.sv"], "shell \(shell)")
+            let colonMatch = try #require(found.results.first { $0.relativePath == "dir/a:b.sv" })
+            #expect(colonMatch.path == root.path + "/dir/a:b.sv")
+            #expect(colonMatch.lineNumber == 2)
+            #expect(colonMatch.columnNumber == 5)
+            #expect(colonMatch.preview == "say hello: there")
+            // Smart case: an uppercase query is case-sensitive.
+            let upper = try Self.search("HELLO", root: root.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(upper.relativePaths == ["Upper.sv"], "shell \(shell)")
+            let none = try Self.search("absent-needle", root: root.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(none.format == .gitGrep, "shell \(shell)")
+            #expect(none.status == .noMatches, "shell \(shell)")
+        }
+        // A root below the top of the work tree: paths are relative to the root searched.
+        let sub = try Self.search("hello", root: root.path + "/dir", shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(sub.format == .gitGrep)
+        #expect(sub.relativePaths == ["a:b.sv"])
+        #expect(sub.results.first?.path == root.path + "/dir/a:b.sv")
+    }
+
+    @Test
+    func testGrepOutsideAWorkTreeSkipsVirtualenvsAndCaches() throws {
+        let root = try Self.makeSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for relativePath in [".venv/lib/site.py", "venv/x.py", "pkg/__pycache__/m.py", ".cache/c.txt"] {
+            let url = root.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("hello from \(relativePath)\n".utf8).write(to: url)
+        }
+        let found = try Self.search("hello", root: root.path, shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(found.format == .grep)
+        #expect(found.relativePaths == ["dir/a:b.txt", "Upper.txt"])
+    }
+
     // MARK: Parsing
+
+    @Test
+    func testGitGrepLinesHaveANulAfterTheLineNumberAndPathsRelativeToTheRoot() {
+        var parser = SSHFileSearchLineParser(rootPath: "/srv/repo/", query: "needle")
+        #expect(parser.parse(line: Data(("motd" + SSHFileSearchCommand.gitGrepMarker).utf8)) == nil)
+        #expect(parser.format == .gitGrep)
+        func line(_ path: String, _ number: String, _ text: String) -> Data {
+            Data(path.utf8) + Data([0]) + Data(number.utf8) + Data([0]) + Data(text.utf8)
+        }
+        // Colons in the path and in the text; the line number ends at a NUL, not a colon.
+        let colon = parser.parse(line: line("rtl/a:12:b.sv", "7", "  x = needle:1; // 3:4"))
+        #expect(colon?.path == "/srv/repo/rtl/a:12:b.sv")
+        #expect(colon?.relativePath == "rtl/a:12:b.sv")
+        #expect(colon?.lineNumber == 7)
+        #expect(colon?.columnNumber == 7)
+        #expect(colon?.preview == "x = needle:1; // 3:4")
+        // Non-ASCII path (git -z prints it unquoted) and text.
+        let accented = parser.parse(line: line("r\u{E9}sum\u{E9}/caf\u{E9}.sv", "3", "\u{E9}\u{E9}needle"))
+        #expect(accented?.path == "/srv/repo/r\u{E9}sum\u{E9}/caf\u{E9}.sv")
+        #expect(accented?.relativePath == "r\u{E9}sum\u{E9}/caf\u{E9}.sv")
+        #expect(accented?.columnNumber == 5)
+        // grep's `path NUL line:text` shape is not git grep's.
+        #expect(parser.parse(line: Data("a.sv".utf8) + Data([0]) + Data("7:needle".utf8)) == nil)
+        #expect(parser.parse(line: line("a.sv", "x", "needle")) == nil)
+        #expect(parser.parse(line: line("", "1", "needle")) == nil)
+        // The root itself is "/".
+        var top = SSHFileSearchLineParser(rootPath: "/", query: "needle")
+        _ = top.parse(line: Data(SSHFileSearchCommand.gitGrepMarker.utf8))
+        #expect(top.parse(line: line("etc/x", "1", "needle"))?.path == "/etc/x")
+    }
 
     @Test
     func testGrepLinesSplitAtTheNulSoColonsInPathsSurvive() {
@@ -487,6 +573,34 @@ struct SSHFileSearchTests {
 
     private static func grepLine(_ path: String, _ line: Int, _ text: String) -> Data {
         Data(path.utf8) + Data([0]) + Data("\(line):\(text)\n".utf8)
+    }
+
+    /// A Git work tree: `hello` in tracked, untracked and non-ASCII-named
+    /// files, and in a gitignored `.venv` and an unignored `node_modules`
+    /// that the search must skip.
+    static func makeGitSearchTree() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-ssh-gitgrep-\(UUID().uuidString)", isDirectory: true)
+        let files: [(String, String)] = [
+            (".gitignore", ".venv/\n"),
+            ("dir/a:b.sv", "first line\nsay hello: there\n"),
+            ("Upper.sv", "HELLO upper\n"),
+            ("r\u{E9}sum\u{E9}.sv", "hello accented\n"),
+            ("new.sv", "untracked hello\n"),
+            (".venv/lib/site.py", "hello from the virtualenv\n"),
+            ("node_modules/pkg/index.js", "hello from node_modules\n"),
+        ]
+        for (relativePath, contents) in files {
+            let url = root.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(contents.utf8).write(to: url)
+        }
+        let setup = try run(
+            "git init -q . && git add .gitignore dir Upper.sv r*.sv",
+            shell: "/bin/sh", path: "/usr/bin:/bin", directory: root.path
+        )
+        guard setup.status == 0 else { throw CocoaError(.fileWriteUnknown) }
+        return root
     }
 
     /// `hello` appears in two searchable files and in four places the search must skip.
