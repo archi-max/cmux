@@ -12,6 +12,10 @@ import (
 // prints after a path.
 var lineSuffix = regexp.MustCompile(`:[0-9]+(:[0-9]+)?$`)
 
+// maxOpenFileBytes matches the app's cap on what `cmux open` downloads
+// without a click (RemoteTerminalFilePreviewCoordinator).
+const maxOpenFileBytes = 32 << 20
+
 // runOpenRelay handles "cmux open <path>[:line]" in an SSH session. The path
 // is resolved here, on the SSH host, and sent as an absolute host path; the
 // app previews it through this workspace's own SSH connection

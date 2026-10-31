@@ -84,6 +84,9 @@ struct RemoteRelayRemoteFileOpenPolicyTests {
             "/" + String(repeating: "a", count: 4_096), ["/a", "/b"], 7, NSNull(),
             // Only the canonical spelling the remote CLI sends.
             "/home/u/../../etc/passwd", "/home/./u/a.sv", "//home/u/a.sv", "/home/u/", "/..", "/",
+            // Checked on bytes, not characters: a combining mark after `/`
+            // and a CRLF are single Characters.
+            "/a/../\u{301}x", "/a\r\nb",
         ]
         for path in rejected {
             var params = owned

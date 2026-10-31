@@ -73,6 +73,16 @@ func TestCLIOpenRejectsWhatItCannotPreview(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Larger than the app previews without a click: refused here, before any request.
+	big, err := os.Create(filepath.Join(dir, "big.fsdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(maxOpenFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	big.Close()
+	cases["too large"] = []string{"big.fsdb"}
 	for name, args := range cases {
 		sockPath, requests := startMockV2SocketWithRequestCapture(t)
 		code := runCLI(append([]string{"--socket", sockPath, "open"}, args...))
