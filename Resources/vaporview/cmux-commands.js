@@ -717,6 +717,8 @@
     frameGone = false;
     applying = 0;
     applyEpoch++;
+    // A failure on the way (a handler's error) didn't stop this reload.
+    failedReload = false;
     restoreAsked = true;
     restorePending = false;
     if (kept) {
@@ -906,7 +908,7 @@
     return window.cmuxNetlist.selectedItems().filter((x) => x.kind === 'var');
   }
 
-  async function addFiltered(vars, noWarning) {
+  async function addFiltered(vars, noWarning, mode) {
     const list = vars.filter((x) => x.kind === 'var');
     if (list.length > 48 && !noWarning) {
       const s = S();
@@ -914,16 +916,22 @@
         buttons: [{ label: s.dialogNo, value: false }, { label: s.dialogYes, value: true }] });
       if (!answer) { return; }
     }
-    host().addVariables(list);
+    host().addVariables(list, undefined, undefined, mode);
   }
 
+  // Add All in Scope's signals, leaving out those shown already (and repeats):
+  // the warning and the cap count only what would be added.
   async function scopeVariables(scope, recursive, maxChildren) {
     const vars = [];
+    const seen = new Set();
+    const shown = host().alreadyShown || (() => false);
     const scopes = [scope];
     while (scopes.length && vars.length < maxChildren) {
       const children = await host().getChildren(scopes.shift());
       children.forEach((c) => {
-        if (c.kind === 'var') { vars.push(c); } else if (c.kind === 'scope' && recursive) { scopes.push(c); }
+        if (c.kind === 'var') {
+          if (vars.length < maxChildren && !seen.has(c.netlistId) && !shown(c.netlistId)) { seen.add(c.netlistId); vars.push(c); }
+        } else if (c.kind === 'scope' && recursive) { scopes.push(c); }
       });
     }
     return vars;
@@ -944,8 +952,8 @@
       return false;
     }
     if (item.kind === 'scope') { window.cmuxNetlist.focusSearch(item); return true; }
-    // Shown already: addVariables selects its row.
-    host().addVariables([item]);
+    // Shown already: addVariables selects its row (VaporView's reveal).
+    host().addVariables([item], undefined, undefined, 'reveal');
     return true;
   }
 
@@ -1143,7 +1151,7 @@
 
   async function addScope(e, recursive) {
     if (!e || e.kind !== 'scope') { return; }
-    addFiltered(await scopeVariables(e, recursive, 128), false);
+    addFiltered(await scopeVariables(e, recursive, 128), false, 'bulk');
   }
 
   async function run(id, args) {
@@ -1309,6 +1317,8 @@
     webviewContext = null;
     // What was posted to the old viewer is answered (if at all) before its unload.
     resetApplying();
+    // An Undo queued for a reload this one overtakes doesn't carry over.
+    waitingHistory = [];
     // A reload of another path: what was pressed for the old one doesn't carry.
     // Another path is another document (VaporView keeps a history per
     // document): neither the presses nor the history carry over.
