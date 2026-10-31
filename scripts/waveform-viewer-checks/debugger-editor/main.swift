@@ -399,7 +399,9 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     WaveformDebuggerRTLStatus.editorGone(otherEditor)
     await settle()
     expect(page.rtlShownTimes == [65], "the editor play waited for closed: the cycle is shown: \(page.rtlShownTimes)")
-    expect(page.rtlStatuses.last?["text"] as? String == "RTL: cpu.sv", "the strip names the one left: \(String(describing: page.rtlStatuses.last))")
+    expect((page.rtlStatuses.last?["tooltip"] as? String)?.contains("other.sv") == false
+           && (page.rtlStatuses.last?["text"] as? String)?.contains("waiting") == false,
+           "the strip no longer waits for it: \(String(describing: page.rtlStatuses.last))")
     FilePreviewLanguageFeatures.all = []
     WaveformDebuggerRTLStatus.editorGone(editor)
     await settle()

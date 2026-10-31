@@ -86,7 +86,7 @@ enum WaveformDebuggerEditorHighlights {
         var paths: [[String]] = []
     }
 
-    /// Most driver cones asked of slang-server per refresh (each is cached).
+    /// Most driver cones asked of slang-server per refresh, or per cycle while playing (each is cached).
     private static let maxConeRequests = 16
 
     private struct ConeBudget {
@@ -96,7 +96,7 @@ enum WaveformDebuggerEditorHighlights {
         var left: Int
     }
 
-    /// Cone lookups left for the cycle shown (`maxConeRequests` per cycle across editors).
+    /// While playing: cone lookups left for the cycle shown (`maxConeRequests` per cycle across editors).
     private static var coneBudget: ConeBudget?
 
     /// How long an editor waits after the marker moves before it reads values again: none
@@ -209,10 +209,25 @@ enum WaveformDebuggerEditorHighlights {
     ) async {
         guard let session = shown.editor.linkSession?.session else { return }
         let server = ObjectIdentifier(session)
-        // One budget per cycle shown, shared by every editor (forgotten cones start a new one).
-        let cycle = ConeBudget(waveform: ObjectIdentifier(shown.waveform), time: shown.time, generation: coneGeneration, left: 0)
-        if coneBudget.map({ $0.waveform != cycle.waveform || $0.time != cycle.time || $0.generation != cycle.generation }) ?? true {
-            coneBudget = ConeBudget(waveform: cycle.waveform, time: cycle.time, generation: cycle.generation, left: maxConeRequests)
+        // While playing, one budget per cycle shown, shared by every editor (forgotten cones
+        // start a new one); else each refresh (a scroll, an edit, a step) has its own.
+        let playing = WaveformDebugger.state(of: shown.waveform).playing
+        var ownBudget = maxConeRequests
+        if playing {
+            let cycle = ConeBudget(waveform: ObjectIdentifier(shown.waveform), time: shown.time, generation: coneGeneration, left: 0)
+            if coneBudget.map({ $0.waveform != cycle.waveform || $0.time != cycle.time || $0.generation != cycle.generation }) ?? true {
+                coneBudget = ConeBudget(waveform: cycle.waveform, time: cycle.time, generation: cycle.generation, left: maxConeRequests)
+            }
+        }
+        func takeLookup() -> Bool {
+            if playing {
+                guard let budget = coneBudget, budget.left > 0 else { return false }
+                coneBudget?.left = budget.left - 1
+                return true
+            }
+            guard ownBudget > 0 else { return false }
+            ownBudget -= 1
+            return true
         }
         var lines = Set(result.driverLines.map(\.location))
         for module in changed.keys.sorted() {
@@ -224,8 +239,7 @@ enum WaveformDebuggerEditorHighlights {
                 if cone == nil {
                     // A failure (often: the design isn't compiled yet) is asked again after a while.
                     if let failedAt = failedCones[key], Date().timeIntervalSince(failedAt) < failedConeRetryInterval { continue }
-                    guard let budget = coneBudget, budget.left > 0 else { continue }
-                    coneBudget?.left = budget.left - 1
+                    guard takeLookup() else { continue }
                     let generation = coneGeneration
                     guard let found = try? await session.slangDriverCone(path) else {
                         if generation == coneGeneration { failedCones[key] = Date() }
