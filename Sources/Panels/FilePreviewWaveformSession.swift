@@ -1,4 +1,5 @@
 import AppKit
+import CmuxCloud
 import CmuxFoundation
 import SwiftUI
 import WebKit
