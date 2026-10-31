@@ -182,10 +182,13 @@ public struct HierarchyPathMapping: Codable, Sendable, Equatable {
 public struct HierarchyNode: Sendable, Equatable {
     public var name: String
     public var isScope: Bool
+    /// A dumped signal's width in bits, when the dump gives it.
+    public var width: Int?
 
-    public init(name: String, isScope: Bool) {
+    public init(name: String, isScope: Bool, width: Int? = nil) {
         self.name = name
         self.isScope = isScope
+        self.width = width
     }
 }
 

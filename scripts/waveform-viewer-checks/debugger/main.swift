@@ -394,14 +394,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       try {
         // (Values come through wellen by path, which knows only req: the lookup is checked here.)
         const found = async (p) => { const v = await h.findLinkItem(p, true); return v ? v.netlistId === req.netlistId : null; };
-        return { values: [await found(['top', 'ports', 'req']), await found(['top', 'ports', 'req[0:0]']), await found(['top', 'ports', 're'])],
-          has: await cmuxWaveform.link.hasSignal(['top', 'ports', 'req']) };
+        const values = [await found(['top', 'ports', 'req']), await found(['top', 'ports', 'req[0:0]']), await found(['top', 'ports', 're'])];
+        const has = await cmuxWaveform.link.hasSignal(['top', 'ports', 'req']);
+        // An index or a range narrower than the signal is an element or a part-select, not req.
+        req.name = 'req[3]';
+        const index = await found(['top', 'ports', 'req']);
+        req.name = 'req[1:0]';
+        const narrow = await found(['top', 'ports', 'req']);
+        req.name = 'req[0:0]';
+        const scope = (await cmuxWaveform.link.scopeChildren(['top', 'ports'])).find((x) => x.name === 'req[0:0]');
+        return { values, has, index, narrow, width: scope ? scope.width : null };
       } finally { req.name = 'req'; }
     """) as? [String: Any]
     let rangedValues = ranged?["values"] as? [Any]
     expect(rangedValues?.count == 3 && rangedValues?[0] as? Bool == true && rangedValues?[1] as? Bool == true
-           && rangedValues?[2] is NSNull && ranged?["has"] as? Bool == true,
-           "req finds req[0:0] (a prefix like re does not): \(String(describing: ranged))")
+           && rangedValues?[2] is NSNull && ranged?["has"] as? Bool == true
+           && ranged?["index"] is NSNull && ranged?["narrow"] is NSNull && ranged?["width"] as? Int == 1,
+           "req finds req[0:0] (a prefix like re, an index req[3] and a narrower req[1:0] do not; scopeChildren gives the width): \(String(describing: ranged))")
     // A reload while the clock is still being read: no warning, since the reload owns the page.
     let raced = await call("""
       const toasts = [];
