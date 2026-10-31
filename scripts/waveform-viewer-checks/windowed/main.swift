@@ -178,7 +178,14 @@ func relayChecks() async throws {
         return h["cancelled"] as? Bool == true ? "cancelled" : (h["result"] != nil ? "answered" : "other \(h)")
       }
       group.addTask {
-        try? await Task.sleep(nanoseconds: UInt64.random(in: 0...3_000_000))
+        // Half cancel at a random moment; half the moment the request is mapped (its id
+        // published), where a relay that writes the request later sends the cancel first.
+        if id % 2 == 0 {
+          try? await Task.sleep(nanoseconds: UInt64.random(in: 0...3_000_000))
+        } else {
+          let end = Date().addingTimeInterval(2)
+          while !helper.isMapped(pageId: id), Date() < end { await Task.yield() }
+        }
         _ = await helper.response(for: json(["cmd": "cancel", "id": id]), failureMessage: fail)
         return nil
       }
@@ -189,7 +196,7 @@ func relayChecks() async throws {
   }
   let raceMs = Int(Date().timeIntervalSince(raceStart) * 1000)
   let cancelledCount = outcomes.filter { $0 == "cancelled" }.count
-  expect(outcomes.count == 60 && outcomes.allSatisfy { $0 == "cancelled" || $0 == "answered" } && cancelledCount >= 50 && raceMs < 3000,
+  expect(outcomes.count == 60 && outcomes.allSatisfy { $0 == "cancelled" || $0 == "answered" } && cancelledCount >= 50 && raceMs < 4000,
          "60 racing request/cancel pairs: \(cancelledCount) cancelled, the rest answered, in \(raceMs) ms: \(Set(outcomes))")
 
   // No cancel reached the helper ahead of its request (the request is written before its
@@ -300,6 +307,16 @@ func fallbackChecks() async throws {
     expect(proto(rp) == "none" && pLog.fellBack.isEmpty && lines(ran) == 0 && (header(rp)["error"] as? String ?? "").contains("refused"),
            "a group-writable \(name) is refused before the launcher runs: ran \(lines(ran)), \(header(rp))")
   }
+
+  // ssh itself can't run here: an error, not a switch to v1 (which would fail the same way).
+  let runLog = StatusLog()
+  let noSSH = WaveformFSDBHelper(sshArguments: localShell(home: fbHome),
+                                 installs: WaveformFSDBHelper.installs(v2Root: v2Root, v1Root: v1Root, loading: .auto),
+                                 executable: URL(fileURLWithPath: "/nonexistent/ssh"), hostKey: "host-run", allowedCommands: testCommands,
+                                 allowedFile: nil, readyTimeout: 5) { runLog.add($0) }
+  let rr = await open(noSSH); noSSH.stop()
+  expect(proto(rr) == "none" && runLog.fellBack.isEmpty && (header(rr)["error"] as? String ?? "").contains("connectionFailed"),
+         "ssh that can't run is an error, not a fallback: \(header(rr)), \(runLog.fellBack)")
 
   // ssh can't connect (255): an error, no fallback.
   let sshLog = StatusLog()
