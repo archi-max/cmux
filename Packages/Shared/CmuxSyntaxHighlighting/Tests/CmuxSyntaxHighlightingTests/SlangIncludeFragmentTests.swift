@@ -378,7 +378,7 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func aFailedInstanceCountIsNotOneInstance() async throws {
-        try await Self.withFixture { fixture in
+        try await Self.withFixture { fixture async throws in
             // s1.d's width needs getInstances (one instance of ssub). A timeout is thrown, not taken
             // for one instance.
             await fixture.session.setDeclarationInstancesErrorForTesting(.timeout(method: "workspace/executeCommand"))
