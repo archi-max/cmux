@@ -64,6 +64,26 @@ extension LanguageServerSession {
         searchTimeLimit: TimeInterval = 10,
         willSearch: (@Sendable () async -> Void)? = nil
     ) async throws -> [String] {
+        // The port name of a named port connection (`.name` of `.name (signal)`) is the child
+        // instance's port, which can be all a simulator dumps of the net.
+        if let text = sourceText(of: uri), let offset = Self.utf16Offset(of: position, in: text),
+           let connection = Self.portConnection(in: text, at: offset),
+           let instancePosition = Self.position(ofUTF16Offset: connection.instanceOffset, in: text) {
+            let instances = try await slangDesignPaths(
+                uri: uri,
+                position: instancePosition,
+                identifier: connection.instance,
+                isInModule: isInModule,
+                searchTimeLimit: searchTimeLimit,
+                willSearch: willSearch
+            )
+            var ports: [String] = []
+            for instance in instances.prefix(Self.fragmentSearchResultLimit) {
+                let children = try await scopeChildrenSkippingUnresolved(instance)
+                if children.contains(where: { $0.name == connection.port }) { ports.append(instance + "." + connection.port) }
+            }
+            return ports
+        }
         let direct = try await slangInstancePaths(uri: uri, position: position)
         guard direct.isEmpty else { return direct }
         guard !(isInModule ?? documentIsInModule(uri, at: position)) else { return [] }
@@ -104,6 +124,237 @@ extension LanguageServerSession {
         guard !identifier.isEmpty else { return [] }
         await willSearch?()
         return try await slangFragmentPaths(of: identifier, inFile: uri, timeLimit: searchTimeLimit)
+    }
+
+    /// The open document's text, else (for a local server) the file's.
+    private func sourceText(of uri: URL) -> String? {
+        if let text = documentText(uri) { return text }
+        guard case .local = launch else { return nil }
+        return try? String(contentsOf: uri, encoding: .utf8)
+    }
+
+    /// Other names of the net at `path` that a simulator may have dumped instead: the instance
+    /// ports it is connected to (`.port (name)` of an instance in its scope), and what its scope's
+    /// instantiation connects it to when it is a port. Only plain whole-net connections, never an
+    /// expression or a slice. Instances whose source text is not at hand are skipped.
+    public func slangPortAliases(of path: String) async throws -> [String] {
+        let parent = Self.parentPath(of: path)
+        let name = String(path.dropFirst(parent.isEmpty ? 0 : parent.count + 1))
+        guard !parent.isEmpty, Self.isPlainIdentifier(name) else { return [] }
+        var aliases: [String] = []
+        for child in try await scopeChildrenSkippingUnresolved(parent) where child.kind == "Instance" {
+            guard let connections = instanceConnections(child) else { continue }
+            for connection in connections where connection.signal == name {
+                aliases.append(parent + "." + child.name + "." + connection.port)
+            }
+        }
+        let grandparent = Self.parentPath(of: parent)
+        let instanceName = String(parent.dropFirst(grandparent.isEmpty ? 0 : grandparent.count + 1))
+        if !grandparent.isEmpty, Self.isPlainIdentifier(instanceName) {
+            let siblings = try await scopeChildrenSkippingUnresolved(grandparent)
+            if let instance = siblings.first(where: { $0.name == instanceName && $0.kind == "Instance" }),
+               let connections = instanceConnections(instance) {
+                for connection in connections where connection.port == name {
+                    if let signal = connection.signal { aliases.append(grandparent + "." + signal) }
+                }
+            }
+        }
+        var seen = Set<String>()
+        return aliases.filter { $0 != path && seen.insert($0).inserted }
+    }
+
+    /// The named port connections of an instance, read from its instantiation's text.
+    private func instanceConnections(_ instance: SlangHierarchyItem) -> [(port: String, signal: String?)]? {
+        guard let location = instance.location, let text = sourceText(of: location.uri),
+              let start = Self.utf16Offset(of: location.range.start, in: text),
+              let end = Self.utf16Offset(of: location.range.end, in: text), start < end else { return nil }
+        let units = Array(text.utf16)
+        return Self.portConnections(inInstanceText: String(decoding: units[start..<min(end + 1, units.count)], as: UTF16.self))
+    }
+
+    /// The `` `.port (signal)` `` items of an instantiation's text (`name (...)`): the port, and
+    /// the signal when the connection is one plain identifier (nil for an expression, a slice or
+    /// an empty connection). `.port` alone connects the same-named signal; `.*` and positional
+    /// connections are skipped.
+    static func portConnections(inInstanceText text: String) -> [(port: String, signal: String?)] {
+        let units = blankingCommentsAndStrings(Array(text.utf16))
+        guard let open = units.firstIndex(of: UInt16(UInt8(ascii: "("))) else { return [] }
+        var connections: [(port: String, signal: String?)] = []
+        var index = open + 1
+        var depth = 1
+        while index < units.count, depth > 0 {
+            let unit = units[index]
+            if unit == openUnit { depth += 1 } else if unit == closeUnit { depth -= 1 }
+            if unit == dotUnit, depth == 1 {
+                var cursor = index + 1
+                while cursor < units.count, isSpace(units[cursor]) { cursor += 1 }
+                let nameStart = cursor
+                while cursor < units.count, isIdentifierUnit(units[cursor]) { cursor += 1 }
+                guard cursor > nameStart else { index += 1; continue }
+                let port = String(decoding: units[nameStart..<cursor], as: UTF16.self)
+                while cursor < units.count, isSpace(units[cursor]) { cursor += 1 }
+                if cursor < units.count, units[cursor] == openUnit {
+                    var close = cursor + 1
+                    var inner = 1
+                    while close < units.count, inner > 0 {
+                        if units[close] == openUnit { inner += 1 } else if units[close] == closeUnit { inner -= 1 }
+                        if inner > 0 { close += 1 }
+                    }
+                    let expression = String(decoding: units[(cursor + 1)..<min(close, units.count)], as: UTF16.self)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    connections.append((port, isPlainIdentifier(expression) ? expression : nil))
+                    index = close + 1
+                } else {
+                    connections.append((port, port))
+                    index = cursor
+                }
+                continue
+            }
+            index += 1
+        }
+        return connections
+    }
+
+    /// When `offset` is on the port name of a named port connection (`.port` before its
+    /// parentheses, or `.port` alone), the port, and the instance's name and where it starts.
+    /// Not for a parameter override (`#(.W(2))`) or a function call's named argument.
+    static func portConnection(in text: String, at offset: Int) -> (instance: String, instanceOffset: Int, port: String)? {
+        let units = blankingCommentsAndStrings(Array(text.utf16))
+        guard offset >= 0, offset <= units.count else { return nil }
+        var start = offset
+        while start > 0, isIdentifierUnit(units[start - 1]) { start -= 1 }
+        var end = offset
+        while end < units.count, isIdentifierUnit(units[end]) { end += 1 }
+        guard end > start else { return nil }
+        let port = String(decoding: units[start..<end], as: UTF16.self)
+        var before = start - 1
+        while before >= 0, isSpace(units[before]) { before -= 1 }
+        guard before >= 0, units[before] == dotUnit else { return nil }
+        var beforeDot = before - 1
+        while beforeDot >= 0, isSpace(units[beforeDot]) { beforeDot -= 1 }
+        guard beforeDot >= 0, units[beforeDot] == openUnit || units[beforeDot] == commaUnit else { return nil }
+        var after = end
+        while after < units.count, isSpace(units[after]) { after += 1 }
+        guard after < units.count, [openUnit, commaUnit, closeUnit].contains(units[after]) else { return nil }
+        // The parenthesis that opens the list the connection is in.
+        var cursor = before - 1
+        var depth = 0
+        while cursor >= 0 {
+            let unit = units[cursor]
+            if unit == semicolonUnit { return nil }
+            if unit == closeUnit {
+                depth += 1
+            } else if unit == openUnit {
+                if depth == 0 { break }
+                depth -= 1
+            }
+            cursor -= 1
+        }
+        guard cursor >= 0 else { return nil }
+        var nameEnd = cursor
+        while nameEnd > 0, isSpace(units[nameEnd - 1]) { nameEnd -= 1 }
+        var nameStart = nameEnd
+        while nameStart > 0, isIdentifierUnit(units[nameStart - 1]) { nameStart -= 1 }
+        guard nameEnd > nameStart, !isDigitUnit(units[nameStart]) else { return nil }
+        // An instance name follows the module type (or its parameter list, or a previous instance).
+        var typeEnd = nameStart
+        while typeEnd > 0, isSpace(units[typeEnd - 1]) { typeEnd -= 1 }
+        // (`#(.W(2))` has no name before its list, and a call `f(.a(1))` follows an operator.)
+        guard typeEnd > 0, typeEnd < nameStart else { return nil }
+        let previous = units[typeEnd - 1]
+        guard isIdentifierUnit(previous) || previous == closeUnit || previous == commaUnit else { return nil }
+        let instance = String(decoding: units[nameStart..<nameEnd], as: UTF16.self)
+        return (instance, nameStart, port)
+    }
+
+    private static let dotUnit = UInt16(UInt8(ascii: ".")), commaUnit = UInt16(UInt8(ascii: ","))
+    private static let openUnit = UInt16(UInt8(ascii: "(")), closeUnit = UInt16(UInt8(ascii: ")"))
+    private static let semicolonUnit = UInt16(UInt8(ascii: ";"))
+    private static let slashUnit = UInt16(UInt8(ascii: "/")), starUnit = UInt16(UInt8(ascii: "*"))
+    private static let newlineUnit = UInt16(UInt8(ascii: "\n"))
+
+    /// `units` with comments and string literals turned into spaces (newlines kept), so the
+    /// same offsets scan code only.
+    static func blankingCommentsAndStrings(_ units: [UInt16]) -> [UInt16] {
+        var result = units
+        let quote = UInt16(UInt8(ascii: "\""))
+        let backslash = UInt16(UInt8(ascii: "\\"))
+        var index = 0
+        func blank(_ range: Range<Int>) {
+            for i in range where result[i] != newlineUnit { result[i] = 0x20 }
+        }
+        while index < units.count {
+            let next: UInt16 = index + 1 < units.count ? units[index + 1] : 0
+            if units[index] == slashUnit, next == slashUnit {
+                let start = index
+                while index < units.count, units[index] != newlineUnit { index += 1 }
+                blank(start..<index)
+            } else if units[index] == slashUnit, next == starUnit {
+                let start = index
+                index += 2
+                while index < units.count, !(units[index] == starUnit && index + 1 < units.count && units[index + 1] == slashUnit) { index += 1 }
+                index = min(index + 2, units.count)
+                blank(start..<index)
+            } else if units[index] == quote {
+                let start = index
+                index += 1
+                while index < units.count, units[index] != quote, units[index] != newlineUnit {
+                    index += units[index] == backslash ? 2 : 1
+                }
+                index = min(index + 1, units.count)
+                blank(start..<index)
+            } else {
+                index += 1
+            }
+        }
+        return result
+    }
+
+    private static func isSpace(_ unit: UInt16) -> Bool {
+        unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D
+    }
+
+    private static func isDigitUnit(_ unit: UInt16) -> Bool {
+        unit >= 0x30 && unit <= 0x39
+    }
+
+    private static func isIdentifierUnit(_ unit: UInt16) -> Bool {
+        (unit >= 0x30 && unit <= 0x39) || (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A)
+            || unit == 0x5F || unit == 0x24
+    }
+
+    /// One SystemVerilog identifier (not a slice, select or expression).
+    static func isPlainIdentifier(_ text: String) -> Bool {
+        let units = Array(text.utf16)
+        guard let first = units.first, !isDigitUnit(first) else { return false }
+        return units.allSatisfy(isIdentifierUnit)
+    }
+
+    /// The UTF-16 offset of an LSP position in `text`; nil past its end.
+    static func utf16Offset(of position: LSPPosition, in text: String) -> Int? {
+        let units = Array(text.utf16)
+        var offset = 0
+        var line = 0
+        while line < position.line {
+            guard let newline = units[offset...].firstIndex(of: newlineUnit) else { return nil }
+            offset = newline + 1
+            line += 1
+        }
+        let result = offset + position.character
+        return result <= units.count ? result : nil
+    }
+
+    /// The LSP position of a UTF-16 offset in `text`.
+    static func position(ofUTF16Offset offset: Int, in text: String) -> LSPPosition? {
+        let units = Array(text.utf16)
+        guard offset >= 0, offset <= units.count else { return nil }
+        var line = 0
+        var lineStart = 0
+        for index in 0..<offset where units[index] == newlineUnit {
+            line += 1
+            lineStart = index + 1
+        }
+        return LSPPosition(line: line, character: offset - lineStart)
     }
 
     /// How an `` `include `` names a fragment: by its path (next to the includer, or absolute), or
