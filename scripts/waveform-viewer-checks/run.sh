@@ -59,6 +59,12 @@ case "${1:-}" in
     ;;
   debugger-editor)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    # A sparse worktree may leave the package out (the default cone has no Packages/Shared).
+    if [ ! -d "$L" ]; then
+      echo "line-breakpoints needs Packages/Shared/CmuxSyntaxHighlighting in this checkout:" >&2
+      echo "  git -C \"$ROOT\" sparse-checkout add Packages/Shared/CmuxSyntaxHighlighting" >&2
+      exit 2
+    fi
     # One module here: the package import goes, and SlangDriverCone.swift's session extension is stubbed.
     sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerEditorHighlights.swift" > "$OUT/highlights.swift"
     sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerRTLStatus.swift" > "$OUT/rtl-status.swift"
