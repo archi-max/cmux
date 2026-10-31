@@ -182,6 +182,9 @@ enum WaveformViewerStrings {
             "settingsOptionAsk": String(localized: "filePreview.waveform.settings.option.ask", defaultValue: "Ask"),
             "settingsOptionNever": String(localized: "filePreview.waveform.settings.option.never", defaultValue: "Never"),
             "settingsOptionNone": String(localized: "filePreview.waveform.settings.option.none", defaultValue: "None"),
+            "setting.fsdbLoading": String(localized: "filePreview.waveform.settings.fsdbLoading", defaultValue: "FSDB signal loading"),
+            "settingsOptionFsdbAuto": String(localized: "filePreview.waveform.settings.option.fsdbAuto", defaultValue: "Windowed: large signals load as needed"),
+            "settingsOptionFsdbWhole": String(localized: "filePreview.waveform.settings.option.fsdbWhole", defaultValue: "Whole signals"),
         ]
         return strings
     }

@@ -1,0 +1,1613 @@
+// Part of cmux's FSDB helper v2. GPL-3.0, as VaporView
+// (https://github.com/Lramseyer/vaporview), which it is adapted from; see ../LICENSE.
+// FSDB helper v2: runs next to the dump (on EWS) and answers the viewer over a
+// single ssh stdio channel. Requests are newline-delimited JSON on stdin;
+// replies go to fd 3 as a JSON line plus `binLength` raw bytes (v1 framing),
+// because Verdi's FsdbReader prints to stdout. Start it through helper-v2.sh.
+//
+// v2: a pool of worker processes (worker.js), each with the file open. A
+// signal sticks to one worker, which keeps its walked changes in the addon's
+// compact store; multi-signal requests are split across workers and merged.
+// Replies can come back out of order; every request carries an `id`.
+// open/children are answered here (this process has the hierarchy), so the
+// netlist stays responsive while workers walk signals.
+//
+// Protocol (WINDOWING.md "Protocol v2", as built). Times are integers in the
+// file's unit. Every reply is {id, result, ms, workerMs?} or {id, error};
+// `ms` is time in the helper, `workerMs` the slowest worker part.
+// Changes are normalized (WINDOWING.md "Change normalization") in everything below
+// except v1 `signals`: changes at one time collapse to the last, a change to the value
+// already in effect is dropped, and before the first change the value is all x.
+//   open {file, workers?, warm?, reload?} -> {metadata, top, workers, index, reused?} (warm: start
+//     the search-index warm-up, see warm below; index = its state). Reopening the open file
+//     unchanged (same real path, device, inode, size, mtime, ctime; same pool) keeps all
+//     stores, derived signals and queued work and replies {reused: true}; reload: true forces
+//     a real reopen (a new epoch, as below).
+//   children {scopeOffsetIdx, scopePath} -> {scopes, vars}
+//   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?}
+//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?} | {signalId, error}]}
+//     (total: the signal's whole normalized change count, when it came from the store;
+//     absent for ranged answers. Same number as `count`'s.)
+//     (ranged: a cold signal over a range <= FSDB_COLD_RANGE (0.25) of the file was answered
+//     from a view-window load of just that range, and its whole walk then runs in the
+//     background; file: read from the persistent store cache. The bytes are the same.)
+//     + binary: per signal `bytes` of deflate-raw records [u64 LE delta][width chars]
+//     (first record = value in effect at t0, time t0; deltas start from 0), then,
+//     when not exact, `bucketBytes` of u32 LE change counts per bucket (deflate-raw
+//     too if deflateCounts). Half-open [t0, t1): a change at t is in bucket
+//     floor((t - t0) * buckets / (t1 - t0)); changes exactly at t0 are counted (in
+//     count and bucket 0) but folded into the t0 record, not sent. exact when
+//     count <= 2 * buckets; otherwise per bucket its first and last sent change.
+//   valueAt {signalIds, t}         -> {values: [string | null], cold} (all 'x' before the first
+//     change; null = unreadable). Signals that aren't stored are read cold: a [t, t] view
+//     window, one value, ~2-16 ms each, nothing walked or kept (`cold` = how many).
+//   count {signalIds, exact?}     -> {counts: [{signalId, count, bits, xz, bytes, source} | {signalId, unknown: true}]}
+//     whole-signal normalized change count (= a [0, T+1) window's count), bytes = count * (8 + bits)
+//     (v1 packed size). source store | derived | file (.vvz header). Answered in the coordinator,
+//     never queued; unknown unless exact: true, which loads (walks) them first.
+//   edge {signalId, t, dir: 1|-1, kind: any|rise|fall} -> {t} | {t: null}
+//     first change after t (or last before t); rise/fall (1-bit signals) = new
+//     value '1' / '0' (x->1 is a rise); wider signals treat them as any.
+//   search {signalId, t, dir, value, wildcard?} -> {t} | {t: null}: first change after t (or
+//     last before t) whose new value matches `value` (MSB first, 'x' and '?' wildcards,
+//     short patterns left-padded with 0). wildcard: '?' -> only '?' is a wildcard,
+//     x and z are literal. All answers use the normalized change stream (see below).
+//   cancel {id}                    -> the target's reply becomes {id, cancelled: true};
+//     queued parts are dropped, running ones finish and are discarded (background
+//     ones are told to stop). If `id` isn't running, one {id, cancelled: false} line.
+//     cancel {id, target} always replies under its own id {cancelled, dropped, running}.
+//     Clients must ignore lines for ids they no longer have pending.
+//   stats {}                       -> {workers: [{worker, pid, loaded, bytesCached, limit, queue, background, busy, rss}],
+//                                      coordinatorRss, recycled, splitting, derived, index, searching}
+//   free {signalIds?}, close {}    -> {}
+//   signals {signalIds, widths}    -> v1 whole-signal reply (reader traversal, not the store)
+// Unsolicited {id: 0, ready|error} lines report startup and worker deaths. A dead
+// worker is restarted (and reopens the file); its queued and running parts fail
+// with an error, so no request waits forever. Requests other than open/stats/
+// cancel/close before a successful open fail with `no file open`; ids that the
+// file doesn't have fail with `unknown signal #id`. A reopen fails everything
+// still queued for the old file (`file reopened`).
+//
+// Additions (derived signals, searchAll):
+//   derive {expr, name?} -> {signalId, width, signed, name, operands, refs, count, materialized,
+//     materializeMs, loadMs, mergeMs, steps}. A virtual signal (id >= 1e9) usable in
+//     window/valueAt/edge/search/derive like a real one. Expression language and its
+//     SystemVerilog sizing (IEEE 1800 sec. 11.6: context-determined widths, $signed/$unsigned,
+//     === !==, * / % << >> <<< >>>) in expr.js; paths (generate scopes like gen[0].x too),
+//     unique suffixes, #id, or a derive `name` (which may not hide a real signal). Results change
+//     only when the value changes, evaluated once per distinct operand change time (after
+//     all changes at that time; glitches inside one time step collapse). The same compiled
+//     program over the same signals -> the same id. Evicted results are rebuilt on demand
+//     (real signals are evicted before derived ones). Limits: 65536 bits per node, 64 KB of
+//     text, a result of at most half the worker's store budget, 60 s of merge, and an
+//     up-front cost estimate. Errors: unknown/ambiguous signal, syntax, width, size, time.
+//   searchAll {value | expr, t, dir, scope?, names?, limit = 50, budgetMs = 30000 (max 60000), listCandidates?}
+//     candidates: BitVector signals under `scope` (a path prefix), leaf name (or full path
+//     if the glob has a '.') matching `names` (* ?), one per signal id. value: binary with
+//     x wildcards (a string of only 0/1/x/z/? is binary: "10" = 2'b10) or a literal
+//     (32'h12xx, 'd5, 12); only signals of exactly that width; `wildcard: '?'` as for
+//     search (x/z literal). Ties in time are ordered by signalId. expr: true (any bit 1) with
+//     `$` = the candidate (any width); without `$` it is one temporary derived signal.
+//     Per candidate the nearest matching change after t (dir 1) / before t (dir -1).
+//     Streams {id, partial: true, result: {matches: [{signalId, path, t}], searched, total}}
+//     as matches are found, then {id, final: true, result: {matches (nearest first, <= limit),
+//     found, searched, walked, indexed, errors, unreadable, retried, total, timedOut, yields,
+//     firstMatchMs, complete, incomplete: null | {timedOut, cancelled, unsearched, errors,
+//     failedSignals}}}. A relay must keep the request pending until the line without
+//     `partial`. Once `limit` matches are known, later scans stop at the limit-th nearest
+//     time, so `found` counts only matches that could still rank. One searchAll runs at a
+//     time: a new one ends the old with {id, cancelled: true, reason: 'superseded'}. Its
+//     work is background work: interactive requests go first and make a running chunk stop
+//     early (the rest is requeued); the budget is enforced inside chunks too.
+//   warm {on?, clear?} -> index state {on, dir, indexed, bytes, rawBytes, todo, inflight, failed, yields,
+//     stopped, ms}: the opt-in background search index (see "search index warm-up" below).
+//
+// Adapted from VaporView (https://github.com/Lramseyer/vaporview, GPL-3.0),
+// src/extension_core/fsdb_worker.ts@59107c6: same addon calls, stdio framing
+// instead of Node IPC, and the scope/var walk done here instead of in the host.
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const readline = require('node:readline');
+const zlib = require('node:zlib');
+const { fork } = require('node:child_process');
+const crypto = require('node:crypto');
+const expr = require('./expr.js');
+
+const OUT = 3;
+const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Release/fsdb_reader.node');
+const arg = (name, env, dflt) => { const k = process.argv.indexOf(name); return Number(k > 0 ? process.argv[k + 1] : process.env[env] || dflt) || dflt; };
+const DEFAULT_WORKERS = Math.min(4, arg('--workers', 'FSDB_WORKERS', 4));
+const CACHE_BYTES = arg('--cache-mb', 'FSDB_CACHE_MB', 1024) * 1e6;  // LRU budget, split evenly across workers
+// A cold signal at least this wide is walked in time slices by every worker
+// (the reader's traversal cost grows with width; 480 bits ~1.5 us per change).
+const SPLIT_BITS = Number(process.env.FSDB_SPLIT_BITS || 128);
+// Store files handed between workers (split walks, derived operands) live in a
+// private 0700 directory (mkdtemp); the addon creates them O_EXCL 0600, checks
+// owner and size on read, and deletes them. Directories left by dead helpers
+// (their pid file names a gone process) are swept at startup.
+const SHM_ROOT = fs.existsSync('/dev/shm') ? '/dev/shm' : '/tmp';
+const SHM = makeTmpDir();
+let tmpSeq = 0;
+const tmpPath = (tag) => path.join(SHM, `${tag}-${++tmpSeq}`);
+function makeTmpDir() {
+  const uid = process.getuid();
+  for (const name of fs.readdirSync(SHM_ROOT)) {
+    if (!name.startsWith('fsdb-helper-v2-')) { continue; }
+    const dir = path.join(SHM_ROOT, name);
+    try {
+      const st = fs.lstatSync(dir);
+      if (!st.isDirectory() || st.uid !== uid) { continue; }
+      const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8'));
+      try { process.kill(pid, 0); continue; } catch (e) { if (e.code !== 'ESRCH') { continue; } }
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (e) { /* not ours or racing another sweep */ }
+  }
+  const dir = fs.mkdtempSync(path.join(SHM_ROOT, 'fsdb-helper-v2-'));  // mode 0700
+  fs.writeFileSync(path.join(dir, 'pid'), String(process.pid), { mode: 0o600, flag: 'wx' });
+  return dir;
+}
+function removeTmpDir() { try { fs.rmSync(SHM, { recursive: true, force: true }); } catch (e) { /* exiting */ } }
+const DERIVED_BASE = 1e9;  // derived signal ids start here (FSDB ids are small)
+const SEARCH_CHUNK = 16;   // signals per searchAll task (one batched reader load)
+const COLD_CHUNK = 4;      // cold-scan pool chunk (small, so the pool balances across workers)
+const MAX_BUCKETS = 1 << 22; // per signal in a window request (16 MB of counts)
+const MAX_LINE = 1 << 20;    // request line bytes
+
+function send(obj, bin) {
+  if (bin) { obj.binLength = bin.length; }
+  writeAll(Buffer.from(JSON.stringify(obj) + '\n'));
+  if (bin) { writeAll(bin); }
+}
+const pause = new Int32Array(new SharedArrayBuffer(4));
+function writeAll(buf) {
+  let off = 0;
+  while (off < buf.length) {
+    try {
+      off += fs.writeSync(OUT, buf, off, buf.length - off);
+    } catch (e) {
+      if (e.code === 'EPIPE') { shutdown(0); }   // the ssh channel is gone
+      if (e.code !== 'EAGAIN') { throw e; }
+      Atomics.wait(pause, 0, 0, 1);  // pipe full: wait 1 ms instead of spinning
+    }
+  }
+}
+function shutdown(code) {
+  try { flushManifest(); } catch (e) { /* best effort (L8) */ }
+  for (const w of workers) { w.proc.kill(); }
+  removeTmpDir();
+  process.exit(code);
+}
+
+let addon;
+try { addon = require(addonPath); } catch (e) {
+  send({ id: 0, error: 'failed to load FSDB reader: ' + e.message });
+  process.exit(1);
+}
+
+// ---- worker pool ----
+// Each worker has a FIFO queue and at most one task in flight, so `cancel`
+// can drop queued work. Tasks touching only cached signals jump the queue.
+// Background tasks (searchAll chunks, index warm-up; `bg: true`) wait in a
+// separate queue and run only when the worker has no interactive work; one
+// that is running when interactive work arrives gets SIGUSR2 and returns
+// early (unfinished signals come back as `yielded` and are requeued).
+let workers = [];
+let nextTid = 1;
+const route = new Map();  // signalId -> worker index (sticky, round-robin on first sight)
+let rr = 0;
+// Bumped by every open: replies to tasks from an older epoch are failed and
+// their store state ignored, so a reopen never serves the previous file.
+let epoch = 0;
+const restarts = [];  // times of recent worker restarts (crash-loop guard)
+
+function failTasks(tasks, error) {
+  for (const t of tasks) { if (t && t.done) { t.done({ tid: t.tid, error, ms: 0 }); } }
+}
+
+function startWorker(i) {
+  const proc = fork(path.join(__dirname, 'worker.js'), [], { stdio: ['ignore', 2, 2, 'ipc'], serialization: 'advanced' });
+  const w = { i, proc, queue: [], bgQueue: [], busy: null, state: { bytes: 0, cached: [], rss: 0 }, ready: false };
+  proc.on('message', (m) => onWorkerMessage(w, m));
+  // A send to a worker that just died raises 'error' (EPIPE / channel closed);
+  // its 'exit' handler fails and replaces whatever it held.
+  proc.on('error', (e) => { if (DEBUG) { process.stderr.write(`[helper] worker ${i}: ${e.message}\n`); } });
+  proc.on('exit', (code, signal) => {
+    if (workers[i] !== w) { return; }  // replaced or pool resized
+    const lost = [w.busy, ...w.queue, ...w.bgQueue];
+    w.busy = null; w.queue = []; w.bgQueue = [];
+    const now = performance.now();
+    restarts.push(now);
+    while (restarts[0] < now - 30000) { restarts.shift(); }
+    if (restarts.length > 5) {
+      send({ id: 0, error: `worker ${i} exited (${code ?? signal}); too many restarts, giving up` });
+      failTasks(lost, `worker ${i} exited`);
+      shutdown(1);
+    }
+    send({ id: 0, error: `worker ${i} exited (${code ?? signal}), restarted` });
+    const nw = startWorker(i);
+    workers[i] = nw;
+    if (openFile) { enqueue(nw, { op: 'open', file: openFile, cacheBytes: CACHE_BYTES / workers.length, barrier: true }).done = () => {}; }
+    failTasks(lost, `worker ${i} exited (${code ?? signal})`);
+  });
+  return w;
+}
+
+function spawnPool(n) {
+  const old = workers;
+  workers = [];
+  for (const w of old) { const lost = [w.busy, ...w.queue, ...w.bgQueue]; w.busy = null; w.queue = []; w.bgQueue = []; w.proc.kill(); failTasks(lost, 'worker pool resized'); }
+  route.clear(); rr = 0;
+  for (let i = 0; i < n; i++) { workers.push(startWorker(i)); }
+}
+
+function workerFor(signalId) {
+  let i = route.get(signalId);
+  if (i === undefined || i >= workers.length) { i = rr++ % workers.length; route.set(signalId, i); }
+  return workers[i];
+}
+
+// `barrier` tasks (open) stay ahead of everything queued after them, including
+// fast and `front` tasks.
+function enqueue(w, task, front = false) {
+  task.tid = nextTid++;
+  task.epoch = epoch;
+  // Callers may hold a worker that has since died or been recycled: its
+  // replacement (same index) takes the task; with no replacement it fails.
+  if (workers[w.i] !== w) {
+    if (!workers[w.i]) { setImmediate(() => failTasks([task], 'worker pool resized')); return task; }
+    w = workers[w.i];
+  }
+  const ids = task.signalIds || (task.signalId !== undefined ? [task.signalId] : null);
+  const cached = ids && ids.length && ids.every((id) => w.state.cached.includes(id));
+  if (task.bg) {
+    w.bgQueue.push(task);
+    pump(w);
+    return task;
+  }
+  if (w.busy && w.busy.bg && !w.busy.yieldSent && w.pid) {  // make room: the background task stops early
+    w.busy.yieldSent = true;
+    try { process.kill(w.pid, 'SIGUSR2'); } catch (e) { /* exiting */ }
+  }
+  if (front) {
+    let k = 0;
+    while (k < w.queue.length && w.queue[k].barrier) { k++; }
+    w.queue.splice(k, 0, task);
+  } else if (cached) {
+    let k = 0;
+    while (k < w.queue.length && (w.queue[k].fast || w.queue[k].barrier)) { k++; }
+    task.fast = true;
+    w.queue.splice(k, 0, task);
+  } else {
+    w.queue.push(task);
+  }
+  pump(w);
+  return task;
+}
+
+const DEBUG = process.argv.includes('--debug');
+// A worker over its memory cap (state.recycle) is replaced by a fresh process
+// once idle; its queued work moves over, behind a reopen. Its store goes with
+// it (signals are re-walked on demand; derived results rebuilt).
+// The replacement reloads what the old worker held from store-cache files
+// (one background bgLoad, which yields to interactive work), so a recycle
+// doesn't turn a debugger's warm signals cold. Only signals with a file: a
+// re-walk would push the new worker straight back over its RSS cap.
+// A replacement recycled before it served any request (its reload alone was
+// over the cap) does not reload again: that would loop (a fork storm).
+function recycleWorker(w) {
+  const held = w.reloaded ? [] : w.state.cached.filter((id) => id < DERIVED_BASE && warm.epoch === epoch && warm.files.has(id));
+  const nw = startWorker(w.i);
+  nw.queue = w.queue; nw.bgQueue = w.bgQueue; nw.warming = w.warming;
+  w.queue = []; w.bgQueue = [];
+  workers[w.i] = nw;
+  recycled++;
+  if (openFile) { enqueue(nw, { op: 'open', file: openFile, cacheBytes: CACHE_BYTES / workers.length, barrier: true }, true).done = () => {}; }
+  if (openFile && held.length) { nw.reloaded = true; enqueue(nw, { op: 'bgLoad', signalIds: held, bg: true }).done = () => {}; }
+  w.proc.kill();
+}
+let recycled = 0;
+
+function pump(w) {
+  if (!w.busy && w.recycle && workers[w.i] === w) {
+    // Write what is queued for the store cache first: it needs this store.
+    const k = w.bgQueue.findIndex((t) => t.op === 'persist');
+    if (k < 0 || w.queue.length) { recycleWorker(w); return; }
+    w.bgQueue.unshift(...w.bgQueue.splice(k, 1));
+  }
+  if (workers[w.i] !== w) { return; }  // replaced: its queues moved over or were failed
+  if (w.busy || !w.ready || !(w.queue.length || w.bgQueue.length)) { return; }
+  const task = w.queue.length ? w.queue.shift() : w.bgQueue.shift();
+  w.busy = task;
+  if (DEBUG) { task.startedAt = performance.now(); }
+  const { done, fast, req, startedAt, prepare, epoch: _e, barrier, bg, yieldSent, ...msg } = task;
+  if (prepare) { Object.assign(msg, prepare()); }  // fields computed at dispatch (searchAll bound)
+  if (STORE_CACHE && CACHE_FILE_OPS.has(msg.op) && !msg.files) {  // persistent store cache files for what it may load
+    const ids = msg.signalIds || (msg.signalId !== undefined ? [msg.signalId] : (msg.operands || []).map((o) => o.id));
+    msg.files = indexFor(ids.concat(msg.fixed || []));
+  }
+  w.proc.send(msg, (e) => { if (e && DEBUG) { process.stderr.write(`[helper] send to worker ${w.i}: ${e.message}\n`); } });
+}
+
+function onWorkerMessage(w, m) {
+  if (workers[w.i] !== w) { return; }
+  if (m.ready) { w.ready = true; w.pid = m.pid; pump(w); return; }
+  const task = w.busy;
+  w.busy = null;
+  const stale = task && task.epoch !== epoch;
+  if (m.state && !stale) {
+    w.state = m.state;
+    if (m.state.sizes) { w.sizes = new Map(m.state.sizes.map((e) => [e[0], e])); }  // absent: unchanged
+  }
+  if (m.state && m.state.recycle) { w.recycle = true; }
+  if (task && !task.bg && task.op !== 'open') { w.reloaded = false; }  // it has served real work since its reload
+  if (m.badFiles) {  // a stale reply still drops entries whose file is gone (L7: a reopen may have listed it first)
+    let changed = false;
+    for (const id of m.badFiles) {
+      const f = warm.files.get(id);
+      if (f && (!stale || !fs.existsSync(f.path))) { warm.bytes -= f.bytes; warm.files.delete(id); changed = true; }
+    }
+    if (changed) { scheduleManifest(); }
+  }
+  if (m.walked && !stale) { persistLater(w, m.walked); }
+  if (DEBUG && task) { process.stderr.write(`[w${w.i}] ${task.op} ${JSON.stringify(task.signalIds || task.signalId)} wait->done ${(performance.now() - task.startedAt).toFixed(1)} ms, worker ${m.ms.toFixed(1)} ms, queue ${w.queue.length}\n`); }
+  if (task && task.tid === m.tid && task.done) { task.done(stale ? { tid: m.tid, error: 'file reopened', ms: m.ms } : m); }
+  pump(w);
+}
+
+const asBuf = (u8) => (u8 ? Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength) : null);
+
+// Remove a queued task (either queue); -> true if it was still queued.
+function dequeue(w, task) {
+  for (const x of new Set([w, workers[w.i]])) {  // queues move to the replacement when a worker is recycled
+    if (!x) { continue; }
+    for (const q of [x.queue, x.bgQueue]) { const k = q.indexOf(task); if (k >= 0) { q.splice(k, 1); return true; } }
+  }
+  return false;
+}
+
+// Split signalIds across their workers; resolves with per-id results in order.
+function scatter(req, op, signalIds, extra, pick) {
+  return new Promise((resolve, reject) => {
+    const groups = new Map();
+    for (const id of signalIds) {
+      const w = workerFor(id);
+      if (!groups.has(w)) { groups.set(w, []); }
+      groups.get(w).push(id);
+    }
+    const byId = new Map();
+    const parts = [];
+    let left = groups.size;
+    if (!left) { resolve([]); return; }
+    for (const [w, ids] of groups) {
+      const task = enqueue(w, { op, signalIds: ids, ...extra, req });
+      parts.push({ w, task });
+      task.done = (m) => {
+        if (m.error) { reject(new Error(m.error)); return; }
+        pick(m, ids).forEach((r, k) => byId.set(ids[k], r));
+        req.workerMs = Math.max(req.workerMs || 0, m.ms);
+        if (--left === 0) { resolve(signalIds.map((id) => byId.get(id))); }
+      };
+    }
+    req.parts = [...(req.parts || []), ...parts];  // a request may scatter more than once (window: warm + cold)
+  });
+}
+
+function single(req, op, signalId, extra) {
+  return new Promise((resolve, reject) => {
+    const w = workerFor(signalId);
+    const task = enqueue(w, { op, signalId, ...extra, req });
+    req.parts = [{ w, task }];
+    task.done = (m) => { req.workerMs = m.ms; if (m.error) { reject(new Error(m.error)); } else { resolve(m.result); } };
+  });
+}
+
+function broadcast(op, extra) {
+  return Promise.all(workers.map((w) => new Promise((resolve) => {
+    enqueue(w, { op, ...extra }).done = resolve;
+  })));
+}
+
+// ---- split walks ----
+const widthOf = new Map();  // signalId -> bits, learned from children and window requests
+const splitting = new Map();  // signalId -> Promise<{ms, slices}>
+let timeEnd = 0;
+
+function runTask(w, task, front) {
+  return new Promise((resolve, reject) => {
+    enqueue(w, task, front).done = (m) => (m.error ? reject(new Error(m.error)) : resolve(m.result));
+  });
+}
+
+// Walk cold wide signals in N time slices on all workers, then load the
+// slices into the owner's store. Other requests for the signal wait for it.
+// With view-window slices (each worker loads only its slice) a split also
+// pays for narrow signals, but only when it doesn't take workers from other
+// cold signals: a lone cold signal of any width is split (clk 317 -> 153 ms,
+// pc_rdata 313 -> 122 ms); with several, only wide ones (4 narrow ones split
+// took 427 ms instead of 309 ms in parallel walks).
+const SPLIT_SINGLE = process.env.FSDB_SPLIT_SINGLE !== '0';
+function splitWalks(req, ids) {
+  const waits = [];
+  const coldIds = ids.filter((id) => !splitting.has(id) && !workerFor(id).state.cached.includes(id));
+  for (const id of ids) {
+    if (splitting.has(id)) { waits.push(splitting.get(id).then((r) => [id, r])); continue; }
+    const owner = workerFor(id);
+    // A lone narrow signal is split only when no worker is in background work:
+    // every slice waits for its worker's current reader load (uninterruptible,
+    // up to ~0.5 s per searchAll candidate), so during a cold searchAll the
+    // split cost more than it saved (test-derive M5 wait 400-1100 ms).
+    const wide = widthOf.get(id) >= SPLIT_BITS;
+    const lone = SPLIT_SINGLE && coldIds.length === 1 && widthOf.get(id) > 0 && workers.every((w) => !(w.busy && w.busy.bg));
+    if (workers.length < 2 || !timeEnd || !(wide || lone) || owner.state.cached.includes(id)) { continue; }
+    if (STORE_CACHE && warm.epoch === epoch && warm.files.has(id)) { continue; }  // read from the store cache instead
+    const t0 = performance.now();
+    const n = workers.length;
+    const cuts = [0, ...Array.from({ length: n - 1 }, (_, k) => Math.floor(timeEnd * (k + 1) / n)), 1.8e19];
+    const paths = workers.map(() => tmpPath(`s${id}`));
+    const p = Promise.all(workers.map((w, k) => runTask(w, { op: 'walkSlice', signalId: id, s: cuts[k], e: cuts[k + 1], path: paths[k] })))
+      .then((slices) => runTask(owner, { op: 'adopt', signalId: id, paths }, true).then(() => slices))
+      .then((slices) => ({ ms: performance.now() - t0, slices: slices.map((r) => r.count) }))
+      .finally(() => { if (splitting.get(id) === p) { splitting.delete(id); } for (const f of paths) { fs.rmSync(f, { force: true }); } });
+    splitting.set(id, p);
+    waits.push(p.then((r) => [id, r]));
+  }
+  if (!waits.length) { return null; }
+  return Promise.all(waits).then((rs) => { req.split = new Map(rs); });
+}
+
+// Before a query: split-walk cold wide signals and (re)materialize derived
+// ones. Returns null when nothing has to wait, so callers only await then
+// (an unconditional await would let later request lines enqueue first).
+function prep(req, ids) {
+  const a = splitWalks(req, ids.filter((id) => !derived.has(id)));
+  const b = ensureDerived(ids.filter((id) => derived.has(id)));
+  return a || b ? Promise.all([a, b]) : null;
+}
+
+// ---- cold reads (reader view windows; WINDOWING.md "Cold reads") ----
+// valueAt of a signal that isn't stored reads one value through a [t, t] view
+// window (~2 ms) instead of walking and caching the whole signal. A window over
+// a short range (<= COLD_RANGE of the file) of signals that aren't stored loads
+// and walks only that range (a 1% range of spike_rvfi: ~40 ms instead of ~1.5 s),
+// and the whole walk then runs in the background on the signal's worker, so
+// later pans are served from the store.
+const COLD_RANGE = Number(process.env.FSDB_COLD_RANGE || 0.25);
+const busyness = (w) => (w.busy && !w.busy.bg ? 1 : 0) + w.queue.length;
+const leastBusy = () => workers.reduce((b, w) => (busyness(w) < busyness(b) ? w : b));
+const isCold = (id) => !derived.has(id) && !splitting.has(id) && !workerFor(id).state.cached.includes(id);
+// One task on the least busy worker (cheap reads); with spread one per owner
+// worker in parallel (ranged walks); with spread 'even' split over the workers,
+// least busy first, at least COLD_SPREAD signals per part (cold reads keep
+// nothing, so any worker will do: a debugger's 200-signal step). Resolves with
+// results in ids order.
+const COLD_SPREAD = Number(process.env.FSDB_COLD_SPREAD ?? 16);  // 0: never split
+function coldTask(req, op, ids, extra, spread = false) {
+  const groups = new Map();
+  if (spread === 'even' && COLD_SPREAD > 0 && ids.length >= 2 * COLD_SPREAD) {
+    const ws = [...workers].sort((a, b) => busyness(a) - busyness(b));
+    const k = Math.min(ws.length, Math.floor(ids.length / COLD_SPREAD));
+    for (let j = 0; j < k; j++) { groups.set(ws[j], ids.slice(Math.floor(j * ids.length / k), Math.floor((j + 1) * ids.length / k))); }
+  } else {
+    for (const id of ids) {
+      const w = spread === true ? workerFor(id) : leastBusy();
+      if (!groups.has(w)) { groups.set(w, []); }
+      groups.get(w).push(id);
+    }
+  }
+  return Promise.all([...groups].map(([w, gids]) => new Promise((resolve, reject) => {
+    const task = enqueue(w, { op, signalIds: gids, ...extra, req });
+    req.parts = [...(req.parts || []), { w, task }];
+    task.done = (m) => {
+      req.workerMs = Math.max(req.workerMs || 0, m.ms);
+      if (m.error) { reject(new Error(m.error)); } else { resolve(gids.map((id, k) => [id, m.result[k]])); }
+    };
+  }))).then((parts) => { const by = new Map(parts.flat()); return ids.map((id) => by.get(id)); });
+}
+const bgLoads = new Map();  // signalId -> attempts (background whole walks after a ranged first draw)
+// Walks that failed for good (over the store cap, unreadable): not retried on
+// every ranged pan; that signal stays on ranged cold reads until a reopen.
+const bgFailed = new Map();  // signalId -> error
+function scheduleBgLoad(id) {
+  if (bgLoads.has(id) || bgFailed.has(id)) { return; }
+  bgLoads.set(id, 0);
+  const ep = epoch;
+  const go = () => {
+    if (epoch !== ep || !bgLoads.has(id)) { return; }
+    const w = workerFor(id);
+    if (w.state.cached.includes(id) || splitting.has(id)) { bgLoads.delete(id); return; }
+    const task = enqueue(w, { op: 'bgLoad', signalIds: [id], bg: true });
+    task.done = (m) => {
+      if (task.epoch !== epoch) { return; }
+      const r = m.result && m.result[0];
+      if ((r && r.error === 'yielded') || /exited|reopened/.test(m.error || '')) {
+        const n = bgLoads.get(id) + 1;
+        if (n > 20) { bgLoads.delete(id); bgFailed.set(id, 'kept yielding'); return; }
+        bgLoads.set(id, n);
+        setTimeout(go, 300);  // interactive work came first; try again shortly
+        return;
+      }
+      bgLoads.delete(id);
+      const err = m.error || (r && r.error);
+      if (err) { bgFailed.set(id, err); }
+    };
+  };
+  go();
+}
+
+// ---- full hierarchy index (paths for expressions and searchAll) ----
+let index = null;  // {byPath, byId, list: [{path, signalId, width, msb, lsb, encoding}]}
+function getIndex() {
+  if (index) { return index; }
+  const t0 = performance.now();
+  const list = [], byPath = new Map(), byId = new Map();
+  const walk = (scope, p) => {
+    addon.readVars(p, scope.scopeOffsetIdx, (name, type, encoding, varPath, netlistId, signalId, width, msb, lsb) => {
+      // The reader gives plain reg/wire for `logic signed`; only integer-like types are known signed.
+      const signed = /^(integer|int|shortint|longint|byte)$/i.test(String(type));
+      const v = { path: p + '.' + stripRange(name, width, msb, lsb), signalId, width, msb, lsb, encoding, type, signed };
+      list.push(v);
+      if (!byPath.has(v.path)) { byPath.set(v.path, v); }
+      if (!byId.has(signalId)) { byId.set(signalId, v); }
+      widthOf.set(signalId, width);
+    }, () => {}, () => {}, () => {}, () => {});
+    let start = 0, rem = 1, guard = 256;
+    while (rem > 0 && guard-- > 0) {
+      const r = addon.getScopeChildren(scope.scopeOffsetIdx, start);
+      for (const c of r.scopes) { if (!c.name.startsWith('$')) { walk(c, p + '.' + c.name); } }
+      rem = r.remainingItems; start += r.totalReturned;
+      if (!r.totalReturned) { break; }
+    }
+  };
+  for (const s of addon.readScopes()) { if (!s.name.startsWith('$')) { walk(s, s.name); } }
+  index = { list, byPath, byId, ms: performance.now() - t0 };
+  return index;
+}
+
+// Expression reference -> {signalId, width, msb, lsb, path, sel}. A path may
+// carry its own index brackets (pc_rdata[0]); the longest bracket prefix that
+// names a variable wins and the rest are selects. A unique suffix also works.
+const fmtSel = ([m, l]) => (m === l ? `[${m}]` : `[${m}:${l}]`);
+function resolveRef(r) {
+  const idx = getIndex();
+  if (r.id !== undefined) {
+    const d = derived.get(r.id);
+    if (d) { return { signalId: d.id, width: d.width, msb: d.width - 1, lsb: 0, signed: d.signed, path: d.name || `#${d.id}`, sel: r.sel }; }
+    const v = idx.byId.get(r.id);
+    if (!v) { throw new Error(`unknown signal #${r.id}`); }
+    return { ...v, sel: r.sel };
+  }
+  for (let k = r.sel.length; k >= 0; k--) {
+    const name = r.path + r.sel.slice(0, k).map(fmtSel).join('');
+    const d = derivedByName.get(name);
+    if (d) { return { signalId: d.id, width: d.width, msb: d.width - 1, lsb: 0, signed: d.signed, path: name, sel: r.sel.slice(k) }; }
+    const v = idx.byPath.get(name);
+    if (v) { return { ...v, sel: r.sel.slice(k) }; }
+    const hits = idx.list.filter((e) => e.path.endsWith('.' + name));
+    const ids = [...new Set(hits.map((e) => e.signalId))];
+    if (ids.length === 1) { return { ...hits[0], sel: r.sel.slice(k) }; }
+    if (ids.length > 1) { throw new Error(`ambiguous signal ${name}: ${hits.slice(0, 3).map((e) => e.path).join(', ')}${hits.length > 3 ? ', ...' : ''}`); }
+  }
+  throw new Error(`unknown signal ${r.path}`);
+}
+
+// ---- derived signals ----
+// def: {id, key, expr, name, program, operands, width, signed, pending, count, ms}.
+// The result lives on the first operand's worker; operands on other workers
+// are walked there (in parallel) and handed over as store files. Definitions
+// are keyed on the compiled program plus resolved operand ids, never on the
+// text, so `a & &b` and `a && b` (or a rebound name) can't share an id.
+let nextDerived = DERIVED_BASE;
+const derived = new Map();
+const derivedByKey = new Map();
+const derivedByName = new Map();
+const DERIVE_DEADLINE_MS = 60000;
+
+// -> {d, created}; throws on a bad expression or name.
+function defineDerived(text, name) {
+  const c = expr.compile(expr.parse(String(text)), resolveRef);
+  if (name !== undefined && name !== null) { checkName(name); }
+  const key = JSON.stringify([c.program, c.operands]);
+  let d = derivedByKey.get(key), created = false;
+  if (!d) {
+    d = { id: nextDerived++, key, expr: String(text), name: null, program: c.program, operands: c.operands,
+      width: c.width, signed: c.signed, refs: c.refs, pending: null };
+    derived.set(d.id, d);
+    derivedByKey.set(key, d);
+    route.set(d.id, workerFor(c.operands[0]).i);
+    widthOf.set(d.id, d.width);
+    created = true;
+  }
+  if (name) { d.name = name; derivedByName.set(name, d); }
+  return { d, created, refs: c.refs };
+}
+// A derive name must not hide a real signal (path or unique suffix).
+function checkName(name) {
+  if (typeof name !== 'string' || !/^[A-Za-z_][\w$]*$/.test(name)) { throw new Error(`bad derive name ${name}`); }
+  const idx = getIndex();
+  if (idx.byPath.has(name) || idx.list.some((e) => e.path.endsWith('.' + name))) { throw new Error(`name ${name} already names a signal`); }
+}
+function dropDerived(d) {
+  derived.delete(d.id);
+  if (derivedByKey.get(d.key) === d) { derivedByKey.delete(d.key); }
+  if (d.name && derivedByName.get(d.name) === d) { derivedByName.delete(d.name); }
+  const w = workerFor(d.id);
+  if (w.state.cached.includes(d.id)) { runTask(w, { op: 'free', signalIds: [d.id] }).catch(() => {}); }
+}
+
+function ensureDerived(ids, force = false) {
+  const waits = [];
+  for (const id of ids) {
+    const d = derived.get(id);
+    if (!d) { continue; }
+    if (d.pending) { waits.push(d.pending); continue; }
+    if (!force && workerFor(id).state.cached.includes(id)) { continue; }
+    d.pending = materialize(d).finally(() => { d.pending = null; });
+    waits.push(d.pending);
+  }
+  return waits.length ? Promise.all(waits) : null;
+}
+
+async function materialize(d) {
+  const t0 = performance.now();
+  const ep = epoch;
+  const live = () => { if (epoch !== ep || derived.get(d.id) !== d) { throw new Error('file reopened'); } };
+  const nested = ensureDerived(d.operands.filter((id) => derived.has(id)));
+  if (nested) { await nested; }
+  live();
+  const split = splitWalks({}, d.operands.filter((id) => !derived.has(id)));
+  if (split) { await split; }
+  live();
+  const R = workerFor(d.id);
+  const local = d.operands.filter((id) => workerFor(id) === R);
+  const groups = new Map();
+  for (const id of d.operands) {
+    const w = workerFor(id);
+    if (w !== R) { if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); }
+  }
+  const paths = new Map();
+  for (const ids of groups.values()) { for (const id of ids) { paths.set(id, tmpPath(`d${d.id}-${id}`)); } }
+  try {
+    const loads = [];
+    if (local.length) { loads.push(runTask(R, { op: 'load', signalIds: local })); }
+    for (const [w, ids] of groups) { loads.push(runTask(w, { op: 'export', signalIds: ids, paths: ids.map((id) => paths.get(id)) })); }
+    const lr = await Promise.all(loads);
+    live();
+    const t1 = performance.now();
+    const r = await runTask(R, { op: 'derive', signalId: d.id, program: d.program, deadlineMs: DERIVE_DEADLINE_MS,
+      operands: d.operands.map((id) => (paths.has(id) ? { id, path: paths.get(id) } : { id })) });
+    Object.assign(d, { count: r.count, xz: !!r.xz, steps: r.steps, ms: performance.now() - t0, loadMs: t1 - t0, mergeMs: r.ms,
+      walks: lr.flat().filter((e) => e && !e.cached).length });
+    return r;
+  } finally {
+    for (const f of paths.values()) { fs.rmSync(f, { force: true }); }
+  }
+}
+
+function derivedIdsOf(req) {
+  const ids = [...(req.signals || []).map((s) => s.signalId), ...(req.signalIds || []), ...(req.signalId !== undefined ? [req.signalId] : [])];
+  return ids.filter((id) => derived.has(id));
+}
+
+// ---- searchAll ----
+const MAX_SEARCH_MS = 60000;
+let activeSearch = null;  // one searchAll at a time: a new one cancels the old
+// `value` -> MSB-first pattern. A string of only 0/1/x/z/? is binary (so "10"
+// is 2'b10); anything else is a literal: 32'h12xx, 'd5, or a plain decimal
+// like 12 (32 bits).
+// With wildcard: '?' (strict) only ? is a wildcard and x/z in the value are literal;
+// the pattern then starts with '!' for the addon (not counted in its width).
+function strictWildcard(req) {
+  if (req.wildcard === undefined || req.wildcard === null) { return false; }
+  if (req.wildcard !== '?') { throw new Error(`bad wildcard ${req.wildcard} (only '?')`); }
+  return true;
+}
+function toPattern(value, strict) {
+  const v = String(value).replace(/_/g, '');
+  if (/'/.test(v) || /^\d+$/.test(v) && !/^[01xX]+$/.test(v)) { const b = expr.literalBits(v); return strict ? '!' + b : b.replace(/z/g, 'x'); }
+  if (!/^[01xXzZ?]+$/.test(v)) { throw new Error(`bad search value ${value}`); }
+  return strict ? '!' + v.toLowerCase() : v.toLowerCase().replace(/\?/g, 'x');
+}
+const patternWidth = (p) => p.length - (p[0] === '!' ? 1 : 0);
+// Glob with * and ? in O(len(glob) * len(name)), no regex backtracking.
+function globMatch(g, s) {
+  let i = 0, j = 0, star = -1, mark = 0;
+  while (j < s.length) {
+    if (i < g.length && (g[i] === '?' || g[i] === s[j])) { i++; j++; }
+    else if (i < g.length && g[i] === '*') { star = i++; mark = j; }
+    else if (star >= 0) { i = star + 1; j = ++mark; }
+    else { return false; }
+  }
+  while (i < g.length && g[i] === '*') { i++; }
+  return i === g.length;
+}
+
+// Copy `fixed` operands (loaded once on their owner) to the other workers
+// that will evaluate candidates; -> [{w, id}] copies to free afterwards.
+async function spreadFixed(fixed, targets) {
+  const copies = [];
+  for (const id of fixed) {
+    const owner = workerFor(id);
+    await runTask(owner, { op: 'load', signalIds: [id] });
+    for (const w of targets) {
+      if (w === owner) { continue; }
+      const p = tmpPath(`f${id}`);
+      try {
+        await runTask(owner, { op: 'export', signalIds: [id], paths: [p] });
+        await runTask(w, { op: 'adopt', signalId: id, paths: [p] });
+        copies.push({ w, id });
+      } finally { fs.rmSync(p, { force: true }); }
+    }
+  }
+  return copies;
+}
+
+// ---- search index warm-up (opt-in) ----
+// `open {file, warm: true}` (or `warm {on: true}`) walks the file's BitVector
+// signals that aren't indexed yet, in the background on at most 2 workers,
+// into deflated store files (.vvz) under <index root>/<key>/ (0700; see indexRoot; key =
+// hash of the file format, the dump's real path, size and mtime, so a rewritten
+// dump gets a fresh index).
+// Each walk is one background task: it yields to interactive work (SIGUSR2)
+// and is retried later, and it goes straight to the file, never into the LRU
+// store; the worker's memory guard applies. The index stops growing at
+// FSDB_INDEX_MB (default 2048). searchAll reads indexed candidates from their
+// files instead of the reader. Index dirs unused for 7 days are deleted.
+// Where: node-local /tmp/<user>-cmux-helper/index (0700, ours, not a symlink),
+// not the helper dir, which can be the NFS home with its quota; the helper dir
+// only if /tmp is unusable. FSDB_INDEX_DIR overrides. All key dirs together
+// stay under FSDB_INDEX_TOTAL_MB (default 4096): at open, the least recently
+// used other keys are deleted until they fit.
+const INDEX_TOTAL_BYTES = arg('--index-total-mb', 'FSDB_INDEX_TOTAL_MB', 4096) * 1e6;
+const INDEX_BYTES = Math.min(INDEX_TOTAL_BYTES, arg('--index-mb', 'FSDB_INDEX_MB', 2048) * 1e6);
+// Re-validated at every open (a /tmp dir can be removed and recreated by
+// someone else while we run); the sweep and the LRU only delete key-named dirs.
+const KEY_NAME = /^[0-9a-f]{16}$/;
+function indexRoot() {
+  let user = String(process.getuid());
+  try { user = require('node:os').userInfo().username.replace(/[^A-Za-z0-9._-]/g, '_') || user; } catch (e) { /* uid */ }
+  const tries = process.env.FSDB_INDEX_DIR
+    ? [[process.env.FSDB_INDEX_DIR]]  // an override: only it is made private, not its parent
+    : [[path.join('/tmp', `${user}-cmux-helper`), path.join('/tmp', `${user}-cmux-helper`, 'index')]];
+  tries.push([path.join(__dirname, 'index')]);
+  for (const dirs of tries) {
+    try {
+      for (const d of dirs) { privateDir(d); }
+      const dir = dirs[dirs.length - 1];
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch (e) { /* next */ }
+  }
+  throw new Error('no usable index directory');
+}
+function dirBytes(d) {
+  let n = 0;
+  for (const name of fs.readdirSync(d)) { try { const st = fs.lstatSync(path.join(d, name)); if (st.isFile()) { n += st.size; } } catch (e) { /* racing */ } }
+  return n;
+}
+// Least recently used first (a key dir's mtime is touched at every open).
+function capIndexRoot(root, keep) {
+  const dirs = [];
+  for (const name of fs.readdirSync(root)) {
+    const d = path.join(root, name);
+    try {
+      const st = fs.lstatSync(d);
+      if (!KEY_NAME.test(name) || !st.isDirectory() || st.uid !== process.getuid()) { continue; }
+      dirs.push({ d, name, mtime: st.mtimeMs, bytes: dirBytes(d) });
+    } catch (e) { /* racing */ }
+  }
+  let total = dirs.reduce((n, x) => n + x.bytes, 0);
+  dirs.sort((x, y) => x.mtime - y.mtime);
+  for (const x of dirs) {
+    if (total <= INDEX_TOTAL_BYTES) { break; }
+    if (x.name === keep) { continue; }
+    fs.rmSync(x.d, { recursive: true, force: true });
+    total -= x.bytes;
+  }
+}
+const WARM_WORKERS = 2;
+const INDEX_FORMAT = 'vvz1-normalized';  // part of the index key: a change of what files hold starts a new index
+const warm = { on: false, epoch: -1, dir: null, files: new Map(), bytes: 0, rawBytes: 0, todo: [], failed: new Map(), inflight: 0, gen: 0,
+  startedAt: 0, doneAt: 0, stopped: null, yields: 0 };
+
+function privateDir(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = fs.lstatSync(dir);
+  if (!st.isDirectory() || st.uid !== process.getuid()) { throw new Error(`${dir} is not ours`); }
+  if (st.mode & 0o077) { fs.chmodSync(dir, 0o700); }
+}
+function openIndex(file) {
+  Object.assign(warm, { on: false, epoch, dir: null, files: new Map(), bytes: 0, rawBytes: 0, todo: [], failed: new Map(), startedAt: 0, doneAt: 0, stopped: null, yields: 0 });
+  try {
+    const root = indexRoot();
+    const st = fs.statSync(file);
+    const key = crypto.createHash('sha1').update(`${INDEX_FORMAT}\0${fs.realpathSync(file)}\0${st.dev}\0${st.ino}\0${st.size}\0${st.mtimeMs}`).digest('hex').slice(0, 16);
+    for (const name of fs.readdirSync(root)) {  // sweep old indexes
+      const d = path.join(root, name);
+      if (name !== key && KEY_NAME.test(name) && fs.lstatSync(d).mtimeMs < Date.now() - 7 * 86400e3) { fs.rmSync(d, { recursive: true, force: true }); }
+    }
+    capIndexRoot(root, key);
+    warm.dir = path.join(root, key);
+    if (!fs.existsSync(warm.dir)) { return; }
+    privateDir(warm.dir);
+    fs.utimesSync(warm.dir, new Date(), new Date());
+    const man = readManifest(warm.dir);
+    for (const name of fs.readdirSync(warm.dir)) {
+      const m = /^(\d+)\.vvz$/.exec(name), f = path.join(warm.dir, name);
+      if (name === MANIFEST) { continue; }
+      if (!m) {  // leftover temp files; another live helper's fresh ones (< 1 min) are left alone
+        try { if (!/\.tmp$/.test(name) || fs.lstatSync(f).mtimeMs < Date.now() - 60e3) { fs.rmSync(f, { force: true }); } } catch (e) { /* gone */ }
+        continue;
+      }
+      const st = fs.lstatSync(f);
+      const e = { path: f, bytes: st.size };
+      const h = man[m[1]];  // trusted only while the file is unchanged, and only if it is one the worker would accept
+      if (st.isFile() && st.nlink === 1 && st.uid === process.geteuid() && validEntry(h) && h[3] === st.size && h[4] === st.mtimeMs && h[5] === st.ino && h[6] === st.ctimeMs) {
+        e.hdr = { count: h[0], bits: h[1], xz: h[2] === 1 }; setStamp(e, st);
+      }
+      warm.files.set(Number(m[1]), e);
+      warm.bytes += st.size;
+    }
+    if ([...warm.files.values()].some((x) => x.hdr === undefined)) { scheduleManifest(); }  // headers of files from older helpers: read in the background
+  } catch (e) {
+    warm.dir = null;
+    send({ id: 0, error: 'search index unavailable: ' + e.message });
+  }
+}
+function startWarm() {
+  if (!warm.dir || warm.epoch !== epoch) { throw new Error('no search index for this file'); }
+  privateDir(path.dirname(warm.dir));
+  privateDir(warm.dir);
+  const seen = new Set();
+  warm.todo = [];
+  for (const v of getIndex().list) {
+    if (v.encoding !== 'BitVector' || seen.has(v.signalId)) { continue; }
+    seen.add(v.signalId);
+    if (!warm.files.has(v.signalId) && !warm.failed.has(v.signalId)) { warm.todo.push(v.signalId); }
+  }
+  Object.assign(warm, { on: true, startedAt: performance.now(), doneAt: 0, stopped: null });
+  pumpWarm();
+}
+function pumpWarm() {
+  if (!warm.on || warm.epoch !== epoch) { return; }
+  for (let k = 0; k < Math.min(WARM_WORKERS, workers.length); k++) {
+    const w = workers[k];
+    if (w.warming) { continue; }
+    if (warm.bytes >= INDEX_BYTES) { warm.on = false; warm.stopped = 'index size limit'; return; }
+    const id = warm.todo.shift();
+    if (id === undefined) { if (!warm.inflight) { warm.on = false; warm.doneAt = performance.now(); } return; }
+    w.warming = true; warm.inflight++;
+    const task = enqueue(w, { op: 'warm', signalIds: [id], dir: warm.dir, bg: true });
+    task.done = (m) => {
+      w.warming = false; warm.inflight--;
+      let delay = 0;
+      if (task.epoch !== epoch) { return; }
+      if (m.error) {
+        if (/exited|reopened|memory limit/.test(m.error)) { warm.todo.push(id); delay = 1000; } else { warm.failed.set(id, m.error); }
+      } else {
+        for (const r of m.result) {
+          if (r.yielded) { warm.todo.unshift(r.signalId); warm.yields++; delay = 500; continue; }  // interactive work: back off
+          if (r.error) { warm.failed.set(r.signalId, r.error); continue; }
+          const f = path.join(warm.dir, `${r.signalId}.vvz`);
+          warm.files.set(r.signalId, { path: f, bytes: r.bytes });
+          warm.bytes += r.bytes;
+          warm.rawBytes += r.rawBytes || 0;
+        }
+        scheduleManifest();
+      }
+      if (delay) { setTimeout(pumpWarm, delay); } else { setImmediate(pumpWarm); }
+    };
+  }
+}
+// ---- persistent store cache (WINDOWING.md "Persistent store cache") ----
+// Every signal walked into a store is written to the dump's index dir in the
+// background (same .vvz files and key as the search index: format, real path,
+// device, inode, size, mtime), and later loads in this or any later helper read
+// the file instead of walking: spike_rvfi 71 ms instead of 1,589 ms, clk 10 ms
+// instead of 256 ms. FSDB_STORE_CACHE=0 turns it off; FSDB_INDEX_MB caps it.
+const STORE_CACHE = process.env.FSDB_STORE_CACHE !== '0';
+const CACHE_FILE_OPS = new Set(['window', 'valueAt', 'edge', 'search', 'load', 'bgLoad', 'export', 'derive', 'searchExpr']);
+const persisting = new Set();
+function persistLater(w, ids) {
+  if (!STORE_CACHE || !warm.dir || warm.epoch !== epoch) { return; }
+  const todo = ids.filter((id) => id < DERIVED_BASE && !warm.files.has(id) && !persisting.has(id));
+  if (!todo.length || warm.bytes >= INDEX_BYTES) { return; }
+  try { privateDir(path.dirname(warm.dir)); privateDir(warm.dir); } catch (e) { return; }  // root re-checked: never write through a swapped-in link
+  for (const id of todo) { persisting.add(id); }
+  const gen = warm.gen;
+  const task = enqueue(w, { op: 'persist', signalIds: todo, dir: warm.dir, bg: true });
+  task.done = (m) => {
+    for (const id of todo) { persisting.delete(id); }
+    if (task.epoch !== epoch || warm.gen !== gen || m.error) { return; }  // (L6: written before a warm {clear})
+    const again = m.result.filter((r) => r.yielded).map((r) => r.signalId);
+    if (again.length) {  // yielded to interactive work: write them a little later (still background)
+      const ep = epoch;
+      setTimeout(() => { if (epoch === ep) { persistLater(workers[w.i], again); } }, 300);
+    }
+    for (const r of m.result) {
+      if (r.error) { continue; }
+      const e = { path: path.join(warm.dir, `${r.signalId}.vvz`), bytes: r.bytes };
+      if (r.count !== undefined && r.stamp) { e.hdr = { count: r.count, bits: r.bits, xz: !!r.xz }; e.stamp = r.stamp; }  // no header read needed
+      warm.files.set(r.signalId, e);
+      warm.bytes += r.bytes;
+      warm.rawBytes += r.rawBytes || 0;
+    }
+    scheduleManifest();
+  };
+}
+const indexFor = (ids) => {
+  if (warm.epoch !== epoch || !warm.files.size) { return null; }
+  const o = {};
+  for (const id of ids) { const f = warm.files.get(id); if (f) { o[id] = f.path; } }
+  return o;
+};
+const warmStats = () => ({ on: warm.on, dir: warm.dir, indexed: warm.files.size, bytes: warm.bytes, rawBytes: warm.rawBytes, todo: warm.todo.length,
+  inflight: warm.inflight, failed: warm.failed.size, yields: warm.yields, stopped: warm.stopped,
+  ms: warm.startedAt ? +((warm.doneAt || performance.now()) - warm.startedAt).toFixed(0) : 0 });
+
+// ---- hierarchy (in this process, as v1) ----
+let openFile = null;
+let lastOpen = null;  // {ident, result} of the open file, for reopen-unchanged
+function fileIdent(file) {
+  const real = fs.realpathSync(file), st = fs.statSync(real);
+  return [real, st.dev, st.ino, st.size, st.mtimeMs, st.ctimeMs].join('\0');
+}
+function stripRange(name, width, msb, lsb) {
+  const suffix = `[${msb}:${lsb}]`;
+  return width > 1 && name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
+}
+
+const inflight = new Map();  // id -> req (for cancel)
+
+// Ids must be signals of the open file (or live derived signals); the reader
+// misbehaves on ids it doesn't have.
+function checkIds(ids) {
+  if (!Array.isArray(ids)) { throw new Error('signal ids must be an array'); }
+  const idx = getIndex();
+  for (const id of ids) {
+    if (!Number.isInteger(id) || id < 0 || (id >= DERIVED_BASE ? !derived.has(id) : !idx.byId.has(id))) { throw new Error(`unknown signal #${id}`); }
+  }
+  return ids;
+}
+function checkTime(name, t) {
+  if (typeof t !== 'number' || !Number.isFinite(t) || t < 0 || t > 1.8e19) { throw new Error(`bad ${name}: ${t}`); }
+  return Math.floor(t);
+}
+const NO_FILE_OK = new Set(['open', 'stats', 'close']);
+
+async function runSearchAll(req) {
+  const t = checkTime('t', Number(req.t || 0)), dir = req.dir < 0 ? -1 : 1;
+  const limit = Math.max(1, Math.min(10000, Math.floor(Number(req.limit)) || 50));
+  const budgetMs = Math.min(MAX_SEARCH_MS, Math.max(1, Number(req.budgetMs) || 30000));
+  const started = performance.now();
+  const remaining = () => Math.max(1, budgetMs - (performance.now() - started));
+  if (req.expr !== undefined && !/(^|[^\w$])\$(?![\w$])/.test(req.expr)) {
+    // No `$`: one temporary derived signal, true = any bit 1.
+    const { d, created } = defineDerived(`|(${req.expr})`);
+    try {
+      let r = null;
+      for (let attempt = 0; attempt < 3 && !req.cancelled; attempt++) {
+        const p = ensureDerived([d.id], attempt > 0);
+        if (p) { await p; }
+        if (req.cancelled || performance.now() - started > budgetMs) { break; }
+        try { r = await single(req, 'search', d.id, { t, dir, value: '1' }); break; } catch (e) { if (!/DERIVED_EVICTED/.test(e.message)) { throw e; } }
+      }
+      const timedOut = !r && !req.cancelled;
+      return { matches: r && r.t !== null ? [{ signalId: d.id, path: req.expr, t: r.t }] : [], found: r && r.t !== null ? 1 : 0,
+        searched: r ? 1 : 0, walked: 0, total: 1, timedOut, complete: !!r, incomplete: r ? null : { timedOut } };
+    } finally {
+      if (created) { dropDerived(d); }
+    }
+  }
+  const idx = getIndex();
+  const glob = req.names ? String(req.names).replace(/\*+/g, '*') : null;
+  const onPath = glob && glob.includes('.');
+  const seen = new Set(), cands = [];
+  for (const v of idx.list) {
+    if (v.encoding !== 'BitVector' || seen.has(v.signalId)) { continue; }
+    if (req.scope && v.path !== req.scope && !v.path.startsWith(req.scope + '.')) { continue; }
+    if (glob && !globMatch(glob, onPath ? v.path : v.path.slice(v.path.lastIndexOf('.') + 1))) { continue; }
+    seen.add(v.signalId);
+    cands.push(v);
+  }
+  let pattern = null, programs = null, fixed = [];
+  if (req.expr !== undefined) {
+    const ast = expr.parse(String(req.expr));
+    programs = new Map();  // width -> compiled program for `$` of that width
+    for (const v of cands) {
+      if (!programs.has(v.width)) {
+        try { programs.set(v.width, expr.asBool(expr.compile(ast, resolveRef, { width: v.width }))); } catch (e) { programs.set(v.width, e); }
+      }
+    }
+    const ok = [...programs.values()].find((c) => !(c instanceof Error));
+    if (!ok) { throw [...programs.values()][0] || new Error('no candidates'); }
+    fixed = ok.operands.slice(1);
+    if (fixed.some((id) => derived.has(id))) { throw new Error('searchAll expr may not use derived signals'); }
+  } else {
+    pattern = toPattern(req.value, strictWildcard(req));
+    for (let k = cands.length - 1; k >= 0; k--) { if (cands[k].width !== patternWidth(pattern)) { cands.splice(k, 1); } }
+  }
+  const pathOf = new Map(cands.map((v) => [v.signalId, v.path]));
+  if (req.listCandidates) { return { candidates: cands.map((v) => ({ signalId: v.signalId, path: v.path, width: v.width })) }; }
+  // Per worker: signals it already holds first, then indexed, then cold ones, in chunks.
+  const perWorker = new Map();
+  for (const v of cands) {
+    const w = workerFor(v.signalId);
+    if (!perWorker.has(w)) { perWorker.set(w, []); }
+    perWorker.get(w).push(v.signalId);
+  }
+  const copies = fixed.length ? await spreadFixed(fixed, [...perWorker.keys()]) : [];
+  if (req.cancelled) { return {}; }
+  const rank = (w, id) => (w.state.cached.includes(id) ? 0 : warm.files.has(id) && warm.epoch === epoch ? 1 : 2);
+  // Stored and indexed candidates go to their own worker. Cold value scans keep
+  // nothing, so any worker can do them: they wait in one pool, in small chunks,
+  // and each worker takes the next when it finishes one (no worker idles while
+  // another still has a queue; this dump's heavy signals made one worker's
+  // share take 4x the others').
+  const chunks = [], coldPool = [];
+  for (const [w, ids] of perWorker) {
+    ids.sort((a, b) => rank(w, a) - rank(w, b));
+    const own = pattern !== null ? ids.filter((id) => rank(w, id) < 2) : ids;
+    for (let k = 0; k < own.length; k += SEARCH_CHUNK) { chunks.push([w, own.slice(k, k + SEARCH_CHUNK)]); }
+    if (pattern !== null) { coldPool.push(...ids.filter((id) => rank(w, id) === 2)); }
+  }
+  return new Promise((resolve) => {
+    const matches = [], unreadable = [], failed = [];
+    let searched = 0, walked = 0, indexed = 0, errors = 0, left = 0, finished = false, firstMatchMs = null, yields = 0;
+    req.parts = [];
+    const retry = new Map();
+    let retried = false;
+    const finish = (timedOut) => {
+      if (finished) { return; }
+      finished = true;
+      clearTimeout(timer);
+      for (const { w, task } of req.parts) { dequeue(w, task); }
+      for (const { w, id } of copies) { runTask(w, { op: 'free', signalIds: [id] }).catch(() => {}); }
+      matches.sort((a, b) => (a.t - b.t) * dir || a.signalId - b.signalId);  // ties by id: deterministic
+      const unsearched = cands.length - searched;
+      const complete = !timedOut && !req.cancelled && errors === 0 && unsearched === 0;
+      resolve({ matches: matches.slice(0, limit), found: matches.length, searched, walked, indexed, errors, unreadable,
+        retried: [...retry.values()].reduce((n, a) => n + a.length, 0), total: cands.length, timedOut, yields,
+        firstMatchMs: firstMatchMs === null ? null : +firstMatchMs.toFixed(1), complete,
+        incomplete: complete ? null : { timedOut, cancelled: !!req.cancelled, unsearched, errors, failedSignals: failed.slice(0, 50) } });
+    };
+    req.onCancel = () => finish(false);
+    // Once `limit` matches are known, later scans stop at the limit-th nearest one.
+    const bound = () => {
+      if (matches.length < limit) { return { bound: dir > 0 ? 1.8e19 : 0 }; }
+      const ts = matches.map((m) => m.t).sort((a, b) => (a - b) * dir);
+      return { bound: ts[limit - 1] };
+    };
+    const timer = setTimeout(() => finish(true), budgetMs);
+    // Some signals read as 0 bits until other signals have been loaded in the
+    // same process (aliases, it seems): those get one retry after the pass.
+    const pullCold = (w) => {
+      if (finished || !coldPool.length) { return false; }
+      runChunk(w, coldPool.splice(0, COLD_CHUNK), true);
+      return true;
+    };
+    const runChunk = (w0, ids, fromPool = false, crashed = 0) => {
+      const w = workers[w0.i] || workers[0];  // the live worker at that index (w0 may have been replaced)
+      left++;
+      const task = pattern !== null
+        ? { op: 'searchScan', signalIds: ids, t, dir, pattern, req, bg: true }
+        : { op: 'searchExpr', signalIds: ids, t, dir, fixed, req, bg: true,
+          programs: ids.map((id) => { const c = programs.get(widthOf.get(id)); return c instanceof Error || !c ? null : c.program; }) };
+      task.prepare = () => ({ ...(pattern !== null ? bound() : {}), deadlineMs: remaining(), index: pattern !== null ? indexFor(ids) : null });
+      enqueue(w, task);
+      req.parts.push({ w, task });
+      task.done = (m) => {
+        left--;
+        if (finished) { return; }
+        const found = [], again = [];
+        if (m.error && /exited/.test(m.error) && !crashed) {  // its worker died: run the chunk once more on the replacement
+          runChunk(w, ids, fromPool, 1);
+          return;
+        }
+        if (m.error) { errors += ids.length; failed.push(...ids.map((id) => ({ signalId: id, path: pathOf.get(id), error: m.error }))); } else {
+          for (const r of m.result) {
+            if (r.yielded) { again.push(r.signalId); continue; }
+            if (r.error && !retried && /0 bits/.test(r.error)) {
+              if (!retry.has(w.i)) { retry.set(w.i, []); }  // by index: the worker may be replaced by then
+              retry.get(w.i).push(r.signalId);
+              continue;
+            }
+            searched++;
+            if (r.walked) { walked++; }
+            if (r.indexed) { indexed++; }
+            if (r.error) { errors++; if (unreadable.length < 50) { unreadable.push({ signalId: r.signalId, path: pathOf.get(r.signalId), error: r.error }); } }
+            if (r.t !== null && r.t !== undefined) { found.push({ signalId: r.signalId, path: pathOf.get(r.signalId), t: r.t }); }
+          }
+        }
+        if (found.length) {
+          if (firstMatchMs === null) { firstMatchMs = performance.now() - started; }
+          matches.push(...found);
+          if (!req.cancelled) { send({ id: req.id, partial: true, result: { matches: found, searched, total: cands.length } }); }
+        }
+        if (again.length) { yields++; runChunk(w, again, fromPool, crashed); }  // yielded to interactive work (or hit the deadline): queue the rest again
+        else if (fromPool) { pullCold(w); }
+        if (left === 0 && !coldPool.length) {
+          if (!retried && retry.size) {
+            retried = true;
+            for (const [ri, rids] of retry) { for (let k = 0; k < rids.length; k += SEARCH_CHUNK) { runChunk(workers[ri % workers.length], rids.slice(k, k + SEARCH_CHUNK)); } }
+            return;
+          }
+          finish(false);
+        }
+      };
+    };
+    for (const [w, ids] of chunks) { runChunk(w, ids); }
+    for (const w of workers) { pullCold(w); }  // one pool chunk in flight per worker
+    if (!chunks.length && !left) { finish(false); }
+  });
+}
+
+// ---- whole-signal counts (count op, hybrid mode) ----
+function sizeEntry(signalId, count, bits, xz, source) { return { signalId, count, bits, xz: !!xz, bytes: count * (8 + bits), source }; }
+// {count, bits, xz} from a .vvz header ("VVZ1", u32 bits, u64 n, u8 hasXz, u64 raw,
+// u64 zlen), with readIndexFile's header checks; cached on the entry. A file
+// that fails them is null for good; an I/O error isn't cached (retried next time).
+function parseHeader(b, st) {
+  if (b.toString('latin1', 0, 4) !== 'VVZ1') { return null; }
+  const bits = b.readUInt32LE(4), n = b.readBigUInt64LE(8), xz = b[16], raw = b.readBigUInt64LE(17), zlen = b.readBigUInt64LE(25);
+  const per = 8n + BigInt((bits + 7) >> 3) * (xz ? 2n : 1n);
+  const ok = bits >= 1 && bits <= (1 << 20) && xz <= 1 && BigInt(st.size) === 33n + zlen && raw === n * per && raw <= 1032n * zlen + 1024n && n <= BigInt(Number.MAX_SAFE_INTEGER);
+  return ok ? { count: Number(n), bits, xz: xz === 1 } : null;
+}
+function fileHeader(f) {
+  if (f.hdr !== undefined) { return f.hdr; }
+  let fd = -1, hdr;
+  try {
+    fd = fs.openSync(f.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const st = fs.fstatSync(fd);
+    const b = Buffer.alloc(33);
+    hdr = null;
+    if (st.isFile() && st.uid === process.geteuid() && st.nlink === 1 && fs.readSync(fd, b, 0, 33, 0) === 33) { hdr = parseHeader(b, st); }
+    if (hdr) { setStamp(f, st); }
+  } catch (e) { hdr = undefined; }
+  if (fd >= 0) { try { fs.closeSync(fd); } catch (e) { /* closed */ } }
+  if (hdr !== undefined) { f.hdr = hdr; }
+  return hdr || null;
+}
+// Header manifest: <key dir>/manifest.json {id: [count, bits, xz, size, mtimeMs]}, so
+// count can answer file-only signals right after open without reading 200
+// headers on the request path (26.9 ms -> 0). An entry is used only while its
+// file's size and mtime match. Written (tmp + rename) 1.5 s after files change,
+// headers it lacks read in small chunks off the request path; flushed at close.
+const MANIFEST = 'manifest.json';
+// The file identity an entry is trusted for: size, mtime, inode, ctime (a rename-replace gets a
+// new inode; utimes can't set ctime).
+const setStamp = (f, st) => { f.stamp = [st.size, st.mtimeMs, st.ino, st.ctimeMs]; };
+const validEntry = (h) => Array.isArray(h) && h.length === 7 && Number.isSafeInteger(h[0]) && h[0] >= 0
+  && Number.isInteger(h[1]) && h[1] >= 1 && h[1] <= (1 << 20) && (h[2] === 0 || h[2] === 1);
+function readManifest(dir) {
+  try {
+    const fd = fs.openSync(path.join(dir, MANIFEST), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    let text;
+    try {
+      const st = fs.fstatSync(fd);
+      if (!st.isFile() || st.uid !== process.geteuid() || st.nlink !== 1 || st.size > 64e6) { return {}; }
+      text = fs.readFileSync(fd, 'utf8');
+    } finally { fs.closeSync(fd); }
+    const m = JSON.parse(text);
+    return m && m.v === 2 && m.entries && typeof m.entries === 'object' ? m.entries : {};
+  } catch (e) { return {}; }
+}
+function writeManifest() {
+  if (!warm.dir || warm.epoch !== epoch) { return; }
+  const entries = {};
+  for (const [id, f] of warm.files) { if (f.hdr && f.stamp) { entries[id] = [f.hdr.count, f.hdr.bits, f.hdr.xz ? 1 : 0, ...f.stamp]; } }
+  const dst = path.join(warm.dir, MANIFEST), tmp = path.join(warm.dir, `.manifest.${process.pid}.tmp`);
+  try {
+    privateDir(path.dirname(warm.dir)); privateDir(warm.dir);
+    fs.rmSync(tmp, { force: true });
+    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify({ v: 2, entries })); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, dst);
+    manifestDirty = false;  // (L4: only once it is really written)
+  } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (e2) { /* gone */ } }
+}
+let manifestTimer = null, manifestDirty = false;
+function scheduleManifest() {
+  if (!warm.dir) { return; }
+  manifestDirty = true;
+  if (manifestTimer) { return; }
+  const ep = epoch, dir = warm.dir, gen = warm.gen;
+  const live = () => epoch === ep && warm.dir === dir && warm.gen === gen;
+  manifestTimer = setTimeout(async () => {
+    manifestTimer = null;
+    for (const f of [...warm.files.values()]) {
+      if (!live()) { return; }
+      if (f.hdr === undefined) { await fileHeaderAsync(f); }
+    }
+    if (live()) { writeManifest(); }
+  }, 1500);
+}
+function flushManifest() {
+  if (manifestTimer) { clearTimeout(manifestTimer); manifestTimer = null; }
+  if (manifestDirty) { writeManifest(); }
+}
+
+// fileHeader's checks with async I/O, for the background manifest job.
+async function fileHeaderAsync(f) {
+  let fh = null, hdr;
+  try {
+    fh = await fs.promises.open(f.path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const st = await fh.stat();
+    const b = Buffer.alloc(33);
+    hdr = null;
+    if (st.isFile() && st.uid === process.geteuid() && st.nlink === 1 && (await fh.read(b, 0, 33, 0)).bytesRead === 33) { hdr = parseHeader(b, st); }
+    if (hdr && f.hdr === undefined) { setStamp(f, st); }  // (L9: stamp and header from the same read)
+  } catch (e) { hdr = undefined; }
+  if (fh) { try { await fh.close(); } catch (e) { /* closed */ } }
+  if (hdr !== undefined && f.hdr === undefined) { f.hdr = hdr; }
+}
+
+function countOf(id) {
+  const d = derived.get(id);
+  if (d && d.count !== undefined && d.count !== null) { return sizeEntry(id, d.count, d.width, d.xz, 'derived'); }
+  for (const w of workers) {
+    const e = w.sizes && w.sizes.get(id);
+    if (e) { return sizeEntry(id, e[1], e[2], e[3], 'store'); }
+  }
+  const f = STORE_CACHE && warm.epoch === epoch ? warm.files.get(id) : null;
+  const h = f && fileHeader(f);
+  return h ? sizeEntry(id, h.count, h.bits, h.xz, 'file') : null;
+}
+
+const handlers = {
+  async open({ file, workers: n, warm: wantWarm, reload }) {
+    if (typeof file !== 'string' || !file) { throw new Error('open needs a file'); }
+    const want = Math.max(1, Math.min(4, n || DEFAULT_WORKERS));
+    // Reopening the file that is already open, unchanged (same real path, device,
+    // inode, size, mtime and ctime) and with the same pool keeps everything: the
+    // workers' stores, derived signals, routes and the search index.
+    let ident = null;
+    try { ident = fileIdent(file); } catch (e) { /* missing: the real open below reports it */ }
+    if (!reload && openFile && lastOpen && ident && ident === lastOpen.ident && want === workers.length) {
+      if (wantWarm && !warm.on) { startWarm(); }
+      return { ...lastOpen.result, index: warmStats(), reused: true };
+    }
+    flushManifest();  // the previous file's headers
+    lastOpen = null;
+    bgLoads.clear();
+    bgFailed.clear();
+    persisting.clear();
+    epoch++;
+    splitting.clear();
+    widthOf.clear();
+    index = null;
+    derived.clear(); derivedByKey.clear(); derivedByName.clear();
+    if (activeSearch) { activeSearch.cancelled = true; activeSearch = null; }
+    if (want !== workers.length) { spawnPool(want); } else { route.clear(); rr = 0; }
+    for (const w of workers) {
+      const lost = [...w.queue, ...w.bgQueue]; w.queue = []; w.bgQueue = []; w.warming = false;
+      w.state = { ...w.state, cached: [] };  // nothing may jump ahead of the reopen
+      w.sizes = new Map();  // count: the old file's stores are gone
+      failTasks(lost, 'file reopened');
+    }
+    // Workers open in parallel with the hierarchy read below; queued work waits behind it.
+    const opens = workers.map((w) => runTask(w, { op: 'open', file, cacheBytes: CACHE_BYTES / want, barrier: true }, true));
+    if (openFile) { addon.unload(); openFile = null; }
+    try {
+      addon.openFsdb(file);
+    } catch (e) {
+      await Promise.allSettled(opens);
+      throw e;
+    }
+    openFile = file;
+    const metadata = { timeTableLoaded: false, scopeCount: 0, netlistIdCount: 0, signalIdCount: 0,
+      timeTableCount: 0, timeEnd: 0, minTimeStep: 1, timeScale: 1, timeUnit: 'ns' };
+    addon.readMetadata(
+      (scopecount, varcount, timescale, timeunit) => Object.assign(metadata,
+        { scopeCount: scopecount, netlistIdCount: varcount, timeScale: timescale, timeUnit: timeunit }),
+      (chunksize, timeend) => Object.assign(metadata, { timeEnd: Number(timeend), timeTableLoaded: true }));
+    timeEnd = metadata.timeEnd;
+    const top = addon.readScopes().filter((s) => !s.name.startsWith('$'));
+    // The hierarchy index (paths, widths) is built now, while the workers open,
+    // not by the first request (count's latency target; ~8-16 ms on this dump).
+    try { getIndex(); } catch (e) { /* rebuilt on demand */ }
+    const failed = (await Promise.allSettled(opens)).find((r) => r.status === 'rejected');
+    if (failed) { addon.unload(); openFile = null; throw new Error('workers could not open the file: ' + failed.reason.message); }
+    warm.inflight = 0;
+    openIndex(file);
+    if (wantWarm) { startWarm(); }
+    const result = { metadata, top, workers: want };
+    if (ident) { lastOpen = { ident, result }; }
+    return { ...result, index: warmStats() };
+  },
+
+  async children({ scopeOffsetIdx, scopePath }) {
+    const scopes = [];
+    let start = 0, remaining = Infinity, guard = 256;
+    while (remaining > 0 && guard-- > 0) {
+      const r = addon.getScopeChildren(scopeOffsetIdx, start);
+      scopes.push(...r.scopes);
+      remaining = r.remainingItems;
+      start += r.totalReturned;
+      if (!r.totalReturned) { break; }
+    }
+    const vars = [];
+    addon.readVars(scopePath, scopeOffsetIdx,
+      (name, type, encoding, varPath, netlistId, signalId, width, msb, lsb) =>
+        { widthOf.set(signalId, width); vars.push({ name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }); },
+      () => {}, () => {}, () => {}, () => {});
+    return { scopes: scopes.filter((s) => !s.name.startsWith('$')), vars };
+  },
+
+  // Header {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs}]};
+  // binary = per signal, deflated records then bucketBytes of u32 counts.
+  async window(req) {
+    const { signals, deflateCounts } = req;
+    if (!Array.isArray(signals)) { throw new Error('window needs signals'); }
+    const ids = checkIds(signals.map((s) => s && s.signalId));
+    const t0 = checkTime('t0', req.t0), t1 = checkTime('t1', req.t1);
+    if (t1 < t0) { throw new Error('window needs t1 >= t0'); }
+    const buckets = Math.max(1, Math.min(MAX_BUCKETS, Math.floor(Number(req.buckets)) || 1));
+    for (const s of signals) { if (s.width) { widthOf.set(s.signalId, s.width); } }
+    const ranged = t1 > t0 && timeEnd > 0 && (t1 - t0) <= timeEnd * COLD_RANGE;
+    // (a signal in the persistent store cache is read from its file instead: <= ~70 ms, and it stays)
+    const cold = new Set(ranged ? ids.filter((id) => isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
+    const warmIds = [...new Set(ids.filter((id) => !cold.has(id)))];
+    const sp = prep(req, warmIds);
+    if (sp) { await sp; }
+    if (req.cancelled) { return {}; }
+    const [warmRes, coldRes] = await Promise.all([
+      warmIds.length ? scatter(req, 'window', warmIds, { t0, t1, buckets }, (m) => m.result) : [],
+      cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets }, true) : []]);
+    const byId = new Map([...warmRes, ...coldRes].map((r) => [r.signalId, r]));
+    for (const r of coldRes) { if (!r.error) { scheduleBgLoad(r.signalId); } }
+    const res = ids.map((id) => byId.get(id));
+    const head = [], bins = [];
+    for (const r of res) {
+      if (r.error) { head.push({ signalId: r.signalId, error: r.error, bytes: 0, bucketBytes: 0 }); continue; }
+      const rec = asBuf(r.records);
+      let cnt = asBuf(r.counts);
+      if (cnt && deflateCounts) { cnt = zlib.deflateRawSync(cnt, { level: 1 }); }
+      const sp = req.split && req.split.get(r.signalId);
+      head.push({ signalId: r.signalId, exact: r.exact, count: r.count, bytes: rec.length, bucketBytes: cnt ? cnt.length : 0,
+        cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
+        ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
+      bins.push(rec);
+      if (cnt) { bins.push(cnt); }
+    }
+    return { result: { signals: head }, bin: Buffer.concat(bins) };
+  },
+
+  // Stored (or derived) signals answer from the store; others with a cold
+  // [t, t] read that walks and keeps nothing. -> {values, cold: how many were cold}
+  async valueAt(req) {
+    const t = checkTime('t', req.t);
+    const ids = checkIds(req.signalIds);
+    const cold = new Set(ids.filter(isCold));
+    const warmIds = [...new Set(ids.filter((id) => !cold.has(id)))];
+    const sp = prep(req, warmIds);
+    if (sp) { await sp; }
+    const [wv, cv] = await Promise.all([
+      warmIds.length ? scatter(req, 'valueAt', warmIds, { t }, (m) => m.result) : [],
+      cold.size ? coldTask(req, 'coldValueAt', [...cold], { t }, 'even') : []]);
+    const byId = new Map([...warmIds.map((id, k) => [id, wv[k]]), ...[...cold].map((id, k) => [id, cv[k]])]);
+    return { values: ids.map((id) => byId.get(id)), cold: cold.size };
+  },
+
+  async edge(req) {
+    const t = checkTime('t', req.t);
+    const sp = prep(req, checkIds([req.signalId])); if (sp) { await sp; }
+    return single(req, 'edge', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, kind: req.kind });
+  },
+  async search(req) {
+    const t = checkTime('t', req.t);
+    if (typeof req.value !== 'string' || !/^[01xXzZ?]*$/.test(req.value)) { throw new Error(`bad search value ${req.value}`); }
+    const sp = prep(req, checkIds([req.signalId])); if (sp) { await sp; }
+    // wildcard: '?' -> strict pattern: only ? matches anything, x and z are literal.
+    return single(req, 'search', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, value: (strictWildcard(req) ? '!' : '') + req.value });
+  },
+
+  // derive {expr, name?} -> {signalId, width, signed, name, operands, count, materializeMs, ...}
+  async derive(req) {
+    const { d, created, refs } = defineDerived(req.expr, req.name);
+    const t0 = performance.now();
+    const p = ensureDerived([d.id]);
+    if (p) { try { await p; } catch (e) { if (created) { dropDerived(d); } throw e; } }
+    return { signalId: d.id, width: d.width, signed: d.signed, name: d.name, operands: d.operands, refs, count: d.count,
+      materialized: !!p, materializeMs: p ? +(performance.now() - t0).toFixed(1) : 0,
+      loadMs: p ? +d.loadMs.toFixed(1) : 0, mergeMs: p ? +d.mergeMs.toFixed(1) : 0, steps: d.steps };
+  },
+
+  // searchAll {value | expr, t, dir, scope?, names?, limit?, budgetMs?}: nearest match per
+  // signal, streamed as {id, partial: true, result: {matches, searched, total}} lines,
+  // then {id, final: true, result: {matches (nearest first, <= limit), ..., complete, incomplete}}.
+  async searchAll(req) {
+    if (activeSearch && activeSearch !== req) { await handlers.cancel({ target: activeSearch.id, reason: 'superseded' }); }
+    activeSearch = req;
+    try { return await runSearchAll(req); } finally { if (activeSearch === req) { activeSearch = null; } }
+  },
+
+  // v1: whole signals, deflated [u64 delta][chars] records.
+  async signals(req) {
+    const { signalIds, widths } = req;
+    checkIds(signalIds);
+    if (signalIds.some((id) => id >= DERIVED_BASE)) { throw new Error('signals does not take derived signals'); }
+    const wOf = new Map(signalIds.map((id, k) => [id, widths ? widths[k] : undefined]));
+    const res = await new Promise((resolve, reject) => {
+      const groups = new Map();
+      for (const id of signalIds) { const w = workerFor(id); if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); }
+      const byId = new Map();
+      let left = groups.size;
+      if (!left) { resolve([]); return; }
+      req.parts = [];
+      for (const [w, ids] of groups) {
+        const task = enqueue(w, { op: 'signals', signalIds: ids, widths: widths && ids.map((id) => wOf.get(id)), req });
+        req.parts.push({ w, task });
+        task.done = (m) => {
+          if (m.error) { reject(new Error(m.error)); return; }
+          m.result.forEach((r) => byId.set(r.signalId, r));
+          if (--left === 0) { resolve(signalIds.map((id) => byId.get(id))); }
+        };
+      }
+    });
+    const out = [], parts = [];
+    for (const r of res) {
+      if (r.records) {
+        const b = asBuf(r.records);
+        out.push({ signalId: r.signalId, width: r.width, count: r.count, bytes: b.length, min: 0, max: 0 });
+        parts.push(b);
+      } else {
+        out.push(r);
+      }
+    }
+    return { result: out, bin: parts.length ? Buffer.concat(parts) : null };
+  },
+
+  // count {signalIds, exact?} -> {counts: [{signalId, count, bits, xz, bytes, source} | {signalId, unknown: true}]}
+  // Whole-signal normalized change count (what a [0, T+1) window reports), its
+  // width, and v1's packed size count * (8 + bits). Answered here, never queued:
+  // source 'store' (a worker holds it), 'derived', or 'file' (the store-cache
+  // .vvz header). Others are {unknown: true}, unless exact: true, which loads
+  // them first (a walk; source 'store').
+  async count(req) {
+    const ids = checkIds(req.signalIds);
+    const errors = new Map();  // exact: why a signal couldn't be counted
+    if (req.exact === true) {
+      const need = [...new Set(ids.filter((id) => !countOf(id)))];
+      for (const id of need.filter((x) => derived.has(x))) {  // a derived signal: materialize it (its count is then known)
+        try { const p = ensureDerived([id]); if (p) { await p; } } catch (e) { errors.set(id, String(e && e.message || e)); }
+      }
+      // A signal whose walk already failed for good (bgFailed: over the store cap,
+      // unreadable) is reported from memory, not walked again.
+      for (const id of need) { if (bgFailed.has(id) && /larger than|0 bits|unsupported|limit/.test(bgFailed.get(id))) { errors.set(id, bgFailed.get(id)); } }
+      const real = need.filter((x) => !derived.has(x) && !errors.has(x));
+      if (real.length) {
+        try { const sp = prep(req, real); if (sp) { await sp; } } catch (e) { /* a failed split: the load below reports it per signal */ }
+        const res = await scatter(req, 'load', real, {}, (m) => m.result);
+        for (const r of res) {  // (load's results carry their ids)
+          if (r && r.error) { errors.set(r.signalId, r.error); if (/larger than|0 bits|unsupported/.test(r.error)) { bgFailed.set(r.signalId, r.error); } }
+        }
+      }
+    }
+    return { counts: ids.map((id) => countOf(id) || (errors.has(id) ? { signalId: id, error: errors.get(id) } : { signalId: id, unknown: true })) };
+  },
+
+  async free(req) {
+    if (!req.signalIds) { await broadcast('free', {}); return {}; }
+    await scatter(req, 'free', req.signalIds, {}, (m, ids) => ids.map(() => true));
+    return {};
+  },
+
+  // Answered from the state each worker attaches to its replies (never waits on a walk).
+  async stats() {
+    return {
+      workers: workers.map((w) => ({ worker: w.i, pid: w.pid, loaded: w.state.cached, bytesCached: w.state.bytes,
+        limit: w.state.limit, queue: w.queue.length + (w.busy && !w.busy.bg ? 1 : 0), background: w.bgQueue.length + (w.busy && w.busy.bg ? 1 : 0),
+        busy: w.busy ? w.busy.op : null, rss: w.state.rss })),
+      index: warmStats(),
+      searching: activeSearch ? activeSearch.id : null,
+      coordinatorRss: process.memoryUsage().rss,
+      recycled,
+      splitting: [...splitting.keys()],
+      coldWalks: { pending: [...bgLoads.keys()], failed: [...bgFailed.keys()] },
+      derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
+    };
+  },
+
+  // Drop queued parts of request `target`; its reply becomes {cancelled: true}.
+  async cancel({ target, reason }) {
+    const req = inflight.get(target);
+    if (!req) { return { cancelled: false }; }
+    let dropped = 0, running = 0;
+    for (const { w, task } of req.parts || []) {
+      if (dequeue(w, task)) { dropped++; } else if (w.busy === task) {
+        running++; task.done = () => {};
+        if (task.bg && !task.yieldSent && w.pid) { task.yieldSent = true; try { process.kill(w.pid, 'SIGUSR2'); } catch (e) { /* gone */ } }
+      }
+    }
+    req.cancelled = true;
+    if (req.onCancel) { req.onCancel(); }
+    inflight.delete(target);
+    send({ id: target, cancelled: true, ...(reason ? { reason } : {}) });
+    return { cancelled: true, dropped, running };
+  },
+
+  // warm {on?: bool, clear?: bool} -> index state (see "search index warm-up").
+  async warm(req) {
+    if (req.clear) {
+      warm.on = false;
+      if (manifestTimer) { clearTimeout(manifestTimer); manifestTimer = null; }  // (L6) nothing left to write
+      manifestDirty = false;
+      if (warm.dir) { fs.rmSync(warm.dir, { recursive: true, force: true }); }
+      Object.assign(warm, { files: new Map(), bytes: 0, rawBytes: 0, todo: [], failed: new Map(), gen: (warm.gen || 0) + 1 });
+    }
+    if (req.on === true) { startWarm(); } else if (req.on === false) { warm.on = false; }
+    return warmStats();
+  },
+
+  async close() {
+    flushManifest();
+    lastOpen = null;
+    bgLoads.clear();
+    bgFailed.clear();
+    persisting.clear();
+    epoch++;
+    splitting.clear();
+    derived.clear(); derivedByKey.clear(); derivedByName.clear();
+    index = null;
+    warm.on = false; warm.epoch = -1; warm.inflight = 0;
+    for (const w of workers) { const lost = [...w.queue, ...w.bgQueue]; w.queue = []; w.bgQueue = []; w.warming = false; w.state = { ...w.state, cached: [] }; w.sizes = new Map(); failTasks(lost, 'file closed'); }
+    if (openFile) { addon.unload(); openFile = null; }
+    await Promise.allSettled(workers.map((w) => runTask(w, { op: 'close', barrier: true }, true)));
+    return {};
+  },
+};
+
+spawnPool(DEFAULT_WORKERS);
+send({ id: 0, ready: true, pid: process.pid, workers: workers.length });
+
+readline.createInterface({ input: process.stdin }).on('line', async (line) => {
+  if (!line.trim()) { return; }
+  if (line.length > MAX_LINE) { send({ id: -1, error: `request longer than ${MAX_LINE} bytes` }); return; }
+  let req;
+  try { req = JSON.parse(line); } catch (e) { send({ id: -1, error: 'bad json' }); return; }
+  const t0 = process.hrtime.bigint();
+  // `cancel {id, target}` always gets a reply under its own id: {cancelled, dropped, running}.
+  // `cancel {id}` (spec form) names the target in `id`: the target's reply becomes
+  // {id, cancelled: true}, or, if it isn't running (already answered, or unknown),
+  // one {id, cancelled: false} line, which a client with nothing pending ignores.
+  if (req.cmd === 'cancel') {
+    const r = await handlers.cancel({ target: req.target ?? req.id });
+    if (req.target !== undefined) { send({ id: req.id, result: r }); } else if (!r.cancelled) { send({ id: req.id, cancelled: false }); }
+    return;
+  }
+  inflight.set(req.id, req);
+  try {
+    const fn = handlers[req.cmd];
+    if (!fn) { throw new Error('unknown command ' + req.cmd); }
+    if (!openFile && !NO_FILE_OK.has(req.cmd)) { throw new Error('no file open'); }
+    let r;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        r = await fn(req);
+        break;
+      } catch (e) {
+        // A derived signal was evicted between our check and the worker: rebuild and retry
+        // (searchAll handles its own, so partial replies are never sent twice).
+        if (!/DERIVED_EVICTED/.test(String(e && e.message)) || req.cancelled || req.cmd === 'searchAll' || attempt >= 2) { throw e; }
+        await ensureDerived(derivedIdsOf(req), true);
+      }
+    }
+    if (req.cancelled) { return; }
+    const ms = +(Number(process.hrtime.bigint() - t0) / 1e6).toFixed(3);
+    const workerMs = req.workerMs !== undefined ? +req.workerMs.toFixed(3) : undefined;
+    const fin = req.cmd === 'searchAll' ? { final: true } : {};
+    if (r && r.bin !== undefined) { send({ id: req.id, result: r.result, ms, workerMs }, r.bin); } else { send({ id: req.id, ...fin, result: r, ms, workerMs }); }
+  } catch (e) {
+    if (DEBUG) { process.stderr.write(`[req ${req.id}] ${(e && e.stack) || e}\n`); }
+    if (!req.cancelled) { send({ id: req.id, error: String((e && e.message) || e) }); }
+  } finally {
+    if (inflight.get(req.id) === req) { inflight.delete(req.id); }
+  }
+}).on('close', () => {
+  if (openFile) { addon.unload(); }
+  shutdown(0);
+});
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) { process.on(sig, () => shutdown(0)); }
+process.on('exit', removeTmpDir);
