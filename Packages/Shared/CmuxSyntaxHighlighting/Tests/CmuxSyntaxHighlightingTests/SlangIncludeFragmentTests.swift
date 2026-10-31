@@ -28,6 +28,10 @@ struct SlangIncludeFragmentTests {
         typedef logic [3:0] nib_t;
     endpackage
 
+    /// Instantiated once: its parameter's width is the only one.
+    module ssub #(parameter W = 1) (input logic [W-1:0] d);
+    endmodule
+
     /// Its `b` is not a port; tb_wrapper still names it in a connection (an elaboration error).
     module isub (input logic a);
         logic b;
@@ -50,6 +54,9 @@ struct SlangIncludeFragmentTests {
             .q   (frag_sig)
         );
         `include `DEFS_FILE
+        localparam int N = 1;
+        logic [N-1:0] fp;
+        sub fpu (.clk (fp), .q (fp));
 
     """
 
@@ -73,6 +80,8 @@ struct SlangIncludeFragmentTests {
         logic [3:0] tn;
         tsub #(.W(4)) t (.x4 (t4), .xt (t4), .xb (t1), .xn (tn));
         isub ib (.a (t1), .b (t1));
+        logic [1:0] sd;
+        ssub #(.W(2)) s1 (.d (sd));
         logic gq;
         for (genvar i = 0; i < 1; i++) begin : g
             sub u (.clk (clk), .q (gq));
@@ -402,8 +411,17 @@ struct SlangIncludeFragmentTests {
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ib.b").isEmpty)
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ib.a") == ["tb_wrapper.t1"])
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.tn") == ["tb_wrapper.t.xn"])
-            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.t.xt").isEmpty)
-            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.t4")) == ["tb_wrapper.t.x4"])
+            // tsub has one instance, so its type parameter's width (4 bits, as hovered) is the only one.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.t.xt") == ["tb_wrapper.t4"])
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.t4")) == ["tb_wrapper.t.x4", "tb_wrapper.t.xt"])
+            // A parameter's width in a module instantiated once is the hovered one: an alias. psub has
+            // two instances of different widths (pd1, pd2 above): none.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.sd") == ["tb_wrapper.s1.d"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.s1.d") == ["tb_wrapper.sd"])
+            // A fragment's localparam width in the top (one instance by definition), like adapter_tb's
+            // logic [NUM_PORTS-1:0] dfp_wdone.
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.fp")) == ["tb_wrapper.fpu.clk", "tb_wrapper.fpu.q"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.fpu.q") == ["tb_wrapper.fp"])
         }
     }
 
