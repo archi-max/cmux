@@ -51,7 +51,11 @@ struct FileExplorerPreviewCoordinator {
                         store: store, context: context, isCurrent: isCurrent,
                         validate: {}, provider: remote
                     ) { return }
-                    let lease = try await store.cloudPreviewCache.materialize(path: path, provider: remote)
+                    // The waveform viewer reads FSDB on the SSH host; dumps run to
+                    // hundreds of MB, so none is downloaded.
+                    let lease = remote is SSHFileExplorerProvider && FilePreviewKindResolver.isReadInPlaceOnRemoteHost(path)
+                        ? try await store.cloudPreviewCache.placeholder(path: path, provider: remote)
+                        : try await store.cloudPreviewCache.materialize(path: path, provider: remote)
                     guard isCurrent(), store.resourceContextID == context else { return }
                     if let panel = workspace.openFilePreviewSurfaces(inPane: pane, filePaths: [lease.url.path],
                         focus: true, reuseExisting: false).first {

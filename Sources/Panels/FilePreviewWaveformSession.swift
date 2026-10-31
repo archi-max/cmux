@@ -24,12 +24,17 @@ struct WaveformViewerTheme: Equatable {
 }
 
 /// Hosts the bundled VaporView waveform viewer (`Resources/vaporview`) for a
-/// `.vcd`, `.fst` or `.ghw` file preview.
+/// `.vcd`, `.fst`, `.ghw` or `.fsdb` file preview.
 ///
 /// The page runs VaporView's webview and its wellen WebAssembly parser. This
 /// session serves the page and the file through `WaveformViewerSchemeHandler`
 /// (range reads from disk), tells the page which file to open once it reports
 /// ready, and keeps one WebKit view per panel across SwiftUI remounts.
+///
+/// An FSDB file on an SSH workspace is never downloaded: the session runs
+/// `WaveformFSDBHelper` on the host (one per open viewer) and relays the
+/// page's requests to it. Verdi’s reader does not run on macOS, so a local
+/// FSDB file shows a message instead.
 @MainActor
 final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     static let messageHandlerName = "cmuxWaveform"
@@ -40,6 +45,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private var loadedRevision: Int?
     private var theme: WaveformViewerTheme?
     private var isPageReady = false
+    private weak var panel: FilePreviewPanel?
+    private var fsdbHelper: WaveformFSDBHelper?
     private var webContentProcessRecoveryAttempts = 0
     private let maxWebContentProcessRecoveryAttempts = 2
 
@@ -80,6 +87,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             webView.removeFromSuperview()
         }
         webView = nil
+        stopFSDBHelper()
         schemeHandler.stopServing()
         fileURL = nil
         loadedRevision = nil
@@ -130,6 +138,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 evaluate(function: "setTheme", argument: theme.scriptValue)
             }
         }
+        self.panel = panel
         let url = panel.fileURL
         if fileURL != url || loadedRevision != revision {
             // A new revision means the file changed on disk or was refreshed:
@@ -143,6 +152,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private func loadPage() {
         guard let webView else { return }
         isPageReady = false
+        stopFSDBHelper()
         schemeHandler.stopServing()
         guard schemeHandler.hasAssets else {
             webView.loadHTMLString(Self.missingAssetsHTML(), baseURL: nil)
@@ -153,17 +163,146 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
 
     private func openFileInPage() {
         guard let fileURL else { return }
-        let servedURL = schemeHandler.serve(fileURL: fileURL)
-        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         if let theme {
             evaluate(function: "setTheme", argument: theme.scriptValue)
         }
+        let format = fileURL.pathExtension.lowercased()
+        if format == "fsdb" {
+            var argument: [String: Any] = [
+                "url": fileURL.absoluteString,
+                "format": format,
+                "strings": Self.localizedStrings(),
+            ]
+            // Resolved now, not at configure time: Files sets the remote lease
+            // right after it creates the panel.
+            if let remoteFSDB = panel.flatMap(RemoteFSDB.resolve(panel:)), let relayURL = startFSDBHelper(for: remoteFSDB) {
+                argument["fsdb"] = ["url": relayURL.absoluteString, "path": remoteFSDB.remotePath]
+            }
+            evaluate(function: "open", argument: argument)
+            return
+        }
+        let servedURL = schemeHandler.serve(fileURL: fileURL)
+        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         evaluate(function: "open", argument: [
             "url": servedURL.absoluteString,
             "size": size,
-            "format": fileURL.pathExtension.lowercased(),
+            "format": format,
             "strings": Self.localizedStrings(),
         ])
+    }
+
+    // MARK: Remote FSDB
+
+    /// Where a remote FSDB preview lives: its path on the host and the workspace's SSH route.
+    struct RemoteFSDB {
+        let remotePath: String
+        let host: String
+        let sshArguments: WaveformFSDBHelper.SSHArguments
+
+        static func resolve(panel: FilePreviewPanel) -> RemoteFSDB? {
+            guard panel.fileURL.pathExtension.lowercased() == "fsdb",
+                  let remotePath = panel.cloudPreviewRemotePath,
+                  panel.cloudPreviewProviderIdentity?.hasPrefix("ssh:") == true,
+                  let configuration = AppDelegate.shared?.workspaceFor(tabId: panel.workspaceId)?.remoteConfiguration,
+                  configuration.transport == .ssh else { return nil }
+            // The same batch route as the Files explorer and the remote language
+            // server: it reuses the `cmux ssh` ControlPath.
+            let options = configuration.fileOperationSSHOptions
+            return RemoteFSDB(remotePath: remotePath, host: configuration.destination) { command in
+                configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: options)
+            }
+        }
+    }
+
+    private func startFSDBHelper(for remote: RemoteFSDB) -> URL? {
+        guard let resourceRoot = WaveformFSDBHelper.bundledResourceRoot() else { return nil }
+        stopFSDBHelper()
+        let host = remote.host
+        let helper = WaveformFSDBHelper(sshArguments: remote.sshArguments, resourceRoot: resourceRoot) { [weak self] status in
+            Task { @MainActor [weak self] in self?.showFSDBStatus(status, host: host) }
+        }
+        fsdbHelper = helper
+        return schemeHandler.serve(fsdbRelay: { body in
+            do {
+                return WaveformSchemeResponse.fsdb(try await helper.request(body))
+            } catch {
+                return WaveformSchemeResponse.fsdbError(Self.fsdbFailureMessage(error, host: host))
+            }
+        })
+    }
+
+    private func stopFSDBHelper() {
+        fsdbHelper?.stop()
+        fsdbHelper = nil
+    }
+
+    private func showFSDBStatus(_ status: WaveformFSDBHelper.Status, host: String) {
+        guard isPageReady, fsdbHelper != nil else { return }
+        let title: String
+        let detail: String
+        switch status {
+        case .connecting:
+            title = String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…")
+            detail = ""
+        case .building:
+            title = String(localized: "filePreview.waveform.fsdbBuilding", defaultValue: "Setting up the FSDB reader…")
+            detail = String(
+                format: String(
+                    localized: "filePreview.waveform.fsdbBuildingDetail",
+                    defaultValue: "First FSDB file on %@: cmux is building Verdi’s FSDB reader there. Later files open right away."
+                ),
+                host
+            )
+        }
+        evaluate(function: "setStatus", argument: ["title": title, "detail": detail])
+    }
+
+    /// A message for a failed helper start or request, with the host's own output as detail.
+    static func fsdbFailureMessage(_ error: Error, host: String) -> String {
+        let summary: String
+        var detail = ""
+        switch error as? WaveformFSDBHelper.Failure {
+        case .setupFailed(let code, let output)?:
+            detail = output
+            switch code {
+            case 10:
+                summary = String(
+                    localized: "filePreview.waveform.fsdbNoVerdi",
+                    defaultValue: "Verdi’s FSDB reader was not found on %@. Load the Synopsys module or set VERDI_HOME in your shell startup file there."
+                )
+            case 11:
+                summary = String(
+                    localized: "filePreview.waveform.fsdbNoNode",
+                    defaultValue: "Node.js 18 or later was not found on %@. Install it there, or set CMUX_FSDB_NODE to its path in your shell startup file."
+                )
+            case 12:
+                summary = String(
+                    localized: "filePreview.waveform.fsdbNoCompiler",
+                    defaultValue: "No C++ compiler (g++) was found on %@."
+                )
+            default:
+                summary = String(
+                    localized: "filePreview.waveform.fsdbSetupFailed",
+                    defaultValue: "The FSDB reader could not be built on %@."
+                )
+            }
+        case .helperExited(let output)?:
+            detail = output
+            summary = String(
+                localized: "filePreview.waveform.fsdbHelperExited",
+                defaultValue: "The connection to the FSDB reader on %@ ended. Reload to try again."
+            )
+        case .stopped?:
+            summary = String(
+                localized: "filePreview.waveform.fsdbHelperExited",
+                defaultValue: "The connection to the FSDB reader on %@ ended. Reload to try again."
+            )
+        case nil:
+            // The helper's own error for this request (bad file, unreadable dump).
+            return error.localizedDescription
+        }
+        let text = String(format: summary, host)
+        return detail.isEmpty ? text : text + "\n\n" + detail
     }
 
     private func evaluate(function: String, argument: [String: Any]) {
@@ -179,6 +318,14 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             "loading": String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…"),
             "openFailed": String(localized: "filePreview.waveform.openFailed", defaultValue: "Unable to open waveform"),
             "addSignal": String(localized: "filePreview.waveform.addSignal", defaultValue: "Add to viewer"),
+            "fsdbNeedsRemoteTitle": String(
+                localized: "filePreview.waveform.fsdbNeedsRemote",
+                defaultValue: "FSDB files open from an SSH workspace"
+            ),
+            "fsdbNeedsRemoteDetail": String(
+                localized: "filePreview.waveform.fsdbNeedsRemoteDetail",
+                defaultValue: "Reading FSDB needs Verdi’s FSDB reader, which runs only on Linux. Open this file from an SSH workspace on the host where Verdi is installed."
+            ),
         ]
     }
 

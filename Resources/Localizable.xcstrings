@@ -227555,6 +227555,537 @@
         }
       }
     },
+    "filePreview.waveform.fsdbBuilding": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setting up the FSDB reader…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB リーダーを準備しています…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB-Leser wird eingerichtet …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration du lecteur FSDB…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ إعداد قارئ FSDB…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurando el lector de FSDB…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在設定 FSDB 讀取器…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在设置 FSDB 读取器…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB 리더 설정 중…"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbBuildingDetail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "First FSDB file on %@: cmux is building Verdi’s FSDB reader there. Later files open right away."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で初めての FSDB ファイルです。cmux がそこで Verdi の FSDB リーダーをビルドしています。次回以降はすぐに開きます。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erste FSDB-Datei auf %@: cmux erstellt dort den FSDB-Leser von Verdi. Weitere Dateien öffnen sich sofort."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Premier fichier FSDB sur %@ : cmux y compile le lecteur FSDB de Verdi. Les fichiers suivants s’ouvriront immédiatement."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أول ملف FSDB على %@: يبني cmux قارئ FSDB الخاص بـ Verdi هناك. ستُفتح الملفات التالية فورًا."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Primer archivo FSDB en %@: cmux está compilando allí el lector de FSDB de Verdi. Los siguientes archivos se abrirán al instante."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這是 %@ 上的第一個 FSDB 檔案：cmux 正在該主機上建置 Verdi 的 FSDB 讀取器。之後的檔案會立即開啟。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这是 %@ 上的第一个 FSDB 文件：cmux 正在该主机上构建 Verdi 的 FSDB 读取器。之后的文件会立即打开。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 첫 FSDB 파일입니다. cmux가 그곳에서 Verdi의 FSDB 리더를 빌드하고 있습니다. 이후 파일은 바로 열립니다."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbNoVerdi": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi’s FSDB reader was not found on %@. Load the Synopsys module or set VERDI_HOME in your shell startup file there."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で Verdi の FSDB リーダーが見つかりませんでした。そのホストで Synopsys モジュールを読み込むか、シェルの起動ファイルで VERDI_HOME を設定してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der FSDB-Leser von Verdi wurde auf %@ nicht gefunden. Lade dort das Synopsys-Modul oder setze VERDI_HOME in deiner Shell-Startdatei."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le lecteur FSDB de Verdi est introuvable sur %@. Chargez-y le module Synopsys ou définissez VERDI_HOME dans le fichier de démarrage de votre shell."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُعثر على قارئ FSDB الخاص بـ Verdi على %@. حمّل وحدة Synopsys أو اضبط VERDI_HOME في ملف بدء تشغيل الصدفة هناك."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontró el lector de FSDB de Verdi en %@. Carga allí el módulo de Synopsys o define VERDI_HOME en el archivo de inicio de tu shell."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上找不到 Verdi 的 FSDB 讀取器。請在該主機上載入 Synopsys 模組，或在 shell 啟動檔中設定 VERDI_HOME。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上找不到 Verdi 的 FSDB 读取器。请在该主机上加载 Synopsys 模块，或在 shell 启动文件中设置 VERDI_HOME。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 Verdi의 FSDB 리더를 찾을 수 없습니다. 그곳에서 Synopsys 모듈을 로드하거나 셸 시작 파일에 VERDI_HOME을 설정하세요."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbNoNode": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Node.js 18 or later was not found on %@. Install it there, or set CMUX_FSDB_NODE to its path in your shell startup file."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で Node.js 18 以降が見つかりませんでした。そのホストにインストールするか、シェルの起動ファイルで CMUX_FSDB_NODE にそのパスを設定してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Node.js 18 oder neuer wurde auf %@ nicht gefunden. Installiere es dort oder setze CMUX_FSDB_NODE in deiner Shell-Startdatei auf seinen Pfad."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Node.js 18 ou version ultérieure est introuvable sur %@. Installez-le sur cet hôte ou définissez CMUX_FSDB_NODE sur son chemin dans le fichier de démarrage de votre shell."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُعثر على Node.js 18 أو أحدث على %@. ثبّته هناك، أو اضبط CMUX_FSDB_NODE على مساره في ملف بدء تشغيل الصدفة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontró Node.js 18 o posterior en %@. Instálalo allí o define CMUX_FSDB_NODE con su ruta en el archivo de inicio de tu shell."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上找不到 Node.js 18 或更新版本。請在該主機上安裝，或在 shell 啟動檔中將 CMUX_FSDB_NODE 設為其路徑。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上找不到 Node.js 18 或更高版本。请在该主机上安装，或在 shell 启动文件中将 CMUX_FSDB_NODE 设为其路径。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 Node.js 18 이상을 찾을 수 없습니다. 그곳에 설치하거나 셸 시작 파일에서 CMUX_FSDB_NODE를 해당 경로로 설정하세요."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbNoCompiler": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No C++ compiler (g++) was found on %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で C++ コンパイラ（g++）が見つかりませんでした。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auf %@ wurde kein C++-Compiler (g++) gefunden."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun compilateur C++ (g++) n’a été trouvé sur %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُعثر على مترجم C++ (g++) على %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontró ningún compilador de C++ (g++) en %@."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上找不到 C++ 編譯器（g++）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上找不到 C++ 编译器（g++）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 C++ 컴파일러(g++)를 찾을 수 없습니다."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbSetupFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The FSDB reader could not be built on %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で FSDB リーダーをビルドできませんでした。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der FSDB-Leser konnte auf %@ nicht erstellt werden."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de compiler le lecteur FSDB sur %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر بناء قارئ FSDB على %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo compilar el lector de FSDB en %@."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法在 %@ 上建置 FSDB 讀取器。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %@ 上构建 FSDB 读取器。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 FSDB 리더를 빌드할 수 없습니다."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbHelperExited": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection to the FSDB reader on %@ ended. Reload to try again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ の FSDB リーダーとの接続が終了しました。再読み込みしてもう一度お試しください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Verbindung zum FSDB-Leser auf %@ wurde beendet. Lade neu, um es erneut zu versuchen."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La connexion au lecteur FSDB sur %@ s’est interrompue. Rechargez pour réessayer."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "انتهى الاتصال بقارئ FSDB على %@. أعد التحميل للمحاولة مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La conexión con el lector de FSDB en %@ terminó. Vuelve a cargar para intentarlo de nuevo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "與 %@ 上 FSDB 讀取器的連線已結束。請重新載入後再試一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与 %@ 上 FSDB 读取器的连接已结束。请重新加载后再试一次。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 FSDB 리더와의 연결이 끊어졌습니다. 다시 불러와서 시도하세요."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbNeedsRemote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB files open from an SSH workspace"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB ファイルは SSH ワークスペースから開きます"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB-Dateien werden aus einem SSH-Workspace geöffnet"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les fichiers FSDB s’ouvrent depuis un espace de travail SSH"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تُفتح ملفات FSDB من مساحة عمل SSH"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los archivos FSDB se abren desde un espacio de trabajo SSH"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB 檔案需從 SSH 工作區開啟"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB 文件需从 SSH 工作区打开"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB 파일은 SSH 작업 공간에서 엽니다"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbNeedsRemoteDetail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading FSDB needs Verdi’s FSDB reader, which runs only on Linux. Open this file from an SSH workspace on the host where Verdi is installed."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB の読み込みには Linux でのみ動作する Verdi の FSDB リーダーが必要です。Verdi がインストールされたホストの SSH ワークスペースからこのファイルを開いてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zum Lesen von FSDB wird der FSDB-Leser von Verdi benötigt, der nur unter Linux läuft. Öffne diese Datei aus einem SSH-Workspace auf dem Host, auf dem Verdi installiert ist."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La lecture des fichiers FSDB nécessite le lecteur FSDB de Verdi, qui ne fonctionne que sous Linux. Ouvrez ce fichier depuis un espace de travail SSH sur l’hôte où Verdi est installé."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تتطلب قراءة FSDB قارئ FSDB الخاص بـ Verdi، الذي يعمل على Linux فقط. افتح هذا الملف من مساحة عمل SSH على المضيف المثبت عليه Verdi."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leer FSDB requiere el lector de FSDB de Verdi, que solo funciona en Linux. Abre este archivo desde un espacio de trabajo SSH en el host donde está instalado Verdi."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "讀取 FSDB 需要 Verdi 的 FSDB 讀取器，而它只能在 Linux 上執行。請從安裝了 Verdi 的主機的 SSH 工作區開啟此檔案。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "读取 FSDB 需要 Verdi 的 FSDB 读取器，而它只能在 Linux 上运行。请从安装了 Verdi 的主机的 SSH 工作区打开此文件。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB를 읽으려면 Linux에서만 실행되는 Verdi의 FSDB 리더가 필요합니다. Verdi가 설치된 호스트의 SSH 작업 공간에서 이 파일을 여세요."
+          }
+        }
+      }
+    },
     "filePreview.revert": {
       "extractionState": "manual",
       "localizations": {

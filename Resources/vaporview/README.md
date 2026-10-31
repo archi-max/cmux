@@ -1,7 +1,8 @@
 # Waveform viewer (VaporView)
 
-The waveform viewer that cmux opens for `.vcd`, `.fst` and `.ghw` files is
-VaporView's webview, built from source and hosted in a WKWebView without VS Code.
+The waveform viewer that cmux opens for `.vcd`, `.fst`, `.ghw` and `.fsdb`
+files is VaporView's webview, built from source and hosted in a WKWebView
+without VS Code.
 
 - Upstream: https://github.com/Lramseyer/vaporview
 - Commit: `59107c60c9ee5eefa95750b95369753736b77ca4` (tag `1.6.1-beta`)
@@ -52,13 +53,33 @@ The bundled npm and Rust dependencies, with their licenses, are listed under
   netlist tree in place of VS Code's TreeView. VaporView's VS Code context
   menus and keybindings (contributed in its `package.json`) are not
   reimplemented yet.
+- `host.js` also reads FSDB files through cmux's FSDB helper (below) and
+  delivers every signal's value changes through one function that dispatches
+  the message event on the same-origin viewer frame instead of posting it, so
+  large signals are not structured-cloned. FSDB value changes arrive as
+  packed records and are decoded with one shared string per distinct value.
+- `fsdb-helper/` (new): what cmux uploads to an SSH host to read FSDB there.
+  `fsdb-helper.js` is adapted from `src/extension_core/fsdb_worker.ts`: the
+  same addon calls, served over the ssh stdio channel (newline-delimited JSON
+  requests; replies on fd 3, because Verdi's reader prints to stdout) instead
+  of Node IPC, with the scope/variable walk done in the helper and signal data
+  sent as deflated `[u64 delta time][value chars]` records. `fsdb_reader.cpp`
+  is upstream `src/fsdb_reader.cpp`, unmodified; `packed.cpp.inc` adds
+  `getValueChangesPacked`, which returns a signal's value changes as one
+  packed buffer, and `build.sh` splices it in before `Init()` and compiles
+  the addon on the host with `g++` against that host's Verdi (in place of
+  `binding.gyp`/node-gyp, without `-static-libstdc++`). `fsdb-helper.sh`
+  starts it. `third_party/` holds the node-addon-api 8.6.0 and
+  node-api-headers 1.9.0 headers (MIT) the build needs.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and
   foreground with the panel's colors.
 
 The Swift side (`Sources/Panels/FilePreviewWaveformSession.swift`,
 `Sources/Panels/WaveformViewerSchemeHandler.swift`) serves this folder and the
-opened file over the `cmux-waveform:` URL scheme.
+opened file over the `cmux-waveform:` URL scheme, and
+`Sources/Panels/WaveformFSDBHelper.swift` installs and runs the FSDB helper on
+an SSH workspace's host and relays the page's FSDB requests to it.
 
 ## Updating
 
