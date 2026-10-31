@@ -616,7 +616,7 @@ enum WaveformSourceLink {
         session: LanguageServerSession,
         waveform: FilePreviewPanel,
         state: TopLevelState,
-        progress: @MainActor @Sendable (String) -> Void
+        progress: @escaping @MainActor @Sendable (String) -> Void
     ) async -> Bool {
         // getScope("") also lists packages; only instances are tops.
         guard let tops = try? await session.slangScopeChildren(""), tops.allSatisfy({ $0.kind == "Package" }) else { return false }
@@ -682,7 +682,7 @@ enum WaveformSourceLink {
     private static func autoPickProfile(
         session: LanguageServerSession,
         waveform: FilePreviewPanel,
-        progress: @MainActor @Sendable (String) -> Void
+        progress: @escaping @MainActor @Sendable (String) -> Void
     ) async -> Bool {
         let tops = (await Self.dumpChildren([], in: waveform) ?? []).filter(\.isScope).map(\.name)
         guard !tops.isEmpty else { return false }
