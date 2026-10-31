@@ -384,6 +384,24 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     let r7 = await rows()
     expect(r7.contains("[Locals]") && r7.contains("Locals/top.core.alu.acc") && !r7.contains { $0.hasSuffix("top.core.valid") }, "stop leaves the user's Locals: \(r7)")
+    // A 1-bit vector the dump names with its range (VCS writes [N-1:0] with N=1 as req[0:0] into FSDB;
+    // wellen drops the range, so the check renames the item): it is found by its RTL name.
+    let ranged = await call("""
+      const h = cmuxWaveform.host;
+      const ports = (await h.getChildren(h.doc.netlist.find((x) => x.name === 'top'))).find((x) => x.name === 'ports');
+      const req = (await h.getChildren(ports)).find((x) => x.name === 'req');
+      req.name = 'req[0:0]';
+      try {
+        // (Values come through wellen by path, which knows only req: the lookup is checked here.)
+        const found = async (p) => { const v = await h.findLinkItem(p, true); return v ? v.netlistId === req.netlistId : null; };
+        return { values: [await found(['top', 'ports', 'req']), await found(['top', 'ports', 'req[0:0]']), await found(['top', 'ports', 're'])],
+          has: await cmuxWaveform.link.hasSignal(['top', 'ports', 'req']) };
+      } finally { req.name = 'req'; }
+    """) as? [String: Any]
+    let rangedValues = ranged?["values"] as? [Any]
+    expect(rangedValues?.count == 3 && rangedValues?[0] as? Bool == true && rangedValues?[1] as? Bool == true
+           && rangedValues?[2] is NSNull && ranged?["has"] as? Bool == true,
+           "req finds req[0:0] (a prefix like re does not): \(String(describing: ranged))")
     // A reload while the clock is still being read: no warning, since the reload owns the page.
     let raced = await call("""
       const toasts = [];
