@@ -19,6 +19,10 @@ struct SlangIncludeFragmentTests {
       `include `SUB_DEFS
     endmodule
 
+    /// A port whose width depends on a parameter: one declaration for every instance's width.
+    module psub #(parameter W = 1) (input logic [W-1:0] d);
+    endmodule
+
     """
 
     /// Included by tb_wrapper through a define, like a TB_FILE testbench body.
@@ -41,6 +45,16 @@ struct SlangIncludeFragmentTests {
         `include `BODY_FILE
         logic [1:0] spare;
         sub w (.clk (clk), .q (spare[1]));
+        logic [3:0] wide;
+        sub nw (.clk (wide[0]), .q (wide));
+        logic pd1;
+        logic [1:0] pd2;
+        psub #(.W(2)) p2 (.d (pd2));
+        psub p1 (.d (pd1));
+        logic gq;
+        for (genvar i = 0; i < 1; i++) begin : g
+            sub u (.clk (clk), .q (gq));
+        end
     endmodule
 
     """
@@ -222,6 +236,33 @@ struct SlangIncludeFragmentTests {
         let connections = S.portConnections(inInstanceText: "u0 (\n  .a (x), // .z (no)\n  .b(y[1]),\n  .c, .*\n)")
         #expect(connections.map(\.port) == ["a", "b", "c"])
         #expect(connections.map(\.signal) == ["x", nil, "c"])
+        // A positional connection's member select is not a named port.
+        #expect(S.portConnections(inInstanceText: "u (top.sig, s.f, q)").isEmpty)
+        #expect(S.portConnections(inInstanceText: "u (.a (s.f), .b)").map(\.port) == ["a", "b"])
+    }
+
+    @Test func aTaskCallsNamedArgumentIsNotAPortName() {
+        typealias S = LanguageServerSession
+        for text in ["initial begin foo(.a(x)); end\n", "always @(posedge clk) if (c) foo(.a(x));\n", "function f; return foo(.a(x)); endfunction\n", "initial #5 foo(.a(x));\n"] {
+            let units = Array(text.utf16)
+            let offset = units.count - Array(text[text.range(of: ".a(x)")!.lowerBound...].utf16).count + 1
+            #expect(S.portConnection(in: text, at: offset) == nil)
+        }
+        // An instance after a parameter list, and the second instance of one statement, still are.
+        let text = "sub #(W) u (.a(x)), v (.b(y));\n"
+        let units = Array(text.utf16)
+        func offset(of needle: String) -> Int { units.count - Array(text[text.range(of: needle)!.lowerBound...].utf16).count + 1 }
+        #expect(S.portConnection(in: text, at: offset(of: ".a(x)"))?.instance == "u")
+        #expect(S.portConnection(in: text, at: offset(of: ".b(y)"))?.instance == "v")
+    }
+
+    @Test func aMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
+        try await Self.withFixture { fixture in
+            // sub `include`s `SUB_DEFS (defs.svh), not the fragment; tb_wrapper includes body.sv through `BODY_FILE.
+            let sub = fixture.root.appendingPathComponent("sub.sv")
+            #expect(await fixture.session.includeMatch(of: fixture.fragment, inDeclaringFile: sub) == nil)
+            #expect(await fixture.session.includeMatch(of: fixture.body, inDeclaringFile: fixture.wrapper) == .exact)
+        }
     }
 
     @Test func aNetsPortAliasesArePlainWholeNetConnections() async throws {
@@ -234,6 +275,14 @@ struct SlangIncludeFragmentTests {
             // A slice is not the same net.
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.w.q").isEmpty)
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.spare").isEmpty)
+            // A connection between different widths is not the same net.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.wide").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.nw.q").isEmpty)
+            // A width that depends on a parameter can't be checked from the declaration: skipped.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.pd1").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.pd2").isEmpty)
+            // Inside a generate block the parent's signal is declared further up: not guessed.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.g[0].u.q").isEmpty)
         }
     }
 
