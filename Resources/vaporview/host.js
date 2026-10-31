@@ -337,6 +337,52 @@
         }
         return out;
       },
+      // A 1-bit variable's rising-edge times (Float64Array) for the debugger, scanned
+      // from the helper's records without a value per change; throws past maxEdges.
+      async signalPosedges(v, maxEdges) {
+        const drawn = drawnChanges.get(v.signalId);
+        let edges = new Float64Array(1024);
+        let n = 0;
+        const add = (time) => {
+          if (n >= maxEdges) { throw new Error('too many clock edges'); }
+          if (n === edges.length) { const grown = new Float64Array(edges.length * 2); grown.set(edges); edges = grown; }
+          edges[n++] = time;
+        };
+        if (drawn) {
+          let previous = null;
+          for (const [time, value] of drawn) {
+            if (value === '1' && previous !== null && previous !== '1') { add(Number(time)); }
+            previous = value;
+          }
+          return edges.slice(0, n);
+        }
+        const { result, bin } = await request({ cmd: 'signals', signalIds: [v.signalId], widths: [v.width] });
+        const d = result[0];
+        if (!d) { return new Float64Array(0); }
+        if (d.valueChanges) {
+          let previous = null;
+          for (const [time, value] of d.valueChanges) {
+            const s = String(value);
+            if (s === '1' && previous !== null && previous !== '1') { add(Number(time)); }
+            previous = s;
+          }
+          return edges.slice(0, n);
+        }
+        // Half the changes of a clock are rising edges: refuse before inflating.
+        if (d.count > maxEdges * 2 + 2) { throw new Error('too many clock edges'); }
+        const raw = await inflateRaw(bin.subarray(0, d.bytes));
+        const rec = 8 + d.width;
+        const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        let time = 0;
+        let previous = -1;
+        for (let i = 0; i + rec <= raw.length; i += rec) {
+          time += dv.getUint32(i, true) + dv.getUint32(i + 4, true) * 4294967296;
+          const value = d.width === 1 ? raw[i + 8] : -2;
+          if (value === 0x31 && previous !== -1 && previous !== 0x31) { add(time); }
+          previous = value;
+        }
+        return edges.slice(0, n);
+      },
       // [[time, value], ...] of one variable for the page (cmux-debugger.js): what
       // the viewer was given when it draws it, else read from the helper; null past maxChanges.
       async signalChanges(v, maxChanges) {

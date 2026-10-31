@@ -691657,6 +691657,65 @@
           }
         }
       }
+    },
+    "waveformDebugger.tooManyEdges": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This clock has too many cycles to step (more than 10 million), or its changes could not be read."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تحتوي هذه الساعة على دورات أكثر من أن يُتنقّل بينها (أكثر من 10 ملايين)، أو تعذرت قراءة تغييراتها."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Takt hat zu viele Zyklen zum Durchlaufen (mehr als 10 Millionen), oder seine Änderungen konnten nicht gelesen werden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este reloj tiene demasiados ciclos para avanzar paso a paso (más de 10 millones) o no se pudieron leer sus cambios."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette horloge a trop de cycles pour être parcourue pas à pas (plus de 10 millions), ou ses changements n’ont pas pu être lus."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このクロックはステップ実行するにはサイクルが多すぎる（1,000万を超える）か、変化を読み取れませんでした。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 클록은 단계별로 이동하기에 사이클이 너무 많거나(1,000만 개 초과) 변경 내용을 읽을 수 없습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此时钟的周期太多，无法逐步执行（超过 1000 万个），或无法读取其变化。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此時脈的週期太多，無法逐步執行（超過 1000 萬個），或無法讀取其變化。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
