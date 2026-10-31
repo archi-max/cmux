@@ -623,7 +623,7 @@ enum WaveformSourceLink {
         guard let items = result as? [[String: Any]] else { return nil }
         return items.prefix(maxScopeChildren).compactMap { item in
             guard let name = item["name"] as? String, !name.isEmpty, name.utf16.count <= maxSegmentLength else { return nil }
-            return HierarchyNode(name: name, isScope: item["isScope"] as? Bool ?? false)
+            return HierarchyNode(name: name, isScope: item["isScope"] as? Bool ?? false, width: (item["width"] as? NSNumber)?.intValue)
         }
     }
 

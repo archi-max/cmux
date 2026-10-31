@@ -728,7 +728,7 @@
   // array of segments (["top_tb", "dut", "pc"]), so names holding dots
   // (escaped identifiers, "\a.b ") survive; cmux maps them to and from design
   // paths. Escaped names match with or without their backslash and trailing space.
-  //   scopeChildren(path) -> [{ name, isScope }] | null   ([] lists the tops; at most 5000)
+  //   scopeChildren(path) -> [{ name, isScope, width? }] | null   ([] lists the tops; at most 5000)
   //   hasSignal(path) -> bool
   //   addSignal(path) -> bool   adds it unless shown, then selects it
   //   addScope({ path, confirmed }) -> { added, total } | { needsConfirm, count, total } | null
@@ -765,7 +765,13 @@
       return s.startsWith('\\') ? s.slice(1).trimEnd() : s;
     };
     // FSDB from VCS names a 1-bit vector declared [N-1:0] with N=1 with its range (dfp_read[0:0]).
-    const withoutRange = (name) => plainName(name).replace(/\[\d+(?::\d+)?\]$/, '');
+    // Only a [msb:lsb] as wide as the variable is its own range: an index (mem[3]) or a narrower
+    // part-select is another signal.
+    const withoutRange = (item) => {
+      const name = plainName(item.name);
+      const m = /^(.*)\[(\d+):(\d+)\]$/.exec(name);
+      return m && m[1] && Math.abs(Number(m[2]) - Number(m[3])) + 1 === Number(item.width) ? m[1] : name;
+    };
 
     function segments(path) {
       if (Array.isArray(path)) { return path.map(String); }
@@ -780,7 +786,7 @@
         const last = i === parts.length - 1;
         let named = items.filter((x) => x.name === parts[i]);
         if (!named.length) { named = items.filter((x) => plainName(x.name) === plainName(parts[i])); }
-        if (!named.length && last) { named = items.filter((x) => x.kind === 'var' && withoutRange(x.name) === plainName(parts[i])); }
+        if (!named.length && last) { named = items.filter((x) => x.kind === 'var' && withoutRange(x) === plainName(parts[i])); }
         if (last) {
           return named.find((x) => x.kind === 'var') || (varOnly ? null : named.find((x) => x.kind === 'scope') || null);
         }
@@ -799,7 +805,7 @@
         if (!scope || scope.kind !== 'scope') { return null; }
         items = await getChildren(scope);
       }
-      return items.slice(0, maxChildren).map((x) => ({ name: x.name, isScope: x.kind === 'scope' }));
+      return items.slice(0, maxChildren).map((x) => (x.kind === 'var' ? { name: x.name, isScope: false, width: x.width } : { name: x.name, isScope: x.kind === 'scope' }));
     }
 
     // netlistIds of the shown rows, inside groups too. pinnedOnly: not the
