@@ -693014,6 +693014,537 @@
           }
         }
       }
+    },
+    "waveformDebugger.waitForEditor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Play Waits for the Editor"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التشغيل ينتظر المحرر"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiedergabe wartet auf den Editor"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La reproducción espera al editor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La lecture attend l’éditeur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再生時にエディタを待つ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "재생 시 편집기 대기"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放时等待编辑器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放時等待編輯器"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: %@ files"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: %@ ملفات"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: %@ Dateien"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: %@ archivos"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL : %@ fichiers"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: %@ 個のファイル"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: 파일 %@개"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL：%@ 个文件"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL：%@ 個檔案"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.noEditor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: open a SystemVerilog file of this design to follow it"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: افتح ملف SystemVerilog من هذا التصميم لمتابعته"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: Öffne eine SystemVerilog-Datei dieses Designs, um ihm zu folgen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: abre un archivo SystemVerilog de este diseño para seguirlo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL : ouvrez un fichier SystemVerilog de ce design pour le suivre"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: 追従するには、この設計の SystemVerilog ファイルを開いてください"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: 따라가려면 이 설계의 SystemVerilog 파일을 여세요"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL：打开此设计的 SystemVerilog 文件以跟随"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL：開啟此設計的 SystemVerilog 檔案以跟隨"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.noValues": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: no values for the lines on screen"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: لا توجد قيم للأسطر المعروضة"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: keine Werte für die sichtbaren Zeilen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: no hay valores para las líneas visibles"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL : aucune valeur pour les lignes affichées"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: 表示中の行に値がありません"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL: 화면의 줄에 값이 없습니다"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL：屏幕上的行没有值"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTL：畫面上的行沒有值"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.noneDumped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the waveform has no signals under %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي الشكل الموجي على إشارات ضمن %@."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Wellenform hat keine Signale unter %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la forma de onda no tiene señales bajo %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le chronogramme n’a aucun signal sous %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形に %@ の下の信号がありません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형에 %@ 아래의 신호가 없습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形中没有 %@ 下的信号。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形中沒有 %@ 底下的訊號。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.notPlaced": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ isn’t placed in the design. Set a top level or build file in .slang/server.json."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُحدَّد موضع %@ في التصميم. عيّن مستوى أعلى أو ملف بناء في .slang/server.json."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht im Design platziert. Lege in .slang/server.json eine Top-Ebene oder Build-Datei fest."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está ubicado en el diseño. Define un nivel superior o un archivo de compilación en .slang/server.json."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’est pas placé dans le design. Définissez un niveau supérieur ou un fichier de build dans .slang/server.json."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は設計内に配置されていません。.slang/server.json でトップレベルまたはビルドファイルを設定してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@이(가) 설계에 배치되지 않았습니다. .slang/server.json에서 최상위 또는 빌드 파일을 설정하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 未放入设计中。请在 .slang/server.json 中设置顶层或构建文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 未放入設計中。請在 .slang/server.json 中設定頂層或建置檔案。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.onlyShown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no values. Turn on View > Show FSDB Values for Signals Not in the Waveform."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد قيم. فعّل العرض > إظهار قيم FSDB للإشارات غير الموجودة في الشكل الموجي."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "keine Werte. Aktiviere Ansicht > FSDB-Werte für Signale außerhalb der Wellenform anzeigen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sin valores. Activa Vista > Mostrar valores FSDB de señales que no están en la forma de onda."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "aucune valeur. Activez Présentation > Afficher les valeurs FSDB des signaux absents du chronogramme."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "値がありません。「表示」>「波形にない信号の FSDB 値を表示」をオンにしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "값이 없습니다. 보기 > 파형에 없는 신호의 FSDB 값 표시를 켜세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有值。请打开“视图”>“显示不在波形中的信号的 FSDB 值”。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有值。請開啟「顯示方式」>「顯示不在波形中訊號的 FSDB 值」。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.severalInstances": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ has several instances. Right-click and choose Show Waveform Values For."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لـ %@ عدة نسخ. انقر بزر الماوس الأيمن واختر «إظهار قيم الشكل الموجي لـ»."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ hat mehrere Instanzen. Klicke mit der rechten Maustaste und wähle „Wellenformwerte anzeigen für“."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tiene varias instancias. Haz clic derecho y elige «Mostrar valores de la forma de onda de»."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ a plusieurs instances. Faites un clic droit et choisissez « Afficher les valeurs du chronogramme pour »."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ には複数のインスタンスがあります。右クリックして「波形の値を表示するインスタンス」を選んでください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에 인스턴스가 여러 개 있습니다. 오른쪽 클릭 후 파형 값을 표시할 인스턴스를 선택하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 有多个实例。请右键点按并选取“显示波形值的实例”。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 有多個實例。請按右鍵並選擇「顯示波形值的實例」。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.rtl.waiting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "waiting for the editor"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "في انتظار المحرر"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "wartet auf den Editor"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "esperando al editor"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en attente de l’éditeur"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エディタを待機中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "편집기를 기다리는 중"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待编辑器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待編輯器"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

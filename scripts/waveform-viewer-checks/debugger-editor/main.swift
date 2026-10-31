@@ -274,6 +274,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     page.rtlShownTimes.removeAll()
     FilePreviewLanguageFeatures.all = []
     WaveformDebuggerRTLStatus.report(waveform)
+    await settle()
     let none = page.rtlStatuses.last
     expect(none?["ok"] as? Bool == false && none?["wait"] as? Bool == false && (none?["text"] as? String)?.contains("SystemVerilog") == true,
            "no editor: says to open one, and play does not wait: \(String(describing: none))")

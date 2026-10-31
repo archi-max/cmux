@@ -73,6 +73,8 @@ extension WaveformDebugger {
 /// equivalents and no `.disabled` (SwiftUI can't observe the focused panel):
 /// a command beeps when neither a waveform viewer nor a SystemVerilog editor next to one has focus.
 struct WaveformDebuggerMenu: View {
+    @AppStorage(WaveformDebuggerRTLStatus.waitForEditorKey) private var waitsForEditor = true
+
     var body: some View {
         Menu(String(localized: "menu.view.waveformDebugger", defaultValue: "Waveform Debugger")) {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
@@ -83,6 +85,12 @@ struct WaveformDebuggerMenu: View {
                     }
                 }
             }
+            Divider()
+            Toggle(
+                String(localized: "waveformDebugger.waitForEditor", defaultValue: "Play Waits for the Editor"),
+                isOn: $waitsForEditor
+            )
+            .onChange(of: waitsForEditor) { _, _ in WaveformDebugger.waitForEditorChanged() }
         }
     }
 }

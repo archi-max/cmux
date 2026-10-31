@@ -27,6 +27,8 @@ enum WaveformDebuggerEditorHighlights {
         /// Per module: name → value at `time`.
         let values: [String: [String: String]]
         let instances: [String: Instance]
+        /// Per module without values: why.
+        var reasons: [String: WaveformDebuggerRTLStatus.Reason] = [:]
     }
 
     @MainActor private final class Drawn {
@@ -130,9 +132,16 @@ enum WaveformDebuggerEditorHighlights {
         // The text the lines were scanned from: an edit before the task runs makes them stale too.
         let text = textView.string
         job.task = Task { @MainActor in
-            guard let result = await cycleHighlights(shown, text: text), !Task.isCancelled else { return }
-            apply(result.highlights, lines: shown.lines, in: textView)
-            setRows(result.rows, from: shown.editor, in: shown.waveform)
+            let result = await cycleHighlights(shown, text: text)
+            guard !Task.isCancelled else { return }
+            if let result {
+                apply(result.highlights, lines: shown.lines, in: textView)
+                setRows(result.rows, from: shown.editor, in: shown.waveform)
+            }
+            WaveformDebuggerRTLStatus.editorDone(
+                shown.editor, waveform: shown.waveform, time: shown.time,
+                drew: shown.values.values.contains { !$0.isEmpty }, reasons: shown.reasons
+            )
         }
     }
 
