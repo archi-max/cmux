@@ -23,6 +23,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var listEvents: [[[String: Any]]] = []
   var movedEvents: [[String: Any]] = []
   var openedCount = 0
+  var watchEvents: [[String]] = []
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -265,6 +266,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "a signal row's context menu has both: \(String(describing: shown))")
 
     await runReviewChecks()
+    await runEvaluateChecks()
     await runLineChecks()
     print(failures == 0 ? "BREAKPOINT CHECKS PASSED" : "BREAKPOINT CHECKS FAILED: \(failures)")
     snap()
@@ -422,6 +424,128 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(unhandled == [], "a failed prompt is caught: \(String(describing: unhandled))")
   }
 
+  func evaluate(_ expr: String, scope: [String]? = nil) async -> [String: Any]? {
+    let scopeJS = scope.map { "[" + $0.map { "'\($0)'" }.joined(separator: ", ") + "]" } ?? "undefined"
+    let escaped = expr.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    return await dbg("evaluate({ expr: \"\(escaped)\", scope: \(scopeJS) })")
+  }
+
+  func watchRows() async -> [[String]] {
+    await call("""
+      const list = document.getElementById('cmux-watches');
+      if (!list || !list.closest('#netlist') || list.hidden) { return []; }
+      return Array.from(list.querySelectorAll('.cmux-watch')).map((r) => [r.querySelector('.label').textContent,
+        r.querySelector('.value').textContent, r.classList.contains('changed') ? 'changed' : '']);
+    """) as? [[String]] ?? []
+  }
+
+  /// Rows once they show `expected` (watches refresh after the marker moves).
+  func watchRows(becoming expected: [[String]]) async -> [[String]] {
+    var rows: [[String]] = []
+    for _ in 0..<40 {
+      rows = await watchRows()
+      if rows == expected { return rows }
+      await sleep(50)
+    }
+    return rows
+  }
+
+  /// Evaluate (an expression at the marker, in the shown instance) and watches.
+  func runEvaluateChecks() async {
+    await removeAll()
+    _ = await dbg("setLocals({ path: ['top'] })")
+    await setMarker(305)
+    var r = await evaluate("data")
+    expect(r?["value"] as? String == "8'ha5" && r?["width"] as? Int == 8, "data at 305 in the shown instance: \(String(describing: r))")
+    r = await evaluate("data + 1")
+    expect(r?["value"] as? String == "32'h000000a6", "data + 1: \(String(describing: r?["value"]))")
+    r = await evaluate("state == 3 && mode[1]")
+    expect(r?["value"] as? String == "1'h1", "state == 3 && mode[1]: \(String(describing: r?["value"]))")
+    r = await evaluate("top.data[7:4]")
+    expect(r?["value"] as? String == "4'ha", "an absolute path and a select: \(String(describing: r?["value"]))")
+    r = await evaluate("irq", scope: ["top"])
+    expect(r?["value"] as? String == "1'h0" && (r?["bits"] as? String) == "0", "a scope given with the call: \(String(describing: r))")
+    r = await evaluate("nope + 1")
+    expect(r?["error"] as? String == "unknownName" && r?["message"] as? String == "nope is not in this waveform (column 1)",
+           "an unknown name: \(String(describing: r))")
+    r = await evaluate("data +")
+    expect(r?["message"] as? String == "Unexpected text (column 7)", "a syntax error says where: \(String(describing: r?["message"]))")
+    await setMarker(505)
+    r = await evaluate("data")
+    expect(r?["value"] as? String == "8'hxx", "x at 505: \(String(describing: r?["value"]))")
+    r = await evaluate("data == 0")
+    expect(r?["value"] as? String == "1'hx", "x compares as x: \(String(describing: r?["value"]))")
+
+    // The strip's field: Enter evaluates; up and down go through what was evaluated.
+    _ = await dbg("step({ by: 0 })")
+    await setMarker(305)
+    let field = await call("""
+      const input = document.querySelector('#status-cycle .cmux-eval input');
+      const result = document.querySelector('#status-cycle .cmux-eval .result');
+      if (!input || !result) { return null; }
+      const key = (k) => input.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      const enter = async (text) => {
+        input.value = text;
+        key('Enter');
+        for (let i = 0; i < 40 && result.dataset.expr !== text; i++) { await new Promise((r) => setTimeout(r, 25)); }
+        return result.textContent;
+      };
+      const first = await enter('data');
+      const second = await enter('mode');
+      input.value = '';
+      key('ArrowUp');
+      const up1 = input.value;
+      key('ArrowUp');
+      const up2 = input.value;
+      key('ArrowDown');
+      const down = input.value;
+      key('ArrowDown');
+      const back = input.value;
+      return [first, second, up1, up2, down, back, input.placeholder];
+    """) as? [String]
+    expect(field == ["= 8'ha5 (width 8)", "= 2'h2 (width 2)", "mode", "data", "mode", "", "Evaluate"],
+           "the field evaluates and keeps a history: \(String(describing: field))")
+
+    // Watches: listed under the breakpoints, refreshed when the marker moves, changes marked.
+    watchEvents.removeAll()
+    await setMarker(295)
+    _ = await dbg("addWatch({ expr: 'data' })")
+    _ = await dbg("addWatch({ expr: 'state + 1' })")
+    _ = await dbg("addWatch({ expr: 'data +' })")
+    var rows = await watchRows(becoming: [["data", "8'h00", ""], ["state + 1", "32'h00000004", ""], ["data +", "Unexpected text (column 7)", ""]])
+    expect(rows == [["data", "8'h00", ""], ["state + 1", "32'h00000004", ""], ["data +", "Unexpected text (column 7)", ""]],
+           "watches listed with their values: \(rows)")
+    _ = await dbg("step({ by: 1 })")
+    rows = await watchRows(becoming: [["data", "8'ha5", "changed"], ["state + 1", "32'h00000004", ""], ["data +", "Unexpected text (column 7)", ""]])
+    expect(rows.first == ["data", "8'ha5", "changed"] && rows.dropFirst().first == ["state + 1", "32'h00000004", ""],
+           "a step refreshes them; the one that changed is marked: \(rows)")
+    _ = await dbg("step({ by: 1 })")
+    rows = await watchRows(becoming: [["data", "8'ha5", ""], ["state + 1", "32'h00000004", ""], ["data +", "Unexpected text (column 7)", ""]])
+    expect(rows.first == ["data", "8'ha5", ""], "and unmarked when it stays: \(rows)")
+    expect(watchEvents.last == ["data", "state + 1", "data +"], "cmux is told the watches: \(String(describing: watchEvents.last))")
+    let ids = (await call("return cmuxWaveform.debugger.watches().map((w) => w.id)") as? [Int]) ?? []
+    _ = await dbg("editWatch({ id: \(ids.last ?? -1), expr: 'data + 1' })")
+    _ = await call("document.querySelectorAll('#cmux-watches .cmux-watch .remove')[1].click(); return null")
+    rows = await watchRows(becoming: [["data", "8'ha5", ""], ["data + 1", "32'h000000a6", ""]])
+    expect(rows == [["data", "8'ha5", ""], ["data + 1", "32'h000000a6", ""]], "edited and removed: \(rows)")
+    // The strip's + adds what is in the field.
+    _ = await call("""
+      const input = document.querySelector('#status-cycle .cmux-eval input');
+      input.value = 'irq';
+      document.querySelector('#status-cycle .cmux-eval .add').click();
+      return null
+    """)
+    rows = await watchRows(becoming: [["data", "8'ha5", ""], ["data + 1", "32'h000000a6", ""], ["irq", "1'h0", ""]])
+    expect(rows.last == ["irq", "1'h0", ""], "the field's + adds a watch: \(rows)")
+    // A session's watches come back in place of the page's.
+    _ = await dbg("restoreWatches({ items: ['mode', 'state'] })")
+    rows = await watchRows(becoming: [["mode", "2'h2", ""], ["state", "4'h3", ""]])
+    expect(rows == [["mode", "2'h2", ""], ["state", "4'h3", ""]], "restored: \(rows)")
+    _ = await dbg("restoreWatches({ items: [] })")
+    expect((await watchRows()).isEmpty, "none: the section is hidden")
+    _ = await dbg("stop()")
+  }
+
   /// Line breakpoints (cmux sends them: the editor's gutter and F9): any of the line's signals changing hits.
   func runLineChecks() async {
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
@@ -548,6 +672,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if type == "debugger", body["event"] as? String == "lineBreakpoint" { lineEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "breakpoints" { listEvents.append(body["items"] as? [[String: Any]] ?? []); return }
     if type == "debugger", body["event"] as? String == "moved" { movedEvents.append(body); return }
+    if type == "debugger", body["event"] as? String == "watches" { watchEvents.append(body["items"] as? [String] ?? []); return }
     if ["debugger", "event", "sessionState", "log", "keyState", "context", "signalData"].contains(type) { return }
     print("[\(m.name)]", type)
     if type == "ready" {
@@ -579,6 +704,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerBreakpointSignalGone:'%@ is not in this waveform.',
    debuggerHitAfterLastEdge:'Breakpoint: %1$@ at %2$@, after the last clock edge.',
    debuggerNoEdges:'The clock never rises.', debuggerNoClock:'No clock.',
+   debuggerEvaluate:'Evaluate', debuggerEvaluateTooltip:'An expression at the marker', debuggerEvalResult:'= %1$@ (width %2$@)',
+   debuggerEvalTooltip:'Binary %1$@, decimal %2$@', debuggerAddWatch:'Add Watch', debuggerWatch:'Watch',
+   debuggerRemoveWatch:'Remove Watch', debuggerEditWatch:'Edit Watch', debuggerExprError:'%1$@ (column %2$@)',
+   debuggerExprSyntax:'Unexpected text', debuggerExprUnsupported:'Not supported here', debuggerExprEmpty:'Nothing to evaluate',
+   debuggerExprTooLong:'Longer than %@ characters', debuggerExprTooManySignals:'More than %@ signals',
+   debuggerExprTooWide:'Wider than %@ bits', debuggerExprBadLiteral:'Not a valid literal', debuggerExprNotConstant:'Must be a constant',
+   debuggerExprBadReplication:'A replication count must be at least 1', debuggerExprUnknownName:'%@ is not in this waveform',
+   debuggerExprNoValue:'%@ has no value at the marker', debuggerExprNoMarker:'Put the marker on a cycle first.',
    debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
   """
 
