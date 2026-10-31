@@ -2446,6 +2446,10 @@
 		3865A0153865A0153865A015 /* GlobalSearchTerminalText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3865B0153865B0153865B015 /* GlobalSearchTerminalText.swift */; };
 		3865A0143865A0143865A014 /* GlobalSearchTerminalTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3865B0143865B0143865B014 /* GlobalSearchTerminalTextTests.swift */; };
 		8561A0038561A0038561A003 /* GlobalSearchVisiblePopoverShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8561B0038561B0038561B003 /* GlobalSearchVisiblePopoverShortcutTests.swift */; };
+		95827009F6108C7BE14C91C3 /* GoToFilePaletteModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BA87A04E7D6A824E632C790 /* GoToFilePaletteModel.swift */; };
+		EBCEBE648228D93BBE44DB7B /* GoToFileRanking.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC01416E69C9236736CBD827 /* GoToFileRanking.swift */; };
+		0E64CB60CFA1C3203BA72A85 /* GoToFileSnapshotLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9618285EDBD93AE2F5A125B5 /* GoToFileSnapshotLoader.swift */; };
+		854EB8D05C32F490F9C828CC /* GoToFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A003858F5C6CA0CAD63EC5E5 /* GoToFileTests.swift */; };
 		DD9DE998158FEA6242A9C15F /* GotoSplitActionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AAA9FEEAC85B8AB216861F2 /* GotoSplitActionTests.swift */; };
 		CC000000A1B2C3D4E5F60718 /* GotoSplitCycleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000001A1B2C3D4E5F60718 /* GotoSplitCycleUITests.swift */; };
 		CC2639000000000000000001 /* GotoSplitCycleUITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC2639000000000000000002 /* GotoSplitCycleUITestSupport.swift */; };
@@ -7152,6 +7156,10 @@
 		3865B0153865B0153865B015 /* GlobalSearchTerminalText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Search/GlobalSearchTerminalText.swift; sourceTree = "<group>"; };
 		3865B0143865B0143865B014 /* GlobalSearchTerminalTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchTerminalTextTests.swift; sourceTree = "<group>"; };
 		8561B0038561B0038561B003 /* GlobalSearchVisiblePopoverShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchVisiblePopoverShortcutTests.swift; sourceTree = "<group>"; };
+		4BA87A04E7D6A824E632C790 /* GoToFilePaletteModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoToFilePaletteModel.swift; sourceTree = "<group>"; };
+		CC01416E69C9236736CBD827 /* GoToFileRanking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoToFileRanking.swift; sourceTree = "<group>"; };
+		9618285EDBD93AE2F5A125B5 /* GoToFileSnapshotLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoToFileSnapshotLoader.swift; sourceTree = "<group>"; };
+		A003858F5C6CA0CAD63EC5E5 /* GoToFileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GoToFileTests.swift"; sourceTree = "<group>"; };
 		7AAA9FEEAC85B8AB216861F2 /* GotoSplitActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GotoSplitActionTests.swift"; sourceTree = "<group>"; };
 		CC000001A1B2C3D4E5F60718 /* GotoSplitCycleUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GotoSplitCycleUITests.swift; sourceTree = "<group>"; };
 		CC2639000000000000000002 /* GotoSplitCycleUITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Debug/UITests/GotoSplitCycleUITestSupport.swift; sourceTree = "<group>"; };
@@ -12704,6 +12712,9 @@
 				43BEE6BFA7E4C4634347345D /* SSHFileSearchCommand.swift */,
 				38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */,
 				FD2BE7F015F0AB719204C7CE /* FileExplorerSearchController+SSH.swift */,
+				4BA87A04E7D6A824E632C790 /* GoToFilePaletteModel.swift */,
+				CC01416E69C9236736CBD827 /* GoToFileRanking.swift */,
+				9618285EDBD93AE2F5A125B5 /* GoToFileSnapshotLoader.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -14347,6 +14358,7 @@
 				C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */,
 				2A5FFFD70CEFC28069D619BD /* SSHFileExplorerListingTests.swift */,
 				A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */,
+				A003858F5C6CA0CAD63EC5E5 /* GoToFileTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -16413,6 +16425,9 @@
 					3865A0083865A0083865A008 /* GlobalSearchPanelCaptureManager.swift in Sources */,
 				C5E96687F7398AC884B78744 /* GlobalSearchSnippet.swift in Sources */,
 				3865A0153865A0153865A015 /* GlobalSearchTerminalText.swift in Sources */,
+				95827009F6108C7BE14C91C3 /* GoToFilePaletteModel.swift in Sources */,
+				EBCEBE648228D93BBE44DB7B /* GoToFileRanking.swift in Sources */,
+				0E64CB60CFA1C3203BA72A85 /* GoToFileSnapshotLoader.swift in Sources */,
 				CC2639000000000000000001 /* GotoSplitCycleUITestSupport.swift in Sources */,
 					5B11E5A100000000000000B1 /* GPUSpinner.swift in Sources */,
 					A6AC72010000000000000001 /* GPUSpinnerNSView.swift in Sources */,
@@ -19110,6 +19125,7 @@
 				3865A0123865A0123865A012 /* GlobalSearchTerminalDocumentTests.swift in Sources */,
 				3865A0143865A0143865A014 /* GlobalSearchTerminalTextTests.swift in Sources */,
 				8561A0038561A0038561A003 /* GlobalSearchVisiblePopoverShortcutTests.swift in Sources */,
+				854EB8D05C32F490F9C828CC /* GoToFileTests.swift in Sources */,
 				DD9DE998158FEA6242A9C15F /* GotoSplitActionTests.swift in Sources */,
 					937700020000000000000001 /* GrokVaultAgentPersistenceTests.swift in Sources */,
 				37BCA223B0EBED2ABFEAF6BC /* HerdrResumeBindingTests.swift in Sources */,
