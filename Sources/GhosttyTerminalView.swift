@@ -8928,6 +8928,11 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             return
         }
 
+        hoverTextMemoActive = true
+        defer {
+            hoverTextMemoActive = false
+            hoverTextMemo = nil
+        }
         let resolution = resolveWordUnderCursorPath(at: point)
         if resolution != nil || waveformTerminalLink(at: preferredPointerPoint(from: point)) != nil {
             if !wordPathHoverActive {
@@ -9041,10 +9046,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let size = ghostty_surface_size(surface)
         let rows = max(Int(size.rows), 1)
         let cols = max(Int(size.columns), 1)
-        let visibleText = TerminalController.shared.readTerminalTextForSnapshot(
-            terminalPanel: panel,
-            lineLimit: max(200, rows * 4)
-        ) ?? ""
+        let visibleText = wordPathVisibleText(panel: panel, rows: rows)
         let visibleLines = visibleText.visibleLines(rows: rows)
         let rowOffset = max(0, rows - visibleLines.count)
         let rowFromTop = max(0, min(rows - 1, viewportOffsetStart / cols))
@@ -9078,6 +9080,23 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return WaveformTerminalLinks.link(line: snapshot.line, column: snapshot.column, workspace: workspace)
     }
 
+    /// The terminal text read during one ⌘-hover update (`updateWordPathHover`):
+    /// its file and waveform-link checks share one read per move.
+    private var hoverTextMemoActive = false
+    private var hoverTextMemo: (panelID: UUID, text: String)?
+
+    private func wordPathVisibleText(panel: TerminalPanel, rows: Int) -> String {
+        if hoverTextMemoActive, let memo = hoverTextMemo, memo.panelID == panel.id {
+            return memo.text
+        }
+        let text = TerminalController.shared.readTerminalTextForSnapshot(
+            terminalPanel: panel,
+            lineLimit: max(200, rows * 4)
+        ) ?? ""
+        if hoverTextMemoActive { hoverTextMemo = (panel.id, text) }
+        return text
+    }
+
     private func visibleWordPathSnapshot(at point: NSPoint, panel: TerminalPanel) -> (line: String, column: Int)? {
         guard let surface else { return nil }
         let size = ghostty_surface_size(surface)
@@ -9087,10 +9106,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let resolvedCellHeight = cellSize.height > 0 ? cellSize.height : CGFloat(size.cell_height_px)
         guard resolvedCellWidth > 0, resolvedCellHeight > 0 else { return nil }
 
-        let visibleText = TerminalController.shared.readTerminalTextForSnapshot(
-            terminalPanel: panel,
-            lineLimit: max(200, rows * 4)
-        ) ?? ""
+        let visibleText = wordPathVisibleText(panel: panel, rows: rows)
         let visibleLines = visibleText.visibleLines(rows: rows)
         let rowOffset = max(0, rows - visibleLines.count)
         let xInset = max(0, (bounds.width - (CGFloat(cols) * resolvedCellWidth)) / 2)
