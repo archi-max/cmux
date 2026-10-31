@@ -125,10 +125,10 @@ import Testing
     }
 
     @Test func aDumpNameWithItsRangeMatchesTheSignal() async {
-        // FSDB names a 1-bit vector declared [N-1:0] with its range: `pc[0:0]`, `rst[0]`.
+        // FSDB names a 1-bit vector declared [N-1:0] with its range: `pc[0:0]`, `rst[0:0]`.
         var hierarchy = Self.dump
         hierarchy["top_tb.dut"] = [
-            .init(name: "clk", isScope: false), .init(name: "rst[0]", isScope: false), .init(name: "pc[0:0]", isScope: false),
+            .init(name: "clk", isScope: false), .init(name: "rst[0:0]", isScope: false, width: 1), .init(name: "pc[0:0]", isScope: false, width: 1),
             .init(name: "pc_next", isScope: false), .init(name: "rf", isScope: true),
         ]
         let result = await HierarchyPrefixInference.dumpRules(
@@ -141,8 +141,14 @@ import Testing
         // A scope's index is part of its name: gen[0] is not gen.
         hierarchy["top_tb.dut"]!.append(.init(name: "gen[0]", isScope: true))
         #expect(await !HierarchyPrefixInference.exists(["top_tb", "dut", "gen"], dumpChildren: Self.children(of: hierarchy)))
-        #expect(HierarchyPrefixInference.signalName(.init(name: "dfp_wdone[0:0]", isScope: false)) == "dfp_wdone")
-        #expect(HierarchyPrefixInference.signalName(.init(name: "data[3]", isScope: false)) == "data")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "dfp_wdone[0:0]", isScope: false, width: 1)) == "dfp_wdone")
+        // Only a range as wide as the signal is its declared range: an index or a part-select is
+        // another signal (an array element, a bit), and without a width nothing can be told.
+        #expect(HierarchyPrefixInference.signalName(.init(name: "data[3]", isScope: false, width: 1)) == "data[3]")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[3:0]", isScope: false, width: 4)) == "x")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[7:4]", isScope: false, width: 4)) == "x")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[3:0]", isScope: false, width: 1)) == "x[3:0]")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[0:0]", isScope: false)) == "x[0:0]")
         #expect(HierarchyPrefixInference.signalName(.init(name: "x[a:0]", isScope: false)) == "x[a:0]")
         #expect(HierarchyPrefixInference.signalName(.init(name: "gen[0]", isScope: true)) == "gen[0]")
     }
@@ -154,10 +160,23 @@ import Testing
         let hierarchy: [String: [HierarchyNode]] = [
             "": [.init(name: "top_tb", isScope: true)],
             "top_tb": [.init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "dut", isScope: true)],
-            "top_tb.dut": [.init(name: "clk", isScope: false), .init(name: "rst[0]", isScope: false), .init(name: "pc[0:0]", isScope: false)],
+            "top_tb.dut": [.init(name: "clk", isScope: false), .init(name: "rst[0:0]", isScope: false, width: 1), .init(name: "pc[0:0]", isScope: false, width: 1)],
         ]
         let result = await HierarchyPrefixInference.dumpRules(forDesignPath: "cpu.pc", designRootChildren: root, dumpChildren: Self.children(of: hierarchy))
         #expect(result == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
+    }
+
+    @Test func anArrayElementIsNotTheArray() async {
+        // iverilog dumps mem[3] (an element), not mem: mem is not dumped.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"]!.append(.init(name: "mem[3]", isScope: false, width: 8))
+        #expect(await !HierarchyPrefixInference.exists(["top_tb", "dut", "mem"], dumpChildren: Self.children(of: hierarchy)))
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.mem",
+            designRootChildren: Self.cpuChildren + [.init(name: "mem", isScope: false)],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(result == .notDumped(.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)))
     }
 
     @Test func aDesignPathWithASelectStillMatchesExactly() async {
@@ -175,7 +194,7 @@ import Testing
     @Test func aRangeNamedDumpSignalFindsItsDesignRoot() async {
         var hierarchy = Self.dump
         hierarchy["top_tb.dut"] = [
-            .init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "pc[0:0]", isScope: false),
+            .init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "pc[0:0]", isScope: false, width: 1),
             .init(name: "pc_next", isScope: false), .init(name: "rf", isScope: true),
         ]
         let rule = await HierarchyPrefixInference.designRule(
