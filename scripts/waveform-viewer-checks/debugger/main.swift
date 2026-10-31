@@ -489,7 +489,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         const index = await found(['top', 'ports', 'req']);
         req.name = 'req[1:0]';
         const narrow = await found(['top', 'ports', 'req']);
+        // Rules shared with Swift's signalName: brackets in an escaped name are part of it, a number
+        // has at most 9 digits, and the width must be a number.
+        req.name = '\\\\req[0:0] ';
+        const escaped = await found(['top', 'ports', 'req']);
+        req.name = 'req[1234567890:1234567890]';
+        const huge = await found(['top', 'ports', 'req']);
         req.name = 'req[0:0]';
+        const width = req.width;
+        req.width = '1';
+        let text = null;
+        try { text = await found(['top', 'ports', 'req']); } finally { req.width = width; }
         const scope = (await cmuxWaveform.link.scopeChildren(['top', 'ports'])).find((x) => x.name === 'req[0:0]');
         // Two vars that both strip to v (valid 1 bit as v[0:0], state 4 bits as v[4:1]): neither is v.
         const core = (await h.getChildren(h.doc.netlist.find((x) => x.name === 'top'))).find((x) => x.name === 'core');
@@ -500,13 +510,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         state.name = 'v[4:1]';
         let twice = null;
         try { const v = await h.findLinkItem(['top', 'core', 'v'], true); twice = v ? v.name : null; } finally { valid.name = 'valid'; state.name = 'state'; }
-        return { values, has, index, narrow, width: scope ? scope.width : null, twice };
+        return { values, has, index, narrow, width: scope ? scope.width : null, twice, escaped, huge, text };
       } finally { req.name = 'req'; }
     """) as? [String: Any]
     let rangedValues = ranged?["values"] as? [Any]
     expect(rangedValues?.count == 3 && rangedValues?[0] as? Bool == true && rangedValues?[1] as? Bool == true
            && rangedValues?[2] is NSNull && ranged?["has"] as? Bool == true
-           && ranged?["index"] is NSNull && ranged?["narrow"] is NSNull && ranged?["width"] as? Int == 1 && ranged?["twice"] is NSNull,
+           && ranged?["index"] is NSNull && ranged?["narrow"] is NSNull && ranged?["width"] as? Int == 1 && ranged?["twice"] is NSNull
+           && ranged?["escaped"] is NSNull && ranged?["huge"] is NSNull && ranged?["text"] is NSNull,
            "req finds req[0:0] (a prefix like re, an index req[3] and a narrower req[1:0] do not; scopeChildren gives the width): \(String(describing: ranged))")
     // A bit-blasted dump (req[0], req[1]): req is no single signal there, so it finds none.
     let blasted = await call("""
