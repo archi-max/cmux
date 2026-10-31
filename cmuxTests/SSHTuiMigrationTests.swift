@@ -1,5 +1,6 @@
 import CmuxCloud
 import CmuxCloudTui
+import Bonsplit
 import CmuxCore
 import CmuxFoundation
 import CmuxSurfaceCatalogModel
@@ -825,6 +826,125 @@ struct SSHTuiMigrationTests {
         let localAfter = workspace.panels.values.compactMap { $0 as? TerminalPanel }.filter { $0.surface.ioMode != .manualMirror }.count
         #expect(localAfter == localBefore, "Cmd+T started a local shell in an SSH workspace")
         #expect(workspace.cloudPendingCreations.values.contains { $0.machine == provider.machine })
+    }
+
+    /// An SSH workspace whose selected tab is a file preview: the anchor that
+    /// used to send Cmd+T, Cmd+D and the tab bar's + to a local shell.
+    @MainActor
+    private struct PreviewSelectedSSHWorkspace {
+        let manager: TabManager
+        let workspace: Workspace
+        let provider: CloudTerminalPlacementTestProvider
+        let paneID: PaneID
+        let previewID: UUID
+        let cleanup: () -> Void
+
+        var localTerminalCount: Int {
+            workspace.panels.values.compactMap { $0 as? TerminalPanel }.filter { $0.surface.ioMode != .manualMirror }.count
+        }
+
+        var hostReservations: Int {
+            workspace.cloudPendingCreations.values.filter { $0.machine == provider.machine }.count
+        }
+    }
+
+    @MainActor
+    private func previewSelectedSSHWorkspace() throws -> PreviewSelectedSSHWorkspace {
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let originalTabManager = appDelegate.tabManager
+        let manager = originalTabManager ?? TabManager()
+        appDelegate.tabManager = manager
+        let originalSelection = manager.selectedTabId
+        let workspace = manager.addWorkspace(select: true)
+        let config = configuration()
+        let connection = SSHTuiConnection(configuration: config)
+        workspace.remoteConfiguration = config
+        let catalog = SurfaceCatalog.shared
+        let provider = CloudTerminalPlacementTestProvider(machine: .init(rawValue: connection.id))
+        catalog.register(provider)
+        workspace.cloudVMBinding = WorkspaceCloudVMBinding(vmID: connection.id, isBase: false, remoteWorkspaceID: provider.remote.id)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-preview-\(UUID().uuidString).sv")
+        try "module top; endmodule\n".write(to: file, atomically: true, encoding: .utf8)
+        let cleanup = {
+            provider.release.resolve(true)
+            catalog.unregister(machine: provider.machine)
+            try? FileManager.default.removeItem(at: file)
+            if manager.tabs.contains(where: { $0.id == workspace.id }) { manager.closeWorkspace(workspace, recordHistory: false) }
+            if let originalSelection { manager.selectedTabId = originalSelection }
+            appDelegate.tabManager = originalTabManager
+        }
+        do {
+            let paneID = try #require(workspace.bonsplitController.focusedPaneId)
+            let preview = try #require(workspace.newFilePreviewSurface(inPane: paneID, filePath: file.path, focus: true))
+            try #require(workspace.focusedPanelId == preview.id)
+            return PreviewSelectedSSHWorkspace(
+                manager: manager, workspace: workspace, provider: provider,
+                paneID: paneID, previewID: preview.id, cleanup: cleanup
+            )
+        } catch {
+            cleanup()
+            throw error
+        }
+    }
+
+    @Test("Cmd+T beside a file preview in an SSH workspace runs on the host")
+    @MainActor
+    func newTabFromFilePreviewRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        fixture.manager.newSurface()
+
+        #expect(fixture.localTerminalCount == localBefore, "Cmd+T started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("The tab bar's + beside a file preview in an SSH workspace runs on the host")
+    @MainActor
+    func tabBarNewTerminalFromFilePreviewRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        fixture.workspace.splitTabBar(fixture.workspace.bonsplitController, didRequestNewTab: "terminal", inPane: fixture.paneID)
+
+        #expect(fixture.localTerminalCount == localBefore, "The tab bar's + started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("Cmd+D from a file preview in an SSH workspace splits onto the host")
+    @MainActor
+    func splitFromFilePreviewRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        let outcome = fixture.manager.createSplitOutcome(
+            tabId: fixture.workspace.id, surfaceId: fixture.previewID, direction: .right
+        )
+
+        #expect(outcome.isAccepted)
+        #expect(fixture.localTerminalCount == localBefore, "Cmd+D started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    /// Socket and CLI creates that carry their own command keep their
+    /// existing local behavior; only the UI entry points route to the host.
+    @Test("A scripted create with a command beside a file preview stays unchanged")
+    @MainActor
+    func scriptedCreateFromFilePreviewIsUnchanged() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        let outcome = fixture.workspace.newTerminalSurfaceOutcome(
+            inPane: fixture.paneID, focus: false, initialCommand: "true"
+        )
+
+        #expect(outcome.panel != nil)
+        #expect(fixture.localTerminalCount == localBefore + 1)
+        #expect(fixture.hostReservations == 0)
     }
 
     @Test("Native SSH respawn preserves its surface and executes only through the provider")
