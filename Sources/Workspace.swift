@@ -12419,6 +12419,12 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         return false
     }
 
+    /// The empty-pane placeholder's "Terminal" button.
+    @discardableResult
+    func newEmptyPaneTerminal(inPane paneId: PaneID) -> TerminalPanel? {
+        newTerminalSurface(inPane: paneId, inheritWorkingDirectoryFallback: true)
+    }
+
     /// Create a new terminal surface in the currently focused pane
     @discardableResult
     func newTerminalSurfaceInFocusedPane(
