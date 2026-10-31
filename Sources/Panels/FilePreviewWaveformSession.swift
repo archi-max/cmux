@@ -81,8 +81,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
 
     /// Every session with a page, so a change of the shared `fsdbLoading` reaches all of them.
     private static let liveSessions = NSHashTable<FilePreviewWaveformSession>.weakObjects()
-    /// Why the open remote FSDB runs the classic (v1) helper, shown in the page with a Retry.
-    private var fsdbFallbackReason: String?
+    /// Bumped per started FSDB helper: a status the previous helper queued is dropped.
+    private var fsdbHelperGeneration = 0
 
     func view(
         panel: FilePreviewPanel,
@@ -608,13 +608,17 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         stopFSDBHelper()
         Self.liveSessions.add(self)
         let host = remote.host
+        fsdbHelperGeneration += 1
+        let generation = fsdbHelperGeneration
         let helper = WaveformFSDBHelper(
             sshArguments: remote.sshArguments, installs: installs, hostKey: host, allowedFile: remote.remotePath
         ) { [weak self] status in
-            Task { @MainActor [weak self] in self?.showFSDBStatus(status, host: host) }
+            Task { @MainActor [weak self] in
+                guard let self, self.fsdbHelperGeneration == generation else { return }
+                self.showFSDBStatus(status, host: host)
+            }
         }
         fsdbHelper = helper
-        fsdbFallbackReason = nil
         evaluate(function: "setFallbackNotice", argument: [:])
         return schemeHandler.serve(fsdbRelay: { body in
             // Managed file transfer off: no upload of the helper, no waveform data back.
@@ -637,7 +641,6 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         switch status {
         case .fellBack(let reason, _):
             // Whole signals from the v1 helper: said in the page, with a Retry.
-            fsdbFallbackReason = reason
             let message = String(
                 format: String(localized: "filePreview.waveform.fsdbFallback", defaultValue: "Using the classic viewer: %@"),
                 reason.split(separator: "\n").last.map(String.init) ?? reason
@@ -693,6 +696,12 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                     defaultValue: "The FSDB reader could not be built on %@."
                 )
             }
+        case .rememberedBuildFailure(let output)?:
+            detail = output
+            summary = String(
+                localized: "filePreview.waveform.fsdbSetupFailed",
+                defaultValue: "The FSDB reader could not be built on %@."
+            )
         case .connectionFailed(let output)?:
             detail = output
             summary = String(
