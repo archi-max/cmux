@@ -28,6 +28,7 @@
 //   { type: 'settings', values } | { type: 'sessionState', state, dirty }
 //   { type: 'saveSession', text, suggestedName } | { type: 'loadSession' } | { type: 'reload' }
 //   { type: 'keyState', viewerFocused, blocked }   which of VaporView's keys the page will run
+//   { type: 'event', eventType, eventData }   VaporView's API events (markerSet, signalSelect, ...)
 
 (function () {
   const nativeHandler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.cmuxWaveform;
@@ -399,9 +400,7 @@
     updateConfiguration: (m) => { window.cmuxCommands.updateSetting(m.property, m.value); },
     showMessage: (m) => { window.cmuxUI.toast(String(m.message || ''), m.messageType); },
     handleDrop: (m) => { window.cmuxCommands.handleDrop(m); },
-    // VaporView's API events (markerSet, signalSelect, ...): nothing in cmux
-    // listens yet; the source link below chains onto this.
-    emitEvent: () => {},
+    emitEvent: (m) => { toNative({ type: 'event', eventType: m.eventType, eventData: m.eventData }); },
     copyToClipboard: (m) => { toNative({ type: 'copy', text: String(m.text || '') }); },
     logOutput: (m) => { toNative({ type: 'log', message: String(m.message) }); },
     // focus (reveal the editor tab) has no cmux counterpart: the panel is already visible.
