@@ -8,14 +8,17 @@ import Testing
 @Suite struct WaveformRefreshThrottleTests {
     @Test func aMoveWhileIdleSchedules() {
         var throttle = WaveformRefreshThrottle()
-        #expect(throttle.markerMoved())
+        let result1 = throttle.markerMoved()
+        #expect(result1)
     }
 
     @Test func movesWhileWaitingKeepTheWait() {
         var throttle = WaveformRefreshThrottle()
         _ = throttle.scheduled()
-        #expect(!throttle.markerMoved())
-        #expect(!throttle.markerMoved())
+        let result2 = throttle.markerMoved()
+        #expect(!result2)
+        let result3 = throttle.markerMoved()
+        #expect(!result3)
         #expect(throttle.phase == .waiting)
     }
 
@@ -23,13 +26,17 @@ import Testing
         var throttle = WaveformRefreshThrottle()
         let serial = throttle.scheduled()
         throttle.started(serial)
-        #expect(!throttle.markerMoved())
-        #expect(!throttle.markerMoved())
-        #expect(throttle.finished(serial))
+        let result4 = throttle.markerMoved()
+        #expect(!result4)
+        let result5 = throttle.markerMoved()
+        #expect(!result5)
+        let result6 = throttle.finished(serial)
+        #expect(result6)
         #expect(throttle.phase == .idle)
         let next = throttle.scheduled()
         throttle.started(next)
-        #expect(!throttle.finished(next))
+        let result7 = throttle.finished(next)
+        #expect(!result7)
     }
 
     @Test func aReplacedRefreshFinishingChangesNothing() {
@@ -37,7 +44,8 @@ import Testing
         let old = throttle.scheduled()
         throttle.started(old)
         let new = throttle.scheduled()
-        #expect(!throttle.finished(old))
+        let result8 = throttle.finished(old)
+        #expect(!result8)
         #expect(throttle.phase == .waiting)
         throttle.started(old)
         #expect(throttle.phase == .waiting)
@@ -52,8 +60,10 @@ import Testing
         _ = throttle.markerMoved()
         throttle.cleared()
         #expect(throttle.phase == .idle)
-        #expect(!throttle.finished(serial))
-        #expect(throttle.markerMoved())
+        let result9 = throttle.finished(serial)
+        #expect(!result9)
+        let result10 = throttle.markerMoved()
+        #expect(result10)
     }
 
     @Test func aRefreshThatNeverEndsStopsHoldingMovesBack() {
@@ -61,11 +71,14 @@ import Testing
         let start = Date(timeIntervalSince1970: 1000)
         let serial = throttle.scheduled()
         throttle.started(serial, at: start)
-        #expect(!throttle.markerMoved(at: start.addingTimeInterval(1)))
+        let result11 = throttle.markerMoved(at: start.addingTimeInterval(1))
+        #expect(!result11)
         // A page or language server call that never returns must not freeze the values.
-        #expect(throttle.markerMoved(at: start.addingTimeInterval(11)))
+        let result12 = throttle.markerMoved(at: start.addingTimeInterval(11))
+        #expect(result12)
         let next = throttle.scheduled()
-        #expect(!throttle.finished(serial))
+        let result13 = throttle.finished(serial)
+        #expect(!result13)
         throttle.started(next, at: start.addingTimeInterval(11))
         #expect(throttle.phase == .running)
     }
