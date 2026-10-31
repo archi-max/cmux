@@ -148,6 +148,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         completionTask?.cancel()
         clearInlineValues()
         closeLinkMessage()
+        if linkPanel?.slangHeader != nil { linkPanel?.slangHeader = nil }
         inlineValueOverlay?.removeFromSuperview()
         inlineValueOverlay = nil
         for observer in [inlineScrollObserver, inlineFrameObserver, inlineEditObserver].compactMap({ $0 }) {
@@ -266,6 +267,9 @@ final class FilePreviewLanguageFeatures: NSObject {
         await session.open(uri: context.documentURI, text: text, version: documentVersion)
         // Edits made while the server was starting.
         await sendCurrentText()
+        updateSlangHeader()
+        SlangCompilationActions.refreshListing(for: self)
+        SlangCompilationActions.compilationDidChange(session: session)
     }
 
     /// Remote slang-server builds can hang on completion, so a remote document
@@ -574,6 +578,16 @@ final class FilePreviewLanguageFeatures: NSObject {
             menu.insertItem(item, at: separatorIndex)
             separatorIndex += 1
         }
+        if let slangMenu = SlangCompilationActions.menu(for: self) {
+            let item = NSMenuItem(
+                title: String(localized: "slangProfile.contextMenu", defaultValue: "slang Profile"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            item.submenu = slangMenu
+            menu.insertItem(item, at: separatorIndex)
+            separatorIndex += 1
+        }
         menu.insertItem(.separator(), at: separatorIndex)
     }
 
@@ -864,6 +878,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             editor.inlineModuleInstances = [:]
             editor.scheduleInlineValues(after: .milliseconds(120))
         }
+        SlangCompilationActions.compilationDidChange(session: session)
     }
 
     private func scheduleInlineValues(after delay: Duration) {
@@ -1219,6 +1234,47 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// The window showing this editor, for sheets.
     var linkPanelWindow: NSWindow? {
         textView?.window
+    }
+
+    // MARK: - slang menu
+
+    /// The document's server route and root, once resolved.
+    var linkContext: FilePreviewLanguageDocumentContext? {
+        isDetached ? nil : context
+    }
+
+    var documentText: String? {
+        textView?.string
+    }
+
+    var caretIndex: Int? {
+        textView?.selectedRange().location
+    }
+
+    /// Shows what slang-server compiles in the panel's header.
+    func updateSlangHeader() {
+        guard !isDetached, let panel = linkPanel else { return }
+        let state = SlangCompilationActions.headerState(for: self)
+        if panel.slangHeader != state { panel.slangHeader = state }
+    }
+
+    /// The header's (at the mouse) or the command palette's (at the caret) slang menu.
+    func showSlangMenu(atCaret: Bool) {
+        guard let menu = SlangCompilationActions.menu(for: self) else {
+            NSSound.beep()
+            return
+        }
+        popUpSlangMenu(menu, atCaret: atCaret)
+    }
+
+    func popUpSlangMenu(_ menu: NSMenu, atCaret: Bool) {
+        guard let textView else { return }
+        if atCaret, let rect = viewRect(forCharacterRange: NSRange(location: textView.selectedRange().location, length: 0)) {
+            menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.maxY), in: textView)
+        } else if let window = textView.window, let content = window.contentView {
+            let point = content.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            menu.popUp(positioning: nil, at: point, in: content)
+        }
     }
 
     /// Asks which instance's signal to add when the module is instantiated more than once.

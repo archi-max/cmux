@@ -20,7 +20,7 @@ enum SlangCompilationActions {
     private static let diagnosticsSettleDelay: Duration = .milliseconds(400)
 
     /// What cmux set a session to compile, for the menus (the session's own record is async).
-    private final class Entry {
+    final class Entry {
         weak var session: LanguageServerSession?
         var target: SlangCompilationTarget?
         /// The config file cmux wrote `"build"` into instead of the runtime command.
@@ -28,6 +28,10 @@ enum SlangCompilationActions {
         /// Workspaces whose Files explorer chose the build file, so Clear Build File finds the
         /// server after its editors closed.
         var workspaceIds: Set<UUID> = []
+        /// The user chose Explore Mode (No Top): nothing is compiled, not even the config's build.
+        var isExplore = false
+        /// The design's top instances as last read (nil: not read yet), for the editor's slang header.
+        var tops: [String]?
 
         init(session: LanguageServerSession) {
             self.session = session
@@ -50,7 +54,7 @@ enum SlangCompilationActions {
     /// Sessions with a top level or build change in flight.
     private static var busySessions: Set<ObjectIdentifier> = []
 
-    private static func entry(for session: LanguageServerSession) -> Entry {
+    static func entry(for session: LanguageServerSession) -> Entry {
         entries.removeAll { $0.session == nil }
         if let entry = entries.first(where: { $0.session === session }) { return entry }
         let entry = Entry(session: session)
@@ -72,20 +76,20 @@ enum SlangCompilationActions {
         busySessions.contains(ObjectIdentifier(session))
     }
 
-    private static func claim(_ sessions: [LanguageServerSession]) -> Bool {
+    static func claim(_ sessions: [LanguageServerSession]) -> Bool {
         guard !sessions.contains(where: isBusy) else { return false }
         for session in sessions { busySessions.insert(ObjectIdentifier(session)) }
         return true
     }
 
-    private static func release(_ sessions: [LanguageServerSession]) {
+    static func release(_ sessions: [LanguageServerSession]) {
         for session in sessions { busySessions.remove(ObjectIdentifier(session)) }
     }
 
     /// Puts `session` back to what it compiled before `previous`'s replacement failed:
     /// the config's build (by a restart that drops the runtime choice), a top level or
     /// build file, or explore mode.
-    private static func restore(_ previous: SlangCompilationTarget?, on session: LanguageServerSession) async {
+    static func restore(_ previous: SlangCompilationTarget?, on session: LanguageServerSession) async {
         if previous == nil, entry(for: session).configFile != nil {
             try? await session.restart(keepingCompilation: false)
             return
@@ -98,7 +102,7 @@ enum SlangCompilationActions {
     }
 
     /// What the session compiles as far as cmux knows: the mirror, else the session's own record.
-    private static func currentTarget(of session: LanguageServerSession) async -> SlangCompilationTarget? {
+    static func currentTarget(of session: LanguageServerSession) async -> SlangCompilationTarget? {
         if let target = target(of: session) { return target }
         return await session.slangCompilationTarget
     }
@@ -486,7 +490,7 @@ enum SlangCompilationActions {
     }
 
     /// Distinct live language servers of the workspace's SystemVerilog editors.
-    private static func sessions(inWorkspace workspaceId: UUID) -> [LanguageServerSession] {
+    static func sessions(inWorkspace workspaceId: UUID) -> [LanguageServerSession] {
         var seen = Set<ObjectIdentifier>()
         var sessions: [LanguageServerSession] = []
         for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: workspaceId) {
@@ -502,7 +506,7 @@ enum SlangCompilationActions {
 
     // MARK: Outcome
 
-    private struct Outcome {
+    struct Outcome {
         var tops: [String]
         var instanceCount: Int
         var summary: SlangDiagnosticsSummary
@@ -550,7 +554,7 @@ enum SlangCompilationActions {
     }
 
     /// The design the server compiled, once its diagnostics have arrived.
-    private static func outcome(of session: LanguageServerSession) async -> Outcome {
+    static func outcome(of session: LanguageServerSession) async -> Outcome {
         try? await Task.sleep(for: diagnosticsSettleDelay)
         // getScope("") also lists packages; only instances are tops.
         let tops = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }.map(\.name)
@@ -587,7 +591,7 @@ enum SlangCompilationActions {
 
     // MARK: Alerts
 
-    private static func runAlert(_ alert: NSAlert, window: NSWindow?) async -> NSApplication.ModalResponse {
+    static func runAlert(_ alert: NSAlert, window: NSWindow?) async -> NSApplication.ModalResponse {
         guard let window = window ?? NSApp.keyWindow ?? NSApp.mainWindow else { return alert.runModal() }
         return await withCheckedContinuation { continuation in
             alert.beginSheetModal(for: window) { response in
@@ -596,7 +600,7 @@ enum SlangCompilationActions {
         }
     }
 
-    private static func showAlert(title: String, message: String, window: NSWindow?) {
+    static func showAlert(title: String, message: String, window: NSWindow?) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message

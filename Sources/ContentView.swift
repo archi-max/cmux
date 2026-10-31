@@ -7577,6 +7577,7 @@ struct ContentView: View {
                 CommandPaletteContextKeys.panelIsFilePreviewTextEditor,
                 (panelContext.panel as? FilePreviewPanel)?.previewMode == .text
             )
+            SlangCommandPalette.setContext(panel: panelContext.panel, in: &snapshot)
             snapshot.setBool(
                 CommandPaletteContextKeys.panelBrowserOmnibarVisible,
                 (panelContext.panel as? BrowserPanel)?.isOmnibarVisible ?? true
@@ -7923,6 +7924,7 @@ struct ContentView: View {
             )
         )
         contributions.append(contentsOf: Self.commandPaletteViewCommandContributions())
+        contributions.append(contentsOf: SlangCommandPalette.contributions())
         contributions.append(contentsOf: Self.commandPaletteCanvasCommandContributions())
         contributions.append(
             CommandPaletteCommandContribution(
@@ -9239,6 +9241,7 @@ struct ContentView: View {
             )
         }
         registerViewCommandHandlers(&registry)
+        SlangCommandPalette.registerHandlers(&registry) { focusedPanelContext?.panel }
         registerCanvasCommandHandlers(&registry)
         registerCloudCommandHandlers(&registry)
         registerComputerUseCommandPaletteHandlers(&registry)

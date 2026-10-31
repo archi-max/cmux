@@ -1280,6 +1280,8 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     @Published private(set) var isFileUnavailable = false
     @Published private(set) var textContent = ""
     @Published private(set) var isDirty = false
+    /// What slang-server compiles for a SystemVerilog file, shown in the header (nil: not a slang document).
+    @Published var slangHeader: SlangHeaderState?
     @Published private(set) var isSaving = false
     @Published private(set) var focusFlashToken = 0
     @Published private(set) var previewMode: FilePreviewMode
@@ -1737,6 +1739,11 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     }
 
     @discardableResult
+    /// Opens the slang menu of the SystemVerilog editor at the mouse (the header's button).
+    func showSlangMenu() {
+        (textView as? SavingTextView)?.languageFeatures?.showSlangMenu(atCaret: false)
+    }
+
     func saveTextContent() -> Task<Void, Never>? {
         guard !isReadOnlyPreview else { return nil }
         guard previewMode == .text else { return nil }
@@ -1807,6 +1814,13 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
                 self.setTabMetadataDirtyState(self.textContent != currentContent)
                 self.isFileUnavailable = false
                 languageFeatures?.documentDidSave(currentContent)
+                if remoteLease != nil {
+                    if let remotePath = self.cloudPreviewRemotePath, let identity = self.cloudPreviewProviderIdentity {
+                        SlangCompilationActions.fileWasSaved(path: remotePath, hostIdentity: identity)
+                    }
+                } else {
+                    SlangCompilationActions.fileWasSaved(path: fileURL.path, hostIdentity: "local")
+                }
                 reconciliationTask = self.reloadFromDisk()
             case .failed(let fileExists):
                 self.isFileUnavailable = !fileExists
@@ -2024,8 +2038,37 @@ struct FilePreviewPanelView: View {
                 markdownPreviewToggle
             }
 
+            if let slang = panel.slangHeader {
+                slangHeaderButton(slang)
+            }
+
             FileExternalOpenMenu(fileURL: panel.fileURL, isDisabled: panel.isFileUnavailable)
         }
+    }
+
+    /// `slang: <profile> · top <name> ▾`: the slang menu of the SystemVerilog editor.
+    private func slangHeaderButton(_ slang: SlangHeaderState) -> some View {
+        Button(action: { panel.showSlangMenu() }) {
+            HStack(spacing: 3) {
+                if slang.hasConfigWarning {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.yellow)
+                }
+                Text(slang.label)
+                    .cmuxFont(size: 11)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.secondary)
+        .help(slang.hasConfigWarning
+            ? String(localized: "slangProfile.header.warningHelp", defaultValue: "A slang-server config file of this folder is empty or unreadable. Click to fix it.")
+            : String(localized: "slangProfile.header.help", defaultValue: "Choose what slang-server compiles for this folder"))
+        .accessibilityLabel(slang.label)
     }
 
     private var markdownPreviewToggle: some View {
