@@ -219,4 +219,42 @@ import Testing
         history.record(7, isSame: ==)
         #expect(history.forward.isEmpty && history.back == [7])
     }
+
+    // An `include`d fragment (a testbench body) has no module header: by default its lines
+    // belong to no module and give no identifiers; as a fragment they belong to its pseudo-module.
+    static let fragment = """
+    localparam int NUM_PORTS = 1;
+    logic [NUM_PORTS-1:0] dfp_read = 1'b0;
+    logic [NUM_PORTS-1:0] dfp_ready;
+    cache_adapter #(.NUM_PORTS(NUM_PORTS)) dut (
+        .clk      (clk),
+        .dfp_ready(dfp_ready)
+    );
+    task automatic check(input logic cond);
+      if (!cond) errors++;
+    endtask
+    """
+
+    @Test func aFragmentHasNoModuleByDefault() {
+        let lines = Self.scan(Self.fragment)
+        #expect(lines.allSatisfy { $0.module == nil && $0.identifiers.isEmpty })
+        var cache = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: Self.fragment as NSString))
+        #expect(cache.opensModule() == false)
+        var module = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: "module m;\n  logic a;\nendmodule" as NSString))
+        #expect(module.opensModule() == true)
+    }
+
+    @Test func aFragmentsLinesBelongToItsPseudoModule() {
+        var cache = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: Self.fragment as NSString))
+        cache.fragmentModule = "adapter_tb.sv"
+        let lines = cache.lines(in: NSRange(location: 0, length: (Self.fragment as NSString).length))
+        #expect(lines.allSatisfy { $0.module == "adapter_tb.sv" })
+        #expect(lines.map { $0.identifiers.map(\.name) } == [
+            ["NUM_PORTS"], ["NUM_PORTS", "dfp_read"], ["NUM_PORTS", "dfp_ready"], ["cache_adapter", "NUM_PORTS", "dut"],
+            ["clk"], ["dfp_ready"], [], [], [], [],
+        ])
+        // Back to a plain file: the pseudo-module goes, and so do its identifiers.
+        cache.fragmentModule = nil
+        #expect(cache.lines(in: NSRange(location: 0, length: 10)).first?.module == nil)
+    }
 }
