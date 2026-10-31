@@ -13747,23 +13747,7 @@ struct VerticalTabsSidebar: View, Equatable {
             return .accepted
 
         case .createTerminalSurface(let workspaceId):
-            guard let workspace = workspaceId.flatMap({ id in tabManager.tabs.first(where: { $0.id == id }) }) ?? tabManager.selectedWorkspace else {
-                return .rejected(String(localized: "sidebar.extensions.action.workspaceNotFound", defaultValue: "Workspace not found"))
-            }
-            if tabManager.selectedTabId != workspace.id {
-                tabManager.selectWorkspace(workspace)
-            }
-            let panel = workspace.newTerminalSurfaceInFocusedPane(focus: true, initialInput: nil)
-            if panel == nil, workspace.isRemoteTmuxMirror {
-                // Routed to the remote as a tmux `new-window`; the tab arrives
-                // asynchronously via the mirror, so this is success, not failure.
-                return CmuxSidebarActionResult(
-                    accepted: true,
-                    message: String(localized: "sidebar.extensions.action.remoteTmuxWindowRequested", defaultValue: "Remote tmux window requested")
-                )
-            }
-            return panel.map { CmuxSidebarActionResult(accepted: true, message: $0.id.uuidString) }
-                ?? .rejected(String(localized: "sidebar.extensions.action.surfaceCreateRejected", defaultValue: "Surface could not be created"))
+            return tabManager.createSidebarExtensionTerminalSurface(workspaceId: workspaceId)
 
         case .createBrowserSurface(let workspaceId, let urlString):
             let validatedURL = cmuxSidebarExtensionOptionalHTTPURL(from: urlString)
@@ -18635,4 +18619,27 @@ enum SidebarSelection {
     case notifications
     /// Chief Home fills the content area; workspaces stay mounted but hidden and input-inactive.
     case home
+}
+
+extension TabManager {
+    /// A sidebar extension's "new terminal" in a workspace's focused pane.
+    func createSidebarExtensionTerminalSurface(workspaceId: UUID?) -> CmuxSidebarActionResult {
+        guard let workspace = workspaceId.flatMap({ id in tabs.first(where: { $0.id == id }) }) ?? selectedWorkspace else {
+            return .rejected(String(localized: "sidebar.extensions.action.workspaceNotFound", defaultValue: "Workspace not found"))
+        }
+        if selectedTabId != workspace.id {
+            selectWorkspace(workspace)
+        }
+        let panel = workspace.newTerminalSurfaceInFocusedPane(focus: true, initialInput: nil)
+        if panel == nil, workspace.isRemoteTmuxMirror {
+            // Routed to the remote as a tmux `new-window`; the tab arrives
+            // asynchronously via the mirror, so this is success, not failure.
+            return CmuxSidebarActionResult(
+                accepted: true,
+                message: String(localized: "sidebar.extensions.action.remoteTmuxWindowRequested", defaultValue: "Remote tmux window requested")
+            )
+        }
+        return panel.map { CmuxSidebarActionResult(accepted: true, message: $0.id.uuidString) }
+            ?? .rejected(String(localized: "sidebar.extensions.action.surfaceCreateRejected", defaultValue: "Surface could not be created"))
+    }
 }
