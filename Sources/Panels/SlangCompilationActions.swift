@@ -32,10 +32,22 @@ enum SlangCompilationActions {
         var isExplore = false
         /// The design's top instances as last read (nil: not read yet), for the editor's slang header.
         var tops: [String]?
+        /// The profile the waveform link picked by itself, what it replaced, and when (for Undo).
+        var autoPick: AutoPick?
+        /// The user undid an auto-pick: the link doesn't pick for this server again.
+        var autoPickDeclined = false
 
         init(session: LanguageServerSession) {
             self.session = session
         }
+    }
+
+    /// A profile the waveform link chose by itself (offered for Undo in the header).
+    struct AutoPick {
+        let profile: String
+        let picked: SlangCompilationTarget?
+        let previous: SlangCompilationTarget?
+        let at: Date
     }
 
     struct ConfigFileLocation {

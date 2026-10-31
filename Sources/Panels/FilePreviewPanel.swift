@@ -1743,6 +1743,12 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
         (textView as? SavingTextView)?.languageFeatures?.showSlangMenu(atCaret: false)
     }
 
+    /// Undo of the header's "Switched to <profile> to match the waveform" note.
+    func undoSlangAutoPick() {
+        guard let features = (textView as? SavingTextView)?.languageFeatures else { return }
+        SlangCompilationActions.undoAutoPick(editor: features)
+    }
+
     @discardableResult
     func saveTextContent() -> Task<Void, Never>? {
         guard !isReadOnlyPreview else { return nil }
@@ -2039,10 +2045,34 @@ struct FilePreviewPanelView: View {
             }
 
             if let slang = panel.slangHeader {
+                if let notice = slang.autoPickNotice {
+                    slangAutoPickNotice(notice)
+                }
                 slangHeaderButton(slang)
             }
 
             FileExternalOpenMenu(fileURL: panel.fileURL, isDisabled: panel.isFileUnavailable)
+        }
+    }
+
+    /// "Switched to <profile> to match the waveform · Undo", after the waveform link picked a
+    /// profile by itself. Non-modal; it goes away by itself.
+    private func slangAutoPickNotice(_ notice: String) -> some View {
+        HStack(spacing: 4) {
+            Text(notice)
+                .cmuxFont(size: 11)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundColor(.secondary)
+            Text(verbatim: "·")
+                .cmuxFont(size: 11)
+                .foregroundColor(.secondary)
+            Button(action: { panel.undoSlangAutoPick() }) {
+                Text(String(localized: "slangProfile.autoPick.undo", defaultValue: "Undo"))
+                    .cmuxFont(size: 11)
+            }
+            .buttonStyle(.link)
+            .help(String(localized: "slangProfile.autoPick.undoHelp", defaultValue: "Go back to what slang-server compiled before, and stop switching profiles for this folder"))
         }
     }
 

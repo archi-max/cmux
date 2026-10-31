@@ -690182,6 +690182,183 @@
           }
         }
       }
+    },
+    "slangProfile.autoPick.notice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switched to %@ to match the waveform"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形に合わせて %@ に切り替えました"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zu %@ gewechselt, passend zur Wellenform"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passage à %@ pour correspondre à la forme d’onde"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تم التبديل إلى %@ لمطابقة الموجة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se cambió a %@ para coincidir con la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已切換至 %@ 以符合波形"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已切换到 %@ 以匹配波形"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형에 맞춰 %@(으)로 전환함"
+          }
+        }
+      }
+    },
+    "slangProfile.autoPick.undo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取り消す"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Widerrufen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annuler"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تراجع"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deshacer"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "還原"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "撤销"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "실행 취소"
+          }
+        }
+      }
+    },
+    "slangProfile.autoPick.undoHelp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go back to what slang-server compiled before, and stop switching profiles for this folder"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以前 slang-server がコンパイルしていた内容に戻し、このフォルダのプロファイル自動切り替えを停止します"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zu dem zurückkehren, was slang-server vorher kompiliert hat, und Profile für diesen Ordner nicht mehr automatisch wechseln"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revenir à ce que slang-server compilait auparavant et ne plus changer de profil automatiquement pour ce dossier"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "العودة إلى ما كان slang-server يترجمه سابقًا، وإيقاف تبديل الملفات الشخصية تلقائيًا لهذا المجلد"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volver a lo que slang-server compilaba antes y dejar de cambiar de perfil automáticamente para esta carpeta"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回到 slang-server 先前編譯的內容，並停止為此資料夾自動切換設定檔"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复到 slang-server 之前编译的内容，并停止为此文件夹自动切换配置"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이전에 slang-server가 컴파일하던 내용으로 되돌리고 이 폴더의 프로필 자동 전환을 중지합니다"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
