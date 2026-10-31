@@ -45,6 +45,9 @@ struct RemoteRelayRemoteFileOpenPolicyTests {
     @Test
     func testOwnedTerminalAndAbsoluteHostPathAreAllowed() {
         #expect(evaluate(owned) == .allow)
+        var spaced = owned
+        spaced["path"] = "/home/u/name with trailing space " // a legal host file name
+        #expect(evaluate(spaced) == .allow)
         #expect(validate(owned) == .allowed)
         #expect(RemoteRelayCommandPolicy().permittedMethods(from: ["file.open", "file.open_remote"]) == ["file.open_remote"])
     }
@@ -79,6 +82,8 @@ struct RemoteRelayRemoteFileOpenPolicyTests {
         let rejected: [Any] = [
             "rtl/alu.sv", "~/.ssh/id_ed25519", "file:///etc/passwd", "", "/a\u{0}b", "/a\nb",
             "/" + String(repeating: "a", count: 4_096), ["/a", "/b"], 7, NSNull(),
+            // Only the canonical spelling the remote CLI sends.
+            "/home/u/../../etc/passwd", "/home/./u/a.sv", "//home/u/a.sv", "/home/u/", "/..", "/",
         ]
         for path in rejected {
             var params = owned
