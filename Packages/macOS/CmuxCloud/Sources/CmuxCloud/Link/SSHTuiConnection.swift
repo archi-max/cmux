@@ -12,12 +12,16 @@ public struct SSHTuiConnection: Sendable {
     /// - Parameters:
     ///   - configuration: The persisted SSH workspace configuration.
     ///   - environment: The local environment inherited by SSH children.
+    ///   - bundleIdentifier: The app's bundle identifier; a tagged DEV build
+    ///     keeps its own cmux-tui and daemon on the host (see `remoteTag`).
     public init(
         configuration: WorkspaceRemoteConfiguration,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundleIdentifier: String? = Bundle.main.bundleIdentifier
     ) {
         self.configuration = configuration
         inheritedEnvironment = environment
+        remoteTag = Self.remoteTag(bundleIdentifier: bundleIdentifier)
     }
 
     public let configuration: WorkspaceRemoteConfiguration
@@ -81,7 +85,32 @@ public struct SSHTuiConnection: Sendable {
             .map { String(format: "%02x", $0) }.joined()
     }
 
-    public var session: String { "cmux" }
+    /// Set for a tagged DEV build (`com.cmuxterm.app.debug.<tag>`), nil for
+    /// every other build. Each app uploads its own cmux-tui and the daemon
+    /// runs the binary that started it, so a DEV build and the release on one
+    /// host must not share the binary or the session: each would replace the
+    /// other's binary and drive a daemon of the other version.
+    public let remoteTag: String?
+
+    /// The tag of a `com.cmuxterm.app.debug.<tag>` bundle, as a word that is
+    /// safe in a remote path and session name; "dev" for an untagged DEV build.
+    public static func remoteTag(bundleIdentifier: String?) -> String? {
+        let prefix = "com.cmuxterm.app.debug"
+        guard let bundleIdentifier, bundleIdentifier == prefix || bundleIdentifier.hasPrefix(prefix + ".") else {
+            return nil
+        }
+        let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-")
+        let tag = String(bundleIdentifier.dropFirst(prefix.count).lowercased().map { allowed.contains($0) ? $0 : "-" })
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return tag.isEmpty ? "dev" : String(tag.prefix(40))
+    }
+
+    /// The daemon session on the host. Its state, journal and sockets live
+    /// under a directory named after it.
+    public var session: String { remoteTag.map { "cmux-" + $0 } ?? "cmux" }
+
+    /// Where cmux-tui is installed on the host.
+    public var remoteBinary: String { "~/.local/bin/cmux-tui" + (remoteTag.map { "-" + $0 } ?? "") }
 
     public var authenticationArguments: [String] {
         routeCheckArguments(batchMode: false) + ["--", configuration.destination, "true"]
@@ -200,6 +229,10 @@ public struct SSHTuiConnection: Sendable {
         var arguments = ["remote", "ssh", configuration.destination, "--headless", "--json",
                          "--exit-with-parent", "--lanes", "single", "--carrier",
                          "--session", session, "--state-dir", stateDirectory]
+        if remoteTag != nil {
+            // The release keeps the default path, as every earlier release used.
+            arguments += ["--remote-binary", remoteBinary]
+        }
         var sshArguments = ["-o", "BatchMode=yes", "-o", "RequestTTY=no", "-o", "RemoteCommand=none"]
         if let port = configuration.port { sshArguments += ["-p", String(port)] }
         if let identity = configuration.identityFile { sshArguments += ["-i", identity] }
