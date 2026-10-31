@@ -52,6 +52,16 @@ import Testing
         #expect(lines[1].identifiers == [.init(name: "full", offset: (text as NSString).range(of: "full").location)])
     }
 
+    @Test func aModuleOnOneLineIsTheLinesModule() {
+        let text = """
+        module tiny; assign y = a; endmodule
+        module pair; endmodule module last; assign z = b; endmodule
+        """
+        let lines = Self.scan(text)
+        #expect(lines.map(\.module) == ["tiny", "last"])
+        #expect(lines.map { $0.identifiers.map(\.name) } == [["y", "a"], ["z", "b"]])
+    }
+
     @Test func functionTaskAndGenerateLocalsAreLeftOut() {
         let text = """
         module m;
