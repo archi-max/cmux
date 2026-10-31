@@ -31,6 +31,7 @@
 #   ./run.sh fsdb-locals                 FSDB inline values of pinned signals
 #   ./run.sh breakpoints                 debugger breakpoints: continue, reverse, landing, play stops, list
 #   ./run.sh line-breakpoints            line breakpoints: F9, gutter, edits, instances, session
+#   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
 #                                        (helper stand-in, no host)
@@ -74,6 +75,10 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger-fsdb"
     "$OUT/debugger-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$1" "$2" "$3" "$OUT/debugger-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/debugger-fsdb.log"
     grep -q '^DEBUGGER FSDB CHECKS PASSED' "$OUT/debugger-fsdb.log"
+    ;;
+  expr)
+    swiftc -swift-version 6 -O "$HERE/expr/main.swift" -o "$OUT/expr"
+    "$OUT/expr" "$ASSETS/cmux-expr.js" "$HERE/expr/cases.js"
     ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
