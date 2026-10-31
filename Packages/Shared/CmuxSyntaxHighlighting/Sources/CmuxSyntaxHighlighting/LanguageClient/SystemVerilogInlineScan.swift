@@ -123,6 +123,8 @@ public enum SystemVerilogInlineScan {
         /// Whether the file opens a module, interface, program, package, config or primitive
         /// anywhere (false: an `include`d fragment).
         public mutating func opensModule() -> Bool {
+            // Read up to a checkpoint (still before any edit) that had opened one: known without reading on.
+            if checkpoints.contains(where: { $0.state.openedModule }) { return true }
             _ = lines(in: NSRange(location: units.count, length: 0))
             return lastState.openedModule
         }
