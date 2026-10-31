@@ -16,7 +16,8 @@
 //   - a late <dump>.json is offered only while the user hasn't changed the view;
 //   - a kept restore survives a reload during it, and an interrupted user load
 //     keeps the unsaved marker and says it was interrupted (by a reload or by
-//     opening another file), also when the reload comes right after the apply.
+//     opening another file), also when the reload comes right after the apply;
+//   - undo and redo of the first signal added to a new viewer.
 // Exits 0 and prints PARITY CHECKS PASSED, or prints CHECK FAILED and exits 2.
 // Usage: parity <assetRoot> <parity.vcd>
 import AppKit
@@ -453,6 +454,33 @@ extension Harness {
         """) { r in
           check(r["open"] as? Bool == true, "an open that interrupts a load says another file opened")
           check(r["reload"] as? Bool == false, "and doesn't say the file reloaded")
+          self.phaseL()
+        }
+      }
+    }
+  }
+
+  // Undo and redo of the first signal added to a new viewer (VaporView's
+  // document starts with an empty context, so that change is undoable).
+  func phaseL() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const drawn = () => document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;
+        R.start = drawn();
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        R.added = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undone = drawn();
+        await C.run('cmux.redo');
+        await sleep(800);
+        R.redone = drawn();
+        """) { r in
+          check(r["start"] as? Int == 0 && r["added"] as? Int == 1, "a new viewer shows the added signal")
+          check(r["undone"] as? Int == 0, "undo removes the first added signal (rows drawn \(r["undone"] ?? "nil"))")
+          check(r["redone"] as? Int == 1, "redo brings it back (rows drawn \(r["redone"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
