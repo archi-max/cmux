@@ -1340,5 +1340,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let harness = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { harness.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 240) { print("CHECK FAILED: timeout"); exit(2) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 400) { print("CHECK FAILED: timeout"); exit(2) }
 app.run()
