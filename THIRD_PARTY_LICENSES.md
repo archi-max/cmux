@@ -354,6 +354,60 @@ The following packages are linked into the cmux app binary.
 - **Copyright:** Copyright (c) Stack Auth (HexClave, Inc.)
 - **Source:** https://github.com/stack-auth/stack
 
+### Highlightr
+
+- **Version:** 2.3.0
+- **License:** MIT License
+- **Copyright:** Copyright (c) 2016 Juan Pablo Illanes
+- **Source:** https://github.com/raspu/Highlightr
+
+Linked by `Packages/Shared/CmuxSyntaxHighlighting`. It bundles highlight.js
+(BSD 3-Clause, see above), whose `verilog` grammar colors `.sv`, `.svh`, `.v`
+and `.vh` files in the file editor.
+
+---
+
+## SystemVerilog Editor Tools (not bundled)
+
+The file editor's SystemVerilog support runs these programs when they are
+installed on the machine that holds the file (the Mac, or the SSH host for
+remote files). cmux does not bundle or redistribute them; the editor talks to
+them over the Language Server Protocol or standard input/output.
+
+### slang-server
+
+- **License:** MIT License
+- **Copyright:** Copyright (c) 2024-2025 Hudson River Trading LLC
+- **Source:** https://github.com/hudson-trading/slang-server
+
+Provides diagnostics, hover, go to definition, find references and completion.
+
+### slang
+
+- **License:** MIT License
+- **Copyright:** Copyright (c) 2015-2026 Michael Popoloski
+- **Source:** https://github.com/MikePopoloski/slang
+
+The SystemVerilog compiler library that slang-server is built on.
+
+### Verible
+
+- **License:** Apache License 2.0
+- **Copyright:** Copyright the Verible Authors
+- **Source:** https://github.com/chipsalliance/verible
+
+`verible-verilog-format` provides format on save.
+
+### Language Server Protocol
+
+- **License:** MIT License (specification text: Creative Commons Attribution 3.0)
+- **Copyright:** Copyright (c) Microsoft Corporation
+- **Source:** https://github.com/microsoft/language-server-protocol
+
+The LSP client in `Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient/`
+is an original implementation written from this specification; no client
+library code is copied.
+
 ---
 
 ## Diff Viewer Highlighting Assets
