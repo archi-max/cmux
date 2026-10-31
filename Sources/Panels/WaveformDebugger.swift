@@ -298,6 +298,13 @@ enum WaveformDebugger {
             "debuggerExprUnknownName": String(localized: "waveformDebugger.exprUnknownName", defaultValue: "%@ is not in this waveform"),
             "debuggerExprNoValue": String(localized: "waveformDebugger.exprNoValue", defaultValue: "%@ has no value at the marker"),
             "debuggerExprNoMarker": String(localized: "waveformDebugger.exprNoMarker", defaultValue: "Put the marker on a cycle first."),
+            "debuggerBreakpointIf": String(localized: "waveformDebugger.breakpointIf", defaultValue: "%1$@ if %2$@"),
+            "debuggerEditCondition": String(localized: "waveformDebugger.editCondition", defaultValue: "Edit Condition…"),
+            "debuggerConditionPrompt": String(
+                localized: "waveformDebugger.conditionPrompt",
+                defaultValue: "Break only when this is true at the clock edge"
+            ),
+            "debuggerConditionError": String(localized: "waveformDebugger.conditionError", defaultValue: "Condition of %1$@: %2$@"),
         ]
     }
 
