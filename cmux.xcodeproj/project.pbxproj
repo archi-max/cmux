@@ -1742,6 +1742,7 @@
 		7F81637D3CD3867FAA502D1E /* CmuxTuiSurfaceProvider+FileDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E053B7E9AE536377476E4B /* CmuxTuiSurfaceProvider+FileDelivery.swift */; };
 		9F121ECF23BB326F3B0DAE77 /* CmuxTuiSurfaceProvider+GuestURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = B51835ECCEF581663B12E497 /* CmuxTuiSurfaceProvider+GuestURL.swift */; };
 		EA48BFF3E91706F21FEB02CF /* CmuxTuiSurfaceProvider+Hosting.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97A8A59948A6E78A1170AA3 /* CmuxTuiSurfaceProvider+Hosting.swift */; };
+		A7C3E10F5D2B4E6F8A9C0D11 /* CmuxTuiSurfaceProvider+HostOpen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C3E10F5D2B4E6F8A9C0D12 /* CmuxTuiSurfaceProvider+HostOpen.swift */; };
 		C34C28E742E141B3A4B81D0A /* CmuxTuiSurfaceProvider+LayoutCreation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B8B96B6079F479493DF32BC /* CmuxTuiSurfaceProvider+LayoutCreation.swift */; };
 		6F98C7D1EF8F3F6C1F44DDC1 /* CmuxTuiSurfaceProvider+LayoutSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8683148CAE5FA8638862B2D /* CmuxTuiSurfaceProvider+LayoutSync.swift */; };
 		F6F617E3D7DB4012B1032667 /* CmuxTuiSurfaceProvider+Lifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71433FB540BA482FBBB90C12 /* CmuxTuiSurfaceProvider+Lifecycle.swift */; };
@@ -3057,8 +3058,8 @@
 		A5001643 /* RemoteInteractiveShellBootstrapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001642 /* RemoteInteractiveShellBootstrapBuilder.swift */; };
 		B9000028A1B2C3D4E5F60719 /* RemoteInteractiveShellBootstrapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001642 /* RemoteInteractiveShellBootstrapBuilder.swift */; };
 		D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */; };
-		33185F6084DE26EB590F3F17 /* RemotePreviewCacheBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCF589D6752E864288B73BA /* RemotePreviewCacheBudget.swift */; };
 		6FDE2E140F81B7DAEDCF789A /* RemotePreviewCacheBudget+Panels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F868B1288822F264BA11766 /* RemotePreviewCacheBudget+Panels.swift */; };
+		33185F6084DE26EB590F3F17 /* RemotePreviewCacheBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCF589D6752E864288B73BA /* RemotePreviewCacheBudget.swift */; };
 		F423CB39DA2A61437E8D3A67 /* RemotePreviewCacheBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D612CDB3EA4F9E63F350E5C4 /* RemotePreviewCacheBudgetTests.swift */; };
 		E30790000000000000000004 /* RemotePTYBridgeStrings+App.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30790000000000000000003 /* RemotePTYBridgeStrings+App.swift */; };
 		B11049000000000000000003 /* RemoteRelayTmuxCompatAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B11049000000000000000004 /* RemoteRelayTmuxCompatAuthorizationTests.swift */; };
@@ -4457,6 +4458,10 @@
 		D017093861349E48BF816E02 /* VMRemoteWorkspaceResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA2691D26BF6676FF32FBC54 /* VMRemoteWorkspaceResolver.swift */; };
 		C37800000000000000000001 /* VMSSHCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C37800000000000000000002 /* VMSSHCommandTests.swift */; };
 		249A593EF9615DF0C071986D /* VMSSHTransportFallbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5C553AF2050E7E6D7CD62EC /* VMSSHTransportFallbackTests.swift */; };
+		5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B002 /* WaveformDebugger.swift */; };
+		5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */; };
+		5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */; };
+		5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */; };
 		5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */; };
 		CB0EBBD1B828D9EA5B91C951 /* WaveformLinkShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */; };
 		5ED1DB3057555190D5DA13A3 /* WaveformSessionOverwriteCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */; };
@@ -4464,10 +4469,6 @@
 		5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */; };
 		5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */; };
 		5A7EF000000000000000B001 /* WaveformViewerStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000B002 /* WaveformViewerStrings.swift */; };
-		5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */; };
-		5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */; };
-		5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B002 /* WaveformDebugger.swift */; };
-		5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */; };
 		C7B206ECEE3E020A96259AFF /* WebKitBrowserReplDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F63189EE1BF0052D9BDC241 /* WebKitBrowserReplDriver.swift */; };
 		A10020000000000000000019 /* WebSurfaceSelectionEvaluationOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1002000000000000000001A /* WebSurfaceSelectionEvaluationOwner.swift */; };
 		A10020000000000000000011 /* WebSurfaceSelectionReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10020000000000000000012 /* WebSurfaceSelectionReader.swift */; };
@@ -6471,6 +6472,7 @@
 		F9E053B7E9AE536377476E4B /* CmuxTuiSurfaceProvider+FileDelivery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "CmuxTuiSurfaceProvider+FileDelivery.swift"; sourceTree = "<group>"; };
 		B51835ECCEF581663B12E497 /* CmuxTuiSurfaceProvider+GuestURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CmuxTuiSurfaceProvider+GuestURL.swift"; sourceTree = "<group>"; };
 		F97A8A59948A6E78A1170AA3 /* CmuxTuiSurfaceProvider+Hosting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Surfaces/CmuxTuiSurfaceProvider+Hosting.swift"; sourceTree = "<group>"; };
+		A7C3E10F5D2B4E6F8A9C0D12 /* CmuxTuiSurfaceProvider+HostOpen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CmuxTuiSurfaceProvider+HostOpen.swift"; sourceTree = "<group>"; };
 		2B8B96B6079F479493DF32BC /* CmuxTuiSurfaceProvider+LayoutCreation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CmuxTuiSurfaceProvider+LayoutCreation.swift"; sourceTree = "<group>"; };
 		E8683148CAE5FA8638862B2D /* CmuxTuiSurfaceProvider+LayoutSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CmuxTuiSurfaceProvider+LayoutSync.swift"; sourceTree = "<group>"; };
 		71433FB540BA482FBBB90C12 /* CmuxTuiSurfaceProvider+Lifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CmuxTuiSurfaceProvider+Lifecycle.swift"; sourceTree = "<group>"; };
@@ -7757,8 +7759,8 @@
 		D7AB12048000000000000004 /* RemoteInteractiveShellBootstrapBuilder+WorkingDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteInteractiveShellBootstrapBuilder+WorkingDirectory.swift"; sourceTree = "<group>"; };
 		A5001642 /* RemoteInteractiveShellBootstrapBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteInteractiveShellBootstrapBuilder.swift; sourceTree = "<group>"; };
 		D0C0D0C0D0C0D0C0D0C00004 /* RemoteLoopbackRuntimeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLoopbackRuntimeBridge.swift; sourceTree = "<group>"; };
-		EFCF589D6752E864288B73BA /* RemotePreviewCacheBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePreviewCacheBudget.swift; sourceTree = "<group>"; };
 		8F868B1288822F264BA11766 /* RemotePreviewCacheBudget+Panels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemotePreviewCacheBudget+Panels.swift"; sourceTree = "<group>"; };
+		EFCF589D6752E864288B73BA /* RemotePreviewCacheBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePreviewCacheBudget.swift; sourceTree = "<group>"; };
 		D612CDB3EA4F9E63F350E5C4 /* RemotePreviewCacheBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemotePreviewCacheBudgetTests.swift"; sourceTree = "<group>"; };
 		E30790000000000000000003 /* RemotePTYBridgeStrings+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemotePTYBridgeStrings+App.swift"; sourceTree = "<group>"; };
 		B11049000000000000000004 /* RemoteRelayTmuxCompatAuthorizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRelayTmuxCompatAuthorizationTests.swift; sourceTree = "<group>"; };
@@ -9142,6 +9144,10 @@
 		BA2691D26BF6676FF32FBC54 /* VMRemoteWorkspaceResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMRemoteWorkspaceResolver.swift; sourceTree = "<group>"; };
 		C37800000000000000000002 /* VMSSHCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMSSHCommandTests.swift; sourceTree = "<group>"; };
 		F5C553AF2050E7E6D7CD62EC /* VMSSHTransportFallbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VMSSHTransportFallbackTests.swift"; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B002 /* WaveformDebugger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebugger.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEditorHighlights.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerMenu.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerRTLStatus.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformFSDBHelper.swift; sourceTree = "<group>"; };
 		E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformLinkShortcutRoutingTests.swift"; sourceTree = "<group>"; };
 		C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformSessionOverwriteCheckTests.swift"; sourceTree = "<group>"; };
@@ -9149,10 +9155,6 @@
 		5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTerminalLinks.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformViewerSchemeHandler.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000B002 /* WaveformViewerStrings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformViewerStrings.swift; sourceTree = "<group>"; };
-		5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerMenu.swift; sourceTree = "<group>"; };
-		5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEditorHighlights.swift; sourceTree = "<group>"; };
-		5A7EF0000000000000D0B002 /* WaveformDebugger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebugger.swift; sourceTree = "<group>"; };
-		5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerRTLStatus.swift; sourceTree = "<group>"; };
 		9F63189EE1BF0052D9BDC241 /* WebKitBrowserReplDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserRepl/WebKitBrowserReplDriver.swift; sourceTree = "<group>"; };
 		A1002000000000000000001A /* WebSurfaceSelectionEvaluationOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebSurfaceSelectionEvaluationOwner.swift; sourceTree = "<group>"; };
 		A10020000000000000000012 /* WebSurfaceSelectionReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebSurfaceSelectionReader.swift; sourceTree = "<group>"; };
@@ -10126,6 +10128,7 @@
 				C12469AA0000000000000016 /* CmuxTuiSurfaceProvider+CreationRecovery.swift */,
 
 				EF71108A70863A2942D129D2 /* CmuxTuiSurfaceProvider+Notifications.swift */,
+				A7C3E10F5D2B4E6F8A9C0D12 /* CmuxTuiSurfaceProvider+HostOpen.swift */,
 				B51835ECCEF581663B12E497 /* CmuxTuiSurfaceProvider+GuestURL.swift */,
 				14D8703CDF43856369DCE15B /* CloudPortDiscovery.swift */,
 				C1323400000000000000000C /* CmuxTuiSurfaceProvider+PortDiscovery.swift */,
@@ -15999,6 +16002,7 @@
 				7F81637D3CD3867FAA502D1E /* CmuxTuiSurfaceProvider+FileDelivery.swift in Sources */,
 				9F121ECF23BB326F3B0DAE77 /* CmuxTuiSurfaceProvider+GuestURL.swift in Sources */,
 				EA48BFF3E91706F21FEB02CF /* CmuxTuiSurfaceProvider+Hosting.swift in Sources */,
+				A7C3E10F5D2B4E6F8A9C0D11 /* CmuxTuiSurfaceProvider+HostOpen.swift in Sources */,
 				C34C28E742E141B3A4B81D0A /* CmuxTuiSurfaceProvider+LayoutCreation.swift in Sources */,
 				6F98C7D1EF8F3F6C1F44DDC1 /* CmuxTuiSurfaceProvider+LayoutSync.swift in Sources */,
 				F6F617E3D7DB4012B1032667 /* CmuxTuiSurfaceProvider+Lifecycle.swift in Sources */,
@@ -16827,8 +16831,8 @@
 				D7AB12048000000000000003 /* RemoteInteractiveShellBootstrapBuilder+WorkingDirectory.swift in Sources */,
 				A5001643 /* RemoteInteractiveShellBootstrapBuilder.swift in Sources */,
 				D0C0D0C0D0C0D0C0D0C00003 /* RemoteLoopbackRuntimeBridge.swift in Sources */,
-				33185F6084DE26EB590F3F17 /* RemotePreviewCacheBudget.swift in Sources */,
 				6FDE2E140F81B7DAEDCF789A /* RemotePreviewCacheBudget+Panels.swift in Sources */,
+				33185F6084DE26EB590F3F17 /* RemotePreviewCacheBudget.swift in Sources */,
 				E30790000000000000000004 /* RemotePTYBridgeStrings+App.swift in Sources */,
 				A5001640 /* RemoteRelayZshBootstrap.swift in Sources */,
 				A5001645 /* RemoteSessionBundledResourceLoader.swift in Sources */,

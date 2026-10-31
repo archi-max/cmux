@@ -70,8 +70,8 @@ struct SSHTuiHostOpenCommandTests {
         #expect(release.installDirectory.hasPrefix("$HOME/.local/share/cmux/ssh-cli/cmux/"))
         #expect(tagged.installDirectory.hasPrefix("$HOME/.local/share/cmux/ssh-cli/cmux-svedit/"))
         #expect(!tagged.installDirectory.contains(".cmux/bin"))
-        #expect(tagged.script.contains("$HOME/.local/bin/cmux-tui-svedit"))
-        #expect(release.script.contains("$HOME/.local/bin/cmux-tui\""))
+        #expect(tagged.script.contains("$HOME/.local/bin/cmux-tui-svedit}\""))
+        #expect(release.script.contains("$HOME/.local/bin/cmux-tui}\""))
     }
 
     // MARK: Host script
