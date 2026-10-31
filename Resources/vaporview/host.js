@@ -457,7 +457,9 @@
   const webviewHandlers = {
     ready: () => { webviewReady = true; sendInit(); },
     initialized: () => { toNative({ type: 'opened', top: doc.netlist.map((t) => t.name) }); },
-    fetchDataFromFile: async (m) => { if (backend) { await backend.fetch(m.requestList); } },
+    // Until the backend has opened (doc.metadata), a request is the old
+    // viewer's: the reloaded one asks again for what it shows.
+    fetchDataFromFile: async (m) => { if (backend && doc.metadata) { await backend.fetch(m.requestList); } },
     contextUpdate: (m) => {
       viewerContext.webview = m;
       if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
