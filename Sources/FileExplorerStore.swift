@@ -822,8 +822,14 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection,
         to localURL: URL
     ) async throws {
-        let escapedPath = Self.remoteShellPathWord(path)
-        try await runDownload(command: "test -f \(escapedPath) && cat -- \(escapedPath)", connection: connection, to: localURL)
+        try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+    }
+
+    /// The remote command for a whole-file download, as a POSIX script any
+    /// login shell runs.
+    static func downloadCommand(path: String) -> String {
+        let word = remoteShellPathWord(path)
+        return SlangWorkspaceRoot.posixShellCommand("test -f \(word) && cat -- \(word)")
     }
 
     /// `head -c` stops the host after `maxBytes + 1` bytes, however large the
