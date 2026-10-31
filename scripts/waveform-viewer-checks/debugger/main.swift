@@ -163,6 +163,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("pause()")
     let restarted = await dbg("state()")
     expect((restarted?["cycle"] as? Int ?? 0) < 1000, "play at the end starts over: \(String(describing: restarted?["cycle"]))")
+    // The user's own edits during play are still undoable and unsaved; a click on the waveform pauses.
+    _ = await call("cmuxCommands.sessionSaved({}); return null")
+    let undoAtPlay = await call("return cmuxCommands.undoDepth ? cmuxCommands.undoDepth() : -1") as? Int ?? -1
+    _ = await dbg("play({ rate: 10 })")
+    await sleep(300)
+    _ = await call("return await cmuxWaveform.link.addSignal(['top', 'count'])")
+    await sleep(500)
+    let during = await call("return { dirty: cmuxCommands.sessionSnapshot().dirty, undo: cmuxCommands.undoDepth ? cmuxCommands.undoDepth() : -1 }") as? [String: Any]
+    expect(during?["dirty"] as? Bool == true && (during?["undo"] as? Int ?? -1) > undoAtPlay,
+           "adding a signal during play is an unsaved, undoable change: \(String(describing: during)), undo before \(undoAtPlay)")
+    _ = await call("cmuxWaveform.link.setMarker(22); return null")
+    await sleep(400)
+    let clicked = await dbg("state()")
+    let clickedAt = await marker()
+    expect(clicked?["playing"] as? Bool == false && clickedAt == 22, "a click on the waveform during play pauses there: \(String(describing: clicked?["playing"])) at \(String(describing: clickedAt))")
+    _ = await dbg("pause()")
 
     // Locals: the instance's own signals in a group of their own; pinned rows stay.
     _ = await call("return await cmuxWaveform.link.addSignal(['top', 'count'])")
@@ -221,7 +237,31 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(300)
     let notScope = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'count'] })") as? Bool
     expect(notScope == false, "Locals of a signal path is refused")
-
+    // Renamed by the user, Locals is still the debugger's: refilled in place, not saved.
+    _ = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Locals');
+      const c = JSON.parse(g.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
+      document.getElementById('viewer').contentWindow.postMessage({ command: 'renameSignalGroup', rowId: c.rowId, groupName: 'Mine' }, '*');
+      return null;
+    """)
+    await sleep(300)
+    _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core', 'alu'] })")
+    await sleep(400)
+    let renamed = await rows()
+    let renamedSaved = await call("return cmuxCommands.sessionSnapshot().state.displayedSignals.map(d => d.groupName || d.name)") as? [String]
+    expect(renamed.contains("[Mine]") && renamed.contains("Mine/top.core.alu.acc") && renamed.filter { $0 == "top.core.alu.acc" }.count == 1,
+           "a renamed Locals is refilled in place: \(renamed)")
+    expect(renamedSaved?.contains("Mine") == false, "and still left out of sessions: \(String(describing: renamedSaved))")
+    // An undo drops Locals from the viewer; it comes back.
+    _ = await call("return await cmuxWaveform.link.addSignal(['top', 'core', 'valid'])")
+    await sleep(400)
+    _ = await call("cmuxCommands.run('cmux.undo'); return null")
+    await sleep(800)
+    let undone = await rows()
+    expect(!undone.contains("top.core.valid") && undone.contains("Mine/top.core.alu.acc"), "after an undo Locals comes back: \(undone)")
+    _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })")
+    await sleep(400)
     // Rows the editor highlights this cycle.
     _ = await dbg("jump({ to: 'first' })")
     await sleep(300)
