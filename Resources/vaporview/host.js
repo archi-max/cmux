@@ -252,6 +252,10 @@
   // signalId -> the [time, value] changes the viewer was given for it (FSDB),
   // so the source link reads shown signals' values without fetching them again.
   const drawnChanges = new Map();
+  // Signals whose rows were removed, dropped from drawnChanges if no row draws them a moment later.
+  const forgetCandidates = new Set();
+  let forgetTimer = null;
+  const forgetDelayMs = 1000;
 
   async function inflateRaw(bytes) {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
@@ -420,6 +424,7 @@
           totalChunks: 1, chunkNum: 0, min: d.min, max: d.max });
         // The viewer keeps this same array (deliverValueChanges does not copy it), so holding it costs nothing extra.
         drawnChanges.set(d.signalId, changes);
+        forgetCandidates.delete(d.signalId);
         const entry = { signalId: d.signalId, changes: changes.length, fetchMs: Math.round(fetchMs),
           helperMs: Math.round(helperMs), wireBytes, inflateMs: Math.round(t2 - t1), decodeMs: Math.round(t3 - t2),
           deliverMs: Math.round(performance.now() - t3) };
@@ -616,6 +621,7 @@
   // Resolves to false when a newer load superseded this one.
   async function openBackend(generation) {
     drawnChanges.clear();
+    forgetCandidates.clear();
     const opening = config.format === 'fsdb' ? fsdbBackend(config) : wellenBackend(config);
     backend = opening;
     const metadata = await opening.open((top) => {
@@ -755,7 +761,7 @@
       if (m.eventType === 'signalSelect') { selectedId = firstId(m.eventData); }
       if (m.eventType === 'removeVariable') {
         const removed = [].concat(m.eventData && m.eventData.netlistId != null ? m.eventData.netlistId : []);
-        removed.forEach((id) => { pendingAdds.delete(id); forgetDrawn(id, removed); });
+        removed.forEach((id) => { pendingAdds.delete(id); forgetDrawn(id); });
         if (removed.includes(selectedId)) { selectedId = null; }
       }
     };
@@ -827,15 +833,26 @@
 
     const isShown = (v) => shownIds(true).has(v.netlistId);
 
-    // A removed row's changes are dropped once no other shown row (outside `removed`) draws the same signal.
-    function forgetDrawn(netlistId, removed) {
+    // A removed row's changes are dropped once no shown row draws the same signal. Rows of one
+    // signal share its netlist id (a pinned row and its copy in the debugger's Locals), so the
+    // removal event can't tell which went: the rows are looked at once the viewer has sent them.
+    function forgetDrawn(netlistId) {
       const v = doc.items.get(netlistId);
       if (!v || v.signalId === undefined) { return; }
-      for (const id of shownIds()) {
-        const other = doc.items.get(id);
-        if (!removed.includes(id) && other && other.signalId === v.signalId) { return; }
-      }
-      drawnChanges.delete(v.signalId);
+      forgetCandidates.add(v.signalId);
+      clearTimeout(forgetTimer);
+      forgetTimer = setTimeout(() => {
+        forgetTimer = null;
+        const drawn = new Set();
+        for (const id of shownIds()) {
+          const other = doc.items.get(id);
+          if (other && other.signalId !== undefined) { drawn.add(other.signalId); }
+        }
+        for (const signalId of forgetCandidates) {
+          if (!drawn.has(signalId)) { drawnChanges.delete(signalId); }
+        }
+        forgetCandidates.clear();
+      }, forgetDelayMs);
     }
 
     async function selectSignal(path) {
