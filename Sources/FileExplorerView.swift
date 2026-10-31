@@ -907,6 +907,56 @@ struct FileExplorerPanelView: NSViewRepresentable {
             copyRelItem.target = self
             copyRelItem.representedObject = node
             menu.addItem(copyRelItem)
+
+            addBuildFileMenuItems(for: node, to: menu)
+        }
+
+        /// Use as SystemVerilog Build File on a `.f` file of a local or SSH workspace, and its undo.
+        private func addBuildFileMenuItems(for node: FileExplorerNode, to menu: NSMenu) {
+            guard !node.isDirectory, SlangCompilationActions.isBuildFileCandidate(path: node.path),
+                  let file = slangExplorerFile(path: node.path) else { return }
+            menu.addItem(.separator())
+            let useItem = NSMenuItem(
+                title: String(localized: "fileExplorer.contextMenu.useAsBuildFile", defaultValue: "Use as SystemVerilog Build File"),
+                action: #selector(contextMenuUseAsBuildFile(_:)),
+                keyEquivalent: ""
+            )
+            useItem.target = self
+            useItem.representedObject = node
+            useItem.state = SlangCompilationActions.isBuildFileInUse(file, workspaceId: file.workspaceId) ? .on : .off
+            menu.addItem(useItem)
+            if SlangCompilationActions.isBuildFileInUse(nil, workspaceId: file.workspaceId) {
+                let clearItem = NSMenuItem(
+                    title: String(localized: "slangTop.clearBuildFile", defaultValue: "Clear Build File"),
+                    action: #selector(contextMenuClearBuildFile(_:)),
+                    keyEquivalent: ""
+                )
+                clearItem.target = self
+                menu.addItem(clearItem)
+            }
+        }
+
+        private func slangExplorerFile(path: String) -> SlangCompilationActions.ExplorerFile? {
+            guard let workspaceId = store.workspaceRootIdentity else { return nil }
+            let window = outlineView?.window
+            if store.provider is LocalFileExplorerProvider {
+                return .init(path: path, workspaceId: workspaceId, sshProvider: nil, window: window)
+            }
+            if let ssh = store.provider as? SSHFileExplorerProvider, ssh.isAvailable {
+                return .init(path: path, workspaceId: workspaceId, sshProvider: ssh, window: window)
+            }
+            return nil
+        }
+
+        @objc private func contextMenuUseAsBuildFile(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? FileExplorerNode,
+                  let file = slangExplorerFile(path: node.path) else { return }
+            SlangCompilationActions.useBuildFile(file)
+        }
+
+        @objc private func contextMenuClearBuildFile(_ sender: NSMenuItem) {
+            guard let workspaceId = store.workspaceRootIdentity else { return }
+            SlangCompilationActions.clearBuildFile(workspaceId: workspaceId, window: outlineView?.window)
         }
 
         /// `node` is the clicked row, or `nil` for the blank tree area.

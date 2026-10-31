@@ -412,10 +412,79 @@ extension LanguageServerSession {
         _ = try await executeCommand("slang.setTopLevel", argument: .string(serverPath), timeout: Self.setTopLevelTimeout)
     }
 
+    /// Elaborates the design a `.f` build file describes, replacing explore mode or a top level.
+    /// The empty path puts the server back in explore mode.
+    public func slangSetBuildFile(_ serverPath: String) async throws {
+        _ = try await executeCommand("slang.setBuildFile", argument: .string(serverPath), timeout: Self.setTopLevelTimeout)
+    }
+
+    /// Whether the server advertised `command`. Nil when it advertised no list (unknown).
+    public func supportsCommand(_ command: String) -> Bool? {
+        advertisedCommands.map { $0.contains(command) }
+    }
+
+    /// Instances in the full compilation, summed over its modules (`slang.getScopesByModule`); 0 without one.
+    public func slangInstanceCount() async throws -> Int {
+        let result = try await executeCommand("slang.getScopesByModule", argument: nil)
+        return (result.arrayValue ?? []).reduce(0) { $0 + max(0, $1["instCount"]?.intValue ?? 0) }
+    }
+
+    /// What the server compiles now, as set through this session.
+    public var slangCompilationTarget: SlangCompilationTarget? {
+        guard let compilationCommand, let path = compilationCommand.argument.stringValue else { return nil }
+        return compilationCommand.command == "slang.setBuildFile" ? .buildFile(path) : .topLevel(path)
+    }
+
+    /// Error messages the server showed since the last call, oldest first.
+    public func takeRecentErrorMessages() -> [String] {
+        defer { clearRecentErrorMessages() }
+        return recentErrorMessages
+    }
+
+    /// Error and warning counts over every file the server published diagnostics for,
+    /// with the first few errors.
+    public func diagnosticsSummary(maxErrors: Int = 5) -> SlangDiagnosticsSummary {
+        var summary = SlangDiagnosticsSummary()
+        for (url, diagnostics) in allLatestDiagnostics.sorted(by: { $0.key.path < $1.key.path }) {
+            for diagnostic in diagnostics {
+                switch diagnostic.severity {
+                case .error:
+                    summary.errorCount += 1
+                    if summary.firstErrors.count < maxErrors {
+                        summary.firstErrors.append("\(url.lastPathComponent):\(diagnostic.range.start.line + 1): \(diagnostic.message)")
+                    }
+                case .warning:
+                    summary.warningCount += 1
+                default:
+                    break
+                }
+            }
+        }
+        return summary
+    }
+
     /// slang's `SlangKind` order, for servers that send the enum as a number.
     private static func slangKindName(_ value: Int) -> String {
         let names = ["Instance", "Scope", "ScopeArray", "InterfacePort", "InterfacePortArray", "Port", "Param", "Logic",
                      "InstanceArray", "Package"]
         return names.indices.contains(value) ? names[value] : ""
     }
+}
+
+/// What a slang-server session compiles beyond explore mode.
+public enum SlangCompilationTarget: Sendable, Equatable {
+    /// `slang.setTopLevel`: the file whose uninstantiated modules are the tops (server path).
+    case topLevel(String)
+    /// `slang.setBuildFile`: a `.f` file list (server path).
+    case buildFile(String)
+}
+
+/// Counts of a session's latest diagnostics.
+public struct SlangDiagnosticsSummary: Sendable, Equatable {
+    public var errorCount = 0
+    public var warningCount = 0
+    /// `file:line: message` of the first errors.
+    public var firstErrors: [String] = []
+
+    public init() {}
 }

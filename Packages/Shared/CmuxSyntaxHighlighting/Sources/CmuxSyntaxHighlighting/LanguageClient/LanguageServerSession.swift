@@ -80,6 +80,14 @@ public actor LanguageServerSession {
     private var latestDiagnostics: [URL: [LSPDiagnostic]] = [:]
     private var diagnosticsSubscribers: [UUID: AsyncStream<(uri: URL, diagnostics: [LSPDiagnostic])>.Continuation] = [:]
     private var lastExit: LanguageServerError?
+    /// `executeCommandProvider.commands` from the last initialize reply; nil when the server sent none.
+    private(set) var advertisedCommands: Set<String>?
+    /// A command that changes what the server compiles (slang's top level or build file),
+    /// sent again after a relaunch so the choice outlives a crash.
+    private(set) var compilationCommand: (command: String, argument: JSONValue)?
+    /// The last `window/showMessage` errors, newest last.
+    private(set) var recentErrorMessages: [String] = []
+    private static let recentErrorMessageLimit = 5
     private var consecutiveTimeouts = 0
     /// After this many back-to-back request timeouts the server is assumed wedged and is killed.
     private static let wedgedTimeoutLimit = 2
@@ -150,7 +158,9 @@ public actor LanguageServerSession {
         }
 
         do {
-            _ = try await request("initialize", params: initializeParams(), timeout: initializeTimeout, allowWhileStarting: true)
+            let reply = try await request("initialize", params: initializeParams(), timeout: initializeTimeout, allowWhileStarting: true)
+            advertisedCommands = reply["capabilities"]?["executeCommandProvider"]?["commands"]?.arrayValue
+                .map { Set($0.compactMap(\.stringValue)) }
         } catch {
             if self.generation == generation {
                 teardown(error: error)
@@ -165,6 +175,23 @@ public actor LanguageServerSession {
         for (url, document) in documents {
             sendDidOpen(url: url, text: document.text, version: document.version)
         }
+        if let compilationCommand {
+            Task { [weak self] in
+                _ = try? await self?.executeCommand(compilationCommand.command, argument: compilationCommand.argument, timeout: 120)
+            }
+        }
+    }
+
+    /// Relaunches the server, keeping its open documents (and the compilation
+    /// command, which is sent again), so it rereads its config files.
+    public func restart() async throws {
+        if let tool, state != .stopped {
+            tool.kill()
+            for _ in 0..<500 where state != .stopped {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        try await start()
     }
 
     /// Sends shutdown and exit, then terminates the process if it lingers.
@@ -284,6 +311,10 @@ public actor LanguageServerSession {
     /// `countsTowardWedged`: false for exploratory requests (the design walk) whose timeout
     /// says the request was too big, not that the server hangs.
     func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil, countsTowardWedged: Bool = true) async throws -> JSONValue {
+        // Remember what the server compiles, cleared by the commands' empty argument.
+        if command == "slang.setTopLevel" || command == "slang.setBuildFile" {
+            compilationCommand = argument?.stringValue?.isEmpty == false ? (command, argument!) : nil
+        }
         var params: [String: JSONValue] = ["command": .string(command)]
         params["arguments"] = .array(argument.map { [$0] } ?? [])
         return try await request("workspace/executeCommand", params: .object(params), timeout: timeout, countsTowardWedged: countsTowardWedged)
@@ -315,7 +346,16 @@ public actor LanguageServerSession {
         latestDiagnostics[uri]
     }
 
-    private func removeDiagnosticsSubscriber(_ id: UUID) {
+    /// The latest diagnostics of every file the server reported on.
+    var allLatestDiagnostics: [URL: [LSPDiagnostic]] {
+        latestDiagnostics
+    }
+
+    func clearRecentErrorMessages() {
+        recentErrorMessages.removeAll()
+    }
+
+        private func removeDiagnosticsSubscriber(_ id: UUID) {
         diagnosticsSubscribers[id] = nil
     }
 
@@ -432,6 +472,11 @@ public actor LanguageServerSession {
     }
 
     private func handleNotification(method: String, params: JSONValue?) {
+        if method == "window/showMessage", params?["type"]?.intValue == 1, let message = params?["message"]?.stringValue {
+            recentErrorMessages.append(message)
+            if recentErrorMessages.count > Self.recentErrorMessageLimit { recentErrorMessages.removeFirst() }
+            return
+        }
         guard method == "textDocument/publishDiagnostics",
               let uriString = params?["uri"]?.stringValue,
               let uri = editorURL(forServerURI: uriString)
@@ -539,7 +584,8 @@ public actor LanguageServerSession {
         }
     }
 
-    func serverPath(for url: URL) -> String {
+    /// The path the server knows `url` by (symlinks resolved for a local server).
+    public nonisolated func serverPath(for url: URL) -> String {
         guard url.isFileURL else { return url.path }
         return launch.isRemote ? url.standardizedFileURL.path : Self.realPath(url.path)
     }

@@ -787,5 +787,17 @@
     "arguments": [
       1
     ]
+  },
+  "slangTop.success.instances": {
+    "source": "Elaborated %lld instances.",
+    "arguments": [
+      1
+    ]
+  },
+  "slangTop.summary.errors": {
+    "source": "slang reports %lld errors.",
+    "arguments": [
+      1
+    ]
   }
 }

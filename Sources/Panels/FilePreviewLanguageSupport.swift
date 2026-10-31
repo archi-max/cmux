@@ -145,9 +145,28 @@ struct FilePreviewLanguageDocumentContext {
         filePath: String
     ) -> FilePreviewLanguageDocumentContext? {
         let workspace = panel.flatMap { AppDelegate.shared?.workspaceFor(tabId: $0.workspaceId) }
-        if let remotePath = panel?.cloudPreviewRemotePath {
+        return resolve(
+            languageId: languageId,
+            workspace: workspace,
+            filePath: filePath,
+            remotePath: panel?.cloudPreviewRemotePath,
+            providerIdentity: panel?.cloudPreviewProviderIdentity
+        )
+    }
+
+    /// The context a document at `filePath` (local) or `remotePath` (on the
+    /// workspace's SSH host, `providerIdentity` naming the route) would get, so
+    /// other features reach the same pooled language server as its editor.
+    static func resolve(
+        languageId: String,
+        workspace: Workspace?,
+        filePath: String,
+        remotePath: String?,
+        providerIdentity: String?
+    ) -> FilePreviewLanguageDocumentContext? {
+        if let remotePath {
             // Only SSH workspaces can run a remote language server.
-            guard let providerIdentity = panel?.cloudPreviewProviderIdentity,
+            guard let providerIdentity,
                   providerIdentity.hasPrefix("ssh:"),
                   let configuration = workspace?.remoteConfiguration,
                   configuration.transport == .ssh,
