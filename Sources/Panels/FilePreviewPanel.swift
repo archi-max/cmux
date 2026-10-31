@@ -922,6 +922,7 @@ enum FilePreviewMode: Equatable {
     case image
     case media
     case quickLook
+    case waveform
 }
 
 enum FilePreviewKindResolver {
@@ -950,6 +951,14 @@ enum FilePreviewKindResolver {
         "py", "rb", "rs", "sh", "sql", "sv", "svh", "swift", "toml", "ts", "tsx", "tsv", "txt",
         "v", "vh", "xml", "yaml", "yml", "zsh"
     ]
+
+    /// Waveform dumps the bundled VaporView viewer reads. FSDB needs Verdi's
+    /// reader on the host that has it and is not routed here yet.
+    static let waveformExtensions: Set<String> = ["vcd", "fst", "ghw"]
+
+    static func isWaveformFile(_ url: URL) -> Bool {
+        waveformExtensions.contains(url.pathExtension.lowercased())
+    }
 
     static func mode(for url: URL) -> FilePreviewMode {
         switch resolvedResolution(for: url) {
@@ -994,11 +1003,16 @@ enum FilePreviewKindResolver {
             return "play.rectangle"
         case .quickLook:
             return "doc.viewfinder"
+        case .waveform:
+            return "waveform.path"
         }
     }
 
     private static func initialResolution(for url: URL) -> Resolution {
         let ext = url.pathExtension.lowercased()
+        if isWaveformFile(url) {
+            return .resolved(.waveform)
+        }
         if let textResolution = knownTextResolutionBeforeMedia(for: url, sniffMediaCollisions: false) {
             return textResolution
         }
@@ -1021,6 +1035,9 @@ enum FilePreviewKindResolver {
 
     private static func resolvedResolution(for url: URL) -> Resolution {
         let ext = url.pathExtension.lowercased()
+        if isWaveformFile(url) {
+            return .resolved(.waveform)
+        }
         if ext == "plist", looksLikeBinaryPropertyList(url: url) {
             return .resolved(.quickLook)
         }
@@ -1618,6 +1635,8 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
                 if self.isFileUnavailable {
                     if self.previewMode == .media {
                         self.nativeViewSessions.media.close()
+                    } else if self.previewMode == .waveform {
+                        self.nativeViewSessions.waveform.close()
                     }
                 } else {
                     self.previewRevisionState.increment()
@@ -1916,6 +1935,8 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
             return .mediaPlayer
         case .quickLook:
             return .quickLook
+        case .waveform:
+            return .waveformViewer
         }
     }
 }
@@ -2084,6 +2105,16 @@ struct FilePreviewPanelView: View {
                     isVisibleInUI: isVisibleInUI,
                     backgroundColor: contentBackgroundColor,
                     drawsBackground: appearance.drawsContentBackground
+                )
+            case .waveform:
+                FilePreviewWaveformView(
+                    panel: panel,
+                    revision: previewRevision,
+                    isVisibleInUI: isVisibleInUI,
+                    theme: WaveformViewerTheme.resolve(
+                        backgroundColor: contentBackgroundColor,
+                        foregroundColor: themeForegroundColor
+                    )
                 )
             }
         }
@@ -4065,7 +4096,7 @@ final class FilePreviewPDFContainerView: NSView, NSSplitViewDelegate, NSOutlineV
         switch intent {
         case .pdfCanvas, .pdfThumbnails, .pdfOutline:
             return intent
-        case .textEditor, .imageCanvas, .mediaPlayer, .quickLook:
+        case .textEditor, .imageCanvas, .mediaPlayer, .quickLook, .waveformViewer:
             return nil
         }
     }

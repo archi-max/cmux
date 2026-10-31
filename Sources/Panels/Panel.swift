@@ -111,6 +111,7 @@ public enum FilePreviewPanelFocusIntent: Hashable {
     case imageCanvas
     case mediaPlayer
     case quickLook
+    case waveformViewer
 }
 
 public enum ProjectPanelFocusIntent: Hashable {

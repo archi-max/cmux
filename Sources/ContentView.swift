@@ -10764,6 +10764,8 @@ struct ContentView: View {
             return "filePreview.mediaPlayer"
         case .filePreview(.quickLook):
             return "filePreview.quickLook"
+        case .filePreview(.waveformViewer):
+            return "filePreview.waveformViewer"
         case .project(.navigator):
             return "project.navigator"
         case .project(.detail):

@@ -6,6 +6,7 @@ final class FilePreviewNativeViewSessions {
     let image = FilePreviewImageSession()
     let media = FilePreviewMediaSession()
     let quickLook = FilePreviewQuickLookSession()
+    let waveform = FilePreviewWaveformSession()
 
     deinit {
         // AppKit teardown is performed explicitly by closeAll() on the main actor.
@@ -19,18 +20,27 @@ final class FilePreviewNativeViewSessions {
             image.close()
             media.close()
             quickLook.close()
+            waveform.close()
         case .image:
             pdf.close()
             media.close()
             quickLook.close()
+            waveform.close()
         case .media:
             pdf.close()
             image.close()
             quickLook.close()
+            waveform.close()
         case .quickLook:
             pdf.close()
             image.close()
             media.close()
+            waveform.close()
+        case .waveform:
+            pdf.close()
+            image.close()
+            media.close()
+            quickLook.close()
         }
     }
 
@@ -39,5 +49,6 @@ final class FilePreviewNativeViewSessions {
         image.close()
         media.close()
         quickLook.close()
+        waveform.close()
     }
 }

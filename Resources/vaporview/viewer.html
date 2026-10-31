@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<!-- Adapted from VaporView (https://github.com/Lramseyer/vaporview, GPL-3.0), media/webview.html@59107c6. -->
+<html>
+<head>
+  <title>VaporView - Waveform Viewer</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="codicons/codicon.css"/>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="vscode-theme.css">
+  <script src="vscode-api-shim.js"></script>
+</head>
+<body data-vscode-context='{"preventDefaultContextMenuItems":true,"webviewSection":"viewer"}'>
+  <div id="vaporview-top">
+    <div id="control-bar" data-vscode-context='{"webviewSection":"control-bar"}'>
+      <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+        <defs>
+          <symbol id="binary-edge" viewBox="0 0 16 16">
+            <path d="M 2 14 L 2 14 L 8 14 L 8 3 C 8 1 8 1 10 1 L 14 1 L 14 2 L 9 2 L 9 13 C 9 15 9 15 7 15 L 2 15 L 2 14"/>
+          </symbol>
+          <symbol id="bus-edge" viewBox="0 0 16 16">
+            <path d="M 2 1 L 6 1 L 8 6 L 10 1 L 14 1 L 14 2 L 10.663 2 L 8.562 7.5 L 10.663 14 L 14 14 L 14 15 L 10 15 L 8 9 L 6 15 L 2 15 L 2 14 L 5.337 14 L 7.437 7.5 L 5.337 2 L 2 2 L 2 1"/>
+          </symbol>
+          <symbol id="arrow" viewBox="0 0 16 16">
+            <path d="M 1 7 L 1 8 L 6 8 L 4 10 L 4.707 10.707 L 7.914 7.5 L 4.707 4.293 L 4 5 L 6 7 L 6 7 L 1 7"/>
+          </symbol>
+          <symbol id="back-arrow" viewBox="0 0 16 16">
+            <use href="#arrow" transform="scale(-1, 1) translate(-16, 0)"/>
+          </symbol>
+          <symbol id="next-posedge" viewBox="0 0 16 16">
+            <use href="#arrow"/>
+            <use href="#binary-edge" transform="translate(3, 0)"/>
+          </symbol>
+          <symbol id="next-negedge" viewBox="0 0 16 16">
+            <use href="#arrow"/>
+            <use href="#binary-edge" transform="translate(3, 16) scale(1, -1)"/>
+          </symbol>
+          <symbol id="next-edge" viewBox="0 0 16 16">
+            <use href="#arrow"/>
+            <use href="#bus-edge" transform="translate(3, 0)"/>
+          </symbol>
+          <symbol id="previous-posedge" viewBox="0 0 16 16">
+            <use href="#back-arrow"/>
+            <use href="#binary-edge" transform="translate(-3, 0)"/>
+          </symbol>
+          <symbol id="previous-negedge" viewBox="0 0 16 16">
+            <use href="#back-arrow"/>
+            <use href="#binary-edge" transform="translate(-3, 16) scale(1, -1)"/>
+          </symbol>
+          <symbol id="previous-edge" viewBox="0 0 16 16">
+            <use href="#back-arrow"/>
+            <use href="#bus-edge" transform="translate(-3, 0)"/>
+          </symbol>
+          <symbol id="time-equals" viewBox="0 0 16 16">
+            <text x="8" y="8" class="icon-text">t=</text>
+          </symbol>
+          <symbol id="search-hex" viewBox="0 0 16 16">
+            <text id="search-symbol" x="8" y="8" class="icon-text">hex</text>
+          </symbol>
+          <symbol id="zoom-fit" viewBox="0 0 16 16">
+            <path d="M 12.027 6.149 a 5.52 5.52 0 0 1 -1.27 3.908 l 4.26 4.26 l -0.7 0.71 l -4.26 -4.27 a 5.52 5.52 0 1 1 1.97 -4.608 z m -5.45 4.888 a 4.51 4.51 0 0 0 3.18 -1.32 l -0.04 0.02 a 4.51 4.51 0 0 0 1.36 -3.2 a 4.5 4.5 0 1 0 -4.5 4.5 z M 4 6 L 9 6 L 8 5 L 8.707 4.293 L 10.707 6.5 L 8.707 8.707 L 8 8 L 9 7 L 4 7 L 5 8 L 4.203 8.707 L 2.293 6.5 L 4.293 4.293 L 5 5 L 4 6"/>
+          </symbol>
+          <symbol id="touchpad" viewBox="0 0 16 16">
+            <path d="M 1 2 L 1 10 C 1 11 2 11 2 11 L 3 11 L 3 10 L 2 10 L 2 2 L 14 2 L 14 10 L 12 10 L 12 11 L 14 11 C 14 11 15 11 15 10 L 15 2 C 15 2 15 1 14 1 L 2 1 C 1 1 1 2 1 2 M 4 14 L 5 14 L 5 11 C 5 10 5 9 6 9 C 7 9 7 10 7 11 L 7 14 L 8 14 L 8 9 C 8 8 8 7 9 7 C 10 7 10 8 10 9 L 10 14 L 11 14 L 11 9 C 11 7 10.5 6 9 6 C 7.5 6 7 7 7 8 L 7 8.5 C 6.917 8.261 6.671 8.006 6 8 C 4.5 8 4 9 4 11 L 4 14"/>
+          </symbol>
+          <symbol id="mouse" viewBox="0 0 16 16">
+            <path d="M 3 14 L 3 8 Q 3 2 8 2 Q 13 2 13 8 L 13 14 L 12 14 L 12 8 Q 12 3 8.5 3 L 8.5 5 Q 9 5 9 6 L 9 7 Q 9 8 8.5 8 L 8.5 9 L 7.5 9 L 7.5 8 Q 7 8 7 7 L 7 6 Q 7 5 7.5 5 L 7.5 3 Q 4 3 4 8 L 4 14 L 3 14"/>
+          </symbol>
+          <symbol id="auto" viewBox="0 0 16 16">
+            <text x="8" y="8" class="icon-text">auto</text>
+          </symbol>
+        </defs>
+      </svg>
+      <div class="control-bar-group hide-2">
+        <div class="control-bar-button has-tooltip" id="zoom-fit-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#zoom-fit"/></svg>
+          <span class="tooltip tooltip-arrow tooltip-left">Zoom to Fit (Ctrl/Command + 0)</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="zoom-out-button">
+          <div class='codicon codicon-zoom-out'></div>
+          <span class="tooltip tooltip-arrow tooltip-left">Zoom Out (Ctrl/Command + scroll down)</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="zoom-in-button">
+          <div class='codicon codicon-zoom-in'></div>
+          <span class="tooltip tooltip-arrow tooltip-left">Zoom In (Ctrl/Command + scroll up)</span>
+        </div>
+      </div>
+      <div class="control-bar-group hide-1">
+        <div class="control-bar-button has-tooltip" id="previous-negedge-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#previous-negedge"/></svg>
+          <span class="tooltip tooltip-arrow">Go To Previous Negative Edge Transition</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="previous-posedge-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#previous-posedge"/></svg>
+          <span class="tooltip tooltip-arrow">Go To Previous Positive Edge Transition</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="previous-edge-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#previous-edge"/></svg>
+          <span class="tooltip tooltip-arrow">Go To Previous Transition (&#8678;)</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="next-edge-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#next-edge"/></svg>
+          <span class="tooltip tooltip-arrow">Go To Next Transition (&#8680;)</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="next-posedge-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#next-posedge"/></svg>
+        <span class="tooltip tooltip-arrow">Go To Next Positive Edge Transition</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="next-negedge-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#next-negedge"/></svg>
+          <span class="tooltip tooltip-arrow">Go To Next Negative Edge Transition</span>
+        </div>
+      </div>
+      <div class="control-bar-group hide-3">
+        <div id="search-container">
+          <textarea id="search-bar" class="search-input" autocorrect="off" autocapitalize="off" spellcheck="false" wrap="off" aria-label="Find" placeholder="Search"></textarea>
+          <div class="search-button selected-button" title="Go to Time specified" id="time-equals-button">
+            <svg class="custom-icon" viewBox="0 0 16 16"><use href="#time-equals"/></svg>
+          </div>
+          <div class="search-button" title="Search by hex value" id="value-equals-button">
+            <svg class="custom-icon" viewBox="0 0 16 16"><use id="value-icon-reference" href="#search-hex"/></svg>
+          </div>
+        </div>
+        <div class="control-bar-button has-tooltip" id="previous-button">
+          <div class='codicon codicon-arrow-left'></div>
+          <span class="tooltip tooltip-arrow">Previous</span>
+        </div>
+        <div class="control-bar-button has-tooltip" id="next-button">
+          <div class='codicon codicon-arrow-right'></div>
+          <span class="tooltip tooltip-arrow">Next</span>
+        </div>
+      </div>
+      <div class="control-bar-group">
+        <div class="format-button has-tooltip" id="mouse-scroll-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#mouse"/></svg>
+          <span class="tooltip tooltip-arrow">Enable Mouse Scrolling</span>
+        </div>
+        <div class="format-button has-tooltip" id="touchpad-scroll-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#touchpad"/></svg>
+          <span class="tooltip tooltip-arrow">Enable Touchpad Scrolling</span>
+        </div>
+        <div class="format-button has-tooltip" id="auto-scroll-button">
+          <svg class="custom-icon" viewBox="0 0 16 16"><use href="#auto"/></svg>
+          <span class="tooltip tooltip-arrow">Auto Detect Mouse/Touchpad</span>
+        </div>
+      </div>
+      <div class="control-bar-group has-tooltip"> 
+        <input type="checkbox" id="autoReload" name="Auto Reload" value="Unchecked" class="control-bar-checkbox">
+        <label for="autoReload" class="control-bar-label">Auto Reload</label>
+        <span class="tooltip tooltip-arrow">Automatically reload when file is updated</span>
+      </div>
+      <div class="control-bar-group control-bar-right"> 
+        <div class="control-bar-button has-tooltip" id="settings-menu">
+          <div class='codicon codicon-more' data-vscode-context='{"preventDefaultContextMenuItems": true, "webviewSection": "ruler" }'></div>
+          <span class="tooltip tooltip-arrow tooltip-right">Settings</span>
+        </div>
+      </div>
+    </div>
+    <div id="viewer-container" data-vscode-context='{"webviewSection":"waveform-labels"}'>
+      <div id="resize-1" class="resize-bar is-idle"></div>
+      <div id="resize-2" class="resize-bar is-idle"></div>
+    </div>
+    <div id="waveform-labels-spacer" class="ruler-spacer"> </div>
+    <div id="waveform-labels-container" class="labels-container">
+      <div id="waveform-labels" class="labels-group"> </div>
+    </div>
+    <div id="value-display-spacer" class="ruler-spacer"></div>
+    <div id="value-display-container" class="labels-container">
+      <div id="value-display" data-vscode-context='{"webviewSection":"value-display"}'></div>
+    </div>
+    <div id="ruler">
+      <div id="main-marker-label" class="time-marker-label" style="left: 0px; display:none"></div>
+      <div id="alt-marker-label" class="time-marker-label" style="left: 0px; display:none"></div>
+      <canvas id="rulerCanvas"></canvas>
+    </div>
+    <div id="scrollArea" data-vscode-context='{"webviewSection":"viewport"}'>
+      <div id="contentArea" tabindex="0">
+        <div id="netlist-link">
+          <p>Add signals from the </p><p id="netlist-link-text"><u>Netlist View</u></p>
+        </div>
+        <canvas id="viewport-selection"></canvas>
+        <canvas id="viewport-background"></canvas>
+        <canvas id="viewport-waveforms"></canvas>
+        <canvas id="viewport-overlay"></canvas>
+      </div>
+      <div id="horizontal-scrollbar">
+        <canvas id="scrollbarAreaCanvas"></canvas>
+        <div id="horizontal-scrollbar-slider" class="scrollbar"></div>
+      </div>
+      <div id="vertical-scrollbar">
+        <div id="vertical-scrollbar-slider" class="scrollbar"></div>
+      </div>
+    </div>
+  </div>
+  <script src="webview.js"></script>
+</body>
+</html>

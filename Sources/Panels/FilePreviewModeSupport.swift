@@ -13,6 +13,8 @@ extension FilePreviewMode {
             return "media"
         case .quickLook:
             return "quickLook"
+        case .waveform:
+            return "waveform"
         }
     }
 }
