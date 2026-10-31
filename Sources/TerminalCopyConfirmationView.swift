@@ -36,6 +36,17 @@ extension GhosttySurfaceScrollView {
         confirmationView.show()
     }
 
+    /// Shows a short notice in the same capsule, for something that happened
+    /// in this terminal without a click to answer (a `cmux open` that can't
+    /// open). Not tied to the copy-confirmation setting.
+    func showTerminalNotice(_ message: String) {
+        let noticeView = subviews.lazy
+            .compactMap { $0 as? TerminalCopyConfirmationView }
+            .first ?? installCopyConfirmationView()
+        noticeView.frame = sessionContentFrame
+        noticeView.show(title: message, symbol: "exclamationmark.circle", visibleFor: .seconds(4))
+    }
+
     // Created on first use, so panes that never copy on select pay nothing.
     private func installCopyConfirmationView() -> TerminalCopyConfirmationView {
         let confirmationView = TerminalCopyConfirmationView(frame: sessionContentFrame)
@@ -53,7 +64,9 @@ final class TerminalCopyConfirmationView: NSView {
     private static let fadeInDuration: TimeInterval = 0.12
     private static let fadeOutDuration: TimeInterval = 0.3
 
-    private let hostingView = NSHostingView(rootView: CopyConfirmationCapsule(accent: .accentColor))
+    private let hostingView = NSHostingView(rootView: CopyConfirmationCapsule(
+        title: CopyConfirmationCapsule.title, symbol: CopyConfirmationCapsule.symbol, accent: .accentColor
+    ))
     private var hideTask: Task<Void, Never>?
 
     override var acceptsFirstResponder: Bool { false }
@@ -87,9 +100,14 @@ final class TerminalCopyConfirmationView: NSView {
 
     /// Shows the capsule, restarting its timer if it is already visible.
     func show() {
+        show(title: CopyConfirmationCapsule.title, symbol: CopyConfirmationCapsule.symbol, visibleFor: Self.visibleDuration)
+    }
+
+    /// Shows the capsule with `title`, restarting its timer if it is already visible.
+    func show(title: String, symbol: String, visibleFor visibleDuration: Duration) {
         let isDark = SidebarAppearanceColorResolver().currentColorScheme() == .dark
         hostingView.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
-        hostingView.rootView = CopyConfirmationCapsule(accent: Self.accent())
+        hostingView.rootView = CopyConfirmationCapsule(title: title, symbol: symbol, accent: Self.accent())
         isHidden = false
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Self.fadeInDuration
@@ -99,14 +117,14 @@ final class TerminalCopyConfirmationView: NSView {
             element: NSApp as Any,
             notification: .announcementRequested,
             userInfo: [
-                .announcement: CopyConfirmationCapsule.title,
+                .announcement: title,
                 .priority: NSAccessibilityPriorityLevel.medium.rawValue,
             ]
         )
 
         hideTask?.cancel()
         hideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.visibleDuration)
+            try? await Task.sleep(for: visibleDuration)
             guard !Task.isCancelled else { return }
             self?.hide()
         }
@@ -138,14 +156,18 @@ private struct CopyConfirmationCapsule: View {
         )
     }
 
+    static let symbol = "doc.on.clipboard"
+
+    let title: String
+    let symbol: String
     let accent: Color
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "doc.on.clipboard")
+            Image(systemName: symbol)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(accent)
-            Text(Self.title)
+            Text(title)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)

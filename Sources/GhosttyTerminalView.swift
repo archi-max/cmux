@@ -3950,8 +3950,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     /// `cmux open` from this SSH terminal: one host path, native preview only.
-    func openRemoteFileFromCommandLine(path: String) -> Bool {
-        guard let terminalSurface, let workspace = terminalSurface.owningWorkspace() else { return false }
+    func openRemoteFileFromCommandLine(path: String) -> RemoteTerminalFilePreviewCoordinator.CommandLineOpenOutcome {
+        guard let terminalSurface, let workspace = terminalSurface.owningWorkspace() else { return .unavailable }
         return remoteFilePreviewCoordinator.openFromCommandLine(
             workspace: workspace, sourcePanelID: terminalSurface.id, path: path
         )
@@ -11020,7 +11020,7 @@ final class GhosttySurfaceScrollView: NSView {
         surfaceView.openRemoteFilePreview(tokens: tokens)
     }
 
-    func openRemoteFileFromCommandLine(path: String) -> Bool {
+    func openRemoteFileFromCommandLine(path: String) -> RemoteTerminalFilePreviewCoordinator.CommandLineOpenOutcome {
         surfaceView.openRemoteFileFromCommandLine(path: path)
     }
 
