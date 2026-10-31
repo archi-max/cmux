@@ -505,6 +505,35 @@ extension Harness {
         """) { r in
           check(r["during"] as? Int == 0, "no stale context while the viewer reloads (rows \(r["during"] ?? "nil"))")
           check((r["after"] as? [Int]) == [1, 1], "after the reload the context matches the viewer (\(r["after"] ?? "nil"))")
+          self.phaseN()
+        }
+      }
+    }
+  }
+
+  // Undo during a reload's gap, while the viewer has no rows, doesn't touch the
+  // undo history: afterwards undo and redo still go to the views around the add.
+  func phaseN() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const drawn = () => document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({});
+        await C.run('cmux.undo');
+        await sleep(1500);
+        R.reloaded = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undone = drawn();
+        await C.run('cmux.redo');
+        await sleep(800);
+        R.redone = drawn();
+        """) { r in
+          check(r["reloaded"] as? Int == 1, "an undo during the reload changes nothing (rows drawn \(r["reloaded"] ?? "nil"))")
+          check(r["undone"] as? Int == 0, "after the reload, undo removes the added signal (rows drawn \(r["undone"] ?? "nil"))")
+          check(r["redone"] as? Int == 1, "and redo brings it back (rows drawn \(r["redone"] ?? "nil"))")
           self.phaseO()
         }
       }
