@@ -29,9 +29,19 @@ func machine() -> String {
   return withUnsafeBytes(of: &u.machine) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
 }
 
+struct InstallSpec {
+  let cache: String
+  let root: URL
+  let files: [String]
+  let launcher: String
+  /// The launcher's body; nil runs the mock (v2, or as v1).
+  var script: String? = nil
+  var asV1 = false
+}
+
 /// A scratch HOME with the given installs in place, as build.sh would leave them; each
-/// launcher runs the mock with its replies on fd 3.
-func makeHome(_ name: String, installs: [(cache: String, root: URL, files: [String], launcher: String)]) throws -> URL {
+/// launcher runs the mock with its replies on fd 3 (or the spec's own script).
+func makeHome(_ name: String, installs: [InstallSpec]) throws -> URL {
   let home = scratch.appendingPathComponent(name, isDirectory: true)
   let fm = FileManager.default
   for i in installs {
@@ -42,15 +52,18 @@ func makeHome(_ name: String, installs: [(cache: String, root: URL, files: [Stri
       try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
       try Data().write(to: url)
     }
-    let script = "#!/bin/bash\nexec node \(shellQuoted(mock)) --latency 20 --jitter 10 \"$@\" 3>&1 1>&2\n"
-    try Data(script.utf8).write(to: dir.appendingPathComponent(i.launcher))
+    let body = i.script ?? "exec node \(shellQuoted(mock)) --latency 20 --jitter 10\(i.asV1 ? " --v1" : "") \"$@\" 3>&1 1>&2"
+    try Data("#!/bin/bash\n\(body)\n".utf8).write(to: dir.appendingPathComponent(i.launcher))
   }
   try fm.createDirectory(at: home, withIntermediateDirectories: true)
   return home
 }
 
-let v2Install = (cache: "fsdb-helper-v2", root: v2Root, files: ["addon/build/Release/fsdb_reader.node"], launcher: "cmux-helper-v2.sh")
-let v1Install = (cache: "fsdb-helper", root: v1Root, files: ["fsdb_reader.node"], launcher: "fsdb-helper.sh")
+let v2Install = InstallSpec(cache: "fsdb-helper-v2", root: v2Root, files: ["addon/build/Release/fsdb_reader.node"], launcher: "cmux-helper-v2.sh")
+let v1Install = InstallSpec(cache: "fsdb-helper", root: v1Root, files: ["fsdb_reader.node"], launcher: "fsdb-helper.sh", asV1: true)
+func v2Launching(_ script: String) -> InstallSpec {
+  InstallSpec(cache: "fsdb-helper-v2", root: v2Root, files: ["addon/build/Release/fsdb_reader.node"], launcher: "cmux-helper-v2.sh", script: script)
+}
 
 /// `/bin/sh -c` stands in for `ssh host`: same remote command, run here with HOME set.
 func localShell(home: URL) -> WaveformFSDBHelper.SSHArguments {
@@ -58,11 +71,35 @@ func localShell(home: URL) -> WaveformFSDBHelper.SSHArguments {
   return { command in ["-c", "HOME=\(shellQuoted(h)); export HOME; \(command)"] }
 }
 
-func makeHelper(home: URL, loading: WaveformFSDBHelper.Loading, v2Root: URL = v2Root) -> WaveformFSDBHelper {
+/// Statuses a helper reported, for the fallback checks.
+final class StatusLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var items: [WaveformFSDBHelper.Status] = []
+  func add(_ s: WaveformFSDBHelper.Status) { lock.withLock { items.append(s) } }
+  var fellBack: [(detail: String, remembered: Bool)] {
+    lock.withLock { items.compactMap { if case .fellBack(let d, let r) = $0 { return (d, r) }; return nil } }
+  }
+}
+
+let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll"])
+
+func makeHelper(home: URL, loading: WaveformFSDBHelper.Loading, v2Root: URL = v2Root, hostKey: String = "local",
+                allowedFile: String? = nil, readyTimeout: TimeInterval = 20, log: StatusLog? = nil) -> WaveformFSDBHelper {
   WaveformFSDBHelper(sshArguments: localShell(home: home),
                      installs: WaveformFSDBHelper.installs(v2Root: v2Root, v1Root: v1Root, loading: loading),
-                     executable: URL(fileURLWithPath: "/bin/sh")) { status in print("[status]", status) }
+                     executable: URL(fileURLWithPath: "/bin/sh"), hostKey: hostKey, allowedCommands: testCommands,
+                     allowedFile: allowedFile, readyTimeout: readyTimeout) { status in log?.add(status); print("[status]", String(format: "%.1f", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1000)), status) }
 }
+
+/// A v2 source folder whose build.sh counts its runs in `counter` and exits `code`.
+func failingV2Root(_ name: String, code: Int, counter: URL) throws -> URL {
+  let root = scratch.appendingPathComponent(name, isDirectory: true)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  try Data("#!/bin/sh\necho run >> \(shellQuoted(counter.path))\necho 'cmux-fsdb-build: failing on purpose (\(code))' >&2\nexit \(code)\n".utf8)
+    .write(to: root.appendingPathComponent("build.sh"))
+  return root
+}
+func lines(_ url: URL) -> Int { ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").count }
 
 func json(_ object: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: object) }
 func header(_ r: WaveformSchemeResponse) -> [String: Any] {
@@ -116,22 +153,139 @@ func relayChecks() async throws {
   let again = await helper.response(for: json(["cmd": "sleep", "ms": 10, "id": 41]), failureMessage: fail)
   expect((header(again)["result"] as? [String: Any])?["slept"] as? Int == 10, "a reused page id after its reply runs: \(header(again))")
 
-  // v1 fallback: the v2 install is missing and its build fails (exit 11: no Node.js).
-  let broken = scratch.appendingPathComponent("broken-v2", isDirectory: true)
-  try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
-  try Data("#!/bin/sh\necho 'cmux-fsdb-build: Node.js 18 or later not found' >&2\nexit 11\n".utf8).write(to: broken.appendingPathComponent("build.sh"))
+  // Early cancels last as long as the request is on its way, not a fixed time.
+  _ = await helper.response(for: json(["cmd": "cancel", "id": 77]), failureMessage: fail)
+  try await Task.sleep(nanoseconds: 3_000_000_000)
+  let late = await helper.response(for: json(["cmd": "sleep", "ms": 4000, "id": 77]), failureMessage: fail)
+  expect(header(late)["cancelled"] as? Bool == true, "a cancel that overtook its request still applies 3 s later: \(header(late))")
+  // ... and a cancel of a request already answered is ignored (the next request with that id runs).
+  _ = await helper.response(for: json(["cmd": "cancel", "id": 3]), failureMessage: fail)
+  let after3 = await helper.response(for: json(["cmd": "sleep", "ms": 10, "id": 3]), failureMessage: fail)
+  expect((header(after3)["result"] as? [String: Any])?["slept"] != nil, "a cancel of an answered id doesn't cancel a later request: \(header(after3))")
+
+  // Request and cancel POSTs racing: every request ends (cancelled or answered), none hangs.
+  let raceStart = Date()
+  let outcomes: [String] = await withTaskGroup(of: String?.self) { group in
+    for id in 200..<260 {
+      group.addTask {
+        let r = await helper.response(for: json(["cmd": "sleep", "ms": 600, "id": id]), failureMessage: fail)
+        let h = header(r)
+        return h["cancelled"] as? Bool == true ? "cancelled" : (h["result"] != nil ? "answered" : "other \(h)")
+      }
+      group.addTask {
+        try? await Task.sleep(nanoseconds: UInt64.random(in: 0...3_000_000))
+        _ = await helper.response(for: json(["cmd": "cancel", "id": id]), failureMessage: fail)
+        return nil
+      }
+    }
+    var out: [String] = []
+    for await o in group { if let o { out.append(o) } }
+    return out
+  }
+  let raceMs = Int(Date().timeIntervalSince(raceStart) * 1000)
+  let cancelledCount = outcomes.filter { $0 == "cancelled" }.count
+  expect(outcomes.count == 60 && outcomes.allSatisfy { $0 == "cancelled" || $0 == "answered" } && cancelledCount >= 50 && raceMs < 3000,
+         "60 racing request/cancel pairs: \(cancelledCount) cancelled, the rest answered, in \(raceMs) ms: \(Set(outcomes))")
+
+  // The relay passes only the page's commands, and an open only of the panel's file.
+  let warm = await helper.response(for: json(["cmd": "warm", "on": true]), failureMessage: fail)
+  expect((header(warm)["error"] as? String ?? "").contains("notAllowed"), "a command the page doesn't use is refused: \(header(warm))")
+  let fenced = makeHelper(home: home, loading: .auto, allowedFile: dump)
+  defer { fenced.stop() }
+  let other = await fenced.response(for: json(["cmd": "open", "file": "synth:ms=2"]), failureMessage: fail)
+  let own = await fenced.response(for: json(["cmd": "open", "file": dump]), failureMessage: fail)
+  expect((header(other)["error"] as? String ?? "").contains("notAllowed") && header(own)["result"] != nil,
+         "open is limited to the panel's file: other \(header(other)), own \(header(own).keys.sorted())")
+}
+
+/// When v2 gives way to v1, and when it doesn't.
+func fallbackChecks() async throws {
+  let fail: @Sendable (Error) -> String = { "\($0)" }
+  func open(_ helper: WaveformFSDBHelper) async -> WaveformSchemeResponse {
+    // A small dump: these checks time the start, not the open.
+    await helper.response(for: json(["cmd": "open", "file": "synth:ms=0.02", "id": 1]), failureMessage: fail)
+  }
+  func proto(_ r: WaveformSchemeResponse) -> String { r.headers[WaveformFSDBHelper.protocolHeader] ?? "none" }
+
+  // The v2 build fails to compile (13): v1 runs, said with the reason, and remembered for the host.
+  let counter = scratch.appendingPathComponent("builds-13.txt")
+  let broken = try failingV2Root("broken-13", code: 13, counter: counter)
   let fbHome = try makeHome("fallback", installs: [v1Install])
-  let fallback = makeHelper(home: fbHome, loading: .auto, v2Root: broken)
-  defer { fallback.stop() }
-  let fbOpen = await fallback.response(for: json(["cmd": "open", "file": dump, "id": 1]), failureMessage: fail)
-  expect(header(fbOpen)["result"] != nil && fbOpen.headers[WaveformFSDBHelper.protocolHeader] == "1",
-         "a failed v2 build falls back to the v1 helper: \(header(fbOpen).keys.sorted()) protocol \(String(describing: fbOpen.headers[WaveformFSDBHelper.protocolHeader]))")
+  let log1 = StatusLog()
+  let first = makeHelper(home: fbHome, loading: .auto, v2Root: broken, hostKey: "host-a", log: log1)
+  let r1 = await open(first); first.stop()
+  expect(header(r1)["result"] != nil && proto(r1) == "1" && log1.fellBack.count == 1 && log1.fellBack[0].remembered
+         && log1.fellBack[0].detail.contains("failing on purpose"),
+         "a failed v2 build falls back to v1, with the reason: protocol \(proto(r1)), \(log1.fellBack)")
+  let log2 = StatusLog()
+  let second = makeHelper(home: fbHome, loading: .auto, v2Root: broken, hostKey: "host-a", log: log2)
+  let r2 = await open(second); second.stop()
+  expect(proto(r2) == "1" && lines(counter) == 1 && log2.fellBack.first?.remembered == true,
+         "the failure is remembered for the host: no second build (\(lines(counter)) runs), notice \(log2.fellBack)")
+  let other = makeHelper(home: fbHome, loading: .auto, v2Root: broken, hostKey: "host-b")
+  _ = await open(other); other.stop()
+  expect(lines(counter) == 2, "another host builds v2 itself: \(lines(counter)) runs")
+  WaveformFSDBHelper.forgetV2Failure(hostKey: "host-a")
+  let retried = makeHelper(home: fbHome, loading: .auto, v2Root: broken, hostKey: "host-a")
+  _ = await open(retried); retried.stop()
+  expect(lines(counter) == 3, "Retry windowed (forgetV2Failure) builds v2 again: \(lines(counter)) runs")
+
+  // No Node.js (11): v1 would fail the same way: an error, not a fallback.
+  let c11 = scratch.appendingPathComponent("builds-11.txt")
+  let noNode = makeHelper(home: fbHome, loading: .auto, v2Root: try failingV2Root("broken-11", code: 11, counter: c11), hostKey: "host-c")
+  let r11 = await open(noNode); noNode.stop()
+  expect(proto(r11) == "none" && (header(r11)["error"] as? String ?? "").contains("setupFailed(code: 11"),
+         "a build that can't find Node.js is an error, not a fallback: \(header(r11))")
+
+  // The v2 launcher exits before its ready line: v1, said, not remembered.
+  let exitLog = StatusLog()
+  let exitHome = try makeHome("exit1", installs: [v2Launching("echo 'cmux-helper-v2: out of memory' >&2; exit 1"), v1Install])
+  let exits = makeHelper(home: exitHome, loading: .auto, hostKey: "host-d", log: exitLog)
+  let rx = await open(exits); exits.stop()
+  expect(proto(rx) == "1" && exitLog.fellBack.first?.remembered == false && exitLog.fellBack.first?.detail.contains("out of memory") == true,
+         "a v2 helper that exits before ready falls back for now, not for good: \(exitLog.fellBack)")
+  // A startup error line from v2 (id 0, error): the same.
+  let errLog = StatusLog()
+  let errHome = try makeHome("ready-error", installs: [v2Launching("echo '{\"id\":0,\"error\":\"worker failed to open\"}'; sleep 1"), v1Install])
+  let errs = makeHelper(home: errHome, loading: .auto, hostKey: "host-e", log: errLog)
+  let re = await open(errs); errs.stop()
+  expect(proto(re) == "1" && errLog.fellBack.first?.detail.contains("worker failed to open") == true,
+         "a v2 startup error falls back to v1: \(errLog.fellBack)")
+
+  // ssh can't connect (255): an error, no fallback.
+  let sshLog = StatusLog()
+  let sshHome = try makeHome("exit255", installs: [v2Launching("echo 'ssh: connect to host: Connection refused' >&2; exit 255"), v1Install])
+  let ssh = makeHelper(home: sshHome, loading: .auto, hostKey: "host-f", log: sshLog)
+  let r255 = await open(ssh); ssh.stop()
+  expect(proto(r255) == "none" && sshLog.fellBack.isEmpty && (header(r255)["error"] as? String ?? "").contains("connectionFailed"),
+         "an unreachable host is an error, not a fallback: \(header(r255))")
+
+  // A refused (not private) install: an error, v1 not run.
+  let refLog = StatusLog()
+  let refHome = try makeHome("exit86", installs: [v2Launching("echo 'cmux-helper-v2: refusing to run' >&2; exit 86"), v1Install])
+  let refused = makeHelper(home: refHome, loading: .auto, hostKey: "host-g", log: refLog)
+  let r86 = await open(refused); refused.stop()
+  expect(proto(r86) == "none" && refLog.fellBack.isEmpty && (header(r86)["error"] as? String ?? "").contains("refused"),
+         "a refused install is an error and v1 doesn't run: \(header(r86))")
+
+  // v2 doesn't get ready in time: v1 once, remembered for the session.
+  let tLog = StatusLog()
+  let tCount = scratch.appendingPathComponent("slow-launches.txt")
+  let tHome = try makeHome("timeout", installs: [v2Launching("echo run >> \(shellQuoted(tCount.path)); sleep 30"), v1Install])
+  let slow = makeHelper(home: tHome, loading: .auto, hostKey: "host-h", readyTimeout: 2, log: tLog)
+  let t0 = Date()
+  let rt = await open(slow); slow.stop()
+  expect(proto(rt) == "1" && tLog.fellBack.first?.remembered == true && Date().timeIntervalSince(t0) < 6,
+         "a v2 that misses its ready timeout falls back to v1 in \(Int(Date().timeIntervalSince(t0))) s: protocol \(proto(rt)) \(header(rt).keys.sorted()), \(tLog.fellBack)")
+  let slow2 = makeHelper(home: tHome, loading: .auto, hostKey: "host-h", readyTimeout: 2)
+  let rt2 = await open(slow2); slow2.stop()
+  expect(proto(rt2) == "1" && lines(tCount) == 1, "the next viewer of that host doesn't wait for v2 again: \(lines(tCount)) launches")
 
   // loading = whole: the v1 helper only, even with v2 installed.
-  let whole = makeHelper(home: home, loading: .whole)
-  defer { whole.stop() }
-  let wOpen = await whole.response(for: json(["cmd": "open", "file": dump, "id": 1]), failureMessage: fail)
-  expect(wOpen.headers[WaveformFSDBHelper.protocolHeader] == "1", "loading whole runs the v1 helper: \(String(describing: wOpen.headers[WaveformFSDBHelper.protocolHeader]))")
+  let wHome = try makeHome("whole", installs: [v2Install, v1Install])
+  let whole = makeHelper(home: wHome, loading: .whole)
+  let wOpen = await open(whole); whole.stop()
+  expect(proto(wOpen) == "1", "loading whole runs the v1 helper: \(proto(wOpen))")
 }
 
 // MARK: Page
@@ -165,6 +319,13 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let cfg = WKWebViewConfiguration()
     cfg.setURLSchemeHandler(scheme, forURLScheme: WaveformViewerSchemeHandler.scheme)
     cfg.userContentController.add(self, name: "cmuxWaveform")
+    // The order of the host's messages as the viewer frame receives them.
+    cfg.userContentController.addUserScript(WKUserScript(source: """
+      if (location.pathname.endsWith('viewer.html')) {
+        window.__msgOrder = [];
+        window.addEventListener('message', (e) => { const c = e.data && e.data.command; if (c) { window.__msgOrder.push(c); } }, true);
+      }
+      """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
     web = WKWebView(frame: window.contentView!.bounds, configuration: cfg)
     web.navigationDelegate = self
     window.contentView!.addSubview(web)
@@ -173,7 +334,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     window.alphaValue = 0
     window.ignoresMouseEvents = true
     window.orderBack(nil)
-    helper = makeHelper(home: home, loading: loading)
+    helper = makeHelper(home: home, loading: loading, allowedFile: dump)
     return await withCheckedContinuation { c in
       opened = c
       web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
@@ -200,9 +361,32 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
   }
 
+  func messageOrder() async -> [String] {
+    await call("return document.getElementById('viewer').contentWindow.__msgOrder || []") as? [String] ?? []
+  }
+
+  /// Pixels of the snapshot's waveform area that differ from the background: drawn rows.
+  func drawnPixels() async -> Int {
+    let image: NSImage? = await withCheckedContinuation { c in web.takeSnapshot(with: nil) { img, _ in c.resume(returning: img) } }
+    guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return 0 }
+    var n = 0
+    let x0 = rep.pixelsWide * 3 / 10
+    for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+      for x in stride(from: x0, to: rep.pixelsWide, by: 2) {
+        guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+        let d = abs(c.redComponent - 0x1e / 255.0) + abs(c.greenComponent - 0x1e / 255.0) + abs(c.blueComponent - 0x2e / 255.0)
+        if d > 0.25 { n += 1 }
+      }
+    }
+    return n
+  }
+
   func windowedChecks() async {
     let enabled = await wc("w.enabled") as? Bool
-    expect(enabled == true, "protocol 2: the viewer is windowed (set-windowing before initViewport): \(String(describing: enabled))")
+    let order = await messageOrder()
+    let sw = order.firstIndex(of: "set-windowing"), iv = order.firstIndex(of: "initViewport")
+    expect(enabled == true && sw != nil && iv != nil && sw! < iv!,
+           "protocol 2: set-windowing reaches the viewer before initViewport: enabled \(String(describing: enabled)), order \(order.prefix(6))")
     for path in [["tb", "clk"], ["tb", "dut", "bus0"], ["tb", "dut", "state"], ["tb", "dut", "spike_rvfi"]] {
       let added = await call("return await cmuxWaveform.link.addSignal([\(path.map { "'\($0)'" }.joined(separator: ","))])")
       if added as? Bool != true { print("[add]", path, String(describing: added)) }
@@ -220,6 +404,26 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let relayed = await call("return cmuxWaveform.v2Stats ? cmuxWaveform.v2Stats() : null") as? [String: Any]
     expect((relayed?["relayed"] as? Int ?? 0) > 0, "viewer requests went through the page's v2 relay: \(String(describing: relayed))")
 
+    let pixels = await drawnPixels()
+    expect(pixels > 1500, "the windowed rows are drawn: \(pixels) drawn pixels in the waveform area")
+
+    // The viewer's own cancels (stale windows of a viewport that moved on) go through the relay.
+    let refinesBefore = await wc("w.stats.refineMs.length") as? Int ?? 0
+    _ = await call("""
+      const T = cmuxWaveform.host.doc.metadata.timeEnd;
+      for (let k = 0; k < 12; k++) {
+        const w = T / 2 ** (3 + k % 5), a = Math.floor(((k * 0.618) % 1) * (T - w));
+        cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: a, endTime: a + w });
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return null
+      """)
+    let drained = await waitFor(10000) { await self.wc("w.getStats().inflight === 0") as? Bool == true }
+    let cancels = (await call("return cmuxWaveform.v2Stats()") as? [String: Any])?["cancelled"] as? Int ?? 0
+    let refinesAfter = await wc("w.stats.refineMs.length") as? Int ?? 0
+    expect(cancels > 0 && drained && refinesAfter > refinesBefore,
+           "the viewer's cancels reach the helper and nothing is left waiting: \(cancels) cancels, drained \(drained), refines \(refinesBefore)->\(refinesAfter)")
+
     // Next edge on the windowed clock, from the marker.
     _ = await call("cmuxWaveform.link.setMarker(500000300); return null")
     _ = await call("return await cmuxWaveform.link.selectSignal(['tb','clk'])")
@@ -231,8 +435,13 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // Inline values (the editor's) on windowed rows.
     let values = await call("return await cmuxWaveform.link.valuesAt({ time: 500001500, paths: [['tb','clk'], ['tb','dut','bus0']] })")
     print("[values]", String(describing: values))
-    let list = values as? [Any] ?? (values as? [String: Any])?["values"] as? [Any] ?? []
-    expect(list.count == 2 && "\(list)".contains("1"), "inline values of windowed signals: \(list)")
+    let list = values as? [Any] ?? []
+    let truth = try? await helper.request(json(["cmd": "valueAt", "signalIds": [0, 2], "t": 500001500]))
+    let bits = truth.flatMap { (try? JSONSerialization.jsonObject(with: $0.header)) as? [String: Any] }
+      .flatMap { ($0["result"] as? [String: Any])?["values"] as? [String] } ?? []
+    let wantBus = bits.count == 2 ? UInt32(bits[1], radix: 2).map { String(format: "%08x", $0) } : nil
+    expect(list.count == 2 && list[0] as? String == bits.first && list[1] as? String == wantBus,
+           "inline values of windowed signals are the helper's: \(list) vs clk \(bits.first ?? "?"), bus0 \(wantBus ?? "?")")
 
     // The debugger steps the windowed clock and reads values at its edges.
     let step = await call("return await cmuxWaveform.debugger.step({ by: 1 })") as? [String: Any]
@@ -252,6 +461,11 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     let loadStats = await call("return cmuxWaveform.stats") ?? "none"
     expect(loaded, "loading whole: bus0 arrives as whole-signal data: \(loadStats)")
+    await sleep(500)
+    let relayed = await call("return cmuxWaveform.v2Stats()") as? [String: Any]
+    expect(relayed?["relayed"] as? Int == 0 && relayed?["cancelled"] as? Int == 0, "loading whole: no v2 requests at all: \(String(describing: relayed))")
+    let pixels = await drawnPixels()
+    expect(pixels > 500, "loading whole: bus0 is drawn: \(pixels) drawn pixels")
   }
 
   func snapshot() async {
@@ -273,6 +487,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 @MainActor
 func run() async {
   do { try await relayChecks() } catch { expect(false, "relay checks ran: \(error)") }
+  do { try await fallbackChecks() } catch { expect(false, "fallback checks ran: \(error)") }
   do {
     let home = try makeHome("page", installs: [v2Install, v1Install])
     let page = Page(loading: .auto)
