@@ -132,7 +132,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         "messageNotASession": "not a session", "messageSessionMismatch": "mismatch",
       ]
       self.strings = strings
-      openFresh { self.phaseA() }
+      // PARITY_FROM=AQ runs from that phase on (for iterating; the full run is the check).
+      let from: [String: () -> Void] = ["P": phaseP, "AO": phaseAO, "AQ": phaseAQ, "AR": phaseAR, "AS": phaseAS]
+      if let name = ProcessInfo.processInfo.environment["PARITY_FROM"], let phase = from[name] { phase() } else { openFresh { self.phaseA() } }
     case "opened":
       opened += 1
       let next = onOpened
@@ -1756,12 +1758,223 @@ extension Harness {
           check(r["before"] as? Int == 130, "130 of the 140 shown: \(r["before"] ?? "nil")")
           check(r["warned"] as? Bool == false, "Add All doesn't ask: only 10 would be added")
           check(r["after"] as? Int == 140 && r["distinct"] as? Int == 140, "and adds them once each: \(r["after"] ?? "nil") rows, \(r["distinct"] ?? "nil") distinct")
+          self.phaseAQ()
+        }
+      }
+    }
+    web.evaluateJavaScript("cmuxWaveform.open(\(json))")
+  }
+
+  // An add made while an Undo or a reload's restore looks up its rows is
+  // checked against the rows that view brings back, not the ones it replaces:
+  // Add All and a pick by name leave a signal it restores once. An add held
+  // for a view that a reload then overtakes is dropped, and Add All says so.
+  func phaseAQ() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe + """
+        const n = (name) => tr().split(',').filter((x) => x === name).length;
+        const link = window.cmuxWaveform.link;
+        const findItem = H.findItem;
+        const slow = (ms) => { H.findItem = async (...a) => { await sleep(ms); return findItem(...a); }; };
+        await byName('top.clk');
+        await sleep(600);
+        removeAll(clk);
+        await sleep(600);
+        // Add All of top while the Undo that brings top.clk back resolves.
+        slow(800);
+        C.run('cmux.undo');
+        await sleep(100);
+        R.undoScope = JSON.stringify(await link.addScope({ path: ['top'] }));
+        await sleep(1500);
+        H.findItem = findItem;
+        R.undoScopeRows = tr(); R.undoScopeClk = n('top.clk');
+        // Back to one top.clk row, whatever the step before left.
+        removeAll(clk);
+        await sleep(400);
+        await byName('top.clk');
+        await sleep(600);
+        // A pick by name (link.addSignal: reveal) during the same Undo.
+        removeAll(clk);
+        await sleep(600);
+        slow(800);
+        C.run('cmux.undo');
+        await sleep(100);
+        await link.addSignal(['top', 'clk']);
+        await sleep(1500);
+        H.findItem = findItem;
+        R.undoPickRows = tr(); R.undoPickClk = n('top.clk');
+        // Back to one top.clk row, whatever the step before left.
+        removeAll(clk);
+        await sleep(400);
+        await byName('top.clk');
+        await sleep(600);
+        // Add All of top while a reload's restore (top.clk) resolves.
+        const restoreState = C.restoreState;
+        let during = null;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          slow(800);
+          const p = restoreState(m);
+          await sleep(100);
+          during = link.addScope({ path: ['top'] });
+          await p;
+          H.findItem = findItem;
+        };
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        await sleep(1000);
+        R.reloadScope = JSON.stringify(await during);
+        R.reloadRows = tr(); R.reloadClk = n('top.clk');
+        // Back to one top.clk row, whatever the step before left.
+        removeAll(clk);
+        await sleep(400);
+        await byName('top.clk');
+        await sleep(600);
+        // An add held for an Undo that a reload overtakes is dropped.
+        removeAll(clk);
+        await sleep(600);
+        slow(2500);
+        C.run('cmux.undo');
+        await sleep(100);
+        const held = link.addScope({ path: ['top', 'core'] });
+        await sleep(100);
+        window.cmuxWaveform.reload({});
+        R.heldScope = JSON.stringify(await held);
+        H.findItem = findItem;
+        await reloaded();
+        await sleep(800);
+        R.heldRows = tr();
+        // An Undo whose lookup never settles holds adds only until a reload.
+        await byName('top.clk');
+        await sleep(600);
+        removeAll(clk);
+        await sleep(600);
+        H.findItem = () => new Promise(() => {});
+        C.run('cmux.undo');
+        await sleep(100);
+        const stuck = link.addScope({ path: ['top', 'core'] });
+        await sleep(100);
+        H.findItem = findItem;
+        window.cmuxWaveform.reload({});
+        const pending = () => sleep(5000).then(() => 'pending');
+        R.stuckScope = JSON.stringify(await Promise.race([stuck, pending()]));
+        await reloaded();
+        await sleep(600);
+        R.afterStuck = JSON.stringify(await Promise.race([link.addScope({ path: ['top', 'core'] }), pending()]));
+        await sleep(600);
+        R.afterStuckRows = tr();
+        // An Undo of the load before that settles during the reload's restore
+        // doesn't end the restore's hold.
+        removeAll(acc);
+        await sleep(400);
+        await byName('top.clk');
+        await sleep(600);
+        await byName('top.core.acc');
+        await sleep(600);
+        R.lateBefore = tr();
+        slow(2500);
+        let late = null;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          const p = restoreState(m);
+          await sleep(100);
+          R.lateRestoreAt = Date.now() - lateStart;
+          late = link.addScope({ path: ['top'] });
+          await p;
+        };
+        const lateStart = Date.now();
+        C.run('cmux.undo');
+        await sleep(100);
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        R.lateScope = JSON.stringify(await late);
+        H.findItem = findItem;
+        await sleep(800);
+        R.lateRows = tr();
+        """) { r in
+          let s = { (k: String) in r[k] as? String ?? "nil" }
+          check(r["undoScopeClk"] as? Int == 1, "Add All during an Undo that restores top.clk leaves it once: \(s("undoScopeRows"))")
+          check(s("undoScope").contains(#""added":0"#), "and says it added none: \(s("undoScope"))")
+          check(r["undoPickClk"] as? Int == 1, "a pick by name during that Undo leaves top.clk once: \(s("undoPickRows"))")
+          check(r["reloadClk"] as? Int == 1, "Add All during a reload's restore leaves top.clk once: \(s("reloadRows"))")
+          check(s("reloadScope").contains(#""added":0"#), "and says it added none: \(s("reloadScope"))")
+          check(!s("heldRows").contains("top.core.acc"), "an add held for an Undo a reload overtook is dropped: \(s("heldRows"))")
+          check(s("heldScope").contains(#""added":0"#), "and Add All says it added none: \(s("heldScope"))")
+          check(s("stuckScope").contains(#""added":0"#), "Add All held by an Undo that never settles answers once a reload drops it: \(s("stuckScope"))")
+          check(s("afterStuck").contains(#""added":1"#) && s("afterStuckRows").contains("top.core.acc"),
+                "and adds after the reload aren't held: \(s("afterStuck")) -> \(s("afterStuckRows"))")
+          check(s("lateBefore") == "top.clk,top.core.acc" && s("lateScope").contains(#""added":0"#) && s("lateRows") == "top.clk,top.core.acc",
+                "an old load's Undo settling during the restore doesn't release the restore's held add: \(s("lateBefore")) -> \(s("lateScope")) -> \(s("lateRows"))")
+          self.phaseAR()
+        }
+      }
+    }
+  }
+
+  // A context the viewer posted before an add reached it, showing the signal
+  // only in Locals, doesn't end that add's wait: a second Add All of the
+  // scope, made on that context, doesn't add it again at the top level.
+  func phaseAR() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe + """
+        await d.step({ by: 1 });
+        await d.setLocals({ path: ['top', 'core'] });
+        await sleep(800);
+        R.locals = tr();
+        const before = JSON.parse(JSON.stringify(H.viewerContext.webview));
+        R.first = JSON.stringify(await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] }));
+        await window.cmuxWaveform.fromWebview(Object.assign({}, before, { command: 'contextUpdate' }));
+        R.second = JSON.stringify(await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] }));
+        await sleep(800);
+        R.rows = tr(); R.accRows = tr().split(',').filter((x) => x === 'top.core.acc').length;
+        await d.setLocals({ path: null });
+        await sleep(400);
+        """) { r in
+          let s = { (k: String) in r[k] as? String ?? "nil" }
+          check(s("locals") == "[Locals],Locals/top.core.acc", "top.core.acc in Locals: \(s("locals"))")
+          check(s("first").contains(#""added":1"#), "Add All of top.core adds it at the top level: \(s("first"))")
+          check(s("second").contains(#""added":0"#) && r["accRows"] as? Int == 1,
+                "a second Add All on a context from before the add doesn't add it again: \(s("second")) -> \(s("rows"))")
+          self.phaseAS()
+        }
+      }
+    }
+  }
+
+  // Opening a file: a context the old viewer sends after the open began is
+  // not the new viewer's shown rows (host.js takes contexts only after init).
+  func phaseAS() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe + """
+        await byName('top.clk');
+        await sleep(600);
+        const frame = document.querySelector('iframe');
+        frame.contentWindow.cmuxOldFrame = true;
+        // The contexts the old frame sends from here on.
+        const fromOld = new Set();
+        const listener = (m) => { try { if (frame.contentWindow.cmuxOldFrame) { fromOld.add(m); } } catch (e) {} };
+        H.contextListeners.push(listener);
+        H.toWebview({ command: 'setSelectedSignal', netlistId: clk.netlistId });
+        window.cmuxWaveform.open(Object.assign({}, H.config, { restore: null }));
+        let stale = 0;
+        const t = Date.now();
+        while (Date.now() - t < 3000) {
+          if (fromOld.has(H.viewerContext.webview)) { stale++; }
+          await sleep(10);
+        }
+        H.contextListeners.splice(H.contextListeners.indexOf(listener), 1);
+        R.stale = stale; R.oldContexts = fromOld.size;
+        """) { r in
+          check(r["oldContexts"] as? Int ?? 0 > 0, "the old viewer sent a context after the open began")
+          check(r["stale"] as? Int == 0, "the old viewer's context after an open isn't the shown rows (\(r["stale"] ?? "nil") samples)")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
       }
     }
-    web.evaluateJavaScript("cmuxWaveform.open(\(json))")
   }
   static func jsString(_ s: String) -> String {
     String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
