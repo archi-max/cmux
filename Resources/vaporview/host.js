@@ -700,7 +700,7 @@
       if (!(await openBackend(generation))) { return; }
       sendInit();
     } catch (error) {
-      if (generation === loadGeneration) { fail(error); }
+      if (generation === loadGeneration) { window.cmuxCommands.reloadFailed(); fail(error); }
     }
   }
 
