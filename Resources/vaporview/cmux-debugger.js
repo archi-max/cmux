@@ -597,6 +597,13 @@
     d.addEventListener('scroll', queuePlace, true);
     d.addEventListener('wheel', queuePlace, { capture: true, passive: true });
     iframe.contentWindow.addEventListener('resize', queuePlace);
+    // A group folded or unfolded by message sends no context update: its rows came or went.
+    iframe.contentWindow.addEventListener('message', (e) => {
+      const m = e.data;
+      if (m && m.command === 'editSignalGroup' && m.isExpanded !== undefined && state.highlightIds.size) {
+        setTimeout(matchHighlightedRows, 0);
+      }
+    });
   });
 
   // ---- status strip: cycle counter and play controls ----
@@ -654,11 +661,12 @@
     rate.title = s.debuggerRateTooltip || '';
   }
 
-  // Rows came or went (Locals refilled, a signal pinned): light the highlighted signals' new rows.
+  // Rows came or went (Locals refilled, a signal pinned, a group folded): light the highlighted signals' rows.
   // A restore (undo, reload) dropped Locals: put it back.
   let rowsSignature = '';
   const signature = (list) => (list || []).map((d) => (d.dataType === 'signal-group'
-    ? '[' + d.groupName + ':' + signature(d.children) + ']' : String(d.netlistId))).join(',');
+    ? '[' + d.groupName + (d.collapseState === 1 ? '-' : '+') + ':' + signature(d.children) + ']'
+    : String(d.netlistId))).join(',');
   host.contextListeners.push((m) => {
     if (m.displayedSignals) {
       const next = signature(m.displayedSignals);

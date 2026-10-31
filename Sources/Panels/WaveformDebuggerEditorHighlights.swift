@@ -29,13 +29,21 @@ enum WaveformDebuggerEditorHighlights {
         let instances: [String: Instance]
     }
 
-    private final class Drawn {
+    @MainActor private final class Drawn {
         var attributes: [(range: NSRange, key: NSAttributedString.Key, value: Any)] = []
-        /// The text's length when drawn: after an edit the ranges no longer hold.
+        /// The text storage and its edit count when drawn: after an edit, or on another
+        /// storage, the ranges no longer hold.
+        weak var storage: NSTextStorage?
         let revision: Int
 
-        init(revision: Int) {
-            self.revision = revision
+        init(_ textView: NSTextView) {
+            storage = textView.textStorage
+            revision = WaveformDebuggerEditorHighlights.revision(of: textView)
+        }
+
+        func holds(in textView: NSTextView) -> Bool {
+            guard let storage, storage === textView.textStorage else { return false }
+            return WaveformDebuggerEditorHighlights.revision(of: textView) == revision
         }
     }
 
@@ -44,7 +52,9 @@ enum WaveformDebuggerEditorHighlights {
     }
 
     /// Edits per text storage, so ranges drawn before an edit are never drawn again after it.
-    private static let revisions = NSMapTable<NSTextStorage, Counter>.weakToStrongObjects()
+    /// Keyed by identity: text storages compare (and hash) by their text, which edits change.
+    private static let revisions = NSMapTable<NSTextStorage, Counter>(
+        keyOptions: [.weakMemory, .objectPointerPersonality], valueOptions: .strongMemory)
     private static var editObserver: NSObjectProtocol?
 
     static func revision(of textView: NSTextView) -> Int {
@@ -211,7 +221,7 @@ enum WaveformDebuggerEditorHighlights {
     private static func apply(_ result: WaveformCycleHighlights.Result, lines: [SystemVerilogInlineScan.Line], in textView: NSTextView) {
         clear(in: textView)
         guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length else { return }
-        let drawn = Drawn(revision: revision(of: textView))
+        let drawn = Drawn(textView)
         func add(_ key: NSAttributedString.Key, _ value: Any, _ range: NSRange) {
             guard range.length > 0, NSMaxRange(range) <= length else { return }
             layoutManager.addTemporaryAttribute(key, value: value, forCharacterRange: range)
@@ -300,7 +310,7 @@ enum WaveformDebuggerEditorHighlights {
               let textView = target.debuggerTextView else { return }
         let text = textView.string as NSString
         let lineIndex = FilePreviewLSPLineIndex(textView.string)
-        let drawn = Drawn(revision: revision(of: textView))
+        let drawn = Drawn(textView)
         let color = NSColor.systemBlue.withAlphaComponent(0.24)
         for location in [declaration] + drivers {
             let start = lineIndex.offset(for: location.range.start)
@@ -322,7 +332,7 @@ enum WaveformDebuggerEditorHighlights {
 
     private static func redraw(_ drawn: Drawn, in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length,
-              revision(of: textView) == drawn.revision else { return }
+              drawn.holds(in: textView) else { return }
         for (range, key, value) in drawn.attributes where range.length > 0 && NSMaxRange(range) <= length {
             layoutManager.addTemporaryAttribute(key, value: value, forCharacterRange: range)
         }
