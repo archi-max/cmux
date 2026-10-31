@@ -744,6 +744,7 @@
   // landing after the marker, reverse continue to the nearest landing before it, so each always
   // moves. Signals' changes come from host.signalChanges (what the viewer was given when shown).
   const MAX_BREAKPOINT_CHANGES = 1000000;
+  const MAX_LINE_PATHS = 64;
   // { id, path, kind: 'change' | 'equals', value, pattern, enabled, times, timesFor }, and the
   // line breakpoints cmux sets (setLineBreakpoints): { id, kind: 'line', key, label, paths, ... }.
   const breakpoints = [];
@@ -766,8 +767,8 @@
     } else if (sized) {
       const [, size, , base, digits] = sized;
       if (base === 'd') {
-        if (!/^\d+$/.test(digits)) { return null; }
-        bits = BigInt(digits).toString(2);
+        // A single x, z or ? decimal digit is allowed (4'dx).
+        if (/^[xz?]$/.test(digits)) { bits = digits; } else if (!/^\d+$/.test(digits)) { return null; } else { bits = BigInt(digits).toString(2); }
       } else {
         const per = base === 'b' ? 1 : (base === 'o' ? 3 : 4);
         bits = '';
@@ -783,6 +784,8 @@
         if (!(n > 0)) { return null; }
         bits = fitBits(bits, n);
         if (bits === null) { return null; }
+        // A sized value's x/z extension stops at its size; widening it is zero-extension (unsigned).
+        if (n < width) { bits = '0'.repeat(width - n) + bits; }
       }
     } else {
       return null;
@@ -878,7 +881,9 @@
     for (const item of items) {
       const key = String(item.key || '');
       if (!key || lines.some((b) => b.key === key)) { continue; }
-      const paths = (Array.isArray(item.paths) ? item.paths : []).filter(Array.isArray).map((p) => p.map(String));
+      const allPaths = (Array.isArray(item.paths) ? item.paths : []).filter(Array.isArray).map((p) => p.map(String));
+      // Each path may hold up to 1M changes while its times are built: a line watches at most 64.
+      const paths = allPaths.slice(0, MAX_LINE_PATHS);
       const before = old.get(key);
       const same = before && JSON.stringify(before.paths) === JSON.stringify(paths);
       const checked = checkCondition(item.condition);
@@ -886,7 +891,7 @@
       const scope = Array.isArray(item.scope) ? item.scope.map(String) : null;
       lines.push({ id: before ? before.id : nextBreakpointId++, kind: 'line', key, label: String(item.label || key), paths,
         enabled: item.enabled !== false, times: same ? before.times : null, timesFor: same ? before.timesFor : null,
-        condition: checked.condition || null, scope });
+        condition: checked.condition || null, scope, pathsTotal: allPaths.length });
     }
     if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId) && !lines.some((b) => b.id === lastHitId)) { lastHitId = null; }
     breakpoints.push(...lines);
@@ -983,6 +988,27 @@
     if (state.playing) { refreshPlayStop(); }
   }
 
+  // A condition's signals' changes (it reads values at each landing): a small cache of its own,
+  // the most recently used kept (each may hold up to 1M changes).
+  const conditionCache = new Map();
+  const MAX_CONDITION_SIGNALS = 16;
+  async function conditionChangesOf(path, backend) {
+    for (const [key, entry] of conditionCache) { if (entry.backend !== backend) { conditionCache.delete(key); } }
+    const key = JSON.stringify(path);
+    const cached = conditionCache.get(key);
+    if (cached) { conditionCache.delete(key); conditionCache.set(key, cached); return cached; }
+    const v = await signalOf(path);
+    if (!v) { return null; }
+    const changes = await host.signalChanges(v, MAX_BREAKPOINT_CHANGES);
+    if (changes === undefined) { return { backend, changes: undefined, width: Number(v.width) || 1 }; }
+    const entry = { backend, changes: changes && changes.length <= MAX_BREAKPOINT_CHANGES ? changes : null, width: Number(v.width) || 1 };
+    if (host.currentBackend === backend) {
+      conditionCache.set(key, entry);
+      while (conditionCache.size > MAX_CONDITION_SIGNALS) { conditionCache.delete(conditionCache.keys().next().value); }
+    }
+    return entry;
+  }
+
   // A signal's changes for the current backend ({ changes, width }; changes null past the cap),
   // or null when it is not in the file.
   async function changesOf(path, backend) {
@@ -998,6 +1024,17 @@
     const entry = { backend, changes: changes && changes.length <= MAX_BREAKPOINT_CHANGES ? changes : null, width: Number(v.width) || 1 };
     if (host.currentBackend === backend) { changeCache.set(key, entry); }
     return entry;
+  }
+
+  // A breakpoint has its times: the raw changes of its paths are let go, unless another
+  // breakpoint still has to build its times from them.
+  function releaseChanges(paths, bp, backend) {
+    for (const path of paths) {
+      const key = JSON.stringify(path);
+      const needed = breakpoints.some((b) => b !== bp && b.timesFor !== backend
+        && (b.kind === 'line' ? b.paths : [b.path]).some((p) => JSON.stringify(p) === key));
+      if (!needed) { changeCache.delete(key); }
+    }
   }
 
   // The times `changes` hits a change (or equals, with `pattern`) breakpoint at.
@@ -1054,6 +1091,7 @@
       times = times.concat(timesOf(entry, bp.kind, bp.pattern));
     }
     if (!found) { return null; }
+    if (!incomplete) { releaseChanges(paths, bp, backend); }
     times.sort((a, b) => a - b);
     const unique = Float64Array.from(times.filter((t, i) => i === 0 || t !== times[i - 1]));
     if (incomplete) { return unique; }
@@ -1112,7 +1150,7 @@
     }
     const series = new Map();
     for (const v of new Set(vars.values())) {
-      const entry = await changesOf(host.pathOf(v), backend);
+      const entry = await conditionChangesOf(host.pathOf(v), backend);
       if (host.currentBackend !== backend || !entry || entry.changes === undefined) { return false; }
       if (!entry.changes) { return say(format(S().debuggerTooManyChanges, host.pathOf(v).join('.'))); }
       series.set(v.netlistId, entry.changes);
@@ -1255,7 +1293,9 @@
       label.className = 'label';
       label.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis;' + (bp.enabled ? '' : ' opacity: 0.6;');
       label.textContent = breakpointName(bp);
-      label.title = bp.kind === 'line' && !bp.paths.length ? format(S().debuggerLineNotPlaced, bp.label) : label.textContent;
+      label.title = bp.kind === 'line' && !bp.paths.length ? format(S().debuggerLineNotPlaced, bp.label)
+        : (bp.kind === 'line' && bp.pathsTotal > bp.paths.length
+          ? format(S().debuggerLinePathsCapped, label.textContent, number(bp.paths.length), number(bp.pathsTotal)) : label.textContent);
       const remove = document.createElement('span');
       remove.className = 'remove codicon codicon-close';
       remove.style.cursor = 'pointer';
@@ -1364,7 +1404,7 @@
     for (const v of vars) {
       let bits = raw.get(v.netlistId);
       if (bits === undefined) {
-        const entry = await changesOf(host.pathOf(v), host.currentBackend);
+        const entry = await conditionChangesOf(host.pathOf(v), host.currentBackend);
         if (entry && entry.changes) { bits = valueIn(entry.changes, time); }
       }
       if (bits !== undefined && bits !== null) { out.set(v.netlistId, String(bits)); }
@@ -1793,6 +1833,7 @@
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
+    cacheSizes: () => ({ changes: changeCache.size, conditions: conditionCache.size }),
     evaluate, promptEvaluate, promptAddWatch, addWatch, removeWatch, editWatch, restoreWatches, watches: () => watches.map(publicWatch),
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
