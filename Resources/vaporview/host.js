@@ -251,6 +251,9 @@
 
   // signalId -> the [time, value] changes the viewer was given for it (FSDB),
   // so the source link reads shown signals' values without fetching them again.
+  // Kept until the file is opened again: the viewer keeps the same arrays until it
+  // unloads and asks for a signal only once, so a row removed and shown again (Locals
+  // back at a scope, a pin) gets no new fetch, and keeping them costs nothing extra.
   const drawnChanges = new Map();
 
   async function inflateRaw(bytes) {
@@ -755,7 +758,7 @@
       if (m.eventType === 'signalSelect') { selectedId = firstId(m.eventData); }
       if (m.eventType === 'removeVariable') {
         const removed = [].concat(m.eventData && m.eventData.netlistId != null ? m.eventData.netlistId : []);
-        removed.forEach((id) => { pendingAdds.delete(id); forgetDrawn(id, removed); });
+        removed.forEach((id) => { pendingAdds.delete(id); });
         if (removed.includes(selectedId)) { selectedId = null; }
       }
     };
@@ -826,17 +829,6 @@
     }
 
     const isShown = (v) => shownIds(true).has(v.netlistId);
-
-    // A removed row's changes are dropped once no other shown row (outside `removed`) draws the same signal.
-    function forgetDrawn(netlistId, removed) {
-      const v = doc.items.get(netlistId);
-      if (!v || v.signalId === undefined) { return; }
-      for (const id of shownIds()) {
-        const other = doc.items.get(id);
-        if (!removed.includes(id) && other && other.signalId === v.signalId) { return; }
-      }
-      drawnChanges.delete(v.signalId);
-    }
 
     async function selectSignal(path) {
       const v = await findLinkItem(path, true);
