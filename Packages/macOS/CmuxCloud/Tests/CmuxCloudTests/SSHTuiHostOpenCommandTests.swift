@@ -249,6 +249,10 @@ struct SSHTuiHostOpenCommandTests {
         #expect(help.stdout.contains("Usage: cmux open <path>\n"), "\(help.stdout)")
         #expect(help.stdout.contains(":line"))
         #expect(help.stdout.contains("tmux"))
+        // tmux's environment names the client that attached last.
+        #expect(help.stdout.contains("attached last"), "\(help.stdout)")
+        // Success means the Mac queued the preview, not that it is on screen.
+        #expect(help.stdout.contains("queued"), "\(help.stdout)")
     }
 
     // MARK: Host script: the Mac's answer
@@ -261,7 +265,6 @@ struct SSHTuiHostOpenCommandTests {
             (.stale, "too old"),
             (.malformed, "could not read"),
             (.path, "refused this path"),
-            (.notOpenHere, "not open in a cmux window"),
             (.previewsOff, "file previews are off"),
             (.unsupportedType, "Files panel"),
         ]
@@ -285,6 +288,128 @@ struct SSHTuiHostOpenCommandTests {
         #expect(result.stderr.contains("no cmux window took"), "\(result.stderr)")
         // Giving up withdraws the request, so the Mac cannot open it later.
         #expect(try sandbox.ackLog().contains("--client \(SSHTuiHostOpenAnswer.cancelledClientID)"))
+    }
+
+    @Test("Two copies of this cmux on PATH do not exec each other forever")
+    func passthroughDoesNotLoop() throws {
+        let sandbox = try Sandbox()
+        let script = try String(contentsOfFile: sandbox.scriptPath, encoding: .utf8)
+        let a = sandbox.root + "/a-bin", b = sandbox.root + "/b-bin"
+        for dir in [a, b] {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try sandbox.writeExecutable(dir + "/cmux", script)
+        }
+        var environment = sandbox.openEnvironment
+        environment["PATH"] = b + ":" + a + ":/usr/bin:/bin"
+        let looped = try sandbox.run(["/bin/sh", "-c", "cmux notify --title x"], environment: environment, timeout: 10)
+        #expect(looped.status == 2, "\(looped.stderr)")
+        #expect(looped.stderr.contains("only cmux open"), "\(looped.stderr)")
+
+        // Every install directory is skipped, so a real cmux after them still runs.
+        let installs = sandbox.home + "/.local/share/cmux/ssh-cli/cmux-svedit"
+        let first = installs + "/1111", second = installs + "/2222"
+        let other = sandbox.root + "/other-bin"
+        for dir in [first, second, other] {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
+        try sandbox.writeExecutable(first + "/cmux", script)
+        try sandbox.writeExecutable(second + "/cmux", script)
+        try sandbox.writeExecutable(other + "/cmux", "#!/bin/sh\nprintf 'other cmux:%s\\n' \"$*\"\n")
+        environment["PATH"] = [first, second, other, "/usr/bin", "/bin"].joined(separator: ":")
+        let passed = try sandbox.run(["/bin/sh", "-c", "cmux notify --title x"], environment: environment, timeout: 10)
+        #expect(passed.status == 0, "\(passed.stderr)")
+        #expect(passed.stdout == "other cmux:notify --title x\n")
+
+        // A passthrough that comes back to this script stops.
+        environment["CMUX_SSH_CLI_PASSTHROUGH"] = "1"
+        let again = try sandbox.run(["/bin/sh", "-c", "cmux notify --title x"], environment: environment, timeout: 10)
+        #expect(again.status == 2, "\(again.stderr)")
+        #expect(!again.stdout.contains("other cmux"))
+    }
+
+    @Test("A file named like an answer is not an answer: only read_by counts")
+    func answerMatchedOnlyInReadBy() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("cmux-open:ok")
+        var environment = sandbox.openEnvironment
+        environment["FAKE_READ_BY"] = ""
+        let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "cmux-open:ok"], environment: environment,
+                                     cwd: sandbox.work, timeout: 30)
+        #expect(result.status == 1, "\(result.stderr)")
+        #expect(result.stderr.contains("no cmux window took"), "\(result.stderr)")
+    }
+
+    @Test("The subtitle drops JSON punctuation, so a name cannot reshape the row the CLI reads")
+    func subtitleIsSanitized() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a\"]}{[b\\.sv")
+        let result = try sandbox.open(["a\"]}{[b\\.sv"], shell: "/bin/sh", cwd: sandbox.work)
+        #expect(result.status == 0, "\(result.stderr)")
+        #expect(sandbox.value(after: "--subtitle", in: try sandbox.createArgv()) == "ab.sv")
+    }
+
+    @Test("not-open-here is one Mac's view: the CLI keeps waiting for another Mac's ok")
+    func notOpenHereKeepsWaiting() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        var environment = sandbox.openEnvironment
+        environment["FAKE_READ_BY"] = "\"\(SSHTuiHostOpenAnswer.notOpenHere.clientID)\""
+        environment["FAKE_SWITCH_AFTER"] = "3"
+        environment["FAKE_READ_BY_LATER"] = "\"\(SSHTuiHostOpenAnswer.notOpenHere.clientID)\",\"cmux-open:ok\""
+        let opened = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment,
+                                     cwd: sandbox.work, timeout: 30)
+        #expect(opened.status == 0, "\(opened.stderr)")
+
+        // A hard refusal beside it still ends the wait at once.
+        environment["FAKE_SWITCH_AFTER"] = nil
+        environment["FAKE_READ_BY"] = "\"\(SSHTuiHostOpenAnswer.notOpenHere.clientID)\",\"\(SSHTuiHostOpenAnswer.unsupportedType.clientID)\""
+        let hard = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment,
+                                   cwd: sandbox.work, timeout: 30)
+        #expect(hard.status == 1)
+        #expect(hard.stderr.contains("Files panel"), "\(hard.stderr)")
+        #expect(hard.elapsed < 5, "\(hard.elapsed)")
+    }
+
+    @Test("Only not-open-here until the deadline: the CLI waits it out, withdraws, and says why")
+    func notOpenHereAloneTimesOut() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        var environment = sandbox.openEnvironment
+        environment["FAKE_READ_BY"] = "\"\(SSHTuiHostOpenAnswer.notOpenHere.clientID)\""
+        let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment,
+                                     cwd: sandbox.work, timeout: 30)
+        #expect(result.status == 1)
+        #expect(result.stderr.contains("not open in a cmux window"), "\(result.stderr)")
+        #expect(result.elapsed >= Double(SSHTuiHostOpenCommand.answerWaitSeconds) - 2, "\(result.elapsed)")
+        #expect(try sandbox.ackLog().contains("--client \(SSHTuiHostOpenAnswer.cancelledClientID)"))
+    }
+
+    @Test("An ok that lands shortly after the withdrawal still counts")
+    func lateOkAfterCancelCounts() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        var environment = sandbox.openEnvironment
+        environment["FAKE_READ_BY"] = ""
+        environment["FAKE_OK_AFTER_CANCEL"] = "2"
+        let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment,
+                                     cwd: sandbox.work, timeout: 30)
+        #expect(result.status == 0, "\(result.stderr)")
+    }
+
+    @Test("Without fractional sleep the wait still ends at the same deadline")
+    func wholeSecondSleepKeepsDeadline() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        let bin = sandbox.root + "/sleep-bin"
+        try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+        try sandbox.writeExecutable(bin + "/sleep", "#!/bin/sh\ncase $1 in *.*) exit 1 ;; esac\nexec /bin/sleep \"$@\"\n")
+        var environment = sandbox.openEnvironment
+        environment["PATH"] = bin + ":/usr/bin:/bin"
+        environment["FAKE_READ_BY"] = ""
+        let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment,
+                                     cwd: sandbox.work, timeout: 60)
+        #expect(result.status == 1, "\(result.stderr)")
+        #expect(result.elapsed < Double(SSHTuiHostOpenCommand.answerWaitSeconds) + 5, "\(result.elapsed)")
     }
 
     @Test("An unreadable daemon reply fails closed")
@@ -373,6 +498,9 @@ private final class Sandbox {
     private var fakeBinary: String { root + "/fake-cmux-tui" }
     private var argvFile: String { root + "/create-argv" }
     private var ackFile: String { root + "/ack-log" }
+    private var subtitleFile: String { root + "/subtitle" }
+    private var listCountFile: String { root + "/list-count" }
+    private var afterCancelFile: String { root + "/after-cancel-count" }
 
     init() throws {
         root = Sandbox.canonical(NSTemporaryDirectory()) + "/cmux-open-\(UUID().uuidString.prefix(8))"
@@ -391,9 +519,19 @@ private final class Sandbox {
               *"notification create"*)
                 : > "\(argvFile)"
                 for a in "$@"; do printf '%s\\0' "$a" >> "\(argvFile)"; done
+                prev=
+                for a in "$@"; do [ "$prev" = --subtitle ] && printf '%s' "$a" > "\(subtitleFile)"; prev=$a; done
                 printf '%s\\n' "${FAKE_CREATE_REPLY-{\\"value\\":{\\"body\\":\\"x\\",\\"id\\":\\"\(id)\\",\\"read_by\\":[]}}}" ;;
               *"notification list"*)
-                printf '[{"body":"x","id":"\(id)","read_by":[%s]}]\\n' "${FAKE_READ_BY-\\"mac-1\\",\\"cmux-open:ok\\"}" ;;
+                # Keys sorted as serde_json writes them; the subtitle follows read_by.
+                n=$(($(cat "\(listCountFile)" 2>/dev/null || echo 0) + 1)); echo "$n" > "\(listCountFile)"
+                readers=${FAKE_READ_BY-\\"mac-1\\",\\"cmux-open:ok\\"}
+                if [ -n "${FAKE_SWITCH_AFTER:-}" ] && [ "$n" -gt "$FAKE_SWITCH_AFTER" ]; then readers=$FAKE_READ_BY_LATER; fi
+                if [ -n "${FAKE_OK_AFTER_CANCEL:-}" ] && grep -q cancelled "\(ackFile)" 2>/dev/null; then
+                  c=$(($(cat "\(afterCancelFile)" 2>/dev/null || echo 0) + 1)); echo "$c" > "\(afterCancelFile)"
+                  [ "$c" -ge "$FAKE_OK_AFTER_CANCEL" ] && readers='"cmux-open:cancelled","cmux-open:ok"'
+                fi
+                printf '[{"body":"x","id":"\(id)","read_by":[%s],"subtitle":"%s"}]\\n' "$readers" "$(cat "\(subtitleFile)" 2>/dev/null)" ;;
               *"notification ack"*)
                 printf '%s\\n' "$*" >> "\(ackFile)" ;;
               *) exit 9 ;;
@@ -467,7 +605,8 @@ private final class Sandbox {
         try handle.close()
     }
 
-    func run(_ argv: [String], environment: [String: String], cwd: String? = nil) throws -> ProcessResult {
+    func run(_ argv: [String], environment: [String: String], cwd: String? = nil,
+             timeout: TimeInterval = 60) throws -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
@@ -477,13 +616,18 @@ private final class Sandbox {
         process.standardOutput = out
         process.standardError = err
         process.standardInput = FileHandle.nullDevice
+        let started = Date()
         try process.run()
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [process] in
+            if process.isRunning { process.terminate() }
+        }
         let stdout = out.fileHandleForReading.readDataToEndOfFile()
         let stderr = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return ProcessResult(status: process.terminationStatus,
                              stdout: String(decoding: stdout, as: UTF8.self),
-                             stderr: String(decoding: stderr, as: UTF8.self))
+                             stderr: String(decoding: stderr, as: UTF8.self),
+                             elapsed: Date().timeIntervalSince(started))
     }
 
     func writeExecutable(_ path: String, _ contents: String) throws {
@@ -496,4 +640,5 @@ private struct ProcessResult {
     let status: Int32
     let stdout: String
     let stderr: String
+    let elapsed: TimeInterval
 }

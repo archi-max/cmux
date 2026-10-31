@@ -90,6 +90,9 @@ public struct SSHTuiHostOpenIngress: Sendable {
         self.machineID = machineID
     }
 
+    /// Placeholder; the fix follows.
+    public mutating func resetBaseline() {}
+
     /// Request rows of an SSH machine, and everything else. A Cloud machine
     /// has no host CLI posting them, so its rows all stay ordinary.
     public static func partition(_ rows: [CloudVMNotificationRow], isSSH: Bool)
