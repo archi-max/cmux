@@ -498,6 +498,7 @@
       document.getElementById('status-reload').hidden = true;
       host().toNative({ type: 'reload' });
     }
+    runWaitingHistory();
   }
 
   // Whether context update `m` changes nothing a session keeps but the marker (and the view panning to it).
@@ -710,6 +711,8 @@
       return;
     }
     await offerSessionFile();
+    // Nothing to restore: an Undo pressed during the reload runs now.
+    runWaitingHistory();
   }
 
   async function offerSessionFile() {
@@ -781,13 +784,31 @@
     };
   }
 
+  // Undo/Redo pressed while a reload or its restore is pending, in order. A
+  // reloading viewer has no rows to apply a view to, and its restore (until
+  // the viewer answers it) would overwrite one: they run once it is back.
+  let waitingHistory = [];
+
+  // Whether a view was applied (its answer then runs the next waiting one).
   function undo(stack, other, type) {
-    // A reloading viewer has no rows to apply a view to, and its restore (until
-    // the viewer answers it) would overwrite one: the history waits for both.
-    if (!stack.length || reloading || restorePending) { return; }
+    if (reloading || restorePending) {
+      if (waitingHistory.length < 50) { waitingHistory.push(type); }
+      return false;
+    }
+    if (!stack.length) { return false; }
     const state = JSON.parse(stack.pop());
     other.push(JSON.stringify(undoState()));
     applySession(state, type);
+    return true;
+  }
+
+  function runWaitingHistory() {
+    while (waitingHistory.length && !reloading && !restorePending) {
+      const type = waitingHistory.shift();
+      const applied = type === StateChangeType.Undo
+        ? undo(undoStack, redoStack, StateChangeType.Undo) : undo(redoStack, undoStack, StateChangeType.Redo);
+      if (applied) { return; }
+    }
   }
 
   // ---- status strip (VaporviewStatusBar) ----
@@ -1204,6 +1225,7 @@
     reloadBaseline = null;
     frameGone = false;
     keptIsCurrent = false;
+    waitingHistory = [];
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
