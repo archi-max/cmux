@@ -304,10 +304,10 @@ enum WaveformDebuggerEditorHighlights {
     /// `session` compiled the design again (it published diagnostics): its cones may have changed.
     static func recompiled(_ session: LanguageServerSession) {
         let server = ObjectIdentifier(session)
-        guard cones.keys.contains(where: { $0.server == server }) || failedCones.keys.contains(where: { $0.server == server }) else { return }
+        // Always: a lookup still out (nothing cached yet) must not be kept either.
         coneGeneration += 1
-        cones = cones.filter { $0.key.server != server }
-        failedCones = failedCones.filter { $0.key.server != server }
+        if cones.keys.contains(where: { $0.server == server }) { cones = cones.filter { $0.key.server != server } }
+        if failedCones.keys.contains(where: { $0.server == server }) { failedCones = failedCones.filter { $0.key.server != server } }
     }
 
     // MARK: Selected row → editor
