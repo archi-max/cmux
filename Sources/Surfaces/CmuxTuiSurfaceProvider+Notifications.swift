@@ -166,6 +166,7 @@ extension CmuxTuiSurfaceProvider {
         notificationPlacementResolver.target(for: row)
     }
     func deliverNotification(_ row: CloudVMNotificationRow, to target: CloudNotificationDeliveryTarget) -> CloudNotificationDeliveryOutcome {
+        if let outcome = handleHostOpenRequest(row, target: target) { return outcome }
         let machineID = self.machineID
         return CloudNotificationLocalDelivery(
             machineID: machineID,

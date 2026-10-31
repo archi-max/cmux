@@ -53,13 +53,13 @@ struct SSHTuiMigrationTests {
         let command = "printf configured-command"
         let configured = SSHTuiConnection(configuration: configuration(command: command))
         #expect(RemoteTuiMachine.ssh(configured).defaultTerminalCommand ==
-                ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" -lc \"$1\"", "cmux-ssh", command])
+                ["/bin/sh", "-c", configured.hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -lc \"$1\"", "cmux-ssh", command])
         let tmux = SSHTuiConnection(configuration: configuration(command: command, profile: .defaultTmux))
         #expect(RemoteTuiMachine.ssh(tmux).defaultTerminalCommand ==
                 WorkspaceRemoteTerminalProfile.defaultTmux.remoteCommandArguments)
         let shell = SSHTuiConnection(configuration: configuration())
         #expect(RemoteTuiMachine.ssh(shell).defaultTerminalCommand ==
-                ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" -l"])
+                ["/bin/sh", "-c", shell.hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -l"])
     }
 
     @MainActor
