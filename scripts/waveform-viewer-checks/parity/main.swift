@@ -1132,7 +1132,8 @@ extension Harness {
         await sleep(500);
         R.before = results().includes('clk');
         window.cmuxWaveform.reload({});
-        await sleep(1500);
+        await reloaded();
+        for (let i = 0; i < 40 && !results().includes('clk'); i++) { await sleep(50); }
         R.after = results().includes('clk');
         input.value = '';
         input.dispatchEvent(new Event('input'));
