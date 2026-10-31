@@ -138,6 +138,20 @@ keybindings, netlist view, settings, sessions and terminal links).
   open file (where upstream's calls would dereference null), and hands its
   buffer to Node without a copy. `third_party/` holds the node-addon-api 8.6.0 and
   node-api-headers 1.9.0 headers (MIT) the build needs.
+- `fsdb-helper-v2/` (new): the windowed viewer's helper (protocol 2 in
+  cmux's WINDOWING.md), uploaded and built on the host like `fsdb-helper/`.
+  `helper.js` coordinates a pool of `worker.js` processes (four), each with the
+  file open and its signals in the addon's compact store, and answers
+  `window`, `valueAt`, `edge`, `search`, `count`, `cancel` and the v1
+  `signals`; `expr.js` evaluates derived signals. `addon/fsdb_reader.cpp` is
+  upstream `src/fsdb_reader.cpp`, unmodified apart from a two-line license
+  header; `build.sh` splices in
+  `packed.cpp.inc`, `window.cpp.inc`, `deval.h` and `derive.cpp.inc` and
+  compiles it with `g++` against the host's Verdi (and zlib), and
+  `cmux-helper-v2.sh` starts it under `nice` in a private run directory,
+  refusing an install anyone else can write. `WaveformFSDBHelper` falls back
+  to `fsdb-helper/` when this one can't be built or started, and the
+  `fsdbLoading` setting (Whole signals) uses `fsdb-helper/` only.
 - `cmux-debugger.js` (new, written for cmux): the waveform debugger's page
   side. It picks a clock, steps the marker by its posedges, plays them at a
   set rate, keeps a Locals group of the editor's instance and highlights the
