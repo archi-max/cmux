@@ -5,7 +5,7 @@ import SwiftUI
 extension WaveformDebugger.Command {
     /// The commands of View > Waveform Debugger and the command palette, in menu order.
     static let all: [WaveformDebugger.Command] = [
-        .step(1), .step(-1), .first, .last, .continueToBreakpoint(1), .continueToBreakpoint(-1),
+        .step(1), .step(-1), .first, .last, .continueToBreakpoint(1), .continueToBreakpoint(-1), .toggleLineBreakpoint,
         .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop,
     ]
 
@@ -25,6 +25,8 @@ extension WaveformDebugger.Command {
                 : String(localized: "waveformDebugger.command.continue", defaultValue: "Continue to Next Breakpoint")
         case .continueOrTogglePlay:
             return KeyboardShortcutSettings.Action.toggleWaveformPlayback.label
+        case .toggleLineBreakpoint:
+            return KeyboardShortcutSettings.Action.toggleWaveformBreakpoint.label
         case .faster:
             return String(localized: "waveformDebugger.command.faster", defaultValue: "Play Faster")
         case .slower:
@@ -47,6 +49,7 @@ extension WaveformDebugger.Command {
         case .continueToBreakpoint(let direction):
             return direction < 0 ? "palette.waveformDebugger.reverseContinue" : "palette.waveformDebugger.continue"
         case .continueOrTogglePlay: return "palette.waveformDebugger.continueOrTogglePlay"
+        case .toggleLineBreakpoint: return "palette.waveformDebugger.toggleLineBreakpoint"
         case .faster: return "palette.waveformDebugger.faster"
         case .slower: return "palette.waveformDebugger.slower"
         case .useSelectedAsClock: return "palette.waveformDebugger.useSelectedAsClock"
@@ -65,6 +68,7 @@ extension WaveformDebugger.Command {
         case .continueToBreakpoint(let direction):
             return common + ["breakpoint", "continue", "run"] + (direction < 0 ? ["reverse", "back", "previous"] : ["next", "forward"])
         case .continueOrTogglePlay: return common + ["breakpoint", "continue", "play", "pause"]
+        case .toggleLineBreakpoint: return common + ["breakpoint", "line", "toggle", "gutter"]
         case .faster: return common + ["faster", "speed", "rate"]
         case .slower: return common + ["slower", "speed", "rate"]
         case .useSelectedAsClock: return common + ["selected", "signal", "choose"]
@@ -93,7 +97,7 @@ struct WaveformDebuggerMenu: View {
     var body: some View {
         Menu(String(localized: "menu.view.waveformDebugger", defaultValue: "Waveform Debugger")) {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
-                if index == 4 || index == 6 || index == 9 || index == 11 { Divider() }
+                if index == 4 || index == 7 || index == 10 || index == 12 { Divider() }
                 Button(command.title) {
                     if !WaveformDebugger.performFromShortcut(command, window: NSApp.keyWindow ?? NSApp.mainWindow) {
                         NSSound.beep()

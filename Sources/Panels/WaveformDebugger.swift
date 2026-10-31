@@ -21,6 +21,8 @@ enum WaveformDebugger {
         case continueToBreakpoint(Int)
         /// F5: continue when a breakpoint is enabled, else play or pause.
         case continueOrTogglePlay
+        /// F9: a line breakpoint on the SystemVerilog editor's caret line, or none.
+        case toggleLineBreakpoint
         case faster
         case slower
         case useSelectedAsClock
@@ -33,6 +35,7 @@ enum WaveformDebugger {
         (.stepWaveformCycleBack, .step(-1)),
         (.toggleWaveformPlayback, .continueOrTogglePlay),
         (.reverseContinueWaveform, .continueToBreakpoint(-1)),
+        (.toggleWaveformBreakpoint, .toggleLineBreakpoint),
     ]
 
     /// What the page last reported for a viewer.
@@ -88,6 +91,8 @@ enum WaveformDebugger {
     /// F10, Shift-F10, F5 and Shift-F5. False (the key goes on) unless a waveform viewer,
     /// or a SystemVerilog editor with a viewer in its workspace, has focus.
     static func performFromShortcut(_ command: Command, window: NSWindow?) -> Bool {
+        // In the editor, with or without a viewer.
+        if command == .toggleLineBreakpoint { return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) }
         if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
             // Typing in the viewer's search or value field.
             guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
@@ -103,6 +108,9 @@ enum WaveformDebugger {
     /// Runs `command` on the viewer for `panel` (see `target(for:)`). False when there is none.
     @discardableResult
     static func perform(_ command: Command, for panel: FilePreviewPanel?) -> Bool {
+        if command == .toggleLineBreakpoint {
+            return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: NSApp.keyWindow ?? NSApp.mainWindow)
+        }
         guard let waveform = target(for: panel) else { return false }
         perform(command, on: waveform)
         return true
@@ -121,9 +129,13 @@ enum WaveformDebugger {
             case .togglePlay:
                 _ = await page.callDebugger("togglePlay")
             case .continueToBreakpoint(let direction):
+                await WaveformDebuggerLineBreakpoints.sync(waveform)
                 _ = await page.callDebugger("continue", argument: ["dir": direction])
             case .continueOrTogglePlay:
+                await WaveformDebuggerLineBreakpoints.sync(waveform)
                 _ = await page.callDebugger("continue", argument: ["dir": 1, "orTogglePlay": true])
+            case .toggleLineBreakpoint:
+                break
             case .faster:
                 _ = await page.callDebugger("changeRate", argument: ["by": 1])
             case .slower:
@@ -143,6 +155,16 @@ enum WaveformDebugger {
 
     /// `{ type: 'debugger', event: 'cycle' | 'state', ...state }` from the viewer page.
     static func pageReported(_ body: [String: Any], waveform: FilePreviewPanel) {
+        // The page's breakpoint list toggled or removed a line breakpoint.
+        if body["event"] as? String == "lineBreakpoint" {
+            WaveformDebuggerLineBreakpoints.pageReported(body, waveform: waveform)
+            return
+        }
+        // Its signal breakpoints changed: kept for the workspace's session.
+        if body["event"] as? String == "breakpoints" {
+            WaveformDebuggerLineBreakpoints.signalsReported(body, waveform: waveform)
+            return
+        }
         // A played move, posted by the page as it moves (before the viewer's markerSet).
         if body["event"] as? String == "moved" {
             if isStepping(waveform), let time = (body["movedTo"] as? NSNumber)?.int64Value {
@@ -181,6 +203,7 @@ enum WaveformDebugger {
 
     /// A new page (a reload or a web content crash) starts without stepping, and doesn't say so.
     static func pageLoaded(_ waveform: FilePreviewPanel) {
+        WaveformDebuggerLineBreakpoints.pageLoaded(waveform)
         guard isStepping(waveform) else { return }
         box(waveform).state = PageState()
         stoppedStepping(waveform, editors: FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId))
@@ -274,6 +297,10 @@ enum WaveformDebugger {
             "debuggerBreakpointSignalGone": String(
                 localized: "waveformDebugger.breakpointSignalGone",
                 defaultValue: "%@ is not in this waveform."
+            ),
+            "debuggerLineNotPlaced": String(
+                localized: "waveformDebugger.lineNotPlaced",
+                defaultValue: "%@: none of its signals are in the waveform (not placed in the design yet)."
             ),
         ]
     }
