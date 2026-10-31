@@ -19,7 +19,16 @@ import GhosttyKit
 extension Workspace {
     /// A saved device terminal stays process-free until its provider reconnects:
     /// the pane is built on the same manual-mirror path as a live attachment.
-    func restoreDeviceDisplayPanel(_ snapshot: SessionPanelSnapshot, in pane: PaneID) -> UUID? {
+    ///
+    /// An SSH workspace never starts a local shell, so a terminal it saved
+    /// without a host terminal behind it (a local shell, or a pane whose
+    /// creation never finished) also restores here. No provider adopts that
+    /// pane, so its Retry replaces it with a new terminal on the host.
+    func restoreDeviceDisplayPanel(
+        _ snapshot: SessionPanelSnapshot,
+        in pane: PaneID,
+        origin: DeviceTerminalAttachmentStatus.Origin = .device
+    ) -> UUID? {
         guard let panel = makeRemoteTmuxPanePanel(onInput: { _ in }, keyNameResolver: nil) else { return nil }
         Self.bindCloudManualMirrorCallbacks(
             panel: panel, onResize: { _ in }, onRuntimeReady: {}, onFocus: {}, attachment: nil
@@ -27,13 +36,20 @@ extension Workspace {
         guard let panelID = try? insertCloudManualMirrorTab(panel, in: pane, focus: false, isLoading: false, iconAssetName: nil) else {
             return nil
         }
-        let status = DeviceTerminalAttachmentStatus()
+        let status = DeviceTerminalAttachmentStatus(origin: origin)
         panel.deviceAttachment = status
         status.onChange = { [weak self] in self?.postRemoteConnectionPresentationDidChange() }
-        status.onRetry = { [weak self] in
-            guard self != nil, let projection = SurfaceCatalog.shared.projection(forPanel: panelID),
-                  let provider = SurfaceCatalog.shared.provider(for: projection.resource.machine) else { return }
-            Task { await provider.refresh(force: true) }
+        status.onRetry = { [weak self, weak status] in
+            guard let self else { return }
+            let catalog = SurfaceCatalog.shared
+            if let projection = catalog.projectionIncludingPendingRestore(forPanel: panelID),
+               let provider = catalog.provider(for: projection.resource.machine) {
+                Task { await provider.refresh(force: true) }
+                return
+            }
+            if self.replaceUnattachedSSHDisplayPanel(panelID) { return }
+            // Nothing can reconnect this pane; do not leave Retry spinning.
+            status?.update(connected: false, connecting: false)
         }
         status.update(connected: false, connecting: false)
         applySessionPanelMetadata(snapshot, toPanelId: panelID)

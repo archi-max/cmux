@@ -693783,6 +693783,124 @@
           }
         }
       }
+    },
+    "ssh.terminal.unattached.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This tab has no session on the SSH host to reattach. Retry opens a new terminal on the host in its place."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا تحتوي علامة التبويب هذه على جلسة على مضيف SSH لإعادة الارتباط بها. تؤدي إعادة المحاولة إلى فتح طرفية جديدة على المضيف في مكانها."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dieser Tab hat keine Sitzung auf dem SSH-Host, die wieder verbunden werden kann. Ein erneuter Versuch öffnet an seiner Stelle ein neues Terminal auf dem Host."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta pestaña no tiene ninguna sesión en el host SSH a la que volver a conectarse. Reintentar abre en su lugar un terminal nuevo en el host."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cet onglet n’a aucune session à rattacher sur l’hôte SSH. Réessayer ouvre à sa place un nouveau terminal sur l’hôte."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このタブには再接続できる SSH ホスト上のセッションがありません。再試行すると、代わりにホスト上で新しいターミナルが開きます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 탭에는 다시 연결할 SSH 호스트 세션이 없습니다. 다시 시도하면 이 자리에 호스트의 새 터미널이 열립니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此标签页在 SSH 主机上没有可重新连接的会话。重试将在此位置打开主机上的新终端。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此分頁在 SSH 主機上沒有可重新連線的工作階段。重試會在此位置開啟主機上的新終端機。"
+          }
+        }
+      }
+    },
+    "ssh.terminal.unattached.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not running on the SSH host"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يعمل على مضيف SSH"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Läuft nicht auf dem SSH-Host"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se ejecuta en el host SSH"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ne s’exécute pas sur l’hôte SSH"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH ホストで実行されていません"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 호스트에서 실행 중이 아님"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未在 SSH 主机上运行"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未在 SSH 主機上執行"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

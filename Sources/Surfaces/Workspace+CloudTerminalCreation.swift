@@ -64,6 +64,9 @@ extension Workspace {
                 pendingCreation: reservation.creationReceipt
             )
         }
+        // A restored SSH pane with no host terminal still belongs to the host:
+        // Cmd+T or Cmd+D from it must not start a local shell.
+        if let source = unattachedSSHDisplaySourcePlacement(forPanel: panelID) { return source }
         // A disconnected provider may remove its graph while the native remote
         // transport remains. Absence of graph metadata is not local ownership.
         if let machineID = (panels[panelID] as? TerminalPanel)?.cloudAttachment?.machineID {
