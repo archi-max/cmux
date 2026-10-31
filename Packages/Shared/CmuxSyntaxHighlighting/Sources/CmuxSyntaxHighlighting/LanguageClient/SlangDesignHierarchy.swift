@@ -371,7 +371,7 @@ extension LanguageServerSession {
     /// macro (`` `include `TB_FILE ``, often defined in the build file) counts through its
     /// expansion, which slang-server's hover shows. Read from the open document, else from disk
     /// for a local server; nil when the text is not at hand.
-    private func includeMatch(of fragment: URL, inDeclaringFile declaringURI: URL) async -> IncludeMatch? {
+    func includeMatch(of fragment: URL, inDeclaringFile declaringURI: URL) async -> IncludeMatch? {
         var text = documentText(declaringURI)
         if text == nil, case .local = launch {
             text = try? String(contentsOf: declaringURI, encoding: .utf8)
