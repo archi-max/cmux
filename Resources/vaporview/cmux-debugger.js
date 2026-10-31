@@ -816,6 +816,25 @@
   const toldLine = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'lineBreakpoint', key: bp.key,
     enabled: bp.enabled, removed: false }, extra || {}));
 
+  // The signal breakpoints of a restored session (cmux), in place of the page's; checked when
+  // searched, since the file may not be open yet.
+  function restoreBreakpoints(query) {
+    const items = Array.isArray((query || {}).items) ? query.items : [];
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind !== 'line') { breakpoints.splice(i, 1); } }
+    const restored = [];
+    for (const item of items) {
+      const path = Array.isArray(item.path) ? item.path.map(String) : null;
+      const kind = item.kind === 'equals' ? 'equals' : (item.kind === 'change' ? 'change' : null);
+      if (!path || !path.length || !kind) { continue; }
+      restored.push({ id: nextBreakpointId++, path, kind, value: kind === 'equals' ? String(item.value || '') : null,
+        pattern: null, enabled: item.enabled !== false, times: null, timesFor: null });
+    }
+    breakpoints.unshift(...restored);
+    if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId)) { lastHitId = null; }
+    breakpointsChanged();
+    return restored.map(publicBreakpoint);
+  }
+
   // The editors' line breakpoints (cmux): replaces the page's, keeps the signal breakpoints.
   function setLineBreakpoints(query) {
     const items = Array.isArray((query || {}).items) ? query.items : [];
@@ -892,6 +911,9 @@
     const watched = new Set();
     for (const b of breakpoints) { for (const path of (b.kind === 'line' ? b.paths : [b.path])) { watched.add(JSON.stringify(path)); } }
     for (const key of Array.from(changeCache.keys())) { if (!watched.has(key)) { changeCache.delete(key); } }
+    // cmux keeps the signal breakpoints for the workspace's session (restoreBreakpoints).
+    host.toNative({ type: 'debugger', event: 'breakpoints', items: breakpoints.filter((b) => b.kind !== 'line')
+      .map((b) => ({ path: b.path.slice(), kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled })) });
     renderBreakpoints();
     if (state.playing) { refreshPlayStop(); }
   }
@@ -949,6 +971,14 @@
       if (!entry.changes) {
         window.cmuxUI.toast(format(S().debuggerTooManyChanges, path.join('.')), 'warning');
         continue;
+      }
+      // A restored value is read once the signal's width is known.
+      if (bp.kind === 'equals' && !bp.pattern) {
+        bp.pattern = parseValue(bp.value, entry.width);
+        if (!bp.pattern) {
+          window.cmuxUI.toast(format(S().debuggerBadValue, bp.value, number(entry.width)), 'warning');
+          continue;
+        }
       }
       found++;
       times = times.concat(timesOf(entry, bp.kind, bp.pattern));
@@ -1235,7 +1265,7 @@
     },
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
-    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setLineBreakpoints,
+    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });

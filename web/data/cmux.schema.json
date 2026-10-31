@@ -2707,6 +2707,7 @@
               "stepWaveformCycleBack",
               "toggleWaveformPlayback",
               "reverseContinueWaveform",
+              "toggleWaveformBreakpoint",
               "openBrowser",
               "focusBrowserAddressBar",
               "browserBack",

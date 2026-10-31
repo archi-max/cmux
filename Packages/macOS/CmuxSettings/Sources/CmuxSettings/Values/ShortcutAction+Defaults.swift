@@ -211,6 +211,7 @@ extension ShortcutAction {
         case .stepWaveformCycleBack: return ShortcutStroke(key: "f10", shift: true)
         case .toggleWaveformPlayback: return ShortcutStroke(key: "f5")
         case .reverseContinueWaveform: return ShortcutStroke(key: "f5", shift: true)
+        case .toggleWaveformBreakpoint: return ShortcutStroke(key: "f9")
         case .openBrowser: return ShortcutStroke(key: "l", command: true, shift: true)
         case .focusBrowserAddressBar: return ShortcutStroke(key: "l", command: true)
         case .browserBack: return ShortcutStroke(key: "[", command: true)

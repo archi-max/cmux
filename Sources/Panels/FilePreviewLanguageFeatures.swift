@@ -1122,6 +1122,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                     )
             }
         }
+        WaveformDebuggerLineBreakpoints.instancesLearned(by: self)
         // A newer refresh, an edit or a scroll since: the positions are stale.
         guard !Task.isCancelled, !isDetached, self.textView === textView, inlineTextGeneration == generation,
               let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
@@ -1177,6 +1178,23 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// The editor's text view, for the waveform debugger's highlights.
     var debuggerTextView: NSTextView? { isDetached ? nil : textView }
+
+    /// The dump instances of `module` the inline values found: the one shown (or that would be),
+    /// and all of them. For the debugger's line breakpoints.
+    func breakpointInstances(ofModule module: String) -> (shown: String?, all: [String]) {
+        let all = inlineInstanceCandidates[module] ?? []
+        return (inlineShownInstances[module]?.dump ?? chosenDumpInstance(module: module, candidates: all), all)
+    }
+
+    /// The scanned line holding UTF-16 offset `offset` (nil for a big file being scanned), for line breakpoints.
+    func breakpointLine(at offset: Int) -> SystemVerilogInlineScan.Line? {
+        guard !isDetached, let textView else { return nil }
+        var scan = syncedInlineScan(of: textView)
+        guard scan.units.count <= Self.backgroundScanThreshold else { return nil }
+        let line = scan.lines(in: NSRange(location: offset, length: 0)).first
+        inlineScan = scan
+        return line
+    }
 
     /// New lines scroll into view, or the layout changes (zoom, wrap width): place the values again.
     private func observeLayoutForInlineValues(_ textView: NSTextView) {

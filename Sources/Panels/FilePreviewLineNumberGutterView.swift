@@ -23,6 +23,16 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
     }
     private static let horizontalPadding: CGFloat = 10
 
+    /// A breakpoint dot in the gutter (cmux's waveform debugger).
+    enum BreakpointMark { case enabled, disabled, lost }
+    /// Dots by line start offset; nil for a text view that takes no breakpoints (no dot column).
+    static var breakpointMarks: (@MainActor (NSTextView) -> [Int: BreakpointMark]?)? = { WaveformDebuggerLineBreakpoints.styles(in: $0) }
+    /// A click on the line starting at the offset; true when it was taken.
+    static var breakpointClicked: (@MainActor (NSTextView, Int) -> Bool)? = { WaveformDebuggerLineBreakpoints.gutterClicked($0, lineStart: $1) }
+    /// The menu for a right-click on the line starting at the offset.
+    static var breakpointMenu: (@MainActor (NSTextView, Int) -> NSMenu?)? = { WaveformDebuggerLineBreakpoints.gutterMenu($0, lineStart: $1) }
+    private static let breakpointColumn: CGFloat = 12
+
     private var lineIndex = FilePreviewLineIndex(string: "")
     /// Set when edits were skipped (ruler hidden) and the index must be
     /// rebuilt before its next use.
@@ -136,7 +146,8 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
         let labelWidth = (String(repeating: "8", count: digits) as NSString).size(
             withAttributes: [.font: font]
         ).width
-        let nextThickness = ceil(labelWidth) + Self.horizontalPadding
+        let takesBreakpoints = (clientView as? NSTextView).flatMap { Self.breakpointMarks?($0) } != nil
+        let nextThickness = ceil(labelWidth) + Self.horizontalPadding + (takesBreakpoints ? Self.breakpointColumn : 0)
         if abs(ruleThickness - nextThickness) > 0.5 {
             ruleThickness = nextThickness
         }
@@ -190,6 +201,7 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
             : nil
         let lineCount = lineIndex.lineCount
         var drewTrailingLine = false
+        let breakpoints = Self.breakpointMarks?(textView) ?? [:]
 
         layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, fragmentGlyphRange, _ in
             let characterRange = layoutManager.characterRange(
@@ -201,6 +213,9 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
             )
             guard self.lineIndex.offset(forLine: lineNumber) == characterRange.location else {
                 return
+            }
+            if let mark = breakpoints[characterRange.location] {
+                self.drawBreakpoint(mark, atTextViewY: usedRect.minY + textView.textContainerOrigin.y, height: usedRect.height, in: textView)
             }
             self.drawLineNumber(
                 lineNumber,
@@ -282,6 +297,57 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
                 }
             }
         }
+    }
+
+    private func drawBreakpoint(_ mark: BreakpointMark, atTextViewY y: CGFloat, height: CGFloat, in textView: NSTextView) {
+        let top = convert(NSPoint(x: 0, y: y), from: textView).y
+        let size: CGFloat = 8
+        let dot = NSRect(x: 3, y: top + max(0, (height - size) / 2), width: size, height: size)
+        let path = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
+        let red = NSColor.systemRed
+        switch mark {
+        case .enabled:
+            red.setFill()
+            path.fill()
+        case .disabled:
+            red.withAlphaComponent(0.8).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        case .lost:
+            NSColor.systemGray.withAlphaComponent(0.8).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        }
+    }
+
+    /// The start offset of the line at a click, or nil off the text.
+    private func lineStart(at event: NSEvent) -> Int? {
+        guard let textView = clientView as? NSTextView, let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return nil }
+        let point = textView.convert(event.locationInWindow, from: nil)
+        let inContainer = NSPoint(x: 0, y: point.y - textView.textContainerOrigin.y)
+        guard layoutManager.numberOfGlyphs > 0, inContainer.y >= 0,
+              inContainer.y <= layoutManager.usedRect(for: container).maxY else { return nil }
+        let glyph = layoutManager.glyphIndex(for: inContainer, in: container)
+        let character = layoutManager.characterIndexForGlyph(at: glyph)
+        return lineIndex.offset(forLine: lineIndex.lineNumber(containingUTF16Offset: character))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let textView = clientView as? NSTextView, Self.breakpointMarks?(textView) != nil,
+           let start = lineStart(at: event), Self.breakpointClicked?(textView, start) == true {
+            needsDisplay = true
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        if let textView = clientView as? NSTextView, let start = lineStart(at: event),
+           let menu = Self.breakpointMenu?(textView, start) {
+            return menu
+        }
+        return super.menu(for: event)
     }
 
     private static func isUsableLineRect(_ rect: NSRect) -> Bool {

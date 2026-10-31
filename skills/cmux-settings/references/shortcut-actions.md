@@ -199,6 +199,7 @@ Values for `shortcuts.bindings.<action>`:
 - `shortcuts.bindings.stepWaveformCycleBack`
 - `shortcuts.bindings.toggleWaveformPlayback`
 - `shortcuts.bindings.reverseContinueWaveform`
+- `shortcuts.bindings.toggleWaveformBreakpoint`
 - `shortcuts.bindings.toggleFileExplorer`
 - `shortcuts.bindings.toggleReactGrab`
 

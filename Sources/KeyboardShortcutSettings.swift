@@ -207,7 +207,7 @@ enum KeyboardShortcutSettings {
         case saveFilePreview, toggleFileEditorWordWrap
         case addSignalToWaveform, revealWaveformSignalInSource
         case navigateSourceBack, navigateSourceForward
-        case stepWaveformCycleForward, stepWaveformCycleBack, toggleWaveformPlayback, reverseContinueWaveform
+        case stepWaveformCycleForward, stepWaveformCycleBack, toggleWaveformPlayback, reverseContinueWaveform, toggleWaveformBreakpoint
         case openBrowser
         case focusBrowserAddressBar
         case browserBack, browserForward, browserReload
@@ -395,6 +395,7 @@ enum KeyboardShortcutSettings {
             case .stepWaveformCycleBack: return String(localized: "shortcut.stepWaveformCycleBack.label", defaultValue: "Step Back One Cycle")
             case .toggleWaveformPlayback: return String(localized: "shortcut.toggleWaveformPlayback.continueLabel", defaultValue: "Continue, or Play or Pause Waveform")
             case .reverseContinueWaveform: return String(localized: "shortcut.reverseContinueWaveform.label", defaultValue: "Reverse Continue to Breakpoint")
+            case .toggleWaveformBreakpoint: return String(localized: "shortcut.toggleWaveformBreakpoint.label", defaultValue: "Toggle Breakpoint")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .focusBrowserAddressBar: return String(localized: "command.browserFocusAddressBar.title", defaultValue: "Focus Address Bar")
             case .browserBack: return String(localized: "menu.view.back", defaultValue: "Back")
@@ -719,6 +720,7 @@ enum KeyboardShortcutSettings {
             case .stepWaveformCycleBack: return StoredShortcut(key: "f10", command: false, shift: true, option: false, control: false)
             case .toggleWaveformPlayback: return StoredShortcut(key: "f5", command: false, shift: false, option: false, control: false)
             case .reverseContinueWaveform: return StoredShortcut(key: "f5", command: false, shift: true, option: false, control: false)
+            case .toggleWaveformBreakpoint: return StoredShortcut(key: "f9", command: false, shift: false, option: false, control: false)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .focusBrowserAddressBar:

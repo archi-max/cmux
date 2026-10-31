@@ -1,0 +1,432 @@
+import AppKit
+import CmuxSyntaxHighlighting
+import Foundation
+
+/// The waveform debugger's line breakpoints: F9, or a click in a SystemVerilog editor's
+/// line-number gutter, puts one on a line. It hits when a signal the line assigns changes
+/// (`WaveformLineBreakpoint.watchedSignals`), in the instance the editor shows values for, or
+/// in any instance of the module. The viewer page searches for hits (`setLineBreakpoints`);
+/// this side keeps the breakpoints per workspace, on their lines while the file is edited, and
+/// finds their lines again by text when the file is opened again.
+@MainActor
+enum WaveformDebuggerLineBreakpoints {
+    struct Mark: Codable, Equatable, Sendable {
+        var id: UUID
+        /// The file's path (as the editor has it).
+        var path: String
+        /// 0-based, as last seen.
+        var line: Int
+        /// The line's text as last seen (`WaveformLineBreakpoint.lineText`).
+        var text: String
+        var enabled = true
+        var anyInstance = false
+        /// The line's text was not found when the file was opened again: kept disabled at its old line.
+        var lost = false
+    }
+
+    /// Per workspace, in the order they were added.
+    private(set) static var marks: [UUID: [Mark]] = [:]
+
+    /// Where the marks of an open file are, kept through the text view's edits.
+    private final class Tracker {
+        weak var storage: NSTextStorage?
+        let workspace: UUID
+        let path: String
+        var offsets: [UUID: Int] = [:]
+        var observer: (any NSObjectProtocol)?
+        init(storage: NSTextStorage, workspace: UUID, path: String) {
+            self.storage = storage
+            self.workspace = workspace
+            self.path = path
+        }
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+    }
+
+    private static let trackers = NSMapTable<NSTextView, Tracker>.weakToStrongObjects()
+
+    // MARK: Editing
+
+    /// F9: a breakpoint on the caret's line, or none if it had one. False when the focused
+    /// view is not a SystemVerilog editor (the key goes on).
+    static func toggleAtCaret(window: NSWindow?) -> Bool {
+        guard let textView = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window),
+              let editor = textView.languageFeatures else { return false }
+        return toggle(in: editor, textView: textView, at: textView.selectedRange().location)
+    }
+
+    /// A breakpoint on the line holding UTF-16 offset `index`, or none if it had one.
+    @discardableResult
+    static func toggle(in editor: FilePreviewLanguageFeatures, textView: NSTextView, at index: Int) -> Bool {
+        guard let workspace = editor.linkWorkspaceId, let tracker = tracker(for: textView, editor: editor),
+              let storage = textView.textStorage else { return false }
+        let text = storage.string as NSString
+        let start = WaveformLineBreakpoint.lineStart(containing: index, in: text)
+        if let existing = tracker.offsets.first(where: { $0.value == start })?.key {
+            remove(existing, in: workspace)
+            return true
+        }
+        let line = lineNumber(at: start, in: text)
+        let mark = Mark(id: UUID(), path: editor.filePath, line: line, text: lineText(at: start, in: text))
+        marks[workspace, default: []].append(mark)
+        tracker.offsets[mark.id] = start
+        changed(workspace)
+        return true
+    }
+
+    static func remove(_ id: UUID, in workspace: UUID) {
+        marks[workspace]?.removeAll { $0.id == id }
+        for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] { tracker.offsets[id] = nil }
+        changed(workspace)
+    }
+
+    static func setEnabled(_ id: UUID, _ enabled: Bool, in workspace: UUID) {
+        update(id, in: workspace) { $0.enabled = enabled; if enabled { $0.lost = false } }
+    }
+
+    static func setAnyInstance(_ id: UUID, _ any: Bool, in workspace: UUID) {
+        update(id, in: workspace) { $0.anyInstance = any }
+    }
+
+    private static func update(_ id: UUID, in workspace: UUID, _ change: (inout Mark) -> Void) {
+        guard let index = marks[workspace]?.firstIndex(where: { $0.id == id }) else { return }
+        change(&marks[workspace]![index])
+        changed(workspace)
+    }
+
+    /// The page's list toggled or removed one: `{ event: 'lineBreakpoint', key, enabled, removed }`.
+    static func pageReported(_ body: [String: Any], waveform: FilePreviewPanel) {
+        guard let key = body["key"] as? String, let id = UUID(uuidString: key) else { return }
+        let workspace = waveform.workspaceId
+        if body["removed"] as? Bool == true {
+            remove(id, in: workspace)
+        } else if let enabled = body["enabled"] as? Bool {
+            setEnabled(id, enabled, in: workspace)
+        }
+    }
+
+    // MARK: Gutter
+
+    /// The gutter's dots: line start offset → style. Nil for a view that takes no breakpoints.
+    static func styles(in textView: NSTextView) -> [Int: FilePreviewLineNumberGutterView.BreakpointMark]? {
+        guard let editor = (textView as? SavingTextView)?.languageFeatures,
+              let tracker = tracker(for: textView, editor: editor) else { return nil }
+        let byId = Dictionary((marks[tracker.workspace] ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var styles: [Int: FilePreviewLineNumberGutterView.BreakpointMark] = [:]
+        for (id, offset) in tracker.offsets {
+            guard let mark = byId[id] else { continue }
+            styles[offset] = mark.lost ? .lost : (mark.enabled ? .enabled : .disabled)
+        }
+        return styles
+    }
+
+    /// A click on the gutter at line start `start`: toggles the line's breakpoint.
+    static func gutterClicked(_ textView: NSTextView, lineStart start: Int) -> Bool {
+        guard let editor = (textView as? SavingTextView)?.languageFeatures else { return false }
+        return toggle(in: editor, textView: textView, at: start)
+    }
+
+    /// The menu of a breakpoint's dot: enable, any instance, remove. Nil without one on the line.
+    static func gutterMenu(_ textView: NSTextView, lineStart start: Int) -> NSMenu? {
+        guard let editor = (textView as? SavingTextView)?.languageFeatures,
+              let tracker = tracker(for: textView, editor: editor),
+              let id = tracker.offsets.first(where: { $0.value == start })?.key,
+              let mark = marks[tracker.workspace]?.first(where: { $0.id == id }) else { return nil }
+        let workspace = tracker.workspace
+        let menu = NSMenu()
+        menu.addItem(GutterMenuItem(
+            title: mark.enabled
+                ? String(localized: "waveformDebugger.lineBreakpoint.disable", defaultValue: "Disable Breakpoint")
+                : String(localized: "waveformDebugger.lineBreakpoint.enable", defaultValue: "Enable Breakpoint")
+        ) { setEnabled(id, !mark.enabled, in: workspace) })
+        let any = GutterMenuItem(
+            title: String(localized: "waveformDebugger.lineBreakpoint.anyInstance", defaultValue: "Break in Any Instance")
+        ) { setAnyInstance(id, !mark.anyInstance, in: workspace) }
+        any.state = mark.anyInstance ? .on : .off
+        menu.addItem(any)
+        menu.addItem(.separator())
+        menu.addItem(GutterMenuItem(
+            title: String(localized: "waveformDebugger.removeBreakpoint", defaultValue: "Remove Breakpoint")
+        ) { remove(id, in: workspace) })
+        return menu
+    }
+
+    @MainActor private final class GutterMenuItem: NSMenuItem {
+        private let run: @MainActor () -> Void
+        init(title: String, run: @escaping @MainActor () -> Void) {
+            self.run = run
+            super.init(title: title, action: #selector(runItem), keyEquivalent: "")
+            target = self
+        }
+        required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+        @objc private func runItem() { run() }
+    }
+
+    // MARK: Tracking an open file
+
+    /// The text view's tracker, made (and its file's breakpoints placed by text) on first use or
+    /// after the view swaps in another text storage (a reload).
+    private static func tracker(for textView: NSTextView, editor: FilePreviewLanguageFeatures) -> Tracker? {
+        guard let workspace = editor.linkWorkspaceId, let storage = textView.textStorage,
+              FilePreviewLanguageFeatures.isSupported(filePath: editor.filePath) else { return nil }
+        if let tracker = trackers.object(forKey: textView), tracker.storage === storage,
+           tracker.workspace == workspace, tracker.path == editor.filePath {
+            return tracker
+        }
+        let tracker = Tracker(storage: storage, workspace: workspace, path: editor.filePath)
+        place(tracker, in: storage)
+        tracker.observer = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: storage,
+            queue: nil
+        ) { [weak textView] _ in
+            // Posted on the main thread (queue nil): the observed storage, which the tracker holds.
+            MainActor.assumeIsolated {
+                guard let textView, let tracker = trackers.object(forKey: textView), let storage = tracker.storage,
+                      storage.editedMask.contains(.editedCharacters) else { return }
+                edited(tracker, storage: storage)
+            }
+        }
+        trackers.setObject(tracker, forKey: textView)
+        return tracker
+    }
+
+    /// The file's breakpoints on their lines: by their text (the nearest such line), else kept
+    /// at their old line, disabled and marked lost.
+    private static func place(_ tracker: Tracker, in storage: NSTextStorage) {
+        let text = storage.string as NSString
+        let starts = lineStarts(of: text)
+        var taken: Set<Int> = []
+        guard var list = marks[tracker.workspace] else { return }
+        for index in list.indices where list[index].path == tracker.path {
+            var mark = list[index]
+            if let line = WaveformLineBreakpoint.line(matching: mark.text, near: mark.line, in: text), !taken.contains(line) {
+                mark.line = line
+                mark.lost = false
+            } else if !mark.lost {
+                mark.lost = true
+                mark.enabled = false
+            }
+            mark.line = min(mark.line, starts.count - 1)
+            guard taken.insert(mark.line).inserted else { continue }
+            list[index] = mark
+            tracker.offsets[mark.id] = starts[mark.line]
+        }
+        marks[tracker.workspace] = list
+    }
+
+    /// Moves the file's breakpoints with an edit (two that meet on one line become one). Their
+    /// line numbers and texts are brought up to date when they are next sent or saved.
+    private static func edited(_ tracker: Tracker, storage: NSTextStorage) {
+        let text = storage.string as NSString
+        let range = storage.editedRange
+        let delta = storage.changeInLength
+        var seen: Set<Int> = []
+        var dropped: [UUID] = []
+        for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
+            let moved = WaveformLineBreakpoint.offset(offset, afterEditing: range, changeInLength: delta, in: text)
+            guard seen.insert(moved).inserted else { dropped.append(id); continue }
+            tracker.offsets[id] = moved
+        }
+        for id in dropped { tracker.offsets[id] = nil }
+        if !dropped.isEmpty { marks[tracker.workspace]?.removeAll { dropped.contains($0.id) } }
+        changed(tracker.workspace, redraw: !dropped.isEmpty)
+    }
+
+    /// The marks' line numbers and texts from where their open files have them (one pass per file).
+    private static func refreshPositions(in workspace: UUID) {
+        guard var list = marks[workspace] else { return }
+        for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] where tracker.workspace == workspace {
+            guard let storage = tracker.storage else { continue }
+            let text = storage.string as NSString
+            let sorted = tracker.offsets.sorted { $0.value < $1.value }
+            var line = 0
+            var index = 0
+            for (id, offset) in sorted {
+                let end = min(offset, text.length)
+                while index < end {
+                    let unit = text.character(at: index)
+                    if unit == 0x0A || (unit == 0x0D && (index + 1 >= text.length || text.character(at: index + 1) != 0x0A)) { line += 1 }
+                    index += 1
+                }
+                guard let at = list.firstIndex(where: { $0.id == id }) else { continue }
+                list[at].line = line
+                list[at].text = lineText(at: offset, in: text)
+            }
+        }
+        marks[workspace] = list
+    }
+
+    private static func lineStarts(of text: NSString) -> [Int] {
+        var starts: [Int] = []
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
+            starts.append(range.location)
+        }
+        return starts.isEmpty ? [0] : starts
+    }
+
+    private static func lineNumber(at offset: Int, in text: NSString) -> Int {
+        var line = 0
+        var index = 0
+        let end = min(offset, text.length)
+        while index < end {
+            let unit = text.character(at: index)
+            if unit == 0x0A || (unit == 0x0D && (index + 1 >= text.length || text.character(at: index + 1) != 0x0A)) { line += 1 }
+            index += 1
+        }
+        return line
+    }
+
+    private static func lineText(at start: Int, in text: NSString) -> String {
+        WaveformLineBreakpoint.lineText(text.substring(with: text.lineRange(for: NSRange(location: start, length: 0)))
+            .trimmingCharacters(in: .newlines))
+    }
+
+    // MARK: To the viewer
+
+    private static var syncTasks: [UUID: Task<Void, Never>] = [:]
+    private static let sent = NSMapTable<FilePreviewPanel, NSString>.weakToStrongObjects()
+
+    /// Breakpoints changed: the gutters redraw, the viewers hear soon.
+    private static func changed(_ workspace: UUID, redraw: Bool = true) {
+        if redraw { redrawGutters() }
+        scheduleSync(workspace)
+    }
+
+    /// An editor learned (or changed) the instances it shows: the viewers may need other paths.
+    static func instancesLearned(by editor: FilePreviewLanguageFeatures) {
+        guard let workspace = editor.linkWorkspaceId, marks[workspace]?.contains(where: { $0.path == editor.filePath }) == true else { return }
+        scheduleSync(workspace)
+    }
+
+    private static func scheduleSync(_ workspace: UUID) {
+        syncTasks[workspace]?.cancel()
+        syncTasks[workspace] = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            for waveform in viewers(inWorkspace: workspace) { await sync(waveform) }
+        }
+    }
+
+    /// Sends `waveform` the workspace's line breakpoints when they differ from what it has
+    /// (before a continue from cmux, so it searches the current ones).
+    static func sync(_ waveform: FilePreviewPanel) async {
+        let items = self.items(inWorkspace: waveform.workspaceId)
+        guard let data = try? JSONSerialization.data(withJSONObject: items, options: [.sortedKeys]),
+              let json = NSString(data: data, encoding: String.Encoding.utf8.rawValue) else { return }
+        // A new page has none: pageLoaded forgets what was sent.
+        if sent.object(forKey: waveform) as String? == json as String { return }
+        sent.setObject(json, forKey: waveform)
+        _ = await waveform.nativeViewSessions.waveform.callDebugger("setLineBreakpoints", argument: ["items": items])
+    }
+
+    /// A new page has no breakpoints: it gets the lines and the workspace's signal breakpoints.
+    static func pageLoaded(_ waveform: FilePreviewPanel) {
+        sent.removeObject(forKey: waveform)
+        Task { @MainActor in
+            await sync(waveform)
+            guard let list = signals[waveform.workspaceId], !list.isEmpty else { return }
+            _ = await waveform.nativeViewSessions.waveform.callDebugger(
+                "restoreBreakpoints", argument: ["items": list.map(\.pageItem)]
+            )
+        }
+    }
+
+    private static func viewers(inWorkspace workspace: UUID) -> [FilePreviewPanel] {
+        var out: [FilePreviewPanel] = []
+        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: workspace) {
+            if let waveform = WaveformSourceLink.waveformPanel(near: editor.linkPanel), !out.contains(where: { $0 === waveform }) {
+                out.append(waveform)
+            }
+        }
+        return out
+    }
+
+    /// The page's items: `{ key, label, paths, enabled }`; a line whose file is closed, or whose
+    /// module has no instance in the waveform yet, has no paths.
+    static func items(inWorkspace workspace: UUID) -> [[String: Any]] {
+        refreshPositions(in: workspace)
+        let editors = FilePreviewLanguageFeatures.linkables(inWorkspace: workspace)
+        return (marks[workspace] ?? []).map { mark in
+            let label = "\((mark.path as NSString).lastPathComponent):\(mark.line + 1)"
+            var paths: [[String]] = []
+            if let editor = editors.first(where: { $0.filePath == mark.path }), let textView = editor.debuggerTextView,
+               let offset = trackers.object(forKey: textView)?.offsets[mark.id], let storage = textView.textStorage,
+               let line = editor.breakpointLine(at: offset), let module = line.module {
+                let signals = WaveformLineBreakpoint.watchedSignals(of: line, in: storage.string as NSString)
+                let instances = editor.breakpointInstances(ofModule: module)
+                let dumps = mark.anyInstance ? instances.all : instances.shown.map { [$0] } ?? []
+                for dump in dumps {
+                    let scope = HierarchyPathMapping.segments(dump)
+                    paths += signals.map { scope + [$0] }
+                }
+            }
+            return ["key": mark.id.uuidString, "label": label, "paths": paths, "enabled": mark.enabled && !mark.lost]
+        }
+    }
+
+    private static func redrawGutters() {
+        for case let textView as NSTextView in trackers.keyEnumerator().allObjects {
+            textView.enclosingScrollView?.verticalRulerView?.needsDisplay = true
+        }
+    }
+
+    // MARK: Signal breakpoints
+
+    /// A breakpoint the page made on a waveform signal (Break When Changes / Equals…).
+    struct SignalBreakpoint: Codable, Equatable, Sendable {
+        var path: [String]
+        var kind: String
+        var value: String?
+        var enabled: Bool
+
+        var pageItem: [String: Any] {
+            var item: [String: Any] = ["path": path, "kind": kind, "enabled": enabled]
+            if let value { item["value"] = value }
+            return item
+        }
+    }
+
+    /// The signal breakpoints a viewer of the workspace last had (a new page gets them back).
+    private(set) static var signals: [UUID: [SignalBreakpoint]] = [:]
+
+    /// `{ event: 'breakpoints', items: [{ path, kind, value, enabled }] }` from the page.
+    static func signalsReported(_ body: [String: Any], waveform: FilePreviewPanel) {
+        let items = body["items"] as? [[String: Any]] ?? []
+        signals[waveform.workspaceId] = items.compactMap { item in
+            guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
+                  kind == "change" || kind == "equals" else { return nil }
+            return SignalBreakpoint(path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true)
+        }
+    }
+
+    // MARK: Session
+
+    /// The workspace's breakpoints, for its session snapshot; nil when it has none.
+    static func snapshot(of workspace: UUID) -> SessionWaveformBreakpointsSnapshot? {
+        refreshPositions(in: workspace)
+        let lines = marks[workspace] ?? []
+        let signals = self.signals[workspace] ?? []
+        guard !lines.isEmpty || !signals.isEmpty else { return nil }
+        return SessionWaveformBreakpointsSnapshot(lines: lines.isEmpty ? nil : lines, signals: signals.isEmpty ? nil : signals)
+    }
+
+    /// Breakpoints from a restored session: lines are placed by text when their files open,
+    /// signal breakpoints go to the workspace's viewers when their pages load.
+    static func restore(_ snapshot: SessionWaveformBreakpointsSnapshot?, in workspace: UUID) {
+        guard let snapshot else { return }
+        if let lines = snapshot.lines, !lines.isEmpty {
+            marks[workspace] = lines
+            changed(workspace)
+        }
+        if let restored = snapshot.signals, !restored.isEmpty { signals[workspace] = restored }
+    }
+}
+
+/// A workspace's waveform debugger breakpoints in its session; absent in older manifests and
+/// for workspaces without any.
+struct SessionWaveformBreakpointsSnapshot: Codable, Sendable, Equatable {
+    var lines: [WaveformDebuggerLineBreakpoints.Mark]?
+    var signals: [WaveformDebuggerLineBreakpoints.SignalBreakpoint]?
+}
