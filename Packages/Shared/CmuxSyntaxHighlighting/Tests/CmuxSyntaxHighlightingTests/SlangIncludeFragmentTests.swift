@@ -34,7 +34,15 @@ struct SlangIncludeFragmentTests {
         bit clk = 1'b0;
         always #1 clk = ~clk;
         `include `TB_FILE
+        logic [3:0] count;
+        `include `BODY_FILE
     endmodule
+
+    """
+
+    /// A fragment that declares nothing: it only drives the includer's signals.
+    static let body = """
+        always @(posedge clk) count <= count + 4'd1;
 
     """
 
@@ -53,11 +61,12 @@ struct SlangIncludeFragmentTests {
         var fragment: URL { root.appendingPathComponent("tb/top_tb.sv") }
         var wrapper: URL { root.appendingPathComponent("tb_wrapper.sv") }
         var unused: URL { root.appendingPathComponent("unused.sv") }
+        var body: URL { root.appendingPathComponent("tb/body.sv") }
     }
 
-    /// Runs `body` on a workspace with the fixture and a build file for it, then stops the server
-    /// and removes the folder, also when `body` throws.
-    static func withFixture(_ body: (Fixture) async throws -> Void) async throws {
+    /// Runs `check` on a workspace with the fixture and a build file for it, then stops the server
+    /// and removes the folder, also when `check` throws.
+    static func withFixture(_ check: (Fixture) async throws -> Void) async throws {
         let root = URL(fileURLWithPath: "/tmp").appendingPathComponent("cmux-frag-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("tb"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -65,10 +74,12 @@ struct SlangIncludeFragmentTests {
         try wrapper.write(to: root.appendingPathComponent("tb_wrapper.sv"), atomically: true, encoding: .utf8)
         try unused.write(to: root.appendingPathComponent("unused.sv"), atomically: true, encoding: .utf8)
         try fragment.write(to: root.appendingPathComponent("tb/top_tb.sv"), atomically: true, encoding: .utf8)
+        try body.write(to: root.appendingPathComponent("tb/body.sv"), atomically: true, encoding: .utf8)
         let real = LanguageServerSession.realPath(root.path)
         let build = """
         --top tb_wrapper
         +define+TB_FILE=\\"\(real)/tb/top_tb.sv\\"
+        +define+BODY_FILE=\\"\(real)/tb/body.sv\\"
         \(real)/sub.sv
         \(real)/tb_wrapper.sv
         \(real)/unused.sv
@@ -83,7 +94,8 @@ struct SlangIncludeFragmentTests {
             await session.open(uri: fixture.fragment, text: fragment, version: 1)
             await session.open(uri: fixture.unused, text: unused, version: 1)
             await session.open(uri: fixture.wrapper, text: wrapper, version: 1)
-            try await body(fixture)
+            await session.open(uri: fixture.body, text: body, version: 1)
+            try await check(fixture)
         } catch {
             await session.shutdown()
             throw error
@@ -111,6 +123,18 @@ struct SlangIncludeFragmentTests {
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 1, character: 9), identifier: "dut")
             #expect(paths == ["tb_wrapper.dut"])
         }
+    }
+
+    @Test func aFragmentThatDeclaresNothingIsPlacedThroughItsIncluder() async throws {
+        try await Self.withFixture { fixture in
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.body, position: LSPPosition(line: 0, character: 26), identifier: "count")
+            #expect(paths == ["tb_wrapper.count"])
+        }
+    }
+
+    @Test func includeDirectivesAreRead() {
+        let text = "`include \"a/b.svh\"\n  `include <c.sv> // `include \"commented.sv\"\n`include `TB_FILE\n// `include \"no.sv\"\n"
+        #expect(LanguageServerSession.includeDirectives(in: text) == ["a/b.svh", "c.sv", "`TB_FILE"])
     }
 
     @Test func aModuleFileStillUsesGetInstances() async throws {
