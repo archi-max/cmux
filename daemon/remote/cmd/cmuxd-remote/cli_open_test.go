@@ -74,7 +74,7 @@ func TestCLIOpenRejectsWhatItCannotPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Larger than the app previews without a click: refused here, before any request.
-	big, err := os.Create(filepath.Join(dir, "big.fsdb"))
+	big, err := os.Create(filepath.Join(dir, "big.vcd"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestCLIOpenRejectsWhatItCannotPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	big.Close()
-	cases["too large"] = []string{"big.fsdb"}
+	cases["too large"] = []string{"big.vcd"}
 	for name, args := range cases {
 		sockPath, requests := startMockV2SocketWithRequestCapture(t)
 		code := runCLI(append([]string{"--socket", sockPath, "open"}, args...))
@@ -113,5 +113,37 @@ func TestCLIOpenNeedsTheTerminalItRunsIn(t *testing.T) {
 	case req := <-requests:
 		t.Fatalf("sent %v", req)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// FSDB is read in place on this host by the app's waveform viewer, so its
+// size doesn't matter: nothing is downloaded.
+func TestCLIOpenSendsLargeFSDBDumps(t *testing.T) {
+	dir := t.TempDir()
+	dir, _ = filepath.EvalSymlinks(dir)
+	t.Chdir(dir)
+	t.Setenv("CMUX_WORKSPACE_ID", "ws-env")
+	t.Setenv("CMUX_SURFACE_ID", "sf-env")
+	dump := filepath.Join(dir, "dump.FSDB")
+	f, err := os.Create(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxOpenFileBytes * 8); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	sockPath, requests := startMockV2SocketWithRequestCapture(t)
+	if code := runCLI([]string{"--socket", sockPath, "open", "dump.FSDB"}); code != 0 {
+		t.Fatalf("open dump.FSDB: exit %d", code)
+	}
+	select {
+	case req := <-requests:
+		params, _ := req["params"].(map[string]any)
+		if params["path"] != dump {
+			t.Fatalf("path %v, want %v", params["path"], dump)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no request")
 	}
 }
