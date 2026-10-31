@@ -4440,6 +4440,7 @@
 		249A593EF9615DF0C071986D /* VMSSHTransportFallbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5C553AF2050E7E6D7CD62EC /* VMSSHTransportFallbackTests.swift */; };
 		5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */; };
 		CB0EBBD1B828D9EA5B91C951 /* WaveformLinkShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */; };
+		5ED1DB3057555190D5DA13A3 /* WaveformSessionOverwriteCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */; };
 		5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B2 /* WaveformSourceLink.swift */; };
 		5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */; };
 		5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */; };
@@ -9101,6 +9102,7 @@
 		F5C553AF2050E7E6D7CD62EC /* VMSSHTransportFallbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VMSSHTransportFallbackTests.swift"; sourceTree = "<group>"; };
 		5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformFSDBHelper.swift; sourceTree = "<group>"; };
 		E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformLinkShortcutRoutingTests.swift"; sourceTree = "<group>"; };
+		C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformSessionOverwriteCheckTests.swift"; sourceTree = "<group>"; };
 		5A7EF000000000000000A1B2 /* WaveformSourceLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformSourceLink.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTerminalLinks.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformViewerSchemeHandler.swift; sourceTree = "<group>"; };
@@ -14311,6 +14313,7 @@
 				FBFA082D961AFAB3FFBFF6CC /* RawOSCMachinePayloadTests.swift */,
 				E5E915CF2237052FDE02EE05 /* WorkspaceTitleRecoveryTests.swift */,
 				E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */,
+				C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -19612,6 +19615,7 @@
 				C37800000000000000000001 /* VMSSHCommandTests.swift in Sources */,
 				249A593EF9615DF0C071986D /* VMSSHTransportFallbackTests.swift in Sources */,
 				CB0EBBD1B828D9EA5B91C951 /* WaveformLinkShortcutRoutingTests.swift in Sources */,
+				5ED1DB3057555190D5DA13A3 /* WaveformSessionOverwriteCheckTests.swift in Sources */,
 				063BC42CEE257D6213A2E30C /* WindowAndDragTests.swift in Sources */,
 				A59170000000000000000001 /* WindowAppearanceSnapshotPaneBackgroundTests.swift in Sources */,
 				F4200000A1B2C3D4E5F60718 /* WindowAppearanceSnapshotTests.swift in Sources */,
