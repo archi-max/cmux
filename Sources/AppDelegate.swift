@@ -16827,7 +16827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return shortcutFocusedSavingTextView(in: resolvedShortcutEventWindow(event))?.languageFeatures?.addSignalUnderCaretToWaveform() ?? false
         }
         if matchConfiguredShortcut(event: event, action: .revealWaveformSignalInSource) {
-            return WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel())
+            return WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel(in: resolvedShortcutEventWindow(event)))
         }
         if matchConfiguredShortcut(event: event, action: .markdownZoomIn) {
             return shortcutEventMarkdownPanel(event)?.zoomIn() ?? false

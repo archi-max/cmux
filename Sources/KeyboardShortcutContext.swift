@@ -240,6 +240,18 @@ extension AppDelegate {
         return true
     }
 
+    /// The waveform viewer that holds `window`'s keyboard responder: the focused
+    /// panel of that window's workspace, and only while its web view has focus.
+    func shortcutFocusedWaveformPanel(in window: NSWindow?) -> FilePreviewPanel? {
+        guard let window, let responder = window.firstResponder,
+              let workspace = shortcutContextTabManager(in: window)?.selectedWorkspace,
+              let panelId = workspace.focusedPanelId,
+              let panel = workspace.panels[panelId] as? FilePreviewPanel,
+              !panel.isClosed, panel.previewMode == .waveform,
+              panel.nativeViewSessions.waveform.holdsResponder(responder) else { return nil }
+        return panel
+    }
+
     /// Resolves the editor that owns the requested window’s keyboard responder.
     func shortcutFocusedSavingTextView(in window: NSWindow?) -> SavingTextView? {
         guard let responder = window?.firstResponder ?? NSApp.keyWindow?.firstResponder ?? NSApp.mainWindow?.firstResponder else {

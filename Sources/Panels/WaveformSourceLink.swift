@@ -69,13 +69,9 @@ enum WaveformSourceLink {
         return viewers.min { $0.filePath < $1.filePath }
     }
 
-    /// The focused panel of the selected workspace, when it is a waveform viewer.
-    static func focusedWaveformPanel() -> FilePreviewPanel? {
-        guard let workspace = AppDelegate.shared?.tabManager?.selectedWorkspace,
-              let panelId = workspace.focusedPanelId,
-              let panel = workspace.panels[panelId] as? FilePreviewPanel,
-              !panel.isClosed, panel.previewMode == .waveform else { return nil }
-        return panel
+    /// The waveform viewer whose web view has focus in `window` (the key window by default).
+    static func focusedWaveformPanel(in window: NSWindow? = nil) -> FilePreviewPanel? {
+        AppDelegate.shared?.shortcutFocusedWaveformPanel(in: window ?? NSApp.keyWindow)
     }
 
     /// The editor to ask about `waveform`'s signals: the one that last linked with it, else the workspace's most recent.
@@ -98,11 +94,21 @@ enum WaveformSourceLink {
 
     // MARK: Path mapping
 
-    /// Mappings are kept per design (the editor's server root) and dump (its top scope names),
-    /// so a unit testbench and a system testbench of one design keep separate rules.
-    private static func mappingKey(rootKey: String, waveform: FilePreviewPanel) async -> String {
-        let tops = (await Self.dumpChildren([], in: waveform) ?? []).map(\.name).sorted()
-        return rootKey + "|" + tops.joined(separator: ",")
+    /// Mappings are kept per design (the editor's server root) and dump (its file name and
+    /// top scope names), so a unit testbench and a system testbench of one design keep
+    /// separate rules even when both dumps start at `TOP` or `tb`. Nil while the viewer
+    /// has no hierarchy (loading or reloading), so nothing reads or writes a key without tops.
+    private static func mappingKey(rootKey: String, waveform: FilePreviewPanel) async -> String? {
+        guard let tops = await Self.dumpChildren([], in: waveform), !tops.isEmpty else { return nil }
+        let file = (waveform.filePath as NSString).lastPathComponent
+        return rootKey + "|" + file + "|" + tops.map(\.name).sorted().joined(separator: ",")
+    }
+
+    private static var waveformLoadingMessage: String {
+        String(
+            localized: "waveformLink.waveformLoading",
+            defaultValue: "The waveform is still loading. Try again in a moment."
+        )
     }
 
     static func mapping(forKey key: String) -> HierarchyPathMapping {
@@ -172,7 +178,9 @@ enum WaveformSourceLink {
         }
         let chosen = paths.count > 1 ? await chooseInstance(paths) : paths
         guard !chosen.isEmpty, !Task.isCancelled else { return nil }
-        let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform)
+        guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else {
+            return Task.isCancelled ? nil : Self.waveformLoadingMessage
+        }
         var missing: [String] = []
         var notDumped: [String] = []
         var instances: [String] = []
@@ -309,7 +317,7 @@ enum WaveformSourceLink {
             ))
             return .found(rules.map { HierarchyPathMapping.join(HierarchyPathMapping.segments($0.dumpPrefix) + rest) })
         case .notDumped(let rule):
-            Self.addInferredRules([rule], forKey: key)
+            // Not saved: the rule only explains the miss, and a wrong one would stop later lookups from inferring again.
             return .notDumped(HierarchyPathMapping.join(HierarchyPathMapping.segments(rule.dumpPrefix) + rest.dropLast()))
         case .notFound:
             return .notFound
@@ -505,7 +513,8 @@ enum WaveformSourceLink {
         rootKey: String,
         progress: @escaping @MainActor @Sendable (String) -> Void
     ) async -> LSPLocation? {
-        let mapping = Self.mapping(forKey: await Self.mappingKey(rootKey: rootKey, waveform: waveform))
+        // Without a key (the viewer is reloading), try the paths as they are.
+        let mapping = await Self.mappingKey(rootKey: rootKey, waveform: waveform).map(Self.mapping(forKey:)) ?? HierarchyPathMapping()
         if let location = await Self.location(ofDesignPath: mapping.designPath(forDumpPath: dumpPath), session: session) {
             return location
         }
@@ -620,7 +629,10 @@ enum WaveformSourceLink {
         }
         let rootKey = editor.linkRootKey
         Task { @MainActor in
-            let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform)
+            guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else {
+                Self.showAlert(Self.waveformLoadingMessage)
+                return
+            }
             let alert = NSAlert()
             alert.messageText = String(localized: "waveformLink.mapping.title", defaultValue: "Waveform Path Mapping")
             alert.informativeText = String(

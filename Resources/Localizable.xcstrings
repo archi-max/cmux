@@ -481628,6 +481628,65 @@
         }
       }
     },
+    "waveformLink.waveformLoading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The waveform is still loading. Try again in a moment."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形はまだ読み込み中です。しばらくしてからもう一度お試しください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Wellenform wird noch geladen. Versuchen Sie es gleich noch einmal."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le chronogramme est encore en cours de chargement. Réessayez dans un instant."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يزال الشكل الموجي قيد التحميل. حاول مرة أخرى بعد قليل."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La forma de onda aún se está cargando. Inténtalo de nuevo en un momento."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形仍在載入中。請稍後再試。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形仍在加载中。请稍后再试。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형을 아직 불러오는 중입니다. 잠시 후 다시 시도하세요."
+          }
+        }
+      }
+    },
     "waveformLink.noDriver": {
       "extractionState": "manual",
       "localizations": {
