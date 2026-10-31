@@ -1209,13 +1209,24 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection,
         showHidden: Bool
     ) async throws -> [FileExplorerEntry] {
-        let escapedPath = remoteShellPathWord(path)
-        let lsFlags = showHidden ? "-1paFA" : "-1paF"
         let output = try await runSSHCommand(
             connection: connection,
-            command: "ls \(lsFlags) \(escapedPath) 2>/dev/null"
+            command: listCommand(path: path, showHidden: showHidden)
         )
+        return parseListOutput(output, path: path, showHidden: showHidden)
+    }
 
+    /// The remote `ls` for a folder. GNU ls quotes names (`'my sim.json'`) when
+    /// the environment sets QUOTING_STYLE, which a non-interactive shell's
+    /// dotfiles can do; the listing must name files exactly, since Save on Host
+    /// decides from it that a file is absent. BSD and BusyBox ls ignore it.
+    static func listCommand(path: String, showHidden: Bool) -> String {
+        let lsFlags = showHidden ? "-1paFA" : "-1paF"
+        return "QUOTING_STYLE=literal ls \(lsFlags) \(remoteShellPathWord(path)) 2>/dev/null"
+    }
+
+    /// Entries of `ls -1paF` output for `path`, without `.` and `..`.
+    static func parseListOutput(_ output: String, path: String, showHidden: Bool) -> [FileExplorerEntry] {
         let normalizedPath = path.hasSuffix("/") ? path : path + "/"
         return output.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
             let entry = String(line)
