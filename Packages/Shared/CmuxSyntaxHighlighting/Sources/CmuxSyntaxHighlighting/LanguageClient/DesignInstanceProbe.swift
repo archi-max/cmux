@@ -5,7 +5,9 @@ public enum DesignInstanceProbe {
     /// The instances the first probe that finds any gives ([] when the probes answered and
     /// none found any). Nil when nothing was learned, so it is no miss to remember: cancelled,
     /// or a lookup failed. A failure is the server's (compiling, timed out), not the probe's,
-    /// so the rest aren't asked to wait out the same. `lookup` gives one probe's instances.
+    /// so the rest aren't asked to wait out the same; but a path slang can't resolve at that
+    /// position (a macro, a type or a package name) is that probe finding nothing, and the next
+    /// is asked. `lookup` gives one probe's instances.
     /// A file with no design unit may be an `include`d fragment, or only a header of parameters
     /// and typedefs that sits in a package: until slang shows an includer it is asked cheaply,
     /// and finding none says nothing.
@@ -14,7 +16,11 @@ public enum DesignInstanceProbe {
     public static let fragmentSearchTimeLimit: TimeInterval = 2
 
     /// Whether finding no instance is shown as "isn't placed in the design" (with its fix).
-    public static func reportsNotPlaced(isFragment: Bool, designHasTops: Bool? = nil) -> Bool { !isFragment }
+    /// `designHasTops` false: the design has no top level at all, so the hint how to set one up
+    /// is shown for a fragment too.
+    public static func reportsNotPlaced(isFragment: Bool, designHasTops: Bool? = nil) -> Bool {
+        !isFragment || designHasTops == false
+    }
 
     /// Seconds before a module's instances are asked again: after `failures` lookups in a row
     /// no probe answered (the server busy), 2 s doubling to 30 s; else after `misses` lookups
@@ -30,9 +36,16 @@ public enum DesignInstanceProbe {
         _ lookup: (Probe) async throws -> [String]
     ) async -> [String]? {
         for probe in probes {
-            let instances = try? await lookup(probe)
+            let instances: [String]
+            do {
+                instances = try await lookup(probe)
+            } catch where LanguageServerSession.isUnresolvedPath(error) {
+                if Task.isCancelled { return nil }
+                continue
+            } catch {
+                return nil
+            }
             if Task.isCancelled { return nil }
-            guard let instances else { return nil }
             if !instances.isEmpty { return instances }
         }
         return Task.isCancelled ? nil : []

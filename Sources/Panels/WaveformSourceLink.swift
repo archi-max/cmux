@@ -1040,7 +1040,7 @@ enum WaveformSourceLink {
         documentURI: URL,
         probes: [(name: String, position: LSPPosition)]
     ) async -> [String]? {
-        // Nil when cancelled; a probe that fails goes on to the next.
+        // Nil when cancelled or the server failed; a probe slang can't resolve goes on to the next.
         await DesignInstanceProbe.firstFound(Array(probes.prefix(6))) { probe in
             let paths = try await session.slangInstancePaths(uri: documentURI, position: probe.position)
             return instances(holding: probe.name, paths: paths)

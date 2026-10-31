@@ -165,6 +165,8 @@ enum WaveformDebugger {
         }
         if box.state.stepping, box.state.playing, !wasPlaying {
             WaveformDebuggerRTLStatus.playStarted(waveform)
+        } else if box.state.stepping, !box.state.playing, wasPlaying {
+            WaveformDebuggerRTLStatus.playStopped(waveform)
         }
     }
 
