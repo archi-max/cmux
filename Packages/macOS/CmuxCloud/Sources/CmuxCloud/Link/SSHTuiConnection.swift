@@ -218,11 +218,13 @@ public struct SSHTuiConnection: Sendable {
         if let command = configuration.configuredRemoteCommand, !command.isEmpty {
             return commandArguments(command)
         }
-        return ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" -l"]
+        return ["/bin/sh", "-c", hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -l"]
     }
 
+    /// Both login-shell launches first install the host `cmux` (`cmux open`)
+    /// and put it on PATH; see ``SSHTuiHostOpenCommand``.
     public func commandArguments(_ command: String) -> [String] {
-        ["/bin/sh", "-c", "exec \"${SHELL:-/bin/sh}\" -lc \"$1\"", "cmux-ssh", command]
+        ["/bin/sh", "-c", hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -lc \"$1\"", "cmux-ssh", command]
     }
 
     public func arguments(stateDirectory: String, deviceName: String, upgrade: Bool = false) -> [String] {
