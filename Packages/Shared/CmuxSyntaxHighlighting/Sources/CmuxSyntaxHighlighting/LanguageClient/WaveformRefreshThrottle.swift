@@ -6,7 +6,9 @@ import Foundation
 /// plays (the marker moves faster than the wait), and cancelling a refresh in
 /// flight throws its work away. Instead a move while a refresh waits changes
 /// nothing (it reads the newest marker when it runs), and a move while one
-/// runs queues exactly one more after it.
+/// runs queues exactly one more after it. A refresh that has run for
+/// `stuckAfter` seconds no longer holds moves back (a page or server call that
+/// never returns must not freeze the values).
 public struct WaveformRefreshThrottle: Sendable {
     public enum Phase: Sendable, Equatable {
         case idle
@@ -14,9 +16,12 @@ public struct WaveformRefreshThrottle: Sendable {
         case running
     }
 
+    public static let stuckAfter: TimeInterval = 10
+
     public private(set) var phase: Phase = .idle
     private var serial = 0
     private var again = false
+    private var startedAt = Date.distantPast
 
     public init() {}
 
@@ -29,9 +34,10 @@ public struct WaveformRefreshThrottle: Sendable {
     }
 
     /// The refresh `serial` stopped waiting and started.
-    public mutating func started(_ serial: Int) {
+    public mutating func started(_ serial: Int, at now: Date = Date()) {
         guard serial == self.serial else { return }
         phase = .running
+        startedAt = now
     }
 
     /// The refresh `serial` ended. True when the marker moved meanwhile, so another should run now.
@@ -49,13 +55,14 @@ public struct WaveformRefreshThrottle: Sendable {
     }
 
     /// The marker moved. True when a refresh has to be scheduled for it.
-    public mutating func markerMoved() -> Bool {
+    public mutating func markerMoved(at now: Date = Date()) -> Bool {
         switch phase {
         case .idle:
             return true
         case .waiting:
             return false
         case .running:
+            if now.timeIntervalSince(startedAt) >= Self.stuckAfter { return true }
             again = true
             return false
         }

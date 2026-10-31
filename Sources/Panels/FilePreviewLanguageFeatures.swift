@@ -880,6 +880,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// The server's design changed (a top level set or reset): instances are looked up again.
     static func designHierarchyDidChange(session: LanguageServerSession) {
+        WaveformDebuggerEditorHighlights.forgetCones()
         for editor in liveInstances.allObjects where editor.session === session {
             editor.inlineModuleInstances = [:]
             editor.scheduleInlineValues(after: .milliseconds(120))

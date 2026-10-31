@@ -31,6 +31,12 @@ enum WaveformDebuggerEditorHighlights {
 
     private final class Drawn {
         var attributes: [(range: NSRange, key: NSAttributedString.Key, value: Any)] = []
+        /// The text's length when drawn: after an edit the ranges no longer hold.
+        let textLength: Int
+
+        init(textLength: Int) {
+            self.textLength = textLength
+        }
     }
 
     private final class Work {
@@ -89,11 +95,11 @@ enum WaveformDebuggerEditorHighlights {
 
     private static func cycleHighlights(_ shown: Shown, text: String) async -> (highlights: WaveformCycleHighlights.Result, rows: [[String]])? {
         let page = shown.waveform.nativeViewSessions.waveform
-        // The page's cycle must be the one these values were read at.
-        guard let state = await page.callDebugger("state") as? [String: Any],
-              (state["time"] as? NSNumber)?.int64Value == shown.time,
-              let previous = (state["previousTime"] as? NSNumber)?.int64Value,
-              !Task.isCancelled else {
+        // The cycle these values were read in (the marker may have moved on since).
+        let cycle = await page.callDebugger("cycleAt", argument: ["time": NSNumber(value: shown.time)]) as? [String: Any]
+        // Superseded: the newer refresh draws (clearing here would cancel it).
+        if Task.isCancelled { return nil }
+        guard let previous = (cycle?["previousTime"] as? NSNumber)?.int64Value else {
             clear(in: shown.textView)
             return nil
         }
@@ -146,7 +152,8 @@ enum WaveformDebuggerEditorHighlights {
                 if cone == nil {
                     guard requests < maxConeRequests else { continue }
                     requests += 1
-                    let found = (try? await session.slangDriverCone(path)) ?? []
+                    // Not cached when it fails: slang answers once the design is compiled.
+                    guard let found = try? await session.slangDriverCone(path) else { continue }
                     guard !Task.isCancelled else { return }
                     if cones.count >= maxCachedCones { cones.removeAll() }
                     cones[key] = found
@@ -168,7 +175,7 @@ enum WaveformDebuggerEditorHighlights {
     private static func apply(_ result: WaveformCycleHighlights.Result, lines: [SystemVerilogInlineScan.Line], in textView: NSTextView) {
         clear(in: textView)
         guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length else { return }
-        let drawn = Drawn()
+        let drawn = Drawn(textLength: length)
         func add(_ key: NSAttributedString.Key, _ value: Any, _ range: NSRange) {
             guard range.length > 0, NSMaxRange(range) <= length else { return }
             layoutManager.addTemporaryAttribute(key, value: value, forCharacterRange: range)
@@ -194,17 +201,18 @@ enum WaveformDebuggerEditorHighlights {
     static func clear(in textView: NSTextView?) {
         guard let textView else { return }
         work.object(forKey: textView)?.task?.cancel()
-        remove(cycleDrawn.object(forKey: textView), from: textView)
         cycleDrawn.removeObject(forKey: textView)
+        removeAll(from: textView)
         drawSelection(in: textView)
     }
 
-    private static func remove(_ drawn: Drawn?, from textView: NSTextView) {
-        guard let drawn, let layoutManager = textView.layoutManager, let length = textView.textStorage?.length else { return }
-        for (range, key, _) in drawn.attributes {
-            let clamped = NSIntersectionRange(range, NSRange(location: 0, length: length))
-            if clamped.length > 0 { layoutManager.removeTemporaryAttribute(key, forCharacterRange: clamped) }
-        }
+    /// Temporary attributes move with edits, so the ranges drawn may be stale: these two
+    /// keys (only the debugger draws them as temporary attributes) go from the whole text.
+    private static func removeAll(from textView: NSTextView) {
+        guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length, length > 0 else { return }
+        let full = NSRange(location: 0, length: length)
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: full)
     }
 
     // MARK: Waveform rows
@@ -231,6 +239,12 @@ enum WaveformDebuggerEditorHighlights {
     static func forget(_ waveform: FilePreviewPanel) {
         sentRows.removeObject(forKey: waveform)
         showSelection(nil, drivers: [], near: nil)
+        forgetCones()
+    }
+
+    /// The design changed (recompiled, another top level): the cached driver cones may not hold.
+    static func forgetCones() {
+        cones.removeAll()
     }
 
     // MARK: Selected row → editor
@@ -239,9 +253,8 @@ enum WaveformDebuggerEditorHighlights {
     /// (nil: removes the last selection's lines).
     static func showSelection(_ declaration: LSPLocation?, drivers: [LSPLocation], near editor: FilePreviewLanguageFeatures?) {
         for textView in selectionLines.keyEnumerator().allObjects.compactMap({ $0 as? NSTextView }) {
-            let drawn = selectionLines.object(forKey: textView)
             selectionLines.removeObject(forKey: textView)
-            remove(drawn, from: textView)
+            removeAll(from: textView)
             // The cycle highlights under the selection's lines come back.
             if let cycle = cycleDrawn.object(forKey: textView) { redraw(cycle, in: textView) }
         }
@@ -250,7 +263,7 @@ enum WaveformDebuggerEditorHighlights {
               let textView = target.debuggerTextView else { return }
         let text = textView.string as NSString
         let lineIndex = FilePreviewLSPLineIndex(textView.string)
-        let drawn = Drawn()
+        let drawn = Drawn(textLength: text.length)
         let color = NSColor.systemBlue.withAlphaComponent(0.24)
         for location in [declaration] + drivers {
             let start = lineIndex.offset(for: location.range.start)
@@ -271,7 +284,8 @@ enum WaveformDebuggerEditorHighlights {
     }
 
     private static func redraw(_ drawn: Drawn, in textView: NSTextView) {
-        guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length else { return }
+        guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length,
+              length == drawn.textLength else { return }
         for (range, key, value) in drawn.attributes where range.length > 0 && NSMaxRange(range) <= length {
             layoutManager.addTemporaryAttribute(key, value: value, forCharacterRange: range)
         }

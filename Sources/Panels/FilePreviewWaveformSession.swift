@@ -757,6 +757,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             // Once per page load: a repeated ready would restart the FSDB helper.
             guard !isPageReady else { return }
             isPageReady = true
+            if let panel { WaveformDebugger.pageLoaded(panel) }
             openFileInPage()
         case "opened":
             webContentProcessRecoveryAttempts = 0

@@ -6,6 +6,7 @@
 //
 // cmux calls window.cmuxWaveform.debugger through callAsyncJavaScript:
 //   state() -> { clock, cycle, count, time, edgeTime, previousTime, playing, rate, stepping }
+//   cycleAt({ time }) -> the same for another time (the cycle values were read at)
 //   step({ by })                     marker to the clock's posedge `by` cycles away (by < 0: back)
 //   jump({ to: 'first' | 'last' })   marker to the first or last posedge
 //   play({ rate }) | pause() | togglePlay() | setRate({ rate }) | changeRate({ by })   rate in cycles per second
@@ -27,7 +28,7 @@
   const CLOCK_NAMES = ['clk', 'clock', 'clk_i', 'clock_i', 'i_clk', 'clk_in', 'aclk', 'hclk', 'pclk'];
   const RATES = [1, 2, 5, 10, 20, 50, 100, 200, 500];
   // A clock with more posedges than this is not stepped (keeps memory bounded).
-  const MAX_EDGES = 20000000;
+  const MAX_EDGES = 10000000;
   const MAX_LOCALS = 64;
 
   const state = {
@@ -40,8 +41,10 @@
     playing: false,
     rate: 10,
     lastCycleKey: null,
-    locals: { path: null, request: 0 },
-    highlighted: [],    // rowIds
+    locals: { path: null, request: 0, groupId: null, label: null },
+    highlightIds: new Set(),  // netlistIds the editor highlights
+    highlightRequest: 0,
+    highlighted: [],    // their rowIds as drawn
   };
 
   // ---- clock and posedges ----
@@ -93,12 +96,23 @@
           state.clock = (path && await host.findLinkItem(path, true)) || (state.clockChosen ? null : await defaultClock());
           if (!state.clock) { state.clockChosen = false; state.clock = await defaultClock(); }
         }
-        if (!state.clock) { state.edges = null; return null; }
-        const clock = state.clock;
-        const changes = await host.signalChanges(clock, MAX_EDGES * 2);
-        state.edges = changes ? posedges(changes) : new Float64Array(0);
-        state.edgesFor = [clock, backend];
-        return state.edges;
+        for (;;) {
+          if (!state.clock) { state.edges = null; return null; }
+          const clock = state.clock;
+          const fast = host.signalPosedges(clock, MAX_EDGES);
+          let edges;
+          if (fast) {
+            edges = await fast;
+          } else {
+            const changes = await host.signalChanges(clock, MAX_EDGES * 2);
+            edges = changes ? posedges(changes) : new Float64Array(0);
+          }
+          // The clock was changed while its edges were read: read the new one's.
+          if (state.clock !== clock) { continue; }
+          state.edges = edges;
+          state.edgesFor = [clock, backend];
+          return state.edges;
+        }
       } finally {
         state.loading = null;
       }
@@ -149,6 +163,10 @@
   }
 
   function moveMarker(time) {
+    // Until the viewer reports it, the marker is where it was sent (a second
+    // quick step starts from here, not from the old marker).
+    marker.fromEvent = time;
+    marker.contextThen = contextMarker();
     host.toWebview({ command: 'setMarker', time, markerType: 0 });
     // Pans only when the time is out of view.
     host.toWebview({ command: 'setViewportTo', time });
@@ -170,18 +188,19 @@
   }
 
   async function step(query) {
-    const by = Math.trunc(Number((query || {}).by) || 1);
+    const asked = Number((query || {}).by);
+    const by = Number.isFinite(asked) ? Math.trunc(asked) : 1;
     const edges = await start();
     if (!edges) { return publicState(); }
     pause();
     const time = markerTime();
     let index;
     if (time === null) {
-      index = by > 0 ? by - 1 : edges.length + by;
+      index = by > 0 ? by - 1 : (by < 0 ? edges.length + by : 0);
     } else {
       const at = edgeIndexAt(edges, time);
       // From between two edges, one step back lands on the edge before.
-      index = by > 0 ? at + by : (edges[at] === time ? at + by : at + by + 1);
+      index = by > 0 || (by === 0 && at >= 0) ? at + by : (edges[at] === time ? at + by : at + by + 1);
     }
     index = Math.max(0, Math.min(edges.length - 1, index));
     moveMarker(edges[index]);
@@ -296,8 +315,10 @@
   function stop() {
     pause();
     state.stepping = false;
-    highlightRows({ paths: [] });
-    setLocals({ path: null });
+    state.highlightRequest++;
+    state.highlightIds = new Set();
+    matchHighlightedRows();
+    clearLocalsGroup();
     render();
     post('state');
     return publicState();
@@ -314,16 +335,26 @@
     }
   }
 
-  // The top-level group row VaporView drew for `name`.
-  function groupElement(name) {
+  // The top-level group rows VaporView drew.
+  function topGroups() {
     const d = frameDocument();
-    if (!d) { return null; }
-    for (const el of d.querySelectorAll('.waveform-label.waveform-group')) {
-      if (el.parentElement && el.parentElement.closest('.waveform-group')) { continue; }
-      const label = el.querySelector(':scope > .waveform-row p');
-      if (label && label.textContent === name) { return el; }
-    }
-    return null;
+    if (!d) { return []; }
+    return Array.from(d.querySelectorAll('.waveform-label.waveform-group'))
+      .filter((el) => !(el.parentElement && el.parentElement.closest('.waveform-group')));
+  }
+
+  const groupLabel = (el) => {
+    const label = el.querySelector(':scope > .waveform-row p');
+    return label ? label.textContent : null;
+  };
+
+  // The Locals group cmux made, by the id VaporView gave it (a group of the
+  // user's with the same name is never touched). Null once it is gone.
+  function localsElement() {
+    if (state.locals.groupId === null) { return null; }
+    const el = topGroups().find((g) => { const c = rowContext(g); return c && c.groupId === state.locals.groupId; });
+    if (!el) { state.locals.groupId = null; state.locals.label = null; }
+    return el || null;
   }
 
   // Sends `msg` to the viewer frame and lets it run now, without passing the
@@ -342,7 +373,9 @@
   // ---- Locals: the signals of the instance at the editor's caret ----
   const localsName = () => S().debuggerLocals || 'Locals';
 
-  host.isTransientGroup = (d) => !!d && d.dataType === 'signal-group' && d.groupName === localsName();
+  // Saved signal lists name groups but carry no ids: Locals is the top-level group with its label while it exists.
+  host.isTransientGroup = (d) => !!d && d.dataType === 'signal-group' && state.locals.label !== null
+    && d.groupName === state.locals.label && localsElement() !== null;
 
   function localsGroupSaved() {
     const list = (host.viewerContext.webview && host.viewerContext.webview.displayedSignals) || [];
@@ -351,15 +384,17 @@
 
   // Removes the Locals rows one by one (by row id, never by netlist id, so
   // pinned rows of the same signals stay), then the group row if asked.
+  // Returns whether the group was collapsed (it is expanded to reach its rows).
   function clearLocals(removeGroup) {
-    let group = groupElement(localsName());
-    if (!group) { return; }
-    let context = rowContext(group);
-    if (!context) { return; }
-    if (group.classList.contains('collapsed-group')) {
+    let group = localsElement();
+    if (!group) { return false; }
+    const context = rowContext(group);
+    if (!context) { return false; }
+    const collapsed = group.classList.contains('collapsed-group');
+    if (collapsed) {
       dispatchQuietly({ command: 'editSignalGroup', groupId: context.groupId, isExpanded: true });
-      group = groupElement(localsName());
-      if (!group) { return; }
+      group = localsElement();
+      if (!group) { return false; }
     }
     const children = Array.from(group.querySelectorAll(':scope > .labels-group > .waveform-label'))
       .map(rowContext).filter((c) => c && c.rowId !== undefined);
@@ -368,19 +403,26 @@
     }
     if (removeGroup) {
       dispatchQuietly({ command: 'remove-signal', rowId: context.rowId, removeAllSelected: false });
+      state.locals.groupId = null;
+      state.locals.label = null;
     }
+    return collapsed;
+  }
+
+  function clearLocalsGroup() {
+    state.locals.request++;
+    state.locals.path = null;
+    clearLocals(true);
   }
 
   async function setLocals(query) {
     const path = (query || {}).path || null;
     const key = path ? JSON.stringify(path) : null;
+    if (!path) { clearLocalsGroup(); return true; }
+    // Only while stepping; a reload or an undo that dropped the group gets it back on the next call.
+    if (!state.stepping) { return false; }
+    if (key === state.locals.path && localsElement()) { return true; }
     const request = ++state.locals.request;
-    if (!path) {
-      state.locals.path = null;
-      clearLocals(true);
-      return true;
-    }
-    if (key === state.locals.path && groupElement(localsName())) { return true; }
     const scope = await host.findLinkItem(path, false);
     if (request !== state.locals.request) { return false; }
     if (!scope || scope.kind !== 'scope') { return false; }
@@ -388,21 +430,29 @@
     if (request !== state.locals.request) { return false; }
     const w = host.viewerContext.webview;
     const selected = w && w.selectedSignal !== undefined && w.selectedSignal !== null ? w.selectedSignal : null;
-    if (groupElement(localsName())) {
-      clearLocals(false);
+    let collapsed = false;
+    if (localsElement()) {
+      collapsed = clearLocals(false);
     } else {
+      const before = new Set(topGroups().map((g) => (rowContext(g) || {}).groupId));
       dispatchQuietly({ command: 'newSignalGroup', groupName: localsName(), groupPath: undefined, parentGroupId: undefined,
         eventRowId: undefined, moveSelected: false, showRenameInput: false });
+      // VaporView renames it when the user has a group of that name already.
+      const made = topGroups().find((g) => { const c = rowContext(g); return c && !before.has(c.groupId); });
+      if (made) { state.locals.groupId = rowContext(made).groupId; state.locals.label = groupLabel(made); }
     }
-    if (!groupElement(localsName())) { return false; }
+    const group = localsElement();
+    if (!group) { return false; }
     state.locals.path = key;
     if (vars.length) {
       dispatchQuietly({ command: 'add-variable', signalList: vars.map((v) => ({ signalId: v.signalId, signalWidth: v.width,
         signalName: v.name, scopePath: v.scopePath, netlistId: v.netlistId, type: v.type, encoding: v.encoding,
-        enumType: v.enumType, msb: v.msb, lsb: v.lsb })), groupPath: [localsName()] });
+        enumType: v.enumType, msb: v.msb, lsb: v.lsb })), groupPath: [state.locals.label] });
       // Adding selects the new rows; give the user's selection back.
       if (selected !== null) { dispatchQuietly({ command: 'setSelectedSignal', netlistId: selected }); }
     }
+    if (collapsed) { dispatchQuietly({ command: 'editSignalGroup', groupId: state.locals.groupId, isExpanded: false }); }
+    matchHighlightedRows();
     return true;
   }
 
@@ -423,11 +473,21 @@
 
   async function highlightRows(query) {
     const paths = Array.isArray((query || {}).paths) ? query.paths.slice(0, 500) : [];
+    const request = ++state.highlightRequest;
     const ids = new Set();
     for (const p of paths) {
       const v = await host.findLinkItem(p, true);
+      // A newer call (or stop) came in meanwhile: it wins.
+      if (request !== state.highlightRequest) { return state.highlighted.length; }
       if (v) { ids.add(v.netlistId); }
     }
+    state.highlightIds = ids;
+    return matchHighlightedRows();
+  }
+
+  // The rows showing the highlighted signals, again whenever rows come and go.
+  function matchHighlightedRows() {
+    const ids = state.highlightIds;
     const d = frameDocument();
     const rows = [];
     if (d && ids.size) {
@@ -554,6 +614,11 @@
     rate.title = s.debuggerRateTooltip || '';
   }
 
+  // Rows came or went (Locals refilled, a signal pinned): light the highlighted signals' new rows.
+  host.contextListeners.push(() => {
+    if (state.highlightIds.size) { queueMicrotask(matchHighlightedRows); }
+  });
+
   // The marker moved (a step, play, a click): draw the counter, tell cmux the cycle.
   host.viewerEventListeners.push((m) => {
     if (m.eventType !== 'markerSet') { return; }
@@ -571,8 +636,14 @@
 
   const api = Object.freeze({
     state: async () => { if (state.stepping) { await ensureEdges(); } return publicState(); },
+    cycleAt: async (query) => {
+      if (state.stepping) { await ensureEdges(); }
+      const time = Number((query || {}).time);
+      return cycleInfo(Number.isFinite(time) ? time : null);
+    },
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
-  window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved };
+  window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved,
+    isPlaying: () => state.playing };
 })();
