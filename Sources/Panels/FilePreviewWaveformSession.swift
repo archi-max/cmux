@@ -367,16 +367,22 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         path: String,
         provider: SSHFileExplorerProvider
     ) async -> [String: String]? {
-        guard !ManagedFileTransferPolicy.isDisabled else { return nil }
+        guard !ManagedFileTransferPolicy.isDisabled,
+              // No file, or one too big to be a session: nothing is downloaded.
+              let stamp = try? await provider.fileStamp(path: path),
+              stamp.size <= Int64(maxSessionFileSize),
+              let text = try? await downloadSessionText(path: path, provider: provider),
+              isSession(text) else { return nil }
+        return ["path": path, "text": text]
+    }
+
+    /// `path` on the host as text, through a temporary local copy (8 MB at most).
+    nonisolated private static func downloadSessionText(path: String, provider: SSHFileExplorerProvider) async throws -> String {
         let local = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-waveform-session-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: local) }
-        do {
-            try await provider.downloadFile(path: path, to: local)
-        } catch {
-            return nil
-        }
-        return await readSiblingSession(at: local, displayPath: path)
+        try await provider.downloadFile(path: path, to: local)
+        return try await readSessionText(at: local)
     }
 
     /// Hands the page `<dump>.json` when it is a VaporView session, read off the
@@ -450,36 +456,40 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             do {
                 guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
                 // `<dump>.json` may be something else (a testbench config): only a
-                // session, or no file at all, is replaced.
-                if await Self.existingFileIsNotASession(path: path, provider: provider) {
+                // session, or no file at all, is replaced, and only if it doesn't
+                // change in between. When cmux can't tell, it doesn't write.
+                let outcome = await WaveformSessionOverwriteCheck.decide(
+                    name: (path as NSString).lastPathComponent,
+                    listParent: {
+                        try await provider.listDirectory(path: (path as NSString).deletingLastPathComponent, showHidden: true)
+                            .map(\.name)
+                    },
+                    stamp: { try await provider.fileStamp(path: path) },
+                    size: { $0.size },
+                    read: { try await Self.downloadSessionText(path: path, provider: provider) },
+                    maxSize: Self.maxSessionFileSize,
+                    isSession: { Self.isSession($0) }
+                )
+                let expectedStamp: SSHRemoteFileStamp?
+                switch outcome {
+                case .write(let stamp):
+                    expectedStamp = stamp
+                case .notASession:
                     let format = String(
                         localized: "filePreview.waveform.saveSessionRemote.notSession",
                         defaultValue: "%@ exists and is not a VaporView session, so cmux left it alone. Save on this Mac instead."
                     )
                     self?.evaluate(function: "sessionFailed", argument: ["message": String(format: format, path)])
                     return
+                case .failed(let error):
+                    throw error
                 }
-                _ = try await provider.writeFile(path: path, contents: Data(text.utf8), expectedStamp: nil)
+                _ = try await provider.writeFile(path: path, contents: Data(text.utf8), expectedStamp: expectedStamp)
                 self?.evaluate(function: "sessionSaved", argument: [:])
             } catch {
                 self?.evaluate(function: "sessionFailed", argument: ["message": error.localizedDescription])
             }
         }
-    }
-
-    /// Whether `path` on the host holds a file that isn't a VaporView session
-    /// (or one too big to be one). False when it can't be read, e.g. it doesn't exist.
-    nonisolated private static func existingFileIsNotASession(path: String, provider: SSHFileExplorerProvider) async -> Bool {
-        let local = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-waveform-session-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: local) }
-        do {
-            try await provider.downloadFile(path: path, to: local)
-        } catch {
-            return false
-        }
-        guard let text = try? await readSessionText(at: local) else { return true }
-        return !isSession(text)
     }
 
     private func chooseLocalSessionFile(text: String, suggestedName: String) {
@@ -884,3 +894,38 @@ struct FilePreviewWaveformView: NSViewRepresentable {
         )
     }
 }
+
+// MARK: - WaveformSessionOverwriteCheck
+
+/// Whether Save on Host may replace `<dump>.json` next to a dump on the host.
+/// Only a missing file or a VaporView session is replaced; anything cmux can't
+/// read for sure (an ssh failure, a stat that fails) is a refusal, never a
+/// write. Generic over the host calls so it can be tested without a host.
+enum WaveformSessionOverwriteCheck {
+    enum Outcome<Stamp: Sendable> {
+        /// Write; with the existing file's stamp, so a change in between is refused.
+        case write(expectedStamp: Stamp?)
+        case notASession
+        case failed(any Error)
+    }
+
+    static func decide<Stamp: Sendable>(
+        name: String,
+        listParent: @Sendable () async throws -> [String],
+        stamp: @Sendable () async throws -> Stamp,
+        size: @Sendable (Stamp) -> Int64,
+        read: @Sendable () async throws -> String,
+        maxSize: Int,
+        isSession: @Sendable (String) -> Bool
+    ) async -> Outcome<Stamp> {
+        do {
+            guard try await listParent().contains(name) else { return .write(expectedStamp: nil) }
+            let existing = try await stamp()
+            guard size(existing) <= Int64(maxSize) else { return .notASession }
+            return isSession(try await read()) ? .write(expectedStamp: existing) : .notASession
+        } catch {
+            return .failed(error)
+        }
+    }
+}
+// MARK: - end WaveformSessionOverwriteCheck
