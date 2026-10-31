@@ -40,13 +40,22 @@ extension TerminalController {
             }
             // Only SSH terminals (anything else would resolve the path on this
             // Mac), and only while file previews are on.
-            guard workspace.openRemoteFileFromCommandLine(sourcePanelId: surfaceID, path: path) else {
+            switch workspace.openRemoteFileFromCommandLine(sourcePanelId: surfaceID, path: path) {
+            case .started:
+                // The preview opens when the download lands; a notice on the
+                // terminal says so if it can't (too large, failed, wrong type).
+                return .ok(["queued": true, "path": path])
+            case .unavailable:
                 return .err(code: "unsupported", message: String(
                     localized: "socket.fileOpenRemote.notSSH",
                     defaultValue: "This terminal is not connected over SSH, or file previews are off"
                 ), data: nil)
+            case .unsupportedType:
+                return .err(code: "unsupported_type", message: String(
+                    localized: "socket.fileOpenRemote.unsupportedType",
+                    defaultValue: "This file type opens from the Files panel, not cmux open"
+                ), data: nil)
             }
-            return .ok(["queued": true, "path": path])
         }
     }
 }

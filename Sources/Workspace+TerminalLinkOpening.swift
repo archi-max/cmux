@@ -50,12 +50,12 @@ extension Workspace: TerminalLinkOpenContainer {
 
     /// `cmux open` from an SSH terminal of this workspace: previews one
     /// canonical host path through this workspace's SSH connection, in the
-    /// native file preview only. Returns false when nothing will open.
-    func openRemoteFileFromCommandLine(sourcePanelId: UUID, path: String) -> Bool {
+    /// native file preview only.
+    func openRemoteFileFromCommandLine(sourcePanelId: UUID, path: String) -> RemoteTerminalFilePreviewCoordinator.CommandLineOpenOutcome {
         guard remoteConfiguration?.transport == .ssh,
               let target = surfaceOwnershipTarget(for: sourcePanelId),
               remoteTerminalFilePreviewConfiguration(for: target.surfaceID) != nil,
-              let panel = terminalPanel(for: target.surfaceID) else { return false }
+              let panel = terminalPanel(for: target.surfaceID) else { return .unavailable }
         return panel.hostedView.openRemoteFileFromCommandLine(path: path)
     }
 

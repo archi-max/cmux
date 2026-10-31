@@ -43,23 +43,32 @@ final class RemoteTerminalFilePreviewCoordinator {
         case commandLine(path: String)
     }
 
+    /// What a `cmux open` request led to, for the socket reply.
+    enum CommandLineOpenOutcome: Equatable {
+        /// The download started; the preview opens when it lands (if the
+        /// terminal is still focused), else a notice says why it didn't.
+        case started
+        /// Not an SSH terminal, or file previews are off.
+        case unavailable
+        /// The type previews only through Quick Look; open it from the Files panel.
+        case unsupportedType
+    }
+
     @discardableResult
     func open(workspace: Workspace, sourcePanelID: UUID, tokens: [String]) -> Bool {
         let tokens = tokens.filter { RemoteTerminalPathResolver().isFileReference($0) }
         guard !tokens.isEmpty else { return false }
-        return start(.click(tokens: tokens), workspace: workspace, sourcePanelID: sourcePanelID)
+        return start(.click(tokens: tokens), workspace: workspace, sourcePanelID: sourcePanelID) != .unavailable
     }
 
     /// Starts a `cmux open` preview of `path` on the terminal's SSH host.
-    /// Returns false when nothing will open: not an SSH terminal, or file
-    /// previews are off.
-    func openFromCommandLine(workspace: Workspace, sourcePanelID: UUID, path: String) -> Bool {
+    func openFromCommandLine(workspace: Workspace, sourcePanelID: UUID, path: String) -> CommandLineOpenOutcome {
         start(.commandLine(path: path), workspace: workspace, sourcePanelID: sourcePanelID)
     }
 
-    private func start(_ request: Request, workspace: Workspace, sourcePanelID: UUID) -> Bool {
+    private func start(_ request: Request, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
         guard let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID),
-              let panel = workspace.terminalPanel(for: sourcePanelID) else { return false }
+              let panel = workspace.terminalPanel(for: sourcePanelID) else { return .unavailable }
         let settings = FileRouteSettingsStore(defaults: defaults)
         switch request {
         case .click(let tokens):
@@ -67,12 +76,15 @@ final class RemoteTerminalFilePreviewCoordinator {
             guard !ManagedFileTransferPolicy.isDisabled,
                   settings.supportedFileRouteEnabled ||
                     (settings.markdownRouteEnabled && tokens.contains { FileRouteSettingsStore.isMarkdownPath($0.trimmingTrailingTerminalPunctuation()) }) else {
-                return true
+                return .started
             }
-        case .commandLine:
-            guard !ManagedFileTransferPolicy.isDisabled, settings.supportedFileRouteEnabled else { return false }
+        case .commandLine(let path):
+            guard !ManagedFileTransferPolicy.isDisabled, settings.supportedFileRouteEnabled else { return .unavailable }
+            // Refused before any transfer when the extension already says so.
+            guard !FilePreviewKindResolver.opensOnlyThroughQuickLook(path: path) else { return .unsupportedType }
             tasks[sourcePanelID]?.task.cancel()
         }
+        let cacheRoot = cacheDirectory
         let directory = workspace.effectivePanelDirectory(panelId: sourcePanelID)
         let provider = SSHFileExplorerProvider(
             destination: configuration.destination,
@@ -142,6 +154,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                     #if DEBUG
                     cmuxDebugLog("remotePreview.discarded request=\(requestID.uuidString)")
                     #endif
+                    Self.discardUnlessShown(localURL, workspace: workspace, cacheRoot: cacheRoot)
                     return
                 }
                 let opened: Bool
@@ -157,10 +170,16 @@ final class RemoteTerminalFilePreviewCoordinator {
                     // Never the markdown viewer or the browser: the host chose
                     // this file, so it opens only in the native preview.
                     // Quick Look renders some types (web archives, mail, Office)
-                    // through WebKit, so those wait for a click in the Files panel.
-                    opened = FileRouteSettingsStore(defaults: self.defaults).shouldRouteSupportedFile(path: localURL.path)
-                        && FilePreviewKindResolver.mode(for: localURL) != .quickLook
-                        && workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localURL.path) != nil
+                    // through WebKit, so those wait for a click in the Files panel;
+                    // most are refused by extension before the download.
+                    if FilePreviewKindResolver.mode(for: localURL) == .quickLook {
+                        opened = false
+                        panel.hostedView.showTerminalNotice(RemotePreviewNotice.typeOpensFromFilesPanel)
+                    } else {
+                        opened = FileRouteSettingsStore(defaults: self.defaults).shouldRouteSupportedFile(path: localURL.path)
+                            && workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localURL.path) != nil
+                    }
+                    if !opened { Self.discardUnlessShown(localURL, workspace: workspace, cacheRoot: cacheRoot) }
                 }
                 #if DEBUG
                 cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) opened=\(opened)")
@@ -177,15 +196,50 @@ final class RemoteTerminalFilePreviewCoordinator {
                       workspace.owningTabManager?.selectedTabId == workspace.id,
                       workspace.focusedPanelId == sourcePanelID,
                       panel.hostedView.window?.isKeyWindow == true else { return }
-                // Match the existing file-explorer preview failure affordance without exposing SSH diagnostics.
-                NSSound.beep()
+                switch request {
+                case .click:
+                    // Match the existing file-explorer preview failure affordance without exposing SSH diagnostics.
+                    NSSound.beep()
+                case .commandLine:
+                    // No click to answer with a beep: say what happened, still without SSH diagnostics.
+                    panel.hostedView.showTerminalNotice(
+                        error as? RemoteTerminalFilePreviewError == .fileTooLarge
+                            ? RemotePreviewNotice.fileTooLarge
+                            : RemotePreviewNotice.downloadFailed
+                    )
+                }
             }
         }
         tasks[sourcePanelID] = (requestID, task)
-        return true
+        return .started
+    }
+
+    /// Deletes a download that won't be shown, unless a preview in this
+    /// window already shows that cache file (the same host path opened before).
+    private static func discardUnlessShown(_ url: URL, workspace: Workspace?, cacheRoot: URL) {
+        let workspaces = workspace?.owningTabManager?.tabs ?? workspace.map { [$0] } ?? []
+        let shown = workspaces.contains { candidate in
+            candidate.panels.values.contains { ($0 as? FilePreviewPanel)?.filePath == url.path }
+        }
+        if !shown { RemotePreviewCacheBudget.discard(url, cacheRoot: cacheRoot) }
     }
 
     deinit {
         for entry in tasks.values { entry.task.cancel() }
+    }
+}
+
+/// Notices shown on the terminal when a `cmux open` preview can't open.
+enum RemotePreviewNotice {
+    static var fileTooLarge: String {
+        String(localized: "remotePreview.notice.fileTooLarge", defaultValue: "Too large to preview from cmux open; use the Files panel")
+    }
+
+    static var typeOpensFromFilesPanel: String {
+        String(localized: "remotePreview.notice.typeOpensFromFilesPanel", defaultValue: "This file type opens from the Files panel")
+    }
+
+    static var downloadFailed: String {
+        String(localized: "remotePreview.notice.downloadFailed", defaultValue: "Couldn’t download the file from the host")
     }
 }

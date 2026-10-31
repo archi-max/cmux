@@ -1,6 +1,19 @@
 import Foundation
+import UniformTypeIdentifiers
 
 extension FilePreviewKindResolver {
-    /// Stub for the failing tests; the implementation follows in the next commit.
-    static func opensOnlyThroughQuickLook(path: String) -> Bool { false }
+    /// Whether `path` names a type that would preview only through Quick Look
+    /// (web archives, mail, Office and iWork documents, which Quick Look may
+    /// render through WebKit), judged from the extension alone so the file
+    /// need not be downloaded. `cmux open` refuses these; they still open
+    /// with a click in the Files panel. Extensionless and unknown types are
+    /// not refused here: they are sniffed after the download.
+    static func opensOnlyThroughQuickLook(path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        // A plist may be XML text; it is sniffed after the download.
+        guard !ext.isEmpty, ext != "plist", initialMode(for: url) == .quickLook,
+              let type = UTType(filenameExtension: ext), !type.isDynamic else { return false }
+        return !type.conforms(to: .text)
+    }
 }

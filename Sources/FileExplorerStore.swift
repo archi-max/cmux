@@ -329,6 +329,14 @@ protocol SSHFileExplorerTransport: AnyObject {
         connection: SSHFileExplorerConnection,
         to localURL: URL
     ) async throws
+    /// Downloads at most `maxBytes + 1` bytes, so the caller can tell an
+    /// oversize file from one that fits without transferring all of it.
+    nonisolated func downloadFile(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL,
+        maxBytes: Int64
+    ) async throws
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -441,6 +449,17 @@ extension SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         throw FileExplorerError.mutationFailed
+    }
+
+    /// Transports without a bounded read download everything; callers still
+    /// check the size of what arrived.
+    nonisolated func downloadFile(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL,
+        maxBytes: Int64
+    ) async throws {
+        try await downloadFile(path: path, connection: connection, to: localURL)
     }
 
     nonisolated func writeFile(
@@ -713,6 +732,14 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         try await transport.downloadFile(path: path, connection: connection, to: localURL)
     }
 
+    /// Downloads at most `maxBytes + 1` bytes of `path`.
+    func downloadFile(path: String, to localURL: URL, maxBytes: Int64) async throws {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        try await transport.downloadFile(path: path, connection: connection, to: localURL, maxBytes: maxBytes)
+    }
+
     func createFile(path: String) async throws {
         guard isAvailable else {
             throw FileExplorerError.providerUnavailable
@@ -795,10 +822,34 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL
     ) async throws {
         let escapedPath = Self.remoteShellPathWord(path)
+        try await runDownload(command: "test -f \(escapedPath) && cat -- \(escapedPath)", connection: connection, to: localURL)
+    }
+
+    /// `head -c` stops the host after `maxBytes + 1` bytes, however large the
+    /// file is or grows to while it is read.
+    nonisolated func downloadFile(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL,
+        maxBytes: Int64
+    ) async throws {
+        let escapedPath = Self.remoteShellPathWord(path)
+        try await runDownload(
+            command: "test -f \(escapedPath) && head -c \(max(0, maxBytes) + 1) < \(escapedPath)",
+            connection: connection,
+            to: localURL
+        )
+    }
+
+    private nonisolated func runDownload(
+        command: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws {
         let outputURL = localURL
         let commandProcess = SSHDownloadCommandProcess(
             connection: connection,
-            command: "test -f \(escapedPath) && cat -- \(escapedPath)",
+            command: command,
             outputURL: outputURL
         )
         let result = try await withTaskCancellationHandler {

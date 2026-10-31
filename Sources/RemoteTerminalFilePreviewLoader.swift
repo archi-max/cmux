@@ -33,17 +33,20 @@ actor RemoteTerminalFilePreviewLoader {
         return try await download(candidates: candidates)
     }
 
-    /// Downloads exactly `path` (no spelling variants), refusing files over
-    /// `maxBytes` before any byte is fetched. For `cmux open`, where the
-    /// remote CLI has already resolved the one path it means.
+    /// Downloads exactly `path` (no spelling variants), at most `maxBytes`.
+    /// For `cmux open`, where the remote CLI has already resolved the one
+    /// path it means. The host's size is checked first so an oversize file
+    /// costs no transfer; the download itself also stops after `maxBytes + 1`
+    /// bytes, so a file that grew meanwhile is refused too, leaving nothing
+    /// in the cache.
     func load(exactPath path: String, maxBytes: Int64) async throws -> URL {
         try Task.checkCancellation()
         let stamp = try await provider.fileStamp(path: path)
         guard stamp.size <= maxBytes else { throw RemoteTerminalFilePreviewError.fileTooLarge }
-        return try await download(candidates: [path])
+        return try await download(candidates: [path], maxBytes: maxBytes)
     }
 
-    private func download(candidates: [String]) async throws -> URL {
+    private func download(candidates: [String], maxBytes: Int64? = nil) async throws -> URL {
         let identity = [provider.destination, provider.port.map(String.init) ?? "", provider.identityFile ?? ""]
             + provider.sshOptions
         let identityData = try JSONSerialization.data(withJSONObject: identity)
@@ -58,14 +61,32 @@ actor RemoteTerminalFilePreviewLoader {
             let staging = directory.appendingPathComponent(UUID().uuidString + ".download")
             defer { try? fileManager.removeItem(at: staging) }
             do {
-                try await provider.downloadFile(path: path, to: staging)
+                if let maxBytes {
+                    try await provider.downloadFile(path: path, to: staging, maxBytes: maxBytes)
+                    let size = (try? fileManager.attributesOfItem(atPath: staging.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    guard size <= maxBytes else {
+                        RemotePreviewCacheBudget.discard(staging, cacheRoot: cacheDirectory, fileManager: fileManager)
+                        throw RemoteTerminalFilePreviewError.fileTooLarge
+                    }
+                } else {
+                    try await provider.downloadFile(path: path, to: staging)
+                }
                 try Task.checkCancellation()
                 let destination = directory.appendingPathComponent((path as NSString).lastPathComponent)
                 // Publish a complete file atomically; an existing preview never sees a partial download.
                 guard rename(staging.path, destination.path) == 0 else {
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
                 }
+                RemotePreviewCacheBudget.evict(
+                    in: cacheDirectory,
+                    budgetBytes: RemotePreviewCacheBudget.defaultBudgetBytes,
+                    keeping: [destination.path],
+                    recentUseGrace: RemotePreviewCacheBudget.defaultRecentUseGrace,
+                    fileManager: fileManager
+                )
                 return destination
+            } catch let error as RemoteTerminalFilePreviewError {
+                throw error
             } catch {
                 try Task.checkCancellation()
             }
