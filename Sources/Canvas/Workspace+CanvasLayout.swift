@@ -240,7 +240,8 @@ extension Workspace {
         type: CanvasNewPaneType,
         focus: Bool = true,
         direction: CanvasDirection? = nil,
-        animated: Bool = true
+        animated: Bool = true,
+        userInitiated: Bool = false
     ) -> UUID? {
         guard layoutMode == .canvas else { return nil }
         guard let focusedPaneId = bonsplitController.focusedPaneId else { return nil }
@@ -251,7 +252,7 @@ extension Workspace {
         let newPanelId: UUID
         switch type {
         case .terminal:
-            guard let panel = newTerminalSurface(inPane: focusedPaneId, focus: focus) else {
+            guard let panel = newTerminalSurface(inPane: focusedPaneId, focus: focus, userInitiated: userInitiated) else {
                 return nil
             }
             newPanelId = panel.id

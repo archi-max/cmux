@@ -18630,7 +18630,7 @@ extension TabManager {
         if selectedTabId != workspace.id {
             selectWorkspace(workspace)
         }
-        let panel = workspace.newTerminalSurfaceInFocusedPane(focus: true, initialInput: nil)
+        let panel = workspace.newTerminalSurfaceInFocusedPane(focus: true, initialInput: nil, userInitiated: true)
         if panel == nil, workspace.isRemoteTmuxMirror {
             // Routed to the remote as a tmux `new-window`; the tab arrives
             // asynchronously via the mirror, so this is success, not failure.

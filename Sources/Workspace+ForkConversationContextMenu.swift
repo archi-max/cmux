@@ -12,7 +12,10 @@ extension Workspace {
         snapshot: SessionRestorableAgentSnapshot,
         destination: SurfaceDestination
     ) -> TerminalPanel? {
-        guard let source = cloudTerminalSourcePlacement(forPanel: panelID), source.machine.isSSH,
+        // A restored pane with no host terminal never ran this agent on the
+        // host; its resume command must not be replayed there.
+        guard terminalPanel(for: panelID)?.deviceAttachment?.origin != .unattachedSSHTerminal,
+              let source = cloudTerminalSourcePlacement(forPanel: panelID), source.machine.isSSH,
               let configuration = remoteConfiguration,
               SSHTuiConnection(configuration: configuration).id == source.machine.rawValue,
               let command = snapshot.retargetingForkWorkingDirectory(
