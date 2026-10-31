@@ -254,25 +254,38 @@ final class RemoteTerminalFilePreviewCoordinator {
     /// terminal's right or a new split beside it, and a failure shows as a
     /// notice on the terminal.
     private func openInPlaceOnHost(path: String, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
-        guard case .remoteSSH(let workspaceId, let connection, let displayTarget, _, let isAvailable, _) =
-                FileExplorerWorkspaceRootResolver().resolve(workspace),
-              isAvailable,
-              let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID),
-              let terminal = workspace.terminalPanel(for: sourcePanelID) else { return .unavailable }
+        var sshRoot: (workspaceId: UUID, connection: SSHFileExplorerConnection, displayTarget: String)?
+        if case .remoteSSH(let workspaceId, let connection, let displayTarget, _, true, _) =
+            FileExplorerWorkspaceRootResolver().resolve(workspace) {
+            sshRoot = (workspaceId, connection, displayTarget)
+        }
+        let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID)
+        let terminal = workspace.terminalPanel(for: sourcePanelID)
+        let pane = workspace.paneId(forPanelId: sourcePanelID)
         let notice: @MainActor () -> Void = { [weak terminal] in
             guard let view = terminal?.hostedView, view.window?.isKeyWindow == true else { return }
             view.showTerminalNotice(RemotePreviewNotice.couldNotOpen)
         }
-        guard let pane = workspace.paneId(forPanelId: sourcePanelID) else {
+        switch RemotePreviewInPlaceGate.route(
+            sshRootAvailable: sshRoot != nil,
+            terminalIsRemote: configuration != nil && terminal != nil,
+            hasWorkspacePane: pane != nil
+        ) {
+        case .unavailable:
+            return .unavailable
+        case .noticeNoPane:
             // A Dock terminal: no workspace pane to open the viewer beside.
             notice()
             return .started
+        case .open:
+            break
         }
+        guard let sshRoot, let configuration, let pane else { return .unavailable }
         // Bound for previews only: no folder listing or git status on the host.
         inPlaceStore.bindSSHPreviewProvider(
-            workspaceId: workspaceId,
-            connection: connection,
-            displayTarget: displayTarget,
+            workspaceId: sshRoot.workspaceId,
+            connection: sshRoot.connection,
+            displayTarget: sshRoot.displayTarget,
             sshTransport: transport
         )
         let workspaceID = workspace.id
@@ -281,10 +294,13 @@ final class RemoteTerminalFilePreviewCoordinator {
             workspace: workspace,
             pane: pane,
             isCurrent: { [weak workspace] in
-                // Still this workspace, selected, on the same SSH connection.
-                guard let workspace, !workspace.isRetiredFromOwningTabManager,
-                      workspace.owningTabManager?.selectedTabId == workspaceID else { return false }
-                return workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration
+                guard let workspace else { return false }
+                return RemotePreviewInPlaceGate.openIsCurrent(
+                    isSelected: workspace.owningTabManager?.selectedTabId == workspaceID,
+                    isRetired: workspace.isRetiredFromOwningTabManager,
+                    terminalConfiguration: workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID),
+                    openedWith: configuration
+                )
             },
             presentation: FileExplorerPreviewCoordinator.Presentation(
                 openPreview: { workspace, localPath in
@@ -292,10 +308,13 @@ final class RemoteTerminalFilePreviewCoordinator {
                 },
                 reportFailure: { _ in notice() },
                 isPanelCurrent: { [weak workspace] in
-                    // The viewer outlives the terminal: same workspace, selected, same connection.
-                    guard let workspace, !workspace.isRetiredFromOwningTabManager,
-                          workspace.owningTabManager?.selectedTabId == workspaceID else { return false }
-                    return workspace.remoteConfiguration == configuration
+                    guard let workspace else { return false }
+                    return RemotePreviewInPlaceGate.panelIsCurrent(
+                        isSelected: workspace.owningTabManager?.selectedTabId == workspaceID,
+                        isRetired: workspace.isRetiredFromOwningTabManager,
+                        workspaceConfiguration: workspace.remoteConfiguration,
+                        openedWith: configuration
+                    )
                 }
             )
         )
