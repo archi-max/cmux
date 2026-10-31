@@ -1375,6 +1375,42 @@ extension Harness {
         """) { r in
           check(r["during"] as? Int == 1, "an Undo during a reload of another path doesn't undo the old file's change (rows drawn \(r["during"] ?? "nil"))")
           check(r["after"] as? Int == 1, "nor one after it (rows drawn \(r["after"] ?? "nil"))")
+          self.phaseAL()
+        }
+      }
+    }
+  }
+
+  // A posted view the viewer never answers (here dropped on the way) keeps the
+  // waiting Undo from running in that load; it must not carry into the next
+  // reload and apply there, long after it was pressed.
+  func phaseAL() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const restoreState = C.restoreState;
+        C.restoreState = (m) => {
+          C.restoreState = restoreState;
+          const p = restoreState(m);
+          const toWebview = H.toWebview;
+          H.toWebview = (x) => { if (x && x.command === 'apply-state' && x.stateChangeType === 2) { H.toWebview = toWebview; return; } return toWebview(x); };
+          C.run('waveformViewer.loadViewerState', { state: { displayedSignals: [{ dataType: 'netlist-variable', name: 'top.clk' }] } });
+          C.run('cmux.undo');
+          return p;
+        };
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        await sleep(1500);
+        R.stuck = drawn();
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        await sleep(1500);
+        R.next = drawn();
+        """) { r in
+          check(r["stuck"] as? Int == 1, "an Undo behind an unanswered view doesn't run (rows drawn \(r["stuck"] ?? "nil"))")
+          check(r["next"] as? Int == 1, "nor in the next reload (rows drawn \(r["next"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
