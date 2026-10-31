@@ -34,14 +34,43 @@ struct SSHFileExplorerListingTests {
         let script = try #require(Self.script(in: capped))
         #expect(script.contains("head -c 100 <"))
 
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-ls-\(UUID().uuidString)")
+        // A non-ASCII folder name travels base64-encoded inside the script.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-ls-\(UUID().uuidString)-résumé")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         try Data().write(to: folder.appendingPathComponent("my sim.json"))
-        for shell in ["/bin/sh", "/bin/csh"] where FileManager.default.isExecutableFile(atPath: shell) {
-            let output = try Self.run(ProcessSSHFileExplorerTransport.listCommand(path: folder.path, showHidden: false), shell: shell)
-            #expect(output.contains("my sim.json\n"), "\(shell)")
+        let dump = folder.appendingPathComponent("wave é.vcd")
+        try Data(repeating: 0x41, count: 300).write(to: dump)
+        for shell in Self.loginShells {
+            let listing = try Self.run(ProcessSSHFileExplorerTransport.listCommand(path: folder.path, showHidden: false), shell: shell)
+            #expect(listing.output.contains("my sim.json\n"), "\(shell)")
+            #expect(listing.output.contains("wave é.vcd\n"), "\(shell)")
+
+            let capped = try Self.run(ProcessSSHFileExplorerTransport.cappedDownloadCommand(path: dump.path, maxBytes: 99), shell: shell)
+            #expect(capped.status == 0 && capped.data.count == 100, "\(shell): N+1 bytes, got \(capped.data.count)")
+            let whole = try Self.run(ProcessSSHFileExplorerTransport.downloadCommand(path: dump.path), shell: shell)
+            #expect(whole.status == 0 && whole.data.count == 300, "\(shell)")
+
+            for refused in [folder.path, folder.appendingPathComponent("missing é.vcd").path] {
+                let cappedMiss = try Self.run(ProcessSSHFileExplorerTransport.cappedDownloadCommand(path: refused, maxBytes: 99), shell: shell)
+                let wholeMiss = try Self.run(ProcessSSHFileExplorerTransport.downloadCommand(path: refused), shell: shell)
+                #expect(cappedMiss.status == 1 && cappedMiss.data.isEmpty, "\(shell) \(refused)")
+                #expect(wholeMiss.status == 1 && wholeMiss.data.isEmpty, "\(shell) \(refused)")
+            }
         }
+    }
+
+    @Test func theWholeFileDownloadIsAPOSIXScriptForAnyLoginShell() throws {
+        let command = ProcessSSHFileExplorerTransport.downloadCommand(path: "/work/wave.vcd")
+        #expect(SlangWorkspaceRoot.posixShellCommand(command) == command)
+        let script = try #require(Self.script(in: command))
+        #expect(script.hasPrefix("test -f "))
+        #expect(script.contains("&& cat -- "))
+    }
+
+    /// Login shells ssh may run the command with, as installed on this Mac.
+    private static let loginShells = ["/bin/sh", "/bin/csh", "/bin/tcsh"].filter {
+        FileManager.default.isExecutableFile(atPath: $0)
     }
 
     /// The POSIX script inside `sh -c 'eval "$(printf %s <base64> | ...)"'`.
@@ -52,7 +81,7 @@ struct SSHFileExplorerListingTests {
         return Data(base64Encoded: String(encoded)).flatMap { String(data: $0, encoding: .utf8) }
     }
 
-    private static func run(_ command: String, shell: String) throws -> String {
+    private static func run(_ command: String, shell: String) throws -> (output: String, data: Data, status: Int32) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
         process.arguments = ["-c", command]
@@ -62,7 +91,8 @@ struct SSHFileExplorerListingTests {
         try process.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
+        // ls prints names as the filesystem stores them (NFD on APFS).
+        return (String(decoding: data, as: UTF8.self).precomposedStringWithCanonicalMapping, data, process.terminationStatus)
     }
 
     @Test func namesWithSpacesAndQuotesParseAsTheyAre() {

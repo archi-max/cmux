@@ -54,7 +54,7 @@ import Testing
         try Data("local shadow".utf8).write(to: shadow)
         let transport = PreviewDownloadTransport(files: [shadow.path: Data("remote bytes".utf8)])
         let loader = makeLoader(transport: transport, cache: root.appendingPathComponent("cache"))
-        let result = try await loader.load(tokens: [shadow.path], workingDirectory: nil)
+        let result = try await loader.load(tokens: [shadow.path], workingDirectory: nil).url
         #expect(result != shadow)
         #expect(result.lastPathComponent == shadow.lastPathComponent)
         #expect(try String(contentsOf: result, encoding: .utf8) == "remote bytes")
@@ -68,7 +68,7 @@ import Testing
         let transport = PreviewDownloadTransport(files: ["/home/remote/file name.txt": Data("remote".utf8)])
         let result = try await makeLoader(transport: transport, cache: root).load(
             tokens: ["~/file\\ name.txt,"], workingDirectory: "/wrong"
-        )
+        ).url
         #expect(result.lastPathComponent == "file name.txt")
         #expect(try String(contentsOf: result, encoding: .utf8) == "remote")
         let paths = await transport.requests.paths.filter { $0 != "HOME" }
@@ -132,7 +132,7 @@ import Testing
             _ = try await makeLoader(transport: transport, cache: root).load(exactPath: "/home/u/a.txt,", maxBytes: 1_000)
         }
         #expect(await transport.requests.paths.allSatisfy { $0 == "/home/u/a.txt," })
-        let fits = try await makeLoader(transport: transport, cache: root).load(exactPath: "/home/u/a.txt", maxBytes: 1_000)
+        let fits = try await makeLoader(transport: transport, cache: root).load(exactPath: "/home/u/a.txt", maxBytes: 1_000).url
         #expect(try Data(contentsOf: fits) == Data("x".utf8))
     }
 
@@ -161,18 +161,36 @@ import Testing
         let transport = PreviewDownloadTransport(files: ["/home/u/new.sv": Data(count: 10)])
         let shownPath = shown.path
         let loader = makeLoader(transport: transport, cache: root, budgetBytes: 100, shownPaths: { [shownPath] })
-        let fetched = try await loader.load(exactPath: "/home/u/new.sv", maxBytes: 1_000)
+        let fetched = try await loader.load(exactPath: "/home/u/new.sv", maxBytes: 1_000).url
         #expect(FileManager.default.fileExists(atPath: fetched.path))
         #expect(FileManager.default.fileExists(atPath: shown.path), "a file an open preview shows must stay")
         #expect(!FileManager.default.fileExists(atPath: stale.path))
     }
 
-    @Test func commandLineOpensSendWaveformsReadInPlaceToTheFilesPanel() {
-        // FSDB is read by Verdi's reader on the host; a downloaded copy can't be read locally.
-        #expect(FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/wave.fsdb"))
-        #expect(FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/page.webarchive"))
-        #expect(!FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/wave.vcd"))
-        #expect(!FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/alu.sv"))
+    @Test func commandLineOpensReadFSDBInPlaceAndDownloadOtherWaveforms() {
+        // FSDB is read by Verdi's reader on the host, as the Files panel does: never downloaded.
+        #expect(FilePreviewKindResolver.commandLineOpenRoute(path: "/h/wave.fsdb") == .readInPlaceOnHost)
+        #expect(FilePreviewKindResolver.commandLineOpenRoute(path: "/h/WAVE.FSDB") == .readInPlaceOnHost)
+        #expect(FilePreviewKindResolver.commandLineOpenRoute(path: "/h/page.webarchive") == .filesPanelOnly)
+        for downloaded in ["/h/wave.vcd", "/h/wave.fst", "/h/wave.ghw", "/h/alu.sv"] {
+            #expect(FilePreviewKindResolver.commandLineOpenRoute(path: downloaded) == .download, "\(downloaded)")
+        }
+    }
+
+    @Test func aDownloadSaysWhetherItCreatedTheCacheFile() async throws {
+        // Only a file this request created may be discarded: an earlier open of
+        // the same host file uses the same cache path and may still be shown.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = PreviewDownloadTransport(files: ["/home/u/a.sv": Data("x".utf8)])
+        let loader = makeLoader(transport: transport, cache: root)
+        let first = try await loader.load(exactPath: "/home/u/a.sv", maxBytes: 1_000)
+        let second = try await loader.load(exactPath: "/home/u/a.sv", maxBytes: 1_000)
+        #expect(first.isNew)
+        #expect(!second.isNew)
+        #expect(first.url == second.url)
+        let clicked = try await loader.load(tokens: ["/home/u/a.sv"], workingDirectory: nil)
+        #expect(!clicked.isNew)
     }
 
     private func makeLoader(
