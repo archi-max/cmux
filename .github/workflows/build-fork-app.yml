@@ -4,6 +4,12 @@ name: Build fork app
 # uploads it as an artifact. Manual or on push to sv-editor only.
 on:
   workflow_dispatch:
+    inputs:
+      configuration:
+        description: "Release (optimized, no DEV banner) or Debug"
+        type: choice
+        options: [release, debug]
+        default: release
   push:
     branches: [sv-editor]
 
@@ -18,6 +24,8 @@ jobs:
     env:
       CMUX_DEV_BACKEND_MODE: local
       CMUX_ALLOW_UNSIGNED_DEV_APP: "1"
+      # Pushes build Release: optimized, and without the Debug-only dev banner.
+      BUILD_CONFIG: ${{ inputs.configuration || 'release' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,8 +70,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/Library/Developer/Xcode/DerivedData/cmux-svedit
-          key: deriveddata-svedit-${{ github.sha }}
-          restore-keys: deriveddata-svedit-
+          key: deriveddata-svedit-${{ env.BUILD_CONFIG }}-${{ github.sha }}
+          restore-keys: deriveddata-svedit-${{ env.BUILD_CONFIG }}-
 
       # A fresh checkout gives every file a new mtime and inode, which makes
       # Xcode rebuild everything. Pin all files to one fixed mtime, mark only
@@ -108,7 +116,8 @@ jobs:
           trap 'kill $hb 2>/dev/null || true' EXIT
           # reload.sh can exit 1 from its trailing tag-cleanup reminder after a
           # successful build, so judge success by its own summary line.
-          ./scripts/reload.sh --tag svedit --no-global-cli-links 2>&1 | tee "$RUNNER_TEMP/reload.out" || true
+          release_flag=; [ "$BUILD_CONFIG" = release ] && release_flag=--release
+          ./scripts/reload.sh --tag svedit $release_flag --no-global-cli-links 2>&1 | tee "$RUNNER_TEMP/reload.out" || true
           grep -q '^==> reload succeeded' "$RUNNER_TEMP/reload.out"
 
       - name: Package app
@@ -129,7 +138,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/Library/Developer/Xcode/DerivedData/cmux-svedit
-          key: deriveddata-svedit-${{ github.sha }}
+          key: deriveddata-svedit-${{ env.BUILD_CONFIG }}-${{ github.sha }}
 
       - name: Upload app
         uses: actions/upload-artifact@v4
