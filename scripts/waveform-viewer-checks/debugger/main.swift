@@ -209,7 +209,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let (unacked, unackedMissed) = await playedCycles(rate: 100, ack: false, for: 1200)
     let consecutive = { (c: [Int]) in zip(c, c.dropFirst()).allSatisfy { $1 == $0 + 1 } }
     expect(consecutive(unacked) && unacked.count >= 2 && unacked.count <= 7
-           && unackedMissed.count >= 2 && unackedMissed.dropFirst().allSatisfy { $0 },
+           && unackedMissed.count >= 2 && unackedMissed.first == false && unackedMissed.dropFirst().allSatisfy { $0 },
            "waiting with no answer: every cycle, each after the 250 ms wait: \(unacked), missed \(unackedMissed)")
     let (acked, ackedMissed) = await playedCycles(rate: 20, ack: true, for: 1000)
     expect(consecutive(acked) && acked.count >= 4 && !ackedMissed.contains(true),

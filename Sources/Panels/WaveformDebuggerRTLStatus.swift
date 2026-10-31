@@ -119,6 +119,10 @@ enum WaveformDebuggerRTLStatus {
         report(waveform)
     }
 
+    /// (Not yet implemented: the checks compile against these.)
+    static var now: () -> Date = { Date() }
+    static func waitSettingChanged(_ waveform: FilePreviewPanel) {}
+
     /// `editor` closed or stopped linking: the viewers it followed no longer wait for it.
     static func editorGone(_ editor: FilePreviewLanguageFeatures) {
         reports.removeObject(forKey: editor)

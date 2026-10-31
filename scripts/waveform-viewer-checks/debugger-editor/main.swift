@@ -288,6 +288,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(unplaced?["ok"] as? Bool == false && unplaced?["wait"] as? Bool == true
            && (unplaced?["text"] as? String)?.contains("cpu.sv") == true && (unplaced?["text"] as? String)?.contains("placed") == true,
            "a file slang can't place: says so and how to fix it: \(String(describing: unplaced))")
+    expect((unplaced?["tooltip"] as? String)?.contains("cpu.sv: cpu.sv") == false, "the tooltip names the file once: \(String(describing: unplaced))")
     expect(page.rtlShownTimes == [15], "and the cycle counts as shown (nothing to draw): \(page.rtlShownTimes)")
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
@@ -358,6 +359,27 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     ))
     await settle()
     expect(wideA.session.asked.count == 12, "paused: a refresh at the same cycle asks A's other cones: \(askedPlaying) then \(wideA.session.asked.count)")
+
+    // Two viewers playing at once: each viewer's editors have their own 16 per cycle.
+    let viewerC = FilePreviewPanel()
+    let (wideC, viewC) = wideEditor("/rtl/wide_c.sv")
+    let (wideD, viewD) = wideEditor("/rtl/wide_d.sv")
+    let nearC = FilePreviewPanel()
+    nearC.near = viewerC
+    wideD.linkPanel = nearC
+    viewerC.nativeViewSessions.waveform.previousTimes = [45: 35]
+    WaveformDebugger.playing = true
+    WaveformDebuggerEditorHighlights.forgetCones()
+    for (each, view, scope, viewer) in [(wideC, viewC, "tb.a", waveform), (wideD, viewD, "tb.b", viewerC)] {
+        WaveformDebuggerEditorHighlights.valuesShown(.init(
+            editor: each, textView: view, lines: wideLines, waveform: viewer, time: 45,
+            values: ["wide": wideNow], instances: ["wide": .init(design: scope, dump: scope)]
+        ))
+    }
+    await settle()
+    expect(wideC.session.asked.count == 12 && wideD.session.asked.count == 12,
+           "two viewers: each its own budget: \(wideC.session.asked.count) + \(wideD.session.asked.count)")
+    WaveformDebugger.playing = false
 
     // An editor next to another viewer neither holds up this one's play nor shows in its strip.
     let elsewhere = FilePreviewPanel()
@@ -435,6 +457,88 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(lastStatus()["wait"] as? Bool == false, "it missed 75: play runs at its rate: \(lastStatus())")
     await draw(otherEditor, other, at: 85)
     expect(lastStatus()["wait"] as? Bool == true, "it caught up: play waits again: \(lastStatus())")
+
+    for t in [115, 125, 135, 145] as [Int64] { page.previousTimes[t] = t - 10 }
+    // Play starts from a cycle the editors drew before: the first move doesn't count as missed.
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
+    await draw(editor, textView, at: 65)
+    await draw(otherEditor, other, at: 65)
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75, left: 65, missed: false)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == true, "the start cycle isn't a missed one: play waits: \(lastStatus())")
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 75)
+    await draw(otherEditor, other, at: 75)
+    expect(page.rtlShownTimes == [75], "both drew the first played cycle: shown: \(page.rtlShownTimes)")
+
+    // Behind isn't for the whole play: an editor that draws a played cycle within the 250 ms wait
+    // of its move is waited for again; one slower than that isn't.
+    let t0 = Date()
+    WaveformDebuggerRTLStatus.now = { t0 }
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75, left: 65, missed: false)
+    await draw(editor, textView, at: 75)
+    WaveformDebuggerRTLStatus.now = { t0.addingTimeInterval(0.3) }
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85, left: 75, missed: true)
+    WaveformDebuggerRTLStatus.now = { t0.addingTimeInterval(0.35) }
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 95, left: 85, missed: false)
+    WaveformDebuggerRTLStatus.now = { t0.addingTimeInterval(0.75) }
+    await draw(otherEditor, other, at: 85)
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 95)
+    expect(page.rtlShownTimes == [95], "the other drew 85 450 ms after its move: still behind: \(page.rtlShownTimes)")
+    WaveformDebuggerRTLStatus.now = { t0.addingTimeInterval(0.8) }
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 105, left: 95, missed: false)
+    WaveformDebuggerRTLStatus.now = { t0.addingTimeInterval(0.85) }
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 115, left: 105, missed: false)
+    WaveformDebuggerRTLStatus.now = { t0.addingTimeInterval(0.9) }
+    await draw(otherEditor, other, at: 105)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 125, left: 115, missed: false)
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 125)
+    expect(page.rtlShownTimes.isEmpty, "it drew 105 within 100 ms of its move: waited for again: \(page.rtlShownTimes)")
+    WaveformDebuggerRTLStatus.now = { Date() }
+
+    // The setting turned on mid-play: every editor is waited for again.
+    FilePreviewLanguageFeatures.all = [otherEditor]
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75, left: 65, missed: false)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85, left: 75, missed: true)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == false, "(behind: no wait) \(lastStatus())")
+    WaveformDebuggerRTLStatus.waitSettingChanged(waveform)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == true, "the setting changed: it is waited for again: \(lastStatus())")
+
+    // The first cycle (none before it to compare with) is drawn too: it counts as shown.
+    FilePreviewLanguageFeatures.all = [editor]
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 5)
+    expect(page.rtlShownTimes == [5], "a cycle with none before it: shown: \(page.rtlShownTimes)")
+
+    // The page already moved to a cycle every editor drew: the ack comes at once.
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    await draw(editor, textView, at: 135)
+    await draw(otherEditor, other, at: 135)
+    page.rtlShownTimes.removeAll()
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 135, left: 125, missed: false)
+    await settle()
+    expect(page.rtlShownTimes == [135], "moved to a cycle both drew: shown: \(page.rtlShownTimes)")
+
+    // A new page (stepping stopped) starts its plays afresh: a report from an earlier one doesn't count.
+    WaveformDebuggerRTLStatus.forget(waveform)
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    page.rtlShownTimes.removeAll()
+    await draw(otherEditor, other, at: 145)
+    WaveformDebuggerRTLStatus.forget(waveform)
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 145, left: 135, missed: false)
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 145)
+    expect(page.rtlShownTimes.isEmpty, "the other's report from before the page forgot doesn't count: \(page.rtlShownTimes)")
 
     // (Both editors; this one at 65 since play started, the other not, for the checks below.)
     FilePreviewLanguageFeatures.all = [editor, otherEditor]

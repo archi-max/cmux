@@ -5,15 +5,45 @@ import CmuxSyntaxHighlighting
 @Suite struct DesignInstanceProbeTests {
     struct Failed: Error {}
 
-    @Test func aFailingProbeGoesOnToTheNext() async {
+    @Test func aFailingProbeStopsWithNoAnswer() async {
+        // A failure is the server's (compiling, timed out), not the probe's: the others would
+        // each wait out the same timeout. Nothing was learned.
         var asked: [String] = []
         let found = await DesignInstanceProbe.firstFound(["a", "b", "c"]) { probe -> [String] in
             asked.append(probe)
             if probe == "a" { throw Failed() }
+            return ["top.dut"]
+        }
+        #expect(found == nil)
+        #expect(asked == ["a"])
+    }
+
+    @Test func probesThatFindNothingGoOnToTheNext() async {
+        var asked: [String] = []
+        let found = await DesignInstanceProbe.firstFound(["a", "b", "c"]) { probe -> [String] in
+            asked.append(probe)
             return probe == "b" ? ["top.dut"] : []
         }
         #expect(found == ["top.dut"])
         #expect(asked == ["a", "b"])
+    }
+
+    @Test func noAnswerIsAskedAgainSoonerThanAMissButBacksOff() {
+        #expect(DesignInstanceProbe.retryDelay(misses: 0, failures: 1) == 2)
+        #expect(DesignInstanceProbe.retryDelay(misses: 0, failures: 2) == 4)
+        #expect(DesignInstanceProbe.retryDelay(misses: 3, failures: 9) == 30)
+        #expect(DesignInstanceProbe.retryDelay(misses: 1, failures: 0) == 10)
+        #expect(DesignInstanceProbe.retryDelay(misses: 3, failures: 0) == 40)
+        #expect(DesignInstanceProbe.retryDelay(misses: 20, failures: 0) == 300)
+    }
+
+    @Test func aFileThatMayBeAnIncludedFragmentIsAskedCheaplyAndNeverSaidUnplaced() {
+        // Headers of parameters and typedefs look the same as a testbench body: until slang
+        // shows an includer, a lookup is short and finding none says nothing.
+        #expect(DesignInstanceProbe.fragmentProbeLimit == 2)
+        #expect(DesignInstanceProbe.fragmentSearchTimeLimit == 2)
+        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: true) == false)
+        #expect(DesignInstanceProbe.reportsNotPlaced(isFragment: false) == true)
     }
 
     @Test func noneFoundIsEmpty() async {
