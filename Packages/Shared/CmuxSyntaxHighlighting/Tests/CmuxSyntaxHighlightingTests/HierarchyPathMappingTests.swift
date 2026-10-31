@@ -124,6 +124,29 @@ import Testing
         #expect(nested == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
     }
 
+    @Test func aDumpNameWithItsRangeMatchesTheSignal() async {
+        // FSDB names a 1-bit vector declared [N-1:0] with its range: `pc[0:0]`, `rst[0]`.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"] = [
+            .init(name: "clk", isScope: false), .init(name: "rst[0]", isScope: false), .init(name: "pc[0:0]", isScope: false),
+            .init(name: "pc_next", isScope: false), .init(name: "rf", isScope: true),
+        ]
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.pc",
+            designRootChildren: Self.cpuChildren,
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(result == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
+        #expect(await HierarchyPrefixInference.exists(["top_tb", "dut", "pc"], dumpChildren: Self.children(of: hierarchy)))
+        // A scope's index is part of its name: gen[0] is not gen.
+        hierarchy["top_tb.dut"]!.append(.init(name: "gen[0]", isScope: true))
+        #expect(await !HierarchyPrefixInference.exists(["top_tb", "dut", "gen"], dumpChildren: Self.children(of: hierarchy)))
+        #expect(HierarchyPrefixInference.signalName(.init(name: "dfp_wdone[0:0]", isScope: false)) == "dfp_wdone")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "data[3]", isScope: false)) == "data")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[a:0]", isScope: false)) == "x[a:0]")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "gen[0]", isScope: true)) == "gen[0]")
+    }
+
     @Test func aSignalTheDutDidNotDumpIsNotTakenFromAMonitor() async {
         // dut lost `pc` (optimised away); the monitor has a `pc` but shares only clk and pc with cpu.
         var hierarchy = Self.dump
