@@ -15,7 +15,10 @@ final class RemoteTerminalFilePreviewCoordinator {
     private var tasks: [UUID: (id: UUID, task: Task<Void, Never>)] = [:]
     /// Serves `cmux open` of dumps read in place, through the Files panel's preview path.
     private lazy var inPlaceStore = FileExplorerStore()
-    private var inPlaceRoot: FileExplorerWorkspaceRoot?
+    /// The workspace and connection ``inPlaceStore`` is bound to. Paths are
+    /// absolute, so a new folder needs no rebind (which would list it and run
+    /// git status on the host, and drop an earlier open still in flight).
+    private var inPlaceBinding: (workspaceID: UUID, connection: SSHFileExplorerConnection)?
 
     init(
         defaults: UserDefaults,
@@ -48,12 +51,16 @@ final class RemoteTerminalFilePreviewCoordinator {
 
     /// What a `cmux open` request led to, for the socket reply.
     enum CommandLineOpenOutcome: Equatable {
-        /// The download started, and the preview opens when it lands; or the
-        /// waveform viewer is opening the dump in place on the host. When
-        /// the preview can't open, a notice on the terminal says why, except
-        /// when the terminal lost focus meanwhile (then nothing opens).
+        /// Queued. A download started, and the preview opens when it lands;
+        /// when it can't open, a notice on the terminal says why. Nothing
+        /// opens, silently, if the terminal lost focus or its workspace or
+        /// connection changed meanwhile. Or the waveform viewer is opening an
+        /// FSDB dump in place on the host, whose failures show as the Files
+        /// panel's alert; a terminal with no pane for it (in a Dock) gets a
+        /// notice instead.
         case started
-        /// Not an SSH terminal, or file previews are off.
+        /// Not an SSH terminal, file previews are off, or the workspace's
+        /// Files root isn't a connected SSH root.
         case unavailable
         /// Refused by extension before anything is downloaded: the type
         /// previews only through Quick Look, so it opens with a click in the
@@ -247,13 +254,19 @@ final class RemoteTerminalFilePreviewCoordinator {
 
     /// Opens a dump the waveform viewer reads on the host (FSDB) the way the
     /// Files panel does: a placeholder lease, the helper on the host, no
-    /// download. It opens beside the terminal, in the pane to its right if any.
+    /// download. It opens in the pane to the terminal's right if there is
+    /// one, else as a tab in the terminal's pane (as the Files panel opens
+    /// files in the focused pane).
     private func openInPlaceOnHost(path: String, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
         guard case .remoteSSH(let workspaceId, let connection, let displayTarget, let rootPath, let isAvailable, let detail) =
                 FileExplorerWorkspaceRootResolver().resolve(workspace),
-              isAvailable,
-              let pane = workspace.preferredRightSideTargetPane(fromPanelId: sourcePanelID)
-                ?? workspace.paneId(forPanelId: sourcePanelID) else { return .unavailable }
+              isAvailable else { return .unavailable }
+        guard let pane = workspace.preferredRightSideTargetPane(fromPanelId: sourcePanelID)
+                ?? workspace.paneId(forPanelId: sourcePanelID) else {
+            // A Dock terminal: no workspace pane to open the viewer in.
+            workspace.terminalPanel(for: sourcePanelID)?.hostedView.showTerminalNotice(RemotePreviewNotice.couldNotOpen)
+            return .started
+        }
         let pinned = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let root = FileExplorerWorkspaceRoot.remoteSSH(
             workspaceId: workspaceId,
@@ -263,10 +276,13 @@ final class RemoteTerminalFilePreviewCoordinator {
             isAvailable: isAvailable,
             unavailableDetail: detail
         )
-        // Rebind when the workspace, connection, root folder or availability changed.
-        if inPlaceStore.workspaceRootIdentity != workspace.id || inPlaceRoot != root {
+        // Rebind only when the workspace or connection changed.
+        if inPlaceStore.workspaceRootIdentity != workspace.id
+            || inPlaceBinding?.workspaceID != workspace.id
+            || inPlaceBinding?.connection != connection
+            || inPlaceStore.provider?.isAvailable != true {
             inPlaceStore.applyWorkspaceRoot(root, sshTransport: transport)
-            inPlaceRoot = root
+            inPlaceBinding = (workspace.id, connection)
         }
         let workspaceID = workspace.id
         FileExplorerPreviewCoordinator(store: inPlaceStore).open(
@@ -274,8 +290,8 @@ final class RemoteTerminalFilePreviewCoordinator {
             workspace: workspace,
             pane: pane,
             isCurrent: { [weak workspace] in
-                guard let workspace else { return false }
-                return workspace.id == workspaceID && !workspace.isRetiredFromOwningTabManager
+                guard let workspace, !workspace.isRetiredFromOwningTabManager else { return false }
+                return workspace.owningTabManager?.selectedTabId == workspaceID
             }
         )
         return .started
