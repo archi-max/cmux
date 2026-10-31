@@ -5318,5 +5318,75 @@
       "es": "top is the Verilog term for the top-level module that Spanish hardware engineers use as is; a translated entry is still required.",
       "fr": "top is the Verilog term for the top-level module that French hardware engineers use as is; a translated entry is still required."
     }
+  },
+  "waveformDebugger.rtl.item": {
+    "source": "RTL: %@",
+    "identityLocales": {
+      "de": {
+        "reason": "RTL is the invariant hardware term (register-transfer level) and this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "RTL: %@"
+        ]
+      },
+      "ar": {
+        "reason": "RTL is the invariant hardware term (register-transfer level) and this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "RTL: %@"
+        ]
+      },
+      "es": {
+        "reason": "RTL is the invariant hardware term (register-transfer level) and this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "RTL: %@"
+        ]
+      },
+      "ko": {
+        "reason": "RTL is the invariant hardware term (register-transfer level) and this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "RTL: %@"
+        ]
+      },
+      "ja": {
+        "reason": "RTL is the invariant hardware term (register-transfer level) and this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "RTL: %@"
+        ]
+      }
+    }
+  },
+  "waveformDebugger.rtl.note": {
+    "source": "%1$@: %2$@",
+    "identityLocales": {
+      "de": {
+        "reason": "Only a file name, a colon and a message: this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "%1$@: %2$@"
+        ]
+      },
+      "ar": {
+        "reason": "Only a file name, a colon and a message: this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "%1$@: %2$@"
+        ]
+      },
+      "es": {
+        "reason": "Only a file name, a colon and a message: this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "%1$@: %2$@"
+        ]
+      },
+      "ko": {
+        "reason": "Only a file name, a colon and a message: this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "%1$@: %2$@"
+        ]
+      },
+      "ja": {
+        "reason": "Only a file name, a colon and a message: this locale writes the colon as English does. The translated entry is still required.",
+        "values": [
+          "%1$@: %2$@"
+        ]
+      }
+    }
   }
 }

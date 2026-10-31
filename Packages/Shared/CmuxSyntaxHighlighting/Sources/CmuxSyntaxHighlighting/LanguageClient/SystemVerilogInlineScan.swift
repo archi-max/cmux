@@ -120,7 +120,8 @@ public enum SystemVerilogInlineScan {
             return lines
         }
 
-        /// Whether the file opens a module, interface or program anywhere (false: a fragment).
+        /// Whether the file opens a module, interface, program, package, config or primitive
+        /// anywhere (false: an `include`d fragment).
         public mutating func opensModule() -> Bool {
             _ = lines(in: NSRange(location: units.count, length: 0))
             return lastState.openedModule
@@ -172,7 +173,7 @@ public enum SystemVerilogInlineScan {
     private enum Keyword: Sendable {
         case module, endmodule, scopeOpen, scopeClose, function, classKeyword, property
         case typedef, assertion, procedural, begin, end, forKeyword, ifKeyword, elseKeyword
-        case caseKeyword, endcase, generate, prototype, other
+        case caseKeyword, endcase, generate, prototype, designUnit, other
     }
 
     private static let keywordKinds: [String: Keyword] = {
@@ -180,13 +181,15 @@ public enum SystemVerilogInlineScan {
         for word in [
             "and", "assign", "automatic", "bit", "break", "byte", "const", "continue", "default", "do", "enum",
             "forever", "foreach", "genvar", "inout", "input", "int", "integer", "localparam", "logic", "longint",
-            "modport", "negedge", "not", "or", "output", "package", "endpackage", "packed", "parameter", "posedge",
+            "modport", "negedge", "not", "or", "output", "endpackage", "packed", "parameter", "posedge",
             "priority", "real", "reg", "repeat", "return", "shortint", "signed", "static", "struct", "union", "unique",
             "unique0", "unsigned", "var", "virtual", "void", "wait", "while", "wire", "xor", "inside", "with",
             "tri", "supply0", "supply1", "wand", "wor", "string", "chandle", "event", "time", "realtime", "type",
             "clocking", "endclocking", "disable", "iff", "null", "this", "super", "new", "let",
         ] { kinds[word] = .other }
         for word in ["module", "macromodule", "interface", "program"] { kinds[word] = .module }
+        // Design units with no lines of a module: their file is no fragment.
+        for word in ["package", "config", "primitive"] { kinds[word] = .designUnit }
         for word in ["endmodule", "endinterface", "endprogram"] { kinds[word] = .endmodule }
         for word in ["covergroup", "checker"] { kinds[word] = .scopeOpen }
         for word in ["endfunction", "endtask", "endclass", "endgroup", "endproperty", "endsequence", "endchecker", "endgenerate"] {
@@ -453,6 +456,8 @@ public enum SystemVerilogInlineScan {
                 }
             case .prototype:
                 state.inPrototype = true
+            case .designUnit:
+                state.openedModule = true
             case .typedef, .assertion, .other:
                 break
             }

@@ -136,6 +136,7 @@ enum WaveformDebugger {
     static func pageReported(_ body: [String: Any], waveform: FilePreviewPanel) {
         let box = box(waveform)
         let wasStepping = box.state.stepping
+        let wasPlaying = box.state.playing
         box.state = PageState(
             stepping: body["stepping"] as? Bool ?? false,
             playing: body["playing"] as? Bool ?? false,
@@ -152,6 +153,9 @@ enum WaveformDebugger {
             }
         } else if !box.state.stepping, wasStepping {
             stoppedStepping(waveform, editors: editors)
+        }
+        if box.state.stepping, box.state.playing, !wasPlaying {
+            WaveformDebuggerRTLStatus.playStarted(waveform)
         }
     }
 
@@ -314,15 +318,19 @@ enum WaveformDebugger {
 extension WaveformDebugger {
     /// The design instances an `include`d fragment's lines are in: slang-server places a
     /// fragment's symbol only through the file that includes it (slangDesignPaths walks there).
+    /// Nil when cancelled (nothing was learned).
     static func fragmentInstances(
         session: LanguageServerSession,
         documentURI: URL,
         probes: [(name: String, position: LSPPosition)]
-    ) async -> [String] {
+    ) async -> [String]? {
         for probe in probes.prefix(4) {
-            guard let paths = try? await session.slangDesignPaths(
+            let paths = try? await session.slangDesignPaths(
                 uri: documentURI, position: probe.position, identifier: probe.name, isInModule: false
-            ), !Task.isCancelled else { return [] }
+            )
+            if Task.isCancelled { return nil }
+            // This probe failed: the next may not.
+            guard let paths else { continue }
             var instances: [String] = []
             for path in paths {
                 let segments = HierarchyPathMapping.segments(path)

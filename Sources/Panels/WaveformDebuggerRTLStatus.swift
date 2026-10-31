@@ -38,23 +38,44 @@ enum WaveformDebuggerRTLStatus {
     private static let reports = NSMapTable<FilePreviewLanguageFeatures, Report>.weakToStrongObjects()
     private static let sent = NSMapTable<FilePreviewPanel, Sent>.weakToStrongObjects()
 
+    /// The editors that follow `waveform`: those of its workspace whose viewer it is.
+    private static func editors(of waveform: FilePreviewPanel) -> [FilePreviewLanguageFeatures] {
+        FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId).filter {
+            WaveformSourceLink.waveformPanel(near: $0.linkPanel) === waveform
+        }
+    }
+
     /// `editor` finished with the cycle at `time`: it showed values (`drew`), or not, for `reasons`.
     static func editorDone(_ editor: FilePreviewLanguageFeatures, waveform: FilePreviewPanel, time: Int64, drew: Bool, reasons: [String: Reason]) {
         reports.setObject(Report(time: time, drew: drew, reasons: reasons), forKey: editor)
         report(waveform)
+        ackIfAllShown(waveform)
+    }
+
+    /// Every editor that follows `waveform` is at the same cycle: the page may move on
+    /// (it ignores an ack for a cycle it isn't waiting on).
+    private static func ackIfAllShown(_ waveform: FilePreviewPanel) {
         guard WaveformDebugger.isStepping(waveform) else { return }
-        // Every linked editor is at this cycle now: the page may move on.
-        let editors = FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId)
-        guard editors.allSatisfy({ reports.object(forKey: $0)?.time == time }) else { return }
+        let times = editors(of: waveform).map { reports.object(forKey: $0)?.time }
+        guard let first = times.first, let time = first, times.allSatisfy({ $0 == time }) else { return }
         let page = waveform.nativeViewSessions.waveform
         Task { _ = await page.callDebugger("rtlShown", argument: ["time": NSNumber(value: time)]) }
     }
 
-    /// Play started on `waveform`. (Not yet implemented.)
-    static func playStarted(_ waveform: FilePreviewPanel) {}
+    /// Play started on `waveform`: what its editors drew before doesn't count for the cycles to come.
+    static func playStarted(_ waveform: FilePreviewPanel) {
+        for editor in editors(of: waveform) { reports.removeObject(forKey: editor) }
+        report(waveform)
+    }
 
-    /// `editor` closed or stopped linking. (Not yet implemented.)
-    static func editorGone(_ editor: FilePreviewLanguageFeatures) {}
+    /// `editor` closed or stopped linking: the viewers it followed no longer wait for it.
+    static func editorGone(_ editor: FilePreviewLanguageFeatures) {
+        reports.removeObject(forKey: editor)
+        for case let waveform as FilePreviewPanel in sent.keyEnumerator().allObjects {
+            report(waveform)
+            ackIfAllShown(waveform)
+        }
+    }
 
     /// The page forgot what it was told (stepping stopped, or a new page).
     static func forget(_ waveform: FilePreviewPanel) {
@@ -64,7 +85,7 @@ enum WaveformDebuggerRTLStatus {
     /// Sends the strip's status when it changed.
     static func report(_ waveform: FilePreviewPanel) {
         guard WaveformDebugger.isStepping(waveform) else { return }
-        let editors = FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId)
+        let editors = editors(of: waveform)
         let mine = sent.object(forKey: waveform) ?? Sent()
         sent.setObject(mine, forKey: waveform)
         let page = waveform.nativeViewSessions.waveform
@@ -86,24 +107,29 @@ enum WaveformDebuggerRTLStatus {
         var drawn: [String] = []
         var notes: [String] = []
         var firstReason: String?
+        var anyReported = false
+        let waiting = String(localized: "waveformDebugger.rtl.waiting", defaultValue: "waiting for the editor")
         for editor in editors {
             let file = (editor.filePath as NSString).lastPathComponent
             guard let report = reports.object(forKey: editor) else {
-                notes.append(file + ": " + String(localized: "waveformDebugger.rtl.waiting", defaultValue: "waiting for the editor"))
+                notes.append(note(file, waiting))
                 continue
             }
+            anyReported = true
             if report.drew { drawn.append(file) }
             for (_, reason) in report.reasons.sorted(by: { $0.key < $1.key }) {
                 let text = self.text(of: reason, file: file)
-                notes.append(file + ": " + text)
-                if firstReason == nil, !report.drew { firstReason = "RTL: " + text }
+                notes.append(note(file, text))
+                if firstReason == nil, !report.drew { firstReason = rtl(text) }
             }
         }
         let text: String
         if drawn.count == 1 {
-            text = "RTL: " + drawn[0]
+            text = rtl(drawn[0])
         } else if drawn.count > 1 {
             text = String(format: String(localized: "waveformDebugger.rtl.files", defaultValue: "RTL: %@ files"), String(drawn.count))
+        } else if !anyReported {
+            text = rtl(waiting)
         } else {
             text = firstReason ?? String(
                 localized: "waveformDebugger.rtl.noValues",
@@ -112,6 +138,16 @@ enum WaveformDebuggerRTLStatus {
         }
         let tooltip = (drawn + notes).joined(separator: "\n")
         return ["text": text, "tooltip": tooltip, "ok": !drawn.isEmpty, "wait": waitsForEditor]
+    }
+
+    /// The strip's item: "RTL: " and what follows.
+    private static func rtl(_ text: String) -> String {
+        String(format: String(localized: "waveformDebugger.rtl.item", defaultValue: "RTL: %@"), text)
+    }
+
+    /// A tooltip line about one file.
+    private static func note(_ file: String, _ text: String) -> String {
+        String(format: String(localized: "waveformDebugger.rtl.note", defaultValue: "%1$@: %2$@"), file, text)
     }
 
     private static func text(of reason: Reason, file: String) -> String {
