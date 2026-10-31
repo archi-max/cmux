@@ -102,6 +102,8 @@
         for (;;) {
           if (!state.clock) { state.edges = null; return null; }
           const clock = state.clock;
+          // A reload since: this clock belongs to the closed backend's netlist.
+          if (host.currentBackend !== backend) { throw Object.assign(new Error('closed'), { cmuxClosed: true }); }
           const fast = host.signalPosedges(clock, MAX_EDGES);
           let edges;
           if (fast) {
@@ -182,15 +184,19 @@
   }
 
   async function start() {
+    const backend = host.currentBackend;
     let edges;
     try {
       edges = await ensureEdges();
     } catch (error) {
+      // A reload closed the backend mid-read: it owns the page now, and says nothing.
+      if (error && error.cmuxClosed || host.currentBackend !== backend) { return null; }
       // Past MAX_EDGES (or the reader failed): say so rather than stall or run out of memory.
       host.log(error);
       window.cmuxUI.toast(S().debuggerTooManyEdges || '', 'warning');
       return null;
     }
+    if (host.currentBackend !== backend) { return null; }
     if (!edges) {
       window.cmuxUI.toast(S().debuggerNoClock || '', 'warning');
       return null;
