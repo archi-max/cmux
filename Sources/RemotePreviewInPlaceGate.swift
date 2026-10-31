@@ -39,4 +39,20 @@ enum RemotePreviewInPlaceGate {
     ) -> Bool {
         isSelected && !isRetired && workspaceConfiguration == configuration
     }
+
+    /// The SSH identity of a workspace's remote configuration, without the
+    /// relay session (port, token, socket), which can be rewritten while the
+    /// SSH connection stays the same. Nil when the transport isn't SSH.
+    static func sshIdentity(
+        transportIsSSH: Bool,
+        destination: String,
+        port: Int?,
+        identityFile: String?,
+        sshOptions: [String]
+    ) -> SSHFileExplorerConnection? {
+        guard transportIsSSH else { return nil }
+        return SSHFileExplorerConnection(
+            destination: destination, port: port, identityFile: identityFile, sshOptions: sshOptions
+        )
+    }
 }
