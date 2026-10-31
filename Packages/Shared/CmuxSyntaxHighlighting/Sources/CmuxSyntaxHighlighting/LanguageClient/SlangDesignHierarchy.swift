@@ -134,7 +134,7 @@ extension LanguageServerSession {
         for directive in Self.includeDirectiveLocations(in: text) {
             var target = directive.target
             if target.hasPrefix("`") {
-                guard macros < Self.macroIncludeLimit else { continue }
+                guard macros < Self.macroIncludeLimit, !Task.isCancelled else { continue }
                 macros += 1
                 // A macro slang can't expand here is no evidence either way.
                 guard let hover = try? await hover(uri: declaringURI, position: directive.position),

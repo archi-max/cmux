@@ -182,7 +182,8 @@ struct SlangIncludeFragmentTests {
         try await Self.withFixture { fixture in
             // `.clk` of `dut`: sub's port. sub has a macro include, but of defs.svh, not of this fragment.
             let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 10), identifier: "clk")
-            #expect(!paths.contains("tb_wrapper.dut.clk"))
+            // Not dut's port: the walk finds the includer's clk.
+            #expect(paths == ["tb_wrapper.clk"])
         }
     }
 
