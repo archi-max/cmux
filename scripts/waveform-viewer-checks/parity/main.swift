@@ -727,6 +727,30 @@ extension Harness {
         """) { r in
           check(r["afterReload"] as? Bool == true, "Auto Reload survives a reload")
           check(r["afterOpen"] as? Bool == false, "another file opened in the panel starts with Auto Reload off (the setting)")
+          self.phaseT()
+        }
+      }
+    }
+  }
+
+  // A data request the old viewer sends just after a reload starts (a queued
+  // add, a restore's rows) reaches a backend that is still opening. It must
+  // not fail the reload: the old viewer is gone, and the reloaded one asks
+  // again for what it shows.
+  func phaseT() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        let errorsBefore = self.errors.count
+        self.js("""
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({});
+        window.cmuxWaveform.fromWebview({ command: 'fetchDataFromFile', requestList: [{ type: 'signal', signalId: 0 }] });
+        await sleep(1500);
+        R.rows = document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;
+        """) { r in
+          check(self.errors.count == errorsBefore, "a request during a reload's open fails nothing (\(self.errors.suffix(from: errorsBefore)))")
+          check(r["rows"] as? Int == 1, "and the reload brings the row back (rows drawn \(r["rows"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
