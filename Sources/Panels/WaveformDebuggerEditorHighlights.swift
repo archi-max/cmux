@@ -105,6 +105,8 @@ enum WaveformDebuggerEditorHighlights {
     private static var cones: [ConeKey: [SlangConeEntry]] = [:]
     /// When a cone lookup last failed, per server and signal path.
     private static var failedCones: [ConeKey: Date] = [:]
+    /// Bumped whenever cones are forgotten, so a lookup in flight across it is not cached.
+    private static var coneGeneration = 0
     /// Seconds before a failed cone lookup is tried again.
     static var failedConeRetryInterval: TimeInterval = 30
     /// The selected row's declaration and driver lines, per text view (drawn over the cycle highlights).
@@ -195,14 +197,18 @@ enum WaveformDebuggerEditorHighlights {
                     if let failedAt = failedCones[key], Date().timeIntervalSince(failedAt) < failedConeRetryInterval { continue }
                     guard requests < maxConeRequests else { continue }
                     requests += 1
+                    let generation = coneGeneration
                     guard let found = try? await session.slangDriverCone(path) else {
-                        failedCones[key] = Date()
+                        if generation == coneGeneration { failedCones[key] = Date() }
                         continue
                     }
-                    failedCones[key] = nil
                     guard !Task.isCancelled else { return }
-                    if cones.count >= maxCachedCones { cones.removeAll() }
-                    cones[key] = found
+                    // An answer from before a recompile is used this once but not kept.
+                    if generation == coneGeneration {
+                        failedCones[key] = nil
+                        if cones.count >= maxCachedCones { cones.removeAll() }
+                        cones[key] = found
+                    }
                     cone = found
                 }
                 for child in WaveformCycleHighlights.drivingChildInstances(cone: cone ?? [], designInstance: instance.design) {
@@ -290,8 +296,18 @@ enum WaveformDebuggerEditorHighlights {
 
     /// The design changed (recompiled, another top level): the cached driver cones may not hold.
     static func forgetCones() {
+        coneGeneration += 1
         cones.removeAll()
         failedCones.removeAll()
+    }
+
+    /// `session` compiled the design again (it published diagnostics): its cones may have changed.
+    static func recompiled(_ session: LanguageServerSession) {
+        let server = ObjectIdentifier(session)
+        guard cones.keys.contains(where: { $0.server == server }) || failedCones.keys.contains(where: { $0.server == server }) else { return }
+        coneGeneration += 1
+        cones = cones.filter { $0.key.server != server }
+        failedCones = failedCones.filter { $0.key.server != server }
     }
 
     // MARK: Selected row → editor
