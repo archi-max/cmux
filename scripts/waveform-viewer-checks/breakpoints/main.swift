@@ -21,6 +21,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var web: WKWebView!
   var lineEvents: [[String: Any]] = []
   var listEvents: [[[String: Any]]] = []
+  var movedEvents: [[String: Any]] = []
+  var openedCount = 0
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -262,9 +264,162 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(shown?.contains("Break When Changes") == true && shown?.contains("Break When Equals…") == true,
            "a signal row's context menu has both: \(String(describing: shown))")
 
+    await runReviewChecks()
     await runLineChecks()
     print(failures == 0 ? "BREAKPOINT CHECKS PASSED" : "BREAKPOINT CHECKS FAILED: \(failures)")
     snap()
+  }
+
+  func removeAll() async {
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
+  }
+
+  func add(_ name: String, _ kind: String = "change", value: String? = nil) async -> Int? {
+    let v = value.map { ", value: \"\($0)\"" } ?? ""
+    let bp = await call("return cmuxWaveform.debugger.addBreakpoint({ path: ['top', '\(name)'], kind: '\(kind)'\(v) })") as? [String: Any]
+    return bp?["id"] as? Int
+  }
+
+  func setMarker(_ time: Int) async {
+    _ = await call("cmuxWaveform.link.setMarker(\(time)); return null")
+    _ = await marker(time)
+  }
+
+  func waitForPause(_ tries: Int) async -> Bool {
+    var playing = true
+    for _ in 0..<tries where playing {
+      await sleep(50)
+      playing = (await dbg("state()"))?["playing"] as? Bool ?? false
+    }
+    return !playing
+  }
+
+  /// The B1 review's checks: landings from mid-cycle both ways, Play waiting for the editors,
+  /// equals hitting only when it becomes equal, the wellen change cap, play never moving back,
+  /// a hit after the last posedge, the clock with no edges, and what is said or kept once.
+  func runReviewChecks() async {
+    await removeAll()
+    // Reverse from mid-cycle 50: pulse rose at 41, which lands on 45 (the posedge before the marker).
+    _ = await add("pulse")
+    await setMarker(50)
+    var (hit, at) = await go(-1, expect: 45)
+    expect(hit?["time"] as? Int == 41 && at == 45, "reverse from mid-cycle 50: the rise at 41, on 45: \(String(describing: hit)), \(String(describing: at))")
+    await removeAll()
+    // Forward from 54, past the change at 52 but before the posedge it lands on: still 55.
+    _ = await add("irq")
+    await setMarker(54)
+    (hit, at) = await go(1, expect: 55)
+    expect(hit?["time"] as? Int == 52 && at == 55, "forward from 54: the rise at 52 lands ahead, on 55: \(String(describing: hit)), \(String(describing: at))")
+
+    // Play waiting for the editors (the app's default) stops at a hit too; Stop clears the hit mark.
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    _ = await call("cmuxWaveform.debugger.setRtlStatus({ wait: true, ok: true, text: '' }); return null")
+    _ = await dbg("play({ rate: 50 })")
+    let paused = await waitForPause(100)
+    let waited = await marker(55)
+    expect(paused && waited == 55, "play waiting for the editors stops on 55, irq's first hit: \(String(describing: waited))")
+    expect((await list()).first?["hit"] as? Bool == true, "and marks irq as hit: \(await list())")
+    _ = await call("cmuxWaveform.debugger.setRtlStatus({ wait: false, ok: true, text: '' }); return null")
+    _ = await dbg("stop()")
+    expect((await list()).allSatisfy { $0["hit"] as? Bool == false }, "Stop clears the hit mark: \(await list())")
+    await removeAll()
+
+    // Equals hits when the value becomes equal, not on each change that stays equal: mode == 'b?1
+    // is 1 at 105, 3 at 205 (still equal), 2 at 305, 1 at 405.
+    let mode = await add("mode", "equals", value: "'b?1")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    var landed: [Int] = []
+    for expected in [105, 405] {
+      let (h, _) = await go(1, expect: expected)
+      landed.append(h?["time"] as? Int ?? -1)
+    }
+    let afterMode = await dbg("continue({ dir: 1 })")
+    expect(landed == [105, 405] && afterMode?["reason"] as? String == "end", "mode == 'b?1: 105 and 405 only: \(landed), \(String(describing: afterMode?["reason"]))")
+    // The same value written another way is the same breakpoint.
+    let again = await add("mode", "equals", value: "2'b?1")
+    let data1 = await add("data", "equals", value: "'h5a")
+    let data2 = await add("data", "equals", value: "90")
+    expect(again == mode && data1 != nil && data2 == data1, "equal values are one breakpoint: \(String(describing: [mode, again, data1, data2]))")
+    await removeAll()
+
+    // The wellen backend honours the cap: a signal past it is not built (or sent) at all.
+    let capped = await call("""
+      const v = await cmuxWaveform.host.findLinkItem(['top', 'clk'], true);
+      const few = await cmuxWaveform.host.signalChanges(v, 10);
+      const all = await cmuxWaveform.host.signalChanges(v, 1000);
+      return [few === null, Array.isArray(all) ? all.length : -1];
+    """) as? [Any]
+    expect(capped?.first as? Bool == true && (capped?.last as? Int ?? 0) > 200, "clk's 201 changes: null past a cap of 10, all of them under 1000: \(String(describing: capped))")
+
+    // No changes yet (the backend not ready) is not "changes too often", and is asked again.
+    _ = await add("state")
+    _ = await call("""
+      const real = cmuxWaveform.host.signalChanges;
+      cmuxWaveform.host.signalChanges = (v, m) => { cmuxWaveform.host.signalChanges = real; return Promise.resolve(undefined); };
+      return null
+    """)
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    await clearToasts()
+    _ = await dbg("continue({ dir: 1 })")
+    expect(!(await toasts()).contains { $0.contains("too often") }, "no changes yet is not too many: \(await toasts())")
+    (hit, _) = await go(1, expect: 95)
+    expect(hit?["time"] as? Int == 95, "and they are read on the next continue: \(String(describing: hit))")
+
+    // Play never moves back: a stop found after play has passed it is not jumped back to.
+    await removeAll()
+    _ = await call("""
+      const real = cmuxWaveform.host.signalChanges;
+      window.cmuxRealSignalChanges = real;
+      cmuxWaveform.host.signalChanges = (v, m) => new Promise((r) => setTimeout(r, 250)).then(() => real(v, m));
+      return null
+    """)
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    movedEvents.removeAll()
+    _ = await dbg("play({ rate: 100 })")
+    _ = await add("state")
+    let stopped = await waitForPause(100)
+    _ = await call("cmuxWaveform.host.signalChanges = window.cmuxRealSignalChanges; return null")
+    let back = movedEvents.filter { ($0["movedTo"] as? Int ?? 0) < ($0["left"] as? Int ?? 0) }
+    let end = await marker()
+    expect(stopped && back.isEmpty && (end ?? 0) > 95, "play never moves back to a hit it passed: \(back), ended at \(String(describing: end))")
+    await removeAll()
+
+    // A change after the last posedge has no cycle to land on: said so.
+    _ = await add("late")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    await clearToasts()
+    let late = await dbg("continue({ dir: 1 })")
+    expect(late?["reason"] as? String == "afterLastEdge", "a change at 1000, after the last posedge (995): \(String(describing: late?["reason"]))")
+    expect((await toasts()).contains("Breakpoint: top.late changes at 1,000 ns, after the last clock edge."), "and says so: \(await toasts())")
+
+    // A clock that never rises: said as that, not as no clock.
+    _ = await dbg("setClock({ path: ['top', 'busy'] })")
+    let flat = await dbg("continue({ dir: 1 })")
+    expect(flat?["reason"] as? String == "noEdges", "a clock with no edges: \(String(describing: flat?["reason"]))")
+    _ = await dbg("setClock({ path: ['top', 'clk'] })")
+    await removeAll()
+
+    // Break When Equals… whose prompt fails leaves no unhandled rejection.
+    let unhandled = await call("""
+      const reasons = [];
+      const onRejection = (e) => { reasons.push(String(e.reason)); e.preventDefault(); };
+      window.addEventListener('unhandledrejection', onRejection);
+      const prompt = window.cmuxUI.prompt;
+      window.cmuxUI.prompt = () => Promise.reject(new Error('prompt failed'));
+      const v = await cmuxWaveform.host.findLinkItem(['top', 'data'], true);
+      const item = window.cmuxDebugger.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId }).find((i) => i.label === 'Break When Equals…');
+      item.run();
+      await new Promise((r) => setTimeout(r, 100));
+      window.cmuxUI.prompt = prompt;
+      window.removeEventListener('unhandledrejection', onRejection);
+      return reasons;
+    """) as? [String]
+    expect(unhandled == [], "a failed prompt is caught: \(String(describing: unhandled))")
   }
 
   /// Line breakpoints (cmux sends them: the editor's gutter and F9): any of the line's signals changing hits.
@@ -340,6 +495,25 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let (hit, _) = await go(1, expect: 605)
     expect(hit?["time"] as? Int == 605, "a restored equals breakpoint searches: \(String(describing: hit))")
     expect(await toasts().contains("top.gone is not in this waveform."), "a restored one whose signal is gone says so when searched: \(await toasts())")
+    await clearToasts()
+    _ = await dbg("continue({ dir: -1 })")
+    expect(!(await toasts()).contains("top.gone is not in this waveform."), "once, not on every continue: \(await toasts())")
+
+    // A reload clears the hit mark, and reads an equals value again for the signal's new width
+    // (top.data is 16 bits in breakpoints-wide.vcd).
+    _ = await go(1, expect: 605)
+    let wide = waveURL.deletingLastPathComponent().appendingPathComponent("breakpoints-wide.vcd")
+    let wideURL = scheme.serve(fileURL: wide)
+    let wideSize = (try? FileManager.default.attributesOfItem(atPath: wide.path)[.size] as? NSNumber)?.intValue ?? 0
+    let opened = openedCount
+    _ = await call("cmuxWaveform.reload({ url: '\(wideURL.absoluteString)', size: \(wideSize) }); return null")
+    for _ in 0..<100 where openedCount == opened { await sleep(50) }
+    expect(openedCount > opened, "reloaded with the wide dump")
+    expect((await list()).allSatisfy { $0["hit"] as? Bool == false }, "a reload clears the hit mark: \(await list())")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    let (wideHit, _) = await go(1, expect: 605)
+    expect(wideHit?["time"] as? Int == 605, "'h5a found in the 16-bit data: \(String(describing: wideHit))")
   }
 
   func start() {
@@ -373,6 +547,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     if type == "debugger", body["event"] as? String == "lineBreakpoint" { lineEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "breakpoints" { listEvents.append(body["items"] as? [[String: Any]] ?? []); return }
+    if type == "debugger", body["event"] as? String == "moved" { movedEvents.append(body); return }
     if ["debugger", "event", "sessionState", "log", "keyState", "context", "signalData"].contains(type) { return }
     print("[\(m.name)]", type)
     if type == "ready" {
@@ -381,6 +556,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
       web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(Harness.strings)})")
     } else if type == "opened" {
+      openedCount += 1
       guard !checksStarted else { return }
       checksStarted = true
       Task { @MainActor in await self.runChecks() }
@@ -401,6 +577,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerNoHitBack:'No breakpoint hit before the start.', debuggerNoBreakpoints:'No breakpoints are enabled.',
    debuggerBadValue:'“%1$@” is not a value for a %2$@-bit signal.', debuggerTooManyChanges:'%@ changes too often to search here.',
    debuggerBreakpointSignalGone:'%@ is not in this waveform.',
+   debuggerHitAfterLastEdge:'Breakpoint: %1$@ at %2$@, after the last clock edge.',
+   debuggerNoEdges:'The clock never rises.', debuggerNoClock:'No clock.',
    debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
   """
 
