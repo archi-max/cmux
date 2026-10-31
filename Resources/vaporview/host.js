@@ -96,6 +96,8 @@
 
   function fail(error) {
     if (error && error.cmuxClosed) { return; }
+    // During a reload (its open, a worker crash): what was pressed for it is void.
+    window.cmuxCommands.reloadFailed();
     const detail = String((error && error.message) || error);
     showMessage(strings.openFailed, detail);
     toNative({ type: 'error', message: detail });
@@ -700,7 +702,7 @@
       if (!(await openBackend(generation))) { return; }
       sendInit();
     } catch (error) {
-      if (generation === loadGeneration) { window.cmuxCommands.reloadFailed(); fail(error); }
+      if (generation === loadGeneration) { fail(error); }
     }
   }
 

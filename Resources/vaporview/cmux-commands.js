@@ -810,11 +810,15 @@
   // reloading viewer has no rows to apply a view to, and its restore (until
   // the viewer answers it) would overwrite one: they run once it is back.
   let waitingHistory = [];
+  // The reload in progress failed (or its viewer did): until the next reload
+  // or open, nothing is shown to undo, so presses are dropped.
+  let failedReload = false;
   // The path the waiting history belongs to.
   let historyPath = null;
 
   // Whether a view was applied (its answer then runs the next waiting one).
   function undo(stack, other, type) {
+    if (failedReload) { return false; }
     if (reloading || restorePending) {
       if (waitingHistory.length < 50) { waitingHistory.push(type); }
       return false;
@@ -1250,6 +1254,7 @@
     frameGone = false;
     keptIsCurrent = false;
     waitingHistory = [];
+    failedReload = false;
     historyPath = config.path || null;
     resetApplying();
     pendingReload = false;
@@ -1297,8 +1302,11 @@
     // What was posted to the old viewer is answered (if at all) before its unload.
     resetApplying();
     // A reload of another path: what was pressed for the old one doesn't carry.
+    // Another path is another document (VaporView keeps a history per
+    // document): neither the presses nor the history carry over.
     const path = host().config.path || null;
-    if (path !== historyPath) { waitingHistory = []; historyPath = path; }
+    if (path !== historyPath) { waitingHistory = []; undoStack = []; redoStack = []; historyPath = path; }
+    failedReload = false;
   }
 
   window.cmuxCommands = {
@@ -1307,7 +1315,7 @@
     frameUnloaded: () => { if (reloading) { frameGone = true; } },
     // The reload's file didn't open: an Undo pressed for it would apply to
     // whatever a later reload shows.
-    reloadFailed: () => { waitingHistory = []; },
+    reloadFailed: () => { if (reloading) { waitingHistory = []; failedReload = true; } },
     // A reload or restore has not come back yet (Undo/Redo wait for it).
     isRestoring: () => reloading || restorePending,
     init,
