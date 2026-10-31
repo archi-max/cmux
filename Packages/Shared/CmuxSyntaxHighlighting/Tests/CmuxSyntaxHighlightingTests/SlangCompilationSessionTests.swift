@@ -73,6 +73,22 @@ import Testing
         await session.shutdown()
     }
 
+    @Test func exploreModeOutlivesARestartButNotAConfigReload() async throws {
+        guard let (session, root) = try await Self.session() else { return }
+        try FileManager.default.createDirectory(atPath: root + "/.slang/local", withIntermediateDirectories: true)
+        try "{\"build\": \"\(root)/build.f\"}\n".write(toFile: root + "/.slang/local/server.json", atomically: true, encoding: .utf8)
+        try await session.restart(keepingCompilation: false)
+        #expect(try await Self.tops(session) == ["top"])
+        try await session.slangExplore()
+        #expect(try await Self.tops(session).isEmpty)
+        #expect(await session.slangCompilationTarget == nil)
+        try await session.restart()
+        #expect(try await Self.tops(session).isEmpty)
+        try await session.restart(keepingCompilation: false)
+        #expect(try await Self.tops(session) == ["top"])
+        await session.shutdown()
+    }
+
     @Test func theEmptyPathReturnsToExploreMode() async throws {
         guard let (session, root) = try await Self.session() else { return }
         try await session.slangSetTopLevel(root + "/top.sv")

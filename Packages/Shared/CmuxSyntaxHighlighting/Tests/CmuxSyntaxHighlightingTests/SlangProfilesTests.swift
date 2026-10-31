@@ -19,6 +19,21 @@ import Testing
         #expect(file.sources == ["rtl/cpu.sv", "pkg/my types.sv", "hvl/top_tb.sv"])
     }
 
+    @Test func aBackslashAtTheEndOfALineContinuesIt() {
+        let file = SlangBuildFile.parse("--top \\\ntb_top +incdir+a \\\nrtl/cpu.sv\r\n")
+        #expect(file.tops == ["tb_top"])
+        #expect(file.sources == ["rtl/cpu.sv"])
+    }
+
+    @Test func aRootWhoseNameStartsWithADotIsSearched() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("slang-dot-\(UUID().uuidString)/.hidden proj").path
+        defer { try? FileManager.default.removeItem(atPath: (root as NSString).deletingLastPathComponent) }
+        try FileManager.default.createDirectory(atPath: root + "/sim", withIntermediateDirectories: true)
+        try "--top w_tb\n".write(toFile: root + "/sim/w.f", atomically: true, encoding: .utf8)
+        let (_, output) = try SlangWorkspaceRootTests.run(SlangProfileCatalog.listingCommand(root: root), shell: "/bin/sh")
+        #expect(SlangProfileCatalog.parseListing(output).profiles.map(\.name) == ["w"])
+    }
+
     @Test func slashesInsidePathsAndEscapesStayWords() {
         let file = SlangBuildFile.parse("-DMSG=\\\"hi\\\" /abs/a.sv\n#comment line\nb.sv")
         #expect(file.sources == ["/abs/a.sv", "b.sv"])
@@ -64,16 +79,18 @@ import Testing
         try "--top s_tb\n".write(toFile: home + "/.config/cmux-slang/my proj.f", atomically: true, encoding: .utf8)
         try Data().write(to: URL(fileURLWithPath: root + "/.slang/server.json"))
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", SlangProfileCatalog.listingCommand(root: root)]
-        process.environment = ["HOME": home, "PATH": "/usr/bin:/bin"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let remoteListing = SlangProfileCatalog.parseListing(String(decoding: data, as: UTF8.self))
+        var outputs: [String] = []
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/csh"] {
+            let (status, output) = try SlangWorkspaceRootTests.run(
+                SlangProfileCatalog.listingCommand(root: root),
+                shell: shell,
+                environment: ["HOME": home, "PATH": "/usr/bin:/bin"]
+            )
+            #expect(status == 0, "\(shell)")
+            outputs.append(output)
+        }
+        #expect(Set(outputs).count == 1)
+        let remoteListing = SlangProfileCatalog.parseListing(outputs[0])
         let remote = remoteListing.profiles
         #expect(remoteListing.configs == [.init(path: root + "/.slang/server.json", health: .empty)])
         let tops = Set(remote.flatMap(\.buildFile.tops))
