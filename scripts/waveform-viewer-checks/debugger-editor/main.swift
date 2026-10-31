@@ -582,8 +582,73 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(page.rtlStatuses.last?["wait"] as? Bool == false && page.rtlStatuses.last?["ok"] as? Bool == false,
            "the last one closed: play doesn't wait: \(String(describing: page.rtlStatuses.last))")
 
+    await runScrollChecks()
     print(failures == 0 ? "DEBUGGER EDITOR CHECKS PASSED" : "DEBUGGER EDITOR CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
+}
+
+/// A long module scrolled at one cycle: each refresh draws the lines on screen. Wherever a changed
+/// signal or a driver line is lit, the module's other lines on screen are dimmed, and nothing
+/// from the screen before stays.
+@MainActor func runScrollChecks() async {
+    var source = "module core(input logic clk);\n  logic [7:0] count, limit;\n  logic done, busy;\n"
+    for k in 0..<40 { source += "  // filler \(k)\n" }
+    source += "  always_ff @(posedge clk) begin\n    count <= count + 1;\n    done <= count == limit;\n  end\nendmodule\n"
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+    textView.string = source
+    let text = source as NSString
+    let all = SystemVerilogInlineScan.lines(in: source, range: NSRange(location: 0, length: text.length))
+    let editor = FilePreviewLanguageFeatures(textView: textView, path: "/rtl/core.sv")
+    FilePreviewLanguageFeatures.all = [editor]
+    let waveform = FilePreviewPanel()
+    WaveformSourceLink.waveform = waveform
+    let page = waveform.nativeViewSessions.waveform
+    page.previousTimes = [25: 15]
+    let scope = "TOP.tb.core"
+    let now = ["count": "05", "limit": "09", "done": "0", "busy": "1", "clk": "1"]
+    WaveformSourceLink.values = [
+        25: Dictionary(uniqueKeysWithValues: now.map { (scope + "." + $0.key, $0.value) }),
+        15: Dictionary(uniqueKeysWithValues: ["count": "04", "limit": "09", "done": "0", "busy": "1", "clk": "1"].map { (scope + "." + $0.key, $0.value) }),
+    ]
+    let layout = textView.layoutManager!
+    func dimmed(_ line: Int) -> Bool {
+        layout.temporaryAttribute(.foregroundColor, atCharacterIndex: all[line].contentRange.location, effectiveRange: nil) != nil
+    }
+    func lit(_ line: Int) -> Bool {
+        let range = all[line].contentRange
+        return (0..<range.length).contains { layout.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location + $0, effectiveRange: nil) != nil }
+    }
+    func draw(_ visible: Range<Int>) async {
+        let lines = Array(all[visible])
+        var shownValues: [String: String] = [:]
+        for line in lines { for id in line.identifiers { if let v = now[id.name] { shownValues[id.name] = v } } }
+        WaveformDebuggerEditorHighlights.valuesShown(.init(
+            editor: editor, textView: textView, lines: lines, waveform: waveform, time: 25,
+            values: ["core": shownValues], instances: ["core": .init(design: "tb.core", dump: scope)]
+        ))
+        try? await Task.sleep(nanoseconds: 300_000_000)
+    }
+    let bottom = (all.count - 6)..<all.count
+    // The top: count changed and is declared here, but its driver line is off screen.
+    await draw(0..<12)
+    let topDimmed = (0..<12).filter { dimmed($0) }
+    expect(lit(1) && topDimmed == Array(0..<12),
+           "scrolled to the top: count is lit, the module's other lines on screen are dimmed: lit \(lit(1)), dimmed \(topDimmed)")
+    // Scrolled down to the always_ff at the same cycle (no step): its driver line is lit, the rest dimmed,
+    // and the top's dimming is gone.
+    await draw(bottom)
+    let driver = all.firstIndex { text.substring(with: $0.contentRange).contains("count <= count") }!
+    let bottomDimmed = bottom.filter { dimmed($0) }
+    let stale = (0..<12).filter { dimmed($0) || lit($0) }
+    expect(lit(driver) && !dimmed(driver) && bottomDimmed == bottom.filter { $0 != driver },
+           "scrolled to the bottom: the driver line is lit, the other lines dimmed: dimmed \(bottomDimmed), driver \(driver)")
+    expect(stale.isEmpty, "nothing from the top's screen stays: \(stale)")
+    // Fillers only: nothing changed on screen, so nothing is dimmed.
+    await draw(14..<30)
+    let middleDimmed = (0..<all.count).filter { dimmed($0) }
+    expect(middleDimmed.isEmpty, "a screen with nothing lit dims nothing: \(middleDimmed)")
+    FilePreviewLanguageFeatures.all = []
+    WaveformDebuggerRTLStatus.editorGone(editor)
 }
 
 // No window and no Dock icon; the app only gives the text view its run loop.
