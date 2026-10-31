@@ -536,7 +536,7 @@ extension Harness {
         await sleep(800);
         R.redone = drawn();
         """) { r in
-          check(r["reloaded"] as? Int == 1, "an undo during the reload changes nothing (rows drawn \(r["reloaded"] ?? "nil"))")
+          check(r["reloaded"] as? Int == 0, "an undo during the reload waits for it, then takes back the add (rows drawn \(r["reloaded"] ?? "nil"))")
           check(r["undone"] as? Int == 0, "after the reload, undo removes the added signal (rows drawn \(r["undone"] ?? "nil"))")
           check(r["redone"] as? Int == 1, "and redo brings it back (rows drawn \(r["redone"] ?? "nil"))")
           self.phaseO()
@@ -789,7 +789,7 @@ extension Harness {
         await sleep(800);
         R.redone = drawn();
         """) { r in
-          check(r["reloaded"] as? Int == 1, "an undo while the restore resolves changes nothing (rows drawn \(r["reloaded"] ?? "nil"))")
+          check(r["reloaded"] as? Int == 0, "an undo while the restore resolves waits for it, then takes back the add (rows drawn \(r["reloaded"] ?? "nil"))")
           check(r["undone"] as? Int == 0 && r["redone"] as? Int == 1,
                 "afterwards undo/redo still work (rows drawn \(r["undone"] ?? "nil") / \(r["redone"] ?? "nil"))")
           self.phaseV()
@@ -1178,6 +1178,76 @@ extension Harness {
           check(r["init"] as? String == "ok", "the worker starts")
           check(r["beforeInit"] as? String == "not open" && r["beforeLoad"] as? String == "not open" && r["values"] as? String == "not open",
                 "and answers \"not open\" before a file is loaded (\(r["beforeInit"] ?? "nil"), \(r["beforeLoad"] ?? "nil"), \(r["values"] ?? "nil"))")
+          self.phaseAF()
+        }
+      }
+    }
+  }
+
+  // A reload while a kept restore hasn't reached the viewer (it had no context
+  // of its own), with a marker set in the emptied viewer: the frame's own
+  // saved state is then empty, and the kept restore must still win.
+  func phaseAF() {
+    let restore: [String: Any] = ["dirty": false, "state": ["displayedSignals": [
+      ["dataType": "netlist-variable", "name": "top.clk"],
+    ]]]
+    // The restore's apply-state is held back, as if the reload overtook it.
+    web.evaluateJavaScript("""
+    (() => {
+      const host = window.cmuxWaveform.host, original = host.toWebview;
+      host.toWebview = (m) => {
+        if (m && m.command === 'apply-state' && m.stateChangeType === 1) { host.toWebview = original; return; }
+        original(m);
+      };
+      return 1;
+    })()
+    """)
+    openFresh(restore: restore) {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        const frameUnloaded = C.frameUnloaded;
+        C.frameUnloaded = () => {
+          C.frameUnloaded = frameUnloaded;
+          frameUnloaded();
+          H.toWebview({ command: 'setMarker', time: 20, markerType: 0 });
+        };
+        let frameState = null;
+        const restoreState = C.restoreState;
+        C.restoreState = (m) => { C.restoreState = restoreState; frameState = m.state ? (m.state.displayedSignals || []).length : null; return restoreState(m); };
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        R.frameState = frameState;
+        R.rows = drawn();
+        """) { r in
+          check(r["frameState"] as? Int == 0, "the emptied viewer's own state has no rows (\(r["frameState"] ?? "nil"))")
+          check(r["rows"] as? Int == 1, "a kept restore wins over the emptied viewer's own state (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseAG()
+        }
+      }
+    }
+  }
+
+  // A second reload after the frame has emptied: what it sends before it
+  // handles that reload's unload is still the emptied viewer's.
+  func phaseAG() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const frameUnloaded = C.frameUnloaded;
+        C.frameUnloaded = () => {
+          C.frameUnloaded = frameUnloaded;
+          frameUnloaded();
+          window.cmuxWaveform.reload({});
+          window.cmuxWaveform.fromWebview({ command: 'contextUpdate', stateChangeType: 5, displayedSignals: [], markerTime: 20 });
+        };
+        window.cmuxWaveform.reload({});
+        await sleep(300);
+        await reloaded();
+        R.rows = drawn();
+        """) { r in
+          check(r["rows"] as? Int == 1, "the emptied viewer stays ignored through a second reload (rows drawn \(r["rows"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
