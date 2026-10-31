@@ -2230,6 +2230,7 @@
 		FE001102 /* FileExplorerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE001002 /* FileExplorerView.swift */; };
 		633D33A30709BEB9EB0E0962 /* FileExplorerWorkspaceObservation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B194E800BD6F9561D6AFB9 /* FileExplorerWorkspaceObservation.swift */; };
 		CFSF00000000000000000004 /* FileExplorerWorkspaceRootResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFSR00000000000000000004 /* FileExplorerWorkspaceRootResolver.swift */; };
+		C0C2EFD73172D031BCA1B143 /* FileOpenRemoteSocketSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBF32B6B6D23D5FA07B3830C /* FileOpenRemoteSocketSupport.swift */; };
 		A5001441A5001441A5001441 /* FileOpenSocketSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001440A5001440A5001440 /* FileOpenSocketSupport.swift */; };
 		C01E00070000000000000001 /* FilePreviewCodeViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00070000000000000002 /* FilePreviewCodeViewTests.swift */; };
 		C01E00060000000000000001 /* FilePreviewEditorChromeOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00060000000000000002 /* FilePreviewEditorChromeOverlay.swift */; };
@@ -6942,6 +6943,7 @@
 		FE001002 /* FileExplorerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExplorerView.swift; sourceTree = "<group>"; };
 		F8B194E800BD6F9561D6AFB9 /* FileExplorerWorkspaceObservation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileExplorerWorkspaceObservation.swift"; sourceTree = "<group>"; };
 		CFSR00000000000000000004 /* FileExplorerWorkspaceRootResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExplorerWorkspaceRootResolver.swift; sourceTree = "<group>"; };
+		DBF32B6B6D23D5FA07B3830C /* FileOpenRemoteSocketSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileOpenRemoteSocketSupport.swift; sourceTree = "<group>"; };
 		A5001440A5001440A5001440 /* FileOpenSocketSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileOpenSocketSupport.swift; sourceTree = "<group>"; };
 		C01E00070000000000000002 /* FilePreviewCodeViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewCodeViewTests.swift; sourceTree = "<group>"; };
 		C01E00060000000000000002 /* FilePreviewEditorChromeOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewEditorChromeOverlay.swift; sourceTree = "<group>"; };
@@ -12721,6 +12723,7 @@
 				9618285EDBD93AE2F5A125B5 /* GoToFileSnapshotLoader.swift */,
 				BB13A8758BFB9112C57D1628 /* ContentView+GoToFileCommandPalette.swift */,
 				AC6164505612BF258CF44A17 /* SSHRemoteShellScript.swift */,
+				DBF32B6B6D23D5FA07B3830C /* FileOpenRemoteSocketSupport.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -16290,6 +16293,7 @@
 				FE001102 /* FileExplorerView.swift in Sources */,
 				633D33A30709BEB9EB0E0962 /* FileExplorerWorkspaceObservation.swift in Sources */,
 				CFSF00000000000000000004 /* FileExplorerWorkspaceRootResolver.swift in Sources */,
+				C0C2EFD73172D031BCA1B143 /* FileOpenRemoteSocketSupport.swift in Sources */,
 				A5001441A5001441A5001441 /* FileOpenSocketSupport.swift in Sources */,
 					C01E00060000000000000001 /* FilePreviewEditorChromeOverlay.swift in Sources */,
 					C01E00010000000000000001 /* FilePreviewEditorSettings.swift in Sources */,
