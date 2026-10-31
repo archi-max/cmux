@@ -107,7 +107,10 @@ keybindings, netlist view, settings, sessions and terminal links).
   the file chosen there; `<dump>.json` is offered only when it holds a
   session. Rename (F2) on a signal opens the rename box instead of setting
   the label to the full path. F2 and ⌘0 work in the viewer, ⌘F also from
-  the netlist. A netlist search pick reveals a signal that is already shown.
+  the netlist. A signal that is already shown is not added again, from any
+  entrypoint (VaporView adds a scope's or a dropped signal again): a single
+  add selects its row, as VaporView's add with reveal does, and Add All in
+  Scope leaves it out.
   Instance-path terminal links never take file names (see
   `WaveformTerminalLink.swift`), and there is no WCP server or remote
   (surfer) viewer.
@@ -138,6 +141,8 @@ keybindings, netlist view, settings, sessions and terminal links).
   side. It picks a clock, steps the marker by its posedges, plays them at a
   set rate, keeps a Locals group of the editor's instance and highlights the
   rows the editor highlights, using only messages the webview already handles.
+  Locals leaves out signals shown outside it, so a signal added from Locals'
+  scope shows once, and goes back to Locals when that row is removed.
   `wellen-worker.js` gains `getsignalchanges`, which keeps a signal's data in
   the page (decoding wellen's LZ4 frame, written from the LZ4 format
   description) instead of sending it to the viewer frame; `host.js` exposes a

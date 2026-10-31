@@ -944,12 +944,8 @@
       return false;
     }
     if (item.kind === 'scope') { window.cmuxNetlist.focusSearch(item); return true; }
-    const shown = webviewContext ? displayedNetlistIds(webviewContext.displayedSignals || []) : [];
-    if (shown.includes(item.netlistId)) {
-      host().toWebview({ command: 'setSelectedSignal', netlistId: item.netlistId });
-    } else {
-      host().addVariables([item]);
-    }
+    // Shown already: addVariables selects its row.
+    host().addVariables([item]);
     return true;
   }
 
