@@ -56,11 +56,18 @@ check "$(launch | head -1)" 1 "... and runs"
 remote "rm -rf '$D'"
 tarball | ssh -o BatchMode=yes -T "$HOST" "HOME='$H'; export HOME; S=\$(mktemp -d /tmp/cmux-fsdb-src.XXXXXX) && tar -xf - -C \"\$S\" && echo \"\$S\" > '$RDIR/src-dir' && nice sh \"\$S/build.sh\" \"\$S\" '$D'" >/dev/null 2>&1 &
 SSHPID=$!
-sleep 4
+# Kill the ssh once the compiler proper (cc1plus) runs, so the check covers it.
+seen=no
+for _ in $(seq 1 60); do
+  sleep 1
+  n=$(remote "S=\$(cat '$RDIR/src-dir' 2>/dev/null); [ -n \"\$S\" ] || exit 0; P=\$(echo \"\$S\" | sed 's,/tmp/c,/tmp/[c],'); pgrep -u \$(id -u) -f \"cc1plus.*\$P\" | wc -l" | tr -d ' ')
+  if [ "${n:-0}" -gt 0 ]; then seen=yes; break; fi
+done
+check "$seen" yes "the build reached the compiler (cc1plus)"
 kill "$SSHPID" 2>/dev/null; wait "$SSHPID" 2>/dev/null
 sleep 12
 # The folder's name with its first letter bracketed, so pgrep doesn't find its own shell.
 left=$(remote "S=\$(cat '$RDIR/src-dir'); P=\$(echo \"\$S\" | sed 's,/tmp/c,/tmp/[c],'); pgrep -u \$(id -u) -f \"\$P\" | wc -l" | tr -d ' ')
-check "$left" 0 "a build whose ssh was killed stops"
+check "$left" 0 "a build whose ssh was killed stops, cc1plus included"
 remote "S=\$(cat '$RDIR/src-dir' 2>/dev/null); [ -n \"\$S\" ] && rm -rf \"\$S\"; rm -rf '$RDIR'"
 if [ "$fails" -eq 0 ]; then echo "WINDOWED LAUNCHER CHECKS PASSED"; else echo "WINDOWED LAUNCHER CHECKS FAILED: $fails"; exit 1; fi
