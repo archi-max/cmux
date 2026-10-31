@@ -566,6 +566,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return [result.textContent, input.value];
     """) as? [String]
     expect(shownEval == ["= 4'h3 (width 4)", "state"], "an evaluation from cmux shows in the strip and its history: \(String(describing: shownEval))")
+    // The palette's Evaluate Expression… and Add Watch… ask in the page.
+    let prompted = await call("""
+      const real = window.cmuxUI.prompt;
+      const asked = [];
+      window.cmuxUI.prompt = async (o) => { asked.push(o.title); return asked.length === 1 ? 'state' : 'mode + 0'; };
+      try {
+        const r = await cmuxWaveform.debugger.promptEvaluate();
+        const w = await cmuxWaveform.debugger.promptAddWatch();
+        window.cmuxUI.prompt = async () => undefined;
+        const cancelled = await cmuxWaveform.debugger.promptAddWatch();
+        return [asked.join('|'), r && r.value, w && w.expr, cancelled === null ? 'null' : String(cancelled),
+          document.querySelector('#status-cycle .cmux-eval .result').textContent];
+      } finally { window.cmuxUI.prompt = real; }
+    """) as? [String]
+    expect(prompted == ["Evaluate|Add Watch", "4'h3", "mode + 0", "null", "= 4'h3 (width 4)"], "the palette's prompts: \(String(describing: prompted))")
+    _ = await call("const w = cmuxWaveform.debugger.watches(); cmuxWaveform.debugger.removeWatch({ id: w[w.length - 1].id }); return null")
     // A session's watches come back in place of the page's.
     _ = await dbg("restoreWatches({ items: ['mode', 'state'] })")
     rows = await watchRows(becoming: [["mode", "2'h2", ""], ["state", "4'h3", ""]])

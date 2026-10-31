@@ -63,7 +63,7 @@ endmodule
     await LB.sync(waveform)
     expect(describe(lastItems()) == ["core.sv:6 [TOP.u_core.limit] true", "core.sv:5 [TOP.u_core.done] true"], "both sent: \(describe(lastItems()))")
     let menu = LB.gutterMenu(view, lineStart: lineStart(5, in: source))
-    expect(menu?.items.map(\.title) == ["Disable Breakpoint", "Break in Any Instance", "", "Remove Breakpoint"], "the dot's menu: \(String(describing: menu?.items.map(\.title)))")
+    expect(menu?.items.map(\.title) == ["Disable Breakpoint", "Break in Any Instance", "Edit Condition…", "", "Remove Breakpoint"], "the dot's menu: \(String(describing: menu?.items.map(\.title)))")
     expect(LB.gutterMenu(view, lineStart: lineStart(1, in: source)) == nil, "no menu where there is no dot")
     if let any = menu?.items[1], let action = any.action { NSApp.sendAction(action, to: any.target, from: any) }
     if let disable = menu?.items[0], let action = disable.action { NSApp.sendAction(action, to: disable.target, from: disable) }
@@ -89,8 +89,46 @@ endmodule
     await LB.sync(waveform)
     expect(lastItems().count == (LB.marks[workspace]?.count ?? -1), "removed from the page's list: \(describe(lastItems()))")
 
+    // Conditions: the dot's menu asks for one (cmux's prompt), the dot shows it, the viewer gets it
+    // with the line's instance; the page's list changes or clears it.
+    let conditionKey = (lastItems().first?["key"] as? String) ?? ""
+    let conditionId = UUID(uuidString: conditionKey)
+    if let conditionId { LB.setEnabled(conditionId, true, in: workspace) }
+    let conditionStart = styles().keys.first ?? -1
+    WaveformDebuggerEvaluate.promptAnswer = "count == 3"
+    let editMenu = LB.gutterMenu(view, lineStart: conditionStart)
+    if let item = editMenu?.items.first(where: { $0.title == "Edit Condition…" }), let action = item.action {
+        NSApp.sendAction(action, to: item.target, from: item)
+    }
+    expect(WaveformDebuggerEvaluate.prompted == [nil], "the prompt starts empty: \(WaveformDebuggerEvaluate.prompted)")
+    expect(styles()[conditionStart] == .conditional, "a conditional dot: \(styles())")
+    await LB.sync(waveform)
+    let conditioned = lastItems().first { $0["key"] as? String == conditionKey }
+    expect(conditioned?["condition"] as? String == "count == 3" && conditioned?["scope"] as? [String] == ["TOP", "u_core"],
+           "sent with its condition and the line's instance: \(String(describing: conditioned))")
+    let conditionMenu = LB.gutterMenu(view, lineStart: conditionStart)?.items.map(\.title) ?? []
+    expect(conditionMenu.contains("Edit Condition…") && conditionMenu.contains("Remove Condition"), "a conditional dot's menu: \(conditionMenu)")
+    // Asked again: the prompt shows the current one; cancel keeps it.
+    WaveformDebuggerEvaluate.promptAnswer = nil
+    if let item = LB.gutterMenu(view, lineStart: conditionStart)?.items.first(where: { $0.title == "Edit Condition…" }), let action = item.action {
+        NSApp.sendAction(action, to: item.target, from: item)
+    }
+    expect(WaveformDebuggerEvaluate.prompted.last == "count == 3" && LB.marks[workspace]?.first { $0.id == conditionId }?.condition == "count == 3",
+           "cancel keeps it: \(WaveformDebuggerEvaluate.prompted)")
+    LB.pageReported(["key": conditionKey, "enabled": true, "condition": "limit != 0"], waveform: waveform)
+    expect(LB.marks[workspace]?.first { $0.id == conditionId }?.condition == "limit != 0", "the page's list changes it")
+    LB.pageReported(["key": conditionKey, "enabled": true, "condition": NSNull()], waveform: waveform)
+    expect(LB.marks[workspace]?.first { $0.id == conditionId }?.condition == nil && styles()[conditionStart] == .enabled,
+           "and clears it: \(styles())")
+    if let item = LB.gutterMenu(view, lineStart: conditionStart)?.items.first(where: { $0.title == "Remove Condition" }) {
+        expect(false, "no Remove Condition without one: \(item.title)")
+    }
+
     // Signal breakpoints the page reports are kept, and a new page gets everything back.
-    LB.signalsReported(["items": [["path": ["TOP", "u_core", "count"], "kind": "equals", "value": "'h3", "enabled": true]]], waveform: waveform)
+    LB.signalsReported(["items": [["path": ["TOP", "u_core", "count"], "kind": "equals", "value": "'h3", "enabled": true, "condition": "limit > 2"]]],
+                       waveform: waveform)
+    expect(LB.signals[workspace]?.first?.condition == "limit > 2" && LB.signals[workspace]?.first?.pageItem["condition"] as? String == "limit > 2",
+           "a signal breakpoint's condition is kept: \(String(describing: LB.signals[workspace]))")
     page.calls.removeAll()
     LB.pageLoaded(waveform)
     for _ in 0..<20 where page.calls.count < 2 { try? await Task.sleep(nanoseconds: 20_000_000) }
@@ -104,11 +142,18 @@ endmodule
     _ = LB.gutterClicked(view, lineStart: lineStart(4, in: source))
     _ = LB.gutterClicked(view, lineStart: lineStart(1, in: source))
     WaveformDebuggerEvaluate.watches[workspace] = ["count + 1", "limit"]
+    if let first = LB.marks[workspace]?.first { LB.setCondition(first.id, "count == 3", in: workspace) }
     let saved = LB.snapshot(of: workspace)
     let data = try? JSONEncoder().encode(saved)
     let decoded = data.flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }
     expect(decoded == saved && decoded?.lines?.map(\.line) == [4, 1] && decoded?.signals?.count == 1,
            "the snapshot round-trips: \(String(describing: decoded))")
+    expect(decoded?.lines?.first?.condition == "count == 3" && decoded?.signals?.first?.condition == "limit > 2",
+           "conditions are in it: \(String(describing: decoded?.lines?.first))")
+    let olderMark = try? JSONDecoder().decode(LB.Mark.self, from: Data(
+        #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","path":"/a.sv","line":1,"text":"x","enabled":true,"anyInstance":false,"lost":false}"#.utf8))
+    let olderSignal = try? JSONDecoder().decode(LB.SignalBreakpoint.self, from: Data(#"{"path":["a"],"kind":"change","enabled":true}"#.utf8))
+    expect(olderMark != nil && olderMark?.condition == nil && olderSignal != nil, "older marks and signal breakpoints decode")
     expect(decoded?.watches == ["count + 1", "limit"], "the watches are in it: \(String(describing: decoded?.watches))")
     // An older manifest (no watches key) still decodes.
     let older = try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: Data(#"{"signals":[]}"#.utf8))
