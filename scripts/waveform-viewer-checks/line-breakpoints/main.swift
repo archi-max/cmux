@@ -171,7 +171,8 @@ endmodule
     let reopenedEditor = FilePreviewLanguageFeatures(textView: reopened, path: "/rtl/core.sv", workspace: restored)
     FilePreviewLanguageFeatures.all = [reopenedEditor]
     let placed = LB.styles(in: reopened) ?? [:]
-    expect(placed == [lineStart(5, in: reopened.string): .enabled, lineStart(1, in: reopened.string): .lost],
+    // (its condition comes back with it: a conditional dot)
+    expect(placed == [lineStart(5, in: reopened.string): .conditional, lineStart(1, in: reopened.string): .lost],
            "the assign found again a line down; the changed line's kept there, lost: \(placed)")
     WaveformSourceLink.waveform = FilePreviewPanel(workspaceId: restored)
     await LB.sync(WaveformSourceLink.waveform!)

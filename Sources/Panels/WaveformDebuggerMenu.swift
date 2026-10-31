@@ -6,7 +6,7 @@ extension WaveformDebugger.Command {
     /// The commands of View > Waveform Debugger and the command palette, in menu order.
     static let all: [WaveformDebugger.Command] = [
         .step(1), .step(-1), .first, .last, .continueToBreakpoint(1), .continueToBreakpoint(-1), .toggleLineBreakpoint,
-        .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop,
+        .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop, .evaluateExpression, .addWatch,
     ]
 
     var title: String {
@@ -37,6 +37,10 @@ extension WaveformDebugger.Command {
             return String(localized: "waveformDebugger.command.defaultClock", defaultValue: "Use Default Clock")
         case .stop:
             return String(localized: "waveformDebugger.command.stop", defaultValue: "Stop Debugging")
+        case .evaluateExpression:
+            return String(localized: "waveformDebugger.command.evaluate", defaultValue: "Evaluate Expression…")
+        case .addWatch:
+            return String(localized: "waveformDebugger.command.addWatch", defaultValue: "Add Watch…")
         }
     }
 
@@ -55,6 +59,8 @@ extension WaveformDebugger.Command {
         case .useSelectedAsClock: return "palette.waveformDebugger.useSelectedAsClock"
         case .defaultClock: return "palette.waveformDebugger.defaultClock"
         case .stop: return "palette.waveformDebugger.stop"
+        case .evaluateExpression: return "palette.waveformDebugger.evaluate"
+        case .addWatch: return "palette.waveformDebugger.addWatch"
         }
     }
 
@@ -74,6 +80,8 @@ extension WaveformDebugger.Command {
         case .useSelectedAsClock: return common + ["selected", "signal", "choose"]
         case .defaultClock: return common + ["default", "clk", "reset"]
         case .stop: return common + ["stop", "exit", "locals"]
+        case .evaluateExpression: return common + ["evaluate", "expression", "value", "print"]
+        case .addWatch: return common + ["watch", "expression", "add"]
         }
     }
 }
@@ -97,7 +105,7 @@ struct WaveformDebuggerMenu: View {
     var body: some View {
         Menu(String(localized: "menu.view.waveformDebugger", defaultValue: "Waveform Debugger")) {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
-                if index == 4 || index == 7 || index == 10 || index == 12 { Divider() }
+                if index == 4 || index == 7 || index == 10 || index == 12 || index == 13 { Divider() }
                 Button(command.title) {
                     if !WaveformDebugger.performFromShortcut(command, window: NSApp.keyWindow ?? NSApp.mainWindow) {
                         NSSound.beep()

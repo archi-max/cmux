@@ -24,7 +24,7 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
     private static let horizontalPadding: CGFloat = 10
 
     /// A breakpoint dot in the gutter (cmux's waveform debugger).
-    enum BreakpointMark { case enabled, disabled, lost }
+    enum BreakpointMark { case enabled, conditional, disabled, lost }
     /// Dots by line start offset; nil for a text view that takes no breakpoints (no dot column).
     static var breakpointMarks: (@MainActor (NSTextView) -> [Int: BreakpointMark]?)? = { WaveformDebuggerLineBreakpoints.styles(in: $0) }
     /// A click on the line starting at the offset; true when it was taken.
@@ -309,6 +309,13 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
         case .enabled:
             red.setFill()
             path.fill()
+        case .conditional:
+            // A conditional breakpoint: the dot with an equals sign.
+            red.setFill()
+            path.fill()
+            NSColor.white.setFill()
+            NSRect(x: dot.minX + 2, y: dot.midY - 2, width: dot.width - 4, height: 1).fill()
+            NSRect(x: dot.minX + 2, y: dot.midY + 1, width: dot.width - 4, height: 1).fill()
         case .disabled:
             red.withAlphaComponent(0.8).setStroke()
             path.lineWidth = 1

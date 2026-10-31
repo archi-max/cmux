@@ -28,6 +28,9 @@ enum WaveformDebugger {
         case useSelectedAsClock
         case defaultClock
         case stop
+        /// Evaluate Expression… / Add Watch…: the viewer page asks for the expression.
+        case evaluateExpression
+        case addWatch
     }
 
     static let shortcutCommands: [(KeyboardShortcutSettings.Action, Command)] = [
@@ -147,6 +150,10 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("setClock", argument: ["path": NSNull()])
             case .stop:
                 _ = await page.callDebugger("stop")
+            case .evaluateExpression:
+                _ = await page.callDebugger("promptEvaluate")
+            case .addWatch:
+                _ = await page.callDebugger("promptAddWatch")
             }
         }
     }
