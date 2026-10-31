@@ -80,4 +80,17 @@ struct RemotePreviewCacheBudgetTests {
         RemotePreviewCacheBudget.discard(outside, cacheRoot: root)
         #expect(FileManager.default.fileExists(atPath: outside.path))
     }
+
+    @Test
+    func testDiscardLeavesAFileAnOpenPanelShows() throws {
+        // The cache path is fixed per host file, so a download that won't be
+        // shown may be the very file a viewer in another window has open.
+        let root = try Self.makeCache([("ns/a/README.md", 10, 0)])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let shown = root.appendingPathComponent("ns/a/README.md")
+        RemotePreviewCacheBudget.discard(shown, cacheRoot: root, keeping: [shown.path])
+        #expect(Self.exists(root, "ns/a/README.md"))
+        RemotePreviewCacheBudget.discard(shown, cacheRoot: root, keeping: [])
+        #expect(!Self.exists(root, "ns/a"))
+    }
 }
