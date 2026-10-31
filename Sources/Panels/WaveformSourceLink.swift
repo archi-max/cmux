@@ -195,7 +195,7 @@ enum WaveformSourceLink {
                     aliasNotes.append(String(
                         format: String(
                             localized: "waveformLink.showingAlias",
-                            defaultValue: "%1$@ isn’t dumped; showing its alias %2$@, the port it is connected to."
+                            defaultValue: "%1$@ isn’t dumped; showing %2$@, the same net through a port connection."
                         ),
                         designPath,
                         alias.path
