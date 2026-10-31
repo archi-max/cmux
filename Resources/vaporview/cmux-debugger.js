@@ -590,7 +590,9 @@
 
   // A signal of the scope pinned or unpinned outside Locals leaves Locals or
   // comes back to it. Only then: a Locals row the user deleted stays deleted,
-  // and a refill the viewer doesn't take as asked isn't retried.
+  // and a refill the viewer doesn't take as asked isn't retried. Locals is
+  // never in the undo state, so Undo of such a delete brings the row back
+  // (Locals is refilled) and its Redo changes nothing: by design.
   function refreshLocals() {
     if (!state.stepping || !state.locals.path || state.locals.busy || !state.locals.vars) { return; }
     if (!localsElement() || pinnedKey(state.locals.vars) === state.locals.pinnedKey) { return; }
