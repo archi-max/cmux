@@ -11,6 +11,9 @@
 #                                        API (link.* in host.js) on link.vcd
 #   ./run.sh debugger                    the waveform debugger (cmux-debugger.js):
 #                                        clock, stepping, play, Locals, highlights
+#   ./run.sh debugger-fsdb <ssh-host> <remote.fsdb> <scope.path>
+#                                        the debugger on a remote FSDB (helper
+#                                        under nice): clock, steps, Locals
 #   ./run.sh debugger-editor             the debugger's editor highlights
 #                                        (WaveformDebuggerEditorHighlights.swift)
 #                                        on a windowless NSTextView
@@ -56,6 +59,14 @@ case "${1:-}" in
       "$L/SystemVerilogInlineScan.swift" "$L/HierarchyPathMapping.swift" "$L/WaveformCycleHighlights.swift" "$L/LSPTypes.swift" \
       -o "$OUT/debugger-editor"
     "$OUT/debugger-editor"
+    ;;
+  debugger-fsdb)
+    shift
+    if [ $# -lt 3 ]; then echo "debugger-fsdb: needs <ssh-host> <remote.fsdb> <locals.scope.path>"; exit 2; fi
+    swiftc -O "$HERE/debugger-fsdb/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger-fsdb"
+    "$OUT/debugger-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$1" "$2" "$3" "$OUT/debugger-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/debugger-fsdb.log"
+    grep -q '^DEBUGGER FSDB CHECKS PASSED' "$OUT/debugger-fsdb.log"
     ;;
   debugger)
     swiftc -O "$HERE/debugger/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
