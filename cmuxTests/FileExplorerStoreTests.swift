@@ -626,6 +626,11 @@ struct FileExplorerStoreTests {
         )
         #expect(store.resourceContextID != context, "another connection: earlier opens are no longer current")
         #expect((store.provider as? SSHFileExplorerProvider)?.connection == other)
+        let otherContext = store.resourceContextID
+        store.bindSSHPreviewProvider(
+            workspaceId: UUID(), connection: other, displayTarget: "dev@other", sshTransport: transport
+        )
+        #expect(store.resourceContextID != otherContext, "another workspace on the same connection: a new context")
     }
 
     @Test
