@@ -45,6 +45,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var linkMessagePopover: NSPopover?
     private var linkMessageShownAt = Date.distantPast
     private var linkMessageIsProgress = false
+    /// Closes the link message once the editor is hidden or loses focus (a tab or pane switch).
+    private var linkMessageWatch: Task<Void, Never>?
     /// A link message stays up at least this long against clicks and typing; Esc closes it at once.
     private static let linkMessageMinimumDuration: TimeInterval = 8
     private var contextMenuCharacterIndex: Int?
@@ -1087,13 +1089,44 @@ final class FilePreviewLanguageFeatures: NSObject {
         let popover = NSPopover()
         popover.behavior = .applicationDefined
         popover.animates = false
+        popover.delegate = self
         popover.contentViewController = FilePreviewLanguageHoverViewController(sections: [message], isSelectable: true)
         hideHover()
-        linkMessagePopover?.close()
+        closeLinkMessage()
         linkMessagePopover = popover
         linkMessageShownAt = Date()
         linkMessageIsProgress = isProgress
+        let window = textView.window
+        let wasKey = window?.isKeyWindow == true
         popover.show(relativeTo: rect, of: textView, preferredEdge: .minY)
+        // Like hover, the message never takes typing (or Esc) from the editor.
+        if wasKey, window?.isKeyWindow == false {
+            window?.makeKey()
+        }
+        watchLinkMessage()
+    }
+
+    /// Polls (cheaply) for the editor going away under the message: hidden by a tab switch,
+    /// out of its window, or another view of the window taking focus (a pane switch).
+    private func watchLinkMessage() {
+        linkMessageWatch?.cancel()
+        linkMessageWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let self, self.linkMessagePopover != nil else { return }
+                guard let textView = self.textView, let window = textView.window,
+                      !textView.isHiddenOrHasHiddenAncestor, window.isVisible else {
+                    self.closeLinkMessage()
+                    return
+                }
+                // Focus elsewhere in this window; a sheet, menu or other app leaves the window not key.
+                if window.isKeyWindow, let responder = window.firstResponder as? NSView, responder !== textView,
+                   !responder.isDescendant(of: textView) {
+                    self.closeLinkMessage()
+                    return
+                }
+            }
+        }
     }
 
     /// Closes the link's progress note, if that is what is shown.
@@ -1103,14 +1136,18 @@ final class FilePreviewLanguageFeatures: NSObject {
     }
 
     private func closeLinkMessage() {
-        linkMessagePopover?.close()
+        linkMessageWatch?.cancel()
+        linkMessageWatch = nil
+        let popover = linkMessagePopover
         linkMessagePopover = nil
         linkMessageIsProgress = false
+        popover?.close()
     }
 
-    /// A click or key in the editor closes a link message once it has been up long enough.
+    /// A click or key in the editor closes a link message (or a progress note a finished or
+    /// cancelled link left behind) once it has been up long enough.
     private func linkMessageMayClose() {
-        guard linkMessagePopover != nil, !linkMessageIsProgress,
+        guard linkMessagePopover != nil,
               Date().timeIntervalSince(linkMessageShownAt) >= Self.linkMessageMinimumDuration else { return }
         closeLinkMessage()
     }
@@ -1602,5 +1639,16 @@ enum FilePreviewNavigationHistory {
         guard let entry, let target = opener(for: entry) else { return false }
         target.navigate(to: entry.location, recordingHistory: false)
         return true
+    }
+}
+
+extension FilePreviewLanguageFeatures: NSPopoverDelegate {
+    /// AppKit closed the link message itself (its anchor left the window, its window closed).
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === linkMessagePopover else { return }
+        linkMessageWatch?.cancel()
+        linkMessageWatch = nil
+        linkMessagePopover = nil
+        linkMessageIsProgress = false
     }
 }

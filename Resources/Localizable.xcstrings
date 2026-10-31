@@ -685281,6 +685281,65 @@
           }
         }
       }
+    },
+    "waveformLink.searchingFragment": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Looking for %@ in the design this file is included into…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このファイルがインクルードされている設計で %@ を探しています…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ wird im Design gesucht, in das diese Datei eingebunden ist …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche de %@ dans le design qui inclut ce fichier…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ البحث عن %@ في التصميم الذي يتضمّن هذا الملف…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando %@ en el diseño que incluye este archivo…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在包含此檔案的設計中尋找 %@…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在包含此文件的设计中查找 %@…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 파일을 포함하는 설계에서 %@을(를) 찾는 중…"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
