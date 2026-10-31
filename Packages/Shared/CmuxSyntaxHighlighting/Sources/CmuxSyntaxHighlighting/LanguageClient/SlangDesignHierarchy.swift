@@ -486,8 +486,14 @@ extension LanguageServerSession {
                 macros += 1
                 // A cancelled link ends here; a macro slang can't expand is no evidence either way.
                 try Task.checkCancellation()
-                guard let hover = try? await hover(uri: declaringURI, position: directive.position),
-                      let expansion = Self.macroIncludeTarget(fromHover: hover) else { continue }
+                let hover: String?
+                do {
+                    hover = try await self.hover(uri: declaringURI, position: directive.position)
+                } catch LanguageServerError.responseError {
+                    // The server answered but has no hover there: no evidence either way.
+                    continue
+                }
+                guard let hover, let expansion = Self.macroIncludeTarget(fromHover: hover) else { continue }
                 // The server's form of a local path (symlinks resolved), like `file`.
                 target = expansion.hasPrefix("/") && !launch.isRemote ? Self.realPath(expansion) : expansion
             }

@@ -96,11 +96,13 @@ struct SlangIncludeFragmentTests {
         try fragment.write(to: root.appendingPathComponent("tb/top_tb.sv"), atomically: true, encoding: .utf8)
         try body.write(to: root.appendingPathComponent("tb/body.sv"), atomically: true, encoding: .utf8)
         try "// defines\n".write(to: root.appendingPathComponent("tb/defs.svh"), atomically: true, encoding: .utf8)
+        // The body's macro names it through a symlinked folder: matched by its real path.
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("tblink").path, withDestinationPath: "tb")
         let real = LanguageServerSession.realPath(root.path)
         let build = """
         --top tb_wrapper
         +define+TB_FILE=\\"\(real)/tb/top_tb.sv\\"
-        +define+BODY_FILE=\\"\(real)/tb/body.sv\\"
+        +define+BODY_FILE=\\"\(real)/tblink/body.sv\\"
         +define+DEFS_FILE=\\"\(real)/tb/defs.svh\\"
         +define+SUB_DEFS=\\"\(real)/tb/defs.svh\\"
         \(real)/sub.sv
@@ -166,14 +168,14 @@ struct SlangIncludeFragmentTests {
     }
 
     @Test func includeDirectivePositionsAreUTF16LinesAndColumns() {
-        // é is one UTF-16 unit, 😀 two; a macro's position is inside its name.
-        let text = "/* é\n */ `include \"a.sv\"\n  \"😀\" `include `M\n"
+        // 😀 is two UTF-16 units; a macro's position is inside its name.
+        let text = "/* x\n */ `include \"a.sv\"\n  \"😀\" `include `M\n"
         let found = LanguageServerSession.includeDirectiveLocations(in: text)
         #expect(found.map(\.target) == ["a.sv", "`M"])
         #expect(found.map(\.position) == [LSPPosition(line: 1, character: 14), LSPPosition(line: 2, character: 17)])
     }
 
-    @Test func unclosedCommentsAndStringsEndTheScan() {
+    @Test func anUnclosedCommentEndsTheScanAndAnUnclosedStringItsLine() {
         #expect(LanguageServerSession.includeDirectives(in: "`include \"a.sv\"\n/* `include \"b.sv\"") == ["a.sv"])
         #expect(LanguageServerSession.includeDirectives(in: "x = \"open\n`include \"c.sv\"") == ["c.sv"])
         #expect(LanguageServerSession.includeDirectives(in: "`include").isEmpty)
