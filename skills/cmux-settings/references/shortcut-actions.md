@@ -193,6 +193,8 @@ Values for `shortcuts.bindings.<action>`:
 - `shortcuts.bindings.toggleFileEditorWordWrap`
 - `shortcuts.bindings.addSignalToWaveform`
 - `shortcuts.bindings.revealWaveformSignalInSource`
+- `shortcuts.bindings.navigateSourceBack`
+- `shortcuts.bindings.navigateSourceForward`
 - `shortcuts.bindings.toggleFileExplorer`
 - `shortcuts.bindings.toggleReactGrab`
 

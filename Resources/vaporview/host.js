@@ -261,6 +261,22 @@
         return result.scopes.map((s) => ({ kind: 'scope', name: s.name, id: s.scopeOffsetIdx, type: s.type }))
           .concat(result.vars.map((v) => ({ kind: 'var', ...v })));
       },
+      // [[time, value], ...] per variable, for the source link's value lookups (not drawn).
+      async changes(vars) {
+        const { result, bin } = await request({ cmd: 'signals',
+          signalIds: vars.map((v) => v.signalId), widths: vars.map((v) => v.width) });
+        let offset = 0;
+        const out = [];
+        for (const d of result) {
+          let changes = d.valueChanges;
+          if (!changes) {
+            changes = decodeRecords(await inflateRaw(bin.subarray(offset, offset + d.bytes)), d.width);
+            offset += d.bytes;
+          }
+          out.push(changes);
+        }
+        return out;
+      },
       async fetch(requestList) {
         const signals = requestList.filter((r) => r.type === 'signal');
         if (!signals.length) { return; }
@@ -513,9 +529,12 @@
   //   scopeChildren(path) -> [{ name, isScope }] | null   ([] lists the tops; at most 5000)
   //   hasSignal(path) -> bool
   //   addSignal(path) -> bool   adds it unless shown, then selects it
+  //   addScope(path) -> bool    adds the scope's signals (VaporView's Add All in Scope)
   //   selectSignal(path) -> bool
   //   setMarker(time)
   //   selectedSignal() -> path | null   (null once the selected row is gone)
+  //   valuesAt({ time, paths }) -> [value | null]   formatted like the signal's row
+  //   markerTime() -> time | null
   // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
   const link = (() => {
     const maxChildren = 5000;
@@ -575,10 +594,18 @@
       return items.slice(0, maxChildren).map((x) => ({ name: x.name, isScope: x.kind === 'scope' }));
     }
 
-    function isShown(v) {
-      const shown = (viewerContext.webview && viewerContext.webview.displayedSignals) || [];
-      return shown.some((s) => s.netlistId === v.netlistId);
+    // netlistIds of the shown rows, inside groups too.
+    function shownIds() {
+      const out = new Set();
+      const walk = (list) => (list || []).forEach((d) => {
+        if (d.netlistId !== undefined) { out.add(d.netlistId); }
+        walk(d.children);
+      });
+      walk(viewerContext.webview && viewerContext.webview.displayedSignals);
+      return out;
     }
+
+    const isShown = (v) => shownIds().has(v.netlistId);
 
     async function selectSignal(path) {
       const v = await findLinkItem(path, true);
@@ -602,6 +629,125 @@
     }
 
     const pathOf = (v) => (v.scopePath || []).concat([v.name]);
+
+    // Like VaporView's Add All in Scope (shallow): asks first above 48 signals and
+    // stops at 128, but leaves out the ones already shown.
+    async function addScope(path) {
+      const scope = await findLinkItem(path, false);
+      if (!scope || scope.kind !== 'scope' || !initSent) { return false; }
+      const shown = shownIds();
+      const vars = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId)).slice(0, 128);
+      if (vars.length > 48) {
+        const s = window.cmuxWaveform.strings || {};
+        const answer = await window.cmuxUI.confirm({ message: s.messageManySignals,
+          buttons: [{ label: s.dialogNo, value: false }, { label: s.dialogYes, value: true }] });
+        if (!answer) { return true; }
+      }
+      const now = Date.now();
+      vars.forEach((v) => pendingAdds.set(v.netlistId, now));
+      if (vars.length) { addVariables(vars); }
+      return true;
+    }
+
+    // ---- values at a time, for the editor's inline values ----
+    // FSDB (helper v1) has no point query: a signal's changes are walked once
+    // and kept here, up to maxCachedChanges in all (least recently used out).
+    const maxCachedChanges = 4000000;
+    const changeCache = new Map();
+    let cachedChanges = 0;
+    let cacheBackend = null;
+
+    async function fsdbValues(time, vars) {
+      // A reload opens a new backend; its netlistIds may name other signals.
+      if (cacheBackend !== backend) { changeCache.clear(); cachedChanges = 0; cacheBackend = backend; }
+      const missing = vars.filter((v) => !changeCache.has(v.netlistId));
+      for (let i = 0; i < missing.length; i += 32) {
+        const batch = missing.slice(i, i + 32);
+        const lists = await backend.changes(batch);
+        batch.forEach((v, k) => { changeCache.set(v.netlistId, lists[k] || []); cachedChanges += (lists[k] || []).length; });
+      }
+      const out = new Map();
+      for (const v of vars) {
+        const changes = changeCache.get(v.netlistId);
+        // Most recently used last.
+        changeCache.delete(v.netlistId);
+        changeCache.set(v.netlistId, changes);
+        let lo = 0, hi = changes.length - 1, at = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (changes[mid][0] <= time) { at = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        if (at >= 0) { out.set(v.netlistId, changes[at][1]); }
+      }
+      for (const [id, changes] of changeCache) {
+        if (cachedChanges <= maxCachedChanges || changeCache.size <= vars.length) { break; }
+        changeCache.delete(id);
+        cachedChanges -= changes.length;
+      }
+      return out;
+    }
+
+    async function wellenValues(time, vars) {
+      const out = new Map();
+      if (!backend.valuesAtTime) { return out; }
+      const byPath = new Map(vars.map((v) => [pathOf(v).join('.'), v]));
+      for (const r of await backend.valuesAtTime(time, Array.from(byPath.keys()))) {
+        const v = byPath.get(r.instancePath);
+        let value = r.value;
+        try { value = JSON.parse(value); } catch (error) { /* already a value */ }
+        // [before, after] at a change: the value in effect at `time` is the last.
+        if (Array.isArray(value)) { value = value[value.length - 1]; }
+        if (v && value != null) { out.set(v.netlistId, String(value)); }
+      }
+      return out;
+    }
+
+    function groupBits(bits, size, digits) {
+      let out = '';
+      for (let end = bits.length; end > 0; end -= size) {
+        const group = bits.slice(Math.max(0, end - size), end);
+        if (/^[01]+$/.test(group)) { out = digits[parseInt(group, 2)] + out; }
+        else if (/^[zZ]+$/.test(group)) { out = 'z' + out; }
+        else { out = 'x' + out; }
+      }
+      return out;
+    }
+
+    // A 4-state bit string in VaporView's number format (its default is hexadecimal).
+    function formatValue(bits, format) {
+      if (!/^[01xzXZuUwWlLhH-]+$/.test(bits)) { return bits; }
+      if (bits.length === 1) { return bits.toLowerCase(); }
+      const known = /^[01]+$/.test(bits);
+      switch (format) {
+        case 'binary': return bits.toLowerCase();
+        case 'octal': return groupBits(bits, 3, '01234567');
+        case 'decimal': return known ? BigInt('0b' + bits).toString() : 'x';
+        case 'signed': {
+          if (!known) { return 'x'; }
+          const n = BigInt('0b' + bits);
+          return (bits[0] === '1' ? n - (1n << BigInt(bits.length)) : n).toString();
+        }
+        default: return groupBits(bits, 4, '0123456789abcdef');
+      }
+    }
+
+    // valuesAt({ time, paths }) -> [value | null], one per path: the value in
+    // effect at `time`, in the radix of the signal's row (hexadecimal if not shown).
+    async function valuesAt(query) {
+      const { time, paths } = query || {};
+      if (!backend || !initSent || !Array.isArray(paths)) { return []; }
+      const list = paths.slice(0, 500);
+      const vars = await Promise.all(list.map((p) => findLinkItem(p, true)));
+      const found = Array.from(new Set(vars.filter(Boolean)));
+      const t = Number(time);
+      const raw = backend.changes ? await fsdbValues(t, found) : await wellenValues(t, found);
+      const shown = (viewerContext.webview && viewerContext.webview.displayedSignals) || [];
+      const formats = new Map(shown.map((d) => [d.netlistId, d.numberFormat]));
+      return vars.map((v) => {
+        const bits = v ? raw.get(v.netlistId) : undefined;
+        return bits === undefined ? null : formatValue(bits, formats.get(v.netlistId));
+      });
+    }
 
     function selectedSignal() {
       const v = selectedId == null ? null : doc.items.get(selectedId);
@@ -634,9 +780,12 @@
       scopeChildren,
       hasSignal: async (path) => !!(await findLinkItem(path, true)),
       addSignal,
+      addScope,
       selectSignal,
       setMarker: (time) => { toWebview({ command: 'setMarker', time: Number(time), markerType: 0 }); },
       selectedSignal,
+      valuesAt,
+      markerTime: () => (viewerContext.webview ? viewerContext.webview.markerTime ?? null : null),
     });
   })();
 

@@ -1227,8 +1227,27 @@ struct cmuxApp: App {
                 }
                 features.addSignalUnderCaretToWaveform()
             }
+            Button(String(localized: "menu.view.addScopeToWaveform", defaultValue: "Add All Signals in Scope to Waveform")) {
+                guard let features = appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
+                    .languageFeatures, features.addScopeUnderCaretToWaveform() else {
+                    NSSound.beep()
+                    return
+                }
+            }
             Button(String(localized: "menu.view.revealWaveformSignalInSource", defaultValue: "Show Waveform Signal in Source")) {
                 if !WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel()) {
+                    NSSound.beep()
+                }
+            }
+            Button(String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")) {
+                if appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
+                    .languageFeatures?.navigateBack() != true {
+                    NSSound.beep()
+                }
+            }
+            Button(String(localized: "shortcut.navigateSourceForward.label", defaultValue: "Go Forward in Editor")) {
+                if appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
+                    .languageFeatures?.navigateForward() != true {
                     NSSound.beep()
                 }
             }
