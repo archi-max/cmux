@@ -5,7 +5,8 @@ import SwiftUI
 extension WaveformDebugger.Command {
     /// The commands of View > Waveform Debugger and the command palette, in menu order.
     static let all: [WaveformDebugger.Command] = [
-        .step(1), .step(-1), .first, .last, .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop,
+        .step(1), .step(-1), .first, .last, .continueToBreakpoint(1), .continueToBreakpoint(-1),
+        .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop,
     ]
 
     var title: String {
@@ -18,6 +19,11 @@ extension WaveformDebugger.Command {
         case .last:
             return String(localized: "waveformDebugger.command.last", defaultValue: "Go to Last Cycle")
         case .togglePlay:
+            return String(localized: "shortcut.toggleWaveformPlayback.label", defaultValue: "Play or Pause Waveform")
+        case .continueToBreakpoint(let direction):
+            return direction < 0 ? KeyboardShortcutSettings.Action.reverseContinueWaveform.label
+                : String(localized: "waveformDebugger.command.continue", defaultValue: "Continue to Next Breakpoint")
+        case .continueOrTogglePlay:
             return KeyboardShortcutSettings.Action.toggleWaveformPlayback.label
         case .faster:
             return String(localized: "waveformDebugger.command.faster", defaultValue: "Play Faster")
@@ -38,6 +44,9 @@ extension WaveformDebugger.Command {
         case .first: return "palette.waveformDebugger.first"
         case .last: return "palette.waveformDebugger.last"
         case .togglePlay: return "palette.waveformDebugger.togglePlay"
+        case .continueToBreakpoint(let direction):
+            return direction < 0 ? "palette.waveformDebugger.reverseContinue" : "palette.waveformDebugger.continue"
+        case .continueOrTogglePlay: return "palette.waveformDebugger.continueOrTogglePlay"
         case .faster: return "palette.waveformDebugger.faster"
         case .slower: return "palette.waveformDebugger.slower"
         case .useSelectedAsClock: return "palette.waveformDebugger.useSelectedAsClock"
@@ -53,6 +62,9 @@ extension WaveformDebugger.Command {
         case .first: return common + ["first", "start", "beginning"]
         case .last: return common + ["last", "end"]
         case .togglePlay: return common + ["play", "pause", "timelapse", "animate"]
+        case .continueToBreakpoint(let direction):
+            return common + ["breakpoint", "continue", "run"] + (direction < 0 ? ["reverse", "back", "previous"] : ["next", "forward"])
+        case .continueOrTogglePlay: return common + ["breakpoint", "continue", "play", "pause"]
         case .faster: return common + ["faster", "speed", "rate"]
         case .slower: return common + ["slower", "speed", "rate"]
         case .useSelectedAsClock: return common + ["selected", "signal", "choose"]
@@ -65,7 +77,10 @@ extension WaveformDebugger.Command {
 extension WaveformDebugger {
     /// The shortcut a palette command shows, for the commands that have one.
     static func shortcutAction(forPaletteCommandId commandId: String) -> KeyboardShortcutSettings.Action? {
-        shortcutCommands.first { $0.1.paletteCommandId == commandId }?.0
+        // F5 runs continueOrTogglePlay, which the palette lists as Continue to Next Breakpoint.
+        let id = commandId == Command.continueToBreakpoint(1).paletteCommandId
+            ? Command.continueOrTogglePlay.paletteCommandId : commandId
+        return shortcutCommands.first { $0.1.paletteCommandId == id }?.0
     }
 }
 
@@ -78,7 +93,7 @@ struct WaveformDebuggerMenu: View {
     var body: some View {
         Menu(String(localized: "menu.view.waveformDebugger", defaultValue: "Waveform Debugger")) {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
-                if index == 4 || index == 7 || index == 9 { Divider() }
+                if index == 4 || index == 6 || index == 9 || index == 11 { Divider() }
                 Button(command.title) {
                     if !WaveformDebugger.performFromShortcut(command, window: NSApp.keyWindow ?? NSApp.mainWindow) {
                         NSSound.beep()

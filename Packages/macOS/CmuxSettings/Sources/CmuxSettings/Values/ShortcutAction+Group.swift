@@ -48,7 +48,7 @@ extension ShortcutAction {
             return .panes
         case .openDiffViewer, .saveFilePreview, .toggleFileEditorWordWrap, .addSignalToWaveform, .revealWaveformSignalInSource,
              .navigateSourceBack, .navigateSourceForward,
-             .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
+             .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback, .reverseContinueWaveform,
              .openBrowser, .focusBrowserAddressBar,
              .browserBack, .browserForward, .browserReload, .browserHardReload,
              .browserZoomIn, .browserZoomOut, .browserZoomReset,

@@ -17,6 +17,10 @@ enum WaveformDebugger {
         case first
         case last
         case togglePlay
+        /// Continue (1) or reverse continue (-1) to the nearest breakpoint hit.
+        case continueToBreakpoint(Int)
+        /// F5: continue when a breakpoint is enabled, else play or pause.
+        case continueOrTogglePlay
         case faster
         case slower
         case useSelectedAsClock
@@ -27,7 +31,8 @@ enum WaveformDebugger {
     static let shortcutCommands: [(KeyboardShortcutSettings.Action, Command)] = [
         (.stepWaveformCycleForward, .step(1)),
         (.stepWaveformCycleBack, .step(-1)),
-        (.toggleWaveformPlayback, .togglePlay),
+        (.toggleWaveformPlayback, .continueOrTogglePlay),
+        (.reverseContinueWaveform, .continueToBreakpoint(-1)),
     ]
 
     /// What the page last reported for a viewer.
@@ -80,7 +85,7 @@ enum WaveformDebugger {
         return WaveformSourceLink.waveformPanel(near: panel)
     }
 
-    /// F10, Shift-F10 and F5. False (the key goes on) unless a waveform viewer,
+    /// F10, Shift-F10, F5 and Shift-F5. False (the key goes on) unless a waveform viewer,
     /// or a SystemVerilog editor with a viewer in its workspace, has focus.
     static func performFromShortcut(_ command: Command, window: NSWindow?) -> Bool {
         if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
@@ -115,6 +120,10 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("jump", argument: ["to": "last"])
             case .togglePlay:
                 _ = await page.callDebugger("togglePlay")
+            case .continueToBreakpoint(let direction):
+                _ = await page.callDebugger("continue", argument: ["dir": direction])
+            case .continueOrTogglePlay:
+                _ = await page.callDebugger("continue", argument: ["dir": 1, "orTogglePlay": true])
             case .faster:
                 _ = await page.callDebugger("changeRate", argument: ["by": 1])
             case .slower:
@@ -229,6 +238,42 @@ enum WaveformDebugger {
             "debuggerClockNotBit": String(
                 localized: "waveformDebugger.clockNotBit",
                 defaultValue: "Select a 1-bit signal in the waveform to use as the clock."
+            ),
+        ].merging(breakpointPageStrings()) { first, _ in first }
+    }
+
+    /// Strings of the page's breakpoints: the list, the row menu, the hit messages.
+    private static func breakpointPageStrings() -> [String: String] {
+        [
+            "debuggerBreakpoints": String(localized: "waveformDebugger.breakpoints", defaultValue: "Breakpoints"),
+            "debuggerBreakWhenChanges": String(localized: "waveformDebugger.breakWhenChanges", defaultValue: "Break When Changes"),
+            "debuggerBreakWhenEquals": String(localized: "waveformDebugger.breakWhenEquals", defaultValue: "Break When Equals…"),
+            "debuggerBreakEqualsPrompt": String(localized: "waveformDebugger.breakEqualsPrompt", defaultValue: "Break when %@ equals"),
+            "debuggerBreakEqualsPlaceholder": String(
+                localized: "waveformDebugger.breakEqualsPlaceholder",
+                defaultValue: "For example 'h3f, 8'b1010_??01, 12 or x"
+            ),
+            "debuggerBreakpointChanges": String(localized: "waveformDebugger.breakpointChanges", defaultValue: "%@ changes"),
+            "debuggerBreakpointEquals": String(localized: "waveformDebugger.breakpointEquals", defaultValue: "%1$@ == %2$@"),
+            "debuggerRemoveBreakpoint": String(localized: "waveformDebugger.removeBreakpoint", defaultValue: "Remove Breakpoint"),
+            "debuggerBreakpointHit": String(
+                localized: "waveformDebugger.breakpointHit",
+                defaultValue: "Breakpoint: %1$@ at %2$@ (cycle %3$@)"
+            ),
+            "debuggerNoHitForward": String(localized: "waveformDebugger.noHitForward", defaultValue: "No breakpoint hit before the end."),
+            "debuggerNoHitBack": String(localized: "waveformDebugger.noHitBack", defaultValue: "No breakpoint hit before the start."),
+            "debuggerNoBreakpoints": String(localized: "waveformDebugger.noBreakpoints", defaultValue: "No breakpoints are enabled."),
+            "debuggerBadValue": String(
+                localized: "waveformDebugger.badValue",
+                defaultValue: "“%1$@” is not a value for a %2$@-bit signal."
+            ),
+            "debuggerTooManyChanges": String(
+                localized: "waveformDebugger.tooManyChanges",
+                defaultValue: "%@ changes too often to search here."
+            ),
+            "debuggerBreakpointSignalGone": String(
+                localized: "waveformDebugger.breakpointSignalGone",
+                defaultValue: "%@ is not in this waveform."
             ),
         ]
     }
