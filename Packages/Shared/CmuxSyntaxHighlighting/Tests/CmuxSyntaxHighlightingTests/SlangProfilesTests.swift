@@ -25,6 +25,13 @@ import Testing
         #expect(file.sources == ["rtl/cpu.sv"])
     }
 
+    @Test func aCommentEndsAtACRLFLineEnd() {
+        // A .f saved by a Windows editor: "\r\n" is one Character.
+        let file = SlangBuildFile.parse("// cpu\r\n--top a\r\n# rtl\r\nb.sv\r\n")
+        #expect(file.tops == ["a"])
+        #expect(file.sources == ["b.sv"])
+    }
+
     @Test func aRootWhoseNameStartsWithADotIsSearched() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("slang-dot-\(UUID().uuidString)/.hidden proj").path
         defer { try? FileManager.default.removeItem(atPath: (root as NSString).deletingLastPathComponent) }

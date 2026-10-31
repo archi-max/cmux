@@ -89,6 +89,30 @@ import Testing
         await session.shutdown()
     }
 
+    @Test func aFailedSwitchOutOfExploreModeRestoresExploreMode() async throws {
+        guard let (session, root) = try await Self.session() else { return }
+        try FileManager.default.createDirectory(atPath: root + "/.slang/local", withIntermediateDirectories: true)
+        try "{\"build\": \"\(root)/build.f\"}\n".write(toFile: root + "/.slang/local/server.json", atomically: true, encoding: .utf8)
+        try await session.restart(keepingCompilation: false)
+        try await session.slangExplore()
+        let before = await session.slangCompilationState
+        #expect(before.isExplore)
+        // A switch whose design elaborates nothing, put back to what came before.
+        try await session.slangSetTopLevel(root + "/nomodule.sv")
+        try await session.slangRestore(before)
+        #expect(await session.isInChosenExploreMode)
+        try await session.restart()
+        #expect(try await Self.tops(session).isEmpty) // not the config's build
+        // A top level comes back as itself.
+        try await session.slangSetTopLevel(root + "/top.sv")
+        let top = await session.slangCompilationState
+        try await session.slangExplore()
+        try await session.slangRestore(top)
+        #expect(await session.slangCompilationTarget == .topLevel(root + "/top.sv"))
+        #expect(try await Self.tops(session) == ["top"])
+        await session.shutdown()
+    }
+
     @Test func theEmptyPathReturnsToExploreMode() async throws {
         guard let (session, root) = try await Self.session() else { return }
         try await session.slangSetTopLevel(root + "/top.sv")
