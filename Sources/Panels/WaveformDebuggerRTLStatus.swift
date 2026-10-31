@@ -50,6 +50,12 @@ enum WaveformDebuggerRTLStatus {
         Task { _ = await page.callDebugger("rtlShown", argument: ["time": NSNumber(value: time)]) }
     }
 
+    /// Play started on `waveform`. (Not yet implemented.)
+    static func playStarted(_ waveform: FilePreviewPanel) {}
+
+    /// `editor` closed or stopped linking. (Not yet implemented.)
+    static func editorGone(_ editor: FilePreviewLanguageFeatures) {}
+
     /// The page forgot what it was told (stepping stopped, or a new page).
     static func forget(_ waveform: FilePreviewPanel) {
         sent.removeObject(forKey: waveform)

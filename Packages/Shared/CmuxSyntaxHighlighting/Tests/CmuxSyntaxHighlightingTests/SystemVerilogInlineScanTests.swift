@@ -242,6 +242,12 @@ import Testing
         #expect(cache.opensModule() == false)
         var module = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: "module m;\n  logic a;\nendmodule" as NSString))
         #expect(module.opensModule() == true)
+        // A package, config or primitive file is a design unit too, not a fragment.
+        for unit in ["package p;\n  localparam int W = 8;\nendpackage", "config cfg;\n  design lib.top;\nendconfig",
+                     "primitive mux(output y, input a);\n  table 0:0; endtable\nendprimitive"] {
+            var cache = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: unit as NSString))
+            #expect(cache.opensModule() == true, "\(unit)")
+        }
     }
 
     @Test func aFragmentsLinesBelongToItsPseudoModule() {

@@ -40,6 +40,8 @@ enum PreviewMode { case text, waveform }
 @MainActor final class FilePreviewPanel {
     let workspaceId = UUID()
     let nativeViewSessions = NativeViewSessions()
+    /// The viewer next to this (editor's) panel; nil: WaveformSourceLink.waveform.
+    var near: FilePreviewPanel?
 }
 
 final class LanguageServerSession: @unchecked Sendable {
@@ -67,13 +69,16 @@ final class LanguageServerSession: @unchecked Sendable {
         all.first { $0.path == path }
     }
     var filePath: String { path }
-    var linkPanel: FilePreviewPanel? { nil }
+    var linkPanel: FilePreviewPanel?
     var linkSession: (session: LanguageServerSession, documentURI: URL)? { (session, URL(fileURLWithPath: path)) }
     var debuggerTextView: NSTextView? { textView }
 }
 
 @MainActor enum WaveformDebugger {
     static var stepping = true
+    static var playing = false
+    struct PageState { var playing = false }
+    static func state(of waveform: FilePreviewPanel) -> PageState { PageState(playing: playing) }
     static func isStepping(_ waveform: FilePreviewPanel) -> Bool { stepping }
     static func updateLocals(from editor: FilePreviewLanguageFeatures) {}
 }
@@ -82,7 +87,7 @@ final class LanguageServerSession: @unchecked Sendable {
     static var waveform: FilePreviewPanel?
     /// Values per time, by dump path.
     static var values: [Int64: [String: String]] = [:]
-    static func waveformPanel(near panel: FilePreviewPanel?) -> FilePreviewPanel? { waveform }
+    static func waveformPanel(near panel: FilePreviewPanel?) -> FilePreviewPanel? { panel?.near ?? waveform }
     static func inlineValues(names: [String], dumpInstance: String, waveform: FilePreviewPanel, time: Int64) async -> [String?] {
         names.map { values[time]?[dumpInstance + "." + $0] }
     }
