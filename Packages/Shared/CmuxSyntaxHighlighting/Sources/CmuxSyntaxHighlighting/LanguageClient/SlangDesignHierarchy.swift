@@ -135,27 +135,44 @@ extension LanguageServerSession {
 
     /// Other names of the net at `path` that a simulator may have dumped instead: the instance
     /// ports it is connected to (`.port (name)` of an instance in its scope), and what its scope's
-    /// instantiation connects it to when it is a port. Only plain whole-net connections, never an
-    /// expression or a slice. Instances whose source text is not at hand are skipped.
+    /// instantiation connects it to when it is a port. Only plain whole-net connections between
+    /// declarations of the same width, never an expression, a slice or a width that depends on a
+    /// parameter (one declaration serves every instance, so its hover can't tell). Instances whose
+    /// source text is not at hand are skipped, and nothing is guessed: an alias is a declaration
+    /// the design lists.
     public func slangPortAliases(of path: String) async throws -> [String] {
         let parent = Self.parentPath(of: path)
         let name = String(path.dropFirst(parent.isEmpty ? 0 : parent.count + 1))
         guard !parent.isEmpty, Self.isPlainIdentifier(name) else { return [] }
+        let scope = try await scopeChildrenSkippingUnresolved(parent)
+        guard let item = scope.first(where: { $0.name == name && !$0.isScope }),
+              let width = await declaredWidth(of: item) else { return [] }
+        var texts: [URL: [UInt16]] = [:]
         var aliases: [String] = []
-        for child in try await scopeChildrenSkippingUnresolved(parent) where child.kind == "Instance" {
-            guard let connections = instanceConnections(child) else { continue }
-            for connection in connections where connection.signal == name {
-                aliases.append(parent + "." + child.name + "." + connection.port)
+        for child in scope where child.kind == "Instance" {
+            guard let connections = instanceConnections(child, texts: &texts) else { continue }
+            let ports = connections.filter { $0.signal == name }
+            guard !ports.isEmpty else { continue }
+            let childPath = parent + "." + child.name
+            let childScope = try await scopeChildrenSkippingUnresolved(childPath)
+            for connection in ports {
+                guard let port = childScope.first(where: { $0.name == connection.port && $0.kind == "Port" }),
+                      await declaredWidth(of: port) == width else { continue }
+                aliases.append(childPath + "." + connection.port)
             }
         }
         let grandparent = Self.parentPath(of: parent)
         let instanceName = String(parent.dropFirst(grandparent.isEmpty ? 0 : grandparent.count + 1))
-        if !grandparent.isEmpty, Self.isPlainIdentifier(instanceName) {
+        if item.kind == "Port", !grandparent.isEmpty, Self.isPlainIdentifier(instanceName) {
             let siblings = try await scopeChildrenSkippingUnresolved(grandparent)
             if let instance = siblings.first(where: { $0.name == instanceName && $0.kind == "Instance" }),
-               let connections = instanceConnections(instance) {
+               let connections = instanceConnections(instance, texts: &texts) {
                 for connection in connections where connection.port == name {
-                    if let signal = connection.signal { aliases.append(grandparent + "." + signal) }
+                    // Declared in this scope (not further up, as from inside a generate block).
+                    guard let signal = connection.signal,
+                          let declaration = siblings.first(where: { $0.name == signal && !$0.isScope }),
+                          await declaredWidth(of: declaration) == width else { continue }
+                    aliases.append(grandparent + "." + signal)
                 }
             }
         }
@@ -163,13 +180,57 @@ extension LanguageServerSession {
         return aliases.filter { $0 != path && seen.insert($0).inserted }
     }
 
-    /// The named port connections of an instance, read from its instantiation's text.
-    private func instanceConnections(_ instance: SlangHierarchyItem) -> [(port: String, signal: String?)]? {
-        guard let location = instance.location, let text = sourceText(of: location.uri),
-              let start = Self.utf16Offset(of: location.range.start, in: text),
-              let end = Self.utf16Offset(of: location.range.end, in: text), start < end else { return nil }
-        let units = Array(text.utf16)
-        return Self.portConnections(inInstanceText: String(decoding: units[start..<min(end + 1, units.count)], as: UTF16.self))
+    /// A variable's or port's width as its declaration gives it, from slang-server's hover; nil
+    /// when the hover fails or the declaration's ranges are not plain numbers (a parameter's
+    /// width differs between instances while the hover shows one of them).
+    private func declaredWidth(of item: SlangHierarchyItem) async -> Int? {
+        guard let location = item.location,
+              let hover = try? await hover(uri: location.uri, position: location.range.start) else { return nil }
+        return Self.declaredWidth(fromHover: hover)
+    }
+
+    /// The width in slang-server's hover on a declaration (`Width: `4``; none for one bit), when
+    /// the declaration it quotes has only number ranges.
+    static func declaredWidth(fromHover hover: String) -> Int? {
+        let lines = hover.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let fence = lines.firstIndex(where: { $0.hasPrefix("```") }),
+              let close = lines[(fence + 1)...].firstIndex(where: { $0.hasPrefix("```") }) else { return nil }
+        let declaration = lines[(fence + 1)..<close].joined(separator: "\n")
+        var inRange = false
+        for character in declaration {
+            if character == "[" { inRange = true } else if character == "]" { inRange = false }
+            else if inRange, !(character.isASCII && (character.isNumber || character == ":" || character == " ")) { return nil }
+        }
+        func field(_ label: String) -> String? {
+            for line in lines[..<fence] {
+                let text = line.trimmingCharacters(in: .whitespaces)
+                guard text.hasPrefix(label + " `"), let last = text.lastIndex(of: "`"),
+                      last > text.index(text.startIndex, offsetBy: label.count + 1) else { continue }
+                return String(text[text.index(text.startIndex, offsetBy: label.count + 2)..<last])
+            }
+            return nil
+        }
+        if let width = field("Width:") { return Int(width) }
+        guard let type = field("Type:") else { return nil }
+        let oneBit = ["logic", "bit", "reg", "wire", "logic[0:0]", "bit[0:0]", "reg[0:0]"]
+        return oneBit.contains(type.replacingOccurrences(of: " signed", with: "")) ? 1 : nil
+    }
+
+    /// The named port connections of an instance, read from its instantiation's text (`texts`
+    /// keeps each file's UTF-16 for the next instance).
+    private func instanceConnections(_ instance: SlangHierarchyItem, texts: inout [URL: [UInt16]]) -> [(port: String, signal: String?)]? {
+        guard let location = instance.location else { return nil }
+        let units: [UInt16]
+        if let cached = texts[location.uri] {
+            units = cached
+        } else {
+            guard let text = sourceText(of: location.uri) else { return nil }
+            units = Array(text.utf16)
+            texts[location.uri] = units
+        }
+        guard let start = Self.utf16Offset(of: location.range.start, inUnits: units),
+              let end = Self.utf16Offset(of: location.range.end, inUnits: units), start < end else { return nil }
+        return Self.portConnections(inInstanceText: String(decoding: units[start..<end], as: UTF16.self))
     }
 
     /// The `` `.port (signal)` `` items of an instantiation's text (`name (...)`): the port, and
@@ -185,7 +246,7 @@ extension LanguageServerSession {
         while index < units.count, depth > 0 {
             let unit = units[index]
             if unit == openUnit { depth += 1 } else if unit == closeUnit { depth -= 1 }
-            if unit == dotUnit, depth == 1 {
+            if unit == dotUnit, depth == 1, Self.previousCode(units, before: index).map({ $0 == openUnit || $0 == commaUnit }) == true {
                 var cursor = index + 1
                 while cursor < units.count, isSpace(units[cursor]) { cursor += 1 }
                 let nameStart = cursor
@@ -262,14 +323,47 @@ extension LanguageServerSession {
         // (`#(.W(2))` has no name before its list, and a call `f(.a(1))` follows an operator.)
         guard typeEnd > 0, typeEnd < nameStart else { return nil }
         let previous = units[typeEnd - 1]
-        guard isIdentifierUnit(previous) || previous == closeUnit || previous == commaUnit else { return nil }
+        if isIdentifierUnit(previous) {
+            // The module type, not a keyword or a delay (`begin foo(.a(x))`, `#5 foo(...)`).
+            var typeStart = typeEnd - 1
+            while typeStart > 0, isIdentifierUnit(units[typeStart - 1]) { typeStart -= 1 }
+            let type = String(decoding: units[typeStart..<typeEnd], as: UTF16.self)
+            guard !isDigitUnit(units[typeStart]), !statementKeywords.contains(type) else { return nil }
+        } else if previous == closeUnit {
+            // A parameter list `#(...)`, not a condition (`if (c) foo(.a(x))`).
+            var open = typeEnd - 2
+            var inner = 0
+            while open >= 0 {
+                if units[open] == closeUnit { inner += 1 } else if units[open] == openUnit {
+                    if inner == 0 { break }
+                    inner -= 1
+                }
+                open -= 1
+            }
+            guard open >= 0, previousCode(units, before: open) == hashUnit else { return nil }
+        } else if previous != commaUnit {
+            return nil
+        }
         let instance = String(decoding: units[nameStart..<nameEnd], as: UTF16.self)
         return (instance, nameStart, port)
     }
 
     private static let dotUnit = UInt16(UInt8(ascii: ".")), commaUnit = UInt16(UInt8(ascii: ","))
     private static let openUnit = UInt16(UInt8(ascii: "(")), closeUnit = UInt16(UInt8(ascii: ")"))
-    private static let semicolonUnit = UInt16(UInt8(ascii: ";"))
+    private static let semicolonUnit = UInt16(UInt8(ascii: ";")), hashUnit = UInt16(UInt8(ascii: "#"))
+
+    /// Keywords a task call can follow where a module type would stand.
+    private static let statementKeywords: Set<String> = [
+        "begin", "end", "initial", "final", "always", "always_ff", "always_comb", "always_latch", "return",
+        "else", "fork", "join", "join_any", "join_none", "forever", "do", "void", "default", "assert", "assume", "cover",
+    ]
+
+    /// The last non-space unit before `index`.
+    private static func previousCode(_ units: [UInt16], before index: Int) -> UInt16? {
+        var cursor = index - 1
+        while cursor >= 0, isSpace(units[cursor]) { cursor -= 1 }
+        return cursor >= 0 ? units[cursor] : nil
+    }
     private static let slashUnit = UInt16(UInt8(ascii: "/")), starUnit = UInt16(UInt8(ascii: "*"))
     private static let newlineUnit = UInt16(UInt8(ascii: "\n"))
 
@@ -332,7 +426,10 @@ extension LanguageServerSession {
 
     /// The UTF-16 offset of an LSP position in `text`; nil past its end.
     static func utf16Offset(of position: LSPPosition, in text: String) -> Int? {
-        let units = Array(text.utf16)
+        utf16Offset(of: position, inUnits: Array(text.utf16))
+    }
+
+    static func utf16Offset(of position: LSPPosition, inUnits units: [UInt16]) -> Int? {
         var offset = 0
         var line = 0
         while line < position.line {
