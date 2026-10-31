@@ -208,6 +208,58 @@ struct GoToFileTests {
     }
 
     @Test
+    func testLoaderStopsTheListingToolAtTheByteCap() async throws {
+        // The script runs find in a child of sh; stopping only sh would leave
+        // find blocked on a full pipe and the session stuck loading.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-cap-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<20_000 {
+            FileManager.default.createFile(atPath: root.appendingPathComponent("file-with-a-long-name-\(index).sv").path, contents: nil)
+        }
+        let list = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 30, watchdog: false).command
+        let invocation = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c", list])
+        let started = Date()
+        let finished = Self.Flag()
+        let load = Task.detached {
+            let snapshot = try await GoToFileSnapshotLoader.load(invocation, timeoutSeconds: 30, maxOutputBytes: 16 * 1024)
+            finished.set()
+            return snapshot
+        }
+        while !finished.value, Date().timeIntervalSince(started) < 5 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(finished.value, "the listing never returned after the byte cap")
+        if finished.value {
+            let snapshot = try await load.value
+            #expect(snapshot.isTruncated)
+            #expect(!snapshot.paths.isEmpty)
+        }
+    }
+
+    @Test
+    func testGitListingNeverRunsTheRepositorysFsmonitorHook() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        let root = try SSHFileSearchTests.makeSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.removeItem(at: root.appendingPathComponent(".git"))
+        let marker = root.appendingPathComponent("hook-ran")
+        let hook = root.appendingPathComponent("hook.sh")
+        try Data("#!/bin/sh\ntouch '\(marker.path)'\nexit 1\n".utf8).write(to: hook)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        let setup = try SSHFileSearchTests.run(
+            "git init -q . && git config core.fsmonitor '\(hook.path)' && git add Upper.txt",
+            shell: "/bin/sh", path: "/usr/bin:/bin", directory: root.path
+        )
+        #expect(setup.status == 0)
+        try? FileManager.default.removeItem(at: marker)
+        let command = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 10, watchdog: false).command
+        let output = try SSHFileSearchTests.run(command, shell: "/bin/sh", path: "/usr/bin:/bin")
+        #expect(GoToFileSnapshot.parse(listOutput: output.stdout).paths.contains("Upper.txt"))
+        #expect(!FileManager.default.fileExists(atPath: marker.path), "core.fsmonitor ran")
+    }
+
+    @Test
     func testLoaderFailureNamesTheToolNotTheLoginShell() async {
         let noisy = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c",
             "echo \"/home/u/.bashrc: line 1: noise\" >&2; echo \"fatal: not a git repository\" >&2; exit 3"])
@@ -356,6 +408,13 @@ struct GoToFileTests {
             try await Task.sleep(nanoseconds: 5_000_000)
         }
         Issue.record("condition not met in 2 s")
+    }
+
+    final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flag = false
+        func set() { lock.lock(); flag = true; lock.unlock() }
+        var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     }
 
     private final class CallCounter: @unchecked Sendable {

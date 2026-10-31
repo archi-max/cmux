@@ -149,6 +149,48 @@ struct SSHFileSearchTests {
     }
 
     @Test
+    func testWatchdogReachesTheToolThroughAGNUStyleTimeout() throws {
+        // GNU `timeout` moves its child into a process group of its own unless
+        // given --foreground, which would hide the tool from the watchdog's `kill 0`.
+        let bin = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-fake-timeout-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bin) }
+        let fake = """
+        #!/usr/bin/perl
+        if ($ARGV[0] eq "--foreground") { shift; shift; exec @ARGV or exit 127; }
+        setpgrp(0, 0); shift;
+        my $pid = fork();
+        if ($pid == 0) { exec @ARGV or exit 127; }
+        waitpid($pid, 0); exit($? >> 8);
+
+        """
+        let fakeURL = bin.appendingPathComponent("timeout")
+        try Data(fake.utf8).write(to: fakeURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeURL.path)
+        let token = "33.\(Int.random(in: 1_000...9_999))"
+        let command = SSHRemoteShellScript.command(
+            lines: [SSHRemoteShellScript.timeoutPrefix(seconds: 20), "$w sleep \(token)"],
+            watchdog: true
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = ["-e", Self.setsidExec, "/bin/sh", "-c", command]
+        process.environment = ["PATH": bin.path + ":/usr/bin:/bin"]
+        let stdin = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = FileHandle.nullDevice
+        try process.run()
+        Thread.sleep(forTimeInterval: 0.5)
+        #expect(Self.processCount(matching: "sleep \(token)") == 1)
+        try stdin.fileHandleForWriting.close()
+        let deadline = Date().addingTimeInterval(3)
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        Thread.sleep(forTimeInterval: 0.2)
+        #expect(Self.processCount(matching: "sleep \(token)") == 0)
+        if process.isRunning { process.terminate() }
+    }
+
+    @Test
     func testBannersBeforeTheMarkerAreIgnored() throws {
         let root = try Self.makeSearchTree()
         defer { try? FileManager.default.removeItem(at: root) }
