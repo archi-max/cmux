@@ -464,7 +464,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     r = await evaluate("top.data[7:4]")
     expect(r?["value"] as? String == "4'ha", "an absolute path and a select: \(String(describing: r?["value"]))")
     r = await evaluate("irq", scope: ["top"])
-    expect(r?["value"] as? String == "1'h0" && (r?["bits"] as? String) == "0", "a scope given with the call: \(String(describing: r))")
+    // irq's row is shown in the viewer (binary, as 1-bit rows are): its row's radix.
+    expect(r?["value"] as? String == "1'b0" && (r?["bits"] as? String) == "0", "a scope given with the call, in the row's radix: \(String(describing: r))")
     r = await evaluate("nope + 1")
     expect(r?["error"] as? String == "unknownName" && r?["message"] as? String == "nope is not in this waveform (column 1)",
            "an unknown name: \(String(describing: r))")
@@ -535,8 +536,35 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       document.querySelector('#status-cycle .cmux-eval .add').click();
       return null
     """)
-    rows = await watchRows(becoming: [["data", "8'ha5", ""], ["data + 1", "32'h000000a6", ""], ["irq", "1'h0", ""]])
-    expect(rows.last == ["irq", "1'h0", ""], "the field's + adds a watch: \(rows)")
+    rows = await watchRows(becoming: [["data", "8'ha5", ""], ["data + 1", "32'h000000a6", ""], ["irq", "1'b0", ""]])
+    expect(rows.last == ["irq", "1'b0", ""], "the field's + adds a watch: \(rows)")
+    // A signal row's menu adds it as a watch, by its path from the top.
+    let added = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const contexts = Array.from(d.querySelectorAll('[data-vscode-context]'))
+        .map((el) => { try { return JSON.parse(el.getAttribute('data-vscode-context').replace(/%x20/g, ' ')); } catch (e) { return null; } })
+        .filter((c) => c && c.webviewSection === 'signal' && c.netlistId !== undefined);
+      const before = cmuxWaveform.debugger.watches().length;
+      for (const c of contexts) {
+        const item = window.cmuxDebugger.rowMenuItems(c).find((i) => i.label === 'Add Watch');
+        if (!item) { return 'no Add Watch item'; }
+        await item.run();
+        break;
+      }
+      const list = cmuxWaveform.debugger.watches();
+      return list.length === before + 1 ? list[list.length - 1].expr : 'count ' + list.length;
+    """) as? String
+    expect(added?.hasPrefix("top.") == true, "a row's Add Watch adds its path: \(String(describing: added))")
+    // Evaluate from cmux (the editor's Evaluate at Cycle): shown in the strip's field and remembered.
+    let shownEval = await call("""
+      await cmuxWaveform.debugger.evaluate({ expr: 'state', scope: ['top'], show: true });
+      const input = document.querySelector('#status-cycle .cmux-eval input');
+      const result = document.querySelector('#status-cycle .cmux-eval .result');
+      input.value = '';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      return [result.textContent, input.value];
+    """) as? [String]
+    expect(shownEval == ["= 4'h3 (width 4)", "state"], "an evaluation from cmux shows in the strip and its history: \(String(describing: shownEval))")
     // A session's watches come back in place of the page's.
     _ = await dbg("restoreWatches({ items: ['mode', 'state'] })")
     rows = await watchRows(becoming: [["mode", "2'h2", ""], ["state", "4'h3", ""]])
