@@ -149,6 +149,22 @@ struct SlangIncludeFragmentTests {
         #expect(LanguageServerSession.includeDirectives(in: text) == ["a//b.sv", "yes.sv", "`YES"])
     }
 
+    @Test func includeDirectivePositionsAreUTF16LinesAndColumns() {
+        // é is one UTF-16 unit, 😀 two; a macro's position is inside its name.
+        let text = "/* é\n */ `include \"a.sv\"\n  \"😀\" `include `M\n"
+        let found = LanguageServerSession.includeDirectiveLocations(in: text)
+        #expect(found.map(\.target) == ["a.sv", "`M"])
+        #expect(found.map(\.position) == [LSPPosition(line: 1, character: 14), LSPPosition(line: 2, character: 17)])
+    }
+
+    @Test func unclosedCommentsAndStringsEndTheScan() {
+        #expect(LanguageServerSession.includeDirectives(in: "`include \"a.sv\"\n/* `include \"b.sv\"") == ["a.sv"])
+        #expect(LanguageServerSession.includeDirectives(in: "x = \"open\n`include \"c.sv\"") == ["c.sv"])
+        #expect(LanguageServerSession.includeDirectives(in: "`include").isEmpty)
+        #expect(LanguageServerSession.includeDirectives(in: "`include   ").isEmpty)
+        #expect(LanguageServerSession.includeDirectives(in: "`includes \"no.sv\"").isEmpty)
+    }
+
     @Test func includeTargetsMatchTheFullPath() {
         typealias S = LanguageServerSession
         // Next to the includer.
