@@ -29,6 +29,7 @@
 #                                        (built on the host on first use) and
 #                                        print per-signal timings and memory
 #   ./run.sh fsdb-locals                 FSDB inline values of pinned signals
+#   ./run.sh breakpoints                 debugger breakpoints: continue, reverse, landing, play stops, list
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
 #                                        (helper stand-in, no host)
@@ -72,6 +73,13 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger-fsdb"
     "$OUT/debugger-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$1" "$2" "$3" "$OUT/debugger-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/debugger-fsdb.log"
     grep -q '^DEBUGGER FSDB CHECKS PASSED' "$OUT/debugger-fsdb.log"
+    ;;
+  breakpoints)
+    swiftc -O "$HERE/breakpoints/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/breakpoints"
+    python3 "$HERE/breakpoints/make-vcd.py" "$OUT"
+    "$OUT/breakpoints" "$ASSETS" "$OUT/breakpoints.vcd" "$OUT/breakpoints.png" | grep -v '^\[log\]' | tee "$OUT/breakpoints.log"
+    grep -q '^BREAKPOINT CHECKS PASSED' "$OUT/breakpoints.log"
     ;;
   fsdb-locals)
     swiftc -O "$HERE/fsdb-locals/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \

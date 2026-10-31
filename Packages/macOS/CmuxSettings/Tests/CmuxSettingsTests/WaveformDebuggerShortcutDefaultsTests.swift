@@ -1,8 +1,8 @@
 import Testing
 @testable import CmuxSettings
 
-/// The waveform debugger's keys are bare function keys (F10 steps, ⇧F10 steps back, F5 plays or
-/// pauses), so the binding policy must let each run its default, as the diff viewer's bare keys do.
+/// The waveform debugger's keys are bare function keys (F10 steps, ⇧F10 steps back, F5 continues to
+/// a breakpoint or plays, ⇧F5 reverse-continues), so the binding policy must let each run its default, as the diff viewer's bare keys do.
 @Suite("Waveform debugger shortcut defaults")
 struct WaveformDebuggerShortcutDefaultsTests {
     @Test func eachDebuggerKeyRunsItsDefault() {
@@ -10,6 +10,7 @@ struct WaveformDebuggerShortcutDefaultsTests {
             (ShortcutAction.stepWaveformCycleForward, "f10", false),
             (.stepWaveformCycleBack, "f10", true),
             (.toggleWaveformPlayback, "f5", false),
+            (.reverseContinueWaveform, "f5", true),
         ] {
             #expect(action.shortcutBindingPolicyResult(for: StoredShortcut(first: ShortcutStroke(key: key, shift: shift))) == .accepted, "\(action)")
             let effective = action.effectivePersistedShortcut(nil)
