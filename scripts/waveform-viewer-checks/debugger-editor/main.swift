@@ -87,8 +87,19 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     let calls = page.highlightCalls.count
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
-    expect(editor.session.asked == ["tb.dut.ex_mem", "tb.dut.pc_next", "tb.dut.pc_next"] && page.highlightCalls.count == calls,
-           "a failed cone is not cached, an answered one is; unchanged rows not resent: \(editor.session.asked)")
+    expect(editor.session.asked == ["tb.dut.ex_mem", "tb.dut.pc_next"] && page.highlightCalls.count == calls,
+           "cones cached, a failed one for a while; unchanged rows not resent: \(editor.session.asked)")
+    // A design change forgets them all; a failure is asked again once its wait is over.
+    WaveformDebuggerEditorHighlights.forgetCones()
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    expect(editor.session.asked.count == 4, "after a design change both are asked again: \(editor.session.asked)")
+    WaveformDebuggerEditorHighlights.failedConeRetryInterval = 0.1
+    try? await Task.sleep(nanoseconds: 200_000_000)
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    expect(editor.session.asked.suffix(1) == ["tb.dut.pc_next"] && editor.session.asked.count == 5, "a failed cone is asked again after its wait: \(editor.session.asked)")
+    WaveformDebuggerEditorHighlights.failedConeRetryInterval = 30
 
     // Typing above the highlights moves them with the text; clearing must still take them all away.
     textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "// x\n")
@@ -102,6 +113,17 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
         }
     }
     expect(leftover == 0, "no highlight is left behind after an edit: \(leftover)")
+    textView.string = source
+
+    // An edit that keeps the length still makes the drawn ranges stale: the selection is not drawn back.
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    let declLine = LSPLocation(uri: URL(fileURLWithPath: "/rtl/cpu.sv"), range: LSPRange(start: LSPPosition(line: 2, character: 15), end: LSPPosition(line: 2, character: 27)))
+    WaveformDebuggerEditorHighlights.showSelection(declLine, drivers: [], near: editor)
+    textView.textStorage?.replaceCharacters(in: NSRange(location: lineRanges[1].location + 2, length: 5), with: "LOGIC")
+    WaveformDebuggerEditorHighlights.clear(in: textView)
+    expect(attribute(.backgroundColor, line: 2) == nil, "a same-length edit: no selection drawn at stale ranges")
+    WaveformDebuggerEditorHighlights.showSelection(nil, drivers: [], near: nil)
     textView.string = source
 
     // A newer refresh while an older one still waits for the page: the newer one draws.
