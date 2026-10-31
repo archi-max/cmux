@@ -186,6 +186,10 @@ public enum ShortcutAction: String, CaseIterable, Sendable, Hashable, SettingCod
     case saveFilePreview
     /// Toggles soft wrapping while a file-editor text view owns focus.
     case toggleFileEditorWordWrap
+    /// Adds the SystemVerilog signal under the editor's caret to the workspace's waveform viewer.
+    case addSignalToWaveform
+    /// Opens the waveform viewer's selected signal in the SystemVerilog editor.
+    case revealWaveformSignalInSource
     case openBrowser
     case focusBrowserAddressBar
     case browserBack
@@ -346,8 +350,10 @@ extension ShortcutAction {
             return .or(.atom(.browserFocus), .atom(.markdownFocus))
         case .browserZoomIn, .browserZoomOut, .browserZoomReset:
             return .or(.atom(.browserFocus), .atom(.filePreviewTextEditorFocus))
-        case .toggleFileEditorWordWrap:
+        case .toggleFileEditorWordWrap, .addSignalToWaveform:
             return .atom(.filePreviewTextEditorFocus)
+        case .revealWaveformSignalInSource:
+            return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))
         case .markdownZoomIn, .markdownZoomOut, .markdownZoomReset:
             return .atom(.markdownFocus)
         case .simulatorHome, .simulatorRotateLeft, .simulatorRotateRight,

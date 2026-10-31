@@ -2699,6 +2699,8 @@
               "fileExplorerOpenSelectionFinderAlias",
               "saveFilePreview",
               "toggleFileEditorWordWrap",
+              "addSignalToWaveform",
+              "revealWaveformSignalInSource",
               "openBrowser",
               "focusBrowserAddressBar",
               "browserBack",

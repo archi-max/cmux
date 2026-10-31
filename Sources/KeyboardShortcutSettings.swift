@@ -205,6 +205,7 @@ enum KeyboardShortcutSettings {
 
         // Panels
         case saveFilePreview, toggleFileEditorWordWrap
+        case addSignalToWaveform, revealWaveformSignalInSource
         case openBrowser
         case focusBrowserAddressBar
         case browserBack, browserForward, browserReload
@@ -384,6 +385,8 @@ enum KeyboardShortcutSettings {
             case .fileExplorerOpenSelectionFinderAlias: return String(localized: "shortcut.fileExplorerOpenSelectionFinderAlias.label", defaultValue: "File Explorer: Open Selection (Finder Alias)")
             case .saveFilePreview: return String(localized: "shortcut.saveFilePreview.label", defaultValue: "Save File Preview")
             case .toggleFileEditorWordWrap: return String(localized: "shortcut.toggleFileEditorWordWrap.label", defaultValue: "Toggle File Editor Word Wrap")
+            case .addSignalToWaveform: return String(localized: "shortcut.addSignalToWaveform.label", defaultValue: "Add Signal to Waveform")
+            case .revealWaveformSignalInSource: return String(localized: "shortcut.revealWaveformSignalInSource.label", defaultValue: "Show Waveform Signal in Source")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .focusBrowserAddressBar: return String(localized: "command.browserFocusAddressBar.title", defaultValue: "Focus Address Bar")
             case .browserBack: return String(localized: "menu.view.back", defaultValue: "Back")
@@ -695,6 +698,10 @@ enum KeyboardShortcutSettings {
             case .saveFilePreview:
                 return StoredShortcut(key: "s", command: true, shift: false, option: false, control: false)
             case .toggleFileEditorWordWrap: return StoredShortcut(key: "z", command: false, shift: false, option: true, control: false)
+            // Verdi's nTrace "Add to nWave" key; only claimed in SystemVerilog editors.
+            case .addSignalToWaveform: return StoredShortcut(key: "w", command: false, shift: false, option: false, control: true)
+            // Verdi's Alt+Shift+D "trace driver"; only claimed while a waveform viewer is focused.
+            case .revealWaveformSignalInSource: return StoredShortcut(key: "d", command: false, shift: true, option: true, control: false)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .focusBrowserAddressBar:

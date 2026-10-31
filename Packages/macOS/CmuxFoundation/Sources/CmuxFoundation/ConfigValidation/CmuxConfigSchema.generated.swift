@@ -2709,6 +2709,8 @@ enum CmuxEmbeddedConfigSchema {
               "fileExplorerOpenSelectionFinderAlias",
               "saveFilePreview",
               "toggleFileEditorWordWrap",
+              "addSignalToWaveform",
+              "revealWaveformSignalInSource",
               "openBrowser",
               "focusBrowserAddressBar",
               "browserBack",

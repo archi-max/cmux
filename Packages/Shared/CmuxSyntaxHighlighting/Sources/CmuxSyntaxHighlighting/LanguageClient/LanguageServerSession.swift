@@ -275,6 +275,13 @@ public actor LanguageServerSession {
         return LSPResponseDecoding.completionItems(result)
     }
 
+    /// Runs `workspace/executeCommand` with zero or one argument and returns its raw result.
+    func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil) async throws -> JSONValue {
+        var params: [String: JSONValue] = ["command": .string(command)]
+        params["arguments"] = .array(argument.map { [$0] } ?? [])
+        return try await request("workspace/executeCommand", params: .object(params), timeout: timeout)
+    }
+
     // MARK: Diagnostics
 
     /// Every textDocument/publishDiagnostics notification. Multiple consumers may each call this to get their own stream.
@@ -496,7 +503,7 @@ public actor LanguageServerSession {
         return .object(params)
     }
 
-    private func positionParams(uri: URL, position: LSPPosition) -> JSONValue {
+    func positionParams(uri: URL, position: LSPPosition) -> JSONValue {
         .object([
             "textDocument": .object(["uri": .string(serverURI(for: uri))]),
             "position": .object(["line": .int(position.line), "character": .int(position.character)]),
@@ -537,7 +544,7 @@ public actor LanguageServerSession {
 
     /// Maps a server URI back to the URL the editor used for it, or for its
     /// workspace root when the file was never opened.
-    private func editorURL(forServerURI string: String) -> URL? {
+    func editorURL(forServerURI string: String) -> URL? {
         guard let url = URL(string: string) else { return nil }
         guard url.isFileURL else { return url }
         let path = url.path

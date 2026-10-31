@@ -415,8 +415,89 @@
     }
   }
 
+  // ---- source link (SystemVerilog editor <-> waveform) ----
+  // cmux calls these through callAsyncJavaScript. Paths are dump paths
+  // ("top_tb.dut.pc"); cmux maps them to and from design paths.
+  //   scopeChildren(path) -> [{ name, isScope }] | null   ('' lists the tops)
+  //   hasSignal(path) -> bool
+  //   addSignal(path) -> bool   adds it unless shown, then selects it
+  //   selectSignal(path) -> bool
+  //   setMarker(time)
+  //   selectedSignal() -> path | null
+  // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
+  const link = (() => {
+    let selectedPath = null;
+
+    webviewHandlers.emitEvent = (m) => {
+      if (m.eventType === 'signalSelect' && m.eventData && m.eventData.instancePath) {
+        selectedPath = m.eventData.instancePath[0] || null;
+      }
+    };
+
+    async function scopeChildren(path) {
+      if (!backend) { return null; }
+      let items = doc.netlist;
+      for (const part of path ? path.split('.') : []) {
+        const item = items.find((x) => x.name === part);
+        if (!item || item.kind !== 'scope') { return null; }
+        items = await getChildren(item);
+      }
+      return items.map((x) => ({ name: x.name, isScope: x.kind === 'scope' }));
+    }
+
+    function isShown(v) {
+      const shown = (viewerContext.webview && viewerContext.webview.displayedSignals) || [];
+      return shown.some((s) => s.netlistId === v.netlistId);
+    }
+
+    async function selectSignal(path) {
+      const v = await findVariable(path);
+      if (!v || !initSent) { return false; }
+      toWebview({ command: 'setSelectedSignal', netlistId: v.netlistId });
+      return true;
+    }
+
+    async function addSignal(path) {
+      const v = await findVariable(path);
+      if (!v || !initSent) { return false; }
+      if (!isShown(v)) { addVariable(v); }
+      // add-variable is handled before this message, so the new row exists.
+      toWebview({ command: 'setSelectedSignal', netlistId: v.netlistId });
+      return true;
+    }
+
+    // Double-click on a signal's name in the viewer's label column.
+    function attachToFrame() {
+      const frameDocument = iframe.contentDocument;
+      if (!frameDocument) { return; }
+      frameDocument.addEventListener('dblclick', (e) => {
+        const label = e.target && e.target.closest && e.target.closest('.waveform-label');
+        if (!label) { return; }
+        let context;
+        try {
+          context = JSON.parse((label.getAttribute('data-vscode-context') || '').replace(/%x20/g, ' '));
+        } catch (error) {
+          return;
+        }
+        if (context.webviewSection !== 'signal' || !context.signalName) { return; }
+        const path = context.scopePath ? context.scopePath + '.' + context.signalName : context.signalName;
+        toNative({ type: 'revealInSource', path });
+      });
+    }
+    iframe.addEventListener('load', attachToFrame);
+
+    return {
+      scopeChildren,
+      hasSignal: async (path) => !!(await findVariable(path)),
+      addSignal,
+      selectSignal,
+      setMarker: (time) => { toWebview({ command: 'setMarker', time: Number(time), markerType: 0 }); },
+      selectedSignal: () => selectedPath,
+    };
+  })();
+
   window.cmuxWaveform = { open, setTheme, setStatus, applyThemeTo, fromWebview, viewerContext, commandHandlers,
-    deliverValueChanges, addVariableByPath, stats };
+    deliverValueChanges, addVariableByPath, stats, link };
   applyThemeTo(document);
   toNative({ type: 'ready' });
 })();

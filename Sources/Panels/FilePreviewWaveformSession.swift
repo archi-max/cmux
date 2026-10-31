@@ -306,6 +306,22 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         return detail.isEmpty ? text : text + "\n\n" + detail
     }
 
+    /// Calls `window.cmuxWaveform.link.<function>(argument)` and returns its
+    /// (awaited) result; nil when the page is not ready, the call threw, or it returned null.
+    func callLink(_ function: String, argument: Any? = nil) async -> Any? {
+        guard let webView, isPageReady else { return nil }
+        var arguments: [String: Any] = [:]
+        if let argument { arguments["argument"] = argument }
+        let body = "const link = window.cmuxWaveform && window.cmuxWaveform.link;\n"
+            + "return link ? await link.\(function)(\(argument == nil ? "" : "argument")) : null;"
+        do {
+            let result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: .page)
+            return result is NSNull ? nil : result
+        } catch {
+            return nil
+        }
+    }
+
     private func evaluate(function: String, argument: [String: Any]) {
         guard let webView,
               let data = try? JSONSerialization.data(withJSONObject: argument),
@@ -357,6 +373,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             openFileInPage()
         case "opened":
             webContentProcessRecoveryAttempts = 0
+        case "revealInSource":
+            if let path = body["path"] as? String, let panel {
+                WaveformSourceLink.revealInSource(dumpPath: path, waveformPanel: panel)
+            }
         case "copy":
             if let text = body["text"] as? String {
                 NSPasteboard.general.clearContents()

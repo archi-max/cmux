@@ -55,11 +55,17 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var completionTask: Task<Void, Never>?
     private var formatTask: Task<Void, Never>?
 
+    /// Every attached instance, for the waveform link's lookup of a workspace's language server.
+    private static let liveInstances = NSHashTable<FilePreviewLanguageFeatures>.weakObjects()
+    /// When the user last clicked or typed in this editor.
+    private(set) var lastActivity = Date.distantPast
+
     private init(filePath: String, textView: SavingTextView) {
         self.filePath = filePath
         self.textView = textView
         super.init()
         installTrackingArea()
+        Self.liveInstances.add(self)
     }
 
     deinit {
@@ -99,6 +105,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Ends the server document and removes everything drawn on the text view.
     func detach() {
         isDetached = true
+        Self.liveInstances.remove(self)
         startTask?.cancel()
         changeTask?.cancel()
         diagnosticsTask?.cancel()
@@ -237,7 +244,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         completionMirror = mirror
     }
 
-    private func sendCurrentText() async {
+    func sendCurrentText() async {
         guard let text = textView?.string else { return }
         await completionMirror?.change(text: text)
         guard let session, let documentURI, text != lastSentText else { return }
@@ -418,6 +425,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// Cmd-click on an identifier goes to its definition.
     func handleMouseDown(_ event: NSEvent) -> Bool {
+        lastActivity = Date()
         guard !isDetached, event.clickCount == 1,
               event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
               let textView, let storage = textView.textStorage,
@@ -433,6 +441,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// F12, Shift-F12 and Ctrl-Space.
     func handleKeyDown(_ event: NSEvent) -> Bool {
+        lastActivity = Date()
         guard !isDetached, let textView else { return false }
         let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
@@ -475,7 +484,153 @@ final class FilePreviewLanguageFeatures: NSObject {
         references.target = self
         menu.insertItem(definition, at: 0)
         menu.insertItem(references, at: 1)
-        menu.insertItem(.separator(), at: 2)
+        var separatorIndex = 2
+        if canAddToWaveform {
+            let addToWaveform = NSMenuItem(
+                title: String(localized: "filePreview.language.addToWaveform", defaultValue: "Add to Waveform"),
+                action: #selector(addToWaveformFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            let shortcut = KeyboardShortcutSettings.shortcut(for: .addSignalToWaveform)
+            if let key = shortcut.menuItemKeyEquivalent {
+                addToWaveform.keyEquivalent = key
+                addToWaveform.keyEquivalentModifierMask = shortcut.modifierFlags
+            }
+            addToWaveform.target = self
+            menu.insertItem(addToWaveform, at: separatorIndex)
+            separatorIndex += 1
+        }
+        menu.insertItem(.separator(), at: separatorIndex)
+    }
+
+    @objc private func addToWaveformFromMenu(_ sender: Any?) {
+        guard let textView else { return }
+        addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location)
+    }
+
+    /// Whether the workspace has a waveform viewer to add signals to. The
+    /// add shortcut is claimed only then, so Ctrl-W keeps its AppKit meaning otherwise.
+    var canAddToWaveform: Bool {
+        !isDetached && WaveformSourceLink.waveformPanel(near: textView?.panel as? FilePreviewPanel) != nil
+    }
+
+    /// Adds the signal under the caret to the workspace's waveform viewer. False when there is none.
+    @discardableResult
+    func addSignalUnderCaretToWaveform() -> Bool {
+        guard canAddToWaveform, let textView else { return false }
+        addSignalToWaveform(at: textView.selectedRange().location)
+        return true
+    }
+
+    private func addSignalToWaveform(at index: Int) {
+        guard let textView else { return }
+        guard let session, let documentURI, let storage = textView.textStorage,
+              let identifier = FilePreviewLanguageIdentifier.range(containing: index, in: storage.string as NSString)
+                ?? FilePreviewLanguageIdentifier.range(containing: index - 1, in: storage.string as NSString) else {
+            NSSound.beep()
+            return
+        }
+        let position = FilePreviewLSPLineIndex(textView.string).position(at: identifier.location)
+        requestTask?.cancel()
+        requestTask = Task { [weak self] in
+            // The server must see the current text.
+            await self?.sendCurrentText()
+            guard let self, !Task.isCancelled else { return }
+            let message = await WaveformSourceLink.addSignal(
+                session: session,
+                documentURI: documentURI,
+                position: position,
+                editorPanel: self.textView?.panel as? FilePreviewPanel,
+                rootKey: self.linkRootKey,
+                chooseInstance: { [weak self] paths in await self?.chooseInstance(paths, anchoredAt: identifier.location) ?? [] }
+            )
+            guard !Task.isCancelled, let message else { return }
+            self.showLinkMessage(message, at: identifier.location)
+        }
+    }
+
+    // MARK: - Waveform link support
+
+    /// The language server and document of this editor, once started.
+    var linkSession: (session: LanguageServerSession, documentURI: URL)? {
+        guard !isDetached, let session, let documentURI else { return nil }
+        return (session, documentURI)
+    }
+
+    /// Identifies this editor's design for the saved path mapping: the server root, plus the SSH host for remote files.
+    var linkRootKey: String {
+        let root = context?.rootURI?.standardizedFileURL.path ?? (filePath as NSString).deletingLastPathComponent
+        return (context?.remote?.providerIdentity ?? "local") + "|" + root
+    }
+
+    var linkWorkspaceId: UUID? {
+        (textView?.panel as? FilePreviewPanel)?.workspaceId
+    }
+
+    /// The most recently used live editor with a language server in `workspaceId`.
+    static func mostRecentLinkable(inWorkspace workspaceId: UUID) -> FilePreviewLanguageFeatures? {
+        liveInstances.allObjects
+            .filter { $0.linkWorkspaceId == workspaceId && $0.linkSession != nil }
+            .max { $0.lastActivity < $1.lastActivity }
+    }
+
+    /// The live editor whose document is `path` (a remote path for SSH files).
+    static func linkable(showingDocumentPath path: String) -> FilePreviewLanguageFeatures? {
+        liveInstances.allObjects.first { $0.linkSession?.documentURI.standardizedFileURL.path == path }
+    }
+
+    /// The editor's current text.
+    var linkText: String? {
+        textView?.string
+    }
+
+    /// A short note anchored at `index` (or the caret), shown like a hover.
+    func showLinkMessage(_ message: String, at index: Int? = nil) {
+        guard let textView else { return }
+        let location = index ?? textView.selectedRange().location
+        guard let rect = viewRect(forCharacterRange: NSRange(location: location, length: 0)) else { return }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentViewController = FilePreviewLanguageHoverViewController(sections: [message])
+        hoverPopover?.close()
+        hoverPopover = popover
+        hoverCharacterRange = nil
+        popover.show(relativeTo: rect, of: textView, preferredEdge: .minY)
+    }
+
+    /// Asks which instance's signal to add when the module is instantiated more than once.
+    private func chooseInstance(_ paths: [String], anchoredAt index: Int) async -> [String] {
+        guard let textView else { return [] }
+        let menu = NSMenu(title: String(localized: "filePreview.language.chooseInstance", defaultValue: "Add Which Instance?"))
+        menu.autoenablesItems = false
+        let chooser = FilePreviewLinkMenuChooser()
+        for (offset, path) in paths.enumerated() {
+            let item = NSMenuItem(title: path, action: #selector(FilePreviewLinkMenuChooser.choose(_:)), keyEquivalent: "")
+            item.target = chooser
+            item.tag = offset
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let all = NSMenuItem(
+            title: String(localized: "filePreview.language.addAllInstances", defaultValue: "All Instances"),
+            action: #selector(FilePreviewLinkMenuChooser.choose(_:)),
+            keyEquivalent: ""
+        )
+        all.target = chooser
+        all.tag = -1
+        menu.addItem(all)
+        let anchor = viewRect(forCharacterRange: NSRange(location: index, length: 0)) ?? .zero
+        menu.popUp(positioning: nil, at: NSPoint(x: anchor.minX, y: anchor.maxY), in: textView)
+        guard let tag = chooser.chosenTag else { return [] }
+        return tag < 0 ? paths : [paths[tag]]
+    }
+
+    /// Lists `locations` in a menu like Find References, anchored at `range`.
+    func presentLocations(_ locations: [LSPLocation], anchoredAt range: LSPRange) {
+        guard let textView else { return }
+        let index = FilePreviewLSPLineIndex(textView.string).offset(for: range.start)
+        presentReferences(locations, anchoredAt: index)
     }
 
     @objc private func goToDefinitionFromMenu(_ sender: Any?) {
@@ -534,7 +689,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         }
     }
 
-    private func presentReferences(_ locations: [LSPLocation], anchoredAt index: Int) {
+    func presentReferences(_ locations: [LSPLocation], anchoredAt index: Int) {
         guard let textView, let storage = textView.textStorage else { return }
         guard !locations.isEmpty else {
             NSSound.beep()
@@ -578,7 +733,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         return (path as NSString).lastPathComponent
     }
 
-    private func navigate(to location: LSPLocation) {
+    func navigate(to location: LSPLocation) {
         guard let textView, let context else { return }
         let targetPath = location.uri.standardizedFileURL.path
         if targetPath == context.documentURI.standardizedFileURL.path {

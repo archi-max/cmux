@@ -272,8 +272,10 @@ extension KeyboardShortcutSettings.Action {
             return .browserPanel
         case .browserZoomIn, .browserZoomOut, .browserZoomReset:
             return .browserOrFilePreviewTextEditor
-        case .toggleFileEditorWordWrap:
+        case .toggleFileEditorWordWrap, .addSignalToWaveform:
             return .filePreviewTextEditor
+        case .revealWaveformSignalInSource:
+            return .nonBrowserPanel
         case .markdownZoomIn, .markdownZoomOut, .markdownZoomReset:
             return .markdownPanel
         case .simulatorHome, .simulatorRotateLeft, .simulatorRotateRight,
