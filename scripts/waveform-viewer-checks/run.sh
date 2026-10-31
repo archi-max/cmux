@@ -28,6 +28,10 @@
 #                                        open a remote FSDB through the helper
 #                                        (built on the host on first use) and
 #                                        print per-signal timings and memory
+#   ./run.sh fsdb-locals                 FSDB inline values of pinned signals
+#                                        while the debugger's Locals shows,
+#                                        refills and removes the same signals
+#                                        (helper stand-in, no host)
 #   ./run.sh parity                      terminal-link matcher (50k-char lines),
 #                                        link misses fall through, settings
 #                                        clamps, no page-named save path,
@@ -68,6 +72,12 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger-fsdb"
     "$OUT/debugger-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$1" "$2" "$3" "$OUT/debugger-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/debugger-fsdb.log"
     grep -q '^DEBUGGER FSDB CHECKS PASSED' "$OUT/debugger-fsdb.log"
+    ;;
+  fsdb-locals)
+    swiftc -O "$HERE/fsdb-locals/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/fsdb-locals"
+    "$OUT/fsdb-locals" "$ASSETS" "$OUT/fsdb-locals.png" | grep -v '^\[log\]' | tee "$OUT/fsdb-locals.log"
+    grep -q '^FSDB LOCALS CHECKS PASSED' "$OUT/fsdb-locals.log"
     ;;
   debugger)
     swiftc -O "$HERE/debugger/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
