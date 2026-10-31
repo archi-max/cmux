@@ -208,6 +208,8 @@ extension SlangCompilationActions {
                 slangProfileLogger.error("couldn't list slang profiles of \(root, privacy: .public)")
                 return nil
             }
+            // A listing a forced refresh replaced (started before a save) doesn't overwrite the newer one.
+            guard listingTasks[key]?.token == token else { return listing }
             listings[key] = CachedListing(listing: listing, at: Date())
             for other in FilePreviewLanguageFeatures.allLinkables where other.linkRootKey == key {
                 other.updateSlangHeader()
@@ -709,8 +711,10 @@ extension SlangCompilationActions {
         for editor in FilePreviewLanguageFeatures.allLinkables where editor.linkHostIdentity == hostIdentity {
             guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted,
                   let root = session.rootURI?.path else { continue }
-            // Profiles also live outside the root (~/.config/cmux-slang): list again.
+            // Profiles also live outside the root (~/.config/cmux-slang): list again, not reusing a
+            // listing that started before the save.
             listings[editor.linkRootKey] = nil
+            refreshListing(for: editor, force: true)
             // The server's form of both paths (symlinks and /private resolved locally).
             let savedPath = session.serverPath(for: URL(fileURLWithPath: path))
             if isConfig, [".slang/server.json", SlangServerConfigFile.relativePath].contains(where: {
