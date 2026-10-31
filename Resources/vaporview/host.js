@@ -104,6 +104,8 @@
   }
 
   function toWebview(msg) {
+    // A view applied over the rows replaces any add still on its way.
+    if (msg && msg.command === 'apply-state') { pendingAdds.clear(); }
     if (iframe.contentWindow) { iframe.contentWindow.postMessage(msg, '*'); }
   }
 
@@ -535,23 +537,33 @@
   const pendingAdds = new Map();
   const isPending = (id, now) => { const t = pendingAdds.get(id); return t !== undefined && now - t < 2000; };
 
-  // Every add (the netlist tree, its menu and keys, a drop, the editor, the
-  // API) goes through here: a signal shown outside the debugger's Locals, or
-  // still on its way, is not added again. Asked for alone, its row is
-  // selected, as VaporView's add with reveal does. Locals itself leaves out
-  // what is shown outside it (cmux-debugger.js).
-  function addVariables(vars, groupPath, index) {
-    const shown = shownIds(true);
+  // Shown outside the debugger's Locals, or on its way there.
+  function alreadyShown(netlistId, shown = shownIds(true), now = Date.now()) {
+    return shown.has(netlistId) || isPending(netlistId, now);
+  }
+
+  // Every add goes through here. An explicit add (the netlist tree's
+  // double-click, + and Enter, a drop, the API by id) adds a row even for a
+  // shown signal, as VaporView does. mode 'bulk' (Add All in Scope, from the
+  // netlist menu or the editor) leaves out shown signals and repeats; mode
+  // 'reveal' (a pick by name, the editor's Add to Waveform) selects a shown
+  // signal's row instead, as VaporView's add with reveal does. Locals leaves
+  // out what is shown outside it (cmux-debugger.js).
+  function addVariables(vars, groupPath, index, mode) {
     const now = Date.now();
     const asked = vars.filter(Boolean);
-    const seen = new Set();
-    vars = asked.filter((v) => {
-      if (shown.has(v.netlistId) || isPending(v.netlistId, now) || seen.has(v.netlistId)) { return false; }
-      seen.add(v.netlistId);
-      return true;
-    });
+    vars = asked;
+    if (mode === 'bulk' || mode === 'reveal') {
+      const shown = shownIds(true);
+      const seen = new Set();
+      vars = asked.filter((v) => {
+        if (alreadyShown(v.netlistId, shown, now) || seen.has(v.netlistId)) { return false; }
+        seen.add(v.netlistId);
+        return true;
+      });
+    }
     if (!vars.length) {
-      if (asked.length === 1) { toWebview({ command: 'setSelectedSignal', netlistId: asked[0].netlistId }); }
+      if (mode === 'reveal' && asked.length === 1) { toWebview({ command: 'setSelectedSignal', netlistId: asked[0].netlistId }); }
       return;
     }
     vars.forEach((v) => pendingAdds.set(v.netlistId, now));
@@ -728,6 +740,8 @@
     const unapplied = config.restore && config.restore.state ? config.restore : null;
     config = Object.assign({}, config, next || {}, { restore: unapplied || (snapshot.state ? snapshot : null) });
     window.cmuxCommands.willReload();
+    // The old viewer's rows: the reloaded one reports its own.
+    viewerContext.webview = null;
     pendingAdds.clear();
     closeBackend();
     doc.metadata = null;
@@ -753,6 +767,7 @@
     netlistItem: (id) => doc.items.get(id) || null,
     // The signals shown outside the debugger's Locals (which leaves them out).
     pinnedIds: () => shownIds(true),
+    alreadyShown: (netlistId) => alreadyShown(netlistId),
     // cmux-debugger.js: a variable's changes, VaporView events as they pass,
     // and its Locals group, which the link does not count as shown.
     signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
@@ -872,8 +887,8 @@
     async function addSignal(path) {
       const v = await findLinkItem(path, true);
       if (!v || !initSent) { return false; }
-      // addVariables leaves out a shown signal, or one still on its way.
-      addVariable(v);
+      // A shown signal, or one still on its way, is selected instead.
+      addVariables([v], undefined, undefined, 'reveal');
       // add-variable is handled before this message, so the new row exists.
       toWebview({ command: 'setSelectedSignal', netlistId: v.netlistId });
       return true;
@@ -897,7 +912,7 @@
       const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId, now));
       const vars = all.slice(0, maxScopeAdds);
       if (vars.length > confirmAbove && !confirmed) { return { needsConfirm: true, count: vars.length, total: all.length }; }
-      if (vars.length) { addVariables(vars); }
+      if (vars.length) { addVariables(vars, undefined, undefined, 'bulk'); }
       return { added: vars.length, total: all.length };
     }
 

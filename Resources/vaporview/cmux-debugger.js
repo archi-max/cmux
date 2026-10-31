@@ -43,7 +43,7 @@
     playing: false,
     rate: 10,
     lastCycleKey: null,
-    locals: { path: null, request: 0, groupId: null, label: null, busy: false, vars: null },
+    locals: { path: null, request: 0, groupId: null, label: null, busy: false, vars: null, pinnedKey: null },
     highlightIds: new Set(),  // netlistIds the editor highlights
     highlightRequest: 0,
     highlighted: [],    // their rowIds as drawn
@@ -527,15 +527,18 @@
     return all.filter((v) => !pinned.has(v.netlistId)).slice(0, MAX_LOCALS);
   }
 
-  // A signal pinned or unpinned outside Locals leaves Locals or comes back to it.
+  // Which of the scope's signals are shown outside Locals.
+  function pinnedKey(all) {
+    const pinned = host.pinnedIds ? host.pinnedIds() : new Set();
+    return all.filter((v) => pinned.has(v.netlistId)).map((v) => v.netlistId).sort().join(',');
+  }
+
+  // A signal of the scope pinned or unpinned outside Locals leaves Locals or
+  // comes back to it. Only then: a Locals row the user deleted stays deleted,
+  // and a refill the viewer doesn't take as asked isn't retried.
   function refreshLocals() {
     if (!state.stepping || !state.locals.path || state.locals.busy || !state.locals.vars) { return; }
-    const group = localsGroupSaved();
-    if (!group || !localsElement()) { return; }
-    const want = localsWanted(state.locals.vars).map((v) => v.netlistId);
-    const have = (group.children || []).map((d) => d.netlistId);
-    // As sets: rows the user reordered in Locals stay where they are.
-    if (want.length === have.length && want.every((id) => have.includes(id))) { return; }
+    if (!localsElement() || pinnedKey(state.locals.vars) === state.locals.pinnedKey) { return; }
     const key = state.locals.path;
     const request = ++state.locals.request;
     state.locals.busy = true;
@@ -567,6 +570,7 @@
     if (request !== state.locals.request) { return false; }
     // A signal shown outside Locals (pinned) isn't shown in it too.
     state.locals.vars = all;
+    state.locals.pinnedKey = pinnedKey(all);
     const vars = localsWanted(all);
     const w = host.viewerContext.webview;
     const selected = w && w.selectedSignal !== undefined && w.selectedSignal !== null ? w.selectedSignal : null;
