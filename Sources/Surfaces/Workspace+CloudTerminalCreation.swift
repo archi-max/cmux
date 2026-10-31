@@ -111,7 +111,8 @@ extension Workspace {
         orientation: SplitOrientation,
         insertFirst: Bool,
         focus: Bool,
-        source explicitSource: CloudTerminalSourcePlacement? = nil
+        source explicitSource: CloudTerminalSourcePlacement? = nil,
+        workingDirectory: String? = nil
     ) -> Bool {
         guard let source = explicitSource ?? cloudTerminalSourcePlacement(forPanel: panelID),
               let paneID = paneId(forPanelId: panelID) else { return false }
@@ -121,21 +122,29 @@ extension Workspace {
         return routeCloudPaneTerminalCreate(
             source: source, sourcePanelID: panelID,
             destination: .split(workspaceID: id, paneID: paneID.id.uuidString, direction: direction),
-            focus: focus
+            focus: focus,
+            fallbackWorkingDirectory: workingDirectory
         ).isAccepted
     }
 
     /// Routes a bonsplit UI split (the pane-divider split button) whose source pane
     /// projects a cloud resource: the already-created empty pane receives the machine's
     /// new terminal as its first tab. Returns false when the source is not cloud-anchored.
-    func routeCloudPaneUISplit(from sourcePanelID: UUID, into newPane: PaneID, orientation: SplitOrientation) -> Bool {
-        guard let source = cloudTerminalSourcePlacement(forPanel: sourcePanelID) else { return false }
+    /// The split button is user-initiated, so in an SSH workspace a source
+    /// with no remote owner (a file preview, or no tab at all) splits onto the
+    /// host as well.
+    func routeCloudPaneUISplit(
+        from sourcePanelID: UUID?, sourcePane: PaneID? = nil, into newPane: PaneID, orientation: SplitOrientation
+    ) -> Bool {
+        let anchorSource = sourcePanelID.flatMap { cloudTerminalSourcePlacement(forPanel: $0) }
+        guard let source = anchorSource ?? userInitiatedSSHHostSourcePlacement() else { return false }
         let routed = routeCloudPaneTerminalCreate(
             source: source, sourcePanelID: sourcePanelID,
             destination: .tab(workspaceID: id, paneID: newPane.id.uuidString, index: nil),
             focus: true,
             splitDirection: orientation == .horizontal ? .right : .down,
-            pendingPane: newPane
+            pendingPane: newPane,
+            fallbackWorkingDirectory: anchorSource == nil ? lastKnownHostDirectory(near: sourcePanelID, inPane: sourcePane) : nil
         )
         if !routed.isAccepted { closeUntouchedPane(newPane) }
         return true
@@ -166,7 +175,8 @@ extension Workspace {
         focus: Bool,
         splitDirection: SurfaceSplitDirection? = nil,
         pendingPane: PaneID? = nil,
-        commandOverride: [String]? = nil
+        commandOverride: [String]? = nil,
+        fallbackWorkingDirectory: String? = nil
     ) -> TerminalPanelCreationOutcome {
         let catalog = SurfaceCatalog.shared
         let machine = source.machine
@@ -239,7 +249,7 @@ extension Workspace {
                 } else {
                     let workingDirectory: String?
                     if let resource = resolvedSource.resource { workingDirectory = await provider.currentWorkingDirectory(of: resource) }
-                    else { workingDirectory = nil }
+                    else { workingDirectory = fallbackWorkingDirectory }
                     guard catalog.provider(for: machine) === provider else { throw SurfaceCatalogError.noProvider(machine) }
                     try catalog.checkCloudWorkspaceNavigation(machine: machine, workspaceID: resolvedWorkspaceID)
                     created = try await provider.createTerminal(
