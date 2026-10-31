@@ -343,7 +343,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     }
     await settle()
     let wideAsked = wideA.session.asked.count + wideB.session.asked.count
-    expect(wideAsked == 16 && wideA.session.asked.count == 12, "cone lookups for one cycle: 16 across both editors: \(wideA.session.asked.count) + \(wideB.session.asked.count)")
+    expect(wideAsked == 16, "cone lookups for one cycle: 16 across both editors (interleaved): \(wideA.session.asked.count) + \(wideB.session.asked.count)")
     // Playing: an editor refreshes as soon as the marker moves (the throttle still coalesces).
     expect(WaveformDebuggerEditorHighlights.refreshDelay(playing: true) == .zero
            && WaveformDebuggerEditorHighlights.refreshDelay(playing: false) == .milliseconds(120),

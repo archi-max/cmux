@@ -869,7 +869,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     func waveformMarkerDidMove() {
         inlineValueOverlay?.isStale = true
         guard inlineRefreshThrottle.markerMoved() else { return }
-        scheduleInlineValues(after: .milliseconds(120))
+        let playing = WaveformSourceLink.waveformPanel(near: linkPanel).map { WaveformDebugger.state(of: $0).playing } ?? false
+        scheduleInlineValues(after: WaveformDebuggerEditorHighlights.refreshDelay(playing: playing))
     }
 
     /// The waveform reloaded, closed or got another mapping: the values shown are no longer its.
