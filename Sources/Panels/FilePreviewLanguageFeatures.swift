@@ -852,6 +852,9 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     // MARK: - Inline waveform values
 
+    /// Whether slang's design had a top level when a possible fragment was last found nowhere.
+    private var inlineDesignHasTops: Bool?
+
     private struct InlineModuleInstances {
         var designInstances: [String]
         var lookedUpAt: Date
@@ -1002,6 +1005,11 @@ final class FilePreviewLanguageFeatures: NSObject {
             lookedUpAt: Date(),
             misses: found.isEmpty ? (cached?.misses ?? 0) + 1 : 0
         )
+        // A possible fragment found nowhere: whether the design has a top level at all says if
+        // the setup hint applies (getScope("") also lists packages; only instances are tops).
+        if found.isEmpty, module == inlineScan.fragmentModule {
+            inlineDesignHasTops = (try? await session.slangScopeChildren(""))?.contains { $0.kind != "Package" }
+        }
         return found
     }
 
@@ -1046,7 +1054,9 @@ final class FilePreviewLanguageFeatures: NSObject {
             guard !Task.isCancelled else { return }
             guard !designInstances.isEmpty else {
                 // A file that may be an included fragment, never placed yet, may be only a header.
-                guard DesignInstanceProbe.reportsNotPlaced(isFragment: module == inlineScan.fragmentModule) else { continue }
+                guard DesignInstanceProbe.reportsNotPlaced(
+                    isFragment: module == inlineScan.fragmentModule, designHasTops: inlineDesignHasTops
+                ) else { continue }
                 reasons[module] = .notPlaced
                 hints[module] = String(
                     localized: "filePreview.inlineValues.noInstance",
