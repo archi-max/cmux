@@ -153,7 +153,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       // a fixed wait is not enough on a loaded machine.
       // isRestoring (newer pages): until the restore itself has come back, which a
       // first non-Restore context can precede on a loaded machine.
-      + "const reloaded = async () => { const t = Date.now(); const busy = () => !C.sessionSnapshot().state || (C.isRestoring && C.isRestoring()); while (busy() && Date.now() - t < 8000) { await sleep(50); } await sleep(300); };\n"
+      + "const reloaded = async () => { const t = Date.now(); const busy = () => !C.sessionSnapshot().state || (C.isRestoring && C.isRestoring()); while (busy() && Date.now() - t < 30000) { await sleep(50); } await sleep(300); };\n"
       + body + "\nreturn JSON.stringify(R);"
     web.callAsyncJavaScript(wrapped, arguments: [:], in: nil, in: .page) { result in
       switch result {
@@ -1324,6 +1324,57 @@ extension Harness {
           check(r["afterUndos"] as? Int == 0, "both waiting Undos apply after the reload (rows drawn \(r["afterUndos"] ?? "nil"))")
           check(r["afterRedos"] as? Int == 2, "two Redos bring both rows back (rows drawn \(r["afterRedos"] ?? "nil"))")
           check(r["undoAgain"] as? Int == 1, "and the redo history held each view once (rows drawn \(r["undoAgain"] ?? "nil"))")
+          self.phaseAJ()
+        }
+      }
+    }
+  }
+
+  // Undo pressed after a reload failed (the viewer shows the failure, not a
+  // view to undo) is dropped, not applied after the next good reload.
+  func phaseAJ() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const good = H.config.url, size = H.config.size;
+        window.cmuxWaveform.reload({ url: 'cmux-waveform://local/missing.vcd', size: 10 });
+        await sleep(1500);
+        await C.run('cmux.undo');
+        window.cmuxWaveform.reload({ url: good, size });
+        await reloaded();
+        await sleep(800);
+        R.rows = drawn();
+        """) { r in
+          check(r["rows"] as? Int == 1, "an Undo pressed after a failed reload is dropped (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseAK()
+        }
+      }
+    }
+  }
+
+  // A reload of another path is another document: the old file's history
+  // doesn't apply to it, whether Undo is pressed during or after the reload.
+  func phaseAK() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({ path: '/work/sim/other.vcd' });
+        await C.run('cmux.undo');
+        await reloaded();
+        await sleep(800);
+        R.during = drawn();
+        window.cmuxWaveform.reload({ path: '/work/sim/third.vcd' });
+        await reloaded();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.after = drawn();
+        """) { r in
+          check(r["during"] as? Int == 1, "an Undo during a reload of another path doesn't undo the old file's change (rows drawn \(r["during"] ?? "nil"))")
+          check(r["after"] as? Int == 1, "nor one after it (rows drawn \(r["after"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
@@ -1340,5 +1391,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let harness = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { harness.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 400) { print("CHECK FAILED: timeout"); exit(2) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 900) { print("CHECK FAILED: timeout"); exit(2) }
 app.run()
