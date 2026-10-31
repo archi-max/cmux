@@ -43,7 +43,7 @@
     playing: false,
     rate: 10,
     lastCycleKey: null,
-    locals: { path: null, request: 0, groupId: null, label: null, busy: false },
+    locals: { path: null, request: 0, groupId: null, label: null, busy: false, vars: null },
     highlightIds: new Set(),  // netlistIds the editor highlights
     highlightRequest: 0,
     highlighted: [],    // their rowIds as drawn
@@ -522,6 +522,27 @@
     clearLocals(true);
   }
 
+  function localsWanted(all) {
+    const pinned = host.pinnedIds ? host.pinnedIds() : new Set();
+    return all.filter((v) => !pinned.has(v.netlistId)).slice(0, MAX_LOCALS);
+  }
+
+  // A signal pinned or unpinned outside Locals leaves Locals or comes back to it.
+  function refreshLocals() {
+    if (!state.stepping || !state.locals.path || state.locals.busy || !state.locals.vars) { return; }
+    const group = localsGroupSaved();
+    if (!group || !localsElement()) { return; }
+    const want = localsWanted(state.locals.vars).map((v) => v.netlistId);
+    const have = (group.children || []).map((d) => d.netlistId);
+    // As sets: rows the user reordered in Locals stay where they are.
+    if (want.length === have.length && want.every((id) => have.includes(id))) { return; }
+    const key = state.locals.path;
+    const request = ++state.locals.request;
+    state.locals.busy = true;
+    fillLocals(JSON.parse(key), key, request).catch(() => false)
+      .finally(() => { if (request === state.locals.request) { state.locals.busy = false; } });
+  }
+
   async function setLocals(query) {
     const path = (query || {}).path || null;
     const key = path ? JSON.stringify(path) : null;
@@ -542,8 +563,11 @@
     const scope = await host.findLinkItem(path, false);
     if (request !== state.locals.request) { return false; }
     if (!scope || scope.kind !== 'scope') { return false; }
-    const vars = (await host.getChildren(scope)).filter((c) => c.kind === 'var').slice(0, MAX_LOCALS);
+    const all = (await host.getChildren(scope)).filter((c) => c.kind === 'var');
     if (request !== state.locals.request) { return false; }
+    // A signal shown outside Locals (pinned) isn't shown in it too.
+    state.locals.vars = all;
+    const vars = localsWanted(all);
     const w = host.viewerContext.webview;
     const selected = w && w.selectedSignal !== undefined && w.selectedSignal !== null ? w.selectedSignal : null;
     let collapsed = false;
@@ -761,7 +785,9 @@
         if (state.highlightIds.size) { queueMicrotask(matchHighlightedRows); }
       }
     }
-    if (state.stepping && state.locals.path && !state.locals.busy && !localsElement()) {
+    if (state.stepping && state.locals.path && !state.locals.busy && localsElement()) {
+      setTimeout(refreshLocals, 0);
+    } else if (state.stepping && state.locals.path && !state.locals.busy && !localsElement()) {
       const path = JSON.parse(state.locals.path);
       setTimeout(() => {
         if (state.stepping && !state.locals.busy && !localsElement() && state.locals.path === JSON.stringify(path)) {

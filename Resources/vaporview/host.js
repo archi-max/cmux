@@ -469,6 +469,8 @@
     fetchDataFromFile: async (m) => { if (dataReady()) { await backend.fetch(m.requestList); } },
     contextUpdate: (m) => {
       viewerContext.webview = m;
+      // An add the viewer reports back is no longer on its way.
+      if (pendingAdds.size && m.displayedSignals) { shownIds(true).forEach((id) => pendingAdds.delete(id)); }
       if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
       window.cmuxCommands.onContextUpdate(m);
       hostApi.contextListeners.forEach((listener) => { try { listener(m); } catch (error) { hostApi.log(error); } });
@@ -517,8 +519,42 @@
     return item.childrenRequest;
   }
 
+  // The netlist ids of the rows shown (pinnedOnly: outside the debugger's Locals).
+  function shownIds(pinnedOnly) {
+    const out = new Set();
+    const walk = (list) => (list || []).forEach((d) => {
+      if (pinnedOnly && hostApi.isTransientGroup && hostApi.isTransientGroup(d)) { return; }
+      if (d.netlistId !== undefined) { out.add(d.netlistId); }
+      walk(d.children);
+    });
+    walk(viewerContext.webview && viewerContext.webview.displayedSignals);
+    return out;
+  }
+
+  // netlistId -> time of an add the viewer has not reported back yet.
+  const pendingAdds = new Map();
+  const isPending = (id, now) => { const t = pendingAdds.get(id); return t !== undefined && now - t < 2000; };
+
+  // Every add (the netlist tree, its menu and keys, a drop, the editor, the
+  // API) goes through here: a signal shown outside the debugger's Locals, or
+  // still on its way, is not added again. Asked for alone, its row is
+  // selected, as VaporView's add with reveal does. Locals itself leaves out
+  // what is shown outside it (cmux-debugger.js).
   function addVariables(vars, groupPath, index) {
-    if (!vars.length) { return; }
+    const shown = shownIds(true);
+    const now = Date.now();
+    const asked = vars.filter(Boolean);
+    const seen = new Set();
+    vars = asked.filter((v) => {
+      if (shown.has(v.netlistId) || isPending(v.netlistId, now) || seen.has(v.netlistId)) { return false; }
+      seen.add(v.netlistId);
+      return true;
+    });
+    if (!vars.length) {
+      if (asked.length === 1) { toWebview({ command: 'setSelectedSignal', netlistId: asked[0].netlistId }); }
+      return;
+    }
+    vars.forEach((v) => pendingAdds.set(v.netlistId, now));
     // Next to a selected row of the debugger's Locals, a new row would land in
     // Locals (and go with its next refill): it goes to the top level instead.
     if (groupPath === undefined && index === undefined && hostApi.topLevelIndexOutsideTransient) {
@@ -643,6 +679,9 @@
     if (!next || next.path !== config.path) { autoReloadState = null; }
     closeBackend();
     frameLoaded = false;
+    // The old file's rows: what addVariables counts as shown comes from the new viewer.
+    viewerContext.webview = null;
+    pendingAdds.clear();
     doc.metadata = null;
     doc.netlist = [];
     doc.items.clear();
@@ -689,6 +728,7 @@
     const unapplied = config.restore && config.restore.state ? config.restore : null;
     config = Object.assign({}, config, next || {}, { restore: unapplied || (snapshot.state ? snapshot : null) });
     window.cmuxCommands.willReload();
+    pendingAdds.clear();
     closeBackend();
     doc.metadata = null;
     doc.netlist = [];
@@ -711,6 +751,8 @@
   const hostApi = {
     doc, viewerContext, toWebview, toNative, fail, getChildren, findItem, addVariables, search, valuesAtTime,
     netlistItem: (id) => doc.items.get(id) || null,
+    // The signals shown outside the debugger's Locals (which leaves them out).
+    pinnedIds: () => shownIds(true),
     // cmux-debugger.js: a variable's changes, VaporView events as they pass,
     // and its Locals group, which the link does not count as shown.
     signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
@@ -747,8 +789,6 @@
   const link = (() => {
     const maxChildren = 5000;
     let selectedId = null;
-    // netlistId -> time of an add the viewer has not reported back yet.
-    const pendingAdds = new Map();
 
     // eventData.netlistId is an array of the rows' ids.
     const firstId = (data) => [].concat(data && data.netlistId != null ? data.netlistId : [])[0] ?? null;
@@ -821,18 +861,6 @@
 
     // netlistIds of the shown rows, inside groups too. pinnedOnly: not the
     // debugger's Locals group (its rows come and go with the editor's caret).
-    function shownIds(pinnedOnly) {
-      const out = new Set();
-      const walk = (list) => (list || []).forEach((d) => {
-        if (pinnedOnly && hostApi.isTransientGroup && hostApi.isTransientGroup(d)) { return; }
-        if (d.netlistId !== undefined) { out.add(d.netlistId); }
-        walk(d.children);
-      });
-      walk(viewerContext.webview && viewerContext.webview.displayedSignals);
-      return out;
-    }
-
-    const isShown = (v) => shownIds(true).has(v.netlistId);
 
     async function selectSignal(path) {
       const v = await findLinkItem(path, true);
@@ -844,12 +872,8 @@
     async function addSignal(path) {
       const v = await findLinkItem(path, true);
       if (!v || !initSent) { return false; }
-      // displayedSignals arrives with the next contextUpdate; a second add before it would duplicate the row.
-      const pending = pendingAdds.get(v.netlistId);
-      if (!isShown(v) && !(pending && Date.now() - pending < 2000)) {
-        pendingAdds.set(v.netlistId, Date.now());
-        addVariable(v);
-      }
+      // addVariables leaves out a shown signal, or one still on its way.
+      addVariable(v);
       // add-variable is handled before this message, so the new row exists.
       toWebview({ command: 'setSelectedSignal', netlistId: v.netlistId });
       return true;
@@ -870,11 +894,9 @@
       if (!scope || scope.kind !== 'scope' || !initSent) { return null; }
       const shown = shownIds(true);
       const now = Date.now();
-      const isPending = (id) => { const t = pendingAdds.get(id); return t !== undefined && now - t < 2000; };
-      const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId));
+      const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId, now));
       const vars = all.slice(0, maxScopeAdds);
       if (vars.length > confirmAbove && !confirmed) { return { needsConfirm: true, count: vars.length, total: all.length }; }
-      vars.forEach((v) => pendingAdds.set(v.netlistId, now));
       if (vars.length) { addVariables(vars); }
       return { added: vars.length, total: all.length };
     }
