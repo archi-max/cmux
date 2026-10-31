@@ -394,6 +394,38 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     await settle()
     expect(page.rtlShownTimes.isEmpty, "the other editor's report from before play doesn't count: \(page.rtlShownTimes)")
 
+    // An editor that stops reporting (its refreshes stall) holds play for a second at most,
+    // then the others' cycles count as shown without it.
+    let start = Date()
+    WaveformDebuggerRTLStatus.now = { start }
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    page.rtlShownTimes.removeAll()
+    page.previousTimes[75] = 65
+    page.previousTimes[85] = 75
+    page.previousTimes[95] = 85
+    func draw(_ each: FilePreviewLanguageFeatures, _ view: NSTextView, at time: Int64) async {
+        WaveformDebuggerEditorHighlights.valuesShown(.init(
+            editor: each, textView: view, lines: lines, waveform: waveform, time: time, values: [:], instances: [:]
+        ))
+        await settle()
+    }
+    await draw(editor, textView, at: 75)
+    expect(page.rtlShownTimes.isEmpty, "just after play starts, the other editor is waited for: \(page.rtlShownTimes)")
+    WaveformDebuggerRTLStatus.now = { start.addingTimeInterval(2) }
+    await draw(editor, textView, at: 85)
+    expect(page.rtlShownTimes == [85], "two seconds without a report: it no longer holds play: \(page.rtlShownTimes)")
+    await draw(otherEditor, other, at: 85)
+    WaveformDebuggerRTLStatus.now = { start.addingTimeInterval(2.1) }
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 95)
+    expect(page.rtlShownTimes.isEmpty, "it reported again: it is waited for again: \(page.rtlShownTimes)")
+    WaveformDebuggerRTLStatus.now = { Date() }
+    // (Drawn by both at 65 for the checks below.)
+    await draw(editor, textView, at: 65)
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    await draw(editor, textView, at: 65)
+    page.rtlShownTimes.removeAll()
+
     // An editor closes: play no longer waits for it, and the strip says so.
     FilePreviewLanguageFeatures.all = [editor]
     WaveformDebuggerRTLStatus.editorGone(otherEditor)
