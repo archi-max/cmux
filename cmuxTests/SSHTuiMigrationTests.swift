@@ -52,14 +52,23 @@ struct SSHTuiMigrationTests {
     func providerDefaultUsesSSHLaunchConfiguration() {
         let command = "printf configured-command"
         let configured = SSHTuiConnection(configuration: configuration(command: command))
-        #expect(RemoteTuiMachine.ssh(configured).defaultTerminalCommand ==
-                ["/bin/sh", "-c", configured.hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -lc \"$1\"", "cmux-ssh", command])
+        let configuredArgv = RemoteTuiMachine.ssh(configured).defaultTerminalCommand
+        #expect(configuredArgv.count == 5)
+        #expect(Array(configuredArgv.prefix(2)) == ["/bin/sh", "-c"])
+        #expect(Array(configuredArgv.suffix(2)) == ["cmux-ssh", command])
+        // The launch installs the host cmux (`cmux open`) before the login shell.
+        #expect(configuredArgv[2].hasPrefix("cmux_cli_dir=\"$HOME/.local/share/cmux/ssh-cli/"))
+        #expect(configuredArgv[2].contains("<<'CMUX_SSH_CLI_EOF'"))
+        #expect(configuredArgv[2].hasSuffix("unset cmux_cli_dir\nexec \"${SHELL:-/bin/sh}\" -lc \"$1\""))
         let tmux = SSHTuiConnection(configuration: configuration(command: command, profile: .defaultTmux))
         #expect(RemoteTuiMachine.ssh(tmux).defaultTerminalCommand ==
                 WorkspaceRemoteTerminalProfile.defaultTmux.remoteCommandArguments)
         let shell = SSHTuiConnection(configuration: configuration())
-        #expect(RemoteTuiMachine.ssh(shell).defaultTerminalCommand ==
-                ["/bin/sh", "-c", shell.hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -l"])
+        let shellArgv = RemoteTuiMachine.ssh(shell).defaultTerminalCommand
+        #expect(shellArgv.count == 3)
+        #expect(Array(shellArgv.prefix(2)) == ["/bin/sh", "-c"])
+        #expect(shellArgv[2].hasPrefix("cmux_cli_dir=\"$HOME/.local/share/cmux/ssh-cli/"))
+        #expect(shellArgv[2].hasSuffix("unset cmux_cli_dir\nexec \"${SHELL:-/bin/sh}\" -l"))
     }
 
     @MainActor
