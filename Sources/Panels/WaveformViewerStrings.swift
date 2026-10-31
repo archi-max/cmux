@@ -122,6 +122,7 @@ enum WaveformViewerStrings {
             "messageNotASession": String(localized: "filePreview.waveform.message.notASession", defaultValue: "The file is not a VaporView session."),
             "messageSessionMismatch": String(localized: "filePreview.waveform.message.sessionMismatch", defaultValue: "The session file may not match the active viewer"),
             "messageSessionLoadInterrupted": String(localized: "filePreview.waveform.message.sessionLoadInterrupted", defaultValue: "The waveform file reloaded while the session was loading, so it wasn't loaded. Load it again."),
+            "messageSessionLoadInterruptedByOpen": String(localized: "filePreview.waveform.message.sessionLoadInterruptedByOpen", defaultValue: "Another waveform file opened while the session was loading, so the session wasn't loaded."),
             "messageRestoreSession": String(localized: "filePreview.waveform.message.restoreSession", defaultValue: "Restore state from file: %@?"),
             "messageRestoreSessionDetail": String(localized: "filePreview.waveform.message.restoreSessionDetail", defaultValue: "You can set a default behavior and disable this prompt in the settings."),
             "messageMissingSignals": String(localized: "filePreview.waveform.message.missingSignals", defaultValue: "Missing signals: %@"),

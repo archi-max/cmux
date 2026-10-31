@@ -445,6 +445,13 @@
     }
     if (change === StateChangeType.User) { setDirty(true); }
     webviewContext = Object.assign({}, webviewContext || {}, m);
+    // The viewer answers apply-state with a Restore context (initComplete is set
+    // right after it asks for its state, so the answer always comes).
+    if (appliedRestoreConfig && change === StateChangeType.Restore) {
+      appliedRestoreConfig.restore = null;
+      appliedRestoreConfig = null;
+      restorePending = false;
+    }
     updateStatus(m);
     window.cmuxNetlist.setDisplayed(displayedNetlistIds(webviewContext.displayedSignals || []));
     scheduleSessionSnapshot();
@@ -574,7 +581,7 @@
       selectedSignal = v && v.kind === 'var' ? v.netlistId : undefined;
     }
     if (host().loadGeneration !== generation) { return false; }
-    restorePending = false;
+    if (stateChangeType !== StateChangeType.Restore) { restorePending = false; }
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
       extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
       altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
@@ -598,6 +605,9 @@
   let sessionFileOffered = false;
   // While a restore resolves, the viewer's context is empty: cmux keeps its copy.
   let restorePending = false;
+  // The config whose kept restore was posted: dropped once the viewer's context
+  // comes back with it (onContextUpdate), so a reload in between still has it.
+  let appliedRestoreConfig = null;
 
   async function restoreState(m) {
     const config = host().config;
@@ -608,7 +618,7 @@
     if (m.state) {
       sessionFileOffered = true;
       restorePending = true;
-      if (await applySession(m.state, StateChangeType.Restore)) { config.restore = null; }
+      if (await applySession(m.state, StateChangeType.Restore)) { appliedRestoreConfig = config; }
       return;
     }
     if (config.restore && config.restore.state) {
@@ -616,7 +626,7 @@
       restorePending = true;
       const restore = config.restore;
       if (await applySession(restore.state, StateChangeType.Restore)) {
-        config.restore = null;
+        appliedRestoreConfig = config;
         setDirty(!!restore.dirty);
       }
       return;
@@ -664,10 +674,13 @@
     if (data.fileName && host().config.path && data.fileName !== host().config.path) {
       ui().toast(S().messageSessionMismatch, 'warning');
     }
+    const filePath = host().config.path;
     if (await applySession(data, StateChangeType.File)) {
       setDirty(false);
     } else if (userStarted) {
-      ui().toast(S().messageSessionLoadInterrupted, 'warning');
+      // The panel opened another file, or this one reloaded.
+      ui().toast(host().config.path !== filePath ? S().messageSessionLoadInterruptedByOpen : S().messageSessionLoadInterrupted,
+        'warning');
     }
   }
 
@@ -1096,6 +1109,7 @@
     restoreAsked = false;
     sessionFileOffered = false;
     restorePending = false;
+    appliedRestoreConfig = null;
     if (listenersInstalled) { return; }
     listenersInstalled = true;
     document.addEventListener('keydown', (e) => handleKey(e, false), true);
