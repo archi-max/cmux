@@ -14,8 +14,18 @@ import Testing
         "top_tb.dut.rf": [.init(name: "clk", isScope: false), .init(name: "data", isScope: false), .init(name: "last", isScope: false)],
     ]
 
+    /// cpu's own children in the design.
+    static let cpuChildren: [HierarchyNode] = [
+        .init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "pc", isScope: false),
+        .init(name: "pc_next", isScope: false), .init(name: "rf", isScope: true),
+    ]
+
     static func children(_ path: [String]) async -> [HierarchyNode]? {
         dump[path.joined(separator: ".")]
+    }
+
+    static func children(of hierarchy: [String: [HierarchyNode]]) -> HierarchyPrefixInference.Children {
+        { path in hierarchy[path.joined(separator: ".")] }
     }
 
     @Test func identityWithoutRules() {
@@ -58,38 +68,134 @@ import Testing
         #expect(HierarchyPathMapping(text: "cpu top_tb.dut") == nil)
     }
 
+    @Test func textKeepsInferredMarksEqualsSignsAndEscapedNames() {
+        let mapping = HierarchyPathMapping(rules: [
+            .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut0"),
+            .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut1", isInferred: true),
+            .init(designPrefix: "alu", dumpPrefix: "tb.a=b"),
+            .init(designPrefix: "core", dumpPrefix: "tb.\\u_core.x "),
+        ])
+        #expect(HierarchyPathMapping(text: mapping.text) == mapping)
+    }
+
+    @Test func rulesDecodeWithoutTheInferredFlag() throws {
+        let data = Data(#"{"rules":[{"designPrefix":"cpu","dumpPrefix":"top_tb.dut"}]}"#.utf8)
+        let mapping = try JSONDecoder().decode(HierarchyPathMapping.self, from: data)
+        #expect(mapping.rules == [.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut")])
+    }
+
+    @Test func inferredRulesNeverReplaceUserRules() {
+        var mapping = HierarchyPathMapping(rules: [.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut0")])
+        mapping.addInferredRule(designPrefix: "cpu", dumpPrefix: "top_tb.dut1")
+        mapping.addInferredRule(designPrefix: "cpu", dumpPrefix: "top_tb.dut0")
+        #expect(mapping.rules == [
+            .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut0"),
+            .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut1", isInferred: true),
+        ])
+        // Both instances are candidates, the user's first.
+        #expect(mapping.dumpPaths(forDesignPath: "cpu.pc") == ["top_tb.dut0.pc", "top_tb.dut1.pc"])
+        #expect(mapping.dumpPath(forDesignPath: "cpu.pc") == "top_tb.dut0.pc")
+        #expect(mapping.designPath(forDumpPath: "top_tb.dut1.pc") == "cpu.pc")
+    }
+
+    @Test func inferredRulesPerPrefixAreCapped() {
+        var mapping = HierarchyPathMapping(rules: [.init(designPrefix: "cpu", dumpPrefix: "tb.user")])
+        for index in 0..<(HierarchyPathMapping.maxInferredRulesPerPrefix + 3) {
+            mapping.addInferredRule(designPrefix: "cpu", dumpPrefix: "tb.u\(index)")
+        }
+        #expect(mapping.rules.filter(\.isInferred).count == HierarchyPathMapping.maxInferredRulesPerPrefix)
+        #expect(mapping.rules.first == .init(designPrefix: "cpu", dumpPrefix: "tb.user"))
+        #expect(mapping.rules.last?.dumpPrefix == "tb.u\(HierarchyPathMapping.maxInferredRulesPerPrefix + 2)")
+    }
+
     @Test func infersDumpScopeFromTheInstanceTree() async {
         // `pc` exists under both top_tb.mon and top_tb.dut; dut's children match cpu's.
-        let rule = await HierarchyPrefixInference.dumpRule(
+        let result = await HierarchyPrefixInference.dumpRules(
             forDesignPath: "cpu.pc",
-            designRootChildren: ["clk", "rst", "pc", "pc_next", "rf"],
+            designRootChildren: Self.cpuChildren,
             dumpChildren: Self.children
         )
-        #expect(rule == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut"))
-        let nested = await HierarchyPrefixInference.dumpRule(
+        #expect(result == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
+        let nested = await HierarchyPrefixInference.dumpRules(
             forDesignPath: "cpu.rf.last",
-            designRootChildren: ["clk", "rst", "pc", "pc_next", "rf"],
+            designRootChildren: Self.cpuChildren,
             dumpChildren: Self.children
         )
-        #expect(nested == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut"))
+        #expect(nested == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
+    }
+
+    @Test func aSignalTheDutDidNotDumpIsNotTakenFromAMonitor() async {
+        // dut lost `pc` (optimised away); the monitor has a `pc` but shares only clk and pc with cpu.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"] = hierarchy["top_tb.dut"]!.filter { $0.name != "pc" }
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.pc",
+            designRootChildren: Self.cpuChildren,
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(result == .notDumped(.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)))
+    }
+
+    @Test func aWeakOverlapIsNoMatch() async {
+        // Only the monitor holds `pc`, and two shared names of five are not enough.
+        var hierarchy = Self.dump
+        hierarchy["top_tb"] = hierarchy["top_tb"]!.filter { $0.name != "dut" }
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.pc",
+            designRootChildren: Self.cpuChildren,
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(result == .notFound)
+    }
+
+    @Test func noMatchWithoutTheDesignRootsChildren() async {
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.clk",
+            designRootChildren: [],
+            dumpChildren: Self.children
+        )
+        #expect(result == .notFound)
+    }
+
+    @Test func twoEqualInstancesAreBothReturned() async {
+        var hierarchy = Self.dump
+        hierarchy["top_tb"] = [.init(name: "clk", isScope: false), .init(name: "dut0", isScope: true), .init(name: "dut1", isScope: true)]
+        hierarchy["top_tb.dut0"] = Self.dump["top_tb.dut"]
+        hierarchy["top_tb.dut1"] = Self.dump["top_tb.dut"]
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.pc",
+            designRootChildren: Self.cpuChildren,
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(result == .found([
+            .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut0", isInferred: true),
+            .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut1", isInferred: true),
+        ]))
     }
 
     @Test func noDumpRuleWhenThePathIsNowhere() async {
-        let rule = await HierarchyPrefixInference.dumpRule(
-            forDesignPath: "cpu.missing",
-            designRootChildren: ["pc"],
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "lsu.missing",
+            designRootChildren: [.init(name: "dcache", isScope: true), .init(name: "missing", isScope: false)],
             dumpChildren: Self.children
         )
-        #expect(rule == nil)
+        #expect(result == .notFound)
     }
 
     @Test func infersDesignRootForADumpPath() async {
         let rule = await HierarchyPrefixInference.designRule(
             forDumpPath: "top_tb.dut.rf.data",
-            designRoots: ["cpu": ["clk", "rst", "pc", "pc_next", "rf"]],
+            designRoots: ["cpu": Self.cpuChildren],
             dumpChildren: Self.children
         )
-        #expect(rule == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut"))
+        #expect(rule == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true))
+        // The monitor's two shared names are too few to call it a cpu.
+        let monitor = await HierarchyPrefixInference.designRule(
+            forDumpPath: "top_tb.mon.pc",
+            designRoots: ["cpu": Self.cpuChildren],
+            dumpChildren: Self.children
+        )
+        #expect(monitor == nil)
     }
 
     @Test func assignmentTargets() {
@@ -110,5 +216,13 @@ import Testing
         #expect(!target("  logic [31:0] pc;", "pc"))
         #expect(!target("    x <= (a <= b);", "a"))
         #expect(!target("  .clk(clk),", "clk"))
+        #expect(target("    count += 1;", "count"))
+        #expect(target("    acc <<= 2;", "acc"))
+        #expect(target("    i++;", "i"))
+        #expect(target("    {carry, sum} = a + b;", "carry"))
+        #expect(target("    {carry, sum} = a + b;", "sum"))
+        #expect(!target("  assign y = {a, b};", "a"))
+        #expect(!target("    x = a + b;", "a"))
+        #expect(!target("    if (a >= b) x = 1;", "a"))
     }
 }

@@ -533,7 +533,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             webContentProcessRecoveryAttempts = 0
             topScopes = body["top"] as? [String] ?? []
         case "revealInSource":
-            if let path = body["path"] as? String, let panel {
+            if let path = WaveformSourceLink.dumpPath(fromPage: body["path"]), let panel {
                 WaveformSourceLink.revealInSource(dumpPath: path, waveformPanel: panel)
             }
         case "settings":

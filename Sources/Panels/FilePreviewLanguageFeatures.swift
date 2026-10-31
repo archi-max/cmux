@@ -52,6 +52,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var diagnosticsTask: Task<Void, Never>?
     private var hoverTask: Task<Void, Never>?
     private var requestTask: Task<Void, Never>?
+    /// Add to Waveform; separate from `requestTask` so it and go-to-definition don't cancel each other.
+    private var linkTask: Task<Void, Never>?
     private var completionTask: Task<Void, Never>?
     private var formatTask: Task<Void, Never>?
 
@@ -74,6 +76,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         diagnosticsTask?.cancel()
         hoverTask?.cancel()
         requestTask?.cancel()
+        linkTask?.cancel()
         completionTask?.cancel()
         if let session, let documentURI {
             Task { await session.close(uri: documentURI) }
@@ -111,6 +114,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         diagnosticsTask?.cancel()
         hoverTask?.cancel()
         requestTask?.cancel()
+        linkTask?.cancel()
         completionTask?.cancel()
         hideHover()
         if let textView {
@@ -511,7 +515,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Whether the workspace has a waveform viewer to add signals to. The
     /// add shortcut is claimed only then, so Ctrl-W keeps its AppKit meaning otherwise.
     var canAddToWaveform: Bool {
-        !isDetached && WaveformSourceLink.waveformPanel(near: textView?.panel as? FilePreviewPanel) != nil
+        !isDetached && WaveformSourceLink.waveformPanel(near: linkPanel) != nil
     }
 
     /// Adds the signal under the caret to the workspace's waveform viewer. False when there is none.
@@ -531,8 +535,8 @@ final class FilePreviewLanguageFeatures: NSObject {
             return
         }
         let position = FilePreviewLSPLineIndex(textView.string).position(at: identifier.location)
-        requestTask?.cancel()
-        requestTask = Task { [weak self] in
+        linkTask?.cancel()
+        linkTask = Task { [weak self] in
             // The server must see the current text.
             await self?.sendCurrentText()
             guard let self, !Task.isCancelled else { return }
@@ -540,9 +544,10 @@ final class FilePreviewLanguageFeatures: NSObject {
                 session: session,
                 documentURI: documentURI,
                 position: position,
-                editorPanel: self.textView?.panel as? FilePreviewPanel,
+                editor: self,
                 rootKey: self.linkRootKey,
-                chooseInstance: { [weak self] paths in await self?.chooseInstance(paths, anchoredAt: identifier.location) ?? [] }
+                chooseInstance: { [weak self] paths in await self?.chooseInstance(paths, anchoredAt: identifier.location) ?? [] },
+                progress: { [weak self] note in self?.showLinkMessage(note, at: identifier.location) }
             )
             guard !Task.isCancelled, let message else { return }
             self.showLinkMessage(message, at: identifier.location)
@@ -560,11 +565,21 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Identifies this editor's design for the saved path mapping: the server root, plus the SSH host for remote files.
     var linkRootKey: String {
         let root = context?.rootURI?.standardizedFileURL.path ?? (filePath as NSString).deletingLastPathComponent
-        return (context?.remote?.providerIdentity ?? "local") + "|" + root
+        return linkHostIdentity + "|" + root
+    }
+
+    /// The panel showing this editor.
+    var linkPanel: FilePreviewPanel? {
+        textView?.panel as? FilePreviewPanel
     }
 
     var linkWorkspaceId: UUID? {
-        (textView?.panel as? FilePreviewPanel)?.workspaceId
+        linkPanel?.workspaceId
+    }
+
+    /// The SSH host of a remote file, `local` otherwise.
+    var linkHostIdentity: String {
+        context?.remote?.providerIdentity ?? "local"
     }
 
     /// The most recently used live editor with a language server in `workspaceId`.
@@ -574,9 +589,13 @@ final class FilePreviewLanguageFeatures: NSObject {
             .max { $0.lastActivity < $1.lastActivity }
     }
 
-    /// The live editor whose document is `path` (a remote path for SSH files).
-    static func linkable(showingDocumentPath path: String) -> FilePreviewLanguageFeatures? {
-        liveInstances.allObjects.first { $0.linkSession?.documentURI.standardizedFileURL.path == path }
+    /// The live editor whose document is `path` (a remote path for SSH files),
+    /// on the same host as `editor`, preferring `editor`'s workspace.
+    static func linkable(showingDocumentPath path: String, like editor: FilePreviewLanguageFeatures) -> FilePreviewLanguageFeatures? {
+        let matches = liveInstances.allObjects.filter {
+            $0.linkHostIdentity == editor.linkHostIdentity && $0.linkSession?.documentURI.standardizedFileURL.path == path
+        }
+        return matches.first { $0.linkWorkspaceId == editor.linkWorkspaceId } ?? matches.first
     }
 
     /// The editor's current text.

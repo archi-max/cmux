@@ -1216,27 +1216,30 @@ struct cmuxApp: App {
             }
             .keyboardShortcut("v", modifiers: [.command, .shift])
             .disabled(activeMarkdownFilePreview == nil)
-            splitCommandButton(
-                title: String(localized: "menu.view.addSignalToWaveform", defaultValue: "Add Signal to Waveform"),
-                shortcut: menuShortcut(for: .addSignalToWaveform)
-            ) {
-                _ = appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
-                    .languageFeatures?.addSignalUnderCaretToWaveform()
+            // No key equivalents (see KeyboardShortcutSettings.menuShortcut) and
+            // no `.disabled`: SwiftUI can't observe the focused editor, so the
+            // actions check it themselves and beep when it doesn't apply.
+            Button(String(localized: "menu.view.addSignalToWaveform", defaultValue: "Add Signal to Waveform")) {
+                guard let features = appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
+                    .languageFeatures, features.canAddToWaveform else {
+                    NSSound.beep()
+                    return
+                }
+                features.addSignalUnderCaretToWaveform()
             }
-            .disabled(appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
-                .languageFeatures?.canAddToWaveform != true)
-            splitCommandButton(
-                title: String(localized: "menu.view.revealWaveformSignalInSource", defaultValue: "Show Waveform Signal in Source"),
-                shortcut: menuShortcut(for: .revealWaveformSignalInSource)
-            ) {
-                WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel())
+            Button(String(localized: "menu.view.revealWaveformSignalInSource", defaultValue: "Show Waveform Signal in Source")) {
+                if !WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel()) {
+                    NSSound.beep()
+                }
             }
-            .disabled(WaveformSourceLink.focusedWaveformPanel() == nil)
             Button(String(localized: "menu.view.waveformPathMapping", defaultValue: "Waveform Path Mapping…")) {
                 // Defer modal presentation until after AppKit finishes menu tracking.
                 DispatchQueue.main.async {
                     WaveformSourceLink.editMapping()
                 }
+            }
+            Button(String(localized: "menu.view.resetLanguageServerTopLevel", defaultValue: "Reset Language Server Top Level")) {
+                WaveformSourceLink.resetTopLevel()
             }
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {
                 BrowserHistoryStore.shared.clearHistory()

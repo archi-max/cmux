@@ -481044,55 +481044,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "One rule per line: design prefix = waveform prefix, for example “cpu = top_tb.dut”. cmux fills this in when it finds a signal under a different prefix. Leave it empty to use the same paths."
+            "value": "One rule per line: design prefix = waveform prefix, for example “cpu = top_tb.dut”. Several rules may share a design prefix, one per instance. cmux adds rules marked “# inferred” when it finds a signal under another prefix, and never changes yours. Leave it empty to use the same paths."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "1 行に 1 つのルール: 設計のプレフィックス = 波形のプレフィックス（例:「cpu = top_tb.dut」）。別のプレフィックスの下で信号が見つかると cmux が自動で記入します。同じパスを使う場合は空のままにしてください。"
+            "value": "1 行に 1 つのルール: 設計のプレフィックス = 波形のプレフィックス（例:「cpu = top_tb.dut」）。インスタンスごとに、同じ設計のプレフィックスを持つルールを複数書けます。別のプレフィックスの下で信号が見つかると、cmux は「# inferred」付きのルールを追加します。あなたが書いたルールは変更しません。同じパスを使う場合は空のままにしてください。"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Eine Regel pro Zeile: Design-Präfix = Wellenform-Präfix, zum Beispiel „cpu = top_tb.dut“. cmux trägt sie ein, wenn es ein Signal unter einem anderen Präfix findet. Leer lassen, um dieselben Pfade zu verwenden."
+            "value": "Eine Regel pro Zeile: Design-Präfix = Wellenform-Präfix, zum Beispiel „cpu = top_tb.dut“. Mehrere Regeln dürfen dasselbe Design-Präfix haben, eine pro Instanz. cmux fügt mit „# inferred“ markierte Regeln hinzu, wenn es ein Signal unter einem anderen Präfix findet, und ändert deine nie. Leer lassen, um dieselben Pfade zu verwenden."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Une règle par ligne : préfixe de la conception = préfixe du chronogramme, par exemple « cpu = top_tb.dut ». cmux la remplit lorsqu’il trouve un signal sous un autre préfixe. Laissez vide pour utiliser les mêmes chemins."
+            "value": "Une règle par ligne : préfixe de la conception = préfixe du chronogramme, par exemple « cpu = top_tb.dut ». Plusieurs règles peuvent partager un préfixe de conception, une par instance. cmux ajoute des règles marquées « # inferred » lorsqu’il trouve un signal sous un autre préfixe, et ne modifie jamais les vôtres. Laissez vide pour utiliser les mêmes chemins."
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "قاعدة واحدة في كل سطر: بادئة التصميم = بادئة الشكل الموجي، مثل «cpu = top_tb.dut». يملؤها cmux عندما يجد إشارة تحت بادئة مختلفة. اتركها فارغة لاستخدام المسارات نفسها."
+            "value": "قاعدة واحدة في كل سطر: بادئة التصميم = بادئة الشكل الموجي، مثل «cpu = top_tb.dut». يمكن لعدة قواعد أن تشترك في بادئة التصميم نفسها، واحدة لكل نسخة. يضيف cmux قواعد مُعلَّمة بـ «# inferred» عندما يجد إشارة تحت بادئة أخرى، ولا يغيّر قواعدك أبدًا. اتركها فارغة لاستخدام المسارات نفسها."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Una regla por línea: prefijo del diseño = prefijo de la forma de onda, por ejemplo «cpu = top_tb.dut». cmux la rellena cuando encuentra una señal bajo otro prefijo. Déjalo vacío para usar las mismas rutas."
+            "value": "Una regla por línea: prefijo del diseño = prefijo de la forma de onda, por ejemplo «cpu = top_tb.dut». Varias reglas pueden compartir un prefijo del diseño, una por instancia. cmux añade reglas marcadas con «# inferred» cuando encuentra una señal bajo otro prefijo y nunca cambia las tuyas. Déjalo vacío para usar las mismas rutas."
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "每行一條規則：設計前綴 = 波形前綴，例如「cpu = top_tb.dut」。cmux 在不同前綴下找到訊號時會自動填入。保持空白即使用相同路徑。"
+            "value": "每行一條規則：設計前綴 = 波形前綴，例如「cpu = top_tb.dut」。多條規則可共用同一個設計前綴，每個實例一條。cmux 在其他前綴下找到訊號時，會加入標記為「# inferred」的規則，且絕不更改你寫的規則。保持空白即使用相同路徑。"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "每行一条规则：设计前缀 = 波形前缀，例如“cpu = top_tb.dut”。cmux 在不同前缀下找到信号时会自动填入。保持空白即使用相同路径。"
+            "value": "每行一条规则：设计前缀 = 波形前缀，例如“cpu = top_tb.dut”。多条规则可共用同一个设计前缀，每个实例一条。cmux 在其他前缀下找到信号时，会添加标记为“# inferred”的规则，且绝不更改你写的规则。保持空白即使用相同路径。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "한 줄에 규칙 하나: 설계 접두사 = 파형 접두사, 예: “cpu = top_tb.dut”. 다른 접두사 아래에서 신호를 찾으면 cmux가 자동으로 채웁니다. 같은 경로를 쓰려면 비워 두세요."
+            "value": "한 줄에 규칙 하나: 설계 접두사 = 파형 접두사, 예: “cpu = top_tb.dut”. 인스턴스마다 하나씩, 여러 규칙이 같은 설계 접두사를 가질 수 있습니다. 다른 접두사 아래에서 신호를 찾으면 cmux가 “# inferred” 표시가 붙은 규칙을 추가하며, 직접 쓴 규칙은 바꾸지 않습니다. 같은 경로를 쓰려면 비워 두세요."
           }
         }
       }
@@ -481624,6 +481624,655 @@
           "stringUnit": {
             "state": "translated",
             "value": "언어 서버가 응답하지 않았습니다. 잠시 후 다시 시도하세요."
+          }
+        }
+      }
+    },
+    "waveformLink.noDriver": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No assignment to this signal in this file, so this is its declaration. Drivers in other files and through port connections are not traced."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このファイルにはこの信号への代入がないため、宣言を表示しています。他のファイルにあるドライバやポート接続経由のドライバは追跡されません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In dieser Datei gibt es keine Zuweisung an dieses Signal, daher wird seine Deklaration gezeigt. Treiber in anderen Dateien und über Portverbindungen werden nicht verfolgt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune affectation de ce signal dans ce fichier : voici donc sa déclaration. Les pilotes situés dans d’autres fichiers ou passant par des connexions de ports ne sont pas suivis."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يوجد إسناد لهذه الإشارة في هذا الملف، لذا هذا هو تعريفها. لا يتم تتبّع المشغّلات في ملفات أخرى أو عبر توصيلات المنافذ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay ninguna asignación a esta señal en este archivo, así que esta es su declaración. No se rastrean los controladores en otros archivos ni a través de conexiones de puertos."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此檔案中沒有對此訊號的指派，因此這裡顯示的是它的宣告。不會追蹤其他檔案中或經由埠連接的驅動來源。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件中没有对此信号的赋值，因此这里显示的是它的声明。不会追踪其他文件中或经由端口连接的驱动源。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 파일에는 이 신호에 대한 할당이 없어 선언을 표시합니다. 다른 파일이나 포트 연결을 통한 드라이버는 추적하지 않습니다."
+          }
+        }
+      }
+    },
+    "waveformLink.elaborate.confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elaborate"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エラボレート"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elaborieren"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Élaborer"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تفصيل"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elaborar"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展開"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "엘라보레이션"
+          }
+        }
+      }
+    },
+    "waveformLink.elaborate.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server has no top level for this folder, so it can’t place signals in the design. Elaborate it with %@ (the waveform’s top) as the top level? Diagnostics of this folder’s open files then follow that top level until you choose View > Reset Language Server Top Level."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server にはこのフォルダのトップレベルがないため、信号を設計内で特定できません。%@（波形のトップ）をトップレベルとしてエラボレートしますか？ その後、表示 > 言語サーバーのトップレベルをリセット を選ぶまで、このフォルダで開いているファイルの診断はそのトップレベルに従います。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server hat für diesen Ordner keine Top-Ebene und kann Signale daher nicht im Design zuordnen. Mit %@ (dem Top der Wellenform) als Top-Ebene elaborieren? Die Diagnosen der geöffneten Dateien dieses Ordners folgen dann dieser Top-Ebene, bis du Darstellung > Top-Ebene des Sprachservers zurücksetzen wählst."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server n’a pas de niveau supérieur pour ce dossier et ne peut donc pas situer les signaux dans la conception. L’élaborer avec %@ (le niveau supérieur du chronogramme) ? Les diagnostics des fichiers ouverts de ce dossier suivront alors ce niveau supérieur jusqu’à ce que vous choisissiez Présentation > Réinitialiser le niveau supérieur du serveur de langage."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ليس لدى slang-server مستوى أعلى لهذا المجلد، لذا لا يمكنه تحديد مواضع الإشارات في التصميم. هل تريد تفصيله مع %@ (أعلى الشكل الموجي) كمستوى أعلى؟ ستتبع تشخيصات الملفات المفتوحة في هذا المجلد ذلك المستوى حتى تختار عرض > إعادة تعيين المستوى الأعلى لخادم اللغة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server no tiene un nivel superior para esta carpeta, así que no puede ubicar señales en el diseño. ¿Elaborarlo con %@ (el nivel superior de la forma de onda) como nivel superior? Los diagnósticos de los archivos abiertos de esta carpeta seguirán ese nivel superior hasta que elijas Visualización > Restablecer el nivel superior del servidor de lenguaje."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 沒有此資料夾的頂層，因此無法在設計中找到訊號的位置。要以 %@（波形的頂層）作為頂層展開設計嗎？之後此資料夾中已開啟檔案的診斷會依照該頂層，直到你選擇「顯示方式」>「重設語言伺服器頂層」。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 没有此文件夹的顶层，因此无法在设计中定位信号。要以 %@（波形的顶层）作为顶层展开设计吗？之后此文件夹中已打开文件的诊断会依照该顶层，直到你选择“显示”>“重置语言服务器顶层”。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server에 이 폴더의 최상위 수준이 없어 설계에서 신호 위치를 찾을 수 없습니다. %@(파형의 최상위)을(를) 최상위 수준으로 엘라보레이션할까요? 그러면 보기 > 언어 서버 최상위 수준 재설정을 선택할 때까지 이 폴더에서 열린 파일의 진단이 그 최상위 수준을 따릅니다."
+          }
+        }
+      }
+    },
+    "waveformLink.elaborate.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elaborate the Design?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計をエラボレートしますか？"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Design elaborieren?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Élaborer la conception ?"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "هل تريد تفصيل التصميم؟"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Elaborar el diseño?"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要展開設計嗎？"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要展开设计吗？"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설계를 엘라보레이션할까요?"
+          }
+        }
+      }
+    },
+    "waveformLink.elaborating": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elaborating the design with %@ as the top level…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ をトップレベルとして設計をエラボレートしています…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Design wird mit %@ als Top-Ebene elaboriert …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Élaboration de la conception avec %@ comme niveau supérieur…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ تفصيل التصميم (elaboration) مع %@ كمستوى أعلى…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elaborando el diseño con %@ como nivel superior…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在以 %@ 作為頂層展開設計…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在以 %@ 作为顶层展开设计…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@을(를) 최상위 수준으로 설계를 엘라보레이션하는 중…"
+          }
+        }
+      }
+    },
+    "waveformLink.mappedNote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The waveform names %1$@ as %2$@. Change this in View > Waveform Path Mapping…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形では %1$@ は %2$@ という名前です。表示 > 波形パスの対応付け… で変更できます"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Wellenform nennt %1$@ %2$@. Ändern unter Darstellung > Wellenform-Pfadzuordnung …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le chronogramme nomme %1$@ %2$@. Modifiez-le dans Présentation > Correspondance des chemins du chronogramme…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يسمّي الشكل الموجي %1$@ باسم %2$@. غيّر ذلك من عرض > ربط مسارات الشكل الموجي…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La forma de onda llama %2$@ a %1$@. Cámbialo en Visualización > Correspondencia de rutas de la forma de onda…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形將 %1$@ 稱為 %2$@。可在「顯示方式」>「波形路徑對應…」中變更"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形将 %1$@ 称为 %2$@。可在“显示”>“波形路径映射…”中更改"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형에서는 %1$@을(를) %2$@(으)로 부릅니다. 보기 > 파형 경로 매핑…에서 변경하세요"
+          }
+        }
+      }
+    },
+    "waveformLink.searching": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Looking for the design in the waveform…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形内で設計を探しています…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Design wird in der Wellenform gesucht …"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recherche de la conception dans le chronogramme…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ البحث عن التصميم في الشكل الموجي…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscando el diseño en la forma de onda…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在波形中尋找設計…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在波形中查找设计…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형에서 설계를 찾는 중…"
+          }
+        }
+      }
+    },
+    "waveformLink.notDumped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not dumped: %@. Check the simulator’s dump depth or whether it optimized the signal away."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダンプされていません: %@。シミュレータのダンプ深さや、信号が最適化で削除されていないかを確認してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nicht gedumpt: %@. Prüfe die Dump-Tiefe des Simulators oder ob er das Signal wegoptimiert hat."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non enregistré dans le dump : %@. Vérifiez la profondeur de dump du simulateur ou s’il a supprimé le signal par optimisation."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يتم تفريغها: %@. تحقّق من عمق التفريغ في المحاكي أو مما إذا كان قد أزال الإشارة أثناء التحسين."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No volcado: %@. Revisa la profundidad de volcado del simulador o si optimizó la señal y la eliminó."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未傾印：%@。請檢查模擬器的傾印深度，或確認訊號是否已被最佳化移除。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未转储：%@。请检查仿真器的转储深度，或确认信号是否已被优化掉。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "덤프되지 않음: %@. 시뮬레이터의 덤프 깊이나 신호가 최적화로 제거되었는지 확인하세요."
+          }
+        }
+      }
+    },
+    "waveformLink.isInstance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is an instance. Only signals can be added to the waveform."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ はインスタンスです。波形に追加できるのは信号だけです。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist eine Instanz. Nur Signale können zur Wellenform hinzugefügt werden."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ est une instance. Seuls les signaux peuvent être ajoutés au chronogramme."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ نسخة (instance). يمكن إضافة الإشارات فقط إلى الشكل الموجي."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ es una instancia. Solo se pueden añadir señales a la forma de onda."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 是實例。只有訊號可以加入波形。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 是实例。只有信号可以添加到波形。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@은(는) 인스턴스입니다. 파형에는 신호만 추가할 수 있습니다."
+          }
+        }
+      }
+    },
+    "waveformLink.notDumpedUnder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (the waveform has %2$@ without it)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（波形には %2$@ がありますが、この信号は含まれていません）"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (die Wellenform enthält %2$@ ohne dieses Signal)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (le chronogramme contient %2$@ sans ce signal)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (يحتوي الشكل الموجي على %2$@ بدونها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (la forma de onda tiene %2$@ sin ella)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（波形中有 %2$@，但不含此訊號）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（波形中有 %2$@，但不含此信号）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@(파형에 %2$@은(는) 있지만 이 신호는 없음)"
+          }
+        }
+      }
+    },
+    "menu.view.resetLanguageServerTopLevel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset Language Server Top Level"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語サーバーのトップレベルをリセット"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Top-Ebene des Sprachservers zurücksetzen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réinitialiser le niveau supérieur du serveur de langage"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إعادة تعيين المستوى الأعلى لخادم اللغة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restablecer el nivel superior del servidor de lenguaje"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重設語言伺服器頂層"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重置语言服务器顶层"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "언어 서버 최상위 수준 재설정"
           }
         }
       }
