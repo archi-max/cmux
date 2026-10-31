@@ -206,6 +206,36 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // (An occluded off-screen page fires timers late, so fewer than 20 land; still well above the 250 ms wait's.)
     expect(consecutive(acked) && acked.count >= 8 && acked.count > unacked.count + 2,
            "editors answering at once: every cycle at the play rate: \(acked.count) cycles, \(acked.prefix(8))")
+    // One cycle's answer comes late (a busy machine): the page gives up on it after 250 ms,
+    // says so (cmux then stops waiting for that editor), and the next cycles go at the rate again.
+    let late = await call("""
+      const d = cmuxWaveform.debugger;
+      await d.jump({ to: 'first' });
+      await new Promise((r) => setTimeout(r, 200));
+      window.__ack = false;
+      const moves = [];
+      const original = cmuxWaveform.host.toNative;
+      cmuxWaveform.host.toNative = (m) => {
+        if (m && m.type === 'debugger' && m.event === 'moved') {
+          moves.push({ time: m.movedTo, left: m.left, missed: m.missed, at: performance.now() });
+          // Answer each move at once, except the third, whose answer comes after 400 ms.
+          const time = m.movedTo;
+          if (moves.length === 3) { setTimeout(() => d.rtlShown({ time }), 400); } else { Promise.resolve().then(() => d.rtlShown({ time })); }
+        }
+        return original(m);
+      };
+      try {
+        await d.play({ rate: 20 });
+        await new Promise((r) => setTimeout(r, 1500));
+        await d.pause();
+      } finally { cmuxWaveform.host.toNative = original; }
+      return moves.map((m) => ({ time: m.time, left: m.left, missed: m.missed }));
+    """) as? [[String: Any]]
+    let lateMissed = (late ?? []).enumerated().filter { $0.element["missed"] as? Bool == true }.map(\.offset)
+    expect((late?.count ?? 0) >= 8 && lateMissed == [3],
+           "a late answer: only the move after it says the page gave up waiting, and play goes on at its rate: \(lateMissed) of \(late?.count ?? 0) moves")
+    expect(late.map { moves in zip(moves, moves.dropFirst()).allSatisfy { ($1["left"] as? NSNumber) == ($0["time"] as? NSNumber) } } == true,
+           "each move names the cycle it left: \(String(describing: late?.prefix(4)))")
     _ = await call("await cmuxWaveform.debugger.setRtlStatus({ text: 'RTL: cpu.sv', ok: true, wait: false }); return null")
     let free = await playedCycles(rate: 500, ack: false, for: 600)
     expect(!consecutive(free) && (free.last ?? 0) > 30, "not waiting: play skips cycles to keep pace: \(free.count) moves to \(free.last ?? 0)")
