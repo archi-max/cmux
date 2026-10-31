@@ -1418,50 +1418,75 @@ extension Harness {
   }
 
 
-  // A signal already shown is not added again, from any entrypoint (tree
-  // double-click, Enter, Add All in Scope, a drop, the editor, the API); asked
-  // for alone, its row is selected, as VaporView's reveal does. The debugger's
-  // Locals group leaves out what is shown outside it, so adding the scope
-  // Locals shows pins its signals once, and removing a pinned one gives it
-  // back to Locals.
+
+  static let rowsProbe = """
+  const tr = () => { const out = []; const walk = (l, p) => (l || []).forEach((d) => {
+    if (d.dataType === 'signal-group') { out.push(p + '[' + d.groupName + ']'); walk(d.children, p + d.groupName + '/'); }
+    else if (d.name) { out.push(p + d.name); } });
+    walk(H.viewerContext.webview && H.viewerContext.webview.displayedSignals, ''); return out.join(','); };
+  const selected = () => H.viewerContext.webview && H.viewerContext.webview.selectedSignal;
+  const tree = document.getElementById('tree');
+  const rowOf = (item) => Array.from(tree.querySelectorAll('.row')).find((r) => r._item && r._item.netlistId === item.netlistId);
+  const removeAll = (v) => H.toWebview({ command: 'remove-signal', netlistId: v.netlistId, rowId: undefined, removeAllSelected: false });
+  const byName = (path) => C.run('waveformViewer.addVariable', { instancePath: path });
+  const clk = await H.findLinkItem(['top', 'clk'], true);
+  const acc = await H.findLinkItem(['top', 'core', 'acc'], true);
+  const core = await H.findLinkItem(['top', 'core'], false);
+  const d = window.cmuxWaveform.debugger;
+  """
+
+  // Adds of a shown signal. Bulk adds (Add All in Scope, from the netlist menu
+  // or the editor, and the debugger's Locals) leave out what is shown. An
+  // explicit add of one signal (double-click, Enter, a drop into a group, the
+  // API by id) adds another row, as VaporView does. A pick by name or the
+  // editor's Add to Waveform selects the shown row (VaporView's reveal).
+  // Locals leaves out signals shown outside it, so adding the scope Locals
+  // shows pins its signals once.
   func phaseAM() {
     openFresh {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-        self.js("""
-        const tr = () => { const out = []; const walk = (l, p) => (l || []).forEach((d) => {
-          if (d.dataType === 'signal-group') { out.push(p + '[' + d.groupName + ']'); walk(d.children, p + d.groupName + '/'); }
-          else if (d.name) { out.push(p + d.name); } });
-          walk(H.viewerContext.webview && H.viewerContext.webview.displayedSignals, ''); return out.join(','); };
-        const selected = () => H.viewerContext.webview && H.viewerContext.webview.selectedSignal;
-        const tree = document.getElementById('tree');
-        const rowOf = (item) => Array.from(tree.querySelectorAll('.row')).find((r) => r._item && r._item.netlistId === item.netlistId);
-        const clk = await H.findLinkItem(['top', 'clk'], true);
-        const acc = await H.findLinkItem(['top', 'core', 'acc'], true);
-        const core = await H.findLinkItem(['top', 'core'], false);
+        self.js(Self.rowsProbe + """
+        const n = (name) => tr().split(',').filter((x) => x === name).length;
         window.cmuxNetlist.reveal(clk);
         await sleep(300);
         rowOf(clk).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
         await sleep(600);
         rowOf(clk).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
         await sleep(600);
-        R.dbl = tr(); R.dblSel = selected() === clk.netlistId;
+        R.dbl = n('top.clk');
         rowOf(clk).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
         tree.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
         await sleep(600);
-        R.key = tr();
+        R.key = n('top.clk');
+        removeAll(clk);
+        await sleep(400);
+        await byName('top.clk');
+        await sleep(600);
+        await byName('top.clk');
+        await sleep(600);
+        R.name = n('top.clk'); R.nameSel = selected() === clk.netlistId;
+        await window.cmuxWaveform.link.addSignal(['top', 'clk']);
+        await sleep(600);
+        R.linkSignal = n('top.clk');
         await C.run('vaporview.addAllInScopeShallow', core);
         await sleep(600);
         await C.run('vaporview.addAllInScopeShallow', core);
         await sleep(600);
-        R.menu = tr();
-        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: acc.netlistId }], groupPath: [], dropIndex: 0 });
-        await sleep(600);
-        R.drop = tr();
+        R.menu = n('top.core.acc');
         await C.run('waveformViewer.addVariable', { netlistId: acc.netlistId });
         await sleep(600);
-        R.api = tr(); R.apiSel = selected() === acc.netlistId;
-        const d = window.cmuxWaveform.debugger;
-        H.toWebview({ command: 'remove-signal', netlistId: acc.netlistId, rowId: undefined, removeAllSelected: false });
+        R.api = n('top.core.acc');
+        removeAll(acc);
+        await sleep(400);
+        H.toWebview({ command: 'newSignalGroup', groupName: 'Mine', groupPath: undefined, parentGroupId: undefined,
+          eventRowId: undefined, moveSelected: false, showRenameInput: false });
+        await sleep(400);
+        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: clk.netlistId }], groupPath: ['Mine'], dropIndex: 0 });
+        await sleep(600);
+        R.drop = tr();
+        removeAll(clk);
+        await sleep(400);
+        await byName('top.clk');
         await sleep(600);
         await d.step({ by: 1 });
         await d.setLocals({ path: ['top', 'core'] });
@@ -1477,32 +1502,134 @@ extension Harness {
         C.run('cmux.redo');
         await sleep(800);
         R.redone = tr();
-        H.toWebview({ command: 'remove-signal', netlistId: acc.netlistId, rowId: undefined, removeAllSelected: false });
+        removeAll(acc);
         await sleep(800);
         R.unpinned = tr();
         await C.run('vaporview.addAllInScopeShallow', core);
         await sleep(800);
-        R.link = tr();
+        R.menuPin = tr();
         await d.setLocals({ path: ['top'] });
         await sleep(800);
         R.top = tr();
         """) { r in
           let s = { (k: String) in r[k] as? String ?? "nil" }
-          check(s("dbl") == "top.clk" && r["dblSel"] as? Bool == true, "a second double-click selects the row instead of adding it again: \(s("dbl"))")
-          check(s("key") == "top.clk", "Enter on a shown signal adds nothing: \(s("key"))")
-          check(s("menu") == "top.clk,top.core.acc", "Add All in Scope twice adds each signal once: \(s("menu"))")
-          check(s("drop") == "top.clk,top.core.acc", "dropping a shown signal adds nothing: \(s("drop"))")
-          check(s("api") == "top.clk,top.core.acc" && r["apiSel"] as? Bool == true, "the API selects a shown signal: \(s("api"))")
-          check(s("locals") == "top.clk,[Locals],Locals/top.core.acc", "Locals shows the scope: \(s("locals"))")
-          check(s("pinned").components(separatedBy: ",").filter { $0.hasSuffix("top.core.acc") } == ["top.core.acc"],
+          let i = { (k: String) in r[k] as? Int ?? -1 }
+          let rows = { (k: String) in s(k).components(separatedBy: ",") }
+          let accRows = { (k: String) in rows(k).filter { $0.hasSuffix("top.core.acc") } }
+          check(i("dbl") == 2, "a second double-click adds a second row, as VaporView does: \(i("dbl"))")
+          check(i("key") == 3, "so does Enter: \(i("key"))")
+          check(i("name") == 1 && r["nameSel"] as? Bool == true, "a pick by name selects the shown row: \(i("name"))")
+          check(i("linkSignal") == 1, "so does the editor's Add to Waveform: \(i("linkSignal"))")
+          check(i("menu") == 1, "Add All in Scope twice adds each signal once: \(i("menu"))")
+          check(i("api") == 2, "the API's add by id adds a second row: \(i("api"))")
+          check(rows("drop").contains("Mine/top.clk") && rows("drop").contains("top.clk"),
+                "dropping a shown signal into a group adds a second row there: \(s("drop"))")
+          check(rows("locals").contains("Locals/top.core.acc"), "Locals shows the scope: \(s("locals"))")
+          check(accRows("pinned") == ["top.core.acc"],
                 "the editor's Add All Signals in Scope on the Locals scope pins its signals once, outside Locals: \(s("pinned"))")
-          check(s("undone") == "top.clk,[Locals],Locals/top.core.acc", "Undo of the pin gives the signal back to Locals, once: \(s("undone"))")
-          check(s("redone") == s("pinned"), "Redo pins it again: \(s("redone"))")
-          check(s("unpinned") == "top.clk,[Locals],Locals/top.core.acc", "a removed pinned signal goes back to Locals: \(s("unpinned"))")
-          check(s("link").components(separatedBy: ",").filter { $0.hasSuffix("top.core.acc") } == ["top.core.acc"],
-                "the netlist menu's Add All in Scope pins once too: \(s("link"))")
-          check(s("top").components(separatedBy: ",").filter { $0.hasSuffix("top.clk") } == ["top.clk"],
-                "Locals leaves out a signal already shown: \(s("top"))")
+          check(accRows("undone") == ["Locals/top.core.acc"], "Undo of the pin gives the signal back to Locals, once: \(s("undone"))")
+          check(accRows("redone") == ["top.core.acc"], "Redo pins it again: \(s("redone"))")
+          check(accRows("unpinned") == ["Locals/top.core.acc"], "a removed pinned signal goes back to Locals: \(s("unpinned"))")
+          check(accRows("menuPin") == ["top.core.acc"], "the netlist menu's Add All in Scope pins once too: \(s("menuPin"))")
+          check(rows("top").filter { $0.hasSuffix("top.clk") } == ["top.clk"], "Locals leaves out a signal already shown: \(s("top"))")
+          self.phaseAN()
+        }
+      }
+    }
+  }
+
+  // Locals respects a row the user deleted until the pinned set changes. Add
+  // All counts and caps only what isn't shown. A lost add doesn't swallow
+  // the next one. A reload starts with no viewer context, and a reload that
+  // starts during another drops the Undo queued for it. A failure during a
+  // reload that then succeeds leaves Undo working.
+  func phaseAN() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe + Self.reloadProbe + """
+        const vdoc = () => document.getElementById('viewer').contentDocument;
+        const rowContextOf = (el) => JSON.parse(el.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
+        await byName('top.clk');
+        await sleep(600);
+        await d.step({ by: 1 });
+        await d.setLocals({ path: ['top', 'core'] });
+        await sleep(600);
+        const group = Array.from(vdoc().querySelectorAll('.waveform-group')).find((e) => e.querySelector('p').textContent === 'Locals');
+        const child = group && group.querySelector(':scope > .labels-group > .waveform-label');
+        if (child) { H.toWebview({ command: 'remove-signal', rowId: rowContextOf(child).rowId, removeAllSelected: false }); }
+        await sleep(1000);
+        R.deleted = tr();
+        await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] });
+        await sleep(800);
+        removeAll(acc);
+        await sleep(800);
+        R.back = tr();
+        // A scope whose first 128 signals are shown already: no warning, and the next one is added.
+        removeAll(acc);
+        await sleep(400);
+        await d.setLocals({ path: null });
+        await sleep(400);
+        const fake = { kind: 'scope', name: 'fake', scopePath: ['top'], children: new Array(128).fill(clk).concat([acc]) };
+        const adding = C.run('vaporview.addAllInScopeShallow', fake);
+        await sleep(800);
+        R.warned = !!document.querySelector('.cmux-dialog-backdrop');
+        const no = document.querySelector('.cmux-dialog-backdrop button');
+        if (no) { no.click(); }
+        await adding;
+        await sleep(600);
+        R.capped = tr();
+        // An add the viewer never got (here dropped on its way) doesn't block the next one.
+        removeAll(clk);
+        await sleep(400);
+        const w = document.getElementById('viewer').contentWindow;
+        const post = w.postMessage.bind(w);
+        w.postMessage = (m, o) => { if (m && m.command === 'add-variable') { w.postMessage = post; return; } return post(m, o); };
+        await window.cmuxWaveform.link.addScope({ path: ['top'] });
+        w.postMessage = post;
+        await C.run('waveformViewer.loadViewerState', { state: { displayedSignals: [{ dataType: 'netlist-variable', name: 'top.core.acc' }] } });
+        await sleep(400);
+        await window.cmuxWaveform.link.addScope({ path: ['top'] });
+        await sleep(600);
+        R.readd = tr();
+        // A reload starts without the old viewer's context.
+        window.cmuxWaveform.reload({});
+        R.ctx = H.viewerContext.webview === null;
+        await reloaded();
+        await sleep(800);
+        // An Undo queued in a reload's gap doesn't carry into a reload started before it ran.
+        await C.run('waveformViewer.addVariable', { netlistId: clk.netlistId });
+        await sleep(600);
+        R.before = tr();
+        window.cmuxWaveform.reload({});
+        C.run('cmux.undo');
+        window.cmuxWaveform.reload({});
+        await reloaded();
+        await sleep(1500);
+        R.queued = tr();
+        // A failure during a reload that then succeeds leaves Undo working.
+        if (!tr().split(',').includes('top.clk')) { await C.run('waveformViewer.addVariable', { netlistId: clk.netlistId }); await sleep(600); }
+        window.cmuxWaveform.reload({});
+        H.fail(new Error('probe'));
+        await reloaded();
+        await sleep(800);
+        removeAll(clk);
+        await sleep(600);
+        R.preUndo = tr();
+        C.run('cmux.undo');
+        await sleep(800);
+        R.undo = tr();
+        """) { r in
+          let s = { (k: String) in r[k] as? String ?? "nil" }
+          let rows = { (k: String) in s(k).components(separatedBy: ",") }
+          check(!rows("deleted").contains("Locals/top.core.acc"), "a Locals row the user deleted stays deleted: \(s("deleted"))")
+          check(rows("back").contains("Locals/top.core.acc"), "until the pinned set changes: \(s("back"))")
+          check(r["warned"] as? Bool == false, "Add All doesn't count shown signals toward its warning")
+          check(rows("capped").contains("top.core.acc"), "nor toward its 128 cap: \(s("capped"))")
+          check(rows("readd").contains("top.clk"), "a lost add doesn't swallow the next one: \(s("readd"))")
+          check(r["ctx"] as? Bool == true, "a reload starts with no viewer context")
+          check(s("queued") == s("before"), "a reload started in another's gap drops its queued Undo: \(s("before")) -> \(s("queued"))")
+          check(rows("undo").contains("top.clk") && !rows("preUndo").contains("top.clk"),
+                "Undo works after a reload that failed on the way and then succeeded: \(s("preUndo")) -> \(s("undo"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
