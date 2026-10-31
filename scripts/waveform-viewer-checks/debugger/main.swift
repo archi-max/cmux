@@ -287,20 +287,40 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let relit = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
     expect((relit ?? 0) >= 2, "rows made again stay lit: \(String(describing: relit))")
     // Collapsed then expanded again: its lit row gets its box back.
-    let toggleLocals = { (expanded: Bool) in """
+    // As the user does it: a click on the group's chevron.
+    let clickLocalsChevron = """
       const d = document.getElementById('viewer').contentDocument;
       const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Locals');
-      const c = JSON.parse(g.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
-      document.getElementById('viewer').contentWindow.postMessage({ command: 'editSignalGroup', groupId: c.groupId, isExpanded: \(expanded) }, '*');
-      return null;
-    """ }
-    _ = await call(toggleLocals(false))
+      const chevron = g.querySelector('.codicon-chevron-down, .codicon-chevron-right');
+      chevron.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return chevron.className;
+    """
+    let countBoxes = "return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length"
+    _ = await call(clickLocalsChevron)
     await sleep(400)
-    let folded = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
-    _ = await call(toggleLocals(true))
+    let folded = await call(countBoxes) as? Int
+    _ = await call(clickLocalsChevron)
     await sleep(400)
-    let unfolded = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
+    let unfolded = await call(countBoxes) as? Int
     expect((folded ?? 0) <= 1 && (unfolded ?? 0) >= 2, "collapsing Locals hides its box, expanding brings it back: \(String(describing: folded)) -> \(String(describing: unfolded))")
+    // Selecting a lit row inside a collapsed Locals unfolds it: its box comes back too.
+    let litId = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Locals');
+      for (const el of g.querySelectorAll('.waveform-label')) {
+        const c = JSON.parse((el.getAttribute('data-vscode-context') || '{}').replace(/%x20/g, ' '));
+        const row = el.querySelector(':scope > .waveform-row');
+        if (c.webviewSection === 'signal' && row && getComputedStyle(row).boxShadow.includes('inset')) { return c.netlistId; }
+      }
+      return null;
+    """) as? Int
+    _ = await call(clickLocalsChevron)
+    await sleep(400)
+    let foldedAgain = await call(countBoxes) as? Int
+    _ = await call("document.getElementById('viewer').contentWindow.postMessage({ command: 'setSelectedSignal', netlistId: \(litId ?? -1) }, '*'); return null")
+    await sleep(400)
+    let shownAgain = await call(countBoxes) as? Int
+    expect(litId != nil && (foldedAgain ?? 0) <= 1 && (shownAgain ?? 0) >= 2, "selecting a lit row in a folded Locals brings its box back: \(String(describing: litId)) \(String(describing: foldedAgain)) -> \(String(describing: shownAgain))")
     // An earlier, slower highlight call does not undo a later one.
     _ = await call("""
       const d = cmuxWaveform.debugger;
@@ -380,6 +400,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       } finally { cmuxUI.toast = original; }
     """) as? [String]
     expect(raced == [], "a reload during the clock read warns nothing: \(String(describing: raced))")
+    // A clock chosen while a reload closes the backend is looked up again in the new netlist.
+    let stale = await call("""
+      const h = cmuxWaveform.host;
+      const original = h.signalPosedges;
+      const stale = [];
+      h.signalPosedges = (v, max) => { if (h.netlistItem(v.netlistId) !== v) { stale.push(v.name); } return original(v, max); };
+      try {
+        await cmuxWaveform.debugger.stop();
+        const choosing = cmuxWaveform.debugger.setClock({ path: null }).catch(() => null);
+        cmuxWaveform.reload({});
+        await choosing;
+        await new Promise((r) => setTimeout(r, 1500));
+        await cmuxWaveform.debugger.step({ by: 1 });
+        return stale;
+      } finally { h.signalPosedges = original; }
+    """) as? [String]
+    expect(stale == [], "no clock from the closed netlist is read: \(String(describing: stale))")
     _ = await dbg("stop()")
     // The page can't swap the API cmux calls.
     let tamper = await call("""

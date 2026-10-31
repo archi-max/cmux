@@ -39,8 +39,10 @@ final class LanguageServerSession: @unchecked Sendable {
     var failing: Set<String> = []
     var asked: [String] = []
     struct NotCompiled: Error {}
+    var delay: UInt64 = 0
     func slangDriverCone(_ path: String) async throws -> [SlangConeEntry] {
         asked.append(path)
+        if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
         if failing.contains(path) { throw NotCompiled() }
         return cones[path] ?? []
     }

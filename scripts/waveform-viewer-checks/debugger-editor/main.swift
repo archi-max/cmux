@@ -109,6 +109,18 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     await settle()
     expect(editor.session.asked.suffix(1) == ["tb.dut.pc_next"] && editor.session.asked.count == 7, "a failed cone is asked again after its wait: \(editor.session.asked)")
     WaveformDebuggerEditorHighlights.failedConeRetryInterval = 30
+    // Lookups still out when the server recompiles (nothing cached for it yet): their answers aren't kept.
+    WaveformDebuggerEditorHighlights.forgetCones()
+    editor.session.delay = 400_000_000
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    try? await Task.sleep(nanoseconds: 100_000_000)
+    WaveformDebuggerEditorHighlights.recompiled(editor.session)
+    try? await Task.sleep(nanoseconds: 700_000_000)
+    editor.session.delay = 0
+    let askedBefore = editor.session.asked.count
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    expect(editor.session.asked.count == askedBefore + 2, "answers from before a recompile aren't cached: \(editor.session.asked.count - askedBefore) asked again")
 
     // Typing above the highlights moves them with the text; clearing must still take them all away.
     textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "// x\n")
