@@ -788,6 +788,8 @@
   // reloading viewer has no rows to apply a view to, and its restore (until
   // the viewer answers it) would overwrite one: they run once it is back.
   let waitingHistory = [];
+  // The path the waiting history belongs to.
+  let historyPath = null;
 
   // Whether a view was applied (its answer then runs the next waiting one).
   function undo(stack, other, type) {
@@ -1226,6 +1228,7 @@
     frameGone = false;
     keptIsCurrent = false;
     waitingHistory = [];
+    historyPath = config.path || null;
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
@@ -1268,12 +1271,18 @@
     }
     reloading = true;
     webviewContext = null;
+    // A reload of another path: what was pressed for the old one doesn't carry.
+    const path = host().config.path || null;
+    if (path !== historyPath) { waitingHistory = []; historyPath = path; }
   }
 
   window.cmuxCommands = {
     run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
     addSignalByName, fileChanged, willReload, updateSetting,
     frameUnloaded: () => { if (reloading) { frameGone = true; } },
+    // The reload's file didn't open: an Undo pressed for it would apply to
+    // whatever a later reload shows.
+    reloadFailed: () => { waitingHistory = []; },
     // A reload or restore has not come back yet (Undo/Redo wait for it).
     isRestoring: () => reloading || restorePending,
     init,
