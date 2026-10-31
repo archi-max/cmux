@@ -297,6 +297,7 @@
       return;
     }
     const next = Math.min(edges.length - 1, playIndex + 1);
+    const stop = playStop && next >= playStop.index ? playStop : null;
     const left = edges[playIndex];
     const missed = rtlPending !== null;
     playIndex = next;
@@ -304,11 +305,13 @@
     rtlPending = { time: edges[next], at: now };
     moveMarker(edges[next]);
     postMoved(edges[next], left, missed);
+    if (stop) { pause(); announceHit(stop, edges); return; }
     if (next >= edges.length - 1) { pause(); return; }
     scheduleTick(gap);
   }
 
   let playBackend = null;
+  let playStarts = 0;
 
   function tick() {
     if (!state.playing || !state.edges) { return; }
@@ -316,8 +319,11 @@
     if (host.currentBackend !== playBackend) { pause(); return; }
     const edges = state.edges;
     if (rtlStatus.wait) { waitingTick(edges); return; }
-    const target = Math.min(edges.length - 1,
+    let target = Math.min(edges.length - 1,
       playOrigin.index + Math.floor((performance.now() - playOrigin.at) * state.rate / 1000));
+    // A breakpoint hit on the way (or skipped over by this tick): play stops there.
+    const stop = playStop && target >= playStop.index ? playStop : null;
+    if (stop) { target = stop.index; }
     const left = edges[playIndex];
     playIndex = target;
     const time = markerTime();
@@ -325,6 +331,7 @@
       moveMarker(edges[target]);
       postMoved(edges[target], left, false);
     }
+    if (stop) { pause(); announceHit(stop, edges); return; }
     if (target >= edges.length - 1) { pause(); return; }
     scheduleTick();
   }
@@ -336,6 +343,13 @@
     const time = markerTime();
     let index = time === null ? 0 : Math.max(0, edgeIndexAt(edges, time));
     if (index >= edges.length - 1) { index = 0; }
+    // Where play stops: the first breakpoint hit ahead (found before play starts, so a fast
+    // first tick cannot pass it). A pause or another play meanwhile wins.
+    const started = ++playStarts;
+    const backend = host.currentBackend;
+    playStopRequest++;
+    playStop = breakpoints.some((b) => b.enabled) ? await findHit(edges, edges[index], 1) : null;
+    if (started !== playStarts || host.currentBackend !== backend) { return publicState(); }
     playOrigin = { index, at: performance.now() };
     playIndex = index;
     rtlPending = null;
@@ -349,6 +363,8 @@
 
   function pause() {
     clearTimeout(playTimer);
+    playStarts++;
+    playStop = null;
     if (!state.playing) { return publicState(); }
     state.playing = false;
     render();
@@ -710,6 +726,342 @@
     });
   });
 
+  // ---- breakpoints: break when a dump signal changes or equals a value ----
+  // A hit at change time t lands on the first posedge at or after t, where the new value is
+  // sampled (a registered change lands on its own posedge). Continue goes to the nearest hit
+  // landing after the marker, reverse continue to the nearest landing before it, so each always
+  // moves. Signals' changes come from host.signalChanges (what the viewer was given when shown).
+  const MAX_BREAKPOINT_CHANGES = 1000000;
+  const breakpoints = [];  // { id, path, kind: 'change' | 'equals', value, pattern, enabled, times, timesFor }
+  let nextBreakpointId = 1;
+  let lastHitId = null;
+  let continueRequest = 0;
+  const changeCache = new Map();  // JSON path -> { backend, changes } (null changes: past the cap)
+
+  // An SV-style value as one character per bit, most significant first ('0', '1', 'x', 'z'
+  // or '?' for any bit), `width` bits; null when it is not a value or does not fit.
+  function parseValue(text, width) {
+    const s = String(text || '').trim().toLowerCase().replace(/_/g, '');
+    let bits;
+    const sized = /^(\d*)'(s?)([bodh])([0-9a-fxz?]+)$/.exec(s);
+    if (/^[xz?]$/.test(s)) {
+      bits = s;
+    } else if (/^\d+$/.test(s)) {
+      bits = BigInt(s).toString(2);
+    } else if (sized) {
+      const [, size, , base, digits] = sized;
+      if (base === 'd') {
+        if (!/^\d+$/.test(digits)) { return null; }
+        bits = BigInt(digits).toString(2);
+      } else {
+        const per = base === 'b' ? 1 : (base === 'o' ? 3 : 4);
+        bits = '';
+        for (const c of digits) {
+          if ('xz?'.includes(c)) { bits += c.repeat(per); continue; }
+          const n = parseInt(c, 16);
+          if (!(n < (1 << per))) { return null; }
+          bits += n.toString(2).padStart(per, '0');
+        }
+      }
+      if (size) {
+        const n = Number(size);
+        if (!(n > 0)) { return null; }
+        bits = fitBits(bits, n);
+        if (bits === null) { return null; }
+      }
+    } else {
+      return null;
+    }
+    return fitBits(bits, width);
+  }
+
+  // Extends (by the top bit when it is x, z or ?, else 0) or cuts to `width` bits; null when
+  // what is cut is not all zeros (or all the same x, z or ?).
+  function fitBits(bits, width) {
+    if (bits.length <= width) {
+      const pad = 'xz?'.includes(bits[0]) ? bits[0] : '0';
+      return pad.repeat(width - bits.length) + bits;
+    }
+    const cut = bits.slice(0, bits.length - width);
+    const kept = bits.slice(bits.length - width);
+    if (/^0*$/.test(cut) || ('xz?'.includes(kept[0]) && cut.split('').every((c) => c === kept[0]))) { return kept; }
+    return null;
+  }
+
+  function valueBits(value, width) {
+    const s = String(value).toLowerCase();
+    if (s.length >= width) { return s.slice(s.length - width); }
+    const pad = s[0] === 'x' || s[0] === 'z' ? s[0] : '0';
+    return pad.repeat(width - s.length) + s;
+  }
+
+  function matches(bits, pattern) {
+    for (let i = 0; i < pattern.length; i++) {
+      if (pattern[i] !== '?' && pattern[i] !== bits[i]) { return false; }
+    }
+    return true;
+  }
+
+  const breakpointName = (bp) => (bp.kind === 'equals'
+    ? format(S().debuggerBreakpointEquals, bp.path.join('.'), bp.value)
+    : format(S().debuggerBreakpointChanges, bp.path.join('.')));
+
+  const publicBreakpoint = (bp) => ({ id: bp.id, path: bp.path.slice(), kind: bp.kind,
+    value: bp.kind === 'equals' ? bp.value : null, enabled: bp.enabled, hit: bp.id === lastHitId, label: breakpointName(bp) });
+
+  const signalOf = async (path) => (await host.findLinkItem(path, true)) || null;
+
+  async function addBreakpoint(query) {
+    const q = query || {};
+    const path = Array.isArray(q.path) ? q.path.map(String) : null;
+    const kind = q.kind === 'equals' ? 'equals' : (q.kind === 'change' ? 'change' : null);
+    if (!path || !path.length || !kind) { return null; }
+    const v = await signalOf(path);
+    if (!v) {
+      window.cmuxUI.toast(format(S().debuggerBreakpointSignalGone, path.join('.')), 'warning');
+      return null;
+    }
+    const value = kind === 'equals' ? String(q.value || '').trim() : null;
+    const pattern = kind === 'equals' ? parseValue(value, Number(v.width) || 1) : null;
+    if (kind === 'equals' && !pattern) {
+      window.cmuxUI.toast(format(S().debuggerBadValue, value, number(Number(v.width) || 1)), 'warning');
+      return null;
+    }
+    const same = breakpoints.find((b) => b.kind === kind && b.value === value && JSON.stringify(b.path) === JSON.stringify(path));
+    if (same) {
+      same.enabled = true;
+      breakpointsChanged();
+      return publicBreakpoint(same);
+    }
+    const bp = { id: nextBreakpointId++, path, kind, value, pattern, enabled: true, times: null, timesFor: null };
+    breakpoints.push(bp);
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
+  function removeBreakpoint(query) {
+    const i = breakpoints.findIndex((b) => b.id === Number((query || {}).id));
+    if (i < 0) { return false; }
+    const [bp] = breakpoints.splice(i, 1);
+    if (bp.id === lastHitId) { lastHitId = null; }
+    if (!breakpoints.some((b) => JSON.stringify(b.path) === JSON.stringify(bp.path))) { changeCache.delete(JSON.stringify(bp.path)); }
+    breakpointsChanged();
+    return true;
+  }
+
+  function setBreakpointEnabled(query) {
+    const q = query || {};
+    const bp = breakpoints.find((b) => b.id === Number(q.id));
+    if (!bp) { return false; }
+    bp.enabled = !!q.enabled;
+    breakpointsChanged();
+    return true;
+  }
+
+  function breakpointsChanged() {
+    renderBreakpoints();
+    if (state.playing) { refreshPlayStop(); }
+  }
+
+  // The times a breakpoint hits at (ascending), for the current backend; null when its signal
+  // is gone or changes too often, saying so.
+  async function hitTimes(bp) {
+    const backend = host.currentBackend;
+    if (bp.timesFor === backend && bp.times) { return bp.times; }
+    for (const [key, entry] of changeCache) { if (entry.backend !== backend) { changeCache.delete(key); } }
+    const key = JSON.stringify(bp.path);
+    let entry = changeCache.get(key);
+    if (!entry) {
+      const v = await signalOf(bp.path);
+      if (!v) {
+        window.cmuxUI.toast(format(S().debuggerBreakpointSignalGone, bp.path.join('.')), 'warning');
+        return null;
+      }
+      const changes = await host.signalChanges(v, MAX_BREAKPOINT_CHANGES);
+      entry = { backend, changes: changes && changes.length <= MAX_BREAKPOINT_CHANGES ? changes : null, width: Number(v.width) || 1 };
+      if (host.currentBackend !== backend) { return null; }
+      changeCache.set(key, entry);
+    }
+    if (!entry.changes) {
+      window.cmuxUI.toast(format(S().debuggerTooManyChanges, bp.path.join('.')), 'warning');
+      return null;
+    }
+    const out = [];
+    let previous = null;
+    let previousMatched = false;
+    entry.changes.forEach(([time, value], i) => {
+      const bits = valueBits(value, entry.width);
+      if (bp.kind === 'change') {
+        if (i > 0 && bits !== previous) { out.push(Number(time)); }
+      } else {
+        const now = matches(bits, bp.pattern);
+        if (now && (i === 0 || !previousMatched)) { out.push(Number(time)); }
+        previousMatched = now;
+      }
+      previous = bits;
+    });
+    bp.times = Float64Array.from(out);
+    bp.timesFor = backend;
+    return bp.times;
+  }
+
+  // Index of the first posedge at or after `time` (edges.length: none).
+  function landingIndex(edges, time) {
+    let lo = 0, hi = edges.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (edges[mid] < time) { lo = mid + 1; } else { hi = mid; }
+    }
+    return lo;
+  }
+
+  // The hit of `times` nearest the marker at `from` in direction `dir`: { time, index } (index:
+  // the posedge it lands on), or null. Forward: changes after the marker's posedge (they land
+  // after the marker); reverse: changes at or before the last posedge before the marker.
+  function nearestHit(times, edges, from, dir) {
+    const firstAfter = (limit) => {
+      let lo = 0, hi = times.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] <= limit) { lo = mid + 1; } else { hi = mid; } }
+      return lo;
+    };
+    if (dir > 0) {
+      const at = from === null ? -1 : edgeIndexAt(edges, from);
+      const i = firstAfter(at >= 0 ? edges[at] : -Infinity);
+      if (i >= times.length) { return null; }
+      const index = landingIndex(edges, times[i]);
+      return index < edges.length ? { time: times[i], index } : null;
+    }
+    if (from === null) { return null; }
+    let before = edgeIndexAt(edges, from);
+    if (before >= 0 && edges[before] === from) { before--; }
+    if (before < 0) { return null; }
+    const i = firstAfter(edges[before]) - 1;
+    return i >= 0 ? { time: times[i], index: landingIndex(edges, times[i]) } : null;
+  }
+
+  // The nearest hit of the enabled breakpoints: { bp, time, index } or null.
+  async function findHit(edges, from, dir) {
+    let best = null;
+    for (const bp of breakpoints.filter((b) => b.enabled)) {
+      const times = await hitTimes(bp);
+      if (!times) { continue; }
+      const hit = nearestHit(times, edges, from, dir);
+      if (!hit) { continue; }
+      const nearer = !best || (dir > 0 ? hit.index < best.index || (hit.index === best.index && hit.time < best.time)
+        : hit.index > best.index || (hit.index === best.index && hit.time > best.time));
+      if (nearer) { best = Object.assign({ bp }, hit); }
+    }
+    return best;
+  }
+
+  const timeText = (time) => {
+    const metadata = host.doc.metadata || {};
+    return number(time * (Number(metadata.timeScale) || 1)) + ' ' + (metadata.timeUnit || '');
+  };
+
+  function announceHit(found, edges) {
+    lastHitId = found.bp.id;
+    renderBreakpoints();
+    window.cmuxUI.toast(format(S().debuggerBreakpointHit, breakpointName(found.bp), timeText(found.time), number(found.index + 1)), 'info');
+    return { id: found.bp.id, time: found.time, landed: edges[found.index], cycle: found.index + 1 };
+  }
+
+  // F5 (with `orTogglePlay`: Play/Pause when no breakpoint is enabled) and Shift-F5 (dir -1).
+  async function continueRun(query) {
+    const q = query || {};
+    const dir = Number(q.dir) < 0 ? -1 : 1;
+    if (!breakpoints.some((b) => b.enabled)) {
+      if (q.orTogglePlay && dir > 0) { return Object.assign(await togglePlay(), { hit: null, reason: 'play' }); }
+      window.cmuxUI.toast(S().debuggerNoBreakpoints || '', 'info');
+      return Object.assign(publicState(), { hit: null, reason: 'none' });
+    }
+    const request = ++continueRequest;
+    const edges = await start();
+    if (!edges) { return Object.assign(publicState(), { hit: null, reason: 'noClock' }); }
+    pause();
+    const backend = host.currentBackend;
+    const found = await findHit(edges, markerTime(), dir);
+    // A newer continue, or a reload, since: it says what happened.
+    if (request !== continueRequest || host.currentBackend !== backend) { return Object.assign(publicState(), { hit: null, reason: 'superseded' }); }
+    if (!found) {
+      window.cmuxUI.toast((dir > 0 ? S().debuggerNoHitForward : S().debuggerNoHitBack) || '', 'info');
+      return Object.assign(publicState(), { hit: null, reason: dir > 0 ? 'end' : 'start' });
+    }
+    moveMarker(edges[found.index]);
+    const hit = announceHit(found, edges);
+    return Object.assign(cycleInfo(edges[found.index]), { hit, reason: 'hit' });
+  }
+
+  // Play stops at the first hit ahead of where it started (or where the breakpoints last changed).
+  let playStop = null;    // { bp, time, index }
+  let playStopRequest = 0;
+  async function refreshPlayStop() {
+    const request = ++playStopRequest;
+    const edges = state.edges;
+    if (!edges) { playStop = null; return; }
+    const found = breakpoints.some((b) => b.enabled) ? await findHit(edges, edges[playIndex], 1) : null;
+    if (request === playStopRequest && state.edges === edges) { playStop = found; }
+  }
+
+  // ---- the breakpoint list, at the bottom of the netlist pane ----
+  let breakpointList = null;
+  function renderBreakpoints() {
+    const pane = document.getElementById('netlist');
+    if (!pane) { return; }
+    if (!breakpointList) {
+      breakpointList = document.createElement('div');
+      breakpointList.id = 'cmux-breakpoints';
+      breakpointList.style.cssText = 'flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--vscode-widget-border); padding-bottom: 4px;';
+    }
+    if (breakpointList.parentElement !== pane) { pane.appendChild(breakpointList); }
+    breakpointList.hidden = !breakpoints.length;
+    breakpointList.textContent = '';
+    if (!breakpoints.length) { return; }
+    const title = document.createElement('h2');
+    title.style.cssText = 'margin: 0; padding: 6px 10px 4px; font-weight: 600; text-transform: uppercase; font-size: 11px; color: var(--vscode-descriptionForeground);';
+    title.textContent = S().debuggerBreakpoints || '';
+    breakpointList.appendChild(title);
+    for (const bp of breakpoints) {
+      const row = document.createElement('div');
+      row.className = 'cmux-breakpoint' + (bp.id === lastHitId ? ' hit' : '');
+      row.style.cssText = 'display: flex; align-items: center; gap: 4px; padding: 1px 6px; line-height: 20px; white-space: nowrap;'
+        + (bp.id === lastHitId ? ' font-weight: 600;' : '');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = bp.enabled;
+      box.addEventListener('change', () => setBreakpointEnabled({ id: bp.id, enabled: box.checked }));
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis;' + (bp.enabled ? '' : ' opacity: 0.6;');
+      label.textContent = breakpointName(bp);
+      label.title = label.textContent;
+      const remove = document.createElement('span');
+      remove.className = 'remove codicon codicon-close';
+      remove.style.cursor = 'pointer';
+      remove.title = S().debuggerRemoveBreakpoint || '';
+      remove.addEventListener('click', () => removeBreakpoint({ id: bp.id }));
+      row.append(box, label, remove);
+      breakpointList.appendChild(row);
+    }
+  }
+
+  // The waveform row's menu items (cmux-commands.js adds them to the viewer's context menu).
+  function rowMenuItems(context) {
+    const c = context || {};
+    if (c.webviewSection !== 'signal' || c.netlistId === undefined) { return []; }
+    const v = host.netlistItem(c.netlistId);
+    if (!v) { return []; }
+    const path = host.pathOf(v);
+    const s = S();
+    return [
+      { label: s.debuggerBreakWhenChanges || '', run: () => addBreakpoint({ path, kind: 'change' }) },
+      { label: s.debuggerBreakWhenEquals || '', run: async () => {
+        const value = await window.cmuxUI.prompt({ title: format(s.debuggerBreakEqualsPrompt, path.join('.')), placeholder: s.debuggerBreakEqualsPlaceholder || '' });
+        if (value !== undefined && String(value).trim()) { await addBreakpoint({ path, kind: 'equals', value }); }
+      } },
+    ];
+  }
+
   // ---- status strip: cycle counter and play controls ----
   let strip = null;
   function ensureStrip() {
@@ -828,8 +1180,10 @@
     },
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
+    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled,
+    breakpoints: () => breakpoints.map(publicBreakpoint),
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved,
-    isPlaying: () => state.playing, locals: () => Object.assign({}, state.locals) };
+    isPlaying: () => state.playing, locals: () => Object.assign({}, state.locals), rowMenuItems };
 })();
