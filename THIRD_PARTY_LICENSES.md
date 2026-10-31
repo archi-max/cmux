@@ -446,10 +446,10 @@ from VaporView's VS Code integration:
 The patch's RISC-V instruction format was written from the RISC-V
 Unprivileged (20191213) and Privileged (20211203) ISA specifications (RISC-V
 International, CC-BY-4.0), for the encodings, CSR numbers and pseudo-instruction
-table. Its CSR name list matches the names GNU objdump 2.43.1 prints; it was
-taken from objdump's output (the architectural CSR names of the RISC-V
-specifications). GNU Binutils (GPL-3.0) served only as the test oracle; none of
-its code or tables are included. The value-alias format reads Verdi's alias
+table. Its CSR names were collected by disassembling every CSR number with
+GNU objdump 2.43.1; they are the architectural names the RISC-V
+specifications define. GNU Binutils (GPL-3.0) is not included, and none of its
+source code was copied; objdump otherwise served only as the test oracle. The value-alias format reads Verdi's alias
 file syntax, implemented from a reading of Synopsys' Verdi documentation; no
 text from it is included.
 
@@ -540,6 +540,22 @@ ship as source; nothing in them is compiled into cmux.
 - **node-api-headers** 1.9.0: MIT License; Copyright (c) 2021 Node.js;
   https://github.com/nodejs/node-api-headers. The four Node-API C headers,
   unmodified, with `LICENSE`, in `fsdb-helper/third_party/node-api-headers/`.
+
+### FSDB helper v2 sources (`Resources/vaporview/fsdb-helper-v2/`)
+
+The windowed viewer's helper, uploaded and built on the SSH host the same way
+(`build.sh`), so nothing linked against Verdi is shipped:
+
+- `addon/fsdb_reader.cpp` is VaporView's `src/fsdb_reader.cpp` at the commit
+  above, unmodified. `helper.js` is adapted from VaporView's
+  `src/extension_core/fsdb_worker.ts` (the same addon calls); `worker.js`,
+  `expr.js`, `cmux-helper-v2.sh` and the addon additions (`packed.cpp.inc`,
+  `window.cpp.inc`, `deval.h`, `derive.cpp.inc`) are written for cmux. All
+  carry VaporView's GPL-3.0 license. `expr.js` sizes expressions per IEEE
+  1800 (SystemVerilog) section 11.6, implemented from a reading of the
+  standard; no text from it is included.
+- `third_party/` holds the same node-addon-api 8.6.0 and node-api-headers
+  1.9.0 headers (MIT, with their licenses) as `fsdb-helper/third_party/`.
 
 ISC License (for the ISC components above):
 
