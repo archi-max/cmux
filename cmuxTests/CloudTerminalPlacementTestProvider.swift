@@ -21,6 +21,7 @@ final class CloudTerminalPlacementTestProvider: SurfaceLayoutTerminalCreating {
     private(set) var closedTerminals: [SurfaceResourceID] = []
     private(set) var requestedWorkspaces: [String?] = []
     private(set) var requestedDirectories: [String?] = []
+    private(set) var requestedNames: [String?] = []
     private(set) var materialized: [SurfaceProjection] = []
     private(set) var layoutSources: [(tabID: String, direction: SurfaceSplitDirection?)] = []
     var returnedWorkspaceID: String?
@@ -64,6 +65,7 @@ final class CloudTerminalPlacementTestProvider: SurfaceLayoutTerminalCreating {
         let key = "created-\(requestedWorkspaces.count)"
         requestedWorkspaces.append(remoteWorkspaceID)
         requestedDirectories.append(cwd)
+        requestedNames.append(name)
         requestedCommands.append(command)
         creationStarted.resolve(true)
         _ = await release.result
