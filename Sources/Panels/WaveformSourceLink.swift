@@ -179,13 +179,29 @@ enum WaveformSourceLink {
         var missing: [String] = []
         var notDumped: [String] = []
         var instances: [String] = []
+        var aliasNotes: [String] = []
         for designPath in chosen {
             guard !Task.isCancelled else { return nil }
             var dumpPaths: [String]
+            // The design path whose dump is added (an alias when the simulator kept only that name).
+            var linkedPath = designPath
             switch await Self.resolveDumpPaths(designPath, session: session, waveform: waveform, key: key, progress: progress) {
             case .found(let found):
                 dumpPaths = found
             case .notDumped(let scope):
+                if let alias = await Self.dumpedAlias(of: designPath, session: session, waveform: waveform, key: key, progress: progress) {
+                    dumpPaths = alias.dumpPaths
+                    linkedPath = alias.path
+                    aliasNotes.append(String(
+                        format: String(
+                            localized: "waveformLink.showingAlias",
+                            defaultValue: "%1$@ isn’t dumped; showing its alias %2$@, the port it is connected to."
+                        ),
+                        designPath,
+                        alias.path
+                    ))
+                    break
+                }
                 notDumped.append(String(
                     format: String(
                         localized: "waveformLink.notDumpedUnder",
@@ -216,14 +232,14 @@ enum WaveformSourceLink {
                 }
                 // Inline values follow the instance last added from.
                 editor.recordLinkedInstance(
-                    design: HierarchyPathMapping.join(Array(HierarchyPathMapping.segments(designPath).dropLast())),
+                    design: HierarchyPathMapping.join(Array(HierarchyPathMapping.segments(linkedPath).dropLast())),
                     dump: HierarchyPathMapping.join(Array(segments.dropLast()))
                 )
             }
         }
         lastWaveformPanel = waveform
         pairedEditors.setObject(editor, forKey: waveform)
-        var messages: [String] = []
+        var messages = aliasNotes
         if !instances.isEmpty {
             messages.append(String(
                 format: String(
@@ -501,6 +517,30 @@ enum WaveformSourceLink {
         }
         let added = (result["added"] as? NSNumber)?.intValue ?? 0
         return .added(added, total: (result["total"] as? NSNumber)?.intValue ?? added)
+    }
+
+    /// Aliases tried at most for a path that isn't dumped (one dump lookup each).
+    private static let aliasLimit = 8
+
+    /// For a design path the dump lacks: the first of its plain port-connection aliases
+    /// (`slangPortAliases`) that is dumped, with its dump paths. Simulators often keep only one
+    /// name of a net, such as the instance port a testbench wire is connected to.
+    private static func dumpedAlias(
+        of designPath: String,
+        session: LanguageServerSession,
+        waveform: FilePreviewPanel,
+        key: String,
+        progress: @escaping @MainActor @Sendable (String) -> Void
+    ) async -> (path: String, dumpPaths: [String])? {
+        guard let aliases = try? await session.slangPortAliases(of: designPath) else { return nil }
+        for alias in aliases.prefix(aliasLimit) {
+            guard !Task.isCancelled else { return nil }
+            if case .found(let dumpPaths) = await resolveDumpPaths(alias, session: session, waveform: waveform, key: key, progress: progress),
+               !dumpPaths.isEmpty {
+                return (alias, dumpPaths)
+            }
+        }
+        return nil
     }
 
     private enum DumpResolution {

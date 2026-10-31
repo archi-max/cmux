@@ -692955,6 +692955,65 @@
           }
         }
       }
+    },
+    "waveformLink.showingAlias": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ isn’t dumped; showing its alias %2$@, the port it is connected to."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ はダンプされていないため、接続先のポートである別名 %2$@ を表示します。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ist nicht im Dump; stattdessen wird der Alias %2$@ angezeigt, der Port, mit dem es verbunden ist."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ n’est pas dans le dump ; affichage de son alias %2$@, le port auquel il est connecté."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ غير مُفرَغ؛ يُعرض الاسم البديل %2$@، وهو المنفذ المتصل به."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ no está volcado; se muestra su alias %2$@, el puerto al que está conectado."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 未傾印；改為顯示其別名 %2$@，即與其連接的連接埠。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 未转储；改为显示其别名 %2$@，即与其连接的端口。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@은(는) 덤프되지 않았으므로 연결된 포트인 별칭 %2$@을(를) 표시합니다."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
