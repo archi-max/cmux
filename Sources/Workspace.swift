@@ -1647,12 +1647,18 @@ extension Workspace {
                inPane: paneId
            ) {
             return restoredCloudPanelID }
+        // Another Mac's pane stays that Mac's, even in an SSH workspace.
+        if snapshot.type == .terminal,
+           restoresDeviceProjection || (usesSSHTui && cloudProjectionRecord?.resource.machine.isDevice == true) {
+            return restoreDeviceDisplayPanel(snapshot, in: paneId)
+        }
         if usesSSHTui, remoteConfiguration?.preserveAfterTerminalExit == true, snapshot.type == .terminal {
             // A projected terminal restored through its reservation above. This
             // one has no host terminal for the SSH provider to reattach.
             return restoreDeviceDisplayPanel(
                 snapshot, in: paneId,
-                origin: cloudProjectionRecord == nil ? .unattachedSSHTerminal : .pendingSSHTerminal
+                origin: cloudProjectionRecord == nil ? .unattachedSSHTerminal : .pendingSSHTerminal,
+                pendingMachine: cloudProjectionRecord?.resource.machine
             )
         }
         let restoresUntrustedSavedDirectory = cloudVMBinding != nil ||
@@ -1661,9 +1667,6 @@ extension Workspace {
                     restoresLegacyRemoteDirectoryWithoutProvenance(snapshot)))
         switch snapshot.type {
         case .terminal:
-            if restoresDeviceProjection {
-                return restoreDeviceDisplayPanel(snapshot, in: paneId)
-            }
             let localTmuxStartCommand = sessionRestorePolicy
                 .localTmuxStartCommand(snapshot.terminal?.tmuxStartCommand)
             let snapshotRestorableAgent = localTmuxStartCommand == nil ? snapshot.terminal?.agent : nil
@@ -12432,22 +12435,31 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
     func newTerminalSurfaceInFocusedPane(
         focus: Bool? = nil, initialInput: String? = nil, userInitiated: Bool = false
     ) -> TerminalPanel? {
-        guard let focusedPaneId = bonsplitController.focusedPaneId else { return nil }
+        newTerminalSurfaceInFocusedPaneOutcome(focus: focus, initialInput: initialInput, userInitiated: userInitiated).panel
+    }
+
+    /// Like ``newTerminalSurfaceInFocusedPane(focus:initialInput:userInitiated:)``
+    /// but keeps a create routed to a remote owner distinct from a failure.
+    @discardableResult
+    func newTerminalSurfaceInFocusedPaneOutcome(
+        focus: Bool? = nil, initialInput: String? = nil, userInitiated: Bool = false
+    ) -> TerminalPanelCreationOutcome {
+        guard let focusedPaneId = bonsplitController.focusedPaneId else { return .failed }
         // In canvas mode, Cmd+T means "new tab in the focused canvas pane":
         // remember the anchor panel so the new one joins its pane instead of
         // floating as a separate canvas pane.
         let canvasAnchorPanelId = layoutMode == .canvas ? focusedPanelId : nil
-        let panel = newTerminalSurface(
+        let outcome = newTerminalSurfaceOutcome(
             inPane: focusedPaneId,
             focus: focus,
             initialInput: initialInput,
             inheritWorkingDirectoryFallback: true,
             userInitiated: userInitiated
         )
-        if let panel, let anchor = canvasAnchorPanelId {
+        if let panel = outcome.panel, let anchor = canvasAnchorPanelId {
             joinNewPanelIntoCanvasPane(panel.id, anchor: anchor)
         }
-        return panel
+        return outcome
     }
 
     @discardableResult
