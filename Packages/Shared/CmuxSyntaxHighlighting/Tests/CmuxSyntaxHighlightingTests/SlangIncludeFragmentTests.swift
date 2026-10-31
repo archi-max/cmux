@@ -23,6 +23,18 @@ struct SlangIncludeFragmentTests {
     module psub #(parameter W = 1) (input logic [W-1:0] d);
     endmodule
 
+    package pk;
+        typedef logic bit_t;
+        typedef logic [3:0] nib_t;
+    endpackage
+
+    /// Widths through types: a parameter's typedef and a type parameter vary per instance.
+    module tsub #(parameter W = 1, parameter type T = logic [3:0]) (input logic [3:0] x4, input T xt, input pk::bit_t xb, input pk::nib_t xn);
+        typedef logic [W-1:0] wt;
+        wt inner;
+        assign inner = x4[0];
+    endmodule
+
     """
 
     /// Included by tb_wrapper through a define, like a TB_FILE testbench body.
@@ -51,6 +63,10 @@ struct SlangIncludeFragmentTests {
         logic [1:0] pd2;
         psub #(.W(2)) p2 (.d (pd2));
         psub p1 (.d (pd1));
+        logic [3:0] t4;
+        logic t1;
+        logic [3:0] tn;
+        tsub #(.W(4)) t (.x4 (t4), .xt (t4), .xb (t1), .xn (tn));
         logic gq;
         for (genvar i = 0; i < 1; i++) begin : g
             sub u (.clk (clk), .q (gq));
@@ -261,7 +277,7 @@ struct SlangIncludeFragmentTests {
 
     @Test func aTaskCallsNamedArgumentIsNotAPortName() {
         typealias S = LanguageServerSession
-        for text in ["initial begin foo(.a(x)); end\n", "always @(posedge clk) if (c) foo(.a(x));\n", "function f; return foo(.a(x)); endfunction\n", "initial #5 foo(.a(x));\n"] {
+        for text in ["initial begin foo(.a(x)); end\n", "always @(posedge clk) if (c) foo(.a(x));\n", "function f; return foo(.a(x)); endfunction\n", "initial #5 foo(.a(x));\n", "initial begin : blk foo(.a(x)); end\n", "initial #d foo(.a(x));\n"] {
             let units = Array(text.utf16)
             let offset = units.count - Array(text[text.range(of: ".a(x)")!.lowerBound...].utf16).count + 1
             #expect(S.portConnection(in: text, at: offset) == nil)
@@ -272,6 +288,34 @@ struct SlangIncludeFragmentTests {
         func offset(of needle: String) -> Int { units.count - Array(text[text.range(of: needle)!.lowerBound...].utf16).count + 1 }
         #expect(S.portConnection(in: text, at: offset(of: ".a(x)"))?.instance == "u")
         #expect(S.portConnection(in: text, at: offset(of: ".b(y)"))?.instance == "v")
+    }
+
+    @Test func aDeclarationsWidthIsReadFromItsHover() {
+        typealias S = LanguageServerSession
+        func hover(_ type: String, _ width: String?, _ code: String) -> String {
+            "**Variable** `v` in `m`  \nType: \(type)  \n" + (width.map { "Width: `\($0)`  \n" } ?? "") + "\n\n---\n\n````systemverilog\n\(code)\n````\n\n---\n\nDriven via port\n````systemverilog\n.q(v[W])\n````"
+        }
+        #expect(S.declaredWidth(fromHover: hover("`logic`", nil, "logic v;")) == 1)
+        #expect(S.declaredWidth(fromHover: hover("`logic[0:0]`", nil, "logic [0:0] v;")) == 1)
+        #expect(S.declaredWidth(fromHover: hover("`logic signed[7:0]`", "8", "logic signed [7:0] v;")) == 8)
+        #expect(S.declaredWidth(fromHover: hover("`logic[1:0]`", "2", "output logic [W-1:0] v")) == nil)
+        #expect(S.declaredWidth(fromHover: hover("`logic[3:0]`", "4", "logic [3:0] v;")) == 4)
+        // A typedef's width needs its declaration checked: not read from the hover alone.
+        #expect(S.declaredWidth(fromHover: hover("[`wt (aka logic[3:0])`](<file:///w/m.sv#L6,25>)", "4", "wt v;")) == nil)
+        #expect(S.typeLink(inHover: hover("[`bit_t (aka logic)`](<file:///w/p.sv#L2,17>)", nil, "pk::bit_t v;"))?.line == 1)
+        #expect(S.typeLink(inHover: hover("[`bit_t (aka logic)`](<file:///w/p.sv#L2,17>)", nil, "pk::bit_t v;"))?.width == 1)
+        #expect(S.typeLink(inHover: hover("[`nib_t (aka logic[3:0])`](<file:///w/p.sv#L3,25>)", "4", "nib_t v;"))?.width == 4)
+    }
+
+    @Test func aTypedefInAPackageHasOneWidth() {
+        typealias S = LanguageServerSession
+        let text = "package pk;\n  typedef logic [3:0] a_t;\nendpackage\nmodule m #(parameter W = 1);\n  typedef logic [W-1:0] b_t;\n  typedef logic [3:0] c_t;\n  typedef struct packed {\n    logic [W-1:0] f;\n  } d_t;\nendmodule\ntypedef logic [1:0] e_t;\n"
+        #expect(S.typedefIsFixed(in: text, line: 1))
+        #expect(!S.typedefIsFixed(in: text, line: 4))
+        #expect(S.typedefIsFixed(in: text, line: 5))
+        #expect(!S.typedefIsFixed(in: text, line: 8))
+        #expect(S.typedefIsFixed(in: text, line: 10))
+        #expect(!S.typedefIsFixed(in: "module m #(parameter type T = logic);\nendmodule\n", line: 0))
     }
 
     @Test func aMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
@@ -301,6 +345,12 @@ struct SlangIncludeFragmentTests {
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.pd2").isEmpty)
             // Inside a generate block the parent's signal is declared further up: not guessed.
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.g[0].u.q").isEmpty)
+            // A package's typedef is the same for every instance; a parameter's typedef or a type
+            // parameter is not, whatever this instance's hover says.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.t1") == ["tb_wrapper.t.xb"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.tn") == ["tb_wrapper.t.xn"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.t.xt").isEmpty)
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.t4")) == ["tb_wrapper.t.x4"])
         }
     }
 
