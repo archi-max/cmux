@@ -268,14 +268,19 @@ const handlers = {
     return { result: out, bin: Buffer.concat(parts) };
   },
   sleep({ ms }) { return new Promise((resolve) => setTimeout(() => resolve({ slept: ms }), ms)); },
-  stats() { return { workers: [{ loaded: 'all', queue: queue.size }], latency: LATENCY, jitter: JITTER }; },
+  stats() { return { workers: [{ loaded: 'all', queue: live.size }], latency: LATENCY, jitter: JITTER, requestsAfterCancel }; },
   setLatency({ latency, jitter }) { LATENCY = latency; JITTER = jitter; return { latency: LATENCY, jitter: JITTER }; },
 };
 
 // Artificial round trip: half before the request is processed, half after. A request is
 // cancellable until its reply is sent (helper-v2: queued parts dropped, running ones discarded).
 const live = new Map(); // id -> {timer}
+// Cancels whose target hadn't arrived (or had finished), and requests that came after
+// their own cancel: a relay that publishes a request's id before writing it shows up here.
+const cancelledUnseen = new Set();
+let requestsAfterCancel = 0;
 function schedule(req) {
+  if (cancelledUnseen.has(req.id)) { requestsAfterCancel++; cancelledUnseen.delete(req.id); }
   const rtt = LATENCY + Math.random() * JITTER;
   const entry = { timer: null, cancelled: false };
   live.set(req.id, entry);
@@ -314,6 +319,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     // {id: target, cancelled: true}. cancel {id} of nothing running: one {id, cancelled: false}.
     const target = req.target ?? req.id;
     const entry = live.get(target);
+    if (!entry && cancelledUnseen.size < 100000) { cancelledUnseen.add(target); }
     if (entry) { entry.cancelled = true; clearTimeout(entry.timer); live.delete(target); send({ id: target, cancelled: true }); }
     if (req.target !== undefined) { send({ id: req.id, result: { cancelled: !!entry, dropped: entry ? 1 : 0, running: 0 } }); }
     else if (!entry) { send({ id: req.id, cancelled: false }); }
