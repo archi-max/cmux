@@ -73,7 +73,8 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     let driverLines = lineRanges.indices.filter { isWarm(attribute(.backgroundColor, line: $0)) && attribute(.foregroundColor, line: $0) == nil }
     expect(driverLines == [4, 6, 8, 12], "driver lines: the assign, both pc assignments, and ex_stg's .ex_mem connection: \(driverLines)")
     let dimmed = lineRanges.indices.filter { attribute(.foregroundColor, line: $0, column: 0) != nil }
-    expect(dimmed == [0, 1, 2, 3, 5, 7, 9, 10, 11, 13, 14], "the module's other lines are dimmed: \(dimmed)")
+    // Lines with a changed signal (the declarations of pc, dmem_pending, ex_mem) stay full colour too.
+    expect(dimmed == [0, 5, 7, 9, 10, 11, 13, 14], "the module's other lines are dimmed: \(dimmed)")
     let pcAt = text.range(of: "pc", options: [], range: lineRanges[1]).location
     let stallAt = text.range(of: "stall", options: [], range: lineRanges[2]).location
     expect(isWarm(layout.temporaryAttribute(.backgroundColor, atCharacterIndex: pcAt, effectiveRange: nil) as? NSColor), "a changed signal (pc) is tinted where it is declared")
@@ -626,27 +627,77 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
             editor: editor, textView: textView, lines: lines, waveform: waveform, time: 25,
             values: ["core": shownValues], instances: ["core": .init(design: "tb.core", dump: scope)]
         ))
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        await WaveformDebuggerEditorHighlights.settled(textView)
     }
     let bottom = (all.count - 6)..<all.count
     // The top: count changed and is declared here, but its driver line is off screen.
     await draw(0..<12)
     let topDimmed = (0..<12).filter { dimmed($0) }
-    expect(lit(1) && topDimmed == Array(0..<12),
-           "scrolled to the top: count is lit, the module's other lines on screen are dimmed: lit \(lit(1)), dimmed \(topDimmed)")
+    expect(lit(1) && topDimmed == Array(0..<12).filter { $0 != 1 },
+           "scrolled to the top: count is lit at full colour, the module's other lines on screen are dimmed: lit \(lit(1)), dimmed \(topDimmed)")
     // Scrolled down to the always_ff at the same cycle (no step): its driver line is lit, the rest dimmed,
     // and the top's dimming is gone.
     await draw(bottom)
     let driver = all.firstIndex { text.substring(with: $0.contentRange).contains("count <= count") }!
+    let reads = all.firstIndex { text.substring(with: $0.contentRange).contains("done <= count") }!
     let bottomDimmed = bottom.filter { dimmed($0) }
     let stale = (0..<12).filter { dimmed($0) || lit($0) }
-    expect(lit(driver) && !dimmed(driver) && bottomDimmed == bottom.filter { $0 != driver },
+    expect(lit(driver) && !dimmed(driver) && lit(reads) && bottomDimmed == bottom.filter { $0 != driver && $0 != reads },
            "scrolled to the bottom: the driver line is lit, the other lines dimmed: dimmed \(bottomDimmed), driver \(driver)")
     expect(stale.isEmpty, "nothing from the top's screen stays: \(stale)")
     // Fillers only: nothing changed on screen, so nothing is dimmed.
     await draw(14..<30)
     let middleDimmed = (0..<all.count).filter { dimmed($0) }
     expect(middleDimmed.isEmpty, "a screen with nothing lit dims nothing: \(middleDimmed)")
+    FilePreviewLanguageFeatures.all = []
+    WaveformDebuggerRTLStatus.editorGone(editor)
+    await runTwoModuleChecks()
+}
+
+/// A package and two modules on one screen: only the module with a change is dimmed, and
+/// lines outside every module never are.
+@MainActor func runTwoModuleChecks() async {
+    let source = """
+    package p;
+      localparam int W = 8;
+    endpackage
+    module a(input logic clk);
+      logic [7:0] x, y;
+      always_ff @(posedge clk) x <= y;
+      assign y = 8'd1;
+    endmodule
+    // between the modules
+    module b(input logic clk);
+      logic [7:0] z;
+      always_ff @(posedge clk) z <= z;
+    endmodule
+    """
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+    textView.string = source
+    let text = source as NSString
+    let lines = SystemVerilogInlineScan.lines(in: source, range: NSRange(location: 0, length: text.length))
+    let editor = FilePreviewLanguageFeatures(textView: textView, path: "/rtl/ab.sv")
+    FilePreviewLanguageFeatures.all = [editor]
+    let waveform = FilePreviewPanel()
+    WaveformSourceLink.waveform = waveform
+    waveform.nativeViewSessions.waveform.previousTimes = [25: 15]
+    WaveformSourceLink.values = [
+        25: ["TOP.a.x": "01", "TOP.a.y": "01", "TOP.a.clk": "1", "TOP.b.z": "00", "TOP.b.clk": "1"],
+        15: ["TOP.a.x": "00", "TOP.a.y": "01", "TOP.a.clk": "1", "TOP.b.z": "00", "TOP.b.clk": "1"],
+    ]
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: editor, textView: textView, lines: lines, waveform: waveform, time: 25,
+        values: ["a": ["x": "01", "y": "01", "clk": "1"], "b": ["z": "00", "clk": "1"]],
+        instances: ["a": .init(design: "a", dump: "TOP.a"), "b": .init(design: "b", dump: "TOP.b")]
+    ))
+    await WaveformDebuggerEditorHighlights.settled(textView)
+    let layout = textView.layoutManager!
+    let dimmed = lines.indices.filter {
+        layout.temporaryAttribute(.foregroundColor, atCharacterIndex: lines[$0].contentRange.location, effectiveRange: nil) != nil
+    }
+    let numbered = lines.indices.map { "\($0): \(text.substring(with: lines[$0].contentRange))" }
+    // a: line 5 (x <= y) drives x and is full colour; line 4 declares x (changed): full colour.
+    expect(dimmed == [3, 6, 7], "only module a's other lines are dimmed; the package, the comment and b are not: \(dimmed) \(numbered)")
     FilePreviewLanguageFeatures.all = []
     WaveformDebuggerRTLStatus.editorGone(editor)
 }
