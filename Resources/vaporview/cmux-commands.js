@@ -1240,7 +1240,8 @@
       const selected = webviewContext ? selectedSignalRef(webviewContext.selectedSignal)
         : (reloadBaseline && reloadBaseline.cmuxSelected) || null;
       reloadBaseline = Object.assign(undoState(), { cmuxSelected: selected });
-      keptIsCurrent = !!webviewContext;
+      // Its kept view is still being restored (no context yet): that view stays.
+      keptIsCurrent = !!webviewContext || (restorePending && keptIsCurrent);
       frameGone = false;
     }
     reloading = true;
@@ -1251,6 +1252,8 @@
     run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
     addSignalByName, fileChanged, willReload, updateSetting,
     frameUnloaded: () => { if (reloading) { frameGone = true; } },
+    // A reload or restore has not come back yet (Undo/Redo wait for it).
+    isRestoring: () => reloading || restorePending,
     init,
     setSessionFile: (file) => { host().config.sessionFile = file; return offerSessionFile(); },
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
