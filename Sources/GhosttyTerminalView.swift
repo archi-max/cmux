@@ -9148,6 +9148,18 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             )
         }
 
+        // VaporView's terminal links: a time or an instance path, into the
+        // workspace's waveform viewer (only when one is open).
+        if runtimeOutcome != .openURL,
+           let resolvedPoint, let terminalSurface,
+           let workspace = terminalSurface.owningWorkspace(),
+           workspace.panels.values.contains(where: { ($0 as? FilePreviewPanel)?.previewMode == .waveform }),
+           let panel = workspace.terminalPanel(for: terminalSurface.id),
+           let snapshot = visibleWordPathSnapshot(at: resolvedPoint, panel: panel),
+           WaveformTerminalLinks.open(line: snapshot.line, column: snapshot.column, workspace: workspace) {
+            return nil
+        }
+
         if runtimeOutcome != .openURL,
            let resolvedPoint, let terminalSurface,
            let workspace = terminalSurface.owningWorkspace(),
