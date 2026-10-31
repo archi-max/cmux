@@ -147,7 +147,7 @@ extension LanguageServerSession {
         let scope = try await scopeChildrenSkippingUnresolved(parent)
         var texts: [URL: [UInt16]] = [:]
         guard let item = scope.first(where: { $0.name == name && !$0.isScope }),
-              let width = try await declaredWidth(of: item, texts: &texts) else { return [] }
+              let width = try await declaredWidth(of: item, at: path, texts: &texts) else { return [] }
         var aliases: [String] = []
         for child in scope where child.kind == "Instance" {
             guard let connections = instanceConnections(child, texts: &texts) else { continue }
@@ -157,7 +157,7 @@ extension LanguageServerSession {
             let childScope = try await scopeChildrenSkippingUnresolved(childPath)
             for connection in ports {
                 guard let port = childScope.first(where: { $0.name == connection.port && $0.kind == "Port" }),
-                      try await declaredWidth(of: port, texts: &texts) == width else { continue }
+                      try await declaredWidth(of: port, at: childPath + "." + connection.port, texts: &texts) == width else { continue }
                 aliases.append(childPath + "." + connection.port)
             }
         }
@@ -171,7 +171,7 @@ extension LanguageServerSession {
                     // Declared in this scope (not further up, as from inside a generate block).
                     guard let signal = connection.signal,
                           let declaration = siblings.first(where: { $0.name == signal && !$0.isScope }),
-                          try await declaredWidth(of: declaration, texts: &texts) == width else { continue }
+                          try await declaredWidth(of: declaration, at: grandparent + "." + signal, texts: &texts) == width else { continue }
                     aliases.append(grandparent + "." + signal)
                 }
             }
@@ -180,12 +180,14 @@ extension LanguageServerSession {
         return aliases.filter { $0 != path && seen.insert($0).inserted }
     }
 
-    /// A variable's or port's width as its declaration gives it, from slang-server's hover; nil
-    /// when the server has no hover there, or when the width may differ between instances while
-    /// the hover shows one of them: a range that is not plain numbers, a type parameter, or a
-    /// typedef outside a package. Cancellation and
-    /// server failures are thrown.
-    private func declaredWidth(of item: SlangHierarchyItem, texts: inout [URL: [UInt16]]) async throws -> Int? {
+    /// A variable's or port's width (the item at `path`) as its declaration gives it, from
+    /// slang-server's hover. The hover is per declaration and shows one instance's elaboration, so
+    /// a width that may differ between instances (a range that is not plain numbers, a type
+    /// parameter, a typedef outside a package) is trusted only when the declaration has one
+    /// instance in the design (getInstances on it; a top's, which a fragment's getInstances can't
+    /// place, is one by definition). nil when the server has no hover there or the width can't be
+    /// trusted. Cancellation and server failures are thrown.
+    private func declaredWidth(of item: SlangHierarchyItem, at path: String, texts: inout [URL: [UInt16]]) async throws -> Int? {
         guard let location = item.location else { return nil }
         let hover: String?
         do {
@@ -196,10 +198,22 @@ extension LanguageServerSession {
         }
         guard let hover else { return nil }
         if let width = Self.declaredWidth(fromHover: hover) { return width }
-        guard Self.declarationRangesArePlain(inHover: hover), let link = Self.typeLink(inHover: hover), let width = link.width else { return nil }
-        if texts[link.uri] == nil, let text = sourceText(of: link.uri) { texts[link.uri] = Array(text.utf16) }
-        guard let units = texts[link.uri] else { return nil }
-        return Self.typedefIsFixed(in: String(decoding: units, as: UTF16.self), line: link.line) ? width : nil
+        if Self.declarationRangesArePlain(inHover: hover), let link = Self.typeLink(inHover: hover), let width = link.width {
+            if texts[link.uri] == nil, let text = sourceText(of: link.uri) { texts[link.uri] = Array(text.utf16) }
+            if let units = texts[link.uri], Self.typedefIsFixed(in: String(decoding: units, as: UTF16.self), line: link.line) { return width }
+        }
+        guard let width = Self.resolvedWidth(fromHover: hover) else { return nil }
+        let instances = try await instancePathsSkippingUnresolved(uri: location.uri, position: location.range.start)
+        let inTop = !Self.parentPath(of: path).contains(".")
+        return instances.count == 1 || (instances.isEmpty && inTop) ? width : nil
+    }
+
+    /// The width slang resolved for this declaration's elaboration shown in the hover, whatever
+    /// the declaration's ranges or type: `Width:`, a one-bit type, or a linked type's aka.
+    static func resolvedWidth(fromHover hover: String) -> Int? {
+        if let link = typeLink(inHover: hover) { return link.width }
+        guard let type = hoverField("Type:", in: hover), type.hasPrefix("`"), type.hasSuffix("`"), type.count >= 2 else { return nil }
+        return width(ofHover: hover, type: String(type.dropFirst().dropLast()))
     }
 
     /// The width in slang-server's hover on a declaration (`Width: `4``; none for one bit), when
