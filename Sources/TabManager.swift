@@ -4739,7 +4739,7 @@ class TabManager: ObservableObject {
         AppDelegate.shared?.leaveChiefHome(in: self)
         // Cmd+T should always focus the newly created surface.
         selectedWorkspace?.clearSplitZoom()
-        selectedWorkspace?.newTerminalSurfaceInFocusedPane(focus: true)
+        selectedWorkspace?.newTerminalSurfaceInFocusedPane(focus: true, userInitiated: true)
     }
 
     func newSurface(initialInput: String) {
