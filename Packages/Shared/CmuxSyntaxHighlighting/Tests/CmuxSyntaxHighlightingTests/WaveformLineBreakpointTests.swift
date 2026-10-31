@@ -104,4 +104,13 @@ struct WaveformLineBreakpointTests {
         #expect(WaveformLineBreakpoint.line(matching: "c <= e;", near: 2, in: text) == nil)
         #expect(WaveformLineBreakpoint.lineText(" \t c <=   d; ") == "c <= d;")
     }
+
+    @Test func listsEveryMatchingLineNearestFirst() {
+        let text = "a;\nend\nb;\nend\nc;\nend\n" as NSString
+        #expect(WaveformLineBreakpoint.lines(matching: "end", near: 3, in: text) == [3, 1, 5])
+        #expect(WaveformLineBreakpoint.lines(matching: "end", near: 0, in: text) == [1, 3, 5])
+        // A tie goes to the earlier line.
+        #expect(WaveformLineBreakpoint.lines(matching: "end", near: 2, in: text) == [1, 3, 5])
+        #expect(WaveformLineBreakpoint.lines(matching: "nope", near: 2, in: text).isEmpty)
+    }
 }
