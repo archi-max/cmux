@@ -194,6 +194,15 @@ import Testing
         #expect(rule == nil)
     }
 
+    @Test func aRangeNamedDumpSignalNextToTheExactNameIsNotIt() async {
+        // pc and pc[0:0] in one scope: the design's pc is the exact pc (as host.js finds it), so
+        // pc[0:0] is not mapped back onto it.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"]!.append(.init(name: "pc[0:0]", isScope: false, width: 1))
+        let rule = await HierarchyPrefixInference.designRule(forDumpPath: "top_tb.dut.pc[0:0]", designRoots: ["cpu": Self.cpuChildren], dumpChildren: Self.children(of: hierarchy))
+        #expect(rule == nil)
+    }
+
     @Test func aDesignPathWithASelectStillMatchesExactly() async {
         // An element the dump lists by its index (`mem[3]`), asked for as such.
         var hierarchy = Self.dump
