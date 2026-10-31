@@ -1,6 +1,7 @@
 import CmuxCloud
 import CmuxCore
 import CmuxFoundation
+import CmuxSyntaxHighlighting
 import AppKit
 import Combine
 import Foundation
@@ -833,12 +834,18 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL,
         maxBytes: Int64
     ) async throws {
-        let escapedPath = Self.remoteShellPathWord(path)
         try await runDownload(
-            command: "test -f \(escapedPath) && head -c \(max(0, maxBytes) + 1) < \(escapedPath)",
+            command: Self.cappedDownloadCommand(path: path, maxBytes: maxBytes),
             connection: connection,
             to: localURL
         )
+    }
+
+    /// The remote command for a download of at most `maxBytes + 1` bytes, as a
+    /// POSIX script any login shell runs.
+    static func cappedDownloadCommand(path: String, maxBytes: Int64) -> String {
+        let word = remoteShellPathWord(path)
+        return SlangWorkspaceRoot.posixShellCommand("test -f \(word) && head -c \(max(0, maxBytes) + 1) < \(word)")
     }
 
     private nonisolated func runDownload(
@@ -1273,7 +1280,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     /// decides from it that a file is absent. BSD and BusyBox ls ignore it.
     static func listCommand(path: String, showHidden: Bool) -> String {
         let lsFlags = showHidden ? "-1paFA" : "-1paF"
-        return "QUOTING_STYLE=literal ls \(lsFlags) \(remoteShellPathWord(path)) 2>/dev/null"
+        // `VAR=value cmd` and `2>` are sh syntax that csh/tcsh and fish reject.
+        return SlangWorkspaceRoot.posixShellCommand(
+            "QUOTING_STYLE=literal ls \(lsFlags) \(remoteShellPathWord(path)) 2>/dev/null"
+        )
     }
 
     /// Entries of `ls -1paF` output for `path`, without `.` and `..`.
