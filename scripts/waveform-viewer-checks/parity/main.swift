@@ -13,7 +13,9 @@
 //   - two back-to-back reloads end opened, with no error and the rows kept;
 //   - a session applied as a reload starts is dropped, not applied to the
 //     reloaded viewer;
-//   - a late <dump>.json is offered only while the user hasn't changed the view.
+//   - a late <dump>.json is offered only while the user hasn't changed the view;
+//   - a kept restore survives a reload during it, and an interrupted user load
+//     keeps the unsaved marker and says it was interrupted.
 // Exits 0 and prints PARITY CHECKS PASSED, or prints CHECK FAILED and exits 2.
 // Usage: parity <assetRoot> <parity.vcd>
 import AppKit
@@ -86,11 +88,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var strings: [String: String] = [:]
 
   /// Opens the file in a new viewer frame with no state to restore, as a new panel does.
-  func openFresh(then: @escaping () -> Void) {
-    let argument: [String: Any] = [
+  func openFresh(restore: [String: Any]? = nil, then: @escaping () -> Void) {
+    var argument: [String: Any] = [
       "url": scheme.serve(fileURL: waveURL).absoluteString, "size": size(), "format": "vcd",
       "path": "/work/sim/parity.vcd", "strings": strings, "settings": [String: Any](),
     ]
+    argument["restore"] = restore
     let json = String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)!
     onOpened = then
     web.evaluateJavaScript("cmuxWaveform.open(\(json))")
@@ -320,6 +323,60 @@ extension Harness {
         R.dialog = !!document.querySelector('.cmux-dialog-backdrop');
         """) { r in
           check(r["dialog"] as? Bool == true, "a late session file is offered on an untouched viewer")
+          self.phaseH()
+        }
+      }
+    }
+  }
+
+  // The state cmux kept (a page reload after a WebContent crash) survives a
+  // reload that lands while its rows are still resolving.
+  func phaseH() {
+    let restore: [String: Any] = ["dirty": false, "state": ["displayedSignals": [
+      ["dataType": "netlist-variable", "name": "top.clk"],
+      ["dataType": "netlist-variable", "name": "top.core.acc"],
+    ]]]
+    web.evaluateJavaScript("""
+    (() => {
+      const C = window.cmuxCommands, original = C.restoreState;
+      C.restoreState = (m) => {
+        C.restoreState = original;
+        const pending = original(m);
+        window.cmuxWaveform.reload({});
+        return pending;
+      };
+      return 1;
+    })()
+    """)
+    openFresh(restore: restore) {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+        self.js("const st = C.sessionSnapshot().state; R.rows = st ? st.displayedSignals.length : 0;") { r in
+          check(r["rows"] as? Int == 2, "a kept restore survives a reload during it (rows \(r["rows"] ?? "nil"))")
+          self.phaseI()
+        }
+      }
+    }
+  }
+
+  // A load the user started that a reload overtakes leaves the unsaved marker
+  // alone and says the load didn't happen.
+  func phaseI() {
+    strings["messageSessionLoadInterrupted"] = "INTERRUPTED"
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(500);
+        R.dirtyBefore = !document.getElementById('status-unsaved').hidden;
+        C.applySessionFile({ text: \(Self.jsString(Self.sessionText)), path: '/work/sim/parity.json' });
+        window.cmuxWaveform.reload({});
+        await sleep(1500);
+        R.dirtyAfter = !document.getElementById('status-unsaved').hidden;
+        R.toast = Array.from(document.querySelectorAll('.cmux-toast')).some((t) => t.textContent === 'INTERRUPTED');
+        """) { r in
+          check(r["dirtyBefore"] as? Bool == true, "a user change marks the view unsaved")
+          check(r["dirtyAfter"] as? Bool == true, "an interrupted load keeps the unsaved marker")
+          check(r["toast"] as? Bool == true, "an interrupted load says so")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
