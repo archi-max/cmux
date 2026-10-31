@@ -294,6 +294,12 @@ struct SlangIncludeFragmentTests {
         func offset(of needle: String) -> Int { units.count - Array(text[text.range(of: needle)!.lowerBound...].utf16).count + 1 }
         #expect(S.portConnection(in: text, at: offset(of: ".a(x)"))?.instance == "u")
         #expect(S.portConnection(in: text, at: offset(of: ".b(y)"))?.instance == "v")
+        // Case-generate items without begin: the colon ends a case label, not a block name.
+        let items = "case (P)\n  1: foo u (.a(x));\n  default: foo v (.b(y));\nendcase\n"
+        let itemUnits = Array(items.utf16)
+        func itemOffset(of needle: String) -> Int { itemUnits.count - Array(items[items.range(of: needle)!.lowerBound...].utf16).count + 1 }
+        #expect(S.portConnection(in: items, at: itemOffset(of: ".a(x)"))?.instance == "u")
+        #expect(S.portConnection(in: items, at: itemOffset(of: ".b(y)"))?.instance == "v")
     }
 
     @Test func aDeclarationsWidthIsReadFromItsHover() {
@@ -324,6 +330,27 @@ struct SlangIncludeFragmentTests {
         #expect(!S.typedefIsFixed(in: text, line: 8))
         #expect(!S.typedefIsFixed(in: text, line: 10))
         #expect(!S.typedefIsFixed(in: "module m #(parameter type T = logic);\nendmodule\n", line: 0))
+        // A forward `typedef class` opens nothing, and only a matching end closes: the module after
+        // the package is not in it.
+        let after = "package p;\n  typedef class C;\n  typedef logic [1:0] p_t;\nendpackage\nmodule m #(parameter W = 1);\n  typedef logic [W-1:0] t;\nendmodule\n"
+        #expect(S.typedefIsFixed(in: after, line: 2))
+        #expect(!S.typedefIsFixed(in: after, line: 5))
+        let unmatched = "module m;\n  endpackage\n  typedef logic t;\nendmodule\n"
+        #expect(!S.typedefIsFixed(in: unmatched, line: 2))
+    }
+
+    @Test func aHoverFailureOtherThanTheServersAnswerIsThrown() async throws {
+        try await Self.withFixture { fixture in
+            await fixture.session.setDeclarationHoverErrorForTesting(.timeout(method: "textDocument/hover"))
+            await #expect(throws: LanguageServerError.self) {
+                _ = try await fixture.session.slangPortAliases(of: "tb_wrapper.frag_sig")
+            }
+            // The server's own error answer: no hover there, so no alias, but no failure.
+            await fixture.session.setDeclarationHoverErrorForTesting(.responseError(code: -32603, message: "no hover"))
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.frag_sig").isEmpty)
+            await fixture.session.setDeclarationHoverErrorForTesting(nil)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.frag_sig") == ["tb_wrapper.dut.q"])
+        }
     }
 
     @Test func aMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {

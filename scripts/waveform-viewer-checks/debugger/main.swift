@@ -403,13 +403,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         const narrow = await found(['top', 'ports', 'req']);
         req.name = 'req[0:0]';
         const scope = (await cmuxWaveform.link.scopeChildren(['top', 'ports'])).find((x) => x.name === 'req[0:0]');
-        return { values, has, index, narrow, width: scope ? scope.width : null };
+        // Two vars that both strip to v (valid 1 bit as v[0:0], state 4 bits as v[4:1]): neither is v.
+        const core = (await h.getChildren(h.doc.netlist.find((x) => x.name === 'top'))).find((x) => x.name === 'core');
+        const kids = await h.getChildren(core);
+        const valid = kids.find((x) => x.name === 'valid');
+        const state = kids.find((x) => x.name === 'state');
+        valid.name = 'v[0:0]';
+        state.name = 'v[4:1]';
+        let twice = null;
+        try { const v = await h.findLinkItem(['top', 'core', 'v'], true); twice = v ? v.name : null; } finally { valid.name = 'valid'; state.name = 'state'; }
+        return { values, has, index, narrow, width: scope ? scope.width : null, twice };
       } finally { req.name = 'req'; }
     """) as? [String: Any]
     let rangedValues = ranged?["values"] as? [Any]
     expect(rangedValues?.count == 3 && rangedValues?[0] as? Bool == true && rangedValues?[1] as? Bool == true
            && rangedValues?[2] is NSNull && ranged?["has"] as? Bool == true
-           && ranged?["index"] is NSNull && ranged?["narrow"] is NSNull && ranged?["width"] as? Int == 1,
+           && ranged?["index"] is NSNull && ranged?["narrow"] is NSNull && ranged?["width"] as? Int == 1 && ranged?["twice"] is NSNull,
            "req finds req[0:0] (a prefix like re, an index req[3] and a narrower req[1:0] do not; scopeChildren gives the width): \(String(describing: ranged))")
     // A reload while the clock is still being read: no warning, since the reload owns the page.
     let raced = await call("""

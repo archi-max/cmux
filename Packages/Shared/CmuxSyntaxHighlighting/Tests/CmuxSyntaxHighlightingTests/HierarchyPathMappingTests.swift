@@ -179,6 +179,21 @@ import Testing
         #expect(result == .notDumped(.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)))
     }
 
+    @Test func aBitBlastedDumpHasNoSingleSignal() async {
+        // bus[0:0] and bus[1:1] each strip to bus: neither is it.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"] = [
+            .init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "pc[0:0]", isScope: false, width: 1),
+            .init(name: "pc[1:1]", isScope: false, width: 1), .init(name: "pc_next", isScope: false), .init(name: "rf", isScope: true),
+        ]
+        let dump = Self.children(of: hierarchy)
+        #expect(await !HierarchyPrefixInference.exists(["top_tb", "dut", "pc"], dumpChildren: dump))
+        let result = await HierarchyPrefixInference.dumpRules(forDesignPath: "cpu.pc", designRootChildren: Self.cpuChildren, dumpChildren: dump)
+        #expect(result == .notDumped(.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)))
+        let rule = await HierarchyPrefixInference.designRule(forDumpPath: "top_tb.dut.pc[0:0]", designRoots: ["cpu": Self.cpuChildren], dumpChildren: dump)
+        #expect(rule == nil)
+    }
+
     @Test func aDesignPathWithASelectStillMatchesExactly() async {
         // An element the dump lists by its index (`mem[3]`), asked for as such.
         var hierarchy = Self.dump
