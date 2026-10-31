@@ -110,7 +110,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return out;
     """) as? [String] ?? []
     print(String(format: "Locals of %@: %d rows in %.2f s", args[5], rows.count, Date().timeIntervalSince(t2)))
-    expect(l == true && !rows.isEmpty && rows.allSatisfy { $0.hasPrefix("Locals/") }, "Locals of \(args[5]): \(rows.prefix(6))")
+    expect(l == true && !rows.isEmpty && rows.allSatisfy { $0.hasPrefix("Locals/") }, "Locals of \(args[5]): \(rows)")
+    // Inline values the editor would read at the marker, for names under the Locals scope
+    // (CMUX_DEBUGGER_FSDB_VALUES=a,b,c): only signals in the waveform, then any signal.
+    if let names = ProcessInfo.processInfo.environment["CMUX_DEBUGGER_FSDB_VALUES"]?.split(separator: ",").map(String.init), !names.isEmpty {
+      let pathList: [[String]] = names.map { localsScope + [$0] }
+      let paths = String(data: try! JSONSerialization.data(withJSONObject: pathList), encoding: .utf8)!
+      for unshown in [false, true] {
+        let t = Date()
+        let values = await call("""
+          const time = cmuxWaveform.viewerContext.webview.markerTime;
+          return await cmuxWaveform.link.valuesAt({ time, paths: \(paths), unshown: \(unshown) });
+        """) as? [Any] ?? []
+        print(String(format: "values (unshown %@) in %.3f s: ", unshown ? "on" : "off", Date().timeIntervalSince(t))
+              + zip(names, values).map { "\($0)=\($1)" }.joined(separator: " "))
+        if unshown { expect(values.contains { $0 is String }, "some values with unshown on") }
+      }
+    }
     _ = await dbg("stop()")
     await sleep(300)
     print(failures == 0 ? "DEBUGGER FSDB CHECKS PASSED" : "DEBUGGER FSDB CHECKS FAILED: \(failures)")
