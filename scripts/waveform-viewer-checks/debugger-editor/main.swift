@@ -311,6 +311,44 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(page.rtlShownTimes == [25], "both drew it: shown: \(page.rtlShownTimes)")
     expect((both?["tooltip"] as? String)?.contains("other.sv") == true, "the other editor's reason is in the tooltip: \(String(describing: both))")
 
+    // Cone lookups are capped per cycle across all editors, not per editor: two editors with
+    // 12 unassigned changed signals each ask 16 in all for one cycle.
+    let wideNames = (0..<12).map { "w\($0)" }
+    let wideSource = "module wide;\n" + wideNames.map { "  logic \($0);\n" }.joined() + "endmodule\n"
+    let wideLines = SystemVerilogInlineScan.lines(in: wideSource, range: NSRange(location: 0, length: (wideSource as NSString).length))
+    func wideEditor(_ path: String) -> (FilePreviewLanguageFeatures, NSTextView) {
+        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        view.string = wideSource
+        return (FilePreviewLanguageFeatures(textView: view, path: path), view)
+    }
+    let (wideA, viewA) = wideEditor("/rtl/wide_a.sv")
+    let (wideB, viewB) = wideEditor("/rtl/wide_b.sv")
+    FilePreviewLanguageFeatures.all = [wideA, wideB]
+    page.previousTimes = [45: 35]
+    var wideNow: [String: String] = [:]
+    var wideValues: [Int64: [String: String]] = [45: [:], 35: [:]]
+    for name in wideNames {
+        wideNow[name] = "1"
+        for scope in ["tb.a", "tb.b"] {
+            wideValues[45]![scope + "." + name] = "1"
+            wideValues[35]![scope + "." + name] = "0"
+        }
+    }
+    WaveformSourceLink.values = wideValues
+    for (editor, view, scope) in [(wideA, viewA, "tb.a"), (wideB, viewB, "tb.b")] {
+        WaveformDebuggerEditorHighlights.valuesShown(.init(
+            editor: editor, textView: view, lines: wideLines, waveform: waveform, time: 45,
+            values: ["wide": wideNow], instances: ["wide": .init(design: scope, dump: scope)]
+        ))
+    }
+    await settle()
+    let wideAsked = wideA.session.asked.count + wideB.session.asked.count
+    expect(wideAsked == 16 && wideA.session.asked.count == 12, "cone lookups for one cycle: 16 across both editors: \(wideA.session.asked.count) + \(wideB.session.asked.count)")
+    // Playing: an editor refreshes as soon as the marker moves (the throttle still coalesces).
+    expect(WaveformDebuggerEditorHighlights.refreshDelay(playing: true) == .zero
+           && WaveformDebuggerEditorHighlights.refreshDelay(playing: false) == .milliseconds(120),
+           "no refresh delay while playing, 120 ms otherwise")
+
     print(failures == 0 ? "DEBUGGER EDITOR CHECKS PASSED" : "DEBUGGER EDITOR CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
 }
