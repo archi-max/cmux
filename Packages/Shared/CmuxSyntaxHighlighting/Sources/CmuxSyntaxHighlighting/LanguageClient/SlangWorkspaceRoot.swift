@@ -73,6 +73,19 @@ public enum SlangWorkspaceRoot {
     /// csh/tcsh or fish. The script travels base64-encoded inside single quotes, which none of
     /// them expand, and `sh` decodes and runs it with the command's stdin.
     public static func posixShellCommand(_ script: String) -> String {
+        // Already a wrapper (of a probe or listing): the same command, not one wrapped twice.
+        let prefix = "sh -c 'eval \"$(printf %s "
+        if script.hasPrefix(prefix),
+           let end = script.dropFirst(prefix.count).firstIndex(of: " "),
+           let decoded = Data(base64Encoded: String(script[script.index(script.startIndex, offsetBy: prefix.count)..<end])),
+           let inner = String(data: decoded, encoding: .utf8),
+           wrap(inner) == script {
+            return script
+        }
+        return wrap(script)
+    }
+
+    private static func wrap(_ script: String) -> String {
         let encoded = Data(script.utf8).base64EncodedString()
         // GNU and BusyBox take -d, older macOS -D.
         return "sh -c 'eval \"$(printf %s \(encoded) | base64 -d 2>/dev/null || printf %s \(encoded) | base64 -D)\"'"

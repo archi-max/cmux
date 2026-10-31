@@ -759,7 +759,9 @@ extension SlangCompilationActions {
         Task { @MainActor in
             defer { release([session]) }
             await restore(autoPick.previous, on: session)
-            entry.target = autoPick.previous.target
+            // What the server compiles now, also when the restore failed.
+            entry.target = await session.slangCompilationTarget
+            entry.isExplore = await session.isInChosenExploreMode
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         }
     }
@@ -800,8 +802,9 @@ extension SlangCompilationActions {
         defer { release([session]) }
         // The user may have chosen a top level, build file or explore mode while the profiles were listed.
         guard entry.target == nil, !entry.isExplore, !entry.autoPickDeclined, await session.slangCompilationTarget == nil,
-              await !session.isInChosenExploreMode,
-              ((try? await session.slangScopeChildren("")) ?? []).allSatisfy({ $0.kind == "Package" }) else { return false }
+              await !session.isInChosenExploreMode else { return false }
+        // A server error is not "no tops": nothing is switched while it can't be read.
+        guard let tops = try? await session.slangScopeChildren(""), tops.allSatisfy({ $0.kind == "Package" }) else { return false }
         progress(String(
             format: String(
                 localized: "slangProfile.autoPick",
