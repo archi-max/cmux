@@ -61,7 +61,14 @@ struct SSHFileSearchTests {
                 + "\":(exclude,glob)**/node_modules/**\" \":(exclude,glob)**/dist/**\" "
                 + "\":(exclude,glob)**/build/**\" \":(exclude,glob)**/DerivedData/**\";"
         ))
-        #expect(!content.contains("**/.git/**"))
+        #expect(!content.contains(":(exclude,glob)**/.git/**"))
+        // grep --exclude-dir also skips a root of that name, so the root's own name is dropped.
+        let buildRoot = SSHFileSearchCommand.contentSearch(query: "abc", rootPath: "/p/build", remoteTimeoutSeconds: 5).command
+        #expect(!buildRoot.contains("--exclude-dir=build"))
+        #expect(buildRoot.contains("--exclude-dir=node_modules"))
+        let venvRoot = SSHFileSearchCommand.contentSearch(query: "abc", rootPath: "/p/.venv/", remoteTimeoutSeconds: 5).command
+        #expect(!venvRoot.contains("--exclude-dir=.venv"))
+        #expect(venvRoot.contains("--exclude-dir=build"))
         // Outside a work tree, plain grep also skips virtualenvs and caches.
         for name in [".venv", "venv", "__pycache__", ".cache"] {
             #expect(content.contains("--exclude-dir=\(name)"), "\(name)")
