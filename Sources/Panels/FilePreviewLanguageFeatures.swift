@@ -341,6 +341,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         guard !isDetached else { return }
         diagnostics = next
         renderDiagnostics()
+        if let session { WaveformDebuggerEditorHighlights.recompiled(session) }
     }
 
     private func renderDiagnostics() {
