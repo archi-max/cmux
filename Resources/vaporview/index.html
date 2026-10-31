@@ -57,9 +57,9 @@
     #status-time:hover { color: var(--vscode-foreground); }
     #status .spacer { flex: 1; }
     #status-unsaved::before { content: '\25CF'; color: var(--vscode-foreground); }
-    #status-reload { display: flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
+    #status-reload, #status-fallback { display: flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
     #status-reload[hidden], #status [hidden] { display: none; }
-    #status-reload button { font: inherit; padding: 0 6px; }
+    #status-reload button, #status-fallback button { font: inherit; padding: 0 6px; }
     /* Context menus, dialogs and toasts (cmux-ui.js). */
     #cmux-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
     #cmux-overlay > * { pointer-events: auto; }
@@ -126,6 +126,7 @@
     <span id="status-signal" hidden></span>
     <span class="spacer"></span>
     <span id="status-reload" hidden><span class="text"></span><button type="button" class="cmux-button"></button></span>
+    <span id="status-fallback" hidden><span class="text"></span><button type="button" class="cmux-button"></button></span>
     <span id="status-unsaved" hidden></span>
   </div>
   <script src="cmux-ui.js"></script>
