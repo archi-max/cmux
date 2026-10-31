@@ -634,14 +634,17 @@
     if (!session) { return false; }
     // Counted from now: a waiting Undo must not run while this resolves or
     // before the viewer answers it.
+    // Only a viewer that has asked for its state answers an apply-state (before
+    // its init completes it ignores one): only those are waited for.
     const epoch = applyEpoch;
-    applying++;
+    const counted = restoreAsked;
+    if (counted) { applying++; }
     let posted = false;
     try {
       posted = await postSession(session, stateChangeType);
       return posted;
     } finally {
-      if (!posted && epoch === applyEpoch) { applying = Math.max(0, applying - 1); }
+      if (counted && !posted && epoch === applyEpoch) { applying = Math.max(0, applying - 1); }
     }
   }
 
@@ -649,7 +652,13 @@
   // of the same stateChangeType), counted per load: a reload or open resets.
   let applying = 0;
   let applyEpoch = 0;
-  function resetApplying() { applying = 0; applyEpoch++; }
+  // A view still unanswered at a reload or open held the waiting presses back
+  // in that load; they don't carry into the next one.
+  function resetApplying() {
+    if (applying) { waitingHistory = []; }
+    applying = 0;
+    applyEpoch++;
+  }
   const ANSWER_TYPES = [StateChangeType.Restore, StateChangeType.File, StateChangeType.Undo, StateChangeType.Redo];
 
   async function postSession(session, stateChangeType) {
@@ -702,9 +711,12 @@
     // decides.
     const afterUnload = reloading && frameGone;
     const kept = afterUnload && keptIsCurrent && reloadBaseline ? reloadBaseline : null;
-    // The reloaded viewer is live: what it sends from here is its own.
+    // The reloaded viewer is live: what it sends from here is its own. Views
+    // posted to the old one were answered (or not) before its unload.
     reloading = false;
     frameGone = false;
+    applying = 0;
+    applyEpoch++;
     restoreAsked = true;
     restorePending = false;
     if (kept) {
