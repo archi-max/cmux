@@ -214,20 +214,24 @@ public enum HierarchyPrefixInference {
         max(min(2, count), (count + 1) / 2)
     }
 
-    /// A dump item's name as the design names it: a signal's trailing range dropped (FSDB names a
-    /// 1-bit vector declared `[N-1:0]` with it, as `dfp_wdone[0:0]`). The same rule as the
-    /// viewer's `findLinkItem` in host.js; a scope's index (`gen[0]`) is part of its name.
+    /// A dump item's name as the design names it: a signal's own trailing `[msb:lsb]` dropped,
+    /// one as wide as the signal (FSDB names a 1-bit vector declared `[N-1:0]` with it, as
+    /// `dfp_wdone[0:0]`). An index (`mem[3]`, an element) or a narrower range (a part-select) is
+    /// another signal, a scope's index (`gen[0]`) is part of its name, and without a width
+    /// nothing is dropped. The same rule as the viewer's `findLinkItem` in host.js.
     public static func signalName(_ node: HierarchyNode) -> String {
-        node.isScope ? node.name : signalName(ofName: node.name)
+        guard !node.isScope, let width = node.width else { return node.name }
+        return signalName(ofName: node.name, width: width)
     }
 
-    /// `name` without a trailing `[N]` or `[N:M]`.
-    static func signalName(ofName name: String) -> String {
+    /// `name` without a trailing `[msb:lsb]` that spans `width` bits.
+    static func signalName(ofName name: String, width: Int) -> String {
         guard name.hasSuffix("]"), let open = name.lastIndex(of: "[") else { return name }
         let range = name[name.index(after: open)..<name.index(before: name.endIndex)]
         let parts = range.split(separator: ":", omittingEmptySubsequences: false)
-        guard open > name.startIndex, (1...2).contains(parts.count),
-              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) else { return name }
+        guard open > name.startIndex, parts.count == 2,
+              parts.allSatisfy({ !$0.isEmpty && $0.count <= 9 && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }),
+              let msb = Int(parts[0]), let lsb = Int(parts[1]), abs(msb - lsb) + 1 == width else { return name }
         return String(name[..<open])
     }
 
@@ -315,7 +319,9 @@ public enum HierarchyPrefixInference {
             guard let kids = await dumpChildren(prefix) else { break }
             // The design names the signal without the range a dump may give it (`pc[0:0]`).
             let name = path[length]
-            let designName = length == path.count - 1 ? signalName(ofName: name) : name
+            let designName = length == path.count - 1
+                ? kids.first(where: { $0.name == name }).map(signalName) ?? name
+                : name
             for (root, rootChildren) in designRoots.sorted(by: { $0.key < $1.key })
             where rootChildren.contains(where: { $0.name == name || $0.name == designName }) {
                 let match = score(kids, against: rootChildren)
