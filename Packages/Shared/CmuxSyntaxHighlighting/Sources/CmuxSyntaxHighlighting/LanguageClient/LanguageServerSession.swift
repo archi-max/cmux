@@ -175,21 +175,25 @@ public actor LanguageServerSession {
         for (url, document) in documents {
             sendDidOpen(url: url, text: document.text, version: document.version)
         }
+        // The relaunched server compiles what this one did before callers use it.
         if let compilationCommand {
-            Task { [weak self] in
-                _ = try? await self?.executeCommand(compilationCommand.command, argument: compilationCommand.argument, timeout: 120)
-            }
+            dropStaleDiagnostics()
+            _ = try? await sendCommand(compilationCommand.command, argument: compilationCommand.argument, timeout: 120)
         }
     }
 
-    /// Relaunches the server, keeping its open documents (and the compilation
-    /// command, which is sent again), so it rereads its config files.
-    public func restart() async throws {
+    /// Relaunches the server, keeping its open documents, so it rereads its config files.
+    /// `keepingCompilation`: send the top level or build file set through this session again;
+    /// false drops it, so the config files decide.
+    public func restart(keepingCompilation: Bool = true) async throws {
+        if !keepingCompilation { compilationCommand = nil }
+        if let startTask { _ = try? await startTask.value }
         if let tool, state != .stopped {
             tool.kill()
             for _ in 0..<500 where state != .stopped {
                 try? await Task.sleep(nanoseconds: 10_000_000)
             }
+            guard state == .stopped else { throw LanguageServerError.notRunning }
         }
         try await start()
     }
@@ -311,13 +315,26 @@ public actor LanguageServerSession {
     /// `countsTowardWedged`: false for exploratory requests (the design walk) whose timeout
     /// says the request was too big, not that the server hangs.
     func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil, countsTowardWedged: Bool = true) async throws -> JSONValue {
-        // Remember what the server compiles, cleared by the commands' empty argument.
-        if command == "slang.setTopLevel" || command == "slang.setBuildFile" {
+        let isCompilationCommand = command == "slang.setTopLevel" || command == "slang.setBuildFile"
+        if isCompilationCommand { dropStaleDiagnostics() }
+        let result = try await sendCommand(command, argument: argument, timeout: timeout, countsTowardWedged: countsTowardWedged)
+        // Remember what the server compiles (once it accepted it), cleared by the commands' empty argument.
+        if isCompilationCommand {
             compilationCommand = argument?.stringValue?.isEmpty == false ? (command, argument!) : nil
         }
+        return result
+    }
+
+    private func sendCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval?, countsTowardWedged: Bool = true) async throws -> JSONValue {
         var params: [String: JSONValue] = ["command": .string(command)]
         params["arguments"] = .array(argument.map { [$0] } ?? [])
         return try await request("workspace/executeCommand", params: .object(params), timeout: timeout, countsTowardWedged: countsTowardWedged)
+    }
+
+    /// A new compilation republishes the files it reports on; diagnostics of
+    /// files no editor has open would otherwise describe the old one.
+    private func dropStaleDiagnostics() {
+        latestDiagnostics = latestDiagnostics.filter { documents[$0.key] != nil }
     }
 
     // MARK: Diagnostics
@@ -355,7 +372,7 @@ public actor LanguageServerSession {
         recentErrorMessages.removeAll()
     }
 
-        private func removeDiagnosticsSubscriber(_ id: UUID) {
+    private func removeDiagnosticsSubscriber(_ id: UUID) {
         diagnosticsSubscribers[id] = nil
     }
 
