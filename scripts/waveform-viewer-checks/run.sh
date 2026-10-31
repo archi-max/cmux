@@ -11,6 +11,9 @@
 #                                        API (link.* in host.js) on link.vcd
 #   ./run.sh debugger                    the waveform debugger (cmux-debugger.js):
 #                                        clock, stepping, play, Locals, highlights
+#   ./run.sh debugger-editor             the debugger's editor highlights
+#                                        (WaveformDebuggerEditorHighlights.swift)
+#                                        on a windowless NSTextView
 #   ./run.sh fsdb-values <ssh-host> <shown> <unshown> <over-cap> <mid1> <mid2> <mid3>
 #                                        inline values from a remote FSDB (dump
 #                                        paths of: a signal to show, one not
@@ -43,6 +46,16 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/link"
     "$OUT/link" "$ASSETS" "$HERE/link/link.vcd" "$OUT/link.png" | tee "$OUT/link.log"
     grep -q '^LINK CHECKS PASSED' "$OUT/link.log"
+    ;;
+  debugger-editor)
+    L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    # One module here: the package import goes, and SlangDriverCone.swift's session extension is stubbed.
+    sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerEditorHighlights.swift" > "$OUT/highlights.swift"
+    sed '/^extension LanguageServerSession/,$d' "$L/SlangDriverCone.swift" > "$OUT/cone.swift"
+    swiftc -swift-version 6 -O "$HERE/debugger-editor/main.swift" "$HERE/debugger-editor/stubs.swift" "$OUT/highlights.swift" "$OUT/cone.swift" \
+      "$L/SystemVerilogInlineScan.swift" "$L/HierarchyPathMapping.swift" "$L/WaveformCycleHighlights.swift" "$L/LSPTypes.swift" \
+      -o "$OUT/debugger-editor"
+    "$OUT/debugger-editor"
     ;;
   debugger)
     swiftc -O "$HERE/debugger/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
