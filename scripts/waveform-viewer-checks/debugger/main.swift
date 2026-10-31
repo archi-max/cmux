@@ -364,6 +364,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     let r7 = await rows()
     expect(r7.contains("[Locals]") && r7.contains("Locals/top.core.alu.acc") && !r7.contains { $0.hasSuffix("top.core.valid") }, "stop leaves the user's Locals: \(r7)")
+    // A reload while the clock is still being read: no warning, since the reload owns the page.
+    let raced = await call("""
+      const toasts = [];
+      const original = cmuxUI.toast;
+      cmuxUI.toast = (m, k) => { toasts.push(String(m)); return original(m, k); };
+      try {
+        cmuxWaveform.reload({});
+        await new Promise((r) => setTimeout(r, 1500));
+        const stepping = cmuxWaveform.debugger.step({ by: 1 });
+        cmuxWaveform.reload({});
+        await stepping;
+        await new Promise((r) => setTimeout(r, 1500));
+        return toasts;
+      } finally { cmuxUI.toast = original; }
+    """) as? [String]
+    expect(raced == [], "a reload during the clock read warns nothing: \(String(describing: raced))")
+    _ = await dbg("stop()")
     // The page can't swap the API cmux calls.
     let tamper = await call("""
       const before = cmuxWaveform.debugger;
@@ -419,6 +436,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let strings = "{netlist:'Netlist', loading:'Loading…', openFailed:'Could not open', addSignal:'Add', debuggerLocals:'Locals', debuggerCycle:'Cycle %1$@ of %2$@ · %3$@', debuggerRate:'%@ cycles/s'}"
       web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(strings)})")
     } else if type == "opened" {
+      // A reload opens again: the checks run once.
+      guard !checksStarted else { return }
+      checksStarted = true
       Task { @MainActor in
         if self.waveURL.lastPathComponent == "small.vcd" { await self.runSmallChecks() } else { await self.runSteppingChecks() }
       }
@@ -428,6 +448,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
   }
 
+  var checksStarted = false
   var waveURL: URL { URL(fileURLWithPath: args[2]) }
 
   func snapImage(suffix: String) {
