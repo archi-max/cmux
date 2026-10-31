@@ -764,7 +764,7 @@ extension LanguageServerSession {
     }
 
     /// The JSON-RPC internal error slang-server answers a path it cannot resolve with.
-    private static let unresolvedPathCode = -32603
+    static let unresolvedPathCode = -32603
 
     /// Whether slang-server answered that it could not resolve the path (the walk skips those).
     static func isUnresolvedPath(_ error: any Error) -> Bool {
