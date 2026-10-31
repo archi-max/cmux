@@ -64,16 +64,19 @@ public enum WaveformLineBreakpoint {
 
     /// The line (0-based) whose text matches `lineText`, the nearest to `near` when several do; nil when none.
     public static func line(matching lineText: String, near: Int, in text: NSString) -> Int? {
+        lines(matching: lineText, near: near, in: text).first
+    }
+
+    /// Every line (0-based) whose text matches `lineText`, nearest to `near` first (a tie: the earlier).
+    public static func lines(matching lineText: String, near: Int, in text: NSString) -> [Int] {
         let wanted = self.lineText(lineText)
-        guard !wanted.isEmpty else { return nil }
-        var best: Int?
+        guard !wanted.isEmpty else { return [] }
+        var found: [Int] = []
         var number = 0
         text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
-            if self.lineText(text.substring(with: range)) == wanted, best.map({ abs($0 - near) > abs(number - near) }) ?? true {
-                best = number
-            }
+            if self.lineText(text.substring(with: range)) == wanted { found.append(number) }
             number += 1
         }
-        return best
+        return found.sorted { (abs($0 - near), $0) < (abs($1 - near), $1) }
     }
 }
