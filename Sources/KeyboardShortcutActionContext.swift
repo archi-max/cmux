@@ -2,28 +2,9 @@ import CmuxCommandPalette
 import CmuxSettings
 
 extension KeyboardShortcutSettings.Action {
+    /// The settings package's policy (one list, so the recorder, cmux.json and the defaults agree).
     var allowsBareFirstStroke: Bool {
-        switch self {
-        case .diffViewerScrollDown,
-             .diffViewerScrollUp,
-             .diffViewerScrollHalfPageDown,
-             .diffViewerScrollHalfPageUp,
-             .diffViewerScrollDownEmacs,
-             .diffViewerScrollUpEmacs,
-             .diffViewerScrollToBottom,
-             .diffViewerScrollToTop,
-             .diffViewerOpenFileSearch,
-             .diffViewerNextFile,
-             .diffViewerPreviousFile,
-             .diffViewerNextHunk,
-             .diffViewerPreviousHunk,
-             .diffViewerToggleViewed,
-             .fileExplorerOpenSelection,
-             .fileExplorerOpenSelectionFinderAlias:
-            return true
-        default:
-            return false
-        }
+        CmuxSettings.ShortcutAction(rawValue: rawValue)?.allowsBareFirstStroke ?? false
     }
 
     var isBrowserContentShortcut: Bool {

@@ -75,6 +75,9 @@ struct ShortcutActionNumberedDigitTests {
             .diffViewerToggleViewed,
             .fileExplorerOpenSelection,
             .fileExplorerOpenSelectionFinderAlias,
+            .stepWaveformCycleForward,
+            .stepWaveformCycleBack,
+            .toggleWaveformPlayback,
         ]
 
         for action in ShortcutAction.allCases {
