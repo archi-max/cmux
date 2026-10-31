@@ -30,7 +30,7 @@ enum GoToFileSnapshotError: Error, Equatable, LocalizedError {
 
 /// Takes the one file-list snapshot a Go to File session ranks against.
 ///
-/// Local and SSH roots run the same ``SSHFileSearchCommand/fileList(rootPath:maxDepth:remoteTimeoutSeconds:)``
+/// Local and SSH roots run the same ``SSHFileSearchCommand/fileList(rootPath:maxDepth:remoteTimeoutSeconds:watchdog:)``
 /// script, locally under `/bin/sh` and remotely over the workspace's ssh
 /// ControlPath. Cancelling the calling task terminates the child.
 enum GoToFileSnapshotLoader {
@@ -41,6 +41,8 @@ enum GoToFileSnapshotLoader {
     struct Invocation: Equatable, Sendable {
         let executable: String
         let arguments: [String]
+        /// ssh gets a stdin pipe that stays open, so the remote watchdog only
+        /// fires when the client goes away.
         let keepsStdinOpen: Bool
 
         init(executable: String, arguments: [String], keepsStdinOpen: Bool = false) {
@@ -56,17 +58,24 @@ enum GoToFileSnapshotLoader {
     ) -> Invocation {
         // The remote deadline sits just inside the local one so a slow host
         // reports a timeout status rather than a killed ssh.
-        let command = SSHFileSearchCommand.fileList(
-            rootPath: source.rootPath,
-            maxDepth: GoToFileSnapshot.maxFindDepth,
-            remoteTimeoutSeconds: max(1, timeoutSeconds - 2),
-            watchdog: false
-        ).command
+        func command(watchdog: Bool) -> String {
+            SSHFileSearchCommand.fileList(
+                rootPath: source.rootPath,
+                maxDepth: GoToFileSnapshot.maxFindDepth,
+                remoteTimeoutSeconds: max(1, timeoutSeconds - 2),
+                watchdog: watchdog
+            ).command
+        }
         switch source {
         case .local:
-            return Invocation(executable: "/bin/sh", arguments: ["-c", command])
+            // No watchdog here: its `kill 0` would reach this Mac's process group.
+            return Invocation(executable: "/bin/sh", arguments: ["-c", command(watchdog: false)])
         case .ssh(let connection, _):
-            return Invocation(executable: "/usr/bin/ssh", arguments: sshArguments(connection, command))
+            return Invocation(
+                executable: "/usr/bin/ssh",
+                arguments: sshArguments(connection, command(watchdog: true)),
+                keepsStdinOpen: true
+            )
         }
     }
 
@@ -100,17 +109,20 @@ enum GoToFileSnapshotLoader {
             snapshot.isTruncated = true
             return snapshot
         }
+        let toolRan = GoToFileSnapshot.markerEnd(in: outcome.stdout) != nil
         switch outcome.status {
-        case 0:
+        case 0 where toolRan:
             return GoToFileSnapshot.parse(listOutput: outcome.stdout)
+        case 0:
+            throw GoToFileSnapshotError.failed(SSHFileSearchMessages.didNotRun)
         case SSHFileSearchCommand.missingRootStatus:
             throw GoToFileSnapshotError.folderNotFound
+        case SSHRemoteShellScript.decodeFailedStatus:
+            throw GoToFileSnapshotError.failed(SSHFileSearchMessages.decodeFailed)
         default:
             // find exits 1 after unreadable directories but still lists the rest.
             let snapshot = GoToFileSnapshot.parse(listOutput: outcome.stdout)
-            if outcome.status == 1, !snapshot.paths.isEmpty { return snapshot }
-            let toolRan = outcome.stdout.starts(with: Data(SSHFileSearchCommand.gitListMarker.utf8))
-                || outcome.stdout.starts(with: Data(SSHFileSearchCommand.findListMarker.utf8))
+            if outcome.status == 1, toolRan, !snapshot.paths.isEmpty { return snapshot }
             throw GoToFileSnapshotError.failed(
                 SSHRemoteStderr.diagnosis(outcome.stderr, toolRan: toolRan)
                     ?? SSHFileSearchMessages.exited(status: outcome.status)
@@ -147,7 +159,7 @@ enum GoToFileSnapshotLoader {
             self.maxOutputBytes = maxOutputBytes
             process.executableURL = URL(fileURLWithPath: invocation.executable)
             process.arguments = invocation.arguments
-            process.standardInput = FileHandle.nullDevice
+            process.standardInput = invocation.keepsStdinOpen ? Pipe() : FileHandle.nullDevice
             process.standardOutput = outPipe
             process.standardError = errPipe
         }

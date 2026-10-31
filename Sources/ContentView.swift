@@ -10309,6 +10309,8 @@ struct ContentView: View {
         commandPaletteMode = .goToFile
         commandPaletteQuery = ""
         commandPaletteSelectedResultIndex = 0
+        // Enter pressed while a ranking is still running opens its top result when it lands.
+        goToFileModel.onDeferredOpen = { relativePath in openGoToFile(relativePath: relativePath) }
         goToFileModel.begin(source: resolved.source, workspaceId: target.workspace.id, workspaceRoot: resolved.root)
         goToFileModel.update(query: "")
         resetCommandPaletteSearchFocus()
@@ -10320,8 +10322,9 @@ struct ContentView: View {
     }
 
     private func runSelectedGoToFileResult() {
-        guard let relativePath = goToFileModel.selectedRelativePath else {
-            NSSound.beep()
+        guard let relativePath = goToFileModel.openSelectionOrQueue() else {
+            // Queued until the ranking lands, unless there is nothing to rank.
+            if !goToFileModel.opensWhenRanked { NSSound.beep() }
             return
         }
         openGoToFile(relativePath: relativePath)

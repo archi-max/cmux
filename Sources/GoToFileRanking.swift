@@ -16,29 +16,40 @@ struct GoToFileSnapshot: Equatable, Sendable {
 
     static let empty = GoToFileSnapshot(paths: [], isTruncated: false)
 
-    /// Parses ``SSHFileSearchCommand/fileList(rootPath:maxDepth:remoteTimeoutSeconds:)``
-    /// output: an optional marker line, then NUL-separated paths.
-    /// `find` prints `./a/b`; the `./` is dropped so both tools agree.
+    /// Parses ``SSHFileSearchCommand/fileList(rootPath:maxDepth:remoteTimeoutSeconds:watchdog:)``
+    /// output: the marker line, then NUL-separated paths. Anything a login
+    /// shell printed before the marker is dropped; without a marker the whole
+    /// output is read as paths. `find` prints `./a/b`; the `./` is dropped so
+    /// both tools agree. Repeated paths (unmerged entries appear once per
+    /// stage in `git ls-files -c`) are kept once.
     static func parse(listOutput data: Data, maxPaths: Int = maxPaths) -> GoToFileSnapshot {
-        var body = data[data.startIndex...]
-        if let newline = body.firstIndex(of: 10) {
-            let first = String(decoding: body[body.startIndex..<newline], as: UTF8.self)
-            if first == SSHFileSearchCommand.gitListMarker || first == SSHFileSearchCommand.findListMarker {
-                body = body[body.index(after: newline)...]
+        guard let bodyStart = markerEnd(in: data) else { return parse(nulSeparated: data, maxPaths: maxPaths) }
+        return parse(nulSeparated: data[bodyStart...], maxPaths: maxPaths)
+    }
+
+    /// The index just past the first marker line, or nil when there is none.
+    static func markerEnd(in data: Data) -> Data.Index? {
+        var best: Data.Index?
+        for marker in [SSHFileSearchCommand.gitListMarker, SSHFileSearchCommand.findListMarker] {
+            let line = Data((marker + "\n").utf8)
+            if data.starts(with: line) { return data.startIndex + line.count }
+            if let range = data.range(of: Data("\n".utf8) + line), best.map({ range.upperBound < $0 }) ?? true {
+                best = range.upperBound
             }
         }
-        return parse(nulSeparated: body, maxPaths: maxPaths)
+        return best
     }
 
     /// Parses NUL-separated relative paths, keeping at most `maxPaths`.
     static func parse<Bytes: Collection>(nulSeparated bytes: Bytes, maxPaths: Int = maxPaths) -> GoToFileSnapshot
     where Bytes.Element == UInt8, Bytes.SubSequence: Collection {
         var paths: [String] = []
+        var seen = Set<String>()
         let limit = max(0, maxPaths)
         for piece in bytes.split(separator: 0, omittingEmptySubsequences: true) {
             var path = String(decoding: piece, as: UTF8.self)
             if path.hasPrefix("./") { path.removeFirst(2) }
-            guard !path.isEmpty, path != "." else { continue }
+            guard !path.isEmpty, path != ".", seen.insert(path).inserted else { continue }
             guard paths.count < limit else { return GoToFileSnapshot(paths: paths, isTruncated: true) }
             paths.append(path)
         }
@@ -53,6 +64,10 @@ struct GoToFileSnapshot: Equatable, Sendable {
 /// a space, or a lower-to-upper case change), in runs of consecutive
 /// characters, and inside the file name; gaps cost a little. Ties prefer the
 /// shorter path, then the alphabetical one.
+///
+/// Matching works on lowercased UTF-8 bytes prepared once per snapshot
+/// (``Index``), with a cheap subsequence check before the alignment, so a
+/// keystroke over 50,000 paths stays well under a frame budget.
 enum GoToFileRanker {
     private static let matchScore = 16
     private static let boundaryBonus = 24
@@ -62,6 +77,65 @@ enum GoToFileRanker {
     private static let fileNameBonus = 40
     private static let fileNamePrefixBonus = 30
     private static let exactFileNameBonus = 200
+    private static let unset = Int.min / 4
+
+    /// A snapshot prepared for ranking.
+    struct Index: Sendable {
+        fileprivate struct Candidate: Sendable {
+            let path: String
+            let lower: [UInt8]
+            /// Per byte: 0, or the word-start bonus.
+            let bonus: [UInt8]
+            let nameStart: Int
+        }
+
+        fileprivate let candidates: [Candidate]
+        /// Candidate indices in alphabetical order, for the empty query.
+        fileprivate let alphabetical: [Int]
+        fileprivate let maxLength: Int
+
+        var count: Int { candidates.count }
+
+        init(paths: [String]) {
+            var candidates: [Candidate] = []
+            candidates.reserveCapacity(paths.count)
+            var maxLength = 0
+            for path in paths {
+                let original = Array(path.utf8)
+                let lower = Array(path.lowercased().utf8)
+                // lowercased() can change a non-ASCII byte length; case humps then come from `lower` alone.
+                let caseSource = original.count == lower.count ? original : lower
+                var bonus = [UInt8](repeating: 0, count: lower.count)
+                for index in lower.indices {
+                    if index == 0 {
+                        bonus[index] = UInt8(GoToFileRanker.boundaryBonus + GoToFileRanker.firstCharacterBonus)
+                        continue
+                    }
+                    let before = caseSource[index - 1]
+                    let isSeparator = before == UInt8(ascii: "/") || before == UInt8(ascii: "_")
+                        || before == UInt8(ascii: "-") || before == UInt8(ascii: ".") || before == UInt8(ascii: " ")
+                    let isHump = (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(before)
+                        && (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(caseSource[index])
+                    if isSeparator || isHump { bonus[index] = UInt8(GoToFileRanker.boundaryBonus) }
+                }
+                let nameStart = (lower.lastIndex(of: UInt8(ascii: "/")) ?? -1) + 1
+                maxLength = max(maxLength, lower.count)
+                candidates.append(Candidate(path: path, lower: lower, bonus: bonus, nameStart: nameStart))
+            }
+            self.candidates = candidates
+            self.maxLength = maxLength
+            alphabetical = candidates.indices.sorted {
+                candidates[$0].path.localizedStandardCompare(candidates[$1].path) == .orderedAscending
+            }
+        }
+    }
+
+    /// The outcome of one ranking: the best paths and every matching candidate.
+    struct Ranking: Sendable {
+        let paths: [String]
+        /// All matches, to narrow the next ranking when the query only grows.
+        let matches: [Int]
+    }
 
     /// The best `limit` paths for `query`, best first. An empty query lists paths alphabetically.
     static func rank(
@@ -70,133 +144,11 @@ enum GoToFileRanker {
         limit: Int,
         shouldCancel: () -> Bool = { false }
     ) -> [String] {
-        guard limit > 0 else { return [] }
-        let needle = normalizedNeedle(query)
-        if needle.isEmpty {
-            return Array(paths.sorted(by: alphabetical).prefix(limit))
-        }
-        var scored: [(path: String, score: Int)] = []
-        for (index, path) in paths.enumerated() {
-            if index.isMultiple(of: 256), shouldCancel() { return [] }
-            guard let score = score(needle: needle, path: path) else { continue }
-            scored.append((path, score))
-        }
-        scored.sort { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            if lhs.path.count != rhs.path.count { return lhs.path.count < rhs.path.count }
-            return alphabetical(lhs.path, rhs.path)
-        }
-        return scored.prefix(limit).map(\.path)
+        rank(index: Index(paths: paths), query: query, limit: limit, shouldCancel: shouldCancel).paths
     }
 
-    /// The score of `path` for `query`, or nil when it does not match.
-    static func score(query: String, path: String) -> Int? {
-        score(needle: normalizedNeedle(query), path: path)
-    }
-
-    /// Query characters, lowercased per character like the candidates, without spaces.
-    private static func normalizedNeedle(_ query: String) -> [Character] {
-        query.filter { !$0.isWhitespace }.map { $0.lowercased().first ?? $0 }
-    }
-
-    private static func score(needle: [Character], path: String) -> Int? {
-        guard !needle.isEmpty else { return 0 }
-        let haystack = Array(path)
-        let lowered = haystack.map { $0.lowercased().first ?? $0 }
-        guard isSubsequence(needle, of: lowered) else { return nil }
-        let fullScore = alignmentScore(needle: needle, haystack: haystack, lowered: lowered) ?? 0
-
-        let nameStart = (haystack.lastIndex(of: "/") ?? -1) + 1
-        guard nameStart > 0 else { return fullScore + nameScore(needle: needle, lowered: lowered) + fileNameBonus }
-        let name = Array(haystack[nameStart...])
-        let loweredName = Array(lowered[nameStart...])
-        guard isSubsequence(needle, of: loweredName),
-              let nameAlignment = alignmentScore(needle: needle, haystack: name, lowered: loweredName) else {
-            return fullScore
-        }
-        return max(fullScore, nameAlignment + nameScore(needle: needle, lowered: loweredName) + fileNameBonus)
-    }
-
-    private static func nameScore(needle: [Character], lowered name: [Character]) -> Int {
-        if name == needle { return exactFileNameBonus }
-        let stem = name.firstIndex(of: ".").map { Array(name[..<$0]) } ?? name
-        if stem == needle { return exactFileNameBonus }
-        if name.starts(with: needle) { return fileNamePrefixBonus }
-        return 0
-    }
-
-    private static func isSubsequence(_ needle: [Character], of haystack: [Character]) -> Bool {
-        var index = 0
-        for character in haystack where character == needle[index] {
-            index += 1
-            if index == needle.count { return true }
-        }
-        return false
-    }
-
-    /// Best alignment of `needle` in `haystack` (Smith-Waterman style, linear gaps).
-    private static func alignmentScore(needle: [Character], haystack: [Character], lowered: [Character]) -> Int? {
-        let n = haystack.count
-        let m = needle.count
-        guard m <= n else { return nil }
-        let bonuses = (0..<n).map { bonus(at: $0, in: haystack) }
-        let unset = Int.min / 4
-        // previous[j]: best score with needle[i - 1] matched at haystack[j].
-        var previous = [Int](repeating: unset, count: n)
-        var current = [Int](repeating: unset, count: n)
-        for i in 0..<m {
-            var bestBefore = unset // max over k < j of previous[k] + gapPenalty * k
-            for j in 0..<n {
-                if j > 0, i > 0, previous[j - 1] != unset {
-                    bestBefore = max(bestBefore, previous[j - 1] + gapPenalty * (j - 1))
-                }
-                guard lowered[j] == needle[i] else {
-                    current[j] = unset
-                    continue
-                }
-                let base = matchScore + bonuses[j]
-                if i == 0 {
-                    current[j] = base - gapPenalty * min(j, 8)
-                    continue
-                }
-                var best = unset
-                if bestBefore != unset {
-                    best = bestBefore - gapPenalty * (j - 1) + base
-                }
-                if j > 0, previous[j - 1] != unset {
-                    best = max(best, previous[j - 1] + base + consecutiveBonus)
-                }
-                current[j] = best
-            }
-            swap(&previous, &current)
-        }
-        let best = previous.max() ?? unset
-        return best == unset ? nil : best
-    }
-
-    private static func bonus(at index: Int, in haystack: [Character]) -> Int {
-        guard index > 0 else { return boundaryBonus + firstCharacterBonus }
-        let before = haystack[index - 1]
-        if "/_-. ".contains(before) { return boundaryBonus }
-        if before.isLowercase && haystack[index].isUppercase { return boundaryBonus }
-        return 0
-    }
-
-    private static func alphabetical(_ lhs: String, _ rhs: String) -> Bool {
-        lhs.localizedStandardCompare(rhs) == .orderedAscending
-    }
-
-    // Stubs for the failing tests; the prepared index follows in the next commit.
-    struct Index: Sendable {
-        let paths: [String]
-        init(paths: [String]) { self.paths = paths }
-    }
-
-    struct Ranking: Sendable {
-        let paths: [String]
-        let matches: [Int]
-    }
-
+    /// Ranks a prepared snapshot. Pass `within` (an earlier ranking's
+    /// `matches`) when `query` extends that ranking's query.
     static func rank(
         index: Index,
         query: String,
@@ -204,6 +156,149 @@ enum GoToFileRanker {
         within: [Int]? = nil,
         shouldCancel: () -> Bool = { false }
     ) -> Ranking {
-        Ranking(paths: rank(paths: index.paths, query: query, limit: limit, shouldCancel: shouldCancel), matches: [])
+        guard limit > 0 else { return Ranking(paths: [], matches: []) }
+        let needle = normalizedNeedle(query)
+        if needle.isEmpty {
+            let ordered: [Int]
+            if let within {
+                let kept = Set(within)
+                ordered = index.alphabetical.filter { kept.contains($0) }
+            } else {
+                ordered = index.alphabetical
+            }
+            return Ranking(paths: ordered.prefix(limit).map { index.candidates[$0].path }, matches: ordered.sorted())
+        }
+        var scratch = Scratch(capacity: index.maxLength)
+        var scored: [(candidate: Int, score: Int)] = []
+        var count = 0
+        func consider(_ position: Int) -> Bool {
+            count += 1
+            if count.isMultiple(of: 512), shouldCancel() { return false }
+            if let score = score(needle: needle, candidate: index.candidates[position], scratch: &scratch) {
+                scored.append((position, score))
+            }
+            return true
+        }
+        if let within {
+            for position in within where !consider(position) { return Ranking(paths: [], matches: []) }
+        } else {
+            for position in index.candidates.indices where !consider(position) { return Ranking(paths: [], matches: []) }
+        }
+        let candidates = index.candidates
+        scored.sort { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            let left = candidates[lhs.candidate], right = candidates[rhs.candidate]
+            if left.lower.count != right.lower.count { return left.lower.count < right.lower.count }
+            return left.path < right.path
+        }
+        return Ranking(
+            paths: scored.prefix(limit).map { candidates[$0.candidate].path },
+            matches: scored.map(\.candidate).sorted()
+        )
+    }
+
+    /// The score of `path` for `query`, or nil when it does not match.
+    static func score(query: String, path: String) -> Int? {
+        let index = Index(paths: [path])
+        var scratch = Scratch(capacity: index.maxLength)
+        let needle = normalizedNeedle(query)
+        guard !needle.isEmpty else { return 0 }
+        return score(needle: needle, candidate: index.candidates[0], scratch: &scratch)
+    }
+
+    /// Query bytes, lowercased like the candidates, without whitespace.
+    private static func normalizedNeedle(_ query: String) -> [UInt8] {
+        Array(String(query.filter { !$0.isWhitespace }).lowercased().utf8)
+    }
+
+    /// Reused DP rows, sized to the longest path.
+    private struct Scratch {
+        var previous: [Int]
+        var current: [Int]
+        init(capacity: Int) {
+            previous = [Int](repeating: GoToFileRanker.unset, count: max(1, capacity))
+            current = previous
+        }
+    }
+
+    private static func score(needle: [UInt8], candidate: Index.Candidate, scratch: inout Scratch) -> Int? {
+        let lower = candidate.lower
+        guard isSubsequence(needle, of: lower, from: 0) else { return nil }
+        let fullScore = alignmentScore(needle: needle, candidate: candidate, from: 0, scratch: &scratch) ?? 0
+        let nameStart = candidate.nameStart
+        guard isSubsequence(needle, of: lower, from: nameStart),
+              let nameAlignment = alignmentScore(needle: needle, candidate: candidate, from: nameStart, scratch: &scratch)
+        else { return fullScore }
+        return max(fullScore, nameAlignment + nameScore(needle: needle, lower: lower, from: nameStart) + fileNameBonus)
+    }
+
+    private static func nameScore(needle: [UInt8], lower: [UInt8], from start: Int) -> Int {
+        let name = lower[start...]
+        if name.elementsEqual(needle) { return exactFileNameBonus }
+        let stem = name.firstIndex(of: UInt8(ascii: ".")).map { name[..<$0] } ?? name
+        if stem.elementsEqual(needle) { return exactFileNameBonus }
+        if name.starts(with: needle) { return fileNamePrefixBonus }
+        return 0
+    }
+
+    private static func isSubsequence(_ needle: [UInt8], of haystack: [UInt8], from start: Int) -> Bool {
+        var index = 0
+        var position = start
+        while position < haystack.count {
+            if haystack[position] == needle[index] {
+                index += 1
+                if index == needle.count { return true }
+            }
+            position += 1
+        }
+        return false
+    }
+
+    /// Best alignment of `needle` in the candidate from byte `start` on
+    /// (Smith-Waterman style, linear gaps).
+    private static func alignmentScore(
+        needle: [UInt8],
+        candidate: Index.Candidate,
+        from start: Int,
+        scratch: inout Scratch
+    ) -> Int? {
+        let lower = candidate.lower
+        let bonuses = candidate.bonus
+        let n = lower.count - start
+        let m = needle.count
+        guard m <= n else { return nil }
+        for j in 0..<n { scratch.previous[j] = unset }
+        for i in 0..<m {
+            var bestBefore = unset // max over k < j of previous[k] + gapPenalty * k
+            let wanted = needle[i]
+            for j in 0..<n {
+                if j > 0, i > 0, scratch.previous[j - 1] != unset {
+                    bestBefore = max(bestBefore, scratch.previous[j - 1] + gapPenalty * (j - 1))
+                }
+                guard lower[start + j] == wanted else {
+                    scratch.current[j] = unset
+                    continue
+                }
+                // A word start counts at the name's first byte too.
+                let boundary = j == 0 && start > 0 ? boundaryBonus : Int(bonuses[start + j])
+                let base = matchScore + boundary
+                if i == 0 {
+                    scratch.current[j] = base - gapPenalty * min(j, 8)
+                    continue
+                }
+                var best = unset
+                if bestBefore != unset {
+                    best = bestBefore - gapPenalty * (j - 1) + base
+                }
+                if j > 0, scratch.previous[j - 1] != unset {
+                    best = max(best, scratch.previous[j - 1] + base + consecutiveBonus)
+                }
+                scratch.current[j] = best
+            }
+            swap(&scratch.previous, &scratch.current)
+        }
+        var best = unset
+        for j in 0..<n { best = max(best, scratch.previous[j]) }
+        return best == unset ? nil : best
     }
 }

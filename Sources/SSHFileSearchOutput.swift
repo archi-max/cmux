@@ -1,6 +1,6 @@
 import Foundation
 
-/// Parses the output of ``SSHFileSearchCommand/contentSearch(query:rootPath:remoteTimeoutSeconds:)``.
+/// Parses the output of ``SSHFileSearchCommand/contentSearch(query:rootPath:remoteTimeoutSeconds:watchdog:)``.
 ///
 /// The first line is the tool marker; ripgrep lines are `--json` events and grep
 /// lines are `<path>NUL<line>:<text>`. Lines without a NUL in grep mode, such as
@@ -28,10 +28,11 @@ struct SSHFileSearchLineParser: Sendable {
     mutating func parse(line: Data) -> FileSearchResult? {
         switch format {
         case .unknown:
+            // A suffix match tolerates a banner printed without a newline.
             let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if text == SSHFileSearchCommand.ripgrepMarker {
+            if text.hasSuffix(SSHFileSearchCommand.ripgrepMarker) {
                 format = .ripgrep
-            } else if text == SSHFileSearchCommand.grepMarker {
+            } else if text.hasSuffix(SSHFileSearchCommand.grepMarker) {
                 format = .grep
             }
             return nil
@@ -108,7 +109,13 @@ struct SSHFileSearchAccumulator: Sendable {
     private var parser: SSHFileSearchLineParser
     private let maxResults: Int
     private let snapshotInterval: TimeInterval
+    /// Longer lines (a minified file through grep) are skipped, not buffered.
+    static let maxLineBytes = 1 << 20
+
     private var buffer = Data()
+    /// Bytes of `buffer` already known to hold no newline.
+    private var scannedBytes = 0
+    private var skippingLongLine = false
     private var stderrBuffer = Data()
     private(set) var results: [FileSearchResult] = []
     private var lastEmission = Date.distantPast
@@ -128,13 +135,27 @@ struct SSHFileSearchAccumulator: Sendable {
         guard terminalUpdate == nil else { return nil }
         buffer.append(data)
         var changed = false
-        while let newline = buffer.firstIndex(of: 10) {
-            let line = Data(buffer[buffer.startIndex..<newline])
-            buffer.removeSubrange(buffer.startIndex...newline)
-            guard let result = parser.parse(line: line) else { continue }
+        var lineStart = buffer.startIndex
+        var searchFrom = buffer.startIndex + scannedBytes
+        while let newline = buffer[searchFrom...].firstIndex(of: 10) {
+            defer {
+                lineStart = buffer.index(after: newline)
+                searchFrom = lineStart
+            }
+            if skippingLongLine {
+                skippingLongLine = false
+                continue
+            }
+            guard let result = parser.parse(line: Data(buffer[lineStart..<newline])) else { continue }
             if let update = append(result) { return update }
             changed = true
         }
+        buffer.removeSubrange(buffer.startIndex..<lineStart)
+        if buffer.count > Self.maxLineBytes {
+            buffer.removeAll(keepingCapacity: true)
+            skippingLongLine = true
+        }
+        scannedBytes = buffer.count
         guard changed, now.timeIntervalSince(lastEmission) >= snapshotInterval else { return nil }
         lastEmission = now
         return FileSearchPipelineUpdate(results: results, status: .searching, isSearching: true, shouldStopProcess: false)
@@ -170,7 +191,7 @@ struct SSHFileSearchAccumulator: Sendable {
     /// The final state after ssh exits with `status`.
     mutating func finish(status: Int32) -> FileSearchPipelineUpdate {
         if let terminalUpdate { return terminalUpdate }
-        if !buffer.isEmpty {
+        if !buffer.isEmpty, !skippingLongLine {
             let line = buffer
             buffer.removeAll()
             if let result = parser.parse(line: line), let update = append(result) { return update }
@@ -194,10 +215,16 @@ struct SSHFileSearchAccumulator: Sendable {
             String(decoding: stderrBuffer, as: UTF8.self),
             toolRan: parser.format != .unknown
         )
+        let toolRan = parser.format != .unknown
         switch status {
-        case 0, 1:
+        case 0 where toolRan, 1 where toolRan:
             return results.isEmpty ? .noMatches : .matches
-        case 2 where !results.isEmpty || diagnosis == nil:
+        case 0, 1:
+            // A shell that exits cleanly without the marker never ran the search.
+            return .failed(SSHFileSearchMessages.didNotRun)
+        case SSHRemoteShellScript.decodeFailedStatus:
+            return .failed(SSHFileSearchMessages.decodeFailed)
+        case 2 where toolRan && (!results.isEmpty || diagnosis == nil):
             // Unreadable files make rg and grep exit 2 even when others matched.
             return results.isEmpty ? .noMatches : .matches
         case SSHFileSearchCommand.missingRootStatus:

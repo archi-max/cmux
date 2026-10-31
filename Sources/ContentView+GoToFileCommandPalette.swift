@@ -89,9 +89,10 @@ enum GoToFilePaletteRouting {
             } else {
                 guard let root = model.workspaceRoot else { return false }
                 store = model.remotePreviewStore
-                let bound = store.provider as? SSHFileExplorerProvider
-                if store.workspaceRootIdentity != workspace.id || bound?.connection != connection {
+                // Rebind when the workspace, connection, root folder or availability changed.
+                if store.workspaceRootIdentity != workspace.id || model.remotePreviewRoot != root {
                     store.applyWorkspaceRoot(root)
+                    model.remotePreviewRoot = root
                 }
             }
             FileExplorerPreviewCoordinator(store: store).open(

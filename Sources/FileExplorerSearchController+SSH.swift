@@ -67,8 +67,9 @@ extension FileSearchController {
             connection: provider.connection,
             command: command.command
         )
-        // ssh must never read the app's stdin.
-        process.standardInput = FileHandle.nullDevice
+        // An open pipe nobody writes to: ssh never reads the app's stdin, and
+        // the remote watchdog fires only when this client goes away.
+        process.standardInput = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
@@ -90,6 +91,7 @@ extension FileSearchController {
         do {
             try process.run()
         } catch {
+            process.standardInput = nil
             process.standardOutput = nil
             process.standardError = nil
             emit(status: .failed(error.localizedDescription), isSearching: false)

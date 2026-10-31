@@ -24,12 +24,17 @@ final class GoToFilePaletteModel: ObservableObject {
     private(set) var workspaceRoot: FileExplorerWorkspaceRoot?
     /// Serves SSH previews when the Files sidebar shows another workspace.
     private(set) lazy var remotePreviewStore = FileExplorerStore()
+    /// The root last applied to ``remotePreviewStore``; kept across sessions with the store.
+    var remotePreviewRoot: FileExplorerWorkspaceRoot?
     private var snapshot: GoToFileSnapshot?
-    /// Stub for the failing tests: nothing is queued yet.
+    /// The snapshot prepared for ranking, built once per session off the main actor.
+    private var index: GoToFileRanker.Index?
+    /// The last finished ranking and its query, to narrow a query that only grows.
+    private var lastRanking: (query: String, ranking: GoToFileRanker.Ranking)?
+    /// Enter was pressed before the current query's ranking landed.
     private(set) var opensWhenRanked = false
+    /// Called with the top result when a queued Enter's ranking lands.
     var onDeferredOpen: ((String) -> Void)?
-
-    func openSelectionOrQueue() -> String? { selectedRelativePath }
     private var query = ""
     private var resultsQuery: String?
     private var generation: UInt64 = 0
@@ -87,6 +92,9 @@ final class GoToFilePaletteModel: ObservableObject {
         workspaceId = nil
         workspaceRoot = nil
         snapshot = nil
+        index = nil
+        lastRanking = nil
+        opensWhenRanked = false
         query = ""
         resultsQuery = nil
         results = []
@@ -113,6 +121,15 @@ final class GoToFilePaletteModel: ObservableObject {
         return results[selectedIndex]
     }
 
+    /// The selected path when results are current; otherwise queues Enter so
+    /// ``onDeferredOpen`` gets the top result once the ranking lands.
+    func openSelectionOrQueue() -> String? {
+        if let selectedRelativePath { return selectedRelativePath }
+        // Only while this query's ranking is still coming; an empty result stays empty.
+        if isActive, errorMessage == nil, resultsQuery != query { opensWhenRanked = true }
+        return nil
+    }
+
     /// The absolute path of a result on the session's host.
     func absolutePath(forRelativePath relativePath: String) -> String? {
         guard let root = source?.rootPath, !root.isEmpty else { return nil }
@@ -129,6 +146,7 @@ final class GoToFilePaletteModel: ObservableObject {
             rank()
         case .failure(let error):
             isLoading = false
+            opensWhenRanked = false
             errorMessage = error.localizedDescription
         }
     }
@@ -140,27 +158,46 @@ final class GoToFilePaletteModel: ObservableObject {
         let query = query
         rankTask?.cancel()
         isLoading = true
+        let preparedIndex = index
+        // Typing more letters can only drop matches, so rank the last matches again.
+        let within: [Int]? = lastRanking.flatMap { last in
+            Self.normalized(query).hasPrefix(Self.normalized(last.query)) ? last.ranking.matches : nil
+        }
         let paths = snapshot.paths
-        let worker = Task.detached(priority: .userInitiated) {
-            GoToFileRanker.rank(
-                paths: paths,
+        let worker = Task.detached(priority: .userInitiated) { () -> (GoToFileRanker.Index, GoToFileRanker.Ranking) in
+            let index = preparedIndex ?? GoToFileRanker.Index(paths: paths)
+            let ranking = GoToFileRanker.rank(
+                index: index,
                 query: query,
                 limit: GoToFilePaletteModel.maxResults,
+                within: within,
                 shouldCancel: { Task.isCancelled }
             )
+            return (index, ranking)
         }
         rankTask = Task { [weak self] in
-            let ranked = await withTaskCancellationHandler {
+            let (index, ranking) = await withTaskCancellationHandler {
                 await worker.value
             } onCancel: {
                 worker.cancel()
             }
             guard !Task.isCancelled, let self, rankGeneration == self.generation else { return }
-            self.results = ranked
+            self.index = index
+            self.lastRanking = (query, ranking)
+            self.results = ranking.paths
             self.resultsQuery = query
             self.selectedIndex = 0
             self.isLoading = false
             self.rankTask = nil
+            if self.opensWhenRanked {
+                self.opensWhenRanked = false
+                if let top = ranking.paths.first { self.onDeferredOpen?(top) }
+            }
         }
+    }
+
+    /// The query as the ranker sees it (case and spaces ignored).
+    private nonisolated static func normalized(_ query: String) -> String {
+        String(query.filter { !$0.isWhitespace }).lowercased()
     }
 }
