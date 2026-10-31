@@ -309,7 +309,12 @@ extension ShortcutAction {
              .diffViewerPreviousHunk,
              .diffViewerToggleViewed,
              .fileExplorerOpenSelection,
-             .fileExplorerOpenSelectionFinderAlias:
+             .fileExplorerOpenSelectionFinderAlias,
+             // F10, Shift-F10 and F5: the app's keyDown router only runs them with a waveform
+             // viewer or a SystemVerilog editor next to one focused, else the key goes on.
+             .stepWaveformCycleForward,
+             .stepWaveformCycleBack,
+             .toggleWaveformPlayback:
             return true
         default:
             return false
