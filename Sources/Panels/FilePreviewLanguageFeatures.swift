@@ -41,6 +41,12 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var trackingArea: NSTrackingArea?
     private var hoverPopover: NSPopover?
     private var hoverCharacterRange: NSRange?
+    /// The waveform link's message, kept apart from hover so moving the mouse does not close it.
+    private var linkMessagePopover: NSPopover?
+    private var linkMessageShownAt = Date.distantPast
+    private var linkMessageIsProgress = false
+    /// A link message stays up at least this long against clicks and typing; Esc closes it at once.
+    private static let linkMessageMinimumDuration: TimeInterval = 8
     private var contextMenuCharacterIndex: Int?
     private var referenceLocations: [LSPLocation] = []
     private var completionWords: [String]?
@@ -137,6 +143,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         linkTask?.cancel()
         completionTask?.cancel()
         clearInlineValues()
+        closeLinkMessage()
         inlineValueOverlay?.removeFromSuperview()
         inlineValueOverlay = nil
         for observer in [inlineScrollObserver, inlineFrameObserver, inlineEditObserver].compactMap({ $0 }) {
@@ -467,6 +474,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Cmd-click on an identifier goes to its definition.
     func handleMouseDown(_ event: NSEvent) -> Bool {
         lastActivity = Date()
+        linkMessageMayClose()
         guard !isDetached, event.clickCount == 1,
               event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
               let textView, let storage = textView.textStorage,
@@ -484,6 +492,11 @@ final class FilePreviewLanguageFeatures: NSObject {
     func handleKeyDown(_ event: NSEvent) -> Bool {
         lastActivity = Date()
         guard !isDetached, let textView else { return false }
+        if event.keyCode == 53, linkMessagePopover != nil { // Esc
+            closeLinkMessage()
+            return true
+        }
+        linkMessageMayClose()
         let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
            scalar.value == UInt32(NSF12FunctionKey) {
@@ -629,6 +642,12 @@ final class FilePreviewLanguageFeatures: NSObject {
             return
         }
         let position = FilePreviewLSPLineIndex(textView.string).position(at: identifier.location)
+        var scan = syncedInlineScan(of: textView)
+        let symbol = WaveformSourceLink.LinkSymbol(
+            name: (storage.string as NSString).substring(with: identifier),
+            isInModule: scan.lines(in: NSRange(location: identifier.location, length: 0)).first?.module != nil
+        )
+        inlineScan = scan
         linkTask?.cancel()
         linkTask = Task { [weak self] in
             // The server must see the current text.
@@ -638,13 +657,14 @@ final class FilePreviewLanguageFeatures: NSObject {
                 await self?.chooseInstance(paths, anchoredAt: identifier.location) ?? []
             }
             let progress: @MainActor @Sendable (String) -> Void = { [weak self] note in
-                self?.showLinkMessage(note, at: identifier.location)
+                self?.showLinkMessage(note, at: identifier.location, isProgress: true)
             }
             let message = wholeScope
                 ? await WaveformSourceLink.addScope(
                     session: session,
                     documentURI: documentURI,
                     position: position,
+                    symbol: symbol,
                     editor: self,
                     rootKey: self.linkRootKey,
                     chooseInstance: chooseInstance,
@@ -654,12 +674,17 @@ final class FilePreviewLanguageFeatures: NSObject {
                     session: session,
                     documentURI: documentURI,
                     position: position,
+                    symbol: symbol,
                     editor: self,
                     rootKey: self.linkRootKey,
                     chooseInstance: chooseInstance,
                     progress: progress
                 )
-            guard !Task.isCancelled, let message else { return }
+            guard !Task.isCancelled else { return }
+            guard let message else {
+                self.closeLinkProgress()
+                return
+            }
             self.showLinkMessage(message, at: identifier.location)
         }
     }
@@ -1053,18 +1078,41 @@ final class FilePreviewLanguageFeatures: NSObject {
     }
 
     /// A short note anchored at `index` (or the caret), shown like a hover.
-    func showLinkMessage(_ message: String, at index: Int? = nil) {
+    /// Shows a waveform link message by the caret (or `index`), selectable so it can be copied.
+    /// `isProgress`: a note the link replaces or closes when it finishes.
+    func showLinkMessage(_ message: String, at index: Int? = nil, isProgress: Bool = false) {
         guard let textView else { return }
         let location = index ?? textView.selectedRange().location
         guard let rect = viewRect(forCharacterRange: NSRange(location: location, length: 0)) else { return }
         let popover = NSPopover()
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.animates = false
-        popover.contentViewController = FilePreviewLanguageHoverViewController(sections: [message])
-        hoverPopover?.close()
-        hoverPopover = popover
-        hoverCharacterRange = nil
+        popover.contentViewController = FilePreviewLanguageHoverViewController(sections: [message], isSelectable: true)
+        hideHover()
+        linkMessagePopover?.close()
+        linkMessagePopover = popover
+        linkMessageShownAt = Date()
+        linkMessageIsProgress = isProgress
         popover.show(relativeTo: rect, of: textView, preferredEdge: .minY)
+    }
+
+    /// Closes the link's progress note, if that is what is shown.
+    func closeLinkProgress() {
+        guard linkMessageIsProgress else { return }
+        closeLinkMessage()
+    }
+
+    private func closeLinkMessage() {
+        linkMessagePopover?.close()
+        linkMessagePopover = nil
+        linkMessageIsProgress = false
+    }
+
+    /// A click or key in the editor closes a link message once it has been up long enough.
+    private func linkMessageMayClose() {
+        guard linkMessagePopover != nil, !linkMessageIsProgress,
+              Date().timeIntervalSince(linkMessageShownAt) >= Self.linkMessageMinimumDuration else { return }
+        closeLinkMessage()
     }
 
     /// Asks which instance's signal to add when the module is instantiated more than once.

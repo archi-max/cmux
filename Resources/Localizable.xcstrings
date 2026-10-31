@@ -685163,6 +685163,124 @@
           }
         }
       }
+    },
+    "waveformLink.notInDesign.fragment": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has no module of its own; it is `include’d into another file. slang-server found no %@ in the design it is included into."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このファイルには独自のモジュールがなく、別のファイルに `include されています。slang-server は、取り込み先の設計内に %@ を見つけられませんでした。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Datei hat kein eigenes Modul; sie wird per `include in eine andere Datei eingebunden. slang-server hat %@ im Design, in das sie eingebunden ist, nicht gefunden."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ce fichier n’a pas de module propre ; il est inclus par `include dans un autre fichier. slang-server n’a trouvé aucun %@ dans le design qui l’inclut."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي هذا الملف على وحدة خاصة به؛ إذ يُضمَّن عبر ‎`include‎ في ملف آخر. لم يعثر slang-server على %@ في التصميم الذي يُضمَّن فيه."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este archivo no tiene un módulo propio; se incluye con `include en otro archivo. slang-server no encontró %@ en el diseño en el que se incluye."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此檔案沒有自己的模組，而是以 `include 引入另一個檔案。slang-server 在引入它的設計中找不到 %@。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件没有自己的模块，而是通过 `include 引入另一个文件。slang-server 在引入它的设计中找不到 %@。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 파일에는 자체 모듈이 없고 다른 파일에 `include로 포함됩니다. slang-server가 이 파일을 포함하는 설계에서 %@을(를) 찾지 못했습니다."
+          }
+        }
+      }
+    },
+    "waveformLink.notInDesign.elaborated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server found no %@ in the elaborated design. Its module may not be instantiated under the current top level."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server はエラボレートされた設計内に %@ を見つけられませんでした。そのモジュールが現在のトップレベルの下でインスタンス化されていない可能性があります。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server hat %@ im elaborierten Design nicht gefunden. Möglicherweise wird sein Modul unter dem aktuellen Top-Level nicht instanziiert."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server n’a trouvé aucun %@ dans le design élaboré. Son module n’est peut-être pas instancié sous le niveau supérieur actuel."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يعثر slang-server على %@ في التصميم المُفصَّل. ربما لا تُنشأ وحدته كمثيل تحت المستوى الأعلى الحالي."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server no encontró %@ en el diseño elaborado. Puede que su módulo no se instancie bajo el nivel superior actual."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 在展開後的設計中找不到 %@。它的模組可能未在目前的頂層下實例化。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 在展开后的设计中找不到 %@。它的模块可能未在当前顶层下实例化。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server가 엘라보레이션된 설계에서 %@을(를) 찾지 못했습니다. 해당 모듈이 현재 최상위 아래에서 인스턴스화되지 않았을 수 있습니다."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
