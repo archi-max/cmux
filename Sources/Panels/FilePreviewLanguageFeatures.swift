@@ -1201,7 +1201,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         popover.behavior = .applicationDefined
         popover.animates = false
         popover.delegate = self
-        popover.contentViewController = FilePreviewLanguageHoverViewController(sections: [message], isSelectable: true)
+        popover.contentViewController = FilePreviewLanguageHoverViewController(sections: [message], allowsTextSelection: true)
         hideHover()
         closeLinkMessage()
         linkMessagePopover = popover
