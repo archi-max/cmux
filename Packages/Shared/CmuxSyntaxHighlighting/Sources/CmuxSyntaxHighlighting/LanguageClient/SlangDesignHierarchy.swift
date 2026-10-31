@@ -114,7 +114,7 @@ extension LanguageServerSession {
             // A fragment that declares nothing (only assigns or always blocks) has nothing in the
             // declaring scope to find it by: placed when the declaring file `include`s it, by
             // path or through a macro that expands to it.
-            switch await includeMatch(of: uri, inDeclaringFile: declaration.uri) {
+            switch try await includeMatch(of: uri, inDeclaringFile: declaration.uri) {
             case .exact?: return Array(paths.prefix(Self.fragmentSearchResultLimit))
             case .suffix?: if throughIncludeDirectory == nil { throughIncludeDirectory = Array(paths.prefix(Self.fragmentSearchResultLimit)) }
             case nil: break
@@ -468,7 +468,7 @@ extension LanguageServerSession {
     /// macro (`` `include `TB_FILE ``, often defined in the build file) counts through its
     /// expansion, which slang-server's hover shows. Read from the open document, else from disk
     /// for a local server; nil when the text is not at hand.
-    func includeMatch(of fragment: URL, inDeclaringFile declaringURI: URL) async -> IncludeMatch? {
+    func includeMatch(of fragment: URL, inDeclaringFile declaringURI: URL) async throws -> IncludeMatch? {
         var text = documentText(declaringURI)
         if text == nil, case .local = launch {
             text = try? String(contentsOf: declaringURI, encoding: .utf8)
@@ -482,12 +482,14 @@ extension LanguageServerSession {
         for directive in Self.includeDirectiveLocations(in: text) {
             var target = directive.target
             if target.hasPrefix("`") {
-                guard macros < Self.macroIncludeLimit, !Task.isCancelled else { continue }
+                guard macros < Self.macroIncludeLimit else { continue }
                 macros += 1
-                // A macro slang can't expand here is no evidence either way.
+                // A cancelled link ends here; a macro slang can't expand is no evidence either way.
+                try Task.checkCancellation()
                 guard let hover = try? await hover(uri: declaringURI, position: directive.position),
                       let expansion = Self.macroIncludeTarget(fromHover: hover) else { continue }
-                target = expansion
+                // The server's form of a local path (symlinks resolved), like `file`.
+                target = expansion.hasPrefix("/") && !launch.isRemote ? Self.realPath(expansion) : expansion
             }
             switch Self.includeMatch(target: target, declaringFile: declaringFile, file: file, fileExists: fileExists) {
             case .exact?: return .exact
