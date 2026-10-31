@@ -107,4 +107,22 @@ struct RemotePreviewCacheBudgetTests {
         RemotePreviewCacheBudget.discard(RemotePreviewDownload(url: url, isNew: true), cacheRoot: root, keeping: [])
         #expect(!Self.exists(root, "ns/a"))
     }
+
+    @Test
+    func testADiscardLeavesAFileANewerDownloadPutInItsPlace() throws {
+        // Two opens of one host file share a cache path: the older one's
+        // discard must not delete what the newer one renamed there.
+        let root = try Self.makeCache([("ns/a/wave.vcd", 10, 0)])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("ns/a/wave.vcd")
+        let older = RemotePreviewDownload(url: url, isNew: true, fileNumber: RemotePreviewDownload.fileNumber(of: url))
+        let staging = root.appendingPathComponent("ns/a/newer.download")
+        try Data(count: 20).write(to: staging)
+        #expect(rename(staging.path, url.path) == 0)
+        RemotePreviewCacheBudget.discard(older, cacheRoot: root, keeping: [])
+        #expect(Self.exists(root, "ns/a/wave.vcd"))
+        let newer = RemotePreviewDownload(url: url, isNew: true, fileNumber: RemotePreviewDownload.fileNumber(of: url))
+        RemotePreviewCacheBudget.discard(newer, cacheRoot: root, keeping: [])
+        #expect(!Self.exists(root, "ns/a"))
+    }
 }
