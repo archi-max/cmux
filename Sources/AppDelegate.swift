@@ -17685,7 +17685,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     return workspace.openNewCanvasPane(
                         type: .terminal,
                         focus: true,
-                        direction: direction.canvasDirection
+                        direction: direction.canvasDirection,
+                        userInitiated: true
                     ) != nil
                 }
                 return terminalContext.tabManager.createSplitOutcome(
@@ -17699,7 +17700,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return workspace.openNewCanvasPane(
                     type: .terminal,
                     focus: true,
-                    direction: direction.canvasDirection
+                    direction: direction.canvasDirection,
+                    userInitiated: true
                 ) != nil
             }
             return tabManager?.createSplitOutcome(direction: direction).isAccepted ?? false

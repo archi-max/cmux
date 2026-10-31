@@ -1652,7 +1652,7 @@ extension Workspace {
             // one has no host terminal for the SSH provider to reattach.
             return restoreDeviceDisplayPanel(
                 snapshot, in: paneId,
-                origin: cloudProjectionRecord == nil ? .unattachedSSHTerminal : .device
+                origin: cloudProjectionRecord == nil ? .unattachedSSHTerminal : .pendingSSHTerminal
             )
         }
         let restoresUntrustedSavedDirectory = cloudVMBinding != nil ||
@@ -9422,12 +9422,13 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         }
         // A user's split in an SSH workspace runs on the host even from a
         // panel (a file preview, say) that has no remote owner of its own.
-        if userInitiated, !autoLayout, initialCommand == nil, initialInput == nil, tmuxStartCommand == nil,
+        if userInitiated, initialCommand == nil, initialInput == nil, tmuxStartCommand == nil,
            remotePTYSessionID == nil, workingDirectory == nil, startupEnvironment.isEmpty,
            initialDividerPosition == nil, !suppressWorkspaceRemoteStartupCommand,
            let source = userInitiatedSSHHostSourcePlacement() {
             return routeCloudPaneTerminalSplit(
-                from: panelId, orientation: orientation, insertFirst: insertFirst, focus: focus, source: source
+                from: panelId, orientation: orientation, insertFirst: insertFirst, focus: focus, source: source,
+                workingDirectory: lastKnownHostDirectory(near: panelId, inPane: paneId(forPanelId: panelId))
             ) ? .routedToRemote : .failed
         }
         // Auto layout re-tiles every pane itself, so only a plain split is
@@ -9814,7 +9815,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
             return routeCloudPaneTerminalCreate(
                 source: source, sourcePanelID: selectedPanelID,
                 destination: .tab(workspaceID: id, paneID: paneId.id.uuidString, index: nil),
-                focus: focus ?? (bonsplitController.focusedPaneId == paneId)
+                focus: focus ?? (bonsplitController.focusedPaneId == paneId),
+                fallbackWorkingDirectory: lastKnownHostDirectory(near: selectedPanelID, inPane: paneId)
             )
         }
         guard let panel = newTerminalSurfaceLocal(
@@ -12422,7 +12424,7 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
     /// The empty-pane placeholder's "Terminal" button.
     @discardableResult
     func newEmptyPaneTerminal(inPane paneId: PaneID) -> TerminalPanel? {
-        newTerminalSurface(inPane: paneId, inheritWorkingDirectoryFallback: true)
+        newTerminalSurface(inPane: paneId, inheritWorkingDirectoryFallback: true, userInitiated: true)
     }
 
     /// Create a new terminal surface in the currently focused pane
@@ -15421,8 +15423,7 @@ extension Workspace: BonsplitDelegate {
         // Same rule as Cmd+D: a UI split next to a cloud-projected pane continues on that
         // machine (Workspace+CloudPaneRouting). The new pane already exists and is empty;
         // the machine's terminal arrives as its first tab when the projection materializes.
-        if let sourcePanelId,
-           routeCloudPaneUISplit(from: sourcePanelId, into: newPane, orientation: orientation) {
+        if routeCloudPaneUISplit(from: sourcePanelId, sourcePane: originalPane, into: newPane, orientation: orientation) {
             scheduleTerminalGeometryReconcile()
             return
         }

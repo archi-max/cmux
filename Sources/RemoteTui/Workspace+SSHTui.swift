@@ -1,4 +1,5 @@
 import CmuxCloud
+import Bonsplit
 import CmuxCore
 import CmuxSurfaceCatalogModel
 import Foundation
@@ -92,26 +93,50 @@ extension Workspace {
         remoteConfiguration?.routesThroughSSHTui ?? false
     }
 
-    /// The SSH host placement for a restored pane that no host terminal backs.
-    /// New terminals created from it run on the host, never as a local shell.
-    func unattachedSSHDisplaySourcePlacement(forPanel panelID: UUID) -> CloudTerminalSourcePlacement? {
-        guard usesSSHTui, let configuration = remoteConfiguration,
-              terminalPanel(for: panelID)?.deviceAttachment?.origin == .unattachedSSHTerminal,
-              SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: panelID) == nil else { return nil }
+    /// The workspace's SSH host as the owner of a new terminal. The remote
+    /// workspace is set only when the binding names this host; an unbound or
+    /// mismatched workspace gets none, so the create fails closed with a pane
+    /// card instead of guessing a workspace or starting a local shell.
+    private func sshHostSourcePlacement() -> CloudTerminalSourcePlacement? {
+        guard usesSSHTui, let configuration = remoteConfiguration, configuration.preserveAfterTerminalExit else { return nil }
         let machine = SurfaceMachineID(rawValue: SSHTuiConnection(configuration: configuration).id)
         let remoteWorkspaceID = cloudVMBinding?.vmID == machine.rawValue ? cloudVMBinding?.remoteWorkspaceID : nil
         return CloudTerminalSourcePlacement(machine: machine, remoteWorkspaceID: remoteWorkspaceID)
     }
 
-    /// Where a user's new terminal (Cmd+T, Cmd+D, the tab bar's +) goes when
-    /// its anchor has no remote owner: the workspace's bound SSH host. Socket
-    /// and CLI creates do not pass through here.
+    /// The SSH host placement for a restored pane that no host terminal backs.
+    /// New terminals created from it run on the host, never as a local shell.
+    func unattachedSSHDisplaySourcePlacement(forPanel panelID: UUID) -> CloudTerminalSourcePlacement? {
+        guard let status = terminalPanel(for: panelID)?.deviceAttachment,
+              status.origin == .unattachedSSHTerminal, !status.isReplaced,
+              SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: panelID) == nil else { return nil }
+        return sshHostSourcePlacement()
+    }
+
+    /// Where a plain user-initiated new terminal goes when its anchor has no
+    /// remote owner: the workspace's SSH host. The UI entry points pass
+    /// `userInitiated: true` (Cmd+T, Cmd+D, Alt-n, canvas Cmd+D, the tab bar's
+    /// +, the pane split button, the empty pane's Terminal button and a sidebar
+    /// extension's new terminal or split). Socket and CLI creates never do, and
+    /// a create that carries a command, input, cwd or environment never reaches
+    /// this fallback.
     func userInitiatedSSHHostSourcePlacement() -> CloudTerminalSourcePlacement? {
-        guard usesSSHTui, let configuration = remoteConfiguration, configuration.preserveAfterTerminalExit else { return nil }
-        let machine = SurfaceMachineID(rawValue: SSHTuiConnection(configuration: configuration).id)
-        guard cloudVMBinding?.vmID == machine.rawValue,
-              let remoteWorkspaceID = cloudVMBinding?.remoteWorkspaceID else { return nil }
-        return CloudTerminalSourcePlacement(machine: machine, remoteWorkspaceID: remoteWorkspaceID)
+        sshHostSourcePlacement()
+    }
+
+    /// The anchor's, or else its pane's, last host-reported working directory,
+    /// so a new host terminal started beside a file preview opens where the
+    /// user was. Only directories the host reported are used.
+    func lastKnownHostDirectory(near anchorPanelID: UUID?, inPane paneID: PaneID?) -> String? {
+        var candidates: [UUID] = anchorPanelID.map { [$0] } ?? []
+        if let paneID {
+            candidates += bonsplitController.tabs(inPane: paneID).compactMap { panelIdFromSurfaceId($0.id) }
+        }
+        for panelID in candidates where remoteDirectoryReportPanelIds.contains(panelID) {
+            if let directory = panelDirectories[panelID]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !directory.isEmpty { return directory }
+        }
+        return nil
     }
 
     /// Retry on a restored SSH pane with nothing to reattach opens a new host
@@ -119,15 +144,22 @@ extension Workspace {
     /// Returns false when no request was accepted.
     func replaceUnattachedSSHDisplayPanel(_ panelID: UUID) -> Bool {
         guard let source = unattachedSSHDisplaySourcePlacement(forPanel: panelID),
+              let status = terminalPanel(for: panelID)?.deviceAttachment,
               let paneID = paneId(forPanelId: panelID) else { return false }
         let index = bonsplitController.tabs(inPane: paneID).firstIndex { panelIdFromSurfaceId($0.id) == panelID }
+        let customTitle = panelCustomTitles[panelID]
+        let isPinned = pinnedPanelIds.contains(panelID)
         let outcome = routeCloudPaneTerminalCreate(
             source: source, sourcePanelID: panelID,
             destination: .tab(workspaceID: id, paneID: paneID.id.uuidString, index: index),
             focus: true
         )
         guard case .created(let replacement) = outcome else { return false }
-        if replacement.id != panelID { _ = closePanel(panelID, force: true) }
+        guard replacement.id != panelID else { return true }
+        status.markReplaced()
+        if let customTitle { setPanelCustomTitle(panelId: replacement.id, title: customTitle) }
+        if isPinned { setPanelPinned(panelId: replacement.id, pinned: true) }
+        _ = closePanel(panelID, force: true)
         return true
     }
 

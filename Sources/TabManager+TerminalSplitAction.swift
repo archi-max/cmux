@@ -82,7 +82,8 @@ extension TabManager {
             orientation: .horizontal,
             focus: focus,
             autoLayout: true,
-            honorsGhosttySplitInheritance: true
+            honorsGhosttySplitInheritance: true,
+            userInitiated: true
         )
     }
 
