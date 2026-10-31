@@ -1634,11 +1634,134 @@ extension Harness {
           check(s("queued") == s("before"), "a reload started in another's gap drops its queued Undo: \(s("before")) -> \(s("queued"))")
           check(rows("undo").contains("top.clk") && !rows("preUndo").contains("top.clk"),
                 "Undo works after a reload that failed on the way and then succeeded: \(s("preUndo")) -> \(s("undo"))")
+          self.phaseAO()
+        }
+      }
+    }
+  }
+
+  // The old viewer's context, sent after a reload started, doesn't come back
+  // as the shown rows for the reload's gap. An add dropped into Locals
+  // doesn't block a following Add All. An add made while an Undo resolves
+  // its rows lands after the Undo, not under it.
+  func phaseAO() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe + """
+        await byName('top.clk');
+        await sleep(600);
+        const restoreState = C.restoreState;
+        C.restoreState = async (m) => { C.restoreState = restoreState; await sleep(2000); return restoreState(m); };
+        // The old viewer answers this with a context after the reload began.
+        H.toWebview({ command: 'setSelectedSignal', netlistId: clk.netlistId });
+        window.cmuxWaveform.reload({});
+        let stale = 0;
+        const t = Date.now();
+        await sleep(20);
+        while (C.isRestoring() && Date.now() - t < 20000) {
+          const w = H.viewerContext.webview;
+          if (w && (w.displayedSignals || []).length) { stale++; }
+          await sleep(20);
+        }
+        R.stale = stale;
+        await reloaded();
+        await sleep(600);
+        R.afterReload = tr();
+        // Drop top.clk into Locals, then Add All of top: it is pinned.
+        removeAll(clk);
+        await sleep(400);
+        await d.step({ by: 1 });
+        await d.setLocals({ path: ['top', 'core'] });
+        await sleep(600);
+        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: clk.netlistId }], groupPath: ['Locals'], dropIndex: 0 });
+        await sleep(600);
+        R.dropped = tr();
+        R.addAll = JSON.stringify(await window.cmuxWaveform.link.addScope({ path: ['top'] }));
+        await sleep(600);
+        R.pinned = tr();
+        // An add during an Undo's row lookup.
+        await d.setLocals({ path: null });
+        await sleep(400);
+        removeAll(acc);
+        await sleep(400);
+        removeAll(clk);
+        await sleep(400);
+        await byName('top.clk');
+        await sleep(600);
+        removeAll(clk);
+        await sleep(600);
+        const findItem = H.findItem;
+        H.findItem = async (...a) => { await sleep(800); return findItem(...a); };
+        C.run('cmux.undo');
+        await sleep(100);
+        await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] });
+        await sleep(2000);
+        H.findItem = findItem;
+        R.undoAdd = tr();
+        """) { r in
+          let s = { (k: String) in r[k] as? String ?? "nil" }
+          let rows = { (k: String) in s(k).components(separatedBy: ",") }
+          check(r["stale"] as? Int == 0, "the old viewer's late context isn't the shown rows during the reload (\(r["stale"] ?? "nil") samples)")
+          check(rows("afterReload") == ["top.clk"], "the reloaded viewer's rows are: \(s("afterReload"))")
+          check(rows("dropped").contains("Locals/top.clk"), "top.clk dropped into Locals: \(s("dropped"))")
+          check(s("addAll").contains(#""added":1"#), "a following Add All isn't blocked by it: \(s("addAll")) -> \(s("pinned"))")
+          check(rows("undoAdd").contains("top.clk") && rows("undoAdd").contains("top.core.acc"),
+                "an add during an Undo's row lookup lands after the Undo: \(s("undoAdd"))")
+          self.phaseAP()
+        }
+      }
+    }
+  }
+
+  // Add All counts and caps only what isn't shown: with 130 of a scope's 140
+  // signals shown, it adds the other 10 without asking.
+  func phaseAP() {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("parity-wide-\(getpid()).vcd")
+    var text = "$timescale 1ns $end\n$scope module top $end\n$scope module wide $end\n"
+    let ids = (0..<140).map { "w\($0)" }
+    for (i, id) in ids.enumerated() { text += "$var wire 1 \(id) s\(i) $end\n" }
+    text += "$upscope $end\n$upscope $end\n$enddefinitions $end\n#0\n"
+    for id in ids { text += "0\(id)\n" }
+    text += "#10\n"
+    for id in ids { text += "1\(id)\n" }
+    try! text.write(to: url, atomically: true, encoding: .utf8)
+    let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+    let argument: [String: Any] = ["url": scheme.serve(fileURL: url).absoluteString, "size": size, "format": "vcd",
+                                   "path": url.path, "strings": strings, "settings": [String: Any]()]
+    let json = String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)!
+    onOpened = {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe.replacingOccurrences(of: "const clk", with: "const clk0").replacingOccurrences(of: "const acc", with: "const acc0").replacingOccurrences(of: "const core", with: "const core0") + """
+        const wide = await H.findLinkItem(['top', 'wide'], false);
+        const names = [];
+        for (let i = 0; i < 130; i++) { names.push({ dataType: 'netlist-variable', name: 'top.wide.s' + i }); }
+        await C.run('waveformViewer.loadViewerState', { state: { displayedSignals: names } });
+        await sleep(1500);
+        R.before = tr().split(',').length;
+        const dialogs = () => Array.from(document.querySelectorAll('.cmux-dialog-backdrop'));
+        const open = dialogs();
+        const adding = C.run('vaporview.addAllInScopeShallow', wide);
+        await sleep(1500);
+        const fresh = dialogs().filter((e) => !open.includes(e));
+        R.warned = fresh.length > 0;
+        const no = fresh.length ? fresh[0].querySelector('button') : null;
+        if (no) { no.click(); }
+        await adding;
+        await sleep(1500);
+        const all = tr().split(',');
+        R.after = all.length;
+        R.distinct = new Set(all).size;
+        """) { r in
+          try? FileManager.default.removeItem(at: url)
+          check(r["before"] as? Int == 130, "130 of the 140 shown: \(r["before"] ?? "nil")")
+          check(r["warned"] as? Bool == false, "Add All doesn't ask: only 10 would be added")
+          check(r["after"] as? Int == 140 && r["distinct"] as? Int == 140, "and adds them once each: \(r["after"] ?? "nil") rows, \(r["distinct"] ?? "nil") distinct")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
       }
     }
+    web.evaluateJavaScript("cmuxWaveform.open(\(json))")
   }
   static func jsString(_ s: String) -> String {
     String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
