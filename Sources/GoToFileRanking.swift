@@ -185,15 +185,46 @@ enum GoToFileRanker {
             for position in index.candidates.indices where !consider(position) { return Ranking(paths: [], matches: []) }
         }
         let candidates = index.candidates
-        scored.sort { lhs, rhs in
+        // Total order: score, then shorter path, then alphabetical (paths are unique).
+        func isBetter(_ lhs: (candidate: Int, score: Int), _ rhs: (candidate: Int, score: Int)) -> Bool {
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             let left = candidates[lhs.candidate], right = candidates[rhs.candidate]
             if left.lower.count != right.lower.count { return left.lower.count < right.lower.count }
             return left.path < right.path
         }
+        // Top `limit` through a bounded heap whose root is the worst kept
+        // match, instead of sorting every match.
+        var heap: [(candidate: Int, score: Int)] = []
+        heap.reserveCapacity(min(limit, scored.count))
+        for item in scored {
+            if heap.count < limit {
+                heap.append(item)
+                var child = heap.count - 1
+                while child > 0 {
+                    let parent = (child - 1) / 2
+                    guard isBetter(heap[parent], heap[child]) else { break }
+                    heap.swapAt(parent, child)
+                    child = parent
+                }
+            } else if isBetter(item, heap[0]) {
+                heap[0] = item
+                var parent = 0
+                while true {
+                    let left = 2 * parent + 1, right = left + 1
+                    var worst = parent
+                    if left < heap.count, isBetter(heap[worst], heap[left]) { worst = left }
+                    if right < heap.count, isBetter(heap[worst], heap[right]) { worst = right }
+                    guard worst != parent else { break }
+                    heap.swapAt(parent, worst)
+                    parent = worst
+                }
+            }
+        }
+        heap.sort(by: isBetter)
+        // Candidates were visited in ascending order, so matches stay sorted.
         return Ranking(
-            paths: scored.prefix(limit).map { candidates[$0.candidate].path },
-            matches: scored.map(\.candidate).sorted()
+            paths: heap.map { candidates[$0.candidate].path },
+            matches: scored.map(\.candidate)
         )
     }
 
