@@ -79,6 +79,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         // WebKit teardown is performed explicitly by close() on the main actor.
     }
 
+    /// Every session with a page, so a change of the shared `fsdbLoading` reaches all of them.
+    private static let liveSessions = NSHashTable<FilePreviewWaveformSession>.weakObjects()
+    /// Why the open remote FSDB runs the classic (v1) helper, shown in the page with a Retry.
+    private var fsdbFallbackReason: String?
+
     func view(
         panel: FilePreviewPanel,
         revision: Int,
@@ -289,9 +294,21 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
     }
 
-    /// A new `fsdbLoading` applies to an open remote FSDB at once: its helper is
-    /// restarted for the setting and the page reopens the file, keeping its signals.
-    private func fsdbLoadingChanged() {
+    /// A new `fsdbLoading` applies at once to every open remote FSDB: each
+    /// session's helper (and any build it has running) is stopped, a new one
+    /// started for the setting, and the page reopens the file, keeping its signals.
+    private static func fsdbLoadingChanged() {
+        for session in liveSessions.allObjects { session.restartFSDBHelper() }
+    }
+
+    /// The page's "Retry windowed": forgets this host's v2 failure and starts over.
+    private func retryWindowed() {
+        guard let panel, let remoteFSDB = RemoteFSDB.resolve(panel: panel) else { return }
+        WaveformFSDBHelper.forgetV2Failure(hostKey: remoteFSDB.host)
+        restartFSDBHelper()
+    }
+
+    private func restartFSDBHelper() {
         guard isPageReady, fsdbHelper != nil, let panel, let fileURL, fileURL.pathExtension.lowercased() == "fsdb",
               let remoteFSDB = RemoteFSDB.resolve(panel: panel), let relayURL = startFSDBHelper(for: remoteFSDB) else { return }
         WaveformSourceLink.waveformReloading(panel)
@@ -589,11 +606,16 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         )
         guard !installs.isEmpty else { return nil }
         stopFSDBHelper()
+        Self.liveSessions.add(self)
         let host = remote.host
-        let helper = WaveformFSDBHelper(sshArguments: remote.sshArguments, installs: installs) { [weak self] status in
+        let helper = WaveformFSDBHelper(
+            sshArguments: remote.sshArguments, installs: installs, hostKey: host, allowedFile: remote.remotePath
+        ) { [weak self] status in
             Task { @MainActor [weak self] in self?.showFSDBStatus(status, host: host) }
         }
         fsdbHelper = helper
+        fsdbFallbackReason = nil
+        evaluate(function: "setFallbackNotice", argument: [:])
         return schemeHandler.serve(fsdbRelay: { body in
             // Managed file transfer off: no upload of the helper, no waveform data back.
             guard !ManagedFileTransferPolicy.isDisabled else {
@@ -613,9 +635,18 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         let title: String
         let detail: String
         switch status {
-        case .fellBack(let reason):
-            // Whole signals from the v1 helper: the page needs no word of it.
-            NSLog("cmux waveform: FSDB helper v2 unavailable on %@, using v1: %@", host, reason)
+        case .fellBack(let reason, _):
+            // Whole signals from the v1 helper: said in the page, with a Retry.
+            fsdbFallbackReason = reason
+            let message = String(
+                format: String(localized: "filePreview.waveform.fsdbFallback", defaultValue: "Using the classic viewer: %@"),
+                reason.split(separator: "\n").last.map(String.init) ?? reason
+            )
+            evaluate(function: "setFallbackNotice", argument: [
+                "message": message,
+                "detail": reason,
+                "retry": String(localized: "filePreview.waveform.fsdbRetryWindowed", defaultValue: "Retry Windowed"),
+            ])
             return
         case .connecting:
             title = String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…")
@@ -684,6 +715,17 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             summary = String(
                 localized: "filePreview.waveform.fsdbHelperExited",
                 defaultValue: "The connection to the FSDB reader on %@ ended. Reload to try again."
+            )
+        case .refused(let output)?:
+            detail = output
+            summary = String(
+                localized: "filePreview.waveform.fsdbRefused",
+                defaultValue: "cmux did not start the FSDB reader on %@: its folder there can be changed by other users. Make ~/.cache/cmux private to you, or delete it to reinstall."
+            )
+        case .notAllowed?:
+            summary = String(
+                localized: "filePreview.waveform.fsdbNotAllowed",
+                defaultValue: "The waveform viewer sent a request cmux does not pass to the FSDB reader on %@."
             )
         case .stopped?, .notInstalled?:
             summary = String(
@@ -810,7 +852,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if let values = body["values"] as? [String: Any] {
                 let loading = Self.fsdbLoading()
                 Self.storeSettings(values)
-                if Self.fsdbLoading() != loading { fsdbLoadingChanged() }
+                if Self.fsdbLoading() != loading { Self.fsdbLoadingChanged() }
             }
         case "sessionState":
             if let state = body["state"] {
@@ -830,6 +872,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             loadSession()
         case "reload":
             reloadFileInPage()
+        case "retryWindowed":
+            retryWindowed()
         case "openReadme":
             if let url = URL(string: "https://github.com/Lramseyer/vaporview#readme") {
                 NSWorkspace.shared.open(url)
