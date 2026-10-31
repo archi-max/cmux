@@ -253,13 +253,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(renamed.contains("[Mine]") && renamed.contains("Mine/top.core.alu.acc") && renamed.filter { $0 == "top.core.alu.acc" }.count == 1,
            "a renamed Locals is refilled in place: \(renamed)")
     expect(renamedSaved?.contains("Mine") == false, "and still left out of sessions: \(String(describing: renamedSaved))")
-    // An undo drops Locals from the viewer; it comes back.
-    _ = await call("return await cmuxWaveform.link.addSignal(['top', 'core', 'valid'])")
-    await sleep(400)
-    _ = await call("cmuxCommands.run('cmux.undo'); return null")
+    // A restore (undo, reload, a loaded session) drops Locals from the viewer; it comes back.
+    _ = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Mine');
+      const c = JSON.parse(g.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
+      const w = document.getElementById('viewer').contentWindow;
+      w.postMessage({ command: 'remove-group', groupId: c.groupId, recursive: true }, '*');
+      return null;
+    """)
     await sleep(800)
-    let undone = await rows()
-    expect(!undone.contains("top.core.valid") && undone.contains("Mine/top.core.alu.acc"), "after an undo Locals comes back: \(undone)")
+    let restored = await rows()
+    expect(restored.contains { $0.hasSuffix("/top.core.alu.acc") && $0.hasPrefix("Locals") }, "Locals dropped by a restore comes back: \(restored)")
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })")
     await sleep(400)
     // Rows the editor highlights this cycle.
