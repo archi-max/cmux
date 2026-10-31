@@ -134,6 +134,11 @@ enum WaveformDebuggerEditorHighlights {
 
     /// An editor drew its values: while its waveform is stepped, compare them with the
     /// cycle before and highlight what changed and what drove it.
+    /// Waits for `textView`'s highlight job (if any) to finish drawing (tests).
+    static func settled(_ textView: NSTextView) async {
+        await work.object(forKey: textView)?.task?.value
+    }
+
     static func valuesShown(_ shown: Shown) {
         WaveformDebugger.updateLocals(from: shown.editor)
         let textView = shown.textView
