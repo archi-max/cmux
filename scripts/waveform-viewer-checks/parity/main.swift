@@ -10,7 +10,10 @@
 //   - the page never names a path to write, and a JSON file that isn't a
 //     session is refused;
 //   - a missing signal stays as a placeholder row;
-//   - two back-to-back reloads end opened, with no error and the rows kept.
+//   - two back-to-back reloads end opened, with no error and the rows kept;
+//   - a session applied as a reload starts is dropped, not applied to the
+//     reloaded viewer;
+//   - a late <dump>.json is offered only while the user hasn't changed the view.
 // Exits 0 and prints PARITY CHECKS PASSED, or prints CHECK FAILED and exits 2.
 // Usage: parity <assetRoot> <parity.vcd>
 import AppKit
@@ -80,6 +83,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var errors: [String] = []
   var native: [[String: Any]] = []
   var onOpened: (() -> Void)?
+  var strings: [String: String] = [:]
+
+  /// Opens the file in a new viewer frame with no state to restore, as a new panel does.
+  func openFresh(then: @escaping () -> Void) {
+    let argument: [String: Any] = [
+      "url": scheme.serve(fileURL: waveURL).absoluteString, "size": size(), "format": "vcd",
+      "path": "/work/sim/parity.vcd", "strings": strings, "settings": [String: Any](),
+    ]
+    let json = String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)!
+    onOpened = then
+    web.evaluateJavaScript("cmuxWaveform.open(\(json))")
+  }
 
   func start() {
     let cfg = WKWebViewConfiguration()
@@ -110,13 +125,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         "messageSignalNotFound": "Signal not found: %@", "messageSessionLoadFailed": "Failed: %@",
         "messageNotASession": "not a session", "messageSessionMismatch": "mismatch",
       ]
-      let argument: [String: Any] = [
-        "url": scheme.serve(fileURL: waveURL).absoluteString, "size": size(), "format": "vcd",
-        "path": "/work/sim/parity.vcd", "strings": strings, "settings": [String: Any](),
-      ]
-      let json = String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)!
-      web.evaluateJavaScript("cmuxWaveform.open(\(json))")
-      onOpened = { self.phaseA() }
+      self.strings = strings
+      openFresh { self.phaseA() }
     case "opened":
       opened += 1
       let next = onOpened
@@ -246,12 +256,79 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             check(r["metadata"] as? Bool == true, "the reloaded file is open")
             check(r["rows"] as? Int == 3, "rows kept across two reloads (rows \(r["rows"] ?? "nil"))")
             check(r["marker"] as? Bool == true, "the reloaded viewer takes a marker")
-            print("PARITY CHECKS PASSED")
-            exit(0)
+            self.phaseE()
           }
         }
       }
     }
+  }
+}
+
+extension Harness {
+  // A session applied while a reload starts must not land in the reloaded
+  // viewer: its rows were resolved against the closed backend.
+  func phaseE() {
+    let errorsBefore = errors.count
+    onOpened = {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        check(self.errors.count == errorsBefore, "no error after a reload during a restore: \(self.errors)")
+        self.js("R.rows = C.sessionSnapshot().state.displayedSignals.length;") { r in
+          check(r["rows"] as? Int == 3, "a session applied as a reload starts is dropped (rows \(r["rows"] ?? "nil"))")
+          self.phaseF()
+        }
+      }
+    }
+    web.evaluateJavaScript("""
+    (() => {
+      window.cmuxCommands.applySessionFile({ text: JSON.stringify({ displayedSignals: [
+        { dataType: 'netlist-variable', name: 'top.clk' } ] }), path: '/work/sim/one.json' });
+      window.cmuxWaveform.reload({});
+      return 1;
+    })()
+    """)
+  }
+
+  static let sessionText = #"{"displayedSignals":[{"dataType":"netlist-variable","name":"top.core.acc"}]}"#
+
+  // <dump>.json read late (from an SSH host) is not offered once the user changed the view.
+  func phaseF() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(500);
+        C.setSessionFile({ path: '/work/sim/parity.json', text: \(Self.jsString(Self.sessionText)) });
+        await sleep(400);
+        R.dialog = !!document.querySelector('.cmux-dialog-backdrop');
+        R.rows = C.sessionSnapshot().state.displayedSignals.length;
+        """) { r in
+          check(r["dialog"] as? Bool == false, "a late session file is not offered after a user change")
+          check(r["rows"] as? Int == 1, "the user's rows stay")
+          self.phaseG()
+        }
+      }
+    }
+  }
+
+  // On a viewer the user hasn't touched, the same late file is offered.
+  func phaseG() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        C.setSessionFile({ path: '/work/sim/parity.json', text: \(Self.jsString(Self.sessionText)) });
+        await sleep(400);
+        R.dialog = !!document.querySelector('.cmux-dialog-backdrop');
+        """) { r in
+          check(r["dialog"] as? Bool == true, "a late session file is offered on an untouched viewer")
+          print("PARITY CHECKS PASSED")
+          exit(0)
+        }
+      }
+    }
+  }
+
+  static func jsString(_ s: String) -> String {
+    String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
   }
 }
 
