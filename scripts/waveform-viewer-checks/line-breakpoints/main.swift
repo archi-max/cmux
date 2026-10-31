@@ -180,8 +180,106 @@ endmodule
     expect(afterRestore == ["core.sv:6 [] true", "core.sv:2 [] false"], "sent with no instance known yet, the lost one disabled: \(afterRestore)")
     expect(LB.snapshot(of: UUID()) == nil, "a workspace without breakpoints saves none")
 
+    await runTrackingChecks()
     print(failures == 0 ? "LINE BREAKPOINT CHECKS PASSED" : "LINE BREAKPOINT CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
+}
+
+/// Review H1, M1, M2: whole-buffer replaces (Format Document, a reload from disk, their undo), the
+/// gutter drawing before the text loads, edits with no viewer, and lines with the same text.
+@MainActor func runTrackingChecks() async {
+    typealias LB = WaveformDebuggerLineBreakpoints
+    WaveformSourceLink.waveform = nil
+    func open(_ text: String, workspace: UUID) -> SavingTextView {
+        let view = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        view.string = text
+        let editor = FilePreviewLanguageFeatures(textView: view, path: "/rtl/core.sv", workspace: workspace)
+        FilePreviewLanguageFeatures.all.append(editor)
+        return view
+    }
+    func lines(_ view: NSTextView) -> [Int] {
+        let text = view.string
+        let starts = [0] + text.utf16.enumerated().filter { $0.element == 0x0A }.map { $0.offset + 1 }
+        return (LB.styles(in: view) ?? [:]).keys.compactMap { starts.firstIndex(of: $0) }.sorted()
+    }
+    func state(_ workspace: UUID) -> [String] {
+        (LB.marks[workspace] ?? []).map { "\($0.line) \($0.lost ? "lost" : "ok") \($0.enabled)" }.sorted()
+    }
+
+    // Format Document: the whole range replaced with re-indented text. All three stay on their lines.
+    let formatted = UUID()
+    let view = open(source, workspace: formatted)
+    for line in [3, 4, 5] { _ = LB.gutterClicked(view, lineStart: lineStart(line, in: source)) }
+    let reindented = source.replacingOccurrences(of: "\n  ", with: "\n    ")
+    view.textStorage!.replaceCharacters(in: NSRange(location: 0, length: view.textStorage!.length), with: reindented)
+    expect(lines(view) == [3, 4, 5] && LB.marks[formatted]?.count == 3, "format keeps every breakpoint on its line: \(lines(view)) \(state(formatted))")
+    // A reload from disk with the same text, and with a header line added.
+    view.string = view.string
+    expect(lines(view) == [3, 4, 5] && LB.marks[formatted]?.count == 3, "a reload with the same text: \(lines(view))")
+    view.string = "// header\n" + view.string
+    expect(lines(view) == [4, 5, 6] && LB.marks[formatted]?.count == 3, "a reload with a line added above: \(lines(view))")
+    // A whole replace where one line's text changed: it stays at its line, not deleted, not lost.
+    view.string = view.string.replacingOccurrences(of: "assign done = count == limit;", with: "assign done = (count == limit);")
+    expect(lines(view) == [4, 5, 6] && LB.marks[formatted]?.count == 3 && !(LB.marks[formatted] ?? []).contains { $0.lost },
+           "a changed line keeps its breakpoint: \(lines(view)) \(state(formatted))")
+    // Undo of a format is another whole replace: back on the original lines.
+    view.string = "// header\n" + source
+    expect(lines(view) == [4, 5, 6] && LB.marks[formatted]?.count == 3, "undoing the format: \(lines(view))")
+
+    // Deleting the line between two merges them; undoing the delete brings the other one back.
+    let merged = UUID()
+    let mergeView = open(source, workspace: merged)
+    _ = LB.gutterClicked(mergeView, lineStart: lineStart(4, in: source))
+    _ = LB.gutterClicked(mergeView, lineStart: lineStart(5, in: source))
+    let four = lineStart(4, in: source)
+    let deleted = (source as NSString).substring(with: NSRange(location: four, length: lineStart(5, in: source) - four))
+    mergeView.textStorage!.replaceCharacters(in: NSRange(location: four, length: deleted.utf16.count), with: "")
+    expect(lines(mergeView) == [4], "a deleted line takes its breakpoint: \(lines(mergeView))")
+    LB.isUndoing = { _ in true }
+    mergeView.textStorage!.replaceCharacters(in: NSRange(location: four, length: 0), with: deleted)
+    LB.isUndoing = { _ in false }
+    expect(lines(mergeView) == [4, 5] && LB.marks[merged]?.count == 2, "undo brings it back: \(lines(mergeView)) \(state(merged))")
+
+    // The gutter draws before the text has loaded: nothing is lost; the marks are placed when it arrives.
+    let early = UUID()
+    LB.restore(SessionWaveformBreakpointsSnapshot(lines: [
+        LB.Mark(id: UUID(), path: "/rtl/core.sv", line: 3, text: "always_ff @(posedge clk) count <= count + 1;"),
+        LB.Mark(id: UUID(), path: "/rtl/core.sv", line: 4, text: "assign done = count == limit;"),
+    ], signals: nil), in: early)
+    let earlyView = open("", workspace: early)
+    _ = LB.styles(in: earlyView)
+    expect(state(early) == ["3 ok true", "4 ok true"], "drawn before the load: none lost: \(state(early))")
+    earlyView.string = source
+    expect(lines(earlyView) == [3, 4] && state(early) == ["3 ok true", "4 ok true"], "placed when the text arrives: \(lines(earlyView)) \(state(early))")
+
+    // M1: an edit to a breakpoint's line with no viewer open is remembered (the file may close next).
+    let unseen = UUID()
+    let unseenView = open(source, workspace: unseen)
+    _ = LB.gutterClicked(unseenView, lineStart: lineStart(4, in: source))
+    let doneLine = lineStart(4, in: source)
+    unseenView.textStorage!.replaceCharacters(in: NSRange(location: 0, length: 0), with: "// top\n")
+    let lineEnd = doneLine + 7 + "  assign done = count == limit;".utf16.count
+    unseenView.textStorage!.replaceCharacters(in: NSRange(location: lineEnd, length: 0), with: " // note")
+    let wanted = "assign done = count == limit; // note"
+    for _ in 0..<40 where LB.marks[unseen]?.first?.text != wanted { try? await Task.sleep(nanoseconds: 25_000_000) }
+    expect(LB.marks[unseen]?.first?.line == 5 && LB.marks[unseen]?.first?.text == wanted,
+           "line and text kept current without a viewer: \(String(describing: LB.marks[unseen]?.first))")
+
+    // M2: two marks whose nearest matching line is the same one: each gets its own line; a third with
+    // no line left is lost, disabled, and still has a dot.
+    let twins = UUID()
+    let block = "module m;\n  begin\n  end\n  begin\n  end\nendmodule\n"
+    LB.restore(SessionWaveformBreakpointsSnapshot(lines: [
+        LB.Mark(id: UUID(), path: "/rtl/core.sv", line: 2, text: "end"),
+        LB.Mark(id: UUID(), path: "/rtl/core.sv", line: 3, text: "end"),
+        LB.Mark(id: UUID(), path: "/rtl/core.sv", line: 4, text: "end"),
+    ], signals: nil), in: twins)
+    let twinView = open("// added\n" + block, workspace: twins)
+    let twinStyles = LB.styles(in: twinView) ?? [:]
+    expect(lines(twinView) == [3, 4, 5] && twinStyles.values.filter { $0 == .lost }.count == 1,
+           "duplicates take the free matching lines; the extra one is lost with a dot: \(lines(twinView)) \(state(twins))")
+    expect(!(LB.marks[twins] ?? []).contains { !$0.lost && $0.enabled && !twinStyles.keys.contains(lineStart($0.line, in: twinView.string)) },
+           "no enabled breakpoint without a dot: \(state(twins))")
 }
 
 let app = NSApplication.shared
