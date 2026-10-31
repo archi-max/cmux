@@ -2,6 +2,7 @@ import AppKit
 import CmuxCloud
 import CmuxFoundation
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 /// The panel colors handed to the waveform viewer's VS Code theme variables.
@@ -36,6 +37,11 @@ struct WaveformViewerTheme: Equatable {
 /// `WaveformFSDBHelper` on the host (one per open viewer) and relays the
 /// page's requests to it. Verdi’s reader does not run on macOS, so a local
 /// FSDB file shows a message instead.
+///
+/// The page also carries the VS Code side of VaporView (menus, keybindings,
+/// settings, sessions; `Resources/vaporview/cmux-commands.js`). This session
+/// persists its settings, saves and loads session files through AppKit panels,
+/// and keeps the last signal list so a reload or file change restores it.
 @MainActor
 final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     static let messageHandlerName = "cmuxWaveform"
@@ -50,6 +56,16 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private var fsdbHelper: WaveformFSDBHelper?
     private var webContentProcessRecoveryAttempts = 0
     private let maxWebContentProcessRecoveryAttempts = 2
+    /// The page's last `sessionState` (signal list, marker, zoom) for `fileURL`,
+    /// handed back on the next open so a reload keeps the viewer as it was.
+    private var restoreState: [String: Any]?
+    /// The netlist's top scope names, reported when a file opens.
+    private(set) var topScopes: [String] = []
+
+    /// VaporView settings (`vaporview.*` keys) shared by every waveform panel.
+    static let settingsDefaultsKey = "filePreview.waveform.settings"
+    /// Session files bigger than this are not auto-loaded next to a dump.
+    private static let maxSessionFileSize = 8 * 1024 * 1024
 
     deinit {
         // WebKit teardown is performed explicitly by close() on the main actor.
@@ -95,6 +111,14 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         theme = nil
         isPageReady = false
         webContentProcessRecoveryAttempts = 0
+        restoreState = nil
+        topScopes = []
+    }
+
+    /// Runs a VaporView command id in the page (`cmux-commands.js`).
+    func runCommand(_ command: String, args: [String: Any] = [:]) {
+        guard isPageReady else { return }
+        evaluate(function: "runCommand", argument: ["command": command, "args": args])
     }
 
     private func makeWebView() -> MarkdownWebView {
@@ -105,6 +129,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             name: Self.messageHandlerName
         )
         let webView = MarkdownWebView(frame: .zero, configuration: config)
+        webView.isWaveformViewer = true
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsLinkPreview = false
@@ -141,9 +166,15 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
         self.panel = panel
         let url = panel.fileURL
-        if fileURL != url || loadedRevision != revision {
-            // A new revision means the file changed on disk or was refreshed:
-            // reload the page so wellen parses the new contents from scratch.
+        if fileURL == url, loadedRevision != revision, isPageReady {
+            // The file changed on disk: the page reloads it in place (keeping
+            // the signal list) or offers to, per VaporView's Auto Reload.
+            loadedRevision = revision
+            evaluate(function: "fileChanged", argument: [:])
+        } else if fileURL != url || loadedRevision != revision {
+            if fileURL != url {
+                restoreState = nil
+            }
             fileURL = url
             loadedRevision = revision
             loadPage()
@@ -167,13 +198,22 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         if let theme {
             evaluate(function: "setTheme", argument: theme.scriptValue)
         }
+        var common: [String: Any] = [
+            "path": panel?.cloudPreviewRemotePath ?? fileURL.path,
+            "strings": Self.localizedStrings(),
+            "settings": Self.storedSettings(),
+        ]
+        if let restoreState {
+            common["restore"] = restoreState
+        } else if let sessionFile = Self.siblingSessionFile(for: fileURL) {
+            common["sessionFile"] = sessionFile
+        }
         let format = fileURL.pathExtension.lowercased()
         if format == "fsdb" {
-            var argument: [String: Any] = [
+            var argument: [String: Any] = common.merging([
                 "url": fileURL.absoluteString,
                 "format": format,
-                "strings": Self.localizedStrings(),
-            ]
+            ]) { _, new in new }
             // Resolved now, not at configure time: Files sets the remote lease
             // right after it creates the panel.
             if let remoteFSDB = panel.flatMap(RemoteFSDB.resolve(panel:)), let relayURL = startFSDBHelper(for: remoteFSDB) {
@@ -182,14 +222,106 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             evaluate(function: "open", argument: argument)
             return
         }
+        evaluate(function: "open", argument: common.merging(servedFile(fileURL)) { _, new in new }.merging([
+            "format": format,
+        ]) { _, new in new })
+    }
+
+    /// Serves `fileURL` under a fresh token: the page's `url` and `size`.
+    private func servedFile(_ fileURL: URL) -> [String: Any] {
         let servedURL = schemeHandler.serve(fileURL: fileURL)
         let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        evaluate(function: "open", argument: [
-            "url": servedURL.absoluteString,
-            "size": size,
-            "format": format,
-            "strings": Self.localizedStrings(),
-        ])
+        return ["url": servedURL.absoluteString, "size": size]
+    }
+
+    /// Reopens the file in the page, keeping its signal list (VaporView's Reload File).
+    private func reloadFileInPage() {
+        guard let fileURL, isPageReady else { return }
+        if fileURL.pathExtension.lowercased() == "fsdb" {
+            // The FSDB helper rereads the dump on the host for each open.
+            evaluate(function: "reload", argument: [:])
+        } else {
+            evaluate(function: "reload", argument: servedFile(fileURL))
+        }
+    }
+
+    // MARK: Settings and sessions
+
+    static func storedSettings() -> [String: Any] {
+        guard let data = UserDefaults.standard.data(forKey: settingsDefaultsKey),
+              let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return values
+    }
+
+    private static func storeSettings(_ values: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(values),
+              let data = try? JSONSerialization.data(withJSONObject: values) else { return }
+        UserDefaults.standard.set(data, forKey: settingsDefaultsKey)
+    }
+
+    /// VaporView's saved session next to a local dump: `<name>.json` beside `<name>.vcd`.
+    private static func siblingSessionFile(for fileURL: URL) -> [String: Any]? {
+        guard fileURL.isFileURL else { return nil }
+        let sessionURL = fileURL.deletingPathExtension().appendingPathExtension("json")
+        guard let size = try? sessionURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= maxSessionFileSize,
+              let text = try? String(contentsOf: sessionURL, encoding: .utf8) else { return nil }
+        return ["path": sessionURL.path, "text": text]
+    }
+
+    private func saveSession(text: String, suggestedName: String, path: String?) {
+        if let path {
+            writeSession(text: text, to: URL(fileURLWithPath: path))
+            return
+        }
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.json]
+        savePanel.nameFieldStringValue = suggestedName
+        if let fileURL, fileURL.isFileURL {
+            savePanel.directoryURL = fileURL.deletingLastPathComponent()
+        }
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let url = savePanel.url else { return }
+            self.writeSession(text: text, to: url)
+        }
+        if let window = webView?.window {
+            savePanel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(savePanel.runModal())
+        }
+    }
+
+    private func writeSession(text: String, to url: URL) {
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            evaluate(function: "sessionSaved", argument: ["path": url.path])
+        } catch {
+            evaluate(function: "sessionFailed", argument: ["message": error.localizedDescription])
+        }
+    }
+
+    private func loadSession() {
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [.json]
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+        if let fileURL, fileURL.isFileURL {
+            openPanel.directoryURL = fileURL.deletingLastPathComponent()
+        }
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let url = openPanel.url else { return }
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                self.evaluate(function: "applySessionFile", argument: ["text": text, "path": url.path])
+            } catch {
+                self.evaluate(function: "applySessionFile", argument: ["path": url.path, "error": error.localizedDescription])
+            }
+        }
+        if let window = webView?.window {
+            openPanel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(openPanel.runModal())
+        }
     }
 
     // MARK: Remote FSDB
@@ -342,13 +474,14 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
 
     private func evaluate(function: String, argument: [String: Any]) {
         guard let webView,
+              JSONSerialization.isValidJSONObject(argument),
               let data = try? JSONSerialization.data(withJSONObject: argument),
               let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("window.cmuxWaveform && window.cmuxWaveform.\(function)(\(json))", completionHandler: nil)
     }
 
     private static func localizedStrings() -> [String: String] {
-        [
+        WaveformViewerStrings.all().merging([
             "netlist": String(localized: "filePreview.waveform.netlist", defaultValue: "Netlist"),
             "loading": String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…"),
             "openFailed": String(localized: "filePreview.waveform.openFailed", defaultValue: "Unable to open waveform"),
@@ -361,7 +494,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 localized: "filePreview.waveform.fsdbNeedsRemoteDetail",
                 defaultValue: "Reading FSDB needs Verdi’s FSDB reader, which runs only on Linux. Open this file from an SSH workspace on the host where Verdi is installed."
             ),
-        ]
+        ]) { _, new in new }
     }
 
     private static func missingAssetsHTML() -> String {
@@ -398,9 +531,37 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             openFileInPage()
         case "opened":
             webContentProcessRecoveryAttempts = 0
+            topScopes = body["top"] as? [String] ?? []
         case "revealInSource":
             if let path = body["path"] as? String, let panel {
                 WaveformSourceLink.revealInSource(dumpPath: path, waveformPanel: panel)
+            }
+        case "settings":
+            if let values = body["values"] as? [String: Any] {
+                Self.storeSettings(values)
+            }
+        case "sessionState":
+            if let state = body["state"] {
+                var restore: [String: Any] = ["state": state, "dirty": body["dirty"] as? Bool ?? false]
+                restore["sessionPath"] = body["sessionPath"] as? String
+                restoreState = restore
+            }
+        case "saveSession":
+            if let text = body["text"] as? String {
+                saveSession(
+                    text: text,
+                    suggestedName: body["suggestedName"] as? String ?? "untitled.json",
+                    path: body["path"] as? String
+                )
+            }
+        case "loadSession":
+            loadSession()
+        case "reload":
+            reloadFileInPage()
+        case "openURL":
+            if let string = body["url"] as? String, let url = URL(string: string),
+               url.scheme == "https" {
+                NSWorkspace.shared.open(url)
             }
         case "copy":
             if let text = body["text"] as? String {
@@ -437,6 +598,36 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
               webContentProcessRecoveryAttempts < maxWebContentProcessRecoveryAttempts else { return }
         webContentProcessRecoveryAttempts += 1
         loadPage()
+    }
+}
+
+/// The keys VaporView binds in its viewer (`KEYBINDINGS` in
+/// `Resources/vaporview/cmux-commands.js`, from VaporView's package.json):
+/// while the waveform page has focus, cmux lets these through to it instead of
+/// running its own shortcut for the same key (rename tab on ⌘R, find on ⌘F,
+/// save on ⌘S, zoom reset on ⌘0).
+@MainActor
+enum WaveformViewerShortcuts {
+    static func claims(_ event: NSEvent, editableElementFocused: Bool) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+        let key = KeyboardLayout.normalizedCharacters(for: event)
+        switch flags {
+        case [.command]:
+            return ["r", "f", "s", "0", "z"].contains(key)
+        case [.command, .shift]:
+            return key == "z"
+        case [.option]:
+            // Equal, Minus, keypad plus and minus: ⌥ changes the characters.
+            return !editableElementFocused && [24, 27, 69, 78].contains(event.keyCode)
+        case []:
+            // F2 renames; g groups; 1–8 pick a color.
+            return !editableElementFocused
+                && (event.keyCode == 120 || key == "g" || ["1", "2", "3", "4", "5", "6", "7", "8"].contains(key))
+        default:
+            return false
+        }
     }
 }
 

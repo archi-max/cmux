@@ -15192,6 +15192,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return false
         }
 
+        // A focused waveform viewer runs VaporView's own keys (⌘R, ⌘F, ⌘S, ⌘0, …).
+        if waveformViewerClaimsShortcutEvent(event) {
+            return false
+        }
+
         let normalizedFlags = flags.subtracting([.numericPad, .function, .capsLock])
         let commandPaletteTargetWindow = commandPaletteWindowForShortcutEvent(event)
         let isPlainEscape = normalizedFlags.isEmpty && event.keyCode == 53
@@ -19006,6 +19011,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let window = panel.webView.window else { return false }
         guard let fr = window.firstResponder as? NSView else { return false }
         return fr.isDescendant(of: panel.webView)
+    }
+
+    /// Whether the event's first responder is a waveform viewer that binds this key.
+    private func waveformViewerClaimsShortcutEvent(_ event: NSEvent) -> Bool {
+        guard let window = resolvedShortcutEventWindow(event) ?? shortcutRoutingActiveWindow,
+              var view = window.firstResponder as? NSView else { return false }
+        while true {
+            if let webView = view as? MarkdownWebView {
+                return webView.waveformViewerClaims(event)
+            }
+            guard let superview = view.superview else { return false }
+            view = superview
+        }
     }
 
     private func browserFocusModePanelForShortcutEvent(_ event: NSEvent) -> BrowserPanel? {

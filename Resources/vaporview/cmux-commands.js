@@ -1,0 +1,997 @@
+// Adapted from VaporView (https://github.com/Lramseyer/vaporview, GPL-3.0), package.json `contributes` (menus, keybindings, configuration), src/extension_core/commands.ts@59107c6, src/extension_core/viewer_provider.ts@59107c6, src/extension_core/document.ts@59107c6 and VaporviewStatusBar in src/extension_core/tree_view.ts@59107c6.
+//
+// What VS Code and VaporView's extension host do around the webview, for cmux:
+// the command table (same command ids and arguments as VaporView), the
+// webview and netlist context menus, the keybindings, the settings
+// (vaporview.* keys), sessions (VaporView's JSON format, auto-load of
+// <dump>.json, undo/redo, unsaved state), the status strip and the external
+// API used by terminal links and the editor.
+//
+// window.cmuxCommands:
+//   run(commandId, args)          a VaporView command, e.g. run('waveformViewer.setMarker', { time: 50, units: 'ns' })
+//   attachFrame(frameWindow)      installs the context menu, key and drop handlers in the viewer frame
+//   showNetlistMenu(item, x, y)   right-click on a netlist row
+//   settings()                    current settings (vaporview.* keys without the prefix)
+//   configMessage()               the webview's setConfigSettings message for those settings
+//   onContextUpdate(m), restoreState(m), handleDrop(m)   webview messages
+//   addSignalByName(path, msb, lsb)
+//   sessionSaved({ path }), applySessionFile({ text, path, error }), sessionFailed({ message })   replies from cmux
+
+(function () {
+  const host = () => window.cmuxWaveform.host;
+  const S = () => window.cmuxWaveform.strings || {};
+  const ui = () => window.cmuxUI;
+
+  const StateChangeType = { None: 0, Restore: 1, File: 2, Undo: 3, Redo: 4, User: 5 };
+  const EXTENSION_VERSION = '1.6.1-beta';
+
+  function format(template, ...args) {
+    let i = 0;
+    return String(template || '').replace(/%(\d+\$)?@/g, (_, n) => String(args[n ? parseInt(n, 10) - 1 : i++] ?? ''));
+  }
+
+  // ---- menus (package.json contributes.menus, `activeCustomEditorId` terms removed) ----
+  const MENUS = {
+    "webview/context": [
+      {submenu: "vaporview.timeUnit", group: "1_time_ruler@1"},
+      {submenu: "vaporview.rulerTimeIncrement", group: "1_time_ruler@2"},
+      {submenu: "vaporview.scrollMode", group: "1_time_ruler@3", when: "webviewSection == 'ruler'"},
+      {command: "vaporview.showRulerLines", group: "3_general_settings@1", when: "webviewSection == 'ruler' && rulerLines == false"},
+      {command: "vaporview.hideRulerLines", group: "3_general_settings@1", when: "webviewSection == 'ruler' && rulerLines == true"},
+      {command: "vaporview.fillBitVector", group: "3_general_settings@2", when: "webviewSection == 'ruler' && fillBitVector == false"},
+      {command: "vaporview.outlineBitVector", group: "3_general_settings@2", when: "webviewSection == 'ruler' && fillBitVector == true"},
+      {command: "vaporview.enableAnimations", group: "3_general_settings@3", when: "webviewSection == 'ruler' && enableAnimations == false"},
+      {command: "vaporview.disableAnimations", group: "3_general_settings@3", when: "webviewSection == 'ruler' && enableAnimations == true"},
+      {command: "vaporview.viewVaporViewSettings", group: "3_general_settings@4", when: "webviewSection == 'ruler'"},
+      {command: "vaporview.showReadme", group: "3_general_settings@5", when: "webviewSection == 'ruler'"},
+      {submenu: "vaporview.valueFormat", group: "1_waveform_settings@2", when: "webviewSection == 'signal'"},
+      {submenu: "vaporview.renderType", group: "1_waveform_settings@3", when: "webviewSection == 'signal'"},
+      {submenu: "vaporview.highlightEdge", group: "1_waveform_settings@4", when: "webviewSection == 'signal'"},
+      {submenu: "vaporview.valueColor", group: "1_waveform_settings@5", when: "webviewSection == 'signal'"},
+      {submenu: "vaporview.rowHeight", group: "1_waveform_settings@6", when: "(webviewSection == 'signal')"},
+      {submenu: "vaporview.nameType", group: "1_waveform_settings@7", when: "webviewSection == 'signal'"},
+      {command: "vaporview.increaseVerticalScale", group: "1_waveform_settings@8", when: "webviewSection == 'signal' && isAnalog"},
+      {command: "vaporview.decreaseVerticalScale", group: "1_waveform_settings@9", when: "webviewSection == 'signal' && isAnalog"},
+      {command: "vaporview.resetVerticalScale", group: "1_waveform_settings@10", when: "webviewSection == 'signal' && isAnalog"},
+      {command: "vaporview.removeSignal", group: "2_variables@1", when: "webviewSection == 'signal'"},
+      {command: "vaporview.showInNetlistView", group: "2_variables@2", when: "webviewSection == 'signal'"},
+      {command: "vaporview.copyName", group: "2_variables@3", when: "webviewSection == 'signal'"},
+      {command: "vaporview.copyValueAtMarker", group: "2_variables@4", when: "webviewSection == 'signal'"},
+      {command: "vaporview.renameSignalGroup", group: "2_variables@5", when: "(webviewSection == 'signal-group' || webviewSection == 'signal-separator')"},
+      {command: "vaporview.ungroupSignals", group: "2_variables@6", when: "webviewSection == 'signal-group'"},
+      {command: "vaporview.deleteGroup", group: "2_variables@7", when: "webviewSection == 'signal-group'"},
+      {command: "vaporview.removeSeparator", group: "2_variables@8", when: "webviewSection == 'signal-separator'"},
+      {command: "vaporview.newSignalGroup", group: "3_groups@1", when: "webviewSection != 'control-bar' && webviewSection != 'ruler' && !inputFocus"},
+      {command: "vaporview.newGroupFromSelection", group: "3_groups@2", when: "webviewSection != 'control-bar' && webviewSection != 'ruler' && !inputFocus"},
+      {command: "vaporview.newSeparator", group: "3_groups@6", when: "webviewSection != 'control-bar' && webviewSection != 'ruler' && !inputFocus"},
+      {command: "vaporview.newSignalFromBitRange", group: "3_groups@8", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 1"},
+      {submenu: "vaporview.createSignals", group: "3_groups@9", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 1"},
+      {command: "vaporview.saveViewerSession", group: "4_saveLoad@1"},
+      {command: "vaporview.loadViewerSession", group: "4_saveLoad@2"},
+      {submenu: "vaporview.waveDrom", group: "5_waveDrom", when: "webviewSection != 'control-bar' && webviewSection != 'ruler' && !inputFocus"},
+    ],
+    "view/item/context": [
+      {command: "vaporview.addVariable", group: "inline@2", when: "viewItem == 'netlistVar' && view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.showInViewer", group: "inline@1", when: "viewItem == 'netlistVar' && view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.searchScope", group: "1_default@0", when: "view == 'waveformViewerNetlistView' && vaporview.netlistSearchable && viewItem == 'netlistScope'"},
+      {command: "vaporview.addSelected", group: "1_default@1", when: "viewItem == 'netlistVar' && view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.removeSelectedNetlist", group: "1_default@2", when: "viewItem == 'netlistVar' && view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.addAllInScopeShallow", group: "1_default@4", when: "viewItem == 'netlistScope'"},
+      {command: "vaporview.addAllInScopeRecursive", group: "1_default@5", when: "viewItem == 'netlistScope'"},
+      {command: "vaporview.removeAllInScope", group: "1_default@6", when: "viewItem == 'netlistScope'"},
+      {command: "vaporview.showInViewer", group: "1_default@7", when: "viewItem == 'netlistVar'"},
+      {command: "vaporview.copyName", group: "1_default@8", when: "view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.addVariableByInstancePath", group: "2_addVariable", when: "view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.saveViewerSession", group: "3_saveLoad@1", when: "view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.loadViewerSession", group: "3_saveLoad@2", when: "view == 'waveformViewerNetlistView'"},
+      {command: "vaporview.reloadFile", group: "4_reload", when: "view == 'waveformViewerNetlistView'"},
+    ],
+    "vaporview.valueFormat": [
+      {command: "vaporview.displayAsEnum", group: "0_default@1", when: "webviewSection == 'signal' && enum == true"},
+      {command: "vaporview.displayAsBinary", group: "0_default@2", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsHexadecimal", group: "0_default@3", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsOctal", group: "0_default@4", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsDecimal", group: "0_default@5", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsDecimalSigned", group: "0_default@6", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsFloat", group: "0_default@7", when: "webviewSection == 'signal' && (width == '4' || width == '8' || width == '16' || width == '32' || width == '64')"},
+      {command: "vaporview.displayAsBFloat", group: "0_default@8", when: "webviewSection == 'signal' && width == '16'"},
+      {command: "vaporview.displayAsTFloat", group: "0_default@9", when: "webviewSection == 'signal' && width == '19'"},
+      {command: "vaporview.displayAsFixedPoint", group: "0_default@10", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsFixedPointSigned", group: "0_default@11", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsAscii", group: "0_default@12", when: "webviewSection == 'signal' && width > '1'"},
+      {command: "vaporview.displayAsEpochTimeNs", group: "0_default@13", when: "webviewSection == 'signal' && width >= '64'"},
+    ],
+    "vaporview.valueColor": [
+      {command: "vaporview.defaultColor1", group: "0_default@1", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor2", group: "0_default@2", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor3", group: "0_default@3", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor4", group: "0_default@4", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor5", group: "0_default@5", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor6", group: "0_default@6", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor7", group: "0_default@7", when: "webviewSection == 'signal'"},
+      {command: "vaporview.defaultColor8", group: "0_default@8", when: "webviewSection == 'signal'"},
+    ],
+    "vaporview.rowHeight": [
+      {command: "vaporview.rowHeight1x", group: "1_default@1", when: "(webviewSection == 'signal' || webviewSection == 'signal-separator')"},
+      {command: "vaporview.rowHeight2x", group: "1_default@2", when: "(webviewSection == 'signal' || webviewSection == 'signal-separator')"},
+      {command: "vaporview.rowHeight4x", group: "1_default@3", when: "(webviewSection == 'signal' || webviewSection == 'signal-separator')"},
+      {command: "vaporview.rowHeight8x", group: "1_default@3", when: "(webviewSection == 'signal' || webviewSection == 'signal-separator')"},
+    ],
+    "vaporview.nameType": [
+      {command: "vaporview.setNameTypeFullPath", group: "1_default@1", when: "webviewSection == 'signal'"},
+      {command: "vaporview.setNameTypeSignalName", group: "1_default@2", when: "webviewSection == 'signal'"},
+      {command: "vaporview.setNameTypeCustom", group: "1_default@3", when: "webviewSection == 'signal'"},
+      {command: "vaporview.renameSignalGroup", group: "1_default@4", when: "webviewSection == 'signal'"},
+    ],
+    "vaporview.createSignals": [
+      {command: "vaporview.createSignalsForAllBits", group: "1_default@1", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 1 && width <= 32"},
+      {command: "vaporview.createSignalsForAllNibbles", group: "1_default@2", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 4 && width <= 128"},
+      {command: "vaporview.createSignalsForAllBytes", group: "1_default@3", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 8 && width <= 256"},
+      {command: "vaporview.createSignalsForAllWords", group: "1_default@4", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 16 && width <= 512"},
+      {command: "vaporview.createSignalsForAllDoubleWords", group: "1_default@5", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 32 && width <= 1024"},
+      {command: "vaporview.createSignalsForAllQuadWords", group: "1_default@6", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 64 && width <= 2048"},
+      {command: "vaporview.createSignalsForAllCustomLength", group: "1_default@7", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 2 && width <= 256"},
+    ],
+    "vaporview.timeUnit": [
+      {command: "vaporview.setTimeUnitsSeconds", group: "1_default@1", when: "s == true"},
+      {command: "vaporview.setTimeUnitsMilliseconds", group: "1_default@2", when: "ms == true"},
+      {command: "vaporview.setTimeUnitsMicroseconds", group: "1_default@3", when: "µs == true"},
+      {command: "vaporview.setTimeUnitsNanoseconds", group: "1_default@4", when: "ns == true"},
+      {command: "vaporview.setTimeUnitsPicoseconds", group: "1_default@5", when: "ps == true"},
+      {command: "vaporview.setTimeUnitsFemtoseconds", group: "1_default@6", when: "fs == true"},
+    ],
+    "vaporview.rulerTimeIncrement": [
+      {command: "vaporview.autoRulerTimeIncrement", group: "1_default@1", when: "webviewSection == 'ruler'"},
+      {command: "vaporview.setRulerTimeIncrement", group: "1_default@2", when: "webviewSection == 'ruler'"},
+    ],
+    "vaporview.scrollMode": [
+      {command: "vaporview.setMouseScrollingMode", group: "1_default@1", when: "webviewSection == 'ruler'"},
+      {command: "vaporview.setTouchpadScrollingMode", group: "1_default@2", when: "webviewSection == 'ruler'"},
+      {command: "vaporview.setAutoScrollingMode", group: "1_default@3", when: "webviewSection == 'ruler'"},
+    ],
+    "vaporview.renderType": [
+      {command: "vaporview.renderMultiBit", group: "1_default@1", when: "webviewSection == 'signal' && (width > '1' || type == 'Real')"},
+      {command: "vaporview.renderLinear", group: "2_analog@2", when: "webviewSection == 'signal' && (width > '1' || type == 'Real')"},
+      {command: "vaporview.renderStepped", group: "2_analog@3", when: "webviewSection == 'signal' && (width > '1' || type == 'Real')"},
+      {command: "vaporview.renderLinearSigned", group: "2_analog@4", when: "webviewSection == 'signal' && (width > '1')"},
+      {command: "vaporview.renderSteppedSigned", group: "2_analog@5", when: "webviewSection == 'signal' && (width > '1')"},
+    ],
+    "vaporview.highlightEdge": [
+      {command: "vaporview.annotatePosedge", group: "1_default@1", when: "webviewSection == 'signal' && width == '1'"},
+      {command: "vaporview.annotateNegedge", group: "1_default@2", when: "webviewSection == 'signal' && width == '1'"},
+      {command: "vaporview.annotateAllEdge", group: "1_default@3", when: "webviewSection == 'signal'"},
+      {command: "vaporview.annotateNone", group: "1_default@4", when: "webviewSection == 'signal'"},
+    ],
+    "vaporview.waveDrom": [
+      {command: "vaporview.copyWaveDrom"},
+      {command: "vaporview.unsetWaveDromClock"},
+      {command: "vaporview.setWaveDromClockRising"},
+      {command: "vaporview.setWaveDromClockFalling"},
+    ],
+  };
+
+  // Titles that are unit symbols or technical names stay as they are in every language.
+  const INVARIANT_TITLES = {
+    'vaporview.setTimeUnitsSeconds': 's', 'vaporview.setTimeUnitsMilliseconds': 'ms',
+    'vaporview.setTimeUnitsMicroseconds': 'µs', 'vaporview.setTimeUnitsNanoseconds': 'ns',
+    'vaporview.setTimeUnitsPicoseconds': 'ps', 'vaporview.setTimeUnitsFemtoseconds': 'fs',
+    'vaporview.rowHeight1x': '1x', 'vaporview.rowHeight2x': '2x', 'vaporview.rowHeight4x': '4x', 'vaporview.rowHeight8x': '8x',
+    'vaporview.displayAsAscii': 'ASCII', 'vaporview.displayAsBFloat': 'BFloat 16', 'vaporview.displayAsTFloat': 'TensorFloat 32',
+    'vaporview.waveDrom': 'WaveDrom',
+  };
+
+  function title(id) {
+    if (INVARIANT_TITLES[id]) { return INVARIANT_TITLES[id]; }
+    const short = id.split('.').slice(1).join('.');
+    return S()['command.' + short] || S()['submenu.' + short] || short;
+  }
+
+  // ---- keybindings (package.json contributes.keybindings, plus Cmd+S/Cmd+Z as VS Code's save/undo) ----
+  // `viewer` bindings need the viewer frame focused (vaporview.waveformViewerFocused).
+  const KEYBINDINGS = [
+    { command: 'vaporview.showInNetlistView', label: '⌘R', viewer: true, match: (e) => cmd(e) && e.key.toLowerCase() === 'r' },
+    { command: 'vaporview.searchNetlist', label: '⌘F', match: (e) => cmd(e) && e.key.toLowerCase() === 'f' },
+    { command: 'vaporview.renameSignalGroup', label: 'F2', viewer: true, match: (e) => plain(e) && e.key === 'F2' },
+    { command: 'vaporview.zoomToFit', label: '⌘0', viewer: true, match: (e) => cmd(e) && (e.key === '0' || e.code === 'Digit0') },
+    { command: 'vaporview.increaseVerticalScale', label: '⌥=', viewer: true,
+      match: (e) => e.altKey && !e.metaKey && !e.ctrlKey && (e.code === 'Equal' || e.code === 'NumpadAdd') },
+    { command: 'vaporview.decreaseVerticalScale', label: '⌥-', viewer: true,
+      match: (e) => e.altKey && !e.metaKey && !e.ctrlKey && (e.code === 'Minus' || e.code === 'NumpadSubtract') },
+    { command: 'vaporview.newGroupFromSelection', label: 'G', viewer: true, match: (e) => plain(e) && e.key === 'g' },
+    ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ command: 'vaporview.defaultColor' + n, label: String(n), viewer: true,
+      match: (e) => plain(e) && e.key === String(n) })),
+    { command: 'vaporview.saveViewerSession', label: '⌘S', save: true, match: (e) => cmd(e) && e.key.toLowerCase() === 's' },
+    { command: 'cmux.undo', label: '⌘Z', match: (e) => cmd(e) && e.key.toLowerCase() === 'z' },
+    { command: 'cmux.redo', label: '⇧⌘Z', match: (e) => e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'z' },
+  ];
+  function cmd(e) { return e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey; }
+  function plain(e) { return !e.metaKey && !e.altKey && !e.ctrlKey && !e.shiftKey; }
+  const KEY_LABELS = {};
+  KEYBINDINGS.forEach((k) => { if (!KEY_LABELS[k.command]) { KEY_LABELS[k.command] = k.label; } });
+
+  function isTextInput(target) {
+    return !!(target && target.closest && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
+  }
+
+  function handleKey(e, inViewer) {
+    if (e.defaultPrevented || ui().hasOpenOverlay() || isTextInput(e.target)) { return; }
+    for (const binding of KEYBINDINGS) {
+      if (binding.viewer && !inViewer) { continue; }
+      if (!binding.match(e)) { continue; }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      run(binding.command, undefined);
+      return;
+    }
+  }
+
+  // ---- settings (contributes.configuration, `vaporview.` dropped) ----
+  // cmux reads FSDB through its own helper and has no WCP server, so the
+  // fsdbAddonPath, fsdbReaderLibsPath and wcp.* keys do not apply.
+  const COLOR_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
+  const SETTINGS = [
+    { key: 'scrollingMode', type: 'enum', options: [['Mouse', 'settingsOptionMouse'], ['Touchpad', 'settingsOptionTouchpad'], ['Auto', 'settingsOptionAuto']], value: 'Auto' },
+    { key: 'touchpadPinchSensitivity', type: 'number', value: 1, step: 0.1 },
+    { key: 'showRulerLines', type: 'boolean', value: true },
+    { key: 'fillMultiBitValues', type: 'boolean', value: false },
+    { key: 'multiBitFixedHeight', type: 'boolean', value: true },
+    { key: 'enableAnimations', type: 'boolean', value: true },
+    { key: 'animationDuration', type: 'number', value: 50, step: 10 },
+    { key: 'useGlow', type: 'boolean', value: false },
+    { key: 'removeGlitchTransitions', type: 'boolean', value: false },
+    { key: 'defaultTimeUnit', type: 'enum', options: [['fs'], ['ps'], ['ns'], ['µs'], ['ms'], ['s'], ['none', 'settingsOptionNone']], value: 'none' },
+    { key: 'defaultNameType', type: 'enum', options: [['fullPath', 'command.setNameTypeFullPath'], ['signalName', 'command.setNameTypeSignalName']], value: 'fullPath' },
+    { key: 'defaultSingleBitColor', type: 'color', value: 1 },
+    { key: 'defaultMultiBitColor', type: 'color', value: 1 },
+    { key: 'defaultParamColor', type: 'color', value: 3 },
+    { key: 'defaultStringColor', type: 'color', value: 2 },
+    { key: 'defaultEnumColor', type: 'color', value: 1 },
+    { key: 'defaultCustomSignalColor', type: 'color', value: 1 },
+    { key: 'customColor5', type: 'string', value: '#ffa557' },
+    { key: 'customColor6', type: 'string', value: '#dcdcaa' },
+    { key: 'customColor7', type: 'string', value: '#d2a8ff' },
+    { key: 'customColor8', type: 'string', value: '#4abfa8' },
+    { key: 'sortNetlist', type: 'boolean', value: false },
+    { key: 'promptLoadSettings', type: 'enum', options: [['Always', 'settingsOptionAlways'], ['Ask', 'settingsOptionAsk'], ['Never', 'settingsOptionNever']], value: 'Ask' },
+    { key: 'defaultAutoReload', type: 'boolean', value: false },
+    { key: 'enableInstancePathTerminalLinks', type: 'boolean', value: true },
+    { key: 'overrideDevicePixelRatio', type: 'boolean', value: false },
+    { key: 'userPixelRatio', type: 'number', value: 1, step: 0.25 },
+    { key: 'disableAnalogRendererOptimizations', type: 'boolean', value: false },
+  ];
+  let settingsValues = {};
+
+  function settings() {
+    const out = {};
+    SETTINGS.forEach((s) => { out[s.key] = s.key in settingsValues ? settingsValues[s.key] : s.value; });
+    return out;
+  }
+
+  function loadSettings(values) {
+    settingsValues = {};
+    const known = new Set(SETTINGS.map((s) => s.key));
+    Object.entries(values || {}).forEach(([k, v]) => {
+      const key = k.replace(/^vaporview\./, '');
+      if (known.has(key)) { settingsValues[key] = v; }
+    });
+  }
+
+  // Same fields as VaporviewDocument.setConfigurationSettings.
+  function configMessage() {
+    const c = settings();
+    return {
+      command: 'setConfigSettings',
+      scrollingMode: c.scrollingMode,
+      touchpadPinchSensitivity: c.touchpadPinchSensitivity,
+      rulerLines: c.showRulerLines,
+      overrideDevicePixelRatio: c.overrideDevicePixelRatio,
+      userPixelRatio: c.userPixelRatio,
+      fillMultiBitValues: c.fillMultiBitValues,
+      multiBitFixedHeight: c.multiBitFixedHeight,
+      removeGlitchTransitions: c.removeGlitchTransitions,
+      defaultTimeUnit: c.defaultTimeUnit,
+      enableAnimations: c.enableAnimations,
+      animationDuration: c.animationDuration,
+      useGlow: c.useGlow,
+      disableAnalogRendererOptimizations: c.disableAnalogRendererOptimizations,
+      defaultNameType: c.defaultNameType,
+      defaultSingleBitColor: c.defaultSingleBitColor,
+      defaultMultiBitColor: c.defaultMultiBitColor,
+      defaultParamColor: c.defaultParamColor,
+      defaultStringColor: c.defaultStringColor,
+      defaultEnumColor: c.defaultEnumColor,
+      defaultCustomSignalColor: c.defaultCustomSignalColor,
+      customColorPalette: [c.customColor5, c.customColor6, c.customColor7, c.customColor8],
+    };
+  }
+
+  function updateSetting(key, value) {
+    settingsValues[key.replace(/^vaporview\./, '')] = value;
+    persistSettings();
+  }
+
+  function persistSettings() {
+    host().toNative({ type: 'settings', values: Object.assign({}, settingsValues) });
+    host().toWebview(configMessage());
+    if (window.cmuxNetlist && host().doc.netlist.length) { window.cmuxNetlist.render(host().doc.netlist); }
+  }
+
+  function showSettings() {
+    const s = S();
+    return ui().modal((box, finish) => {
+      box.classList.add('cmux-settings');
+      const heading = document.createElement('div');
+      heading.className = 'cmux-dialog-title';
+      heading.textContent = s.settingsTitle || '';
+      const list = document.createElement('div');
+      list.className = 'cmux-settings-list';
+      const current = settings();
+      for (const def of SETTINGS) {
+        const row = document.createElement('label');
+        row.className = 'cmux-setting';
+        const name = document.createElement('span');
+        name.textContent = s['setting.' + def.key] || def.key;
+        let input;
+        if (def.type === 'boolean') {
+          input = document.createElement('input');
+          input.type = 'checkbox';
+          input.checked = !!current[def.key];
+          input.addEventListener('change', () => updateSetting(def.key, input.checked));
+          row.append(input, name);
+        } else if (def.type === 'enum' || def.type === 'color') {
+          input = document.createElement('select');
+          const options = def.type === 'color' ? COLOR_OPTIONS.map((n) => [n, null, title('vaporview.defaultColor' + n)]) : def.options;
+          for (const [value, labelKey, label] of options) {
+            const o = document.createElement('option');
+            o.value = String(value);
+            o.textContent = label || (labelKey && s[labelKey]) || String(value);
+            if (String(current[def.key]) === String(value)) { o.selected = true; }
+            input.appendChild(o);
+          }
+          input.addEventListener('change', () => updateSetting(def.key, def.type === 'color' ? Number(input.value) : input.value));
+          row.append(name, input);
+        } else {
+          input = document.createElement('input');
+          input.type = def.type === 'number' ? 'number' : 'text';
+          if (def.step) { input.step = String(def.step); }
+          input.value = String(current[def.key]);
+          input.spellcheck = false;
+          input.addEventListener('change', () => {
+            const v = def.type === 'number' ? Number(input.value) : input.value.trim();
+            if (def.type === 'number' && !Number.isFinite(v)) { input.value = String(settings()[def.key]); return; }
+            updateSetting(def.key, v);
+          });
+          row.append(name, input);
+        }
+        list.appendChild(row);
+      }
+      const buttons = document.createElement('div');
+      buttons.className = 'cmux-dialog-buttons';
+      buttons.append(
+        ui().button(s.settingsReset, () => { settingsValues = {}; persistSettings(); finish(); showSettings(); }),
+        ui().button(s.settingsClose, () => finish(), true),
+      );
+      box.append(heading, list, buttons);
+    });
+  }
+
+  // ---- time helpers (src/common/functions.ts) ----
+  const LOG_SCALE = { zs: -21, as: -18, fs: -15, ps: -12, ns: -9, us: -6, 'µs': -6, ms: -3, s: 0, ks: 3 };
+  const logScale = (unit) => LOG_SCALE[unit] ?? 0;
+  const scale = (unit) => 10 ** logScale(unit);
+
+  function formatTime(time, unit) {
+    const metadata = host().doc.metadata;
+    const offset = logScale(metadata.timeUnit) - logScale(unit);
+    const value = offset > 0 ? time * metadata.timeScale * (10 ** offset) : time * metadata.timeScale / (10 ** -offset);
+    const parts = value.toString().split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return parts.join('.') + ' ' + unit;
+  }
+
+  function timeHz(deltaT, unit) {
+    const hz = Math.abs(1 / (deltaT * scale(unit)));
+    const steps = [[1e15, 'PHz'], [1e12, 'THz'], [1e9, 'GHz'], [1e6, 'MHz'], [1e3, 'kHz']];
+    const [divisor, units] = steps.find(([d]) => hz >= d) || [1, 'Hz'];
+    return Number((hz / divisor).toPrecision(3)) + ' ' + units;
+  }
+
+  // ---- webview context, session and undo (VaporviewDocument) ----
+  let webviewContext = null;   // latest contextUpdate, as VaporviewDocument.webviewContext
+  let undoStack = [];
+  let redoStack = [];
+  let dirty = false;
+  let sessionPath = null;      // where Cmd+S writes, once saved or loaded
+
+  function contextSession(context) {
+    if (!context) { return null; }
+    return {
+      markerTime: context.markerTime, altMarkerTime: context.altMarkerTime, displayTimeUnit: context.displayTimeUnit,
+      selectedSignal: context.selectedSignal, zoomRatio: context.zoomRatio, scrollLeft: context.scrollLeft,
+      defaultPixelTime: context.defaultPixelTime, autoReload: context.autoReload,
+      displayedSignals: context.displayedSignals || [],
+    };
+  }
+
+  function onContextUpdate(m) {
+    const change = m.stateChangeType;
+    if ((change === StateChangeType.User || change === StateChangeType.File) && webviewContext) {
+      undoStack.push(JSON.stringify(contextSession(webviewContext)));
+      if (undoStack.length > 50) { undoStack.shift(); }
+      redoStack = [];
+    }
+    if (change === StateChangeType.User) { setDirty(true); }
+    webviewContext = Object.assign({}, webviewContext || {}, m);
+    updateStatus(m);
+    window.cmuxNetlist.setDisplayed(displayedNetlistIds(webviewContext.displayedSignals || []));
+    scheduleSessionSnapshot();
+    if (m.autoReload && pendingReload) { pendingReload = false; host().toNative({ type: 'reload' }); }
+  }
+
+  function displayedNetlistIds(list, out = []) {
+    for (const item of list) {
+      if (item.netlistId !== undefined) { out.push(item.netlistId); }
+      if (item.children) { displayedNetlistIds(item.children, out); }
+    }
+    return out;
+  }
+
+  // cmux keeps the latest state so a page reload (file change, WebKit
+  // crash) restores the same signals.
+  let snapshotTimer = 0;
+  function scheduleSessionSnapshot() {
+    clearTimeout(snapshotTimer);
+    snapshotTimer = setTimeout(() => {
+      const state = contextSession(webviewContext);
+      if (state) { host().toNative({ type: 'sessionState', state, dirty, sessionPath }); }
+    }, 250);
+  }
+
+  function setDirty(value) {
+    dirty = value;
+    document.getElementById('status-unsaved').hidden = !dirty;
+  }
+
+  // VaporviewDocument.getWebviewSession: what a session file holds.
+  function sessionFile() {
+    const w = webviewContext || {};
+    const selected = w.selectedSignal !== undefined && w.selectedSignal !== null ? host().netlistItem(w.selectedSignal) : null;
+    return {
+      extensionVersion: EXTENSION_VERSION,
+      fileName: host().config.path || host().config.url,
+      markerTime: w.markerTime,
+      altMarkerTime: w.altMarkerTime,
+      displayTimeUnit: w.displayTimeUnit,
+      selectedSignal: selected ? window.cmuxNetlist.instancePath(selected) : null,
+      zoomRatio: w.zoomRatio,
+      scrollLeft: w.scrollLeft,
+      defaultPixelTime: w.defaultPixelTime,
+      displayedSignals: w.displayedSignals || [],
+    };
+  }
+
+  // VaporviewDocument.convertSignalListToSettings: resolve saved rows to the
+  // netlist of the file that is open now, by instance path.
+  async function convertSignalList(list, missing) {
+    const out = [];
+    for (const signal of Array.isArray(list) ? list : []) {
+      try {
+        if (signal.dataType === 'signal-group') {
+          out.push(Object.assign({}, signal, { children: await convertSignalList(signal.children || [], missing) }));
+        } else if (signal.dataType === 'signal-separator') {
+          out.push(signal);
+        } else if (signal.dataType === 'custom-variable') {
+          const source = [];
+          for (const s of signal.source || []) {
+            const v = await host().findItem(s.name, s.msb, s.lsb, true);
+            if (!v || v.kind !== 'var' || s.lsb >= v.width) {
+              missing.push(s.name);
+              source.push({ name: s.name, netlistId: undefined, signalId: undefined, signalWidth: s.signalWidth, msb: s.msb, lsb: Math.max(s.lsb, 0) });
+            } else {
+              source.push({ name: window.cmuxNetlist.instancePath(v), netlistId: v.netlistId, signalId: v.signalId,
+                signalWidth: v.width, msb: Math.min(s.msb, v.width - 1), lsb: Math.max(s.lsb, 0) });
+            }
+          }
+          out.push(Object.assign({}, signal, { encoding: 'BitVector', source }));
+        } else if (signal.dataType === 'netlist-variable' || signal.dataType === undefined) {
+          const v = await host().findItem(signal.name, signal.msb, signal.lsb, true);
+          if (!v || v.kind !== 'var') { missing.push(signal.name); continue; }
+          out.push(Object.assign({}, signal, { dataType: 'netlist-variable', netlistId: v.netlistId, signalId: v.signalId,
+            signalName: v.name, scopePath: v.scopePath, signalWidth: v.width, type: v.type, encoding: v.encoding,
+            enumType: v.enumType, msb: v.msb, lsb: v.lsb }));
+        }
+      } catch (error) {
+        host().log('session row: ' + error);
+      }
+    }
+    return out;
+  }
+
+  async function applySession(session, stateChangeType) {
+    if (!session) { return; }
+    const missing = [];
+    const displayedSignals = await convertSignalList(session.displayedSignals || [], missing);
+    let selectedSignal = session.selectedSignal;
+    if (typeof selectedSignal === 'string') {
+      const v = await host().findItem(selectedSignal, undefined, undefined, true);
+      selectedSignal = v && v.kind === 'var' ? v.netlistId : undefined;
+    }
+    host().toWebview({ command: 'apply-state', stateChangeType, state: {
+      extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
+      altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
+      zoomRatio: session.zoomRatio, scrollLeft: session.scrollLeft, defaultPixelTime: session.defaultPixelTime,
+      autoReload: session.autoReload,
+    } });
+    if (missing.length) {
+      const text = format(S().messageMissingSignals, missing.join(', '));
+      host().log(text);
+      ui().toast(text, 'warning');
+    }
+  }
+
+  // The webview asks for its state after initViewport (restoreState). Its own
+  // saved state (kept in the frame across an in-page reload) wins, then the
+  // state cmux kept from a previous page, then <dump>.json next to the file.
+  async function restoreState(m) {
+    const config = host().config;
+    if (m.state) { config.restore = null; await applySession(m.state, StateChangeType.Restore); return; }
+    if (config.restore && config.restore.state) {
+      const restore = config.restore;
+      config.restore = null;
+      sessionPath = restore.sessionPath || null;
+      await applySession(restore.state, StateChangeType.Restore);
+      setDirty(!!restore.dirty);
+      return;
+    }
+    const file = config.sessionFile;
+    if (!file || !file.text) { return; }
+    const mode = settings().promptLoadSettings;
+    if (mode === 'Never') { return; }
+    if (mode === 'Ask') {
+      const s = S();
+      const answer = await ui().confirm({ message: format(s.messageRestoreSession, file.path), detail: s.messageRestoreSessionDetail,
+        buttons: [{ label: s.dialogSettings, value: 'settings' }, { label: s.dialogNo, value: 'no' }, { label: s.dialogYes, value: 'yes' }] });
+      if (answer === 'settings') { showSettings(); return; }
+      if (answer !== 'yes') { return; }
+    }
+    await loadSessionText(file.text, file.path);
+  }
+
+  async function loadSessionText(text, path) {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      ui().toast(format(S().messageSessionLoadFailed, String(error.message || error)), 'error');
+      return;
+    }
+    if (data.fileName && host().config.path && data.fileName !== host().config.path) {
+      ui().toast(S().messageSessionMismatch, 'warning');
+    }
+    sessionPath = path || null;
+    await applySession(data, StateChangeType.File);
+    setDirty(false);
+  }
+
+  function saveSession(saveAs) {
+    const name = (host().config.path || host().config.url || 'untitled').split('/').pop().replace(/\.[^/.]+$/, '') + '.json';
+    host().toNative({ type: 'saveSession', text: JSON.stringify(sessionFile(), null, 2), suggestedName: name,
+      path: saveAs ? null : sessionPath });
+  }
+
+  function undo(stack, other, type) {
+    if (!stack.length) { return; }
+    const state = JSON.parse(stack.pop());
+    other.push(JSON.stringify(contextSession(webviewContext)));
+    applySession(state, type);
+  }
+
+  // ---- status strip (VaporviewStatusBar) ----
+  function updateStatus(event) {
+    const doc = host().doc;
+    if (!doc.metadata) { return; }
+    const s = S();
+    const w = webviewContext || {};
+    const unit = event.displayTimeUnit || w.displayTimeUnit || doc.metadata.timeUnit;
+    const timeEl = document.getElementById('status-time');
+    const deltaEl = document.getElementById('status-delta');
+    const signalEl = document.getElementById('status-signal');
+    if (w.markerTime || w.markerTime === 0) {
+      timeEl.textContent = format(s.statusTime, formatTime(w.markerTime, unit));
+      const hasAlt = w.altMarkerTime !== null && w.altMarkerTime !== undefined;
+      deltaEl.hidden = !hasAlt;
+      if (hasAlt) {
+        const delta = w.markerTime - w.altMarkerTime;
+        deltaEl.textContent = format(s.statusDelta, formatTime(delta, unit), timeHz(delta * doc.metadata.timeScale, doc.metadata.timeUnit));
+      }
+    } else {
+      deltaEl.hidden = true;
+      timeEl.textContent = format(s.statusTimeUnits, unit);
+    }
+    timeEl.title = s.statusTimeUnitsTooltip || '';
+    const item = w.selectedSignal !== undefined && w.selectedSignal !== null ? host().netlistItem(w.selectedSignal) : null;
+    signalEl.hidden = false;
+    if (item) {
+      let text = format(s.statusSelectedSignal, item.name);
+      if (event.transitionCount !== undefined && event.transitionCount !== null) {
+        text += ' · ' + format(s.statusValueChanges, String(event.transitionCount).replace(/\B(?=(\d{3})+(?!\d))/g, ','));
+      }
+      signalEl.textContent = text;
+    } else if (event.selectedSignalCount > 1) {
+      signalEl.textContent = format(s.statusSelectedSignals, event.selectedSignalCount);
+    } else {
+      signalEl.hidden = true;
+    }
+  }
+
+  // ---- file changes (VaporviewDocument file watcher) ----
+  let pendingReload = false;
+
+  function fileChanged() {
+    if (webviewContext && webviewContext.autoReload) { host().toNative({ type: 'reload' }); return; }
+    pendingReload = true;
+    document.getElementById('status-reload').hidden = false;
+  }
+
+  // ---- helpers used by commands ----
+  function selectedNetlistVars() {
+    return window.cmuxNetlist.selectedItems().filter((x) => x.kind === 'var');
+  }
+
+  async function addFiltered(vars, noWarning) {
+    const list = vars.filter((x) => x.kind === 'var');
+    if (list.length > 48 && !noWarning) {
+      const s = S();
+      const answer = await ui().confirm({ message: s.messageManySignals,
+        buttons: [{ label: s.dialogNo, value: false }, { label: s.dialogYes, value: true }] });
+      if (!answer) { return; }
+    }
+    host().addVariables(list);
+  }
+
+  async function scopeVariables(scope, recursive, maxChildren) {
+    const vars = [];
+    const scopes = [scope];
+    while (scopes.length && vars.length < maxChildren) {
+      const children = await host().getChildren(scopes.shift());
+      children.forEach((c) => {
+        if (c.kind === 'var') { vars.push(c); } else if (c.kind === 'scope' && recursive) { scopes.push(c); }
+      });
+    }
+    return vars;
+  }
+
+  // ViewerProvider.getNetlistItemFromSignalName + addSignalByNameToDocument.
+  async function addSignalByName(name, msb, lsb) {
+    let path = String(name).trim().replace(/[:;]$/, '');
+    const field = /\[(\d+:)?(\d+)\]$/.exec(path);
+    if (field && msb === undefined) {
+      msb = field[1] ? parseInt(field[1], 10) : parseInt(field[2], 10);
+      lsb = parseInt(field[2], 10);
+      path = path.replace(/\[(\d+:)?(\d+)\]$/, '');
+    }
+    const item = await host().findItem(path, msb, lsb, false);
+    if (!item) { ui().toast(format(S().messageSignalNotFound, name), 'warning'); return false; }
+    if (item.kind === 'scope') { window.cmuxNetlist.focusSearch(item); return true; }
+    const shown = webviewContext ? displayedNetlistIds(webviewContext.displayedSignals || []) : [];
+    if (shown.includes(item.netlistId)) {
+      host().toWebview({ command: 'setSelectedSignal', netlistId: item.netlistId });
+    } else {
+      host().addVariables([item]);
+    }
+    return true;
+  }
+
+  function setMarker(time, units, markerType) {
+    const metadata = host().doc.metadata;
+    if (!metadata || time === undefined || time === null || Number.isNaN(Number(time))) { return false; }
+    let t = Number(time);
+    if (units !== undefined && units !== null && units !== '') {
+      t = Math.round(t * scale(units) / (scale(metadata.timeUnit) * metadata.timeScale));
+    }
+    if (t < 0 || t > metadata.timeEnd) { return false; }
+    host().toWebview({ command: 'setMarker', time: t, markerType: markerType || 0 });
+    return true;
+  }
+
+  function displayFormat(e, properties) {
+    host().toWebview(Object.assign({ command: 'setDisplayFormat', netlistId: e ? e.netlistId : undefined,
+      rowId: e ? e.rowId : undefined, index: undefined }, properties));
+  }
+
+  const keypress = (keyCommand) => (e) => host().toWebview({ command: 'handle-keypress', keyCommand, event: e || null });
+
+  async function askNumberFormat(e, prefix) {
+    const offset = await ui().prompt({ title: S().promptFixedPointOffset, value: '0' });
+    if (!offset) { return; }
+    displayFormat(e, { numberFormat: prefix + offset });
+  }
+
+  function copyName(e) {
+    if (!e) { return; }
+    let text = '';
+    const scopePath = Array.isArray(e.scopePath) ? e.scopePath.join('.') : e.scopePath;
+    if (scopePath) { text += scopePath + '.'; }
+    if (e.name) { text += e.name; }
+    if (e.signalName) { text += e.signalName; }
+    host().toNative({ type: 'copy', text });
+  }
+
+  async function setTimeUnits(units) {
+    const metadata = host().doc.metadata;
+    if (!units) {
+      const maxTime = scale(metadata.timeUnit) * metadata.timeScale * metadata.timeEnd;
+      const choices = ['fs', 'ps', 'ns', 'µs', 'ms', 's'].filter((u) => scale(u) <= maxTime);
+      units = await ui().quickPick({ title: S().promptTimeUnits, items: choices.map((u) => ({ label: u, value: u })) });
+      if (!units) { return; }
+    }
+    host().toWebview({ command: 'updateRulerSettings', units });
+  }
+
+  async function setRulerIncrement() {
+    const increment = await ui().prompt({ title: S().promptRulerIncrement, value: '' });
+    if (increment === undefined) { return; }
+    const metadata = host().doc.metadata;
+    const [time, units] = increment.trim().split(/\s+/);
+    const value = parseFloat(time);
+    if (Number.isNaN(value)) { return; }
+    const timeScale = units ? 10 ** (logScale(units) - logScale(metadata.timeUnit)) : 1;
+    host().toWebview({ command: 'updateRulerSettings', pixelTime: value * timeScale });
+  }
+
+  function groupArgs(e) {
+    e = e || {};
+    return { groupPath: e.groupPath, parentGroupId: e.parentGroupId, eventRowId: e.rowId };
+  }
+
+  // ---- the command table (commands.ts) ----
+  const COMMANDS = {
+    // External API (VaporView's waveformViewer.* commands)
+    'waveformViewer.setMarker': (e) => setMarker(e.time, e.units, e.markerType),
+    'waveformViewer.addVariable': (e) => (e.netlistId !== undefined && host().netlistItem(e.netlistId)
+      ? host().addVariables([host().netlistItem(e.netlistId)]) : addSignalByName(e.instancePath, e.msb, e.lsb)),
+    'waveformViewer.removeVariable': async (e) => {
+      const v = e.netlistId !== undefined ? host().netlistItem(e.netlistId) : await host().findItem(e.instancePath, e.msb, e.lsb, true);
+      if (v) { host().toWebview({ command: 'remove-signal', netlistId: v.netlistId, rowId: undefined, removeAllSelected: false }); }
+    },
+    'waveformViewer.revealInNetlistView': async (e) => {
+      const v = e.netlistId !== undefined ? host().netlistItem(e.netlistId) : await host().findItem(e.instancePath, e.msb, e.lsb, true);
+      if (v) { window.cmuxNetlist.reveal(v.netlistId); }
+    },
+    'waveformViewer.getViewerState': () => sessionFile(),
+    'waveformViewer.loadViewerState': (e) => applySession(e.state || e, StateChangeType.File),
+    'waveformViewer.getValuesAtTime': (e) => host().valuesAtTime(e.time, e.instancePaths || []),
+    'waveformViewerNetlistView.focus': () => window.cmuxNetlist.focusSearch(),
+
+    // Netlist
+    'vaporview.searchNetlist': () => window.cmuxNetlist.focusSearch(null),
+    'vaporview.searchScope': (e) => window.cmuxNetlist.focusSearch(e),
+    'vaporview.addVariableByInstancePath': async (e) => {
+      if (e && e.instancePath) { return addSignalByName(e.instancePath); }
+      const name = await ui().prompt({ title: S().promptVariableName, placeholder: 'top.mid.var' });
+      if (name) { await addSignalByName(name); }
+    },
+    'vaporview.addVariable': (e) => addFiltered([e], true),
+    'vaporview.addSelected': () => addFiltered(selectedNetlistVars(), false),
+    'vaporview.removeSelectedNetlist': () => selectedNetlistVars().forEach((v) =>
+      host().toWebview({ command: 'remove-signal', netlistId: v.netlistId, rowId: undefined, removeAllSelected: false })),
+    'vaporview.addAllInScopeShallow': async (e) => addScope(e, false),
+    'vaporview.addAllInScopeRecursive': async (e) => addScope(e, true),
+    'vaporview.removeAllInScope': async (e) => {
+      if (!e || e.kind !== 'scope') { return; }
+      (await host().getChildren(e)).filter((c) => c.kind === 'var').forEach((v) =>
+        host().toWebview({ command: 'remove-signal', netlistId: v.netlistId, rowId: undefined, removeAllSelected: false }));
+    },
+    'vaporview.showInNetlistView': (e) => {
+      const id = e && e.netlistId !== undefined ? e.netlistId : webviewContext && webviewContext.selectedSignal;
+      if (id !== undefined && id !== null) { window.cmuxNetlist.reveal(id); }
+    },
+    'vaporview.showInViewer': (e) => host().toWebview({ command: 'setSelectedSignal', netlistId: e.netlistId }),
+    'vaporview.copyName': copyName,
+    'vaporview.copyValueAtMarker': (e) => { if (e && e.rowId !== undefined) { host().toWebview({ command: 'copyValueAtMarker', rowId: e.rowId }); } },
+
+    // Rows, groups and separators
+    'vaporview.removeSignal': (e) => { if (e && e.rowId !== undefined) { host().toWebview({ command: 'remove-signal', netlistId: undefined, rowId: e.rowId, removeAllSelected: true }); } },
+    'vaporview.newSignalGroup': (e) => host().toWebview(Object.assign({ command: 'newSignalGroup', groupName: e && e.name, moveSelected: false, showRenameInput: true }, groupArgs(e))),
+    'vaporview.newGroupFromSelection': (e) => host().toWebview(Object.assign({ command: 'newSignalGroup', groupName: e && e.name, moveSelected: true, showRenameInput: true }, groupArgs(e))),
+    'vaporview.ungroupSignals': (e) => host().toWebview({ command: 'remove-group', groupId: e && e.groupId, recursive: false }),
+    'vaporview.deleteGroup': (e) => host().toWebview({ command: 'remove-group', groupId: e && e.groupId, recursive: true }),
+    'vaporview.renameSignalGroup': (e) => host().toWebview({ command: 'renameSignalGroup', rowId: e && e.rowId, groupId: e && e.groupId, groupName: undefined }),
+    'vaporview.newSeparator': (e) => host().toWebview(Object.assign({ command: 'add-separator', name: e && e.name }, groupArgs(e))),
+    'vaporview.removeSeparator': (e) => host().toWebview({ command: 'remove-separator', rowId: e && e.rowId, removeAllSelected: true }),
+    'vaporview.newSignalFromBitRange': async (e) => {
+      const range = await ui().prompt({ title: S().promptBitRange, value: '0' });
+      if (!range) { return; }
+      if (!/^(\d+)(:(\d+))?$/.test(range)) { ui().toast(format(S().messageInvalidBitRange, range), 'warning'); return; }
+      const [msb, lsb] = range.split(':').map((x) => parseInt(x, 10));
+      host().toWebview(Object.assign({ command: 'add-bit-slice', name: e && e.name, msb, lsb: lsb === undefined ? msb : lsb }, groupArgs(e)));
+    },
+    'vaporview.createSignalsForAllCustomLength': async (e) => {
+      const text = await ui().prompt({ title: S().promptCustomLength, value: '1' });
+      if (!text) { return; }
+      const length = parseInt(text, 10);
+      if (Number.isNaN(length) || length <= 0) { ui().toast(S().messageInvalidCustomLength, 'warning'); return; }
+      host().toWebview(Object.assign({ command: 'add-all-bit-slices', name: e && e.name, bitWidth: length }, groupArgs(e)));
+    },
+
+    // Value format, render type, edges, color, row height, name
+    'vaporview.displayAsFloat': (e) => displayFormat(e, { numberFormat: [4, 8, 16, 32, 64].includes(e && e.width) ? 'float' + e.width : 'binary' }),
+    'vaporview.displayAsFixedPoint': (e) => askNumberFormat(e, 'fixedpoint_u_'),
+    'vaporview.displayAsFixedPointSigned': (e) => askNumberFormat(e, 'fixedpoint_s_'),
+    'vaporview.increaseVerticalScale': keypress('increaseVerticalScale'),
+    'vaporview.decreaseVerticalScale': keypress('decreaseVerticalScale'),
+    'vaporview.resetVerticalScale': keypress('resetVerticalScale'),
+    'vaporview.zoomToFit': keypress('zoomToFit'),
+
+    // Time and ruler
+    'vaporview.setTimeUnits': () => setTimeUnits(''),
+    'vaporview.autoRulerTimeIncrement': () => host().toWebview({ command: 'updateRulerSettings', pixelTime: 0 }),
+    'vaporview.setRulerTimeIncrement': setRulerIncrement,
+
+    // Settings
+    'vaporview.showRulerLines': () => updateSetting('showRulerLines', true),
+    'vaporview.hideRulerLines': () => updateSetting('showRulerLines', false),
+    'vaporview.fillBitVector': () => updateSetting('fillMultiBitValues', true),
+    'vaporview.outlineBitVector': () => updateSetting('fillMultiBitValues', false),
+    'vaporview.enableAnimations': () => updateSetting('enableAnimations', true),
+    'vaporview.disableAnimations': () => updateSetting('enableAnimations', false),
+    'vaporview.setMouseScrollingMode': () => updateSetting('scrollingMode', 'Mouse'),
+    'vaporview.setTouchpadScrollingMode': () => updateSetting('scrollingMode', 'Touchpad'),
+    'vaporview.setAutoScrollingMode': () => updateSetting('scrollingMode', 'Auto'),
+    'vaporview.viewVaporViewSettings': () => showSettings(),
+    'vaporview.showReadme': () => host().toNative({ type: 'openURL', url: 'https://github.com/Lramseyer/vaporview#readme' }),
+
+    // WaveDrom
+    'vaporview.copyWaveDrom': () => host().toWebview({ command: 'copyWaveDrom' }),
+    'vaporview.setWaveDromClockRising': (e) => host().toWebview({ command: 'setWaveDromClock', edge: '1', netlistId: e && e.netlistId !== undefined ? e.netlistId : null }),
+    'vaporview.setWaveDromClockFalling': (e) => host().toWebview({ command: 'setWaveDromClock', edge: '0', netlistId: e && e.netlistId !== undefined ? e.netlistId : null }),
+    'vaporview.unsetWaveDromClock': () => host().toWebview({ command: 'setWaveDromClock', edge: '1', netlistId: null }),
+
+    // Sessions and file
+    'vaporview.saveViewerSession': () => saveSession(false),
+    'vaporview.loadViewerSession': () => host().toNative({ type: 'loadSession' }),
+    'vaporview.reloadFile': () => host().toNative({ type: 'reload' }),
+    'cmux.undo': () => undo(undoStack, redoStack, StateChangeType.Undo),
+    'cmux.redo': () => undo(redoStack, undoStack, StateChangeType.Redo),
+  };
+
+  const FORMATS = { displayAsBinary: 'binary', displayAsHexadecimal: 'hexadecimal', displayAsDecimal: 'decimal',
+    displayAsDecimalSigned: 'signed', displayAsOctal: 'octal', displayAsBFloat: 'bfloat16', displayAsTFloat: 'tensorfloat32',
+    displayAsAscii: 'ascii', displayAsEpochTimeNs: 'nsepoch', displayAsEnum: 'enum' };
+  Object.entries(FORMATS).forEach(([k, v]) => { COMMANDS['vaporview.' + k] = (e) => displayFormat(e, { numberFormat: v }); });
+  const RENDER = { renderMultiBit: 'multiBit', renderLinear: 'linear', renderStepped: 'stepped', renderLinearSigned: 'linearSigned', renderSteppedSigned: 'steppedSigned' };
+  Object.entries(RENDER).forEach(([k, v]) => { COMMANDS['vaporview.' + k] = (e) => displayFormat(e, { renderType: v }); });
+  const EDGES = { annotatePosedge: ['1'], annotateNegedge: ['0'], annotateAllEdge: ['0', '1'], annotateNone: [] };
+  Object.entries(EDGES).forEach(([k, v]) => { COMMANDS['vaporview.' + k] = (e) => displayFormat(e, { annotateValue: v }); });
+  [1, 2, 3, 4, 5, 6, 7, 8].forEach((n) => { COMMANDS['vaporview.defaultColor' + n] = (e) => displayFormat(e, { colorIndex: n - 1 }); });
+  [1, 2, 4, 8].forEach((n) => { COMMANDS['vaporview.rowHeight' + n + 'x'] = (e) => displayFormat(e, { rowHeight: n }); });
+  const NAME_TYPES = { setNameTypeFullPath: 'fullPath', setNameTypeSignalName: 'signalName', setNameTypeCustom: 'custom' };
+  Object.entries(NAME_TYPES).forEach(([k, v]) => { COMMANDS['vaporview.' + k] = (e) => displayFormat(e, { nameType: v }); });
+  const UNITS = { Seconds: 's', Milliseconds: 'ms', Microseconds: 'µs', Nanoseconds: 'ns', Picoseconds: 'ps', Femtoseconds: 'fs' };
+  Object.entries(UNITS).forEach(([k, v]) => { COMMANDS['vaporview.setTimeUnits' + k] = () => setTimeUnits(v); });
+  const SLICES = { Bits: 1, Nibbles: 4, Bytes: 8, Words: 16, DoubleWords: 32, QuadWords: 64 };
+  Object.entries(SLICES).forEach(([k, v]) => {
+    COMMANDS['vaporview.createSignalsForAll' + k] = (e) => host().toWebview(Object.assign({ command: 'add-all-bit-slices', name: e && e.name, bitWidth: v }, groupArgs(e)));
+  });
+
+  async function addScope(e, recursive) {
+    if (!e || e.kind !== 'scope') { return; }
+    addFiltered(await scopeVariables(e, recursive, 128), false);
+  }
+
+  async function run(id, args) {
+    const handler = COMMANDS[id];
+    if (!handler) { host().log('unknown command ' + id); return undefined; }
+    try {
+      return await handler(args);
+    } catch (error) {
+      host().log('command ' + id + ' failed: ' + ((error && error.stack) || error));
+      ui().toast(String((error && error.message) || error), 'error');
+      return undefined;
+    }
+  }
+
+  // ---- context menus ----
+  function resolveEntry(args) {
+    return (entry) => {
+      if (entry.group && entry.group.startsWith('inline')) { return null; }
+      if (entry.submenu) { return { label: title(entry.submenu), entries: MENUS[entry.submenu] || [] }; }
+      if (!COMMANDS[entry.command]) { return null; }
+      return { label: title(entry.command), keybinding: KEY_LABELS[entry.command], run: () => run(entry.command, args) };
+    };
+  }
+
+  // VS Code merges every data-vscode-context from the clicked element up to
+  // the root, the closest one winning, and passes the result as the command
+  // argument.
+  function webviewContextAt(target) {
+    const chain = [];
+    for (let el = target; el && el.nodeType === 1; el = el.parentElement) {
+      const raw = el.getAttribute('data-vscode-context');
+      if (raw) { chain.push(raw); }
+    }
+    const context = {};
+    for (const raw of chain.reverse()) {
+      try { Object.assign(context, JSON.parse(raw.replace(/%x20/g, ' '))); } catch (error) { /* not JSON */ }
+    }
+    return context;
+  }
+
+  function attachFrame(frameWindow) {
+    const frameDocument = frameWindow.document;
+    frameDocument.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const args = webviewContextAt(e.target);
+      const context = Object.assign({ inputFocus: isTextInput(e.target) }, host().viewerContext.keys, args);
+      const items = ui().buildMenu(MENUS['webview/context'], context, resolveEntry(args));
+      // cmux addition: VS Code shows Reload File in the editor title bar.
+      items.push({ separator: true }, { label: title('vaporview.reloadFile'), run: () => run('vaporview.reloadFile') });
+      const rect = document.getElementById('viewer').getBoundingClientRect();
+      ui().showMenu(items, rect.left + e.clientX, rect.top + e.clientY);
+    });
+    frameWindow.addEventListener('keydown', (e) => handleKey(e, true), true);
+    frameWindow.addEventListener('mousedown', () => ui().closeMenus(), true);
+    // Netlist rows dragged in from the host page carry 'codeeditors' data.
+    frameDocument.addEventListener('dragover', (e) => {
+      if (e.dataTransfer && [...e.dataTransfer.types].includes('codeeditors')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+    });
+  }
+
+  function showNetlistMenu(item, x, y) {
+    const context = { view: 'waveformViewerNetlistView', viewItem: item.kind === 'scope' ? 'netlistScope' : 'netlistVar',
+      'vaporview.netlistSearchable': true };
+    const args = Object.assign({}, item, { scopePath: item.scopePath.join('.') });
+    const resolve = resolveEntry(item);
+    const items = ui().buildMenu(MENUS['view/item/context'], context, (entry) => {
+      const r = resolve(entry);
+      // copyName reads scopePath as a dotted string, as VaporView's NetlistItem does.
+      if (r && entry.command === 'vaporview.copyName') { r.run = () => run('vaporview.copyName', args); }
+      return r;
+    });
+    ui().showMenu(items, x, y);
+  }
+
+  function handleDrop(m) {
+    const ids = (m.resourceUriList || []).map((r) => r && r.cmuxNetlistId).filter((id) => id !== undefined);
+    const vars = ids.map((id) => host().netlistItem(id)).filter(Boolean);
+    if (vars.length) { host().addVariables(vars, m.groupPath || [], m.dropIndex); }
+  }
+
+  // ---- host page wiring ----
+  let listenersInstalled = false;
+
+  function init(config) {
+    loadSettings(config.settings);
+    webviewContext = null;
+    undoStack = [];
+    redoStack = [];
+    pendingReload = false;
+    sessionPath = (config.restore && config.restore.sessionPath) || null;
+    setDirty(false);
+    if (listenersInstalled) { return; }
+    listenersInstalled = true;
+    document.addEventListener('keydown', (e) => handleKey(e, false), true);
+    document.getElementById('status-time').addEventListener('click', () => run('vaporview.setTimeUnits'));
+    const reload = document.getElementById('status-reload');
+    reload.querySelector('button').addEventListener('click', () => { pendingReload = false; reload.hidden = true; host().toNative({ type: 'reload' }); });
+  }
+
+  // Before an in-page reload: the frame keeps its own state, the rest restarts.
+  function willReload() {
+    pendingReload = false;
+    document.getElementById('status-reload').hidden = true;
+  }
+
+  window.cmuxCommands = {
+    run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
+    addSignalByName, fileChanged, willReload, updateSetting,
+    init,
+    sessionSaved: ({ path }) => { sessionPath = path || sessionPath; setDirty(false); scheduleSessionSnapshot(); },
+    sessionFailed: ({ message }) => ui().toast(format(S().messageSessionSaveFailed, message), 'error'),
+    applySessionFile: ({ text, path, error }) => (error
+      ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path)),
+    sessionSnapshot: () => ({ state: contextSession(webviewContext), dirty, sessionPath }),
+    commandIds: () => Object.keys(COMMANDS),
+    menus: MENUS,
+  };
+})();

@@ -4,21 +4,44 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' cmux-waveform: 'wasm-unsafe-eval'; worker-src 'self' cmux-waveform:; connect-src 'self' cmux-waveform:; style-src 'self' cmux-waveform: 'unsafe-inline'; font-src 'self' cmux-waveform:; img-src 'self' cmux-waveform: data:; frame-src 'self' cmux-waveform:; base-uri 'none'; form-action 'none'">
   <title>Waveform</title>
+  <link rel="stylesheet" href="codicons/codicon.css">
   <link rel="stylesheet" href="vscode-theme.css">
   <style>
-    html, body { height: 100%; overflow: hidden; }
-    body { display: flex; font-family: var(--vscode-font-family); font-size: 12px; user-select: none; -webkit-user-select: none; }
+    html, body { height: 100%; overflow: hidden; margin: 0; }
+    body { display: flex; flex-direction: column; font-family: var(--vscode-font-family); font-size: 12px; user-select: none; -webkit-user-select: none; }
+    #panes { flex: 1; display: flex; min-height: 0; }
     #netlist { width: 220px; min-width: 120px; max-width: 60%; flex: none; display: flex; flex-direction: column;
       border-right: 1px solid var(--vscode-widget-border); resize: horizontal; overflow: hidden; }
     #netlist-title { flex: none; margin: 0; padding: 6px 10px 4px; font-weight: 600; text-transform: uppercase;
       font-size: 11px; color: var(--vscode-descriptionForeground); }
-    #tree { flex: 1; overflow: auto; padding-bottom: 8px; }
-    #tree .row { padding: 1px 6px; cursor: default; white-space: nowrap; line-height: 20px; }
-    #tree .row:hover { background: var(--vscode-list-hoverBackground); }
-    #tree .scope::before { content: '\25B8\00a0\00a0'; }
-    #tree .scope.open::before { content: '\25BE\00a0\00a0'; }
-    #tree .var { color: var(--vscode-symbolIcon-variableForeground); cursor: pointer; }
-    #tree .var .range { color: var(--vscode-descriptionForeground); }
+    #netlist-search { flex: none; margin: 0 6px 4px; display: flex; flex-direction: column; gap: 2px; }
+    #netlist-search input { box-sizing: border-box; width: 100%; padding: 3px 6px; font: inherit; color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 2px;
+      user-select: text; -webkit-user-select: text; }
+    #netlist-search input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+    #netlist-search .scope-row { display: none; align-items: center; gap: 4px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    #netlist-search.scoped .scope-row { display: flex; }
+    #netlist-search .scope { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #netlist-search .clear-scope { cursor: pointer; }
+    #tree, #netlist-results { flex: 1; overflow: auto; padding-bottom: 8px; outline: none; }
+    #netlist-results { display: none; }
+    #netlist.searching #tree { display: none; }
+    #netlist.searching #netlist-results { display: block; }
+    .search-status { padding: 2px 10px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+    #netlist .row { position: relative; padding: 1px 6px; cursor: default; white-space: nowrap; line-height: 20px; outline: none; }
+    #netlist .row:hover { background: var(--vscode-list-hoverBackground); }
+    #netlist .row.selected, #netlist .row:focus { background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground)); }
+    #tree:focus-within .row.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    #netlist .scope::before { content: '\25B8\00a0\00a0'; }
+    #netlist .scope.open::before { content: '\25BE\00a0\00a0'; }
+    #netlist .var { color: var(--vscode-symbolIcon-variableForeground); cursor: pointer; }
+    #netlist .var.displayed .name { font-weight: 600; }
+    #netlist .var.displayed::after { content: '\2022'; position: absolute; left: 0; color: var(--vscode-focusBorder); }
+    #netlist .range, #netlist .detail { color: var(--vscode-descriptionForeground); }
+    #netlist .actions { display: none; position: absolute; right: 4px; top: 2px; gap: 2px; background: inherit; }
+    #netlist .row:hover .actions { display: flex; }
+    #netlist .action { padding: 1px; border-radius: 3px; font-size: 14px; color: var(--vscode-foreground); }
+    #netlist .action:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.25)); }
     #main { flex: 1; position: relative; min-width: 0; }
     #viewer { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
     #message { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
@@ -26,14 +49,88 @@
     #message.visible { display: flex; }
     #message .title { color: var(--vscode-foreground); font-size: 13px; font-weight: 600; }
     #message .detail { font-family: var(--vscode-editor-font-family); white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
+    /* Status strip: VS Code's status bar items for the viewer. */
+    #status { flex: none; display: flex; align-items: center; gap: 14px; height: 22px; padding: 0 10px; font-size: 11px;
+      border-top: 1px solid var(--vscode-widget-border); color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; }
+    #status > span { overflow: hidden; text-overflow: ellipsis; }
+    #status-time { cursor: pointer; }
+    #status-time:hover { color: var(--vscode-foreground); }
+    #status .spacer { flex: 1; }
+    #status-unsaved::before { content: '\25CF'; color: var(--vscode-foreground); }
+    #status-reload { display: flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
+    #status-reload[hidden], #status [hidden] { display: none; }
+    #status-reload button { font: inherit; padding: 0 6px; }
+    /* Context menus, dialogs and toasts (cmux-ui.js). */
+    #cmux-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
+    #cmux-overlay > * { pointer-events: auto; }
+    .cmux-menu { position: fixed; min-width: 180px; max-width: 360px; padding: 4px 0; font-size: 12px; border-radius: 6px;
+      background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); color: var(--vscode-menu-foreground, var(--vscode-foreground));
+      border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); }
+    .cmux-menu-item { display: flex; align-items: center; gap: 16px; padding: 3px 12px 3px 20px; line-height: 18px; cursor: default; white-space: nowrap; }
+    .cmux-menu-item .label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .cmux-menu-item .keybinding { color: var(--vscode-descriptionForeground); }
+    .cmux-menu-item.has-submenu::after { content: '\203A'; margin-left: 8px; }
+    .cmux-menu-item.active { background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+      color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); }
+    .cmux-menu-item.active .keybinding { color: inherit; }
+    .cmux-menu-separator { height: 1px; margin: 4px 0; background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border)); }
+    .cmux-dialog-backdrop { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding-top: 48px;
+      background: rgba(0, 0, 0, 0.15); }
+    .cmux-dialog { width: min(460px, 90vw); max-height: 80vh; display: flex; flex-direction: column; gap: 8px; padding: 10px;
+      background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); }
+    .cmux-dialog-title { font-weight: 600; }
+    .cmux-dialog-detail { color: var(--vscode-descriptionForeground); white-space: pre-wrap; }
+    .cmux-dialog input[type=text], .cmux-dialog input[type=number], .cmux-dialog select { font: inherit; padding: 3px 6px; color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 2px;
+      user-select: text; -webkit-user-select: text; }
+    .cmux-dialog-buttons { display: flex; justify-content: flex-end; gap: 6px; }
+    .cmux-button { font: inherit; padding: 3px 12px; border-radius: 3px; border: 1px solid var(--vscode-widget-border);
+      background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); }
+    .cmux-button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+    .cmux-quickpick { display: flex; flex-direction: column; overflow: auto; }
+    .cmux-quickpick-item { font: inherit; text-align: left; padding: 3px 8px; border: 0; background: transparent; color: inherit; }
+    .cmux-quickpick-item:hover, .cmux-quickpick-item:focus { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); outline: none; }
+    .cmux-settings { width: min(560px, 92vw); }
+    .cmux-settings-list { overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
+    .cmux-setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .cmux-setting input[type=checkbox] + span { flex: 1; }
+    .cmux-setting input[type=number], .cmux-setting input[type=text] { width: 110px; }
+    .cmux-toast { position: fixed; right: 12px; bottom: 32px; max-width: 420px; padding: 8px 12px; border-radius: 6px;
+      background: var(--vscode-notifications-background, var(--vscode-editorWidget-background)); color: var(--vscode-foreground);
+      border: 1px solid var(--vscode-widget-border); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); transition: opacity 0.4s; user-select: text; -webkit-user-select: text; }
+    .cmux-toast.warning { border-left: 3px solid var(--vscode-editorWarning-foreground, #cca700); }
+    .cmux-toast.error { border-left: 3px solid var(--vscode-editorError-foreground, #f14c4c); }
+    .cmux-toast.leaving { opacity: 0; }
   </style>
 </head>
 <body>
-  <div id="netlist"><h4 id="netlist-title"></h4><div id="tree"></div></div>
-  <div id="main">
-    <iframe id="viewer" title=""></iframe>
-    <div id="message"><div class="title"></div><div class="detail"></div></div>
+  <div id="panes">
+    <div id="netlist">
+      <h4 id="netlist-title"></h4>
+      <div id="netlist-search">
+        <input type="search" autocomplete="off" spellcheck="false">
+        <div class="scope-row"><span class="scope"></span><span class="clear-scope codicon codicon-close"></span></div>
+      </div>
+      <div id="tree"></div>
+      <div id="netlist-results"></div>
+    </div>
+    <div id="main">
+      <iframe id="viewer" title=""></iframe>
+      <div id="message"><div class="title"></div><div class="detail"></div></div>
+    </div>
   </div>
+  <div id="status">
+    <span id="status-time"></span>
+    <span id="status-delta" hidden></span>
+    <span id="status-signal" hidden></span>
+    <span class="spacer"></span>
+    <span id="status-reload" hidden><span class="text"></span><button type="button" class="cmux-button"></button></span>
+    <span id="status-unsaved" hidden></span>
+  </div>
+  <script src="cmux-ui.js"></script>
+  <script src="cmux-netlist.js"></script>
+  <script src="cmux-commands.js"></script>
   <script src="host.js"></script>
 </body>
 </html>
