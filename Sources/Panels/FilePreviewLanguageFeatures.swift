@@ -1008,7 +1008,10 @@ final class FilePreviewLanguageFeatures: NSObject {
         // A possible fragment found nowhere: whether the design has a top level at all says if
         // the setup hint applies (getScope("") also lists packages; only instances are tops).
         if found.isEmpty, module == inlineScan.fragmentModule {
-            inlineDesignHasTops = (try? await session.slangScopeChildren(""))?.contains { $0.kind != "Package" }
+            let scope = try? await session.slangScopeChildren("")
+            inlineDesignHasTops = DesignInstanceProbe.designHasTops(
+                scopeKinds: scope?.map(\.kind), cancelled: Task.isCancelled, current: inlineDesignHasTops
+            )
         }
         return found
     }
