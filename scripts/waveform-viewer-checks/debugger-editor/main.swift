@@ -335,6 +335,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
         }
     }
     WaveformSourceLink.values = wideValues
+    WaveformDebugger.playing = true
     for (editor, view, scope) in [(wideA, viewA, "tb.a"), (wideB, viewB, "tb.b")] {
         WaveformDebuggerEditorHighlights.valuesShown(.init(
             editor: editor, textView: view, lines: wideLines, waveform: waveform, time: 45,
@@ -348,6 +349,62 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(WaveformDebuggerEditorHighlights.refreshDelay(playing: true) == .zero
            && WaveformDebuggerEditorHighlights.refreshDelay(playing: false) == .milliseconds(120),
            "no refresh delay while playing, 120 ms otherwise")
+    // Paused, a second look at the same cycle (a scroll, a second editor) has its own 16.
+    WaveformDebugger.playing = false
+    let askedPlaying = wideA.session.asked.count
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: wideA, textView: viewA, lines: wideLines, waveform: waveform, time: 45,
+        values: ["wide": wideNow], instances: ["wide": .init(design: "tb.a", dump: "tb.a")]
+    ))
+    await settle()
+    expect(wideA.session.asked.count == 12, "paused: a refresh at the same cycle asks A's other cones: \(askedPlaying) then \(wideA.session.asked.count)")
+
+    // An editor next to another viewer neither holds up this one's play nor shows in its strip.
+    let elsewhere = FilePreviewPanel()
+    elsewhere.near = FilePreviewPanel()
+    otherEditor.linkPanel = elsewhere
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
+    page.rtlShownTimes.removeAll()
+    page.previousTimes[55] = 45
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: editor, textView: textView, lines: lines, waveform: waveform, time: 55, values: [:], instances: [:]
+    ))
+    await settle()
+    expect(page.rtlShownTimes == [55], "the other viewer's editor isn't waited for: \(page.rtlShownTimes)")
+    expect((page.rtlStatuses.last?["tooltip"] as? String)?.contains("other.sv") == false,
+           "nor in the strip: \(String(describing: page.rtlStatuses.last))")
+    otherEditor.linkPanel = nil
+
+    // Play starts again: reports from before don't count, and the strip waits for the editors.
+    page.previousTimes[65] = 55
+    for (each, view) in [(editor, textView), (otherEditor, other)] {
+        WaveformDebuggerEditorHighlights.valuesShown(.init(
+            editor: each, textView: view, lines: lines, waveform: waveform, time: 65, values: [:], instances: [:]
+        ))
+    }
+    await settle()
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    await settle()
+    expect((page.rtlStatuses.last?["text"] as? String)?.contains("waiting") == true,
+           "before any editor reports, the strip says it waits for them: \(String(describing: page.rtlStatuses.last))")
+    page.rtlShownTimes.removeAll()
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: editor, textView: textView, lines: lines, waveform: waveform, time: 65, values: [:], instances: [:]
+    ))
+    await settle()
+    expect(page.rtlShownTimes.isEmpty, "the other editor's report from before play doesn't count: \(page.rtlShownTimes)")
+
+    // An editor closes: play no longer waits for it, and the strip says so.
+    FilePreviewLanguageFeatures.all = [editor]
+    WaveformDebuggerRTLStatus.editorGone(otherEditor)
+    await settle()
+    expect(page.rtlShownTimes == [65], "the editor play waited for closed: the cycle is shown: \(page.rtlShownTimes)")
+    expect(page.rtlStatuses.last?["text"] as? String == "RTL: cpu.sv", "the strip names the one left: \(String(describing: page.rtlStatuses.last))")
+    FilePreviewLanguageFeatures.all = []
+    WaveformDebuggerRTLStatus.editorGone(editor)
+    await settle()
+    expect(page.rtlStatuses.last?["wait"] as? Bool == false && page.rtlStatuses.last?["ok"] as? Bool == false,
+           "the last one closed: play doesn't wait: \(String(describing: page.rtlStatuses.last))")
 
     print(failures == 0 ? "DEBUGGER EDITOR CHECKS PASSED" : "DEBUGGER EDITOR CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)

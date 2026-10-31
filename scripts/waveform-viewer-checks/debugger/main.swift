@@ -465,6 +465,19 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            && rangedValues?[2] is NSNull && ranged?["has"] as? Bool == true
            && ranged?["index"] is NSNull && ranged?["narrow"] is NSNull && ranged?["width"] as? Int == 1 && ranged?["twice"] is NSNull,
            "req finds req[0:0] (a prefix like re, an index req[3] and a narrower req[1:0] do not; scopeChildren gives the width): \(String(describing: ranged))")
+    // A bit-blasted dump (req[0], req[1]): req is no single signal there, so it finds none.
+    let blasted = await call("""
+      const h = cmuxWaveform.host;
+      const ports = (await h.getChildren(h.doc.netlist.find((x) => x.name === 'top'))).find((x) => x.name === 'ports');
+      const kids = await h.getChildren(ports);
+      const req = kids.find((x) => x.name === 'req');
+      const bit1 = { ...req, name: 'req[1]', netlistId: -7 };
+      req.name = 'req[0]';
+      kids.push(bit1);
+      try { return await h.findLinkItem(['top', 'ports', 'req'], true); }
+      finally { kids.splice(kids.indexOf(bit1), 1); req.name = 'req'; }
+    """)
+    expect(blasted == nil || blasted is NSNull, "req finds none of req[0], req[1]: \(String(describing: blasted))")
     // A reload while the clock is still being read: no warning, since the reload owns the page.
     let raced = await call("""
       const toasts = [];
