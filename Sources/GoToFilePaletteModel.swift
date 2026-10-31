@@ -63,9 +63,14 @@ final class GoToFilePaletteModel: ObservableObject {
         let sessionGeneration = generation
         let loadSnapshot = loadSnapshot
         snapshotTask = Task { [weak self] in
-            let outcome: Result<GoToFileSnapshot, Error>
+            let outcome: Result<(GoToFileSnapshot, GoToFileRanker.Index), Error>
             do {
-                outcome = .success(try await loadSnapshot(source))
+                let snapshot = try await loadSnapshot(source)
+                // Prepared once, off the main actor; every keystroke reuses it.
+                let index = await Task.detached(priority: .userInitiated) {
+                    GoToFileRanker.Index(paths: snapshot.paths)
+                }.value
+                outcome = .success((snapshot, index))
             } catch {
                 outcome = .failure(error)
             }
@@ -136,12 +141,16 @@ final class GoToFilePaletteModel: ObservableObject {
         return root == "/" ? "/" + relativePath : root + "/" + relativePath
     }
 
-    private func finishSnapshot(_ outcome: Result<GoToFileSnapshot, Error>, generation sessionGeneration: UInt64) {
+    private func finishSnapshot(
+        _ outcome: Result<(GoToFileSnapshot, GoToFileRanker.Index), Error>,
+        generation sessionGeneration: UInt64
+    ) {
         guard sessionGeneration == generation else { return }
         snapshotTask = nil
         switch outcome {
-        case .success(let snapshot):
+        case .success(let (snapshot, index)):
             self.snapshot = snapshot
+            self.index = index
             isTruncated = snapshot.isTruncated
             rank()
         case .failure(let error):

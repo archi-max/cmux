@@ -30,6 +30,20 @@ actor RemoteTerminalFilePreviewLoader {
             homeDirectory: home,
             remoteHost: host
         )
+        return try await download(candidates: candidates)
+    }
+
+    /// Downloads exactly `path` (no spelling variants), refusing files over
+    /// `maxBytes` before any byte is fetched. For `cmux open`, where the
+    /// remote CLI has already resolved the one path it means.
+    func load(exactPath path: String, maxBytes: Int64) async throws -> URL {
+        try Task.checkCancellation()
+        let stamp = try await provider.fileStamp(path: path)
+        guard stamp.size <= maxBytes else { throw RemoteTerminalFilePreviewError.fileTooLarge }
+        return try await download(candidates: [path])
+    }
+
+    private func download(candidates: [String]) async throws -> URL {
         let identity = [provider.destination, provider.port.map(String.init) ?? "", provider.identityFile ?? ""]
             + provider.sshOptions
         let identityData = try JSONSerialization.data(withJSONObject: identity)
@@ -58,4 +72,9 @@ actor RemoteTerminalFilePreviewLoader {
         }
         throw FileExplorerError.providerUnavailable
     }
+}
+
+enum RemoteTerminalFilePreviewError: Error, Equatable {
+    /// The host file is larger than a gesture-free open may download.
+    case fileTooLarge
 }

@@ -692549,55 +692549,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This terminal is not connected over SSH"
+            "value": "This terminal is not connected over SSH, or file previews are off"
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "هذه الطرفية غير متصلة عبر SSH"
+            "value": "هذه الطرفية غير متصلة عبر SSH، أو معاينات الملفات متوقفة"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dieses Terminal ist nicht über SSH verbunden"
+            "value": "Dieses Terminal ist nicht über SSH verbunden, oder Dateivorschauen sind deaktiviert"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Esta terminal no está conectada por SSH"
+            "value": "Esta terminal no está conectada por SSH o las vistas previas de archivos están desactivadas"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ce terminal n’est pas connecté via SSH"
+            "value": "Ce terminal n’est pas connecté via SSH, ou les aperçus de fichiers sont désactivés"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "このターミナルは SSH で接続されていません"
+            "value": "このターミナルは SSH で接続されていないか、ファイルプレビューがオフになっています"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "이 터미널은 SSH로 연결되어 있지 않습니다"
+            "value": "이 터미널은 SSH로 연결되어 있지 않거나 파일 미리보기가 꺼져 있습니다"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此终端未通过 SSH 连接"
+            "value": "此终端未通过 SSH 连接，或文件预览已关闭"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "此終端機未透過 SSH 連線"
+            "value": "此終端機未透過 SSH 連線，或檔案預覽已關閉"
           }
         }
       }

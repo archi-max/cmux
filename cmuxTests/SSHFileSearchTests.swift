@@ -151,7 +151,9 @@ struct SSHFileSearchTests {
     @Test
     func testWatchdogReachesTheToolThroughAGNUStyleTimeout() throws {
         // GNU `timeout` moves its child into a process group of its own unless
-        // given --foreground, which would hide the tool from the watchdog's `kill 0`.
+        // given --foreground. GNU forwards the watchdog's SIGTERM to that child,
+        // but a `timeout` that doesn't would hide the tool from `kill 0`; this
+        // fake models that one.
         let bin = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-fake-timeout-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: bin) }

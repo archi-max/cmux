@@ -3949,6 +3949,14 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return remoteFilePreviewCoordinator.open(workspace: workspace, sourcePanelID: terminalSurface.id, tokens: tokens)
     }
 
+    /// `cmux open` from this SSH terminal: one host path, native preview only.
+    func openRemoteFileFromCommandLine(path: String) -> Bool {
+        guard let terminalSurface, let workspace = terminalSurface.owningWorkspace() else { return false }
+        return remoteFilePreviewCoordinator.openFromCommandLine(
+            workspace: workspace, sourcePanelID: terminalSurface.id, path: path
+        )
+    }
+
     weak var terminalSurface: TerminalSurface?
     /// View-scoped ingress keeps title churn independent across terminal surfaces.
     fileprivate let titleUpdateIngress = GhosttyTitleUpdateIngress()
@@ -11010,6 +11018,10 @@ final class GhosttySurfaceScrollView: NSView {
 
     func openRemoteFilePreview(tokens: [String]) -> Bool {
         surfaceView.openRemoteFilePreview(tokens: tokens)
+    }
+
+    func openRemoteFileFromCommandLine(path: String) -> Bool {
+        surfaceView.openRemoteFileFromCommandLine(path: path)
     }
 
     func portalBindingGuardState() -> (surfaceId: UUID?, generation: UInt64?, state: String) {

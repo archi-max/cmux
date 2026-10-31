@@ -61,10 +61,16 @@ enum SSHRemoteShellScript {
         + "; }"
 
     /// Sets `w` to a coreutils or BusyBox `timeout` prefix, or empty when the host has none.
-    /// BusyBox before 1.30 only accepts `timeout -t N`.
+    ///
+    /// GNU `timeout` puts its child in a process group of its own unless
+    /// given `--foreground`. GNU forwards a SIGTERM to that child, but a
+    /// `timeout` that doesn't would hide the tool from the watchdog's
+    /// `kill 0`, so the `--foreground` form comes first. BusyBox before 1.30 only accepts
+    /// `timeout -t N`.
     static func timeoutPrefix(seconds: Int) -> String {
         let seconds = max(1, seconds)
-        return "w=; if timeout 5 true >/dev/null 2>&1; then w=\"timeout \(seconds)\"; "
+        return "w=; if timeout --foreground 5 true >/dev/null 2>&1; then w=\"timeout --foreground \(seconds)\"; "
+            + "elif timeout 5 true >/dev/null 2>&1; then w=\"timeout \(seconds)\"; "
             + "elif timeout -t 5 true >/dev/null 2>&1; then w=\"timeout -t \(seconds)\"; fi"
     }
 }
