@@ -255,6 +255,9 @@
     { key: 'sortNetlist', type: 'boolean', value: false },
     { key: 'promptLoadSettings', type: 'enum', options: [['Always', 'settingsOptionAlways'], ['Ask', 'settingsOptionAsk'], ['Never', 'settingsOptionNever']], value: 'Ask' },
     { key: 'defaultAutoReload', type: 'boolean', value: false },
+    // cmux: how an FSDB on an SSH host loads. auto: windowed (big signals load what
+    // is on screen, small ones whole); whole: every signal whole (the v1 helper).
+    { key: 'fsdbLoading', type: 'enum', options: [['auto', 'settingsOptionFsdbAuto'], ['whole', 'settingsOptionFsdbWhole']], value: 'auto' },
     { key: 'enableInstancePathTerminalLinks', type: 'boolean', value: true },
     { key: 'overrideDevicePixelRatio', type: 'boolean', value: false },
     { key: 'userPixelRatio', type: 'number', value: 1, step: 0.25, min: 0.1, max: 10 },

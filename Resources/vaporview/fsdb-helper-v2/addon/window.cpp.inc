@@ -1,0 +1,1462 @@
+// Part of cmux's FSDB helper v2, written for cmux. GPL-3.0, as VaporView
+// (https://github.com/Lramseyer/vaporview), whose addon it extends; see ../../LICENSE.
+// ---- cmux additions (helper v2): per-signal compact store + window queries ----
+#include <unistd.h>
+#include <cstdint>
+//
+// After one walk through the reader a signal lives here as sorted u64 times
+// plus bit-packed values: a value plane (bit = vc & 1) and, only when some
+// change holds x or z, an x/z plane (bit = vc >> 1). With FSDB_BT_VCD_0..Z =
+// 0..3 the pair (val, xz) is 0=(0,0) 1=(1,0) x=(0,1) z=(1,1). Bit i of a change
+// is character i of the value string the old exports return.
+//
+// Ranges (agreed with the viewer): the value in effect at t is the last change
+// with time <= t. A window is half-open [t0, t1): `count` and the bucket counts
+// include changes exactly at t0, but those are folded into the initial t0
+// record rather than sent as records. A change at time t is in bucket
+// floor((t - t0) * B / (t1 - t0)).
+
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <unordered_map>
+#include <csignal>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cstdint>
+#include <zlib.h>
+
+struct SigStore {
+  uint32_t bits = 0;
+  uint32_t stride = 0;  // bytes per change in each plane
+  std::vector<uint64_t> times;
+  std::vector<uint8_t> val;
+  std::vector<uint8_t> xz;  // empty unless some change holds x or z
+  uint64_t lastUsed = 0;
+  size_t bytes() const { return times.capacity() * 8 + val.capacity() + xz.capacity() + sizeof(SigStore); }
+};
+
+static std::unordered_map<int64_t, SigStore *> g_store;
+static uint64_t g_clock = 0;
+static size_t g_bytes = 0;
+static size_t g_limit = (size_t)1 << 30;
+
+static inline int64_t argI64(const Napi::Value &v) { return v.As<Napi::Number>().Int64Value(); }
+
+// ---- background work that yields ----
+// Background tasks (searchAll chunks, index warm-up) run between bgBegin()
+// and bgEnd(). The coordinator sends SIGUSR2 when interactive work arrives
+// for a busy worker; walks and scans check the flag every 4096 changes and
+// between signals, stop, and report what they didn't finish as yielded.
+// (Node leaves SIGUSR2 alone unless JS listens for it; SIGUSR1 is its debugger.)
+static volatile sig_atomic_t g_yield = 0;
+static bool g_bg = false;
+static double g_bgDeadline = 0;  // steady-clock ms; 0 = none
+static void onYieldSignal(int) { g_yield = 1; }
+static double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static inline bool bgStop() { return g_bg && (g_yield || (g_bgDeadline > 0 && nowMs() > g_bgDeadline)); }
+
+// bgBegin(deadlineInMs = 0): enter background mode (resets the yield flag).
+Napi::Value bgBegin(const Napi::CallbackInfo &info) {
+  static bool installed = false;
+  if (!installed) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = onYieldSignal;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR2, &sa, nullptr);
+    installed = true;
+  }
+  g_yield = 0;
+  g_bg = true;
+  const double in = info.Length() > 0 && info[0].IsNumber() ? info[0].As<Napi::Number>().DoubleValue() : 0;
+  g_bgDeadline = in > 0 ? nowMs() + in : 0;
+  return info.Env().Undefined();
+}
+// bgEnd() -> true if the task was asked to yield (or ran out of time).
+Napi::Value bgEnd(const Napi::CallbackInfo &info) {
+  const bool stopped = bgStop();
+  g_bg = false;
+  g_yield = 0;
+  g_bgDeadline = 0;
+  return Napi::Boolean::New(info.Env(), stopped);
+}
+
+// ---- store files (split-walk slices, derived operands) ----
+// Handed between this helper's own workers through a private 0700 directory.
+// Layout: "VVS2", u32 bits, u64 n, u8 hasXz, n u64 times, n*stride value bytes,
+// then n*stride x/z bytes if hasXz. Created O_EXCL 0600; a reader accepts only
+// a regular file owned by this user whose size matches its header and whose
+// times are sorted, and deletes it.
+static const char kStoreMagic[4] = {'V', 'V', 'S', '2'};
+static const uint32_t kMaxBits = 1u << 20;
+
+static bool writeFull(int fd, const void *p, size_t len) {
+  const uint8_t *b = (const uint8_t *)p;
+  while (len) {
+    const ssize_t w = ::write(fd, b, len);
+    if (w < 0) { if (errno == EINTR) continue; return false; }
+    b += w; len -= (size_t)w;
+  }
+  return true;
+}
+static bool readFull(int fd, void *p, size_t len) {
+  uint8_t *b = (uint8_t *)p;
+  while (len) {
+    const ssize_t r = ::read(fd, b, len);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) return false;
+    b += r; len -= (size_t)r;
+  }
+  return true;
+}
+
+static bool writeStoreFile(const SigStore *s, const std::string &p) {
+  const int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) return false;
+  const uint64_t n = s->times.size();
+  const uint8_t hasXz = !s->xz.empty();
+  bool ok = writeFull(fd, kStoreMagic, 4) && writeFull(fd, &s->bits, 4) && writeFull(fd, &n, 8) && writeFull(fd, &hasXz, 1)
+         && writeFull(fd, s->times.data(), n * 8) && writeFull(fd, s->val.data(), s->val.size())
+         && (!hasXz || writeFull(fd, s->xz.data(), s->xz.size()));
+  ok = (::close(fd) == 0) && ok;
+  if (!ok) ::unlink(p.c_str());
+  return ok;
+}
+
+static SigStore *readStoreFile(const std::string &p, std::string &err, bool consume = true) {
+  const int fd = ::open(p.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) { err = "cannot read " + p; return nullptr; }
+  struct stat st;
+  char magic[4];
+  uint32_t bits = 0;
+  uint64_t n = 0;
+  uint8_t hasXz = 0;
+  bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid() && st.st_nlink == 1
+         && readFull(fd, magic, 4) && memcmp(magic, kStoreMagic, 4) == 0
+         && readFull(fd, &bits, 4) && readFull(fd, &n, 8) && readFull(fd, &hasXz, 1)
+         && bits >= 1 && bits <= kMaxBits && hasXz <= 1;
+  const uint64_t size = ok ? (uint64_t)st.st_size : 0;
+  const uint64_t stride = (bits + 7) / 8;
+  const uint64_t perChange = 8 + stride * (hasXz ? 2 : 1);
+  ok = ok && size >= 17 && n <= (size - 17) / perChange && 17 + n * perChange == size;
+  SigStore *s = nullptr;
+  if (ok) {
+    s = new SigStore();
+    s->bits = bits;
+    s->stride = (uint32_t)stride;
+    s->times.resize(n);
+    s->val.resize(n * stride);
+    ok = readFull(fd, s->times.data(), n * 8) && readFull(fd, s->val.data(), s->val.size());
+    if (ok && hasXz) { s->xz.resize(n * stride); ok = readFull(fd, s->xz.data(), s->xz.size()); }
+    for (uint64_t k = 1; ok && k < n; k++) ok = s->times[k - 1] <= s->times[k];
+  }
+  ::close(fd);
+  if (consume) ::unlink(p.c_str());  // hand-off files are read once; index files stay
+  if (!ok) { delete s; err = "bad store file " + p; return nullptr; }
+  return s;
+}
+
+// Search-index files (warm-up), "VVZ1": u32 bits, u64 n, u8 hasXz, u64 raw
+// length, u64 compressed length, then deflate (level 1) of n u64 time deltas,
+// the value plane and the x/z plane. Written and read in 256 KB pieces, so no
+// extra copy of the signal is made; read with the same checks as store files
+// (ours, one link, exact size, sorted times) plus deflate's own integrity.
+static const char kIndexMagic[4] = {'V', 'V', 'Z', '1'};
+static const size_t kZChunk = 256 << 10;
+
+// With yieldable, a background task's yield (bgStop) abandons the write between
+// 256 KB chunks (*yielded set, the file removed): spike_rvfi's ~240 ms write
+// never holds up interactive work by more than a chunk.
+static bool writeIndexFile(const SigStore *s, const std::string &p, uint64_t &fileBytes, bool *yielded = nullptr) {
+  const int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) return false;
+  const uint64_t n = s->times.size();
+  const uint8_t hasXz = !s->xz.empty();
+  const uint64_t raw = n * 8 + s->val.size() + s->xz.size();
+  uint64_t zlen = 0;
+  bool ok = writeFull(fd, kIndexMagic, 4) && writeFull(fd, &s->bits, 4) && writeFull(fd, &n, 8) && writeFull(fd, &hasXz, 1)
+         && writeFull(fd, &raw, 8) && writeFull(fd, &zlen, 8);
+  z_stream z;
+  memset(&z, 0, sizeof z);
+  ok = ok && deflateInit(&z, 1) == Z_OK;
+  std::vector<uint8_t> out(kZChunk);
+  std::vector<uint64_t> deltas;
+  auto pump = [&](const uint8_t *in, size_t len, int flush) {
+    z.next_in = (Bytef *)in;
+    z.avail_in = (uInt)len;
+    do {
+      z.next_out = out.data();
+      z.avail_out = (uInt)out.size();
+      const int rc = deflate(&z, flush);
+      if (rc == Z_STREAM_ERROR) return false;
+      const size_t got = out.size() - z.avail_out;
+      if (got && !writeFull(fd, out.data(), got)) return false;
+      zlen += got;
+    } while (z.avail_out == 0 || z.avail_in > 0);
+    if (yielded && bgStop()) { *yielded = true; return false; }
+    return true;
+  };
+  uint64_t prev = 0;
+  for (uint64_t k = 0; ok && k < n; k += kZChunk / 8) {
+    const uint64_t m = std::min<uint64_t>(n - k, kZChunk / 8);
+    deltas.resize(m);
+    for (uint64_t j = 0; j < m; j++) { deltas[j] = s->times[k + j] - prev; prev = s->times[k + j]; }
+    ok = pump((const uint8_t *)deltas.data(), m * 8, Z_NO_FLUSH);
+  }
+  for (size_t k = 0; ok && k < s->val.size(); k += kZChunk) ok = pump(&s->val[k], std::min(kZChunk, s->val.size() - k), Z_NO_FLUSH);
+  for (size_t k = 0; ok && k < s->xz.size(); k += kZChunk) ok = pump(&s->xz[k], std::min(kZChunk, s->xz.size() - k), Z_NO_FLUSH);
+  ok = ok && pump(nullptr, 0, Z_FINISH);
+  deflateEnd(&z);
+  ok = ok && ::pwrite(fd, &zlen, 8, 25) == 8;
+  ok = (::close(fd) == 0) && ok;
+  if (!ok) ::unlink(p.c_str());
+  fileBytes = 33 + zlen;
+  return ok;
+}
+
+// With cap > 0 a file whose store would be larger is refused from its header,
+// before anything is allocated (*tooLarge set; the file is fine, just too big here).
+// Errors starting "bad index file" mean the file is corrupt.
+static SigStore *readIndexFile(const std::string &p, std::string &err, size_t cap = 0, bool *tooLarge = nullptr) {
+  const int fd = ::open(p.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) { err = "cannot read " + p; return nullptr; }
+  struct stat st;
+  char magic[4];
+  uint32_t bits = 0;
+  uint64_t n = 0, raw = 0, zlen = 0;
+  uint8_t hasXz = 0;
+  bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid() && st.st_nlink == 1
+         && readFull(fd, magic, 4) && memcmp(magic, kIndexMagic, 4) == 0
+         && readFull(fd, &bits, 4) && readFull(fd, &n, 8) && readFull(fd, &hasXz, 1)
+         && readFull(fd, &raw, 8) && readFull(fd, &zlen, 8)
+         && bits >= 1 && bits <= kMaxBits && hasXz <= 1 && (uint64_t)st.st_size == 33 + zlen;
+  const uint64_t stride = (bits + 7) / 8;
+  const uint64_t perChange = 8 + stride * (hasXz ? 2 : 1);
+  // deflate expands at most ~1032:1, so a header claiming more is corrupt (and
+  // would make us allocate it).
+  ok = ok && n <= raw / perChange && raw == n * perChange && raw <= 1032 * zlen + 1024;
+  if (ok && cap && n * perChange > cap) {
+    ::close(fd);
+    if (tooLarge) *tooLarge = true;
+    err = "signal larger than " + std::to_string(cap >> 20) + " MB (worker store limit)";
+    return nullptr;
+  }
+  SigStore *s = nullptr;
+  z_stream z;
+  memset(&z, 0, sizeof z);
+  bool zinit = false;
+  if (ok) {
+    s = new SigStore();
+    s->bits = bits;
+    s->stride = (uint32_t)stride;
+    s->times.resize(n);
+    s->val.resize(n * stride);
+    if (hasXz) s->xz.resize(n * stride);
+    ok = zinit = inflateInit(&z) == Z_OK;
+    std::vector<uint8_t> in(kZChunk);
+    uint64_t left = zlen;
+    int rc = Z_OK;
+    std::pair<uint8_t *, size_t> parts[3] = {{(uint8_t *)s->times.data(), n * 8}, {s->val.data(), s->val.size()}, {s->xz.data(), s->xz.size()}};
+    for (auto &part : parts) {
+      z.next_out = part.first;
+      z.avail_out = (uInt)0;
+      size_t outLeft = part.second;
+      while (ok && outLeft > 0) {
+        if (z.avail_in == 0 && left > 0) {
+          const size_t m = (size_t)std::min<uint64_t>(left, in.size());
+          ok = readFull(fd, in.data(), m);
+          left -= m;
+          z.next_in = in.data();
+          z.avail_in = (uInt)m;
+        }
+        const uInt give = (uInt)std::min<size_t>(outLeft, 1u << 30);
+        z.avail_out = give;
+        rc = inflate(&z, Z_NO_FLUSH);
+        outLeft -= give - z.avail_out;
+        if (rc == Z_STREAM_END ? outLeft > 0 : rc != Z_OK && !(rc == Z_BUF_ERROR && (z.avail_in > 0 || left > 0))) ok = false;
+      }
+    }
+    // Everything must have been used, and the stream must end exactly here.
+    if (ok && rc != Z_STREAM_END) {
+      uint8_t extra;
+      z.next_out = &extra;
+      z.avail_out = 1;
+      if (z.avail_in == 0 && left > 0) { const size_t m = (size_t)std::min<uint64_t>(left, in.size()); ok = readFull(fd, in.data(), m); left -= m; z.next_in = in.data(); z.avail_in = (uInt)m; }
+      rc = ok ? inflate(&z, Z_FINISH) : rc;
+      ok = ok && rc == Z_STREAM_END && z.avail_out == 1;
+    }
+    ok = ok && z.avail_in == 0 && left == 0;
+    uint64_t t = 0;
+    for (uint64_t k = 0; ok && k < n; k++) { const uint64_t d = s->times[k]; ok = t + d >= t; t += d; s->times[k] = t; }
+  }
+  if (zinit) inflateEnd(&z);
+  ::close(fd);
+  if (!ok) { delete s; err = "bad index file " + p; return nullptr; }
+  return s;
+}
+
+static inline uint64_t argTime(const Napi::Value &v) {
+  const double d = v.As<Napi::Number>().DoubleValue();
+  if (!(d > 0)) return 0;  // also NaN
+  if (d >= 18446744073709551615.0) return UINT64_MAX;
+  return (uint64_t)d;
+}
+
+static void storeFree(int64_t id) {
+  auto it = g_store.find(id);
+  if (it == g_store.end()) return;
+  g_bytes -= it->second->bytes();
+  delete it->second;
+  g_store.erase(it);
+}
+
+// Evict least recently used signals until under the limit, keeping `keep`.
+// Real signals go first: one is re-walked in ~0.3 s, while a derived result
+// (id >= 1e9) costs its operands' walks plus the merge to rebuild.
+static void storeEvict(const std::vector<int64_t> &keep) {
+  while (g_bytes > g_limit) {
+    int64_t victim = 0;
+    uint64_t oldest = UINT64_MAX;
+    bool found = false, foundReal = false;
+    for (auto &kv : g_store) {
+      if (std::find(keep.begin(), keep.end(), kv.first) != keep.end()) continue;
+      const bool real = kv.first < 1000000000;
+      if ((real && !foundReal) || (real == foundReal && kv.second->lastUsed < oldest)) {
+        oldest = kv.second->lastUsed; victim = kv.first; found = true; foundReal = real;
+      }
+    }
+    if (!found) return;
+    storeFree(victim);
+  }
+}
+
+static SigStore *storeGet(const Napi::Env &env, const Napi::Value &v) {
+  auto it = g_store.find(argI64(v));
+  if (it == g_store.end()) {
+    Napi::Error::New(env, "signal not loaded").ThrowAsJavaScriptException();
+    return nullptr;
+  }
+  it->second->lastUsed = ++g_clock;
+  return it->second;
+}
+
+// Bit 0 of each of 8 little-endian bytes -> one byte (byte i -> bit i).
+static inline uint8_t packLow(uint64_t w) {
+  return (uint8_t)(((w & 0x0101010101010101ull) * 0x0102040810204080ull) >> 56);
+}
+
+// The normalized change stream every answer uses (WINDOWING.md, "Change
+// normalization"): changes at one time collapse to the last one, a change to
+// the value already in effect is dropped, and with initialX the value before
+// the first change is all x (so a first change to all x is dropped too).
+// In place; also drops the x/z plane if nothing left in it is x or z.
+static void normalizeStore(SigStore *s, bool initialX) {
+  const size_t n = s->times.size(), st = s->stride;
+  if (n == 0 || st == 0) return;
+  const bool hasXz = !s->xz.empty();
+  std::vector<uint8_t> allX(st, 0);
+  for (uint32_t i = 0; i < s->bits; i++) allX[i >> 3] |= (uint8_t)(1 << (i & 7));
+  auto same = [&](size_t a, size_t b) {  // b == SIZE_MAX: the initial all-x value
+    if (b == SIZE_MAX) {
+      if (!hasXz) return false;
+      for (size_t j = 0; j < st; j++) if (s->val[a * st + j] || s->xz[a * st + j] != allX[j]) return false;
+      return true;
+    }
+    return !memcmp(&s->val[a * st], &s->val[b * st], st) && (!hasXz || !memcmp(&s->xz[a * st], &s->xz[b * st], st));
+  };
+  size_t kept = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (i + 1 < n && s->times[i + 1] == s->times[i]) continue;  // not the last at its time
+    if (kept ? same(i, kept - 1) : (initialX && same(i, SIZE_MAX))) continue;
+    if (i != kept) {
+      s->times[kept] = s->times[i];
+      memmove(&s->val[kept * st], &s->val[i * st], st);
+      if (hasXz) memmove(&s->xz[kept * st], &s->xz[i * st], st);
+    }
+    kept++;
+  }
+  s->times.resize(kept);
+  s->val.resize(kept * st);
+  if (hasXz) {
+    s->xz.resize(kept * st);
+    bool any = false;
+    for (uint8_t b : s->xz) if (b) { any = true; break; }
+    if (!any) s->xz.clear();
+  }
+}
+
+// ---- reader view windows (time-ranged loads) ----
+// ffrSetViewWindow/ffrResetViewWindow make ffrLoadSignals load only the changes
+// in [s, e], plus one synthetic change at s holding the value in effect there.
+// Measured on the course dump: a quarter of spike_rvfi loads in ~105 ms instead
+// of 351 ms, a 1% range in 26 ms, and [t, t] (one value) in 2-18 ms. The first
+// window must be set with Set, later ones with Reset (Set is ignored once a
+// window exists). Invariant: every function that narrows the window widens it
+// back to the whole file before it returns, so other loads see everything.
+static bool g_winNarrow = false;
+static inline void setTag(fsdbTag64 &g, uint64_t t) { g.H = (uint_T)(t >> 32); g.L = (uint_T)(t & 0xFFFFFFFF); }
+static uint64_t fileEnd() {  // time of the file's last change (a window past it loads nothing)
+  fsdbTag64 m;
+  return FSDB_RC_SUCCESS == fsdb_obj->ffrGetMaxFsdbTag64(&m) ? combineTime(m.H, m.L) : UINT64_MAX;
+}
+static void readerWindow(uint64_t s, uint64_t e) {
+  const uint64_t end = fileEnd();
+  if (s > end) s = end;  // the value in effect after the end is the one at the end
+  if (e > end) e = end;
+  fsdbTag64 a, b;
+  setTag(a, s);
+  setTag(b, std::max(s, e));
+  if (fsdb_obj->ffrIsViewWindowSet()) fsdb_obj->ffrResetViewWindow((fsdbXTag *)&a, (fsdbXTag *)&b);
+  else fsdb_obj->ffrSetViewWindow((fsdbXTag *)&a, (fsdbXTag *)&b);
+  g_winNarrow = true;
+}
+static void readerWindowAll() {
+  if (!g_winNarrow) return;
+  fsdbTag64 a, b;
+  setTag(a, 0);
+  setTag(b, UINT64_MAX >> 1);
+  fsdb_obj->ffrResetViewWindow((fsdbXTag *)&a, (fsdbXTag *)&b);
+  g_winNarrow = false;
+}
+
+// Every function that narrows the view window or loads signals holds one of
+// these: whatever path it leaves by (return, throw, bad_alloc), the signals it
+// loaded are unloaded and the window is widened again, so a later whole load
+// is never clipped.
+struct ReaderScope {
+  std::vector<fsdbVarIdcode> loaded;
+  bool widen = true;  // false: the caller's own scope widens (forBatches' per-batch scopes)
+  ReaderScope() = default;
+  ReaderScope(const ReaderScope &) = delete;
+  ReaderScope &operator=(const ReaderScope &) = delete;
+  void unload(fsdbVarIdcode id) {
+    auto it = std::find(loaded.begin(), loaded.end(), id);
+    if (it != loaded.end()) { fsdb_obj->ffrUnloadSignals(id); loaded.erase(it); }
+  }
+  ~ReaderScope() {
+    for (auto id : loaded) fsdb_obj->ffrUnloadSignals(id);
+    fsdb_obj->ffrResetSignalList();
+    if (widen) readerWindowAll();
+  }
+};
+
+// ---- hard memory bounds (review M2) ----
+// One signal's store may not grow past g_signalCap (checked while walking,
+// before the vectors grow, and when slices are joined), and a reader load
+// that leaves the process over g_rssHard is undone before anything is walked.
+// Both are set from JS (cacheSetBounds); 0 = no bound.
+static size_t g_signalCap = 0;
+static size_t g_rssHard = 0;
+static size_t processRss() {
+  FILE *f = fopen("/proc/self/statm", "r");
+  if (!f) return 0;
+  unsigned long size = 0, res = 0;
+  const int n = fscanf(f, "%lu %lu", &size, &res);
+  fclose(f);
+  return n == 2 ? (size_t)res * (size_t)sysconf(_SC_PAGESIZE) : 0;
+}
+static std::string capError(size_t cap) { return "signal larger than " + std::to_string(cap >> 20) + " MB (worker store limit)"; }
+
+// Walk one signal (already loaded into the reader) into a new store; with
+// ranged, only the changes with s <= time < e (a time slice of a split walk).
+static SigStore *walkSignal(fsdbVarIdcode id, std::string &err, bool ranged = false, uint64_t s0 = 0, uint64_t e0 = UINT64_MAX) {
+  ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+  if (!h) { err = "no traverse handle"; return nullptr; }
+  if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) { h->ffrFree(); err = "unsupported encoding"; return nullptr; }
+  SigStore *s = new SigStore();
+  s->bits = h->ffrGetBitSize();
+  // Some signals (port-connected aliases, it seems) have changes but a traverse
+  // handle with 0 bits and no value bytes; VaporView's reader shows them empty.
+  if (s->bits == 0) { h->ffrFree(); delete s; err = "reader reports 0 bits (alias?)"; return nullptr; }
+  s->stride = (s->bits + 7) / 8;
+  const uint32_t bits = s->bits, stride = s->stride;
+  if (h->ffrHasIncoreVC()) {
+    // Under the cap the store holds at most capN changes (counting x/z planes),
+    // checked at every change, and the vectors never grow past capN + 1: the
+    // reserve is the loaded count (a view window's count for slices and cold
+    // windows), growth past it is 1.5x clamped to capN + 1, not doubling.
+    const size_t per = 8 + 2 * (size_t)stride;
+    const size_t capN = g_signalCap ? g_signalCap / per : SIZE_MAX / per;
+    size_t n = std::min<size_t>(fsdb_obj->ffrGetVCCount(id), capN);
+    s->times.reserve(n + 1);
+    s->val.reserve((n + 1) * stride);
+    const uint32_t stopMask = stride >= 1024 ? 63 : stride >= 64 ? 511 : 4095;  // bgStop every ~0.5-8 MB of values
+    fsdbTag64 time;
+    h->ffrGetMinXTag((void *)&time);
+    bool any = true;
+    if (ranged && s0 > combineTime(time.H, time.L)) {
+      fsdbTag64 at;
+      at.H = (uint_T)(s0 >> 32);
+      at.L = (uint_T)(s0 & 0xFFFFFFFF);
+      if (FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&at)) {
+        // Back up past every change at >= s0 (glitches share a time), then walk forward.
+        for (;;) {
+          h->ffrGetXTag(&at);
+          if (combineTime(at.H, at.L) < s0 || FSDB_RC_SUCCESS != h->ffrGotoPrevVC()) break;
+        }
+      } else {
+        any = false;  // s0 is past the last change
+      }
+    } else {
+      h->ffrGotoXTag((void *)&time);
+    }
+    size_t k = 0;
+    if (any) do {
+      byte_T *vc;
+      h->ffrGetXTag(&time);
+      const uint64_t tnow = combineTime(time.H, time.L);
+      if (tnow < s0) continue;
+      if (tnow >= e0) break;
+      h->ffrGetVC(&vc);
+      if (k >= capN) { h->ffrFree(); delete s; err = capError(g_signalCap); return nullptr; }
+      if (k == s->times.capacity()) {
+        const size_t c = std::min(capN + 1, std::max<size_t>(1024, k + k / 2));
+        s->times.reserve(c);
+        s->val.reserve(c * stride);
+        if (!s->xz.empty()) s->xz.reserve(c * stride);
+      }
+      s->times.push_back(tnow);
+      s->val.resize((k + 1) * stride, 0);
+      uint8_t *v = &s->val[k * stride];
+      const uint32_t full = bits & ~7u;
+      uint64_t anyxz = 0;
+      for (uint32_t i = 0; i < full; i += 8) {
+        uint64_t w;
+        memcpy(&w, vc + i, 8);
+        v[i >> 3] = packLow(w);
+        anyxz |= w;
+      }
+      for (uint32_t i = full; i < bits; i++) {
+        v[i >> 3] |= (uint8_t)((vc[i] & 1) << (i & 7));
+        anyxz |= vc[i];
+      }
+      const bool hasXz = anyxz & 0x0202020202020202ull;
+      if (hasXz || !s->xz.empty()) {
+        if (s->xz.empty()) s->xz.reserve(s->val.capacity());  // one allocation, not doubling
+        s->xz.resize((k + 1) * stride, 0);  // first x/z backfills zeros
+        if (hasXz) {
+          uint8_t *x = &s->xz[k * stride];
+          for (uint32_t i = 0; i < full; i += 8) {
+            uint64_t w;
+            memcpy(&w, vc + i, 8);
+            x[i >> 3] = packLow(w >> 1);
+          }
+          for (uint32_t i = full; i < bits; i++) x[i >> 3] |= (uint8_t)(((vc[i] >> 1) & 1) << (i & 7));
+        }
+      }
+      k++;
+      if ((k & stopMask) == 0 && bgStop()) { h->ffrFree(); delete s; err = "yielded"; return nullptr; }
+    } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
+    normalizeStore(s, !ranged);  // a slice joins its neighbours in cacheAdopt
+    s->times.shrink_to_fit();
+    s->val.shrink_to_fit();
+    s->xz.shrink_to_fit();
+  }
+  h->ffrFree();
+  return s;
+}
+
+static inline void putChars(const SigStore *s, size_t k, uint8_t *out) {
+  static const char lut[4] = {'0', '1', 'x', 'z'};
+  const uint8_t *v = &s->val[k * s->stride];
+  const uint8_t *x = s->xz.empty() ? nullptr : &s->xz[k * s->stride];
+  for (uint32_t i = 0; i < s->bits; i++) {
+    uint8_t b = (v[i >> 3] >> (i & 7)) & 1;
+    if (x) b |= ((x[i >> 3] >> (i & 7)) & 1) << 1;
+    out[i] = lut[b];
+  }
+}
+
+static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k) {
+  const size_t o = out.size();
+  out.resize(o + 8 + s->bits);
+  const uint64_t delta = t - prev;
+  prev = t;
+  memcpy(&out[o], &delta, 8);
+  if (k < 0) memset(&out[o + 8], 'x', s->bits);  // before the first change
+  else putChars(s, (size_t)k, &out[o + 8]);
+}
+
+// Index of the first change with time > t.
+static inline size_t upperIdx(const SigStore *s, uint64_t t, size_t lo, size_t hi) {
+  return std::upper_bound(s->times.begin() + lo, s->times.begin() + hi, t) - s->times.begin();
+}
+
+static const size_t kLoadBatch = 16;
+static const uint64_t kLoadBatchBits = 4096;
+
+// cacheLoad(ids[], evict = true) -> [{signalId, cached, count, bits, bytes, xz, loadMs, walkMs} | {signalId, error}]
+Napi::Value cacheLoad(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 1) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array ids = info[0].As<Napi::Array>();
+  readerWindowAll();  // whole loads: never under a window left narrowed
+  std::vector<int64_t> all, todo;
+  for (uint32_t i = 0; i < ids.Length(); i++) {
+    int64_t id = argI64(ids.Get(i));
+    all.push_back(id);
+    if (!g_store.count(id) && std::find(todo.begin(), todo.end(), id) == todo.end()) todo.push_back(id);
+  }
+  using clk = std::chrono::steady_clock;
+  auto msSince = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+  double loadMs = 0;
+  // Reader loads go in batches (at most kLoadBatch signals or kLoadBatchBits
+  // bits), each walked and unloaded before the next, so the reader holds a
+  // bounded amount however many cold signals one request names.
+  size_t next = 0;  // first todo entry not yet loaded
+  std::vector<int64_t> loaded, overLimit;
+  auto loadBatch = [&]() {
+    auto t = clk::now();
+    uint64_t bitsSum = 0;
+    size_t n = 0;
+    while (next < todo.size() && n < kLoadBatch && (n == 0 || bitsSum < kLoadBatchBits)) {
+      ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle((fsdbVarIdcode)todo[next]);
+      bitsSum += h ? std::max<uint32_t>(1, h->ffrGetBitSize()) : 1;
+      if (h) h->ffrFree();
+      fsdb_obj->ffrAddToSignalList((fsdbVarIdcode)todo[next]);
+      loaded.push_back(todo[next]);
+      next++; n++;
+    }
+    fsdb_obj->ffrLoadSignals();
+    fsdb_obj->ffrResetSignalList();
+    loadMs += msSince(t);
+    if (g_rssHard && processRss() > g_rssHard) {  // undo before walking: the walk would add the store on top
+      for (size_t j = loaded.size() - n; j < loaded.size(); j++) { fsdb_obj->ffrUnloadSignals((fsdbVarIdcode)loaded[j]); overLimit.push_back(loaded[j]); }
+    }
+  };
+  Napi::Array result = Napi::Array::New(env);
+  for (uint32_t i = 0; i < all.size(); i++) {
+    const int64_t id = all[i];
+    if (!g_store.count(id) && std::find(loaded.begin(), loaded.end(), id) == loaded.end()) loadBatch();
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)id));
+    auto it = g_store.find(id);
+    double walkMs = 0;
+    bool cached = it != g_store.end();
+    if (!cached && std::find(overLimit.begin(), overLimit.end(), id) != overLimit.end()) {
+      o.Set("error", Napi::String::New(env, "worker memory limit (reader load over " + std::to_string(g_rssHard >> 20) + " MB)"));
+      result.Set(i, o);
+      continue;
+    }
+    if (!cached) {
+      auto t = clk::now();
+      std::string err;
+      SigStore *s = walkSignal((fsdbVarIdcode)id, err);
+      fsdb_obj->ffrUnloadSignals((fsdbVarIdcode)id);
+      walkMs = msSince(t);
+      if (!s) { o.Set("error", Napi::String::New(env, err)); result.Set(i, o); continue; }
+      g_store[id] = s;
+      g_bytes += s->bytes();
+      it = g_store.find(id);
+    }
+    SigStore *s = it->second;
+    s->lastUsed = ++g_clock;
+    o.Set("cached", Napi::Boolean::New(env, cached));
+    o.Set("count", Napi::Number::New(env, (double)s->times.size()));
+    o.Set("bits", Napi::Number::New(env, s->bits));
+    o.Set("bytes", Napi::Number::New(env, (double)s->bytes()));
+    o.Set("xz", Napi::Boolean::New(env, !s->xz.empty()));
+    o.Set("loadMs", Napi::Number::New(env, cached ? 0 : loadMs));
+    o.Set("walkMs", Napi::Number::New(env, walkMs));
+    result.Set(i, o);
+  }
+  if (info.Length() < 2 || info[1].ToBoolean().Value()) storeEvict(all);  // cacheLoad(ids, false): no eviction
+  return result;
+}
+
+// cacheWindow(id, t0, t1, buckets) -> {exact, count, records: Buffer, counts?: Buffer}
+static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint64_t t1, uint32_t B);
+Napi::Value cacheWindow(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  uint64_t t0 = argTime(info[1]), t1 = argTime(info[2]);
+  if (t1 < t0) std::swap(t0, t1);
+  uint32_t B = info[3].As<Napi::Number>().Uint32Value();
+  if (B == 0) B = 1;
+  Napi::Object o = windowOf(env, s, t0, t1, B);
+  o.Set("total", Napi::Number::New(env, (double)s->times.size()));  // whole-signal (normalized) count
+  return o;
+}
+static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint64_t t1, uint32_t B) {
+  const size_t n = s->times.size();
+  auto lowerIdx = [&](uint64_t t, size_t from) {
+    return (size_t)(std::lower_bound(s->times.begin() + from, s->times.end(), t) - s->times.begin());
+  };
+  const size_t lo = lowerIdx(t0, 0);          // first change >= t0 (counted)
+  const size_t first = upperIdx(s, t0, lo, n);  // first change > t0 (sent as a record)
+  const size_t hi = t1 > t0 ? lowerIdx(t1, first) : lo;
+  const size_t count = hi - lo;
+  const bool exact = count <= 2 * (size_t)B;
+  std::vector<uint8_t> rec;
+  uint64_t prev = 0;
+  putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1);
+  Napi::Object o = Napi::Object::New(env);
+  if (exact) {
+    rec.reserve((count + 1) * (8 + s->bits));
+    for (size_t k = first; k < hi; k++) putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
+  } else {
+    std::vector<uint32_t> counts(B);
+    const unsigned __int128 span = t1 - t0;
+    size_t a = lo;
+    for (uint32_t k = 0; k < B; k++) {
+      // Bucket k+1 starts at the first change with time >= t0 + ceil(span * (k+1) / B).
+      const size_t b = k + 1 == B ? hi : lowerIdx(t0 + (uint64_t)((span * (k + 1) + B - 1) / B), a);
+      counts[k] = (uint32_t)(b - a);
+      const size_t f = std::max(a, first);
+      if (b > f) {
+        putRecord(s, rec, prev, s->times[f], (ptrdiff_t)f);
+        if (b - f >= 2) putRecord(s, rec, prev, s->times[b - 1], (ptrdiff_t)(b - 1));
+      }
+      a = b;
+    }
+    o.Set("counts", Napi::Buffer<uint8_t>::Copy(env, (uint8_t *)counts.data(), counts.size() * 4));
+  }
+  o.Set("exact", Napi::Boolean::New(env, exact));
+  o.Set("count", Napi::Number::New(env, (double)count));
+  o.Set("records", Napi::Buffer<uint8_t>::Copy(env, rec.data(), rec.size()));
+  return o;
+}
+
+// cacheRecords(id) -> Buffer of every change, same layout as getValueChangesPacked.
+Napi::Value cacheRecords(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 1)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  std::vector<uint8_t> rec;
+  rec.reserve(s->times.size() * (8 + s->bits));
+  uint64_t prev = 0;
+  for (size_t k = 0; k < s->times.size(); k++) putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
+  return Napi::Buffer<uint8_t>::Copy(env, rec.data(), rec.size());
+}
+
+// cacheValueAt(id, t) -> value string in effect at t (all x before the first change).
+Napi::Value cacheValueAt(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  const size_t k = upperIdx(s, argTime(info[1]), 0, s->times.size());
+  std::string out(s->bits, 'x');
+  if (k > 0) putChars(s, k - 1, (uint8_t *)&out[0]);
+  return Napi::String::New(env, out);
+}
+
+// cacheEdge(id, t, dir, kind) -> time of the next (dir 1, time > t) or previous
+// (dir -1, time < t) change, or null. kind 0 any change, 1 rise (new value '1',
+// so x->1 counts, as in VaporView), 2 fall (new value '0'); rise/fall look at
+// 1-bit signals, wider ones treat them as any.
+Napi::Value cacheEdge(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  const uint64_t t = argTime(info[1]);
+  const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
+  int kind = info[3].As<Napi::Number>().Int32Value();
+  if (s->bits != 1) kind = 0;
+  const size_t n = s->times.size();
+  auto bit2 = [&](size_t k) -> int {  // 0..3 like the reader's bit types
+    int b = s->val[k] & 1;
+    if (!s->xz.empty()) b |= (s->xz[k] & 1) << 1;
+    return b;
+  };
+  auto isEdge = [&](size_t k) -> bool { return kind == 0 || bit2(k) == (kind == 1 ? 1 : 0); };
+  if (dir > 0) {
+    for (size_t k = upperIdx(s, t, 0, n); k < n; k++)
+      if (isEdge(k)) return Napi::Number::New(env, (double)s->times[k]);
+  } else {
+    size_t k = std::lower_bound(s->times.begin(), s->times.end(), t) - s->times.begin();
+    while (k-- > 0)
+      if (isEdge(k)) return Napi::Number::New(env, (double)s->times[k]);
+  }
+  return env.Null();
+}
+
+// cacheSearch(id, t, dir, pattern) -> time of the first change whose new value matches
+// `pattern` (next after t, or last before t), or null. The pattern is MSB-first
+// like the value strings; 'x' (or '?') is a wildcard, '0'/'1'/'z' are literal
+// (strict '!' patterns: see patternBits); a short pattern is padded on the left with '0'.
+// First change in direction dir from t whose value matches pattern p, not
+// past `bound` (dir 1: time <= bound, dir -1: time >= bound). -> found?
+// A pattern that starts with '!' is strict (search {wildcard: '?'}): only '?'
+// matches anything and 'x' is literal. -> per-bit 'd' (don't care), '0', '1', 'x', 'z'.
+static std::string patternBits(std::string p, uint32_t bits) {
+  const bool strict = !p.empty() && p[0] == '!';
+  if (strict) p = p.substr(1);
+  if (p.size() > bits) p = p.substr(p.size() - bits);
+  if (p.size() < bits) p = std::string(bits - p.size(), '0') + p;
+  for (char &c : p) {
+    if (c == '?') c = 'd';
+    else if (c == 'x' || c == 'X') c = strict ? 'x' : 'd';
+    else if (c == 'z' || c == 'Z') c = 'z';
+    else if (c != '1') c = '0';
+  }
+  return p;
+}
+
+static bool storeSearch(const SigStore *s, uint64_t t, int dir, std::string p, uint64_t bound, uint64_t &hit) {
+  p = patternBits(p, s->bits);
+  const uint32_t st = s->stride;
+  std::vector<uint8_t> care(st, 0), wantV(st, 0), wantX(st, 0);
+  for (uint32_t i = 0; i < s->bits; i++) {
+    const char c = p[i];
+    if (c == 'd') continue;
+    care[i >> 3] |= 1 << (i & 7);
+    if (c == '1' || c == 'z') wantV[i >> 3] |= 1 << (i & 7);
+    if (c == 'x' || c == 'z') wantX[i >> 3] |= 1 << (i & 7);
+  }
+  const bool hasXz = !s->xz.empty();
+  auto match = [&](size_t k) -> bool {
+    const uint8_t *v = &s->val[k * st];
+    const uint8_t *x = hasXz ? &s->xz[k * st] : nullptr;
+    for (uint32_t j = 0; j < st; j++) {
+      if ((v[j] ^ wantV[j]) & care[j]) return false;
+      if (((x ? x[j] : 0) ^ wantX[j]) & care[j]) return false;
+    }
+    return true;
+  };
+  const size_t n = s->times.size();
+  if (dir > 0) {
+    for (size_t k = upperIdx(s, t, 0, n); k < n && s->times[k] <= bound; k++)
+      if (match(k)) { hit = s->times[k]; return true; }
+  } else {
+    size_t k = std::lower_bound(s->times.begin(), s->times.end(), t) - s->times.begin();
+    while (k-- > 0 && s->times[k] >= bound)
+      if (match(k)) { hit = s->times[k]; return true; }
+  }
+  return false;
+}
+
+Napi::Value cacheSearch(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4) || !CHECK_STRING(env, info[3])) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
+  const uint64_t bound = info.Length() > 4 ? argTime(info[4]) : (dir > 0 ? UINT64_MAX : 0);
+  uint64_t hit;
+  if (storeSearch(s, argTime(info[1]), dir, info[3].As<Napi::String>().Utf8Value(), bound, hit)) return Napi::Number::New(env, (double)hit);
+  return env.Null();
+}
+
+// ---- search index (opt-in warm-up) ----
+// indexWrite(id, path) -> {count, bytes, rawBytes, bits} | {error}: walk a signal
+// straight into a compressed index file (not the LRU store); background, so it may yield.
+Napi::Value indexWrite(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2) || !CHECK_STRING(env, info[1])) return env.Undefined();
+  const fsdbVarIdcode id = (fsdbVarIdcode)argI64(info[0]);
+  fsdb_obj->ffrAddToSignalList(id);
+  fsdb_obj->ffrLoadSignals();
+  fsdb_obj->ffrResetSignalList();
+  std::string err;
+  SigStore *s = walkSignal(id, err);
+  fsdb_obj->ffrUnloadSignals(id);
+  Napi::Object o = Napi::Object::New(env);
+  if (!s) { o.Set("error", Napi::String::New(env, err)); return o; }
+  const uint64_t raw = 17 + s->times.size() * 8 + s->val.size() + s->xz.size();
+  uint64_t bytes = 0;
+  const bool ok = writeIndexFile(s, info[1].As<Napi::String>().Utf8Value(), bytes);
+  o.Set("rawBytes", Napi::Number::New(env, (double)raw));
+  o.Set("count", Napi::Number::New(env, (double)s->times.size()));
+  o.Set("bits", Napi::Number::New(env, s->bits));
+  o.Set("bytes", Napi::Number::New(env, (double)bytes));
+  if (!ok) o.Set("error", Napi::String::New(env, "cannot write index file"));
+  delete s;
+  return o;
+}
+
+// indexSearch(paths[], ids[], t, dir, pattern, bound) -> [{signalId, t | null} | {signalId, error} | {signalId, yielded}]
+// searchAll from index files (read, searched, dropped; nothing kept).
+Napi::Value indexSearch(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 6) || !CHECK_ARRAY(env, info[0]) || !CHECK_ARRAY(env, info[1]) || !CHECK_STRING(env, info[4])) return env.Undefined();
+  Napi::Array paths = info[0].As<Napi::Array>(), ids = info[1].As<Napi::Array>();
+  const uint64_t t = argTime(info[2]);
+  const int dir = info[3].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
+  const std::string pat = info[4].As<Napi::String>().Utf8Value();
+  const uint64_t bound = argTime(info[5]);
+  Napi::Array out = Napi::Array::New(env);
+  for (uint32_t i = 0; i < paths.Length() && i < ids.Length(); i++) {
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", ids.Get(i));
+    out.Set(i, o);
+    if (bgStop()) { o.Set("yielded", Napi::Boolean::New(env, true)); continue; }
+    std::string err;
+    SigStore *s = readIndexFile(paths.Get(i).As<Napi::String>().Utf8Value(), err);
+    if (!s) { o.Set("error", Napi::String::New(env, err)); continue; }
+    uint64_t hit;
+    o.Set("t", storeSearch(s, t, dir, pat, bound, hit) ? Napi::Number::New(env, (double)hit) : env.Null());
+    delete s;
+  }
+  return out;
+}
+
+// cacheFree(id?) frees one signal, or all with no argument.
+Napi::Value cacheFree(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (info.Length() == 0 || info[0].IsUndefined()) {
+    for (auto &kv : g_store) delete kv.second;
+    g_store.clear();
+    g_bytes = 0;
+    return Napi::Boolean::New(env, true);
+  }
+  const int64_t id = argI64(info[0]);
+  const bool had = g_store.count(id) > 0;
+  storeFree(id);
+  return Napi::Boolean::New(env, had);
+}
+
+// cacheSetLimit(bytes): LRU budget for this process; evicts at once if over.
+Napi::Value cacheSetLimit(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 1) || !CHECK_NUMBER(env, info[0])) return env.Undefined();
+  g_limit = (size_t)info[0].As<Napi::Number>().DoubleValue();
+  storeEvict({});
+  return Napi::Number::New(env, (double)g_limit);
+}
+
+// cacheStats() -> {bytes, limit, signals: [{signalId, count, bits, bytes, xz}]}
+Napi::Value cacheStats(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  Napi::Object o = Napi::Object::New(env);
+  Napi::Array sigs = Napi::Array::New(env);
+  uint32_t i = 0;
+  for (auto &kv : g_store) {
+    Napi::Object e = Napi::Object::New(env);
+    e.Set("signalId", Napi::Number::New(env, (double)kv.first));
+    e.Set("count", Napi::Number::New(env, (double)kv.second->times.size()));
+    e.Set("bits", Napi::Number::New(env, kv.second->bits));
+    e.Set("bytes", Napi::Number::New(env, (double)kv.second->bytes()));
+    e.Set("xz", Napi::Boolean::New(env, !kv.second->xz.empty()));
+    sigs.Set(i++, e);
+  }
+  o.Set("bytes", Napi::Number::New(env, (double)g_bytes));
+  o.Set("limit", Napi::Number::New(env, (double)g_limit));
+  o.Set("signals", sigs);
+  return o;
+}
+
+// ---- split walks: a wide signal is walked in time slices by several workers ----
+// cacheWalkSlice(id, s, e, path) -> {count, xz, loadMs, walkMs}: load the signal,
+// walk s <= time < e, write [bits u32][n u64][hasXz u8][times][val][xz] to path.
+Napi::Value cacheWalkSlice(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4) || !CHECK_STRING(env, info[3])) return env.Undefined();
+  const int64_t id = argI64(info[0]);
+  using clk = std::chrono::steady_clock;
+  auto msSince = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+  auto t = clk::now();
+  const uint64_t s0 = argTime(info[1]), e0 = argTime(info[2]);
+  // Load only this slice (the reader adds the value in effect at s0 as a change
+  // at s0, which cacheAdopt's normalization drops when it repeats). Before view
+  // windows every slice loaded the whole signal, which capped the split at ~1.5x.
+  ReaderScope scope;
+  if (e0 > s0) readerWindow(s0, e0 - 1);
+  fsdb_obj->ffrAddToSignalList((fsdbVarIdcode)id);
+  scope.loaded.push_back((fsdbVarIdcode)id);
+  fsdb_obj->ffrLoadSignals();
+  fsdb_obj->ffrResetSignalList();
+  const double loadMs = msSince(t);
+  t = clk::now();
+  std::string err;
+  SigStore *s = walkSignal((fsdbVarIdcode)id, err, true, s0, e0);
+  scope.unload((fsdbVarIdcode)id);
+  readerWindowAll();
+  if (!s) { Napi::Error::New(env, err).ThrowAsJavaScriptException(); return env.Undefined(); }
+  const std::string path = info[3].As<Napi::String>().Utf8Value();
+  const uint64_t n = s->times.size();
+  const uint8_t hasXz = !s->xz.empty();
+  const bool wrote = writeStoreFile(s, path);
+  delete s;
+  if (!wrote) { Napi::Error::New(env, "cannot write " + path).ThrowAsJavaScriptException(); return env.Undefined(); }
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("count", Napi::Number::New(env, (double)n));
+  o.Set("xz", Napi::Boolean::New(env, hasXz));
+  o.Set("loadMs", Napi::Number::New(env, loadMs));
+  o.Set("walkMs", Napi::Number::New(env, msSince(t)));
+  return o;
+}
+
+// cacheAdopt(id, paths[]) -> {count, bytes}: concatenate slice files (in time
+// order) into this process's store and delete them.
+Napi::Value cacheAdopt(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2) || !CHECK_ARRAY(env, info[1])) return env.Undefined();
+  const int64_t id = argI64(info[0]);
+  Napi::Array paths = info[1].As<Napi::Array>();
+  std::vector<SigStore *> parts;
+  auto cleanup = [&]() { for (SigStore *q : parts) delete q; };
+  uint64_t total = 0, lastT = 0;
+  bool anyXz = false;
+  for (uint32_t i = 0; i < paths.Length(); i++) {
+    std::string err;
+    SigStore *q = paths.Get(i).IsString() ? readStoreFile(paths.Get(i).As<Napi::String>().Utf8Value(), err) : nullptr;
+    if (!q) { cleanup(); Napi::Error::New(env, err.empty() ? "bad slice path" : err).ThrowAsJavaScriptException(); return env.Undefined(); }
+    parts.push_back(q);
+    const bool joins = q->bits == parts[0]->bits && (q->times.empty() || total == 0 || lastT <= q->times.front());
+    if (!q->times.empty()) lastT = q->times.back();
+    if (!joins) { cleanup(); Napi::Error::New(env, "slices do not join").ThrowAsJavaScriptException(); return env.Undefined(); }
+    total += q->times.size();
+    anyXz = anyXz || !q->xz.empty();
+  }
+  if (g_signalCap && !parts.empty() && total * (8 + 2 * (size_t)((parts[0]->bits + 7) / 8)) > g_signalCap) {
+    cleanup(); Napi::Error::New(env, capError(g_signalCap)).ThrowAsJavaScriptException(); return env.Undefined();
+  }
+  SigStore *s = new SigStore();
+  s->bits = parts.empty() ? 0 : parts[0]->bits;
+  s->stride = (s->bits + 7) / 8;
+  s->times.reserve(total);
+  s->val.reserve(total * s->stride);
+  if (anyXz) s->xz.reserve(total * s->stride);
+  for (SigStore *q : parts) {
+    s->times.insert(s->times.end(), q->times.begin(), q->times.end());
+    s->val.insert(s->val.end(), q->val.begin(), q->val.end());
+    if (anyXz) {
+      if (!q->xz.empty()) s->xz.insert(s->xz.end(), q->xz.begin(), q->xz.end());
+      else s->xz.resize(s->xz.size() + q->val.size(), 0);
+    }
+    delete q;
+  }
+  parts.clear();
+  normalizeStore(s, true);
+  s->times.shrink_to_fit();
+  s->val.shrink_to_fit();
+  s->xz.shrink_to_fit();
+  storeFree(id);
+  s->lastUsed = ++g_clock;
+  g_store[id] = s;
+  g_bytes += s->bytes();
+  storeEvict({id});
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("count", Napi::Number::New(env, (double)s->times.size()));
+  o.Set("bytes", Napi::Number::New(env, (double)s->bytes()));
+  return o;
+}
+
+// searchScan(ids[], t, dir, pattern, bound) -> [{signalId, t | null, scanned} | {signalId, error}]
+// searchAll on signals that aren't stored: load them (one batched reader load),
+// scan the reader's changes from t in direction dir for the first change whose
+// value matches `pattern` (as cacheSearch), and stop early past `bound`
+// (dir 1: time > bound, dir -1: time < bound). Nothing is kept.
+Napi::Value searchScan(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 5) || !CHECK_ARRAY(env, info[0]) || !CHECK_STRING(env, info[3])) return env.Undefined();
+  Napi::Array ids = info[0].As<Napi::Array>();
+  const uint64_t t = argTime(info[1]);
+  const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
+  const std::string pat0 = info[3].As<Napi::String>().Utf8Value();
+  const uint64_t bound = argTime(info[4]);
+  std::vector<fsdbVarIdcode> list;
+  for (uint32_t i = 0; i < ids.Length(); i++) list.push_back((fsdbVarIdcode)argI64(ids.Get(i)));
+  // Load a few at a time: a reader load can't be interrupted, so small
+  // batches keep the wait for interactive work (which makes us yield) short.
+  const size_t batch = g_bg ? 1 : 16;
+  size_t loadedEnd = 0;
+  Napi::Array out = Napi::Array::New(env);
+  bool stopped = false;
+  // Only the part of the file the scan can use is loaded: forward [t, bound]
+  // (the reader's first change at t is the value in effect there, the scan's
+  // `prev`), backward [bound - 1, t] (the change at bound - 1 is the value
+  // before a group at bound). Once `limit` matches are known the bound is the
+  // limit-th nearest match, so later candidates load a fraction of the file.
+  ReaderScope scope;  // widens the window (and unloads) on every exit path
+  {
+    const uint64_t end = fileEnd();
+    const uint64_t ws = dir > 0 ? t : (bound > 0 ? bound - 1 : 0);
+    const uint64_t we = dir > 0 ? std::min(bound, end) : std::min(t, end);
+    if (ws > 0 || we < end) readerWindow(ws, std::max(ws, we));
+  }
+  for (uint32_t i = 0; i < list.size(); i++) {
+    const fsdbVarIdcode id = list[i];
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)id));
+    out.Set(i, o);
+    if (stopped || (stopped = bgStop())) {
+      o.Set("yielded", Napi::Boolean::New(env, true));
+      if (i < loadedEnd) scope.unload(id);  // loaded with its batch, not scanned
+      continue;
+    }
+    if (i % batch == 0) {
+      loadedEnd = std::min<size_t>(list.size(), i + batch);
+      for (size_t j = i; j < loadedEnd; j++) { fsdb_obj->ffrAddToSignalList(list[j]); scope.loaded.push_back(list[j]); }
+      fsdb_obj->ffrLoadSignals();
+      fsdb_obj->ffrResetSignalList();
+    }
+    ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+    if (!h) { o.Set("error", Napi::String::New(env, "no traverse handle")); scope.unload(id); continue; }
+    const uint32_t bits = h->ffrGetBitSize();
+    if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B || bits == 0) {
+      o.Set("error", Napi::String::New(env, bits ? "unsupported encoding" : "reader reports 0 bits (alias?)"));
+      h->ffrFree(); scope.unload(id); continue;
+    }
+    const std::string p = patternBits(pat0, bits);
+    std::vector<uint32_t> care;
+    std::vector<uint8_t> want;
+    for (uint32_t j = 0; j < bits; j++) {
+      const char c = p[j];
+      if (c == 'd') continue;
+      care.push_back(j);
+      want.push_back(c == '1' ? 1 : c == 'x' ? 2 : c == 'z' ? 3 : 0);
+    }
+    auto match = [&](const uint8_t *vc) {
+      for (size_t j = 0; j < care.size(); j++) if ((vc[care[j]] & 3) != want[j]) return false;
+      return true;
+    };
+    // The reader's raw changes, read as the normalized stream (normalizeStore):
+    // per time only the last change counts, and only if it differs from the
+    // value in effect before it (all x before the first change).
+    std::vector<uint8_t> prev(bits, 2), cur(bits);
+    auto grab = [&](std::vector<uint8_t> &dst) { byte_T *vc; h->ffrGetVC(&vc); for (uint32_t j = 0; j < bits; j++) dst[j] = vc[j] & 3; };
+    double found = -1, scanned = 0;
+    uint64_t steps = 0;
+    if (h->ffrHasIncoreVC()) {
+      fsdbTag64 tag, at;
+      tag.H = (uint_T)(t >> 32);
+      tag.L = (uint_T)(t & 0xFFFFFFFF);
+      fsdbTag64 maxTag;
+      const bool past = dir > 0 && FSDB_RC_SUCCESS == h->ffrGetMaxXTag((void *)&maxTag) && combineTime(maxTag.H, maxTag.L) <= t;
+      bool onT = !past && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&tag);  // a change <= t
+      // t past the last loaded change (a view window ends at the file's end): start from the last one.
+      if (!onT && dir < 0 && FSDB_RC_SUCCESS == h->ffrGetMaxXTag((void *)&tag) && combineTime(tag.H, tag.L) <= t)
+        onT = FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&tag);
+      if (dir > 0 && !past) {
+        if (!onT) { h->ffrGetMinXTag((void *)&tag); h->ffrGotoXTag((void *)&tag); }
+        bool have = false, more = true;  // `cur` holds the latest change at time `ct`
+        uint64_t ct = 0;
+        while (more) {
+          if ((++steps & 4095) == 0 && bgStop()) { stopped = true; break; }
+          h->ffrGetXTag(&at);
+          const uint64_t tt = combineTime(at.H, at.L);
+          if (have && tt != ct) {  // ct's group is complete
+            if (ct > t) {
+              if (ct > bound) { have = false; break; }
+              if (cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+            }
+            prev.swap(cur);
+          }
+          grab(cur);  // the last change at a time wins
+          ct = tt;
+          have = true;
+          more = FSDB_RC_SUCCESS == h->ffrGotoNextVC();
+        }
+        if (!stopped && have && ct > t && ct <= bound && cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+      } else if (dir < 0 && onT) {
+        // Start at the very last change <= t (the reader may land on the first of a time's changes).
+        while (FSDB_RC_SUCCESS == h->ffrGotoNextVC()) {
+          h->ffrGetXTag(&at);
+          if (combineTime(at.H, at.L) > t) { h->ffrGotoPrevVC(); break; }
+        }
+        // Walking back, the first change met at a time is that time's value; it
+        // counts if it differs from the value of the next time met.
+        bool have = false, more = true;  // `cur` = value of time `ct`
+        uint64_t ct = 0;
+        while (more) {
+          if ((++steps & 4095) == 0 && bgStop()) { stopped = true; break; }
+          h->ffrGetXTag(&at);
+          const uint64_t tt = combineTime(at.H, at.L);
+          if (tt < t && !(have && tt == ct)) {
+            grab(prev);  // the value in effect before ct
+            if (have) {
+              if (ct < bound) { have = false; break; }
+              if (cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+            }
+            cur.swap(prev);
+            ct = tt;
+            have = true;
+          }
+          more = FSDB_RC_SUCCESS == h->ffrGotoPrevVC();
+        }
+        if (!stopped && have && ct >= bound) {  // the earliest group: before it, all x
+          std::fill(prev.begin(), prev.end(), 2);
+          if (cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+        }
+      }
+    }
+    h->ffrFree();
+    scope.unload(id);
+    if (stopped && found < 0) { o.Set("yielded", Napi::Boolean::New(env, true)); continue; }
+    o.Set("t", found < 0 ? env.Null() : Napi::Number::New(env, found));
+    o.Set("scanned", Napi::Number::New(env, scanned));
+  }
+  readerWindowAll();
+  return out;
+}
+
+// ---- diagnostics: reader cost with a view window (measurements for WINDOWING.md) ----
+// readerProbe(id, s, e, seeks, useWindow) -> {loadMs, walkMs, seekMs, count, walked, first, last,
+//   atS: {t, value}, bits}: optionally set the reader's view window to [s, e], load the
+//   signal, walk every loaded change, then `seeks` gotoXTag+getVC at evenly spaced times
+//   in [s, e]; unload and reset the view window to the whole file.
+Napi::Value readerProbe(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  const fsdbVarIdcode id = (fsdbVarIdcode)argI64(info[0]);
+  const uint64_t s = argTime(info[1]), e = argTime(info[2]);
+  const uint32_t seeks = info[3].As<Napi::Number>().Uint32Value();
+  const bool useWin = info[4].ToBoolean().Value();
+  using clk = std::chrono::steady_clock;
+  auto msSince = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("countBefore", Napi::Number::New(env, (double)fsdb_obj->ffrGetVCCount(id)));
+  auto t = clk::now();
+  if (useWin) {
+    fsdbTag64 a, b; setTag(a, s); setTag(b, e);
+    const bool was = fsdb_obj->ffrIsViewWindowSet();
+    o.Set("setRc", Napi::Number::New(env, (int)(was ? fsdb_obj->ffrResetViewWindow((fsdbXTag *)&a, (fsdbXTag *)&b) : fsdb_obj->ffrSetViewWindow((fsdbXTag *)&a, (fsdbXTag *)&b))));
+    g_winNarrow = true;  // so the next whole load (or readerWindowAll) widens it again
+    o.Set("wasSet", Napi::Boolean::New(env, was));
+  }
+  fsdb_obj->ffrAddToSignalList(id);
+  fsdb_obj->ffrLoadSignals();
+  fsdb_obj->ffrResetSignalList();
+  o.Set("loadMs", Napi::Number::New(env, msSince(t)));
+  o.Set("count", Napi::Number::New(env, (double)fsdb_obj->ffrGetVCCount(id)));
+  ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+  if (h) {
+    const uint32_t bits = h->ffrGetBitSize();
+    o.Set("bits", Napi::Number::New(env, bits));
+    o.Set("incore", Napi::Boolean::New(env, h->ffrHasIncoreVC()));
+    fsdbTag64 tag;
+    t = clk::now();
+    double walked = 0, first = -1, last = -1;
+    if (FSDB_RC_SUCCESS == h->ffrGetMinXTag((void *)&tag) && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&tag)) {
+      do {
+        h->ffrGetXTag(&tag);
+        byte_T *vc; h->ffrGetVC(&vc);
+        const double tt = (double)combineTime(tag.H, tag.L);
+        if (first < 0) first = tt;
+        last = tt; walked++;
+      } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
+    }
+    o.Set("walkMs", Napi::Number::New(env, msSince(t)));
+    o.Set("walked", Napi::Number::New(env, walked));
+    o.Set("first", Napi::Number::New(env, first));
+    o.Set("last", Napi::Number::New(env, last));
+    auto valueAt = [&](uint64_t at, double &tAt) -> std::string {
+      fsdbTag64 g; setTag(g, at);
+      if (FSDB_RC_SUCCESS != h->ffrGotoXTag((void *)&g)) { tAt = -1; return ""; }
+      h->ffrGetXTag(&g);
+      tAt = (double)combineTime(g.H, g.L);
+      byte_T *vc; h->ffrGetVC(&vc);
+      std::string v(bits, '?');
+      for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
+      return v;
+    };
+    t = clk::now();
+    double tAt = 0;
+    for (uint32_t k = 0; k < seeks; k++) valueAt(s + (uint64_t)((double)(e - s) * k / std::max<uint32_t>(1, seeks)), tAt);
+    o.Set("seekMs", Napi::Number::New(env, msSince(t)));
+    Napi::Object atS = Napi::Object::New(env);
+    const std::string v = valueAt(s, tAt);
+    atS.Set("t", Napi::Number::New(env, tAt));
+    atS.Set("value", Napi::String::New(env, v.substr(0, 64)));
+    o.Set("atS", atS);
+    h->ffrFree();
+  }
+  fsdb_obj->ffrUnloadSignals(id);
+  if (useWin && info.Length() > 5 && info[5].ToBoolean().Value()) {  // widen back to the whole file
+    fsdbTag64 a, b; setTag(a, 0); setTag(b, UINT64_MAX >> 1);
+    o.Set("resetRc", Napi::Number::New(env, (int)fsdb_obj->ffrResetViewWindow((fsdbXTag *)&a, (fsdbXTag *)&b)));
+    g_winNarrow = false;
+  }
+  return o;
+}
+
+// ---- cold reads with view windows (no full walk, nothing cached) ----
+// Loads go in batches like cacheLoad's (<= kLoadBatch signals, kLoadBatchBits bits).
+template <class F> static void forBatches(const std::vector<fsdbVarIdcode> &ids, F each) {
+  for (size_t i = 0; i < ids.size();) {
+    size_t j = i;
+    uint64_t bitsSum = 0;
+    while (j < ids.size() && j - i < kLoadBatch && (j == i || bitsSum < kLoadBatchBits)) {
+      ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(ids[j]);
+      bitsSum += h ? std::max<uint32_t>(1, h->ffrGetBitSize()) : 1;
+      if (h) h->ffrFree();
+      fsdb_obj->ffrAddToSignalList(ids[j]);
+      j++;
+    }
+    const auto t = std::chrono::steady_clock::now();
+    ReaderScope batch;  // unloads this batch even if `each` throws (the window is the caller's)
+    batch.widen = false;
+    batch.loaded.assign(ids.begin() + i, ids.begin() + j);
+    fsdb_obj->ffrLoadSignals();
+    fsdb_obj->ffrResetSignalList();
+    const double loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+    for (size_t k = i; k < j; k++) { each(k, loadMs); batch.unload(ids[k]); }
+    i = j;
+  }
+}
+
+// coldValueAt(ids[], t) -> [string | {error}]: the value in effect at t of
+// signals that aren't stored, read with a [t, t] view window: one goto, one
+// value, no walk, nothing kept. As cacheValueAt: all x before the first change
+// (the normalized stream's value at t is always the reader's last change <= t).
+Napi::Value coldValueAt(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  const uint64_t t = argTime(info[1]);
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) ids.push_back((fsdbVarIdcode)argI64(arr.Get(i)));
+  Napi::Array out = Napi::Array::New(env);
+  ReaderScope scope;
+  readerWindow(t, t);
+  forBatches(ids, [&](size_t k, double) {
+    ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(ids[k]);
+    std::string err;
+    if (!h) err = "no traverse handle";
+    else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
+    else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
+    if (!err.empty()) {
+      Napi::Object o = Napi::Object::New(env);
+      o.Set("error", Napi::String::New(env, err));
+      out.Set((uint32_t)k, o);
+    } else {
+      const uint32_t bits = h->ffrGetBitSize();
+      std::string v(bits, 'x');
+      fsdbTag64 g;
+      setTag(g, t);
+      bool on = h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g);
+      if (!on && h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGetMaxXTag((void *)&g) && combineTime(g.H, g.L) <= t)
+        on = FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g);  // t is past the last change: the value is the last one
+      if (on) {
+        // The value at t is the LAST change <= t. This reader lands on the last
+        // of same-time changes (test/test-glitch.js), but don't rely on it: step
+        // forward while the next change is still <= t.
+        for (;;) {
+          if (FSDB_RC_SUCCESS != h->ffrGotoNextVC()) break;
+          fsdbTag64 nx;
+          h->ffrGetXTag(&nx);
+          if (combineTime(nx.H, nx.L) > t) { h->ffrGotoPrevVC(); break; }
+        }
+        h->ffrGetXTag(&g);
+        if (combineTime(g.H, g.L) <= t) {
+          byte_T *vc;
+          h->ffrGetVC(&vc);
+          for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
+        }
+      }
+      out.Set((uint32_t)k, Napi::String::New(env, v));
+    }
+    if (h) h->ffrFree();
+  });
+  readerWindowAll();
+  return out;
+}
+
+// cacheWindowCold(ids[], t0, t1, buckets) -> [{signalId, exact, count, records, counts?, loadMs, walkMs} | {signalId, error}]
+// A window over a short range of signals that aren't stored: load only
+// [t0 - 1, t1] (the reader's synthetic first change at t0 - 1 is the value in
+// effect before t0, so normalization and the t0 record come out exactly as
+// from the whole signal), walk that into a scratch store, answer, free it.
+Napi::Value cacheWindowCold(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  uint64_t t0 = argTime(info[1]), t1 = argTime(info[2]);
+  if (t1 < t0) std::swap(t0, t1);
+  uint32_t B = info[3].As<Napi::Number>().Uint32Value();
+  if (B == 0) B = 1;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) ids.push_back((fsdbVarIdcode)argI64(arr.Get(i)));
+  using clk = std::chrono::steady_clock;
+  auto msSince = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+  Napi::Array out = Napi::Array::New(env);
+  ReaderScope scope;
+  readerWindow(t0 > 0 ? t0 - 1 : 0, t1);
+  forBatches(ids, [&](size_t k, double loadMs) {
+    auto tw = clk::now();
+    std::string err;
+    SigStore *s = walkSignal(ids[k], err);
+    Napi::Object o = s ? windowOf(env, s, t0, t1, B) : Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
+    if (!s) o.Set("error", Napi::String::New(env, err));
+    o.Set("loadMs", Napi::Number::New(env, loadMs));
+    o.Set("walkMs", Napi::Number::New(env, msSince(tw)));
+    delete s;
+    out.Set((uint32_t)k, o);
+  });
+  readerWindowAll();
+  return out;
+}
+
+// cacheEvict(keepIds[]): evict least recently used signals other than keepIds
+// until the store is within its limit (after loads done with evict = false).
+Napi::Value cacheEvict(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 1) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  std::vector<int64_t> keep;
+  for (uint32_t i = 0; i < arr.Length(); i++) keep.push_back(argI64(arr.Get(i)));
+  storeEvict(keep);
+  return env.Undefined();
+}
+
+// cacheSetBounds(signalCapBytes, rssHardBytes): the hard bounds above (0 = none).
+Napi::Value cacheSetBounds(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2) || !CHECK_NUMBER(env, info[0]) || !CHECK_NUMBER(env, info[1])) return env.Undefined();
+  g_signalCap = (size_t)std::max(0.0, info[0].As<Napi::Number>().DoubleValue());
+  g_rssHard = (size_t)std::max(0.0, info[1].As<Napi::Number>().DoubleValue());
+  return env.Undefined();
+}
+
+// ---- persistent store cache (the search index's .vvz files) ----
+// cacheAdoptIndex(id, path, evict = true) -> {count, bytes, bits} | {error, tooLarge?}:
+// load a signal's normalized store from its index file instead of walking it
+// (spike_rvfi: ~70 ms instead of ~1.6 s), with readIndexFile's checks. A file
+// over the signal cap is refused from its header (tooLarge: keep the file).
+// evict = false leaves the LRU alone (as cacheLoad's; searchAll's candidates).
+Napi::Value cacheAdoptIndex(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2) || !CHECK_STRING(env, info[1])) return env.Undefined();
+  const int64_t id = argI64(info[0]);
+  Napi::Object o = Napi::Object::New(env);
+  std::string err;
+  const bool evict = info.Length() < 3 || info[2].ToBoolean().Value();
+  bool tooLarge = false;
+  SigStore *s = readIndexFile(info[1].As<Napi::String>().Utf8Value(), err, g_signalCap, &tooLarge);
+  if (!s) { o.Set("error", Napi::String::New(env, err)); if (tooLarge) o.Set("tooLarge", Napi::Boolean::New(env, true)); return o; }
+  if (g_signalCap && s->bytes() > g_signalCap) { delete s; o.Set("error", Napi::String::New(env, capError(g_signalCap))); o.Set("tooLarge", Napi::Boolean::New(env, true)); return o; }
+  storeFree(id);
+  s->lastUsed = ++g_clock;
+  g_store[id] = s;
+  g_bytes += s->bytes();
+  if (evict) storeEvict({id});
+  o.Set("count", Napi::Number::New(env, (double)s->times.size()));
+  o.Set("bytes", Napi::Number::New(env, (double)s->bytes()));
+  o.Set("bits", Napi::Number::New(env, s->bits));
+  return o;
+}
+
+// cacheWriteIndex(id, path) -> {bytes, rawBytes, count} | {error}: write a stored
+// signal to an index file (no re-walk).
+Napi::Value cacheWriteIndex(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2) || !CHECK_STRING(env, info[1])) return env.Undefined();
+  Napi::Object o = Napi::Object::New(env);
+  auto it = g_store.find(argI64(info[0]));
+  if (it == g_store.end()) { o.Set("error", Napi::String::New(env, "signal not loaded")); return o; }
+  const SigStore *s = it->second;
+  uint64_t bytes = 0;
+  bool yielded = false;
+  if (!writeIndexFile(s, info[1].As<Napi::String>().Utf8Value(), bytes, &yielded)) {
+    o.Set("error", Napi::String::New(env, yielded ? "yielded" : "cannot write index file"));
+    if (yielded) o.Set("yielded", Napi::Boolean::New(env, true));
+    return o;
+  }
+  o.Set("bytes", Napi::Number::New(env, (double)bytes));
+  o.Set("rawBytes", Napi::Number::New(env, (double)(17 + s->times.size() * 8 + s->val.size() + s->xz.size())));
+  o.Set("count", Napi::Number::New(env, (double)s->times.size()));
+  o.Set("bits", Napi::Number::New(env, s->bits));
+  o.Set("xz", Napi::Boolean::New(env, !s->xz.empty()));
+  return o;
+}

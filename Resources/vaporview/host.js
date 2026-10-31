@@ -6,7 +6,11 @@
 //
 // Backends: wellen (VCD/FST/GHW, the wasm parser in wellen-worker.js reading
 // the served file) and fsdb (Verdi's reader in cmux's FSDB helper on the SSH
-// host, reached through POST requests to the served fsdb URL).
+// host, reached through POST requests to the served fsdb URL). When cmux's
+// replies name protocol 2 (header X-Cmux-Fsdb-Protocol, helper v2), the viewer
+// is started windowed (set-windowing) and its own helper queries ({command:
+// 'v2', req}) are relayed one POST each, their replies posted back as v2-reply
+// with the binary transferred.
 //
 // The menus, keybindings, settings, sessions and status strip VS Code adds
 // around the webview are in cmux-commands.js, the netlist panel in
@@ -47,6 +51,8 @@
   let initSent = false;
   // Per-signal load timings, newest last (read by tests and the debug inspector).
   const stats = [];
+  // The windowed viewer's relayed queries (tests, debug inspector).
+  const v2Stats = { relayed: 0, cancelled: 0, replyBytes: 0 };
 
   // ---- theme ----
   function applyThemeTo(targetDocument) {
@@ -101,8 +107,8 @@
     toNative({ type: 'error', message: detail });
   }
 
-  function toWebview(msg) {
-    if (iframe.contentWindow) { iframe.contentWindow.postMessage(msg, '*'); }
+  function toWebview(msg, transfer) {
+    if (iframe.contentWindow) { iframe.contentWindow.postMessage(msg, '*', transfer || []); }
   }
 
   // The one path value changes take into the viewer (update-waveform-chunk,
@@ -261,6 +267,20 @@
   function fsdbBackend(config) {
     // Whether the helper answers valueAt (v2); unknown until the first ask.
     let pointQuery;
+    // The running helper's protocol, from cmux's reply header: 2 = windowed
+    // viewing (WINDOWING.md); 1 (or no header) = whole signals.
+    let protocolVersion = 1;
+    const noteProtocol = (response) => {
+      const p = Number(response.headers.get('X-Cmux-Fsdb-Protocol'));
+      if (p) { protocolVersion = p; }
+    };
+    function parseReply(response, all) {
+      if ((response.headers.get('content-type') || '').startsWith('application/octet-stream')) {
+        const headLength = new DataView(all.buffer, all.byteOffset).getUint32(0, true);
+        return { reply: JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + headLength))), bin: all.subarray(4 + headLength) };
+      }
+      return { reply: JSON.parse(new TextDecoder().decode(all)), bin: null };
+    }
     // Replies to requests made before close() (a reload) are dropped, so an
     // old signal reply can't fill a row of the reloaded file.
     let closed = false;
@@ -276,14 +296,8 @@
       } catch (error) {
         throw closed ? closedError() : error;
       }
-      let reply, bin = null;
-      if ((response.headers.get('content-type') || '').startsWith('application/octet-stream')) {
-        const headLength = new DataView(all.buffer).getUint32(0, true);
-        reply = JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + headLength)));
-        bin = all.subarray(4 + headLength);
-      } else {
-        reply = JSON.parse(new TextDecoder().decode(all));
-      }
+      noteProtocol(response);
+      const { reply, bin } = parseReply(response, all);
       if (closed) { throw closedError(); }
       if (reply.error) { throw new Error(reply.error); }
       return { result: reply.result, helperMs: reply.ms || 0, bin, wireBytes: all.length };
@@ -291,6 +305,26 @@
 
     return {
       close() { closed = true; aborter.abort(); },
+      // Protocol 2: the viewer windows signals itself and sends its own queries (v2).
+      windowed: () => protocolVersion >= 2,
+      // One viewer request (window, valueAt, edge, search, count, cancel) to the helper,
+      // verbatim: its reply, under the viewer's id, with the binary as its own
+      // ArrayBuffer (transferred into the frame). A failed relay answers {id, error}
+      // so the viewer never waits on it; null once closed (the viewer was reset).
+      async v2(req) {
+        if (closed) { return null; }
+        let response, all;
+        try {
+          response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
+          all = new Uint8Array(await response.arrayBuffer());
+        } catch (error) {
+          return closed ? null : { reply: { id: req.id, error: String((error && error.message) || error) } };
+        }
+        if (closed) { return null; }
+        noteProtocol(response);
+        const { reply, bin } = parseReply(response, all);
+        return { reply: { ...reply, id: req.id }, bin: bin && bin.length ? bin.slice().buffer : null };
+      },
       async open(showTop) {
         const { result } = await request({ cmd: 'open', file: config.fsdb.path });
         showTop(result.top.map((t) => ({ kind: 'scope', name: t.name, id: t.scopeOffsetIdx, type: t.type })));
@@ -433,6 +467,8 @@
   function sendInit() {
     if (initSent || !webviewReady || !doc.metadata || !doc.metadata.timeTableLoaded) { return; }
     initSent = true;
+    // Before initViewport: the viewer starts windowed or whole (upstream) with the file.
+    toWebview({ command: 'set-windowing', enabled: !!(backend && backend.windowed && backend.windowed()) });
     toWebview(window.cmuxCommands.configMessage());
     const autoReload = autoReloadState !== null ? autoReloadState : !!window.cmuxCommands.settings().defaultAutoReload;
     toWebview({ command: 'initViewport', metadata: doc.metadata, documentId: doc.documentId, uri: doc.uri,
@@ -462,6 +498,19 @@
     // Until the backend has opened (doc.metadata), a request is the old
     // viewer's: the reloaded one asks again for what it shows.
     fetchDataFromFile: async (m) => { if (dataReady()) { await backend.fetch(m.requestList); } },
+    // The windowed viewer's helper queries (protocol 2). A cancel's own reply is not
+    // the viewer's: it names the cancelled request, whose reply says {cancelled}.
+    v2: async (m) => {
+      const asked = backend;
+      if (!asked || !asked.v2 || !m.req) { return; }
+      if (m.req.cmd === 'cancel') { v2Stats.cancelled++; await asked.v2(m.req); return; }
+      v2Stats.relayed++;
+      const answer = await asked.v2(m.req);
+      if (!answer || backend !== asked) { return; }
+      if (answer.bin) { v2Stats.replyBytes += answer.bin.byteLength; }
+      toWebview(answer.bin ? { command: 'v2-reply', reply: answer.reply, bin: answer.bin } : { command: 'v2-reply', reply: answer.reply },
+        answer.bin ? [answer.bin] : undefined);
+    },
     contextUpdate: (m) => {
       viewerContext.webview = m;
       if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
@@ -902,12 +951,15 @@
       if (cacheBackend !== backend) { changeCache.clear(); cachedChanges = 0; cacheBackend = backend; }
       const shown = shownIds();
       const rest = [];
+      // A windowed viewer keeps only windows of a shown signal: those are read
+      // like unshown ones (one valueAt), unless the signal was loaded whole.
+      const windowed = !!(asked.windowed && asked.windowed());
       for (const v of vars) {
         const drawn = shown.has(v.netlistId) ? drawnChanges.get(v.signalId) : undefined;
         if (drawn) {
           const value = valueIn(drawn, time);
           if (value !== undefined) { out.set(v.netlistId, value); }
-        } else if (unshown) {
+        } else if (unshown || (windowed && shown.has(v.netlistId))) {
           rest.push(v);
         }
       }
@@ -1081,7 +1133,7 @@
   })();
 
   window.cmuxWaveform = { open, reload, setTheme, setStatus, applyThemeTo, fromWebview, viewerContext, commandHandlers,
-    deliverValueChanges, addVariableByPath, stats, strings, host: hostApi,
+    deliverValueChanges, addVariableByPath, stats, strings, host: hostApi, v2Stats: () => ({ ...v2Stats }),
     fileChanged: () => window.cmuxCommands.fileChanged(),
     runCommand: ({ command, args }) => window.cmuxCommands.run(command, args),
     sessionSaved: (m) => window.cmuxCommands.sessionSaved(m),
