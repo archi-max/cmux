@@ -190,6 +190,10 @@ final class MarkdownWebView: CmuxUndoableWebView {
     /// renderer coordinator recover content WebKit dropped while the view was
     /// out of the window (e.g. a pane drag re-parented the hosting views).
     var onReenterWindow: (() -> Void)?
+    /// Set for the waveform viewer: its page binds VaporView's keys (letters,
+    /// digits, ⌘R, ⌘F, ⌘S, ⌘0), so the viewer navigation keys stay off and
+    /// cmux leaves those shortcuts to the page while it has focus.
+    var isWaveformViewer = false
 
     /// The coordinator is the only owner of deferred WebKit lifecycle work.
     private var renderingCoordinator: MarkdownWebRenderingCoordinator?
@@ -262,6 +266,11 @@ final class MarkdownWebView: CmuxUndoableWebView {
         editableElementFocused
     }
 
+    /// Whether the waveform page, not cmux, should get `event` (see `isWaveformViewer`).
+    func waveformViewerClaims(_ event: NSEvent) -> Bool {
+        isWaveformViewer && WaveformViewerShortcuts.claims(event, editableElementFocused: editableElementFocused)
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         PaneFirstClickFocusSettings.isEnabled()
     }
@@ -287,7 +296,8 @@ final class MarkdownWebView: CmuxUndoableWebView {
     }
 
     func handleViewerNavigationKey(_ event: NSEvent) -> Bool {
-        guard cmuxOwnsKeyEvent(event),
+        guard !isWaveformViewer,
+              cmuxOwnsKeyEvent(event),
               editableFocusStateConfirmed,
               !editableElementFocused else {
             viewerNavigationKeyRouter.reset()

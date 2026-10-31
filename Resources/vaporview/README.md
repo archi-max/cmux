@@ -71,10 +71,24 @@ Made by cmux on 2026-10-30 (viewer, host, FSDB helper) and 2026-10-31
   `src/extension_core/document.ts` and `src/extension_core/viewer_provider.ts`):
   the extension-host side reduced to opening one file, answering the webview's
   `ready` / `initialized` / `fetchDataFromFile` / `copyToClipboard` messages,
-  recording `contextUpdate` and `executeCommand setContext` state, and a simple
-  netlist tree in place of VS Code's TreeView. VaporView's VS Code context
-  menus and keybindings (contributed in its `package.json`) are not
-  reimplemented yet.
+  recording `contextUpdate` and `executeCommand setContext` state, and
+  answering the netlist search, `getValuesAtTime` and drop requests. The
+  wellen worker gains a `getvaluesattime` request.
+- `cmux-commands.js` (new, adapted from `package.json` `contributes`,
+  `src/extension_core/commands.ts`, `viewer_provider.ts`, `document.ts` and
+  the status bar items in `src/extension_core/`): VaporView's context menus
+  and submenus (the `webview/context` and `view/item/context` entries with
+  their `when` clauses, evaluated against the webview's
+  `data-vscode-context`), its keybindings, the `vaporview.*` settings (minus
+  the FSDB path, WCP and `fstMaxStaticLoadSize` keys, which do not apply),
+  session save/load in VaporView's JSON format, undo/redo, the status strip
+  (marker time, delta, selected signal) and the command implementations the
+  extension host runs.
+- `cmux-netlist.js` (new, adapted from `src/extension_core/tree_view.ts` and
+  the netlist search quick pick): the netlist panel, a lazy tree with
+  multi-select, add/remove/reveal, drag into the viewer and search.
+- `cmux-ui.js` (new): the menu, dialog, quick pick and toast widgets VS Code
+  draws natively.
 - `host.js` also reads FSDB files through cmux's FSDB helper (below) and
   delivers every signal's value changes through one function that dispatches
   the message event on the same-origin viewer frame instead of posting it, so
@@ -103,7 +117,10 @@ Made by cmux on 2026-10-30 (viewer, host, FSDB helper) and 2026-10-31
 
 The Swift side (`Sources/Panels/FilePreviewWaveformSession.swift`,
 `Sources/Panels/WaveformViewerSchemeHandler.swift`) serves this folder and the
-opened file over the `cmux-waveform:` URL scheme, and
+opened file over the `cmux-waveform:` URL scheme, persists the settings,
+saves and loads session files, and lets VaporView's keys through to the page
+while it has focus (`WaveformViewerShortcuts`);
+`Sources/Panels/WaveformViewerStrings.swift` localizes the page's strings; and
 `Sources/Panels/WaveformFSDBHelper.swift` installs and runs the FSDB helper on
 an SSH workspace's host and relays the page's FSDB requests to it.
 
@@ -113,4 +130,5 @@ Rebuild at the new upstream commit with the commands above, copy the files in
 the table, re-apply the `viewer.html` changes, check that the message names in
 `src/webview/vscode_wrapper.ts` and the exports in
 `src/wellen_parser/filehandler.wit` still match `host.js` and
-`wellen-worker.js`, and update the commit here and in `THIRD_PARTY_LICENSES.md`.
+`wellen-worker.js`, regenerate the menus in `cmux-commands.js` from the new
+`package.json`, and update the commit here and in `THIRD_PARTY_LICENSES.md`.

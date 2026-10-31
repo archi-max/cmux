@@ -113,6 +113,7 @@ const api = {
   getsignaldata({ signalIds }) { ex.getsignaldata(...lowerU32List(signalIds)); return 'ok'; },
   getenumdata({ netlistIds }) { ex.getenumdata(...lowerU32List(netlistIds)); return 'ok'; },
   getparametervalues({ signalIds }) { return JSON.parse(liftString('getparametervalues', ex.getparametervalues(...lowerU32List(signalIds)))); },
+  getvaluesattime({ time, paths }) { return JSON.parse(liftString('getvaluesattime', ex.getvaluesattime(BigInt(time), ...lowerString(paths)))); },
   searchnetlist({ query, scopeId }) { return JSON.parse(liftString('searchnetlist', ex.searchnetlist(...lowerString(query), scopeId))); },
   unload() { ex.unload(); return 'ok'; },
 };

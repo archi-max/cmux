@@ -61,6 +61,17 @@
   --vscode-debugTokenExpression-type: #4a90e2;
   --vscode-debugTokenExpression-error: #f48771;
   color-scheme: dark;
+  --vscode-button-background: #0e639c;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #3a3d41;
+  --vscode-button-secondaryForeground: #ffffff;
+  --vscode-menu-background: #252526;
+  --vscode-menu-foreground: #cccccc;
+  --vscode-menu-selectionBackground: #04395e;
+  --vscode-menu-selectionForeground: #ffffff;
+  --vscode-menu-separatorBackground: #454545;
+  --vscode-editorWarning-foreground: #cca700;
+  --vscode-editorError-foreground: #f14c4c;
 }
 
 :root[data-cmux-theme="light"] {
@@ -114,6 +125,17 @@
   --vscode-debugTokenExpression-type: #4a90e2;
   --vscode-debugTokenExpression-error: #e51400;
   color-scheme: light;
+  --vscode-button-background: #007acc;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #e5e5e5;
+  --vscode-button-secondaryForeground: #000000;
+  --vscode-menu-background: #ffffff;
+  --vscode-menu-foreground: #333333;
+  --vscode-menu-selectionBackground: #0060c0;
+  --vscode-menu-selectionForeground: #ffffff;
+  --vscode-menu-separatorBackground: #d4d4d4;
+  --vscode-editorWarning-foreground: #bf8803;
+  --vscode-editorError-foreground: #e51400;
 }
 
 body {

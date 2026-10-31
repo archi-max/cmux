@@ -8,26 +8,39 @@
 // the served file) and fsdb (Verdi's reader in cmux's FSDB helper on the SSH
 // host, reached through POST requests to the served fsdb URL).
 //
+// The menus, keybindings, settings, sessions and status strip VS Code adds
+// around the webview are in cmux-commands.js, the netlist panel in
+// cmux-netlist.js, and the menu and dialog widgets in cmux-ui.js.
+//
 // cmux drives this page through window.cmuxWaveform:
-//   open({ url, size, format, strings, fsdb: { url, path } | undefined })
+//   open({ url, size, format, path, strings, settings, fsdb: { url, path } | undefined,
+//          sessionFile: { path, text } | undefined, restore: { state, dirty, sessionPath } | undefined })
+//   reload({ url, size })          reopen the file in place, keeping the signal list
+//   fileChanged()                  the file changed on disk (reloads if Auto Reload is on)
 //   setTheme({ kind, background, foreground })
 //   setStatus({ title, detail })   progress while cmux prepares the FSDB helper
+//   runCommand({ command, args })  a VaporView command id (cmux-commands.js)
+//   sessionSaved({ path }) | sessionFailed({ message }) | applySessionFile({ text, path, error })
 // and hears back on window.webkit.messageHandlers.cmuxWaveform:
-//   { type: 'ready' } | { type: 'opened' } | { type: 'error', message }
-//   { type: 'copy', text } | { type: 'log', message }
+//   { type: 'ready' } | { type: 'opened', top } | { type: 'error', message }
+//   { type: 'copy', text } | { type: 'log', message } | { type: 'openURL', url }
+//   { type: 'settings', values } | { type: 'sessionState', state, dirty, sessionPath }
+//   { type: 'saveSession', text, suggestedName, path } | { type: 'loadSession' } | { type: 'reload' }
+//   { type: 'event', eventType, eventData }   VaporView's API events (markerSet, signalSelect, ...)
 
 (function () {
   const nativeHandler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.cmuxWaveform;
   const toNative = (msg) => { if (nativeHandler) { nativeHandler.postMessage(msg); } };
 
   const iframe = document.getElementById('viewer');
-  const treeEl = document.getElementById('tree');
   const messageEl = document.getElementById('message');
 
   let theme = { kind: 'dark', background: null, foreground: null };
   let strings = {};
   let backend = null;
-  const doc = { uri: '', documentId: 'cmux-waveform', metadata: null, netlist: [] };
+  let config = {};
+  // items: every netlist variable loaded so far, by netlistId.
+  const doc = { uri: '', documentId: 'cmux-waveform', metadata: null, netlist: [], items: new Map() };
   let webviewReady = false;
   let initSent = false;
   // Per-signal load timings, newest last (read by tests and the debug inspector).
@@ -140,6 +153,9 @@
         }
         return out;
       },
+      search(query, scope) { return call('searchnetlist', { query, scopeId: scope ? scope.id : 0xFFFFFFFF }); },
+      valuesAtTime(time, paths) { return call('getvaluesattime', { time, paths: paths.join(' ') }); },
+      close() { worker.terminate(); },
       async fetch(requestList) {
         const signals = requestList.filter((r) => r.type === 'signal').map((r) => r.signalId);
         const enums = requestList.filter((r) => r.type === 'enum').map((r) => r.netlistId);
@@ -280,11 +296,10 @@
   function sendInit() {
     if (initSent || !webviewReady || !doc.metadata || !doc.metadata.timeTableLoaded) { return; }
     initSent = true;
-    toWebview({ command: 'setConfigSettings', scrollingMode: 'Auto', rulerLines: true, enableAnimations: true,
-      animationDuration: 50, defaultTimeUnit: 'none', defaultNameType: 'fullPath',
-      customColorPalette: ['#CCCCCC', '#CCCCCC', '#CCCCCC', '#CCCCCC'] });
+    toWebview(window.cmuxCommands.configMessage());
+    const autoReload = autoReloadState !== null ? autoReloadState : !!window.cmuxCommands.settings().defaultAutoReload;
     toWebview({ command: 'initViewport', metadata: doc.metadata, documentId: doc.documentId, uri: doc.uri,
-      colorPalette: [], errorColorPalette: ['#C00000'], themeValid: false, autoReload: false });
+      colorPalette: [], errorColorPalette: ['#C00000'], themeValid: false, autoReload });
   }
 
   // What VS Code would hold for its menus and keybindings: the context keys the
@@ -293,25 +308,36 @@
   // and keyboard layer can read these later.
   const viewerContext = { keys: {}, webview: null };
 
-  // VS Code commands the webview executes (executeCommand). Only setContext is
-  // handled; menu and keybinding commands can register here.
+  // VS Code commands the webview executes (executeCommand): setContext here,
+  // VaporView's own commands through cmux-commands.js.
   const commandHandlers = {
     setContext: ([key, value]) => { viewerContext.keys[key] = value; },
   };
 
+  // The Auto Reload checkbox survives an in-page reload.
+  let autoReloadState = null;
+
   const webviewHandlers = {
     ready: () => { webviewReady = true; sendInit(); },
-    initialized: () => { toNative({ type: 'opened' }); },
+    initialized: () => { toNative({ type: 'opened', top: doc.netlist.map((t) => t.name) }); },
     fetchDataFromFile: async (m) => { if (backend) { await backend.fetch(m.requestList); } },
-    contextUpdate: (m) => { viewerContext.webview = m; },
+    contextUpdate: (m) => {
+      viewerContext.webview = m;
+      if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
+      window.cmuxCommands.onContextUpdate(m);
+    },
+    restoreState: (m) => window.cmuxCommands.restoreState(m),
     executeCommand: (m) => {
       const handler = commandHandlers[m.commandName];
-      if (handler) { handler(m.args || []); }
+      if (handler) { handler(m.args || []); } else { window.cmuxCommands.run(m.commandName, (m.args || [])[0]); }
     },
+    updateConfiguration: (m) => { window.cmuxCommands.updateSetting(m.property, m.value); },
+    showMessage: (m) => { window.cmuxUI.toast(String(m.message || ''), m.messageType); },
+    handleDrop: (m) => { window.cmuxCommands.handleDrop(m); },
+    emitEvent: (m) => { toNative({ type: 'event', eventType: m.eventType, eventData: m.eventData }); },
     copyToClipboard: (m) => { toNative({ type: 'copy', text: String(m.text || '') }); },
     logOutput: (m) => { toNative({ type: 'log', message: String(m.message) }); },
-    // restoreState, emitEvent, showMessage, updateConfiguration, handleDrop and
-    // focus have no cmux counterpart yet.
+    // focus (reveal the editor tab) has no cmux counterpart: the panel is already visible.
   };
 
   async function fromWebview(m) {
@@ -324,65 +350,49 @@
     }
   }
 
-  // ---- netlist ----
+  // ---- netlist (drawn by cmux-netlist.js) ----
   async function getChildren(item) {
     if (item.children) { return item.children; }
     const scopePath = item.scopePath.concat([item.name]);
     const out = (await backend.children(item)).map((c) => ({ ...c, scopePath }));
+    out.forEach((c) => { if (c.kind === 'var') { doc.items.set(c.netlistId, c); } });
     item.children = out;
     return out;
   }
 
-  function addVariable(v) {
-    toWebview({ command: 'add-variable', signalList: [{ signalId: v.signalId, signalWidth: v.width, signalName: v.name,
-      scopePath: v.scopePath, netlistId: v.netlistId, type: v.type, encoding: v.encoding, enumType: v.enumType,
-      msb: v.msb, lsb: v.lsb }], groupPath: undefined, index: undefined });
+  function addVariables(vars, groupPath, index) {
+    if (!vars.length) { return; }
+    toWebview({ command: 'add-variable', signalList: vars.map((v) => ({ signalId: v.signalId, signalWidth: v.width,
+      signalName: v.name, scopePath: v.scopePath, netlistId: v.netlistId, type: v.type, encoding: v.encoding,
+      enumType: v.enumType, msb: v.msb, lsb: v.lsb })), groupPath, index });
   }
 
-  function renderTree(items, container, depth) {
-    for (const it of items) {
-      const row = document.createElement('div');
-      row.className = 'row ' + it.kind;
-      row.style.paddingLeft = 6 + depth * 12 + 'px';
-      row.textContent = it.name;
-      if (it.kind === 'var' && it.width > 1) {
-        const range = document.createElement('span');
-        range.className = 'range';
-        range.textContent = ` [${it.msb}:${it.lsb}]`;
-        row.appendChild(range);
-      }
-      container.appendChild(row);
-      if (it.kind === 'scope') {
-        const kids = document.createElement('div');
-        container.appendChild(kids);
-        row.onclick = async () => {
-          try {
-            if (row.classList.toggle('open')) { renderTree(await getChildren(it), kids, depth + 1); } else { kids.textContent = ''; }
-          } catch (error) {
-            fail(error);
-          }
-        };
-        if (depth < 1) { row.click(); }
-      } else {
-        row.title = strings.addSignal || '';
-        row.onclick = () => addVariable(it);
-      }
-    }
-  }
+  function addVariable(v) { addVariables([v]); }
 
-  // Finds a netlist variable by its dotted path ("top.cpu.pc"), expanding scopes on the way.
-  async function findVariable(path) {
-    const parts = path.split('.');
+  // Finds a netlist item by its dotted path ("top.cpu.pc"), expanding scopes
+  // on the way. Of several variables with the same name (bit-blasted vectors),
+  // the one with the given msb/lsb wins. varOnly: scopes do not match.
+  async function findItem(path, msb, lsb, varOnly) {
+    if (!path) { return null; }
+    const parts = String(path).split('.');
     let items = doc.netlist;
     for (let i = 0; i < parts.length; i++) {
-      const item = items.find((x) => x.name === parts[i]);
-      if (!item) { return null; }
-      if (i === parts.length - 1) { return item.kind === 'var' ? item : null; }
-      if (item.kind !== 'scope') { return null; }
-      items = await getChildren(item);
+      const last = i === parts.length - 1;
+      const named = items.filter((x) => x.name === parts[i]);
+      if (last) {
+        const vars = named.filter((x) => x.kind === 'var');
+        const exact = msb === undefined ? null : vars.find((v) => v.msb === msb && v.lsb === (lsb === undefined ? msb : lsb));
+        if (exact || vars[0]) { return exact || vars[0]; }
+        return varOnly ? null : named.find((x) => x.kind === 'scope') || null;
+      }
+      const scope = named.find((x) => x.kind === 'scope');
+      if (!scope) { return null; }
+      items = await getChildren(scope);
     }
     return null;
   }
+
+  async function findVariable(path) { return findItem(path, undefined, undefined, true); }
 
   async function addVariableByPath(path) {
     const v = await findVariable(path);
@@ -390,30 +400,110 @@
     return !!v;
   }
 
+  // VaporView's netlist search: wellen searches the hierarchy itself; other
+  // backends walk the tree here (breadth first, bounded).
+  async function search(query, scope) {
+    if (backend.search) { return backend.search(query, scope); }
+    const needle = query.toLowerCase();
+    const results = [];
+    let total = 0, visited = 0;
+    const queue = scope ? [scope] : [{ kind: 'scope', name: '', scopePath: [], children: doc.netlist }];
+    while (queue.length && visited < 20000) {
+      const s = queue.shift();
+      for (const c of await getChildren(s)) {
+        visited++;
+        const instancePath = c.scopePath.concat([c.name]).join('.');
+        if (instancePath.toLowerCase().includes(needle)) {
+          total++;
+          if (results.length < 100) {
+            results.push({ instancePath, isVar: c.kind === 'var', type: c.type || '', msb: c.kind === 'var' ? c.msb : -1, lsb: c.kind === 'var' ? c.lsb : -1 });
+          }
+        }
+        if (c.kind === 'scope') { queue.push(c); }
+      }
+    }
+    return { totalResults: total, searchResults: results };
+  }
+
+  async function valuesAtTime(time, paths) {
+    if (backend.valuesAtTime) { return backend.valuesAtTime(time, paths); }
+    return [];
+  }
+
   // ---- open ----
-  async function open(config) {
+  async function openBackend() {
+    backend = config.format === 'fsdb' ? fsdbBackend(config) : wellenBackend(config);
+    const metadata = await backend.open((top) => {
+      doc.netlist = top.map((t) => ({ ...t, scopePath: [] }));
+      doc.netlist.forEach((t) => { if (t.kind === 'var') { doc.items.set(t.netlistId, t); } });
+      window.cmuxNetlist.render(doc.netlist);
+    });
+    doc.metadata = metadata;
+    showMessage('', '');
+  }
+
+  async function open(next) {
+    config = Object.assign({}, next);
     strings = config.strings || {};
+    window.cmuxWaveform.strings = strings;
     document.getElementById('netlist-title').textContent = strings.netlist || '';
+    document.getElementById('status-unsaved').title = strings.statusUnsaved || '';
+    document.querySelector('#status-reload .text').textContent = strings.messageFileChanged || '';
+    document.querySelector('#status-reload button').textContent = strings['command.reloadFile'] || '';
+    window.cmuxCommands.init(config);
     doc.uri = config.url;
     if (config.format === 'fsdb' && !config.fsdb) {
       showMessage(strings.fsdbNeedsRemoteTitle, strings.fsdbNeedsRemoteDetail);
       return;
     }
     showMessage(strings.loading, '');
-    backend = config.format === 'fsdb' ? fsdbBackend(config) : wellenBackend(config);
     try {
-      const metadata = await backend.open((top) => {
-        doc.netlist = top.map((t) => ({ ...t, scopePath: [] }));
-        renderTree(doc.netlist, treeEl, 0);
-      });
-      doc.metadata = metadata;
-      showMessage('', '');
+      await openBackend();
       iframe.src = 'viewer.html';
-      iframe.addEventListener('load', sendInit, { once: true });
+      iframe.addEventListener('load', () => {
+        window.cmuxCommands.attachFrame(iframe.contentWindow);
+        sendInit();
+      }, { once: true });
     } catch (error) {
       fail(error);
     }
   }
+
+  // VaporviewDocument.reload: unload the webview, read the file again and
+  // re-initialize the viewport. The viewer frame stays, so its saved state
+  // brings the same signals back (restoreState); cmux's copy covers the case
+  // where the frame has none.
+  async function reload(next) {
+    if (!doc.metadata || !webviewReady) { return open(Object.assign({}, config, next || {})); }
+    const snapshot = window.cmuxCommands.sessionSnapshot();
+    config = Object.assign({}, config, next || {}, { restore: snapshot.state ? snapshot : null });
+    window.cmuxCommands.willReload();
+    if (backend && backend.close) { backend.close(); }
+    backend = null;
+    doc.metadata = null;
+    doc.netlist = [];
+    doc.items.clear();
+    initSent = false;
+    webviewReady = false;
+    toWebview({ command: 'unload' });
+    window.cmuxNetlist.clear();
+    showMessage(strings.loading, '');
+    try {
+      await openBackend();
+      sendInit();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  // What cmux-commands.js and cmux-netlist.js use. Waveform data stays behind
+  // the backend; these only touch the netlist and the viewer frame.
+  const hostApi = {
+    doc, viewerContext, toWebview, toNative, fail, getChildren, findItem, addVariables, search, valuesAtTime,
+    netlistItem: (id) => doc.items.get(id) || null,
+    log: (message) => toNative({ type: 'log', message: String(message) }),
+    get config() { return config; },
+  };
 
   // ---- source link (SystemVerilog editor <-> waveform) ----
   // cmux calls these through callAsyncJavaScript. Paths are dump paths
@@ -428,7 +518,9 @@
   const link = (() => {
     let selectedPath = null;
 
+    const forwardEvent = webviewHandlers.emitEvent;
     webviewHandlers.emitEvent = (m) => {
+      forwardEvent(m);
       if (m.eventType === 'signalSelect' && m.eventData && m.eventData.instancePath) {
         selectedPath = m.eventData.instancePath[0] || null;
       }
@@ -496,8 +588,13 @@
     };
   })();
 
-  window.cmuxWaveform = { open, setTheme, setStatus, applyThemeTo, fromWebview, viewerContext, commandHandlers,
-    deliverValueChanges, addVariableByPath, stats, link };
+  window.cmuxWaveform = { open, reload, setTheme, setStatus, applyThemeTo, fromWebview, viewerContext, commandHandlers,
+    deliverValueChanges, addVariableByPath, stats, strings, host: hostApi,
+    fileChanged: () => window.cmuxCommands.fileChanged(),
+    runCommand: ({ command, args }) => window.cmuxCommands.run(command, args),
+    sessionSaved: (m) => window.cmuxCommands.sessionSaved(m),
+    sessionFailed: (m) => window.cmuxCommands.sessionFailed(m),
+    applySessionFile: (m) => window.cmuxCommands.applySessionFile(m), link };
   applyThemeTo(document);
   toNative({ type: 'ready' });
 })();
