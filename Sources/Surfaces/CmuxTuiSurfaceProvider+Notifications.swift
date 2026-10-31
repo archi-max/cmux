@@ -61,8 +61,11 @@ extension CmuxTuiSurfaceProvider {
         syncAgentHooks(from: state)
         updateGuestURLMembership()
         guestURLService?.recoverOnLinkProgress()
+        // `cmux open` requests from SSH terminals are not notifications.
+        let split = SSHTuiHostOpenIngress.partition(CloudVMNotificationRow.rows(from: state), isSSH: machine.isSSH)
+        syncHostOpenRequests(split.requests)
         guard let notificationSync else { return }
-        let rows = CloudVMNotificationRow.rows(from: state)
+        let rows = split.others
         notificationSync.apply(rows: rows)
         #if DEBUG
         cmuxDebugLog("cloud.notifications.sync machine=\(machineID) revision=\((state.cursor?.revision).map(String.init) ?? "nil") rows=\(rows.count) unreadTerminals=\(notificationSync.unreadTerminalIDs.count) pending=\(notificationSync.state.pendingAcks.count)")
@@ -166,7 +169,6 @@ extension CmuxTuiSurfaceProvider {
         notificationPlacementResolver.target(for: row)
     }
     func deliverNotification(_ row: CloudVMNotificationRow, to target: CloudNotificationDeliveryTarget) -> CloudNotificationDeliveryOutcome {
-        if let outcome = handleHostOpenRequest(row, target: target) { return outcome }
         let machineID = self.machineID
         return CloudNotificationLocalDelivery(
             machineID: machineID,
