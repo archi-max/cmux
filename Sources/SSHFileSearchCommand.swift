@@ -41,6 +41,10 @@ struct SSHFileSearchCommand: Equatable, Sendable {
         !query.contains { $0.isUppercase }
     }
 
+    /// True only in a work tree: in a bare repository or inside `.git`,
+    /// rev-parse prints `false` and still exits 0.
+    private static let insideWorkTree = "[ \"$($g rev-parse --is-inside-work-tree 2>/dev/null)\" = true ]"
+
     /// Prints the marker on a line of its own, even after a login shell's
     /// unterminated banner.
     private static func marker(_ text: String) -> String {
@@ -55,7 +59,9 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// would: a gitignored virtualenv must not fill the result cap), run
     /// from the root with the same hardening as ``fileList`` and with user
     /// config that would change its output (color, full names, columns)
-    /// turned off. Elsewhere GNU/BSD `grep -rnIF --null`, which skips binary
+    /// turned off. A root that is itself ignored, or that holds a submodule or
+    /// a nested repository (which git grep treats as one opaque entry), is
+    /// searched with grep instead. Elsewhere GNU/BSD `grep -rnIF --null`, which skips binary
     /// files and separates the path with a NUL so colons in names stay
     /// unambiguous.
     /// - Parameters:
@@ -69,10 +75,14 @@ struct SSHFileSearchCommand: Equatable, Sendable {
         let globs = excludedDirectoryNames
             .flatMap { ["--glob \"${x}\($0)/**\"", "--glob \"${x}**/\($0)/**\""] }
             .joined(separator: " ")
+        // grep's --exclude-dir also skips a command-line directory with that name,
+        // so a root such as .venv or build would search nothing: drop its own name.
+        let rootName = rootPath.split(separator: "/").last.map(String.init)
         let excludeDirs = (excludedDirectoryNames + grepOnlyExcludedDirectoryNames)
+            .filter { $0 != rootName }
             .map { "--exclude-dir=\($0)" }.joined(separator: " ")
         // git grep never searches .git itself.
-        let excludePathspecs = excludedDirectoryNames.dropFirst()
+        let excludePathspecs = excludedDirectoryNames.filter { $0 != ".git" }
             .map { "\":(exclude,glob)**/\($0)/**\"" }.joined(separator: " ")
         return Self(lines: [
             SSHRemoteShellScript.assign("q", query),
@@ -80,13 +90,18 @@ struct SSHFileSearchCommand: Equatable, Sendable {
             SSHRemoteShellScript.assign("x", "!"),
             "[ -d \"$r\" ] || exit \(missingRootStatus)",
             SSHRemoteShellScript.timeoutPrefix(seconds: remoteTimeoutSeconds),
-            "g=\"git -c core.fsmonitor=false -c core.untrackedCache=false\"",
+            "g=\"git -c core.fsmonitor= -c core.untrackedCache=false\"",
             "if command -v rg >/dev/null 2>&1; then \(marker(ripgrepMarker)); "
                 + "printf %s \"$q\" | $w nice -n 10 rg --json --line-number --column --smart-case --fixed-strings "
                 + "--max-columns 300 --max-columns-preview --color never --hidden --line-buffered "
                 + "\(globs) --file - -- \"$r\"; "
-                + "elif command -v git >/dev/null 2>&1 && cd -- \"$r\" 2>/dev/null "
-                + "&& $g rev-parse --is-inside-work-tree >/dev/null 2>&1; then \(marker(gitGrepMarker)); "
+                + "elif command -v git >/dev/null 2>&1 && cd -- \"$r\" 2>/dev/null && \(insideWorkTree) "
+                // An ignored root, or a submodule or nested repository below it:
+                // git grep wouldn't look inside them, so grep searches.
+                + "&& [ -z \"$($g check-ignore . 2>/dev/null)\" ] "
+                + "&& [ -z \"$(nice -n 10 $g ls-files -s -- . 2>/dev/null | grep ^160000 | head -n 1)\" ] "
+                + "&& [ -z \"$(nice -n 10 $g -c core.quotePath=false ls-files -o --exclude-standard -- . 2>/dev/null "
+                + "| grep /$ | head -n 1)\" ]; then \(marker(gitGrepMarker)); "
                 + "$w nice -n 10 $g -c color.grep=false -c grep.fullName=false -c grep.column=false "
                 + "grep -nIF -z --untracked --exclude-standard\(caseFlag) -e \"$q\" -- . \(excludePathspecs); "
                 + "else \(marker(grepMarker)); "
@@ -102,7 +117,7 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// to `maxDepth`, pruning the same directories as Find in Files.
     ///
     /// The tool is `exec`ed so stopping the shell stops it too. Git runs
-    /// with `core.fsmonitor` and the untracked cache off: a folder's own
+    /// with `core.fsmonitor` (empty: off on every version) and the untracked cache off: a folder's own
     /// `.git/config` must not get to run a hook just because it was listed.
     /// - Parameter watchdog: Only for ssh; never for a listing run on this Mac.
     static func fileList(rootPath: String, maxDepth: Int, remoteTimeoutSeconds: Int, watchdog: Bool) -> Self {
@@ -111,8 +126,8 @@ struct SSHFileSearchCommand: Equatable, Sendable {
             SSHRemoteShellScript.assign("r", rootPath),
             "cd -- \"$r\" 2>/dev/null || exit \(missingRootStatus)",
             SSHRemoteShellScript.timeoutPrefix(seconds: remoteTimeoutSeconds),
-            "g=\"git -c core.fsmonitor=false -c core.untrackedCache=false\"",
-            "if command -v git >/dev/null 2>&1 && $g rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
+            "g=\"git -c core.fsmonitor= -c core.untrackedCache=false\"",
+            "if command -v git >/dev/null 2>&1 && \(insideWorkTree); then "
                 + "\(marker(gitListMarker)); exec $w nice -n 10 $g ls-files -co --exclude-standard -z; "
                 + "else \(marker(findListMarker)); "
                 + "exec $w nice -n 10 find . -maxdepth \(max(1, maxDepth)) \(prunes) -type f -print0; fi",
