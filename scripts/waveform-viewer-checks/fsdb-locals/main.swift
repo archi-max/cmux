@@ -153,6 +153,26 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(settleMs)
     let clkPinned = await value(of: ["tb", "dut", "clk"])
     expect(clkPinned == "0", "clk pinned: it has its value at 20: \(clkPinned)")
+    // Breakpoints search the helper's changes: a rises at 10 (between the posedges at 5 and 15),
+    // cnt becomes 3 at 15.
+    let bp = await call("""
+      const d = cmuxWaveform.debugger;
+      const a = await d.addBreakpoint({ path: ['tb', 'dut', 'a'], kind: 'change' });
+      await d.jump({ to: 'first' });
+      const first = await d.continue({ dir: 1 });
+      const after = await d.continue({ dir: 1 });
+      d.setBreakpointEnabled({ id: a.id, enabled: false });
+      await d.addBreakpoint({ path: ['tb', 'dut', 'cnt'], kind: 'equals', value: "4'h3" });
+      await d.jump({ to: 'first' });
+      const cnt = await d.continue({ dir: 1 });
+      return [first.hit, after.reason, cnt.hit];
+    """) as? [Any]
+    let aHit = bp?.first as? [String: Any]
+    let cntHit = bp?.last as? [String: Any]
+    expect(aHit?["time"] as? Int == 10 && aHit?["landed"] as? Int == 15 && aHit?["cycle"] as? Int == 2,
+           "FSDB: a's change at 10 lands on the posedge at 15: \(String(describing: aHit))")
+    expect(bp?.count == 3 && bp?[1] as? String == "end", "FSDB: a changes once: \(String(describing: bp))")
+    expect(cntHit?["time"] as? Int == 15, "FSDB: cnt == 4'h3 at 15: \(String(describing: cntHit))")
     print(failures == 0 ? "FSDB LOCALS CHECKS PASSED" : "FSDB LOCALS CHECKS FAILED: \(failures)")
     finish()
   }
