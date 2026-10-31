@@ -19,6 +19,9 @@ enum WaveformDebuggerRTLStatus {
     static let waitForEditorKey = "waveformDebugger.waitForEditor"
     static var waitsForEditor: Bool { UserDefaults.standard.object(forKey: waitForEditorKey) as? Bool ?? true }
 
+    /// The clock reports are timed by. (Not yet used.)
+    static var now: () -> Date = { Date() }
+
     private final class Report {
         let time: Int64
         let drew: Bool

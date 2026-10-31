@@ -242,6 +242,16 @@ import Testing
         #expect(cache.opensModule() == false)
         var module = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: "module m;\n  logic a;\nendmodule" as NSString))
         #expect(module.opensModule() == true)
+        // A big module edited near its top: whether it opens a module is known without reading on.
+        var big = "module big;\n"
+        for index in 0..<40_000 { big += "  assign sig_\(index) = in_\(index) ^ other_\(index); // note\n" }
+        big += "endmodule\n"
+        let bigUnits = SystemVerilogInlineScan.units(of: big as NSString)
+        var bigCache = SystemVerilogInlineScan.Cache(units: bigUnits)
+        #expect(bigCache.opensModule() == true)
+        bigCache.replaceUnits(bigUnits, editedFrom: 40_000)
+        let elapsed = ContinuousClock().measure { #expect(bigCache.opensModule() == true) }
+        #expect(elapsed < .milliseconds(2), "\(elapsed)")
         // A package, config or primitive file is a design unit too, not a fragment.
         for unit in ["package p;\n  localparam int W = 8;\nendpackage", "config cfg;\n  design lib.top;\nendconfig",
                      "primitive mux(output y, input a);\n  table 0:0; endtable\nendprimitive"] {
