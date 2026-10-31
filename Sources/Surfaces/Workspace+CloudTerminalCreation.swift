@@ -176,7 +176,8 @@ extension Workspace {
         splitDirection: SurfaceSplitDirection? = nil,
         pendingPane: PaneID? = nil,
         commandOverride: [String]? = nil,
-        fallbackWorkingDirectory: String? = nil
+        fallbackWorkingDirectory: String? = nil,
+        terminalName: String? = nil
     ) -> TerminalPanelCreationOutcome {
         let catalog = SurfaceCatalog.shared
         let machine = source.machine
@@ -238,7 +239,8 @@ extension Workspace {
                 guard catalog.provider(for: machine) === provider else { throw SurfaceCatalogError.noProvider(machine) }
                 try catalog.checkCloudWorkspaceNavigation(machine: machine, workspaceID: resolvedWorkspaceID)
                 let created: SurfaceResource
-                if let sourceTabID = resolvedSource.remoteTabID,
+                // The layout create carries no name, so a named create takes the plain path.
+                if terminalName == nil, let sourceTabID = resolvedSource.remoteTabID,
                    let layoutProvider = provider as? any SurfaceLayoutTerminalCreating {
                     let direction: SurfaceSplitDirection?
                     if case .split(_, _, let requested) = destination { direction = requested }
@@ -253,7 +255,7 @@ extension Workspace {
                     guard catalog.provider(for: machine) === provider else { throw SurfaceCatalogError.noProvider(machine) }
                     try catalog.checkCloudWorkspaceNavigation(machine: machine, workspaceID: resolvedWorkspaceID)
                     created = try await provider.createTerminal(
-                        command: nil, cwd: workingDirectory, name: nil,
+                        command: nil, cwd: workingDirectory, name: terminalName,
                         remoteWorkspaceID: resolvedWorkspaceID, request: request
                     )
                 }

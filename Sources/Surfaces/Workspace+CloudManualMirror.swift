@@ -24,10 +24,13 @@ extension Workspace {
     /// without a host terminal behind it (a local shell, or a pane whose
     /// creation never finished) also restores here. No provider adopts that
     /// pane, so its Retry replaces it with a new terminal on the host.
+    /// A pane whose saved host terminal could not be reserved names that
+    /// machine in `pendingMachine`; its Retry asks the provider again.
     func restoreDeviceDisplayPanel(
         _ snapshot: SessionPanelSnapshot,
         in pane: PaneID,
-        origin: DeviceTerminalAttachmentStatus.Origin = .device
+        origin: DeviceTerminalAttachmentStatus.Origin = .device,
+        pendingMachine: SurfaceMachineID? = nil
     ) -> UUID? {
         guard let panel = makeRemoteTmuxPanePanel(onInput: { _ in }, keyNameResolver: nil) else { return nil }
         Self.bindCloudManualMirrorCallbacks(
@@ -48,6 +51,15 @@ extension Workspace {
                 return
             }
             if self.replaceUnattachedSSHDisplayPanel(panelID) { return }
+            if let pendingMachine, let provider = catalog.provider(for: pendingMachine) {
+                // A refresh lets the provider adopt the pane if its terminal is
+                // still on the host; the notice stays when it is not.
+                Task { @MainActor [weak status] in
+                    await provider.refresh(force: true)
+                    if status?.isConnected != true { status?.update(connected: false, connecting: false) }
+                }
+                return
+            }
             // Nothing can reconnect this pane; do not leave Retry spinning.
             status?.update(connected: false, connecting: false)
         }
