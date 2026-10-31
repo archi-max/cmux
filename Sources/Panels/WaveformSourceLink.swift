@@ -327,6 +327,7 @@ enum WaveformSourceLink {
         }
         var missing: [String] = []
         var truncated: [String] = []
+        var busy = false
         for designPath in chosen {
             guard !Task.isCancelled else { return nil }
             let segments = HierarchyPathMapping.segments(designPath)
@@ -359,9 +360,13 @@ enum WaveformSourceLink {
             for dumpScope in dumpScopes {
                 guard !Task.isCancelled else { return nil }
                 switch await Self.addScopeSignals(dumpScope, in: waveform) {
-                case nil:
+                case .notInViewer:
                     missing.append(scope)
-                case let (added, total)?:
+                case .declined:
+                    continue
+                case .busy:
+                    busy = true
+                case let .added(added, total):
                     if added < total {
                         truncated.append(String(
                             format: String(
@@ -380,6 +385,12 @@ enum WaveformSourceLink {
         lastWaveformPanel = waveform
         pairedEditors.setObject(editor, forKey: waveform)
         var messages = truncated
+        if busy {
+            messages.append(String(
+                localized: "waveformLink.addScope.busy",
+                defaultValue: "Nothing was added: another Waveform Link dialog is open. Close it and choose Add All Signals in Scope again."
+            ))
+        }
         if !missing.isEmpty {
             messages.append(String(
                 format: String(
@@ -392,13 +403,21 @@ enum WaveformSourceLink {
         return messages.isEmpty ? nil : messages.joined(separator: "\n\n")
     }
 
-    /// Adds the signals of dump scope `dumpScope` not shown yet, asking first when
-    /// there are many. Nil when the scope is not in the viewer; else how many were
-    /// added of how many there were (0 of n when the user declined).
-    private static func addScopeSignals(_ dumpScope: String, in waveform: FilePreviewPanel) async -> (added: Int, total: Int)? {
+    private enum ScopeAddResult {
+        case notInViewer
+        /// The user cancelled the confirm.
+        case declined
+        /// Another link dialog was up, so nothing was asked.
+        case busy
+        /// How many were added of how many not shown yet.
+        case added(Int, total: Int)
+    }
+
+    /// Adds the signals of dump scope `dumpScope` not shown yet, asking first when there are many.
+    private static func addScopeSignals(_ dumpScope: String, in waveform: FilePreviewPanel) async -> ScopeAddResult {
         let path = HierarchyPathMapping.segments(dumpScope)
         let session = waveform.nativeViewSessions.waveform
-        guard var result = await session.callLink("addScope", argument: ["path": path]) as? [String: Any] else { return nil }
+        guard var result = await session.callLink("addScope", argument: ["path": path]) as? [String: Any] else { return .notInViewer }
         if result["needsConfirm"] as? Bool == true {
             let count = (result["count"] as? NSNumber)?.intValue ?? 0
             let total = (result["total"] as? NSNumber)?.intValue ?? count
@@ -414,14 +433,16 @@ enum WaveformSourceLink {
             )
             alert.addButton(withTitle: String(localized: "waveformLink.addScope.confirm.add", defaultValue: "Add"))
             alert.addButton(withTitle: String(localized: "waveformLink.mapping.cancel", defaultValue: "Cancel"))
-            guard await Self.runAlert(alert) == .alertFirstButtonReturn, !Task.isCancelled else { return (0, total) }
+            _ = total
+            guard let response = await Self.runAlert(alert) else { return .busy }
+            guard response == .alertFirstButtonReturn, !Task.isCancelled else { return .declined }
             guard let confirmed = await session.callLink("addScope", argument: ["path": path, "confirmed": true]) as? [String: Any] else {
-                return nil
+                return .notInViewer
             }
             result = confirmed
         }
         let added = (result["added"] as? NSNumber)?.intValue ?? 0
-        return (added, (result["total"] as? NSNumber)?.intValue ?? added)
+        return .added(added, total: (result["total"] as? NSNumber)?.intValue ?? added)
     }
 
     private enum DumpResolution {
@@ -819,6 +840,14 @@ enum WaveformSourceLink {
     static func waveformReloading(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
         Self.waveformValuesChanged(in: waveform.workspaceId)
+    }
+
+    /// The viewer received signal data (FSDB): values of newly shown signals can be read now.
+    static func waveformDataArrived(_ waveform: FilePreviewPanel) {
+        guard Self.markerTime(of: waveform) != nil else { return }
+        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId) {
+            editor.waveformMarkerDidMove()
+        }
     }
 
     /// The viewer opened its file: picks up the marker a restored session put back.

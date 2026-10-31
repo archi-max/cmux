@@ -280,17 +280,23 @@
           throw error;
         }
       },
-      // [[time, value], ...] per variable, for the source link's value lookups (not drawn).
-      async changes(vars) {
+      // [[time, value], ...] per variable, for the source link's value lookups (not
+      // drawn); null for one with more than maxChanges changes, which is not decoded.
+      // (Helper v1 reports the count only with the data, so it is still downloaded.)
+      async changes(vars, maxChanges) {
         const { result, bin } = await request({ cmd: 'signals',
           signalIds: vars.map((v) => v.signalId), widths: vars.map((v) => v.width) });
         let offset = 0;
         const out = [];
         for (const d of result) {
-          let changes = d.valueChanges;
+          let changes = d.valueChanges || null;
           if (!changes) {
-            changes = decodeRecords(await inflateRaw(bin.subarray(offset, offset + d.bytes)), d.width);
+            if (!(d.count > maxChanges)) {
+              changes = decodeRecords(await inflateRaw(bin.subarray(offset, offset + d.bytes)), d.width);
+            }
             offset += d.bytes;
+          } else if (changes.length > maxChanges) {
+            changes = null;
           }
           out.push(changes);
         }
@@ -299,34 +305,39 @@
       async fetch(requestList) {
         const signals = requestList.filter((r) => r.type === 'signal');
         if (!signals.length) { return; }
-        const t0 = performance.now();
-        const { result, bin, helperMs, wireBytes } = await request({ cmd: 'signals',
-          signalIds: signals.map((r) => r.signalId), widths: signals.map((r) => r.signalWidth) });
-        const fetchMs = performance.now() - t0;
-        let offset = 0;
-        for (const d of result) {
-          const t1 = performance.now();
-          let changes = d.valueChanges;
-          let t2 = t1;
-          if (!changes) {
-            const raw = await inflateRaw(bin.subarray(offset, offset + d.bytes));
-            offset += d.bytes;
-            t2 = performance.now();
-            changes = decodeRecords(raw, d.width);
-          }
-          const t3 = performance.now();
-          deliverValueChanges({ command: 'update-waveform-chunk', signalId: d.signalId, transitionDataChunk: changes,
-            totalChunks: 1, chunkNum: 0, min: d.min, max: d.max });
-          // The viewer keeps this same array (deliverValueChanges does not copy it), so holding it costs nothing extra.
-          drawnChanges.set(d.signalId, changes);
-          const entry = { signalId: d.signalId, changes: changes.length, fetchMs: Math.round(fetchMs),
-            helperMs: Math.round(helperMs), wireBytes, inflateMs: Math.round(t2 - t1), decodeMs: Math.round(t3 - t2),
-            deliverMs: Math.round(performance.now() - t3) };
-          stats.push(entry);
-          toNative({ type: 'log', message: 'fsdb signal ' + JSON.stringify(entry) });
-        }
+        // The source link reads shown signals' values from drawnChanges: tell cmux they are there.
+        try { await fetchSignals(signals); } finally { toNative({ type: 'signalData' }); }
       },
     };
+
+    async function fetchSignals(signals) {
+      const t0 = performance.now();
+      const { result, bin, helperMs, wireBytes } = await request({ cmd: 'signals',
+        signalIds: signals.map((r) => r.signalId), widths: signals.map((r) => r.signalWidth) });
+      const fetchMs = performance.now() - t0;
+      let offset = 0;
+      for (const d of result) {
+        const t1 = performance.now();
+        let changes = d.valueChanges;
+        let t2 = t1;
+        if (!changes) {
+          const raw = await inflateRaw(bin.subarray(offset, offset + d.bytes));
+          offset += d.bytes;
+          t2 = performance.now();
+          changes = decodeRecords(raw, d.width);
+        }
+        const t3 = performance.now();
+        deliverValueChanges({ command: 'update-waveform-chunk', signalId: d.signalId, transitionDataChunk: changes,
+          totalChunks: 1, chunkNum: 0, min: d.min, max: d.max });
+        // The viewer keeps this same array (deliverValueChanges does not copy it), so holding it costs nothing extra.
+        drawnChanges.set(d.signalId, changes);
+        const entry = { signalId: d.signalId, changes: changes.length, fetchMs: Math.round(fetchMs),
+          helperMs: Math.round(helperMs), wireBytes, inflateMs: Math.round(t2 - t1), decodeMs: Math.round(t3 - t2),
+          deliverMs: Math.round(performance.now() - t3) };
+        stats.push(entry);
+        toNative({ type: 'log', message: 'fsdb signal ' + JSON.stringify(entry) });
+      }
+    }
   }
 
   // ---- viewer frame ----
@@ -578,10 +589,9 @@
       forwardEvent(m);
       if (m.eventType === 'signalSelect') { selectedId = firstId(m.eventData); }
       if (m.eventType === 'removeVariable') {
-        const removed = firstId(m.eventData);
-        pendingAdds.delete(removed);
-        if (removed === selectedId) { selectedId = null; }
-        forgetDrawn(removed);
+        const removed = [].concat(m.eventData && m.eventData.netlistId != null ? m.eventData.netlistId : []);
+        removed.forEach((id) => { pendingAdds.delete(id); forgetDrawn(id, removed); });
+        if (removed.includes(selectedId)) { selectedId = null; }
       }
     };
 
@@ -637,13 +647,13 @@
 
     const isShown = (v) => shownIds().has(v.netlistId);
 
-    // A removed row's changes are dropped once no other shown row draws the same signal.
-    function forgetDrawn(netlistId) {
+    // A removed row's changes are dropped once no other shown row (outside `removed`) draws the same signal.
+    function forgetDrawn(netlistId, removed) {
       const v = doc.items.get(netlistId);
       if (!v || v.signalId === undefined) { return; }
       for (const id of shownIds()) {
         const other = doc.items.get(id);
-        if (id !== netlistId && other && other.signalId === v.signalId) { return; }
+        if (!removed.includes(id) && other && other.signalId === v.signalId) { return; }
       }
       drawnChanges.delete(v.signalId);
     }
@@ -738,12 +748,12 @@
       const missing = rest.filter((v) => !changeCache.has(v.signalId));
       for (let i = 0; i < missing.length; i += 8) {
         const batch = missing.slice(i, i + 8);
-        const lists = await backend.changes(batch);
+        const lists = await backend.changes(batch, maxChangesPerSignal);
         batch.forEach((v, k) => {
-          const changes = lists[k] || [];
-          // Too long to keep: no value rather than a cache that pins it.
-          changeCache.set(v.signalId, changes.length > maxChangesPerSignal ? null : changes);
-          if (changes.length <= maxChangesPerSignal) { cachedChanges += changes.length; }
+          // Too long to keep (null): no value rather than a cache that pins it.
+          const changes = lists[k] === undefined ? [] : lists[k];
+          changeCache.set(v.signalId, changes);
+          if (changes) { cachedChanges += changes.length; }
         });
       }
       for (const v of rest) {

@@ -67,6 +67,13 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var inlineInstanceCandidates: [String: [String]] = [:]
     private var inlineScrollObserver: NSObjectProtocol?
     private var inlineFrameObserver: NSObjectProtocol?
+    private var inlineEditObserver: NSObjectProtocol?
+    /// The text as the inline values' scanner last read it, with its checkpoints.
+    private var inlineScan = SystemVerilogInlineScan.Cache()
+    /// Where the text changed since the scanner last read it (nil: it has not).
+    private var inlineScanEditedFrom: Int? = 0
+    /// Counts text changes, so a scan or refresh that outlived one is dropped.
+    private var inlineTextGeneration = 0
     private var completionTask: Task<Void, Never>?
     private var formatTask: Task<Void, Never>?
 
@@ -132,11 +139,13 @@ final class FilePreviewLanguageFeatures: NSObject {
         clearInlineValues()
         inlineValueOverlay?.removeFromSuperview()
         inlineValueOverlay = nil
-        for observer in [inlineScrollObserver, inlineFrameObserver].compactMap({ $0 }) {
+        for observer in [inlineScrollObserver, inlineFrameObserver, inlineEditObserver].compactMap({ $0 }) {
             NotificationCenter.default.removeObserver(observer)
         }
         inlineScrollObserver = nil
         inlineFrameObserver = nil
+        inlineEditObserver = nil
+        inlineScan = SystemVerilogInlineScan.Cache()
         hideHover()
         if let textView {
             if let trackingArea { textView.removeTrackingArea(trackingArea) }
@@ -166,6 +175,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         if !isUserEdit {
             // A reload replaces the storage and its temporary attributes.
             renderDiagnostics()
+            textChangedForInlineValues(from: 0)
         }
         guard !isUnavailable else { return }
         if startTask == nil {
@@ -548,9 +558,11 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// Show Waveform Values For ▸ the dump instances of the module at `index`, when there are several.
     private func instanceMenu(at index: Int?) -> NSMenuItem? {
-        guard let textView, let index,
-              let module = SystemVerilogInlineScan.lines(in: textView.string, range: NSRange(location: index, length: 0)).first?.module,
-              let candidates = inlineInstanceCandidates[module], candidates.count > 1 else { return nil }
+        guard let textView, let index else { return nil }
+        var scan = syncedInlineScan(of: textView)
+        let module = scan.lines(in: NSRange(location: index, length: 0)).first?.module
+        inlineScan = scan
+        guard let module, let candidates = inlineInstanceCandidates[module], candidates.count > 1 else { return nil }
         let item = NSMenuItem(
             title: String(localized: "filePreview.language.showValuesFor", defaultValue: "Show Waveform Values For"),
             action: nil,
@@ -788,6 +800,43 @@ final class FilePreviewLanguageFeatures: NSObject {
         return candidates.count == 1 ? candidates[0] : nil
     }
 
+    /// Files past this many UTF-16 units are scanned off the main actor (a first read of 4 MB takes ~20 ms optimized).
+    private static let backgroundScanThreshold = 500_000
+
+    private func textChangedForInlineValues(from location: Int) {
+        inlineScanEditedFrom = min(inlineScanEditedFrom ?? location, location)
+        inlineTextGeneration += 1
+    }
+
+    /// The scanner, caught up with the text view's current text.
+    private func syncedInlineScan(of textView: NSTextView) -> SystemVerilogInlineScan.Cache {
+        if let editedFrom = inlineScanEditedFrom {
+            let string = (textView.textStorage?.string ?? textView.string) as NSString
+            inlineScan.replaceUnits(SystemVerilogInlineScan.units(of: string), editedFrom: editedFrom)
+            inlineScanEditedFrom = nil
+        }
+        return inlineScan
+    }
+
+    /// The scanned lines `range` touches; nil when the text changed while a big file was scanned in the background.
+    private func inlineLines(in range: NSRange, of textView: NSTextView) async -> [SystemVerilogInlineScan.Line]? {
+        var scan = syncedInlineScan(of: textView)
+        guard scan.units.count > Self.backgroundScanThreshold else {
+            let lines = scan.lines(in: range)
+            inlineScan = scan
+            return lines
+        }
+        let generation = inlineTextGeneration
+        let snapshot = scan
+        let (lines, updated) = await Task.detached(priority: .userInitiated) { () -> ([SystemVerilogInlineScan.Line], SystemVerilogInlineScan.Cache) in
+            var cache = snapshot
+            return (cache.lines(in: range), cache)
+        }.value
+        guard generation == inlineTextGeneration else { return nil }
+        inlineScan = updated
+        return lines
+    }
+
     /// slang's design instances of `module`, probed with the identifiers of its lines. In explore
     /// mode there are none; asks again after 10 s, doubling up to 5 min while none are found.
     private func designInstances(
@@ -828,8 +877,9 @@ final class FilePreviewLanguageFeatures: NSObject {
             return
         }
         observeLayoutForInlineValues(textView)
+        let generation = inlineTextGeneration
+        guard let lines = await inlineLines(in: Self.visibleCharacterRange(in: textView), of: textView), !Task.isCancelled else { return }
         let text = textView.string
-        let lines = SystemVerilogInlineScan.lines(in: text, range: Self.visibleCharacterRange(in: textView))
         let modules = lines.compactMap(\.module).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
         guard !modules.isEmpty, lines.contains(where: { !$0.identifiers.isEmpty }) else {
             inlineValueOverlay?.clear()
@@ -904,7 +954,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             }
         }
         // A newer refresh, an edit or a scroll since: the positions are stale.
-        guard !Task.isCancelled, !isDetached, self.textView === textView, textView.string == text,
+        guard !Task.isCancelled, !isDetached, self.textView === textView, inlineTextGeneration == generation,
               let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
         var annotations: [FilePreviewInlineValueOverlay.Annotation] = []
         var hinted: Set<String> = []
@@ -953,6 +1003,20 @@ final class FilePreviewLanguageFeatures: NSObject {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.scheduleInlineValues(after: .milliseconds(150))
+                }
+            }
+        }
+        if inlineEditObserver == nil {
+            // Any storage: the text view may swap its storage on reload.
+            inlineEditObserver = NotificationCenter.default.addObserver(
+                forName: NSTextStorage.didProcessEditingNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self, let storage = notification.object as? NSTextStorage,
+                          storage === self.textView?.textStorage, storage.editedMask.contains(.editedCharacters) else { return }
+                    self.textChangedForInlineValues(from: storage.editedRange.location)
                 }
             }
         }
