@@ -363,12 +363,13 @@ final class FilePreviewLanguageHoverViewController: NSViewController {
     private static let maximumWidth: CGFloat = 520
     private static let maximumLines = 40
     private let content: NSAttributedString
-    private let isSelectable: Bool
+    /// Not `isSelectable`: newer SDKs give NSViewController a property of that name.
+    private let allowsTextSelection: Bool
 
-    /// `isSelectable`: the text can be selected and copied (link messages).
-    init(sections: [String], isSelectable: Bool = false) {
+    /// `allowsTextSelection`: the text can be selected and copied (link messages).
+    init(sections: [String], allowsTextSelection: Bool = false) {
         content = Self.render(sections: sections)
-        self.isSelectable = isSelectable
+        self.allowsTextSelection = allowsTextSelection
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -379,7 +380,7 @@ final class FilePreviewLanguageHoverViewController: NSViewController {
 
     override func loadView() {
         let label = NSTextField(labelWithAttributedString: content)
-        label.isSelectable = isSelectable
+        label.isSelectable = allowsTextSelection
         label.maximumNumberOfLines = 0
         label.lineBreakMode = .byWordWrapping
         label.preferredMaxLayoutWidth = Self.maximumWidth
