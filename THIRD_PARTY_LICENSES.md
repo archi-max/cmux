@@ -423,8 +423,9 @@ shows it for `.vcd`, `.fst`, `.ghw` and `.fsdb` files.
 - **Copyright:** Lloyd Ramseyer (GitHub `Lramseyer`) and VaporView contributors; the repository carries no separate copyright notice
 - **Source:** https://github.com/Lramseyer/vaporview/tree/59107c60c9ee5eefa95750b95369753736b77ca4
 
-The minified webview (`src/webview/`, with cmux's HTML-escaping patch), its
-stylesheet, and the wellen parser compiled to WebAssembly
+The minified webview (`src/webview/`, built with cmux's patch in
+`Resources/vaporview/source/cmux-vaporview.patch`: escaping, a row-removal fix,
+RISC-V and value-alias formats, windowed loading), its stylesheet, and the wellen parser compiled to WebAssembly
 (`src/wellen_parser/`) are bundled. The host page,
 VS Code API shim and Web Worker in that folder are adapted from VaporView's
 extension code and carry the same license. So do the pieces cmux rebuilds
@@ -441,6 +442,16 @@ from VaporView's VS Code integration:
   setting descriptions and prompt text.
 - `Sources/Panels/WaveformTerminalLinks.swift` and CmuxTerminalCore's
   `WaveformTerminalLink.swift`: terminal links, from `terminal_links.ts`.
+
+The patch's RISC-V instruction format was written from the RISC-V
+Unprivileged (20191213) and Privileged (20211203) ISA specifications (RISC-V
+International, CC-BY-4.0), for the encodings, CSR numbers and pseudo-instruction
+table. Its CSR name list matches the names GNU objdump 2.43.1 prints; it was
+taken from objdump's output (the architectural CSR names of the RISC-V
+specifications). GNU Binutils (GPL-3.0) served only as the test oracle; none of
+its code or tables are included. The value-alias format reads Verdi's alias
+file syntax, implemented from a reading of Synopsys' Verdi documentation; no
+text from it is included.
 
 ### wellen
 
