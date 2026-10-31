@@ -44,8 +44,8 @@ extension TerminalController {
             switch workspace.openRemoteFileFromCommandLine(sourcePanelId: surfaceID, path: path) {
             case .started:
                 // Queued: the preview opens when the download lands, or the
-                // waveform viewer opens the dump on the host. Failures show on
-                // the terminal (a notice) or, in place, as the Files panel's alert.
+                // waveform viewer opens the dump on the host. Failures show as
+                // a notice on the terminal.
                 return .ok(["queued": true, "path": path])
             case .unavailable:
                 return .err(code: "unsupported", message: String(

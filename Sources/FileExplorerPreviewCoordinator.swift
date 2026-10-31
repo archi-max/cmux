@@ -6,7 +6,23 @@ import Bonsplit
 struct FileExplorerPreviewCoordinator {
     let store: FileExplorerStore
 
-    func open(path: String, workspace: Workspace, pane: PaneID, isCurrent: @escaping @MainActor () -> Bool) {
+    /// Where a remote preview opens and how a failure is reported, for
+    /// entrypoints other than the Files panel (`cmux open`). Without it the
+    /// preview opens as a tab in `pane` and a failure shows an alert.
+    struct Presentation {
+        /// Opens the preview of the local (lease) path, or returns nil.
+        let openPreview: @MainActor (Workspace, String) -> FilePreviewPanel?
+        /// Reports a failure, including a preview that didn't open.
+        let reportFailure: @MainActor (Error) -> Void
+    }
+
+    func open(
+        path: String,
+        workspace: Workspace,
+        pane: PaneID,
+        isCurrent: @escaping @MainActor () -> Bool,
+        presentation: Presentation? = nil
+    ) {
         guard store.workspaceRootIdentity == workspace.id, let provider = store.provider,
               provider.isAvailable else { return }
         let context = store.resourceContextID
@@ -57,8 +73,10 @@ struct FileExplorerPreviewCoordinator {
                         ? try await store.cloudPreviewCache.placeholder(path: path, provider: remote)
                         : try await store.cloudPreviewCache.materialize(path: path, provider: remote)
                     guard isCurrent(), store.resourceContextID == context else { return }
-                    if let panel = workspace.openFilePreviewSurfaces(inPane: pane, filePaths: [lease.url.path],
-                        focus: true, reuseExisting: false).first {
+                    let opened = presentation.map { $0.openPreview(workspace, lease.url.path) }
+                        ?? workspace.openFilePreviewSurfaces(inPane: pane, filePaths: [lease.url.path],
+                            focus: true, reuseExisting: false).first
+                    if let panel = opened {
                         panel.cloudPreviewLease = lease
                         Self.installRemotePreviewRefresh(
                             on: panel, workspace: workspace,
@@ -66,13 +84,19 @@ struct FileExplorerPreviewCoordinator {
                         )
                         Self.installRemoteLinkOpener(on: panel, workspace: workspace, store: store, isCurrent: isCurrent)
                         workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: panel)
+                    } else {
+                        presentation?.reportFailure(FileExplorerError.providerUnavailable)
                     }
                 }
             } catch is CancellationError {
                 return
             } catch {
                 guard isCurrent(), store.resourceContextID == context else { return }
-                Self.present(error, window: AppDelegate.shared?.mainWindowContainingWorkspace(workspace.id))
+                if let presentation {
+                    presentation.reportFailure(error)
+                } else {
+                    Self.present(error, window: AppDelegate.shared?.mainWindowContainingWorkspace(workspace.id))
+                }
             }
         }
     }

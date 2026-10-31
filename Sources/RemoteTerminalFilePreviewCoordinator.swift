@@ -13,12 +13,10 @@ final class RemoteTerminalFilePreviewCoordinator {
     private let clock: any Clock<Duration>
     private let timeout: Duration
     private var tasks: [UUID: (id: UUID, task: Task<Void, Never>)] = [:]
-    /// Serves `cmux open` of dumps read in place, through the Files panel's preview path.
+    /// Serves `cmux open` of dumps read in place, through the Files panel's
+    /// preview path. Bound with ``FileExplorerStore/bindSSHPreviewProvider``:
+    /// no root folder, so it never lists or runs git status on the host.
     private lazy var inPlaceStore = FileExplorerStore()
-    /// The workspace and connection ``inPlaceStore`` is bound to. Paths are
-    /// absolute, so a new folder needs no rebind (which would list it and run
-    /// git status on the host, and drop an earlier open still in flight).
-    private var inPlaceBinding: (workspaceID: UUID, connection: SSHFileExplorerConnection)?
 
     init(
         defaults: UserDefaults,
@@ -51,13 +49,11 @@ final class RemoteTerminalFilePreviewCoordinator {
 
     /// What a `cmux open` request led to, for the socket reply.
     enum CommandLineOpenOutcome: Equatable {
-        /// Queued. A download started, and the preview opens when it lands;
-        /// when it can't open, a notice on the terminal says why. Nothing
-        /// opens, silently, if the terminal lost focus or its workspace or
-        /// connection changed meanwhile. Or the waveform viewer is opening an
-        /// FSDB dump in place on the host, whose failures show as the Files
-        /// panel's alert; a terminal with no pane for it (in a Dock) gets a
-        /// notice instead.
+        /// Queued: a download started, or the waveform viewer is opening an
+        /// FSDB dump in place on the host; the preview opens beside the
+        /// terminal. When it can't open, a notice on the terminal says why.
+        /// Nothing opens, silently, if the terminal lost focus (download) or
+        /// its workspace was deselected or its connection changed meanwhile.
         case started
         /// Not an SSH terminal, file previews are off, or the workspace's
         /// Files root isn't a connected SSH root.
@@ -254,45 +250,48 @@ final class RemoteTerminalFilePreviewCoordinator {
 
     /// Opens a dump the waveform viewer reads on the host (FSDB) the way the
     /// Files panel does: a placeholder lease, the helper on the host, no
-    /// download. It opens in the pane to the terminal's right if there is
-    /// one, else as a tab in the terminal's pane (as the Files panel opens
-    /// files in the focused pane).
+    /// download. It opens like a downloaded preview, in the pane to the
+    /// terminal's right or a new split beside it, and a failure shows as a
+    /// notice on the terminal.
     private func openInPlaceOnHost(path: String, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
-        guard case .remoteSSH(let workspaceId, let connection, let displayTarget, let rootPath, let isAvailable, let detail) =
+        guard case .remoteSSH(let workspaceId, let connection, let displayTarget, _, let isAvailable, _) =
                 FileExplorerWorkspaceRootResolver().resolve(workspace),
-              isAvailable else { return .unavailable }
-        guard let pane = workspace.preferredRightSideTargetPane(fromPanelId: sourcePanelID)
-                ?? workspace.paneId(forPanelId: sourcePanelID) else {
-            // A Dock terminal: no workspace pane to open the viewer in.
-            workspace.terminalPanel(for: sourcePanelID)?.hostedView.showTerminalNotice(RemotePreviewNotice.couldNotOpen)
+              isAvailable,
+              let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID),
+              let terminal = workspace.terminalPanel(for: sourcePanelID) else { return .unavailable }
+        let notice: @MainActor () -> Void = { [weak terminal] in
+            guard let view = terminal?.hostedView, view.window?.isKeyWindow == true else { return }
+            view.showTerminalNotice(RemotePreviewNotice.couldNotOpen)
+        }
+        guard let pane = workspace.paneId(forPanelId: sourcePanelID) else {
+            // A Dock terminal: no workspace pane to open the viewer beside.
+            notice()
             return .started
         }
-        let pinned = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let root = FileExplorerWorkspaceRoot.remoteSSH(
+        // Bound for previews only: no folder listing or git status on the host.
+        inPlaceStore.bindSSHPreviewProvider(
             workspaceId: workspaceId,
             connection: connection,
             displayTarget: displayTarget,
-            rootPath: pinned.isEmpty ? (path as NSString).deletingLastPathComponent : pinned,
-            isAvailable: isAvailable,
-            unavailableDetail: detail
+            sshTransport: transport
         )
-        // Rebind only when the workspace or connection changed.
-        if inPlaceStore.workspaceRootIdentity != workspace.id
-            || inPlaceBinding?.workspaceID != workspace.id
-            || inPlaceBinding?.connection != connection
-            || inPlaceStore.provider?.isAvailable != true {
-            inPlaceStore.applyWorkspaceRoot(root, sshTransport: transport)
-            inPlaceBinding = (workspace.id, connection)
-        }
         let workspaceID = workspace.id
         FileExplorerPreviewCoordinator(store: inPlaceStore).open(
             path: path,
             workspace: workspace,
             pane: pane,
             isCurrent: { [weak workspace] in
-                guard let workspace, !workspace.isRetiredFromOwningTabManager else { return false }
-                return workspace.owningTabManager?.selectedTabId == workspaceID
-            }
+                // Still this workspace, selected, on the same SSH connection.
+                guard let workspace, !workspace.isRetiredFromOwningTabManager,
+                      workspace.owningTabManager?.selectedTabId == workspaceID else { return false }
+                return workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration
+            },
+            presentation: FileExplorerPreviewCoordinator.Presentation(
+                openPreview: { workspace, localPath in
+                    workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localPath)
+                },
+                reportFailure: { _ in notice() }
+            )
         )
         return .started
     }

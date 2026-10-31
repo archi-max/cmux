@@ -79,6 +79,37 @@ extension FileExplorerStore {
         )
     }
 
+    /// Binds `workspaceId`'s SSH connection for remote previews only (`cmux
+    /// open` of a dump read in place): with no root folder, nothing is
+    /// listed, no home is resolved and no git status runs on the host. A
+    /// repeat bind to the same connection keeps the resource context, so an
+    /// open still loading stays current; another connection resets it.
+    func bindSSHPreviewProvider(
+        workspaceId: UUID,
+        connection: SSHFileExplorerConnection,
+        displayTarget: String,
+        sshTransport: SSHFileExplorerTransport
+    ) {
+        setWorkspaceRootIdentity(workspaceId)
+        if let existing = provider as? SSHFileExplorerProvider,
+           existing.connection == connection,
+           existing.displayTarget == displayTarget {
+            existing.updateAvailability(true, homePath: nil)
+            return
+        }
+        cancelRemoteHomeResolution()
+        setProvider(
+            SSHFileExplorerProvider(
+                connection: connection,
+                displayTarget: displayTarget,
+                homePath: "",
+                isAvailable: true,
+                transport: sshTransport
+            ),
+            reloadIfAvailable: false
+        )
+    }
+
     func applyRemoteCloudWorkspaceRoot(
         workspaceId: UUID,
         vmID: String,

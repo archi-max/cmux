@@ -20,6 +20,11 @@ extension RemotePreviewCacheBudget {
                     paths.insert(markdown.filePath)
                 } else if let browser = panel as? BrowserPanel, let url = browser.currentURL, url.isFileURL {
                     paths.insert(url.path)
+                } else if let deferred = panel as? DeferredBrowserPanel,
+                          let string = deferred.sessionPanelSnapshot.browser?.urlString,
+                          let url = URL(string: string), url.isFileURL {
+                    // Restored but not loaded yet: it loads this file when shown.
+                    paths.insert(url.path)
                 }
             }
         }
