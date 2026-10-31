@@ -48,8 +48,20 @@ struct SSHFileSearchTests {
         // gitignored .venv must not fill the result cap before the sources).
         #expect(content.contains(SSHFileSearchCommand.gitGrepMarker))
         #expect(content.contains("grep -nIF -z --untracked --exclude-standard"))
-        #expect(content.contains("-c core.fsmonitor=false -c core.untrackedCache=false"))
-        #expect(content.contains("\":(exclude,glob)**/node_modules/**\""))
+        // An empty fsmonitor is "off" on every git; before 2.36 "false" names a hook to run.
+        #expect(content.contains("g=\"git -c core.fsmonitor= -c core.untrackedCache=false\""))
+        #expect(!content.contains("core.fsmonitor=false"))
+        #expect(content.contains("[ \"$($g rev-parse --is-inside-work-tree 2>/dev/null)\" = true ]"))
+        // The whole git grep call: under timeout and nice, output-changing config off,
+        // the query quoted, every excluded directory but .git as a pathspec.
+        let lowercase = SSHFileSearchCommand.contentSearch(query: "abc", rootPath: "/r", remoteTimeoutSeconds: 5).command
+        #expect(lowercase.contains(
+            "$w nice -n 10 $g -c color.grep=false -c grep.fullName=false -c grep.column=false "
+                + "grep -nIF -z --untracked --exclude-standard -i -e \"$q\" -- . "
+                + "\":(exclude,glob)**/node_modules/**\" \":(exclude,glob)**/dist/**\" "
+                + "\":(exclude,glob)**/build/**\" \":(exclude,glob)**/DerivedData/**\";"
+        ))
+        #expect(!content.contains("**/.git/**"))
         // Outside a work tree, plain grep also skips virtualenvs and caches.
         for name in [".venv", "venv", "__pycache__", ".cache"] {
             #expect(content.contains("--exclude-dir=\(name)"), "\(name)")
@@ -296,6 +308,79 @@ struct SSHFileSearchTests {
     }
 
     @Test
+    func testTheListingChecksThatRevParseSaysTrue() {
+        let list = SSHFileSearchCommand.fileList(rootPath: "/r", maxDepth: 8, remoteTimeoutSeconds: 5, watchdog: false).command
+        #expect(list.contains("g=\"git -c core.fsmonitor= -c core.untrackedCache=false\""))
+        #expect(list.contains("[ \"$($g rev-parse --is-inside-work-tree 2>/dev/null)\" = true ]"))
+    }
+
+    @Test
+    func testGitGrepIsOnlyUsedWhereItSeesWhatRipgrepWould() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        // An ignored root (a gitignored .venv, a build/ folder): git grep would
+        // find nothing in it, so grep searches it, as rg would.
+        let root = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ignored = try Self.search("hello", root: root.path + "/.venv", shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(ignored.format == .grep)
+        #expect(ignored.relativePaths == ["lib/site.py"])
+        // Inside .git, rev-parse prints "false" (exit 0): not a work tree.
+        let dotGit = try Self.search("hello", root: root.path + "/.git", shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(dotGit.format == .grep)
+        let listing = try Self.run(
+            SSHFileSearchCommand.fileList(rootPath: root.path + "/.git", maxDepth: 4, remoteTimeoutSeconds: 10, watchdog: false).command,
+            shell: "/bin/sh", path: Self.pathWithoutRipgrep
+        )
+        #expect(listing.stdout.contains(Data((SSHFileSearchCommand.findListMarker + "\n").utf8)))
+
+        // A nested repository: git grep treats it as one opaque directory.
+        let nested = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: nested) }
+        let inner = nested.appendingPathComponent("inner")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        try Data("hello from a nested repo\n".utf8).write(to: inner.appendingPathComponent("n.sv"))
+        let innerInit = try Self.run("git init -q .", shell: "/bin/sh", path: "/usr/bin:/bin", directory: inner.path)
+        #expect(innerInit.status == 0)
+        let withNested = try Self.search("hello", root: nested.path, shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(withNested.format == .grep)
+        #expect(withNested.relativePaths.contains("inner/n.sv"))
+
+        // A submodule (a gitlink in the index): git grep wouldn't descend into it.
+        let submodule = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: submodule) }
+        let gitlink = try Self.run(
+            "git update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,mod",
+            shell: "/bin/sh", path: "/usr/bin:/bin", directory: submodule.path
+        )
+        #expect(gitlink.status == 0)
+        let withSubmodule = try Self.search("hello", root: submodule.path, shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(withSubmodule.format == .grep)
+    }
+
+    @Test
+    func testGitGrepIgnoresTheRepositorysOwnConfig() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        let root = try Self.makeGitSearchTree(hostileConfig: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent(".git/ran")
+        for shell in Self.availableShells {
+            let found = try Self.search("hello", root: root.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(found.format == .gitGrep, "shell \(shell)")
+            #expect(found.relativePaths == ["dir/a:b.sv", "new.sv", "r\u{E9}sum\u{E9}.sv", "Upper.sv"], "shell \(shell)")
+            let colonMatch = try #require(found.results.first { $0.relativePath == "dir/a:b.sv" })
+            #expect(colonMatch.lineNumber == 2)
+            #expect(colonMatch.preview == "say hello: there", "no colour codes, no column field")
+            let sub = try Self.search("hello", root: root.path + "/dir", shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(sub.relativePaths == ["a:b.sv"], "grep.fullName stays off, shell \(shell)")
+            // The query stays literal through git grep too (and beats patternType=perl).
+            let hostile = try Self.search(Self.hostileQuery, root: root.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(hostile.format == .gitGrep, "shell \(shell)")
+            #expect(hostile.relativePaths == ["hostile.sv"], "shell \(shell)")
+            #expect(!FileManager.default.fileExists(atPath: marker.path), "repository config ran a command, shell \(shell)")
+        }
+    }
+
+    @Test
     func testGrepOutsideAWorkTreeSkipsVirtualenvsAndCaches() throws {
         let root = try Self.makeSearchTree()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -334,6 +419,7 @@ struct SSHFileSearchTests {
         // grep's `path NUL line:text` shape is not git grep's.
         #expect(parser.parse(line: Data("a.sv".utf8) + Data([0]) + Data("7:needle".utf8)) == nil)
         #expect(parser.parse(line: line("a.sv", "x", "needle")) == nil)
+        #expect(parser.parse(line: line("a.sv", "0", "needle")) == nil)
         #expect(parser.parse(line: line("", "1", "needle")) == nil)
         // The root itself is "/".
         var top = SSHFileSearchLineParser(rootPath: "/", query: "needle")
@@ -578,7 +664,7 @@ struct SSHFileSearchTests {
     /// A Git work tree: `hello` in tracked, untracked and non-ASCII-named
     /// files, and in a gitignored `.venv` and an unignored `node_modules`
     /// that the search must skip.
-    static func makeGitSearchTree() throws -> URL {
+    static func makeGitSearchTree(hostileConfig: Bool = false) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-ssh-gitgrep-\(UUID().uuidString)", isDirectory: true)
         let files: [(String, String)] = [
@@ -587,6 +673,7 @@ struct SSHFileSearchTests {
             ("Upper.sv", "HELLO upper\n"),
             ("r\u{E9}sum\u{E9}.sv", "hello accented\n"),
             ("new.sv", "untracked hello\n"),
+            ("hostile.sv", "prefix \(hostileQuery) suffix\n"),
             (".venv/lib/site.py", "hello from the virtualenv\n"),
             ("node_modules/pkg/index.js", "hello from node_modules\n"),
         ]
@@ -600,6 +687,40 @@ struct SSHFileSearchTests {
             shell: "/bin/sh", path: "/usr/bin:/bin", directory: root.path
         )
         guard setup.status == 0 else { throw CocoaError(.fileWriteUnknown) }
+        if hostileConfig {
+            // Set after `git add`: every hook and filter here would leave .git/ran behind.
+            let marker = root.appendingPathComponent(".git/ran").path
+            let hook = root.appendingPathComponent(".git/hook.sh")
+            try Data("#!/bin/sh\ntouch '\(marker)'\nexit 1\n".utf8).write(to: hook)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+            let config = """
+            [core]
+            \tpager = touch '\(marker)'
+            \tfsmonitor = \(hook.path)
+            [pager]
+            \tgrep = touch '\(marker)'
+            [grep]
+            \tcolumn = true
+            \tfullName = true
+            \tlineNumber = false
+            \tpatternType = perl
+            [color]
+            \tui = always
+            \tgrep = always
+            [diff "x"]
+            \ttextconv = touch '\(marker)'
+            [filter "x"]
+            \tprocess = touch '\(marker)'
+            \tclean = touch '\(marker)'
+            \tsmudge = touch '\(marker)'
+
+            """
+            let handle = try FileHandle(forWritingTo: root.appendingPathComponent(".git/config"))
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(config.utf8))
+            try handle.close()
+            try Data("* diff=x filter=x\n".utf8).write(to: root.appendingPathComponent(".gitattributes"))
+        }
         return root
     }
 
