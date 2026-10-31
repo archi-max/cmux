@@ -438,8 +438,8 @@
 
   function onContextUpdate(m) {
     const change = m.stateChangeType;
-    if ((change === StateChangeType.User || change === StateChangeType.File) && webviewContext) {
-      undoStack.push(JSON.stringify(contextSession(webviewContext)));
+    if (change === StateChangeType.User || change === StateChangeType.File) {
+      undoStack.push(JSON.stringify(undoState()));
       if (undoStack.length > 50) { undoStack.shift(); }
       redoStack = [];
     }
@@ -690,10 +690,16 @@
     host().toNative({ type: 'saveSession', text: JSON.stringify(sessionFile(), null, 2), suggestedName: name });
   }
 
+  // The view to go back to: before the viewer's first context, VaporView's
+  // document holds an empty one (new WebviewState()), so the first change undoes.
+  function undoState() {
+    return contextSession(webviewContext) || { displayedSignals: [] };
+  }
+
   function undo(stack, other, type) {
     if (!stack.length) { return; }
     const state = JSON.parse(stack.pop());
-    other.push(JSON.stringify(contextSession(webviewContext)));
+    other.push(JSON.stringify(undoState()));
     applySession(state, type);
   }
 
