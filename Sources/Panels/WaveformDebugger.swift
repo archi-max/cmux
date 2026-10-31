@@ -299,3 +299,30 @@ enum WaveformDebugger {
         }
     }
 }
+
+// MARK: - Included fragments
+
+extension WaveformDebugger {
+    /// The design instances an `include`d fragment's lines are in: slang-server places a
+    /// fragment's symbol only through the file that includes it (slangDesignPaths walks there).
+    static func fragmentInstances(
+        session: LanguageServerSession,
+        documentURI: URL,
+        probes: [(name: String, position: LSPPosition)]
+    ) async -> [String] {
+        for probe in probes.prefix(4) {
+            guard let paths = try? await session.slangDesignPaths(
+                uri: documentURI, position: probe.position, identifier: probe.name, isInModule: false
+            ), !Task.isCancelled else { return [] }
+            var instances: [String] = []
+            for path in paths {
+                let segments = HierarchyPathMapping.segments(path)
+                guard segments.count >= 2, segments.last == probe.name else { continue }
+                let instance = HierarchyPathMapping.join(Array(segments.dropLast()))
+                if !instances.contains(instance) { instances.append(instance) }
+            }
+            if !instances.isEmpty { return instances }
+        }
+        return []
+    }
+}

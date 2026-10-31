@@ -930,6 +930,10 @@ final class FilePreviewLanguageFeatures: NSObject {
             let string = (textView.textStorage?.string ?? textView.string) as NSString
             inlineScan.replaceUnits(SystemVerilogInlineScan.units(of: string), editedFrom: editedFrom)
             inlineScanEditedFrom = nil
+            // An `include`d fragment (no module header of its own): its lines are the file's.
+            if inlineScan.units.count <= Self.backgroundScanThreshold {
+                inlineScan.fragmentModule = inlineScan.opensModule() ? nil : (filePath as NSString).lastPathComponent
+            }
         }
         return inlineScan
     }
@@ -975,7 +979,9 @@ final class FilePreviewLanguageFeatures: NSObject {
             .filter { seen.insert($0.name).inserted }
             .prefix(12)
             .map { (name: $0.name, position: lineIndex.position(at: $0.offset)) }
-        let found = await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: Array(probes))
+        let found = module == inlineScan.fragmentModule
+            ? await WaveformDebugger.fragmentInstances(session: session, documentURI: documentURI, probes: Array(probes))
+            : await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: Array(probes))
         inlineModuleInstances[module] = InlineModuleInstances(
             designInstances: found,
             lookedUpAt: Date(),
