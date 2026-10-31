@@ -289,8 +289,20 @@ final class RemoteTerminalFilePreviewCoordinator {
             sshTransport: transport
         )
         let workspaceID = workspace.id
-        // What the viewer's refresh follows: the connection it opened through.
-        let viewerIdentity = sshRoot.connection
+        // What the viewer's refresh follows, mapped the same way at open and on
+        // every refresh so a one-sided edit can't silently disable it.
+        let identity: @MainActor (Workspace) -> SSHFileExplorerConnection? = {
+            $0.remoteConfiguration.flatMap {
+                RemotePreviewInPlaceGate.sshIdentity(
+                    transportIsSSH: $0.transport == .ssh,
+                    destination: $0.destination,
+                    port: $0.port,
+                    identityFile: $0.identityFile,
+                    sshOptions: $0.fileOperationSSHOptions
+                )
+            }
+        }
+        guard let viewerIdentity = identity(workspace) else { return .unavailable }
         FileExplorerPreviewCoordinator(store: inPlaceStore).open(
             path: path,
             workspace: workspace,
@@ -314,15 +326,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                     return RemotePreviewInPlaceGate.panelIsCurrent(
                         isSelected: workspace.owningTabManager?.selectedTabId == workspaceID,
                         isRetired: workspace.isRetiredFromOwningTabManager,
-                        workspaceConfiguration: workspace.remoteConfiguration.flatMap {
-                            RemotePreviewInPlaceGate.sshIdentity(
-                                transportIsSSH: $0.transport == .ssh,
-                                destination: $0.destination,
-                                port: $0.port,
-                                identityFile: $0.identityFile,
-                                sshOptions: $0.fileOperationSSHOptions
-                            )
-                        },
+                        workspaceConfiguration: identity(workspace),
                         openedWith: viewerIdentity
                     )
                 }
