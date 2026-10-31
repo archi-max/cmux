@@ -103,13 +103,23 @@ endmodule
     view.string = source
     _ = LB.gutterClicked(view, lineStart: lineStart(4, in: source))
     _ = LB.gutterClicked(view, lineStart: lineStart(1, in: source))
+    WaveformDebuggerEvaluate.watches[workspace] = ["count + 1", "limit"]
     let saved = LB.snapshot(of: workspace)
     let data = try? JSONEncoder().encode(saved)
     let decoded = data.flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }
     expect(decoded == saved && decoded?.lines?.map(\.line) == [4, 1] && decoded?.signals?.count == 1,
            "the snapshot round-trips: \(String(describing: decoded))")
+    expect(decoded?.watches == ["count + 1", "limit"], "the watches are in it: \(String(describing: decoded?.watches))")
+    // An older manifest (no watches key) still decodes.
+    let older = try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: Data(#"{"signals":[]}"#.utf8))
+    expect(older != nil && older?.watches == nil, "a manifest without watches decodes: \(String(describing: older))")
+    // Only watches: still saved.
+    let watchOnly = UUID()
+    WaveformDebuggerEvaluate.watches[watchOnly] = ["state"]
+    expect(LB.snapshot(of: watchOnly)?.watches == ["state"], "a workspace with only watches saves them")
     let restored = UUID()
     LB.restore(decoded, in: restored)
+    expect(WaveformDebuggerEvaluate.watches[restored] == ["count + 1", "limit"], "restored watches go back to the workspace")
     let reopened = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
     // A header line above, and the declaration line changed.
     reopened.string = "// header\n" + source.replacingOccurrences(of: "  logic [7:0] count, limit;", with: "  logic [7:0] count, limit; // widths")

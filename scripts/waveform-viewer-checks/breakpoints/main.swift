@@ -235,7 +235,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       if (change) { await change.run(); }
       return labels;
     """) as? [String]
-    expect(menu == ["Break When Changes", "Break When Equals…"], "the row menu items: \(String(describing: menu))")
+    expect(menu == ["Break When Changes", "Break When Equals…", "Add Watch"], "the row menu items: \(String(describing: menu))")
     let added = (await list()).last
     expect(added?["path"] as? [String] == ["top", "data"] && added?["kind"] as? String == "change",
            "Break When Changes adds one for the row's signal: \(String(describing: added))")
