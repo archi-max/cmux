@@ -90,6 +90,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         case stopped
         /// The launcher found no usable install (exit 87). Handled by `start()`.
         case notInstalled
+        /// This machine's v2 build failed before (remembered): v1 runs. Handled by `start()`.
+        case rememberedBuildFailure(detail: String)
         /// The launcher refused an install others can write (exit 86); never run.
         case refused(detail: String)
         /// The page sent a command the relay does not pass, or an `open` of another file.
@@ -179,17 +181,48 @@ final class WaveformFSDBHelper: @unchecked Sendable {
 
     // MARK: Remembered v2 failures
 
-    private static let failureLock = NSLock()
-    nonisolated(unsafe) private static var v2Failures: [String: String] = [:]
+    private struct RememberedFailure {
+        let detail: String
+        /// nil: until Retry or a changed helper.
+        let expires: Date?
+    }
 
-    /// Per host and v2 helper version (a changed helper is tried afresh).
-    private static func failureKey(host: String, install: Install) -> String {
-        host + "\u{0}" + cachedVersion(of: install.resourceRoot)
+    private static let failureLock = NSLock()
+    nonisolated(unsafe) private static var v2Failures: [String: RememberedFailure] = [:]
+    /// How long a v2 that missed its ready timeout is skipped (a slow moment passes).
+    nonisolated(unsafe) static var timeoutMemory: TimeInterval = 600
+
+    /// A failed build: per host, v2 helper version (a changed helper is tried afresh)
+    /// and machine type (`uname -m`, as the install folder: a round-robin host name can
+    /// reach machines that differ). A missed ready timeout: per host and version.
+    private static func failureKey(host: String, install: Install, machine: String?) -> String {
+        host + "\u{0}" + cachedVersion(of: install.resourceRoot) + "\u{0}" + (machine ?? "timeout")
+    }
+
+    private static func rememberedFailure(_ key: String) -> String? {
+        failureLock.withLock {
+            guard let f = v2Failures[key] else { return nil }
+            if let expires = f.expires, expires <= Date() {
+                v2Failures[key] = nil
+                return nil
+            }
+            return f.detail
+        }
+    }
+
+    private static func remember(_ key: String, detail: String, for duration: TimeInterval?) {
+        failureLock.withLock { v2Failures[key] = RememberedFailure(detail: detail, expires: duration.map { Date().addingTimeInterval($0) }) }
     }
 
     /// Forgets the v2 failures remembered for a host (the page's Retry windowed).
     static func forgetV2Failure(hostKey: String) {
         failureLock.withLock { v2Failures = v2Failures.filter { !$0.key.hasPrefix(hostKey + "\u{0}") } }
+    }
+
+    /// The machine type the launch command reports when nothing is installed.
+    static let machinePrefix = "cmux-fsdb-machine: "
+    private static func machine(in stderr: String) -> String? {
+        stderr.split(separator: "\n").last { $0.hasPrefix(machinePrefix) }.map { String($0.dropFirst(machinePrefix.count)) }
     }
 
     /// The v1 helper only.
@@ -413,26 +446,28 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// failed install, an unreachable host) or a refused install is an error.
     private func start() async throws {
         var candidates = installs
-        if let v2 = candidates.first, v2.protocolVersion >= 2, candidates.count > 1 {
-            let key = Self.failureKey(host: hostKey, install: v2)
-            if let detail = Self.failureLock.withLock({ Self.v2Failures[key] }) {
-                onStatus(.fellBack(detail: detail, remembered: true))
-                candidates.removeFirst()
-            }
+        if let v2 = candidates.first, v2.protocolVersion >= 2, candidates.count > 1,
+           let detail = Self.rememberedFailure(Self.failureKey(host: hostKey, install: v2, machine: nil)) {
+            onStatus(.fellBack(detail: detail, remembered: true))
+            candidates.removeFirst()
         }
         var lastError: Error = Failure.setupFailed(code: -1, detail: "no FSDB helper is bundled")
         for (index, install) in candidates.enumerated() {
             do {
-                try await start(install)
+                try await start(install, canFallBack: index < candidates.count - 1)
                 lock.withLock { runningProtocol = install.protocolVersion }
                 return
+            } catch Failure.rememberedBuildFailure(let detail) {
+                // This machine's v2 build failed before: v1, without building again.
+                lastError = Failure.setupFailed(code: 13, detail: detail)
+                onStatus(.fellBack(detail: detail, remembered: true))
             } catch let failure as Failure {
                 lastError = failure
                 let isLast = index == candidates.count - 1
                 guard install.protocolVersion >= 2, !isLast, let fallback = Self.fallback(for: failure) else { throw failure }
-                if fallback.remember {
-                    let key = Self.failureKey(host: hostKey, install: install)
-                    Self.failureLock.withLock { Self.v2Failures[key] = fallback.detail }
+                if fallback.remember, case .timedOut = failure {
+                    Self.remember(Self.failureKey(host: hostKey, install: install, machine: nil),
+                                  detail: fallback.detail, for: Self.timeoutMemory)
                 }
                 onStatus(.fellBack(detail: fallback.detail, remembered: fallback.remember))
             }
@@ -446,15 +481,21 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         case .setupFailed(let code, let detail) where code == 13 || code == 14 || code == notInstalledStatus:
             return (detail, true)
         case .timedOut(let detail):
-            return (detail.isEmpty ? "timed out" : detail, true)
+            return (detail.isEmpty ? String(
+                localized: "filePreview.waveform.fsdbStartTimedOut",
+                defaultValue: "the windowed reader did not start in time"
+            ) : detail, true)
         case .helperExited(let detail):
-            return (detail, false)
+            return (detail.isEmpty ? String(
+                localized: "filePreview.waveform.fsdbStoppedStarting",
+                defaultValue: "the windowed reader stopped while starting"
+            ) : detail, false)
         default:
             return nil
         }
     }
 
-    private func start(_ install: Install) async throws {
+    private func start(_ install: Install, canFallBack: Bool) async throws {
         let version = Self.cachedVersion(of: install.resourceRoot)
         // Per machine type too: an NFS home is shared by hosts that may differ.
         let installDirectory = "$HOME/.cache/cmux/\(install.cacheName)/\(version)-$(uname -m)"
@@ -462,23 +503,47 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         do {
             try await launch(install, installDirectory: installDirectory)
         } catch Failure.notInstalled {
+            let machine = Self.machine(in: lock.withLock { Self.tail(of: stderrTail) })
+            let key = Self.failureKey(host: hostKey, install: install, machine: machine ?? "unknown")
+            if install.protocolVersion >= 2, canFallBack, let detail = Self.rememberedFailure(key) {
+                throw Failure.rememberedBuildFailure(detail: detail)
+            }
             onStatus(.building)
-            try await self.install(install, installDirectory: installDirectory)
-            onStatus(.connecting)
             do {
-                try await launch(install, installDirectory: installDirectory)
-            } catch Failure.notInstalled {
-                // Built, yet the launcher still finds it unusable.
-                throw Failure.setupFailed(code: Self.notInstalledStatus, detail: lock.withLock { Self.tail(of: stderrTail) })
+                try await self.install(install, installDirectory: installDirectory)
+                onStatus(.connecting)
+                do {
+                    try await launch(install, installDirectory: installDirectory)
+                } catch Failure.notInstalled {
+                    // Built, yet the launcher still finds it unusable.
+                    throw Failure.setupFailed(code: Self.notInstalledStatus, detail: lock.withLock { Self.tail(of: stderrTail) })
+                }
+            } catch let failure as Failure {
+                // A failed build of v2 is remembered for this machine type.
+                if install.protocolVersion >= 2, canFallBack, let fallback = Self.fallback(for: failure), fallback.remember,
+                   case .setupFailed = failure {
+                    Self.remember(key, detail: fallback.detail, for: nil)
+                }
+                throw failure
             }
         }
     }
+
+    /// Run before the v2 launcher (v1 keeps its own rules), so a launcher someone else changed never runs
+    /// (the launcher checks again, with helper.env): every entry of the install
+    /// `$D` ours and not group/world writable, a folder find can't read counting
+    /// as changed, and the same for the two folders above it. Exit 86 otherwise.
+    /// No single quotes: it runs inside `sh -c '…'`.
+    static let privacyCheck = "U=$(id -u); "
+        + "O=$(find \"$D\" \\( ! -user \"$U\" -o -perm -g+w -o -perm -o+w \\) ! -type l -print 2>&1) && [ -z \"$O\" ] "
+        + "&& P=$(find \"$D/..\" \"$D/../..\" -maxdepth 0 \\( ! -user \"$U\" -o -perm -g+w -o -perm -o+w \\) -print 2>&1) "
+        + "&& [ -z \"$P\" ] || { echo \"cmux: refusing to run $D, it is not private to $(id -un)\" >&2; exit \(refusedStatus); };"
 
     /// Starts the install's launcher and waits for its ready line.
     private func launch(_ install: Install, installDirectory: String) async throws {
         let checks = install.requiredFiles.map { "[ -f \"$D/\($0)\" ]" }.joined(separator: " && ")
         let script = "D=\"\(installDirectory)\"; \(checks) "
-            + "|| exit \(Self.notInstalledStatus); exec bash \"$D/\(install.launcher)"
+            + "|| { echo \"\(Self.machinePrefix)$(uname -m)\" >&2; exit \(Self.notInstalledStatus); }; \(install.protocolVersion >= 2 ? Self.privacyCheck : "") exec bash \"$D/\(install.launcher)"
         let process = Process()
         process.executableURL = executable
         process.arguments = sshArguments("sh -c '\(script)'")
@@ -521,7 +586,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             do {
                 try process.run()
             } catch {
-                failReady(Failure.helperExited(detail: error.localizedDescription), generation: generation)
+                // ssh itself can't run here: v1 would fail the same way, so no fallback.
+                failReady(Failure.connectionFailed(detail: error.localizedDescription), generation: generation)
                 return
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + self.readyTimeout) { [weak self] in
