@@ -14,7 +14,7 @@ public enum SlangServerConfigFile {
     }
 
     /// The path of the config file under `rootPath`.
-    public static func path(inWorkspace rootPath: String) -> String {
+    public static func path(inWorkspace rootPath: String, relativePath: String = relativePath) -> String {
         (rootPath as NSString).appendingPathComponent(relativePath)
     }
 
