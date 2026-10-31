@@ -59,6 +59,14 @@ import Testing
         #expect(Self.module("macromodule mm;\n  logic |x;\nendmodule : mm\n") == "mm")
     }
 
+    @Test func attributesNumbersAndLineEndings() {
+        #expect(Self.module("module (* keep *) attr_m;\n  logic |x;\nendmodule\n") == "attr_m")
+        #expect(Self.module("module m;\n  always @(*) y = 8'hff;\n  logic |x;\nendmodule\n") == "m")
+        #expect(Self.module("`define M module fake; \\\r\n  endmodule\r\nlogic |x;\r\n") == nil)
+        #expect(Self.module("module crlf;\r\n  logic |x;\r\nendmodule\r\n") == "crlf")
+        #expect(Self.module("module m; logic [7:0] endmodule_count; |endmodule\n") == "m")
+    }
+
     @Test func unterminatedModuleRunsToTheEnd() {
         #expect(Self.module("module open_ended;\n  logic a;\n  |") == "open_ended")
     }

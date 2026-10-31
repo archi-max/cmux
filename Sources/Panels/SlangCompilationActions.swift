@@ -13,7 +13,7 @@ nonisolated private let slangCompilationLogger = Logger(subsystem: "com.cmuxterm
 /// share (`slang.setTopLevel` / `slang.setBuildFile`). A server that does not
 /// advertise `slang.setBuildFile` gets `"build"` in the workspace's
 /// `.slang/local/server.json` instead (after the user confirms the exact
-/// path), and is restarted to read it.
+/// path), and is restarted to read it. One change per server at a time.
 @MainActor
 enum SlangCompilationActions {
     private static let languageId = "verilog"
@@ -24,7 +24,7 @@ enum SlangCompilationActions {
         weak var session: LanguageServerSession?
         var target: SlangCompilationTarget?
         /// The config file cmux wrote `"build"` into instead of the runtime command.
-        var configFile: ConfigFileLocation?
+        var configFile: ConfigFileEdit?
         /// Workspaces whose Files explorer chose the build file, so Clear Build File finds the
         /// server after its editors closed.
         var workspaceIds: Set<UUID> = []
@@ -38,6 +38,12 @@ enum SlangCompilationActions {
         let path: String
         /// Set for a workspace on an SSH host.
         let sshProvider: SSHFileExplorerProvider?
+    }
+
+    /// A `"build"` cmux wrote, and the value it replaced (put back by Clear Build File).
+    struct ConfigFileEdit {
+        let location: ConfigFileLocation
+        let previousBuild: String?
     }
 
     private static var entries: [Entry] = []
@@ -61,17 +67,52 @@ enum SlangCompilationActions {
         entry(for: session).target = target
     }
 
+    /// Whether a top level or build change is running on `session`; the link waits its turn.
+    static func isBusy(_ session: LanguageServerSession) -> Bool {
+        busySessions.contains(ObjectIdentifier(session))
+    }
+
+    private static func claim(_ sessions: [LanguageServerSession]) -> Bool {
+        guard !sessions.contains(where: isBusy) else { return false }
+        for session in sessions { busySessions.insert(ObjectIdentifier(session)) }
+        return true
+    }
+
+    private static func release(_ sessions: [LanguageServerSession]) {
+        for session in sessions { busySessions.remove(ObjectIdentifier(session)) }
+    }
+
+    /// Puts `session` back to what it compiled before `previous`'s replacement failed:
+    /// the config's build (by a restart that drops the runtime choice), a top level or
+    /// build file, or explore mode.
+    private static func restore(_ previous: SlangCompilationTarget?, on session: LanguageServerSession) async {
+        if previous == nil, entry(for: session).configFile != nil {
+            try? await session.restart(keepingCompilation: false)
+            return
+        }
+        switch previous {
+        case .topLevel(let path)?: try? await session.slangSetTopLevel(path)
+        case .buildFile(let path)?: try? await session.slangSetBuildFile(path)
+        case nil: try? await session.slangSetTopLevel("")
+        }
+    }
+
+    /// What the session compiles as far as cmux knows: the mirror, else the session's own record.
+    private static func currentTarget(of session: LanguageServerSession) async -> SlangCompilationTarget? {
+        if let target = target(of: session) { return target }
+        return await session.slangCompilationTarget
+    }
+
     // MARK: Top level
 
     /// Elaborates the design with the file of `module` (the editor's document) as the top level.
     static func setTopLevel(module: String, editor: FilePreviewLanguageFeatures, anchor: Int) {
-        guard let (session, documentURI) = editor.linkSession,
-              busySessions.insert(ObjectIdentifier(session)).inserted else {
+        guard let (session, documentURI) = editor.linkSession, claim([session]) else {
             NSSound.beep()
             return
         }
         Task { @MainActor in
-            defer { busySessions.remove(ObjectIdentifier(session)) }
+            defer { release([session]) }
             // The server must see the current text.
             await editor.sendCurrentText()
             editor.showLinkMessage(String(
@@ -80,25 +121,20 @@ enum SlangCompilationActions {
                     defaultValue: "Elaborating the design with %@ as the top level…"
                 ),
                 module
-            ), at: anchor)
+            ), at: anchor, isProgress: true)
             _ = await session.takeRecentErrorMessages()
-            let previous = await session.slangCompilationTarget
+            let previous = await currentTarget(of: session)
             let outcome: Outcome
             do {
                 try await session.slangSetTopLevel(session.serverPath(for: documentURI))
                 outcome = await Self.outcome(of: session)
             } catch {
                 slangCompilationLogger.error("setTopLevel failed: \(String(describing: error), privacy: .public)")
-                outcome = Outcome(tops: [], instanceCount: 0, summary: await session.diagnosticsSummary(), serverErrors: [String(describing: error)])
+                outcome = Outcome(failure: error, summary: await session.diagnosticsSummary())
             }
             guard !outcome.tops.isEmpty else {
-                // Nothing elaborated: back to what the server compiled before (explore mode if nothing).
-                switch previous {
-                case .topLevel(let path)?: try? await session.slangSetTopLevel(path)
-                case .buildFile(let path)?: try? await session.slangSetBuildFile(path)
-                case nil: try? await session.slangSetTopLevel("")
-                }
-                recordTarget(previous, for: session)
+                // Nothing elaborated: back to what the server compiled before.
+                await restore(previous, on: session)
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 editor.closeLinkProgress()
                 showAlert(
@@ -139,16 +175,23 @@ enum SlangCompilationActions {
         }
     }
 
-    /// Puts `session` back in explore mode after a top level was set.
+    /// Puts `session` back to explore mode (or its config's build) after a top level was set.
     static func resetTopLevel(session: LanguageServerSession) {
+        guard !isBusy(session) else {
+            NSSound.beep()
+            return
+        }
         WaveformSourceLink.resetTopLevel(session: session)
     }
 
-    /// The link's reset ran: forget the top level.
-    static func topLevelWasReset(session: LanguageServerSession) {
+    /// The link's reset: back to the config's build if cmux wrote one, else explore mode.
+    static func returnToConfiguredCompilation(_ session: LanguageServerSession) async {
+        guard claim([session]) else { return }
+        defer { release([session]) }
         if case .topLevel? = target(of: session) {
             recordTarget(nil, for: session)
         }
+        await restore(nil, on: session)
     }
 
     // MARK: Build file
@@ -186,48 +229,15 @@ enum SlangCompilationActions {
                 )
                 return
             }
-            let targets = [primary.session] + sessions(inWorkspace: file.workspaceId).filter {
-                $0 !== primary.session && $0.launch == primary.session.launch
-            }
-            guard targets.allSatisfy({ !busySessions.contains(ObjectIdentifier($0)) }) else {
-                NSSound.beep()
-                return
-            }
-            for session in targets { busySessions.insert(ObjectIdentifier(session)) }
-            defer { for session in targets { busySessions.remove(ObjectIdentifier(session)) } }
-
             let name = (file.path as NSString).lastPathComponent
-            let progress = SlangProgressSheet(
-                message: String(
-                    format: String(localized: "slangTop.progress.build", defaultValue: "Elaborating the design from %@…"),
-                    name
-                ),
-                window: file.window
-            )
-            var outcome: Outcome?
-            if await primary.session.supportsCommand("slang.setBuildFile") != false {
-                for session in targets {
-                    _ = await session.takeRecentErrorMessages()
-                    do {
-                        try await session.slangSetBuildFile(session.serverPath(for: URL(fileURLWithPath: file.path)))
-                    } catch {
-                        slangCompilationLogger.error("setBuildFile failed: \(String(describing: error), privacy: .public)")
-                        continue
-                    }
-                    entry(for: session).workspaceIds.insert(file.workspaceId)
-                    let result = await Self.outcome(of: session)
-                    if session === primary.session { outcome = result }
-                    recordTarget(result.tops.isEmpty ? nil : .buildFile(session.serverPath(for: URL(fileURLWithPath: file.path))), for: session)
-                    if result.tops.isEmpty { try? await session.slangSetBuildFile("") }
-                    FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
-                }
+            let outcome: Outcome?
+            if await primary.session.supportsCommand("slang.setBuildFile") == true {
+                outcome = await useBuildFileAtRuntime(file, primary: primary.session)
             } else {
-                progress.close()
-                outcome = await useBuildFileThroughConfig(file, primary: primary, sessions: targets)
-                guard outcome != nil else { return }
+                outcome = await useBuildFileThroughConfig(file, primary: primary)
             }
-            progress.close()
-            guard let outcome, !outcome.tops.isEmpty else {
+            guard let outcome else { return }
+            guard !outcome.tops.isEmpty else {
                 showAlert(
                     title: String(localized: "slangTop.build.failed.title", defaultValue: "Couldn’t Use the Build File"),
                     message: [
@@ -235,7 +245,7 @@ enum SlangCompilationActions {
                             format: String(localized: "slangTop.build.failed.detail", defaultValue: "slang-server elaborated nothing from %@."),
                             name
                         ),
-                        outcome?.failureDetail ?? "",
+                        outcome.failureDetail,
                     ].filter { !$0.isEmpty }.joined(separator: "\n\n"),
                     window: file.window
                 )
@@ -252,36 +262,82 @@ enum SlangCompilationActions {
         }
     }
 
-    /// Puts the workspace's servers that build from a `.f` file back in explore mode.
+    /// `slang.setBuildFile` on every server of the workspace on the same host. A server that
+    /// elaborates nothing goes back to what it compiled. The primary server's outcome; nil when busy.
+    private static func useBuildFileAtRuntime(_ file: ExplorerFile, primary: LanguageServerSession) async -> Outcome? {
+        let targets = [primary] + sessions(inWorkspace: file.workspaceId).filter {
+            $0 !== primary && $0.launch == primary.launch
+        }
+        guard claim(targets) else {
+            NSSound.beep()
+            return nil
+        }
+        defer { release(targets) }
+        let progress = SlangProgressSheet(
+            message: String(
+                format: String(localized: "slangTop.progress.build", defaultValue: "Elaborating the design from %@…"),
+                (file.path as NSString).lastPathComponent
+            ),
+            window: file.window
+        )
+        defer { progress.close() }
+        var primaryOutcome = Outcome(tops: [], instanceCount: 0, summary: SlangDiagnosticsSummary(), serverErrors: [])
+        for session in targets {
+            let previous = await currentTarget(of: session)
+            let serverPath = session.serverPath(for: URL(fileURLWithPath: file.path))
+            _ = await session.takeRecentErrorMessages()
+            var result: Outcome
+            do {
+                try await session.slangSetBuildFile(serverPath)
+                result = await Self.outcome(of: session)
+            } catch {
+                slangCompilationLogger.error("setBuildFile failed: \(String(describing: error), privacy: .public)")
+                result = Outcome(failure: error, summary: await session.diagnosticsSummary())
+            }
+            if result.tops.isEmpty {
+                await restore(previous, on: session)
+            } else {
+                let entry = entry(for: session)
+                entry.target = .buildFile(serverPath)
+                entry.workspaceIds.insert(file.workspaceId)
+                WaveformSourceLink.topLevelWasChosen(session: session)
+            }
+            FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
+            if session === primary { primaryOutcome = result }
+        }
+        return primaryOutcome
+    }
+
+    /// Puts the workspace's servers that build from a `.f` file back to what they compiled before.
     static func clearBuildFile(workspaceId: UUID, window: NSWindow?) {
         let targets = sessions(inWorkspace: workspaceId).filter {
             if case .buildFile? = target(of: $0) { return true }
             return false
         }
-        guard !targets.isEmpty else {
+        guard !targets.isEmpty, claim(targets) else {
             NSSound.beep()
             return
         }
         Task { @MainActor in
+            defer { release(targets) }
             for session in targets {
                 let entry = entry(for: session)
-                if let configFile = entry.configFile {
-                    do {
-                        try await writeBuild(nil, to: configFile)
+                do {
+                    if let edit = entry.configFile {
+                        try await writeBuild(edit.previousBuild, to: edit.location)
                         entry.configFile = nil
-                        try await session.restart()
-                    } catch {
-                        showAlert(
-                            title: String(localized: "slangTop.build.clearFailed.title", defaultValue: "Couldn’t Clear the Build File"),
-                            message: error.localizedDescription,
-                            window: window
-                        )
-                        continue
+                        try await session.restart(keepingCompilation: false)
+                    } else {
+                        try await session.slangSetBuildFile("")
                     }
-                } else {
-                    try? await session.slangSetBuildFile("")
+                    entry.target = nil
+                } catch {
+                    showAlert(
+                        title: String(localized: "slangTop.build.clearFailed.title", defaultValue: "Couldn’t Clear the Build File"),
+                        message: userMessage(for: error),
+                        window: window
+                    )
                 }
-                entry.target = nil
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
             }
         }
@@ -311,13 +367,18 @@ enum SlangCompilationActions {
     }
 
     /// Servers without `slang.setBuildFile`: `"build"` in `.slang/local/server.json`, then a restart.
-    /// Nil when the user declined or the file could not be written (already reported).
+    /// Nil when the user declined, the server was busy, or the file could not be written (reported).
     private static func useBuildFileThroughConfig(
         _ file: ExplorerFile,
-        primary: (session: LanguageServerSession, context: FilePreviewLanguageDocumentContext),
-        sessions: [LanguageServerSession]
+        primary: (session: LanguageServerSession, context: FilePreviewLanguageDocumentContext)
     ) async -> Outcome? {
         guard let root = primary.context.rootURI?.path else { return nil }
+        let session = primary.session
+        guard claim([session]) else {
+            NSSound.beep()
+            return nil
+        }
+        defer { release([session]) }
         let location = ConfigFileLocation(path: SlangServerConfigFile.path(inWorkspace: root), sshProvider: file.sshProvider)
         let alert = NSAlert()
         alert.messageText = String(localized: "slangTop.config.confirm.title", defaultValue: "Write the Build File to the Server Config?")
@@ -332,27 +393,45 @@ enum SlangCompilationActions {
         alert.addButton(withTitle: String(localized: "slangTop.config.confirm.write", defaultValue: "Write and Restart"))
         alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
         guard await runAlert(alert, window: file.window) == .alertFirstButtonReturn else { return nil }
+        let previousBuild: String?
         do {
-            try await writeBuild(file.path, to: location)
+            previousBuild = try await writeBuild(file.path, to: location)
         } catch {
             showAlert(
                 title: String(localized: "slangTop.build.failed.title", defaultValue: "Couldn’t Use the Build File"),
-                message: error.localizedDescription,
+                message: userMessage(for: error, configPath: displayPath(of: location)),
                 window: file.window
             )
             return nil
         }
-        let session = primary.session
         let entry = entry(for: session)
-        entry.configFile = location
-        entry.workspaceIds.insert(file.workspaceId)
+        let progress = SlangProgressSheet(
+            message: String(
+                format: String(localized: "slangTop.progress.build", defaultValue: "Elaborating the design from %@…"),
+                (file.path as NSString).lastPathComponent
+            ),
+            window: file.window
+        )
+        defer { progress.close() }
+        var outcome: Outcome
         do {
-            try await session.restart()
+            // The config's build, not an earlier runtime top level, decides now.
+            try await session.restart(keepingCompilation: false)
+            outcome = await Self.outcome(of: session)
         } catch {
-            return Outcome(tops: [], instanceCount: 0, summary: SlangDiagnosticsSummary(), serverErrors: [String(describing: error)])
+            outcome = Outcome(failure: error, summary: SlangDiagnosticsSummary())
         }
-        let outcome = await Self.outcome(of: session)
-        entry.target = .buildFile(file.path)
+        if outcome.tops.isEmpty {
+            // Put the file back as it was.
+            _ = try? await writeBuild(previousBuild, to: location)
+            try? await session.restart(keepingCompilation: false)
+            entry.target = nil
+        } else {
+            entry.configFile = ConfigFileEdit(location: location, previousBuild: entry.configFile?.previousBuild ?? previousBuild)
+            entry.target = .buildFile(session.serverPath(for: URL(fileURLWithPath: file.path)))
+            entry.workspaceIds.insert(file.workspaceId)
+            WaveformSourceLink.topLevelWasChosen(session: session)
+        }
         FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         return outcome
     }
@@ -362,32 +441,48 @@ enum SlangCompilationActions {
         return "\(provider.displayTarget):\(location.path)"
     }
 
-    /// Sets (or with nil removes) `"build"` in the config file, creating its folders, locally or over SSH.
-    private static func writeBuild(_ buildPath: String?, to location: ConfigFileLocation) async throws {
+    /// Sets (or with nil removes) `"build"` in the config file, creating its folders, locally or
+    /// over SSH. Returns the `"build"` the file had. A file that cannot be read is never overwritten.
+    @discardableResult
+    private static func writeBuild(_ buildPath: String?, to location: ConfigFileLocation) async throws -> String? {
         let directory = (location.path as NSString).deletingLastPathComponent
         if let provider = location.sshProvider {
-            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-slang-\(UUID().uuidString).json")
-            defer { try? FileManager.default.removeItem(at: scratch) }
             var existing: Data?
             var stamp: SSHRemoteFileStamp?
-            if let current = try? await provider.fileStamp(path: location.path) {
-                stamp = current
+            if try await remoteFileExists(location.path, provider: provider) {
+                stamp = try await provider.fileStamp(path: location.path)
+                let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-slang-\(UUID().uuidString).json")
+                defer { try? FileManager.default.removeItem(at: scratch) }
                 try await provider.downloadFile(path: location.path, to: scratch)
                 existing = try Data(contentsOf: scratch)
+            } else {
+                let parent = (directory as NSString).deletingLastPathComponent
+                if try await !remoteFileExists(parent, provider: provider) { try await provider.createDirectory(path: parent) }
+                if try await !remoteFileExists(directory, provider: provider) { try await provider.createDirectory(path: directory) }
             }
             let data = try SlangServerConfigFile.settingBuild(buildPath, in: existing)
-            if stamp == nil {
-                try? await provider.createDirectory(path: (directory as NSString).deletingLastPathComponent)
-                try? await provider.createDirectory(path: directory)
-            }
+            // The expected stamp makes the write fail rather than clobber a file changed meanwhile.
             _ = try await provider.writeFile(path: location.path, contents: data, expectedStamp: stamp)
-        } else {
-            let url = URL(fileURLWithPath: location.path)
-            let existing = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
-            let data = try SlangServerConfigFile.settingBuild(buildPath, in: existing)
-            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            try data.write(to: url, options: .atomic)
+            return SlangServerConfigFile.build(in: existing)
         }
+        // Write through a symlinked config to its target.
+        let url = URL(fileURLWithPath: location.path).resolvingSymlinksInPath()
+        let existing = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        let data = try SlangServerConfigFile.settingBuild(buildPath, in: existing)
+        try FileManager.default.createDirectory(atPath: url.deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        return SlangServerConfigFile.build(in: existing)
+    }
+
+    /// Whether `path` exists on the SSH host, from its folder's listing (errors are rethrown,
+    /// never read as "absent"). A folder that does not exist has no entries.
+    private static func remoteFileExists(_ path: String, provider: SSHFileExplorerProvider, depth: Int = 0) async throws -> Bool {
+        let parent = (path as NSString).deletingLastPathComponent
+        let name = (path as NSString).lastPathComponent
+        guard !parent.isEmpty, parent != path else { return true }
+        // Below the workspace root (three levels for .slang/local/server.json) check the folder first.
+        if depth < 3, try await !remoteFileExists(parent, provider: provider, depth: depth + 1) { return false }
+        return try await provider.listDirectory(path: parent, showHidden: true).contains { $0.name == name }
     }
 
     /// Distinct live language servers of the workspace's SystemVerilog editors.
@@ -398,9 +493,8 @@ enum SlangCompilationActions {
             guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted else { continue }
             sessions.append(session)
         }
-        for entry in entries where entry.target != nil {
-            guard let session = entry.session, seen.insert(ObjectIdentifier(session)).inserted,
-                  entry.workspaceIds.contains(workspaceId) else { continue }
+        for entry in entries where entry.target != nil && entry.workspaceIds.contains(workspaceId) {
+            guard let session = entry.session, seen.insert(ObjectIdentifier(session)).inserted else { continue }
             sessions.append(session)
         }
         return sessions
@@ -413,6 +507,17 @@ enum SlangCompilationActions {
         var instanceCount: Int
         var summary: SlangDiagnosticsSummary
         var serverErrors: [String]
+
+        init(tops: [String], instanceCount: Int, summary: SlangDiagnosticsSummary, serverErrors: [String]) {
+            self.tops = tops
+            self.instanceCount = instanceCount
+            self.summary = summary
+            self.serverErrors = serverErrors
+        }
+
+        init(failure: any Error, summary: SlangDiagnosticsSummary) {
+            self.init(tops: [], instanceCount: 0, summary: summary, serverErrors: [SlangCompilationActions.userMessage(for: failure)])
+        }
 
         var successLine: String {
             var lines = [String(
@@ -458,6 +563,28 @@ enum SlangCompilationActions {
         )
     }
 
+    /// A short, localized description of a failure for an alert.
+    nonisolated static func userMessage(for error: any Error, configPath: String? = nil) -> String {
+        switch error {
+        case LanguageServerError.timeout:
+            return String(localized: "slangTop.error.timeout", defaultValue: "slang-server didn’t answer in time.")
+        case LanguageServerError.notRunning, LanguageServerError.processExited:
+            return String(localized: "slangTop.error.notRunning", defaultValue: "slang-server isn’t running.")
+        case LanguageServerError.responseError(_, let message):
+            return message
+        case SlangServerConfigFile.EditError.notAJSONObject:
+            return String(
+                format: String(
+                    localized: "slangTop.error.invalidConfig",
+                    defaultValue: "%@ isn’t a JSON object, so cmux left it unchanged. Fix or remove it, then try again."
+                ),
+                configPath ?? SlangServerConfigFile.relativePath
+            )
+        default:
+            return error.localizedDescription
+        }
+    }
+
     // MARK: Alerts
 
     private static func runAlert(_ alert: NSAlert, window: NSWindow?) async -> NSApplication.ModalResponse {
@@ -473,6 +600,11 @@ enum SlangCompilationActions {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
+        // The message can be selected and copied.
+        alert.layout()
+        for case let field as NSTextField in alert.window.contentView?.subviews ?? [] where field.stringValue == message {
+            field.isSelectable = true
+        }
         Task { @MainActor in
             _ = await runAlert(alert, window: window)
         }
@@ -480,6 +612,7 @@ enum SlangCompilationActions {
 }
 
 /// A sheet with a spinner while slang-server elaborates (the Files explorer has no editor to show it in).
+/// Not shown when the window already has a sheet.
 @MainActor
 private final class SlangProgressSheet {
     private let sheet: NSWindow
@@ -497,12 +630,16 @@ private final class SlangProgressSheet {
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         sheet.contentView = stack
-        parent = window ?? NSApp.keyWindow ?? NSApp.mainWindow
-        parent?.beginSheet(sheet)
+        let parent = window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        guard let parent, parent.attachedSheet == nil else { return }
+        self.parent = parent
+        parent.beginSheet(sheet)
     }
 
     func close() {
-        guard sheet.sheetParent != nil else { return }
-        parent?.endSheet(sheet)
+        guard let parent else { return }
+        self.parent = nil
+        parent.endSheet(sheet)
+        sheet.orderOut(nil)
     }
 }

@@ -686878,6 +686878,183 @@
           }
         }
       }
+    },
+    "slangTop.error.timeout": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server didn’t answer in time."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server が時間内に応答しませんでした。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server hat nicht rechtzeitig geantwortet."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server n’a pas répondu à temps."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يستجب slang-server في الوقت المحدد."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server no respondió a tiempo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 未及時回應。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 未及时响应。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server가 제시간에 응답하지 않았습니다."
+          }
+        }
+      }
+    },
+    "slangTop.error.notRunning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server isn’t running."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server が実行されていません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server läuft nicht."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server n’est pas en cours d’exécution."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server لا يعمل."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server no se está ejecutando."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 未在執行。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server 未在运行。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server가 실행 중이 아닙니다."
+          }
+        }
+      }
+    },
+    "slangTop.error.invalidConfig": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ isn’t a JSON object, so cmux left it unchanged. Fix or remove it, then try again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は JSON オブジェクトではないため、cmux は変更しませんでした。修正または削除してから、もう一度お試しください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist kein JSON-Objekt, daher hat cmux die Datei nicht geändert. Korrigiere oder entferne sie und versuche es erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’est pas un objet JSON, cmux l’a donc laissé tel quel. Corrigez-le ou supprimez-le, puis réessayez."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‏%@ ليس كائن JSON، لذا تركه cmux دون تغيير. أصلحه أو احذفه، ثم حاول مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no es un objeto JSON, así que cmux no lo modificó. Corrígelo o elimínalo y vuelve a intentarlo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不是 JSON 物件，因此 cmux 未加以變更。請修正或移除後再試一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不是 JSON 对象，因此 cmux 未作更改。请修复或删除后重试。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@이(가) JSON 객체가 아니어서 cmux가 변경하지 않았습니다. 수정하거나 삭제한 후 다시 시도하세요."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

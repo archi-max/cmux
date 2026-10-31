@@ -42,6 +42,12 @@ public enum SystemVerilogModuleLocator {
                 index = min(count, index + 2)
                 continue
             }
+            if unit == 0x28, next == 0x2A, index + 2 < count, units[index + 2] != 0x29 { // (* attribute *), not @(*)
+                index += 2
+                while index < count, !(units[index] == 0x2A && index + 1 < count && units[index + 1] == 0x29) { index += 1 }
+                index = min(count, index + 2)
+                continue
+            }
             if unit == 0x22 { // "string"
                 index += 1
                 while index < count, units[index] != 0x22, units[index] != 0x0A {

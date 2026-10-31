@@ -600,7 +600,8 @@ enum WaveformSourceLink {
     ) async -> Bool {
         let state = Self.topLevelState(for: session)
         if let running = state.elaboration { return await running.value }
-        guard !state.declined else { return false }
+        // A top level or build file being set by hand wins.
+        guard !state.declined, !SlangCompilationActions.isBusy(session) else { return false }
         if let failedAt = state.failedAt, Date().timeIntervalSince(failedAt) < topLevelRetryInterval { return false }
         let task = Task { @MainActor in
             await Self.runElaboration(session: session, waveform: waveform, state: state, progress: progress)
@@ -693,7 +694,7 @@ enum WaveformSourceLink {
     static func resetTopLevel() {
         guard let workspace = AppDelegate.shared?.tabManager?.selectedWorkspace,
               let session = FilePreviewLanguageFeatures.mostRecentLinkable(inWorkspace: workspace.id)?.linkSession?.session,
-              canResetTopLevel(session: session) else {
+              canResetTopLevel(session: session), !SlangCompilationActions.isBusy(session) else {
             NSSound.beep()
             return
         }
@@ -702,9 +703,11 @@ enum WaveformSourceLink {
 
     /// Whether cmux set `session`'s top level (so Reset Top Level has something to undo).
     static func canResetTopLevel(session: LanguageServerSession) -> Bool {
-        if topLevelStates.first(where: { $0.session === session })?.setByLink == true { return true }
-        if case .topLevel? = SlangCompilationActions.target(of: session) { return true }
-        return false
+        switch SlangCompilationActions.target(of: session) {
+        case .topLevel?: return true
+        case .buildFile?: return false
+        case nil: return topLevelStates.first(where: { $0.session === session })?.setByLink == true
+        }
     }
 
     /// Back to explore mode; the link stops offering to elaborate for this session.
@@ -712,9 +715,8 @@ enum WaveformSourceLink {
         let state = Self.topLevelState(for: session)
         state.setByLink = false
         state.declined = true
-        SlangCompilationActions.topLevelWasReset(session: session)
         Task { @MainActor in
-            try? await session.slangSetTopLevel("")
+            await SlangCompilationActions.returnToConfiguredCompilation(session)
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         }
     }
