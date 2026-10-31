@@ -125,4 +125,34 @@ struct RemotePreviewCacheBudgetTests {
         RemotePreviewCacheBudget.discard(newer, cacheRoot: root, keeping: [])
         #expect(!Self.exists(root, "ns/a"))
     }
+
+    // MARK: cmux open of a dump read in place: when it opens, and how long its viewer refreshes
+
+    @Test
+    func testInPlaceOpenNeedsAConnectedSSHRootAndATerminalItsOwn() {
+        typealias Gate = RemotePreviewInPlaceGate
+        #expect(Gate.route(sshRootAvailable: true, terminalIsRemote: true, hasWorkspacePane: true) == .open)
+        // A Dock terminal: nothing to split, so a notice instead of "not SSH".
+        #expect(Gate.route(sshRootAvailable: true, terminalIsRemote: true, hasWorkspacePane: false) == .noticeNoPane)
+        #expect(Gate.route(sshRootAvailable: false, terminalIsRemote: true, hasWorkspacePane: true) == .unavailable)
+        #expect(Gate.route(sshRootAvailable: true, terminalIsRemote: false, hasWorkspacePane: true) == .unavailable)
+    }
+
+    @Test
+    func testTheOpenNeedsItsTerminalButTheViewerOnlyItsWorkspaceConnection() {
+        typealias Gate = RemotePreviewInPlaceGate
+        // The open itself: selected, not retired, the terminal still on the same connection.
+        #expect(Gate.openIsCurrent(isSelected: true, isRetired: false, terminalConfiguration: "a", openedWith: "a"))
+        #expect(!Gate.openIsCurrent(isSelected: true, isRetired: false, terminalConfiguration: "b", openedWith: "a"))
+        #expect(!Gate.openIsCurrent(isSelected: true, isRetired: false, terminalConfiguration: nil as String?, openedWith: "a"))
+        #expect(!Gate.openIsCurrent(isSelected: false, isRetired: false, terminalConfiguration: "a", openedWith: "a"))
+        #expect(!Gate.openIsCurrent(isSelected: true, isRetired: true, terminalConfiguration: "a", openedWith: "a"))
+        // The viewer outlives its terminal (closed, or no longer in ssh): it
+        // keeps refreshing while the workspace keeps that connection.
+        #expect(Gate.panelIsCurrent(isSelected: true, isRetired: false, workspaceConfiguration: "a", openedWith: "a"))
+        #expect(!Gate.panelIsCurrent(isSelected: true, isRetired: false, workspaceConfiguration: "b", openedWith: "a"))
+        #expect(!Gate.panelIsCurrent(isSelected: true, isRetired: false, workspaceConfiguration: nil as String?, openedWith: "a"))
+        #expect(!Gate.panelIsCurrent(isSelected: false, isRetired: false, workspaceConfiguration: "a", openedWith: "a"))
+        #expect(!Gate.panelIsCurrent(isSelected: true, isRetired: true, workspaceConfiguration: "a", openedWith: "a"))
+    }
 }
