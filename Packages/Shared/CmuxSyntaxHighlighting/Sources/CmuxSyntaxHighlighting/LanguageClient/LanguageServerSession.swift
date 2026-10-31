@@ -237,6 +237,11 @@ public actor LanguageServerSession {
         notify("textDocument/didSave", params: .object(params))
     }
 
+    /// The text of an open document, as last sent.
+    func documentText(_ uri: URL) -> String? {
+        documents[uri]?.text
+    }
+
     /// Sends `textDocument/didClose` and forgets the document.
     public func close(uri: URL) async {
         documents[uri] = nil

@@ -278,11 +278,36 @@ enum WaveformSourceLink {
         progress: @escaping @MainActor @Sendable (String) -> Void
     ) async -> DesignPaths {
         var paths: [String]
+        // An included fragment is placed by walking the design, which can take a while over SSH.
+        let searchNote = String(
+            format: String(
+                localized: "waveformLink.searchingFragment",
+                defaultValue: "Looking for %@ in the design this file is included into…"
+            ),
+            symbol.name
+        )
+        let willSearch: @Sendable () async -> Void = { await progress(searchNote) }
         do {
-            paths = try await session.slangDesignPaths(uri: documentURI, position: position, identifier: symbol.name)
+            paths = try await session.slangDesignPaths(
+                uri: documentURI,
+                position: position,
+                identifier: symbol.name,
+                isInModule: symbol.isInModule,
+                willSearch: willSearch
+            )
+            // Asked again only when the design was empty and the link just elaborated it
+            // (an empty design has nothing to walk, so the walk runs at most once).
             if paths.isEmpty, await Self.elaborateDesign(session: session, waveform: waveform, progress: progress) {
-                paths = try await session.slangDesignPaths(uri: documentURI, position: position, identifier: symbol.name)
+                paths = try await session.slangDesignPaths(
+                    uri: documentURI,
+                    position: position,
+                    identifier: symbol.name,
+                    isInModule: symbol.isInModule,
+                    willSearch: willSearch
+                )
             }
+        } catch is CancellationError {
+            return .paths([])
         } catch {
             waveformSourceLinkLogger.error("getInstances failed: \(String(describing: error), privacy: .public)")
             return .message(String(
@@ -292,7 +317,8 @@ enum WaveformSourceLink {
         }
         guard !Task.isCancelled else { return .paths([]) }
         guard !paths.isEmpty else {
-            let hasTops = !((try? await session.slangScopeChildren("")) ?? []).isEmpty
+            // getScope("") also lists packages; only instances are tops.
+            let hasTops = ((try? await session.slangScopeChildren("")) ?? []).contains { $0.kind != "Package" }
             guard !Task.isCancelled else { return .paths([]) }
             if !hasTops {
                 return .message(String(
