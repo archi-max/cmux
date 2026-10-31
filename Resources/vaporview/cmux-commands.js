@@ -14,8 +14,9 @@
 //   settings()                    current settings (vaporview.* keys without the prefix)
 //   configMessage()               the webview's setConfigSettings message for those settings
 //   onContextUpdate(m), restoreState(m), handleDrop(m)   webview messages
-//   addSignalByName(path, msb, lsb)
-//   sessionSaved({ path }), applySessionFile({ text, path, error }), sessionFailed({ message })   replies from cmux
+//   addSignalByName(path, msb, lsb, quiet)   -> whether it found the signal
+//   sessionSaved(), applySessionFile({ text, path, error }), sessionFailed({ message })   replies from cmux
+//   setSessionFile({ path, text })   <dump>.json, which cmux reads after the file opens
 
 (function () {
   const host = () => window.cmuxWaveform.host;
@@ -231,12 +232,12 @@
   const COLOR_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
   const SETTINGS = [
     { key: 'scrollingMode', type: 'enum', options: [['Mouse', 'settingsOptionMouse'], ['Touchpad', 'settingsOptionTouchpad'], ['Auto', 'settingsOptionAuto']], value: 'Auto' },
-    { key: 'touchpadPinchSensitivity', type: 'number', value: 1, step: 0.1 },
+    { key: 'touchpadPinchSensitivity', type: 'number', value: 1, step: 0.1, min: 0.1, max: 10 },
     { key: 'showRulerLines', type: 'boolean', value: true },
     { key: 'fillMultiBitValues', type: 'boolean', value: false },
     { key: 'multiBitFixedHeight', type: 'boolean', value: true },
     { key: 'enableAnimations', type: 'boolean', value: true },
-    { key: 'animationDuration', type: 'number', value: 50, step: 10 },
+    { key: 'animationDuration', type: 'number', value: 50, step: 10, min: 5, max: 500 },
     { key: 'useGlow', type: 'boolean', value: false },
     { key: 'removeGlitchTransitions', type: 'boolean', value: false },
     { key: 'defaultTimeUnit', type: 'enum', options: [['fs'], ['ps'], ['ns'], ['µs'], ['ms'], ['s'], ['none', 'settingsOptionNone']], value: 'none' },
@@ -256,7 +257,7 @@
     { key: 'defaultAutoReload', type: 'boolean', value: false },
     { key: 'enableInstancePathTerminalLinks', type: 'boolean', value: true },
     { key: 'overrideDevicePixelRatio', type: 'boolean', value: false },
-    { key: 'userPixelRatio', type: 'number', value: 1, step: 0.25 },
+    { key: 'userPixelRatio', type: 'number', value: 1, step: 0.25, min: 0.1, max: 10 },
     { key: 'disableAnalogRendererOptimizations', type: 'boolean', value: false },
   ];
   let settingsValues = {};
@@ -267,12 +268,29 @@
     return out;
   }
 
+  // A setting's value as package.json allows it (type, enum options, range), or undefined.
+  function validSetting(key, value) {
+    const def = SETTINGS.find((s) => s.key === key);
+    if (!def) { return undefined; }
+    switch (def.type) {
+      case 'boolean': return typeof value === 'boolean' ? value : undefined;
+      case 'number': {
+        const n = Number(value);
+        if (typeof value !== 'number' || !Number.isFinite(n)) { return undefined; }
+        return Math.min(def.max ?? Infinity, Math.max(def.min ?? -Infinity, n));
+      }
+      case 'color': return COLOR_OPTIONS.includes(value) ? value : undefined;
+      case 'enum': return def.options.some(([v]) => v === value) ? value : undefined;
+      default: return typeof value === 'string' ? value : undefined;
+    }
+  }
+
   function loadSettings(values) {
     settingsValues = {};
-    const known = new Set(SETTINGS.map((s) => s.key));
     Object.entries(values || {}).forEach(([k, v]) => {
       const key = k.replace(/^vaporview\./, '');
-      if (known.has(key)) { settingsValues[key] = v; }
+      const value = validSetting(key, v);
+      if (value !== undefined) { settingsValues[key] = value; }
     });
   }
 
@@ -306,7 +324,10 @@
   }
 
   function updateSetting(key, value) {
-    settingsValues[key.replace(/^vaporview\./, '')] = value;
+    const name = String(key).replace(/^vaporview\./, '');
+    const valid = validSetting(name, value);
+    if (valid === undefined) { return; }
+    settingsValues[name] = valid;
     persistSettings();
   }
 
@@ -354,12 +375,15 @@
           input = document.createElement('input');
           input.type = def.type === 'number' ? 'number' : 'text';
           if (def.step) { input.step = String(def.step); }
+          if (def.min !== undefined) { input.min = String(def.min); }
+          if (def.max !== undefined) { input.max = String(def.max); }
           input.value = String(current[def.key]);
           input.spellcheck = false;
           input.addEventListener('change', () => {
             const v = def.type === 'number' ? Number(input.value) : input.value.trim();
             if (def.type === 'number' && !Number.isFinite(v)) { input.value = String(settings()[def.key]); return; }
             updateSetting(def.key, v);
+            input.value = String(settings()[def.key]);
           });
           row.append(name, input);
         }
@@ -401,7 +425,6 @@
   let undoStack = [];
   let redoStack = [];
   let dirty = false;
-  let sessionPath = null;      // where Cmd+S writes, once saved or loaded
 
   function contextSession(context) {
     if (!context) { return null; }
@@ -442,9 +465,19 @@
   function scheduleSessionSnapshot() {
     clearTimeout(snapshotTimer);
     snapshotTimer = setTimeout(() => {
-      const state = contextSession(webviewContext);
-      if (state) { host().toNative({ type: 'sessionState', state, dirty, sessionPath }); }
+      const state = plainJSON(contextSession(webviewContext));
+      if (state) { host().toNative({ type: 'sessionState', state, dirty }); }
     }, 250);
+  }
+
+  // NaN and Infinity become null, so cmux can always pass the state back as JSON.
+  function plainJSON(value) {
+    return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  // Whether parsed JSON is a VaporView session (VaporviewDocument.getWebviewSession).
+  function isSession(data) {
+    return !!data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.displayedSignals);
   }
 
   function setDirty(value) {
@@ -462,7 +495,7 @@
       markerTime: w.markerTime,
       altMarkerTime: w.altMarkerTime,
       displayTimeUnit: w.displayTimeUnit,
-      selectedSignal: selected ? window.cmuxNetlist.instancePath(selected) : null,
+      selectedSignal: selected ? { name: window.cmuxNetlist.instancePath(selected), msb: selected.msb, lsb: selected.lsb } : null,
       zoomRatio: w.zoomRatio,
       scrollLeft: w.scrollLeft,
       defaultPixelTime: w.defaultPixelTime,
@@ -495,7 +528,15 @@
           out.push(Object.assign({}, signal, { encoding: 'BitVector', source }));
         } else if (signal.dataType === 'netlist-variable' || signal.dataType === undefined) {
           const v = await host().findItem(signal.name, signal.msb, signal.lsb, true);
-          if (!v || v.kind !== 'var') { missing.push(signal.name); continue; }
+          if (!v || v.kind !== 'var') {
+            // parseNetlistVariableSettings: the row stays, as a missing signal,
+            // so a reload or a later save keeps the layout.
+            missing.push(signal.name);
+            const parts = String(signal.name || '').split('.');
+            out.push(Object.assign({}, signal, { dataType: 'netlist-variable', netlistId: undefined, signalId: undefined,
+              signalName: parts.pop(), scopePath: parts }));
+            continue;
+          }
           out.push(Object.assign({}, signal, { dataType: 'netlist-variable', netlistId: v.netlistId, signalId: v.signalId,
             signalName: v.name, scopePath: v.scopePath, signalWidth: v.width, type: v.type, encoding: v.encoding,
             enumType: v.enumType, msb: v.msb, lsb: v.lsb }));
@@ -511,9 +552,12 @@
     if (!session) { return; }
     const missing = [];
     const displayedSignals = await convertSignalList(session.displayedSignals || [], missing);
+    // A file holds { name, msb, lsb } (or, from older cmux, the name); the
+    // viewer's own state holds the netlistId.
     let selectedSignal = session.selectedSignal;
-    if (typeof selectedSignal === 'string') {
-      const v = await host().findItem(selectedSignal, undefined, undefined, true);
+    if (typeof selectedSignal === 'string' || (selectedSignal && typeof selectedSignal === 'object')) {
+      const s = typeof selectedSignal === 'string' ? { name: selectedSignal } : selectedSignal;
+      const v = s.name ? await host().findItem(s.name, s.msb, s.lsb, true) : null;
       selectedSignal = v && v.kind === 'var' ? v.netlistId : undefined;
     }
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
@@ -532,21 +576,42 @@
   // The webview asks for its state after initViewport (restoreState). Its own
   // saved state (kept in the frame across an in-page reload) wins, then the
   // state cmux kept from a previous page, then <dump>.json next to the file.
+  // <dump>.json is offered once per open: once the viewer has asked for its
+  // state and cmux has read the file (setSessionFile), whichever comes last.
+  let restoreAsked = false;
+  let sessionFileOffered = false;
+
   async function restoreState(m) {
     const config = host().config;
-    if (m.state) { config.restore = null; await applySession(m.state, StateChangeType.Restore); return; }
+    restoreAsked = true;
+    if (m.state) {
+      sessionFileOffered = true;
+      config.restore = null;
+      await applySession(m.state, StateChangeType.Restore);
+      return;
+    }
     if (config.restore && config.restore.state) {
+      sessionFileOffered = true;
       const restore = config.restore;
       config.restore = null;
-      sessionPath = restore.sessionPath || null;
       await applySession(restore.state, StateChangeType.Restore);
       setDirty(!!restore.dirty);
       return;
     }
-    const file = config.sessionFile;
-    if (!file || !file.text) { return; }
+    await offerSessionFile();
+  }
+
+  async function offerSessionFile() {
+    const file = host().config.sessionFile;
+    if (!restoreAsked || sessionFileOffered || !file || !file.text) { return; }
+    sessionFileOffered = true;
     const mode = settings().promptLoadSettings;
     if (mode === 'Never') { return; }
+    try {
+      if (!isSession(JSON.parse(file.text))) { return; }
+    } catch (error) {
+      return;
+    }
     if (mode === 'Ask') {
       const s = S();
       const answer = await ui().confirm({ message: format(s.messageRestoreSession, file.path), detail: s.messageRestoreSessionDetail,
@@ -565,18 +630,21 @@
       ui().toast(format(S().messageSessionLoadFailed, String(error.message || error)), 'error');
       return;
     }
+    if (!isSession(data)) {
+      ui().toast(format(S().messageSessionLoadFailed, S().messageNotASession), 'error');
+      return;
+    }
     if (data.fileName && host().config.path && data.fileName !== host().config.path) {
       ui().toast(S().messageSessionMismatch, 'warning');
     }
-    sessionPath = path || null;
     await applySession(data, StateChangeType.File);
     setDirty(false);
   }
 
-  function saveSession(saveAs) {
+  // Save Vaporview Session...: cmux always asks where, as VaporView's command does.
+  function saveSession() {
     const name = (host().config.path || host().config.url || 'untitled').split('/').pop().replace(/\.[^/.]+$/, '') + '.json';
-    host().toNative({ type: 'saveSession', text: JSON.stringify(sessionFile(), null, 2), suggestedName: name,
-      path: saveAs ? null : sessionPath });
+    host().toNative({ type: 'saveSession', text: JSON.stringify(sessionFile(), null, 2), suggestedName: name });
   }
 
   function undo(stack, other, type) {
@@ -662,7 +730,7 @@
   }
 
   // ViewerProvider.getNetlistItemFromSignalName + addSignalByNameToDocument.
-  async function addSignalByName(name, msb, lsb) {
+  async function addSignalByName(name, msb, lsb, quiet) {
     let path = String(name).trim().replace(/[:;]$/, '');
     const field = /\[(\d+:)?(\d+)\]$/.exec(path);
     if (field && msb === undefined) {
@@ -671,7 +739,10 @@
       path = path.replace(/\[(\d+:)?(\d+)\]$/, '');
     }
     const item = await host().findItem(path, msb, lsb, false);
-    if (!item) { ui().toast(format(S().messageSignalNotFound, name), 'warning'); return false; }
+    if (!item) {
+      if (!quiet) { ui().toast(format(S().messageSignalNotFound, name), 'warning'); }
+      return false;
+    }
     if (item.kind === 'scope') { window.cmuxNetlist.focusSearch(item); return true; }
     const shown = webviewContext ? displayedNetlistIds(webviewContext.displayedSignals || []) : [];
     if (shown.includes(item.netlistId)) {
@@ -749,7 +820,7 @@
     // External API (VaporView's waveformViewer.* commands)
     'waveformViewer.setMarker': (e) => setMarker(e.time, e.units, e.markerType),
     'waveformViewer.addVariable': (e) => (e.netlistId !== undefined && host().netlistItem(e.netlistId)
-      ? host().addVariables([host().netlistItem(e.netlistId)]) : addSignalByName(e.instancePath, e.msb, e.lsb)),
+      ? host().addVariables([host().netlistItem(e.netlistId)]) : addSignalByName(e.instancePath, e.msb, e.lsb, e.quiet)),
     'waveformViewer.removeVariable': async (e) => {
       const v = e.netlistId !== undefined ? host().netlistItem(e.netlistId) : await host().findItem(e.instancePath, e.msb, e.lsb, true);
       if (v) { host().toWebview({ command: 'remove-signal', netlistId: v.netlistId, rowId: undefined, removeAllSelected: false }); }
@@ -839,7 +910,7 @@
     'vaporview.setTouchpadScrollingMode': () => updateSetting('scrollingMode', 'Touchpad'),
     'vaporview.setAutoScrollingMode': () => updateSetting('scrollingMode', 'Auto'),
     'vaporview.viewVaporViewSettings': () => showSettings(),
-    'vaporview.showReadme': () => host().toNative({ type: 'openURL', url: 'https://github.com/Lramseyer/vaporview#readme' }),
+    'vaporview.showReadme': () => host().toNative({ type: 'openReadme' }),
 
     // WaveDrom
     'vaporview.copyWaveDrom': () => host().toWebview({ command: 'copyWaveDrom' }),
@@ -848,7 +919,7 @@
     'vaporview.unsetWaveDromClock': () => host().toWebview({ command: 'setWaveDromClock', edge: '1', netlistId: null }),
 
     // Sessions and file
-    'vaporview.saveViewerSession': () => saveSession(false),
+    'vaporview.saveViewerSession': () => saveSession(),
     'vaporview.loadViewerSession': () => host().toNative({ type: 'loadSession' }),
     'vaporview.reloadFile': () => host().toNative({ type: 'reload' }),
     'cmux.undo': () => undo(undoStack, redoStack, StateChangeType.Undo),
@@ -917,8 +988,31 @@
     return context;
   }
 
+  // ---- key claims (WaveformViewerShortcuts in cmux) ----
+  // cmux lets VaporView's keys through to the page instead of running its own
+  // shortcut only when the page will run them, so it needs to know whether the
+  // viewer frame has focus (the `viewer` bindings) and whether a menu,
+  // dialog or text field takes keys instead (handleKey returns early then).
+  let lastKeyState = '';
+  function postKeyState() {
+    const frame = document.getElementById('viewer');
+    const viewerFocused = document.activeElement === frame;
+    let active = document.activeElement;
+    if (viewerFocused) {
+      try { active = frame.contentDocument.activeElement; } catch (error) { active = null; }
+    }
+    const state = { viewerFocused, blocked: ui().hasOpenOverlay() || isTextInput(active) };
+    const key = JSON.stringify(state);
+    if (key === lastKeyState) { return; }
+    lastKeyState = key;
+    host().toNative(Object.assign({ type: 'keyState' }, state));
+  }
+  const scheduleKeyState = () => setTimeout(postKeyState, 0);
+
   function attachFrame(frameWindow) {
     const frameDocument = frameWindow.document;
+    frameDocument.addEventListener('focusin', scheduleKeyState, true);
+    frameDocument.addEventListener('focusout', scheduleKeyState, true);
     frameDocument.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const args = webviewContextAt(e.target);
@@ -966,11 +1060,17 @@
     undoStack = [];
     redoStack = [];
     pendingReload = false;
-    sessionPath = (config.restore && config.restore.sessionPath) || null;
     setDirty(false);
+    restoreAsked = false;
+    sessionFileOffered = false;
     if (listenersInstalled) { return; }
     listenersInstalled = true;
     document.addEventListener('keydown', (e) => handleKey(e, false), true);
+    document.addEventListener('focusin', scheduleKeyState, true);
+    document.addEventListener('focusout', scheduleKeyState, true);
+    document.addEventListener('cmux-overlay-change', scheduleKeyState);
+    window.addEventListener('focus', scheduleKeyState);
+    window.addEventListener('blur', scheduleKeyState);
     document.getElementById('status-time').addEventListener('click', () => run('vaporview.setTimeUnits'));
     const reload = document.getElementById('status-reload');
     reload.querySelector('button').addEventListener('click', () => { pendingReload = false; reload.hidden = true; host().toNative({ type: 'reload' }); });
@@ -986,11 +1086,12 @@
     run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
     addSignalByName, fileChanged, willReload, updateSetting,
     init,
-    sessionSaved: ({ path }) => { sessionPath = path || sessionPath; setDirty(false); scheduleSessionSnapshot(); },
+    setSessionFile: (file) => { host().config.sessionFile = file; return offerSessionFile(); },
+    sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
     sessionFailed: ({ message }) => ui().toast(format(S().messageSessionSaveFailed, message), 'error'),
     applySessionFile: ({ text, path, error }) => (error
       ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path)),
-    sessionSnapshot: () => ({ state: contextSession(webviewContext), dirty, sessionPath }),
+    sessionSnapshot: () => ({ state: plainJSON(contextSession(webviewContext)), dirty }),
     commandIds: () => Object.keys(COMMANDS),
     menus: MENUS,
   };
