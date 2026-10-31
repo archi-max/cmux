@@ -196,6 +196,23 @@ struct LanguageServerSessionFailureTests {
         #expect(await session.isRunning == false)
     }
 
+    @Test("A server's exit message has the stderr it wrote, even when stderr is read after the exit")
+    func exitKeepsLateStderr() async {
+        // The shell exits at once; a background writer still holds stderr and writes 0.3 s later,
+        // as happens when the stderr reader runs after the exit is seen (parallel load).
+        let launch = LanguageToolLaunch.local(executablePath: "/bin/sh", arguments: ["-c", "(sleep 0.3; echo late-boom >&2) >/dev/null </dev/null & exit 3"])
+        let session = LanguageServerSession(launch: launch, rootURI: nil, languageId: "verilog")
+        do {
+            try await session.start()
+            Issue.record("start() should have thrown")
+        } catch LanguageServerError.processExited(let status, let stderr) {
+            #expect(status == 3)
+            #expect(stderr.contains("late-boom"))
+        } catch {
+            Issue.record("Unexpected error \(error)")
+        }
+    }
+
     @Test("A server that never answers times out")
     func neverAnswers() async {
         let launch = LanguageToolLaunch.local(executablePath: "/bin/sleep", arguments: ["30"])
@@ -345,6 +362,30 @@ struct SourceFormatterFailureTests {
         let started = Date()
         await #expect(throws: SourceFormatterError.timedOut) {
             _ = try await SourceFormatter.format("x", using: .local(executablePath: "/bin/sleep", arguments: ["30"]), timeout: 0.5)
+        }
+        #expect(Date().timeIntervalSince(started) < 5)
+    }
+
+    @Test("A failure carries the stderr written before stderr closes, not only before the exit")
+    func failureKeepsLateStderr() async {
+        let launch = LanguageToolLaunch.local(executablePath: "/bin/sh", arguments: ["-c", "cat >/dev/null; (sleep 0.3; echo late-error >&2) >/dev/null </dev/null & exit 3"])
+        do {
+            _ = try await SourceFormatter.format("x", using: launch)
+            Issue.record("expected a failure")
+        } catch SourceFormatterError.failed(let status, let stderr) {
+            #expect(status == 3)
+            #expect(stderr.contains("late-error"))
+        } catch {
+            Issue.record("Unexpected error \(error)")
+        }
+    }
+
+    @Test("A child that keeps stderr open past the timeout still fails in time")
+    func stderrHeldOpen() async {
+        let launch = LanguageToolLaunch.local(executablePath: "/bin/sh", arguments: ["-c", "cat >/dev/null; sleep 30 >/dev/null </dev/null & exit 3"])
+        let started = Date()
+        await #expect(throws: SourceFormatterError.self) {
+            _ = try await SourceFormatter.format("x", using: launch, timeout: 1)
         }
         #expect(Date().timeIntervalSince(started) < 5)
     }
