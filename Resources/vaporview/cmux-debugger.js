@@ -174,7 +174,15 @@
   }
 
   async function start() {
-    const edges = await ensureEdges();
+    let edges;
+    try {
+      edges = await ensureEdges();
+    } catch (error) {
+      // Past MAX_EDGES (or the reader failed): say so rather than stall or run out of memory.
+      host.log(error);
+      window.cmuxUI.toast(S().debuggerTooManyEdges || '', 'warning');
+      return null;
+    }
     if (!edges) {
       window.cmuxUI.toast(S().debuggerNoClock || '', 'warning');
       return null;

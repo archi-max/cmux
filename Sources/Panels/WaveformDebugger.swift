@@ -197,6 +197,10 @@ enum WaveformDebugger {
                 localized: "waveformDebugger.noEdges",
                 defaultValue: "The clock never rises in this waveform."
             ),
+            "debuggerTooManyEdges": String(
+                localized: "waveformDebugger.tooManyEdges",
+                defaultValue: "This clock has too many cycles to step (more than 10 million), or its changes could not be read."
+            ),
             "debuggerClockNotBit": String(
                 localized: "waveformDebugger.clockNotBit",
                 defaultValue: "Select a 1-bit signal in the waveform to use as the clock."
