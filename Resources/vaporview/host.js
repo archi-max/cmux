@@ -764,6 +764,8 @@
       const s = String(name);
       return s.startsWith('\\') ? s.slice(1).trimEnd() : s;
     };
+    // FSDB from VCS names a 1-bit vector declared [N-1:0] with N=1 with its range (dfp_read[0:0]).
+    const withoutRange = (name) => plainName(name).replace(/\[\d+(?::\d+)?\]$/, '');
 
     function segments(path) {
       if (Array.isArray(path)) { return path.map(String); }
@@ -778,6 +780,7 @@
         const last = i === parts.length - 1;
         let named = items.filter((x) => x.name === parts[i]);
         if (!named.length) { named = items.filter((x) => plainName(x.name) === plainName(parts[i])); }
+        if (!named.length && last) { named = items.filter((x) => x.kind === 'var' && withoutRange(x.name) === plainName(parts[i])); }
         if (last) {
           return named.find((x) => x.kind === 'var') || (varOnly ? null : named.find((x) => x.kind === 'scope') || null);
         }
