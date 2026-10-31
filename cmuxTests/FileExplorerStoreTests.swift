@@ -593,6 +593,41 @@ struct FileExplorerStoreTests {
         #expect(transport.listedPaths == ["/home/dev"])
     }
 
+    /// `cmux open` of an FSDB dump binds a store only to reach the Files
+    /// preview path: it must run nothing on the host (no listing, no home
+    /// lookup, no git status), and a later open on the same connection must
+    /// not invalidate one still loading.
+    @Test
+    func testPreviewOnlySSHBindingRunsNothingOnTheHost() async throws {
+        let transport = MockSSHFileExplorerTransport(homePath: .success("/home/dev"))
+        let workspaceId = UUID()
+        let connection = SSHFileExplorerConnection(destination: "dev@host", port: nil, identityFile: nil, sshOptions: [])
+        let store = FileExplorerStore()
+        store.bindSSHPreviewProvider(
+            workspaceId: workspaceId, connection: connection, displayTarget: "dev@host", sshTransport: transport
+        )
+        #expect(store.workspaceRootIdentity == workspaceId)
+        #expect((store.provider as? SSHFileExplorerProvider)?.connection == connection)
+        #expect(store.provider?.isAvailable == true)
+        let context = store.resourceContextID
+        store.bindSSHPreviewProvider(
+            workspaceId: workspaceId, connection: connection, displayTarget: "dev@host", sshTransport: transport
+        )
+        #expect(store.resourceContextID == context, "same workspace and connection: an open in flight stays current")
+        for _ in 0..<20 { await Task.yield() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(transport.listedPaths.isEmpty)
+        #expect(transport.resolvedHomeConnections.isEmpty)
+        #expect(store.rootPath.isEmpty)
+
+        let other = SSHFileExplorerConnection(destination: "dev@other", port: nil, identityFile: nil, sshOptions: [])
+        store.bindSSHPreviewProvider(
+            workspaceId: workspaceId, connection: other, displayTarget: "dev@other", sshTransport: transport
+        )
+        #expect(store.resourceContextID != context, "another connection: earlier opens are no longer current")
+        #expect((store.provider as? SSHFileExplorerProvider)?.connection == other)
+    }
+
     @Test
     func testSwitchingFromLocalToRemoteRepointsTreeToRemoteHome() async throws {
         let transport = MockSSHFileExplorerTransport(homePath: .success("/home/dev"))
