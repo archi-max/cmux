@@ -817,14 +817,25 @@
     return true;
   }
 
-  const breakpointName = (bp) => (bp.kind === 'line' ? bp.label : (bp.kind === 'equals'
+  const baseName = (bp) => (bp.kind === 'line' ? bp.label : (bp.kind === 'equals'
     ? format(S().debuggerBreakpointEquals, bp.path.join('.'), bp.value)
     : format(S().debuggerBreakpointChanges, bp.path.join('.'))));
+  const breakpointName = (bp) => (bp.condition ? format(S().debuggerBreakpointIf, baseName(bp), bp.condition) : baseName(bp));
 
   const isLastHit = (bp) => bp.id === lastHitId && lastHitBackend === host.currentBackend;
   const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: isLastHit(bp), label: breakpointName(bp),
     path: bp.path ? bp.path.slice() : null, value: bp.kind === 'equals' ? bp.value : null,
-    key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null });
+    key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
+    condition: bp.condition || null });
+
+  // A condition as given: trimmed, '' for none; { error, at, message } when it does not parse.
+  function checkCondition(text) {
+    const condition = String(text === undefined || text === null ? '' : text).trim();
+    if (!condition) { return { condition: '' }; }
+    const parsed = X.parse(condition);
+    if (parsed.error) { return { error: parsed.error, at: parsed.at, message: exprMessage(parsed.error, parsed.at) }; }
+    return { condition };
+  }
 
   // A breakpoint's warnings (signal gone, too many changes, a bad value) are said once each.
   function warnOnce(bp, text) {
@@ -848,8 +859,9 @@
       const path = Array.isArray(item.path) ? item.path.map(String) : null;
       const kind = item.kind === 'equals' ? 'equals' : (item.kind === 'change' ? 'change' : null);
       if (!path || !path.length || !kind) { continue; }
+      const checked = checkCondition(item.condition);
       restored.push({ id: nextBreakpointId++, path, kind, value: kind === 'equals' ? String(item.value || '') : null,
-        pattern: null, enabled: item.enabled !== false, times: null, timesFor: null });
+        pattern: null, enabled: item.enabled !== false, times: null, timesFor: null, condition: checked.condition || null });
     }
     breakpoints.unshift(...restored);
     if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId)) { lastHitId = null; }
@@ -869,8 +881,12 @@
       const paths = (Array.isArray(item.paths) ? item.paths : []).filter(Array.isArray).map((p) => p.map(String));
       const before = old.get(key);
       const same = before && JSON.stringify(before.paths) === JSON.stringify(paths);
+      const checked = checkCondition(item.condition);
+      if (checked.error) { window.cmuxUI.toast(format(S().debuggerConditionError, String(item.label || key), checked.message), 'warning'); }
+      const scope = Array.isArray(item.scope) ? item.scope.map(String) : null;
       lines.push({ id: before ? before.id : nextBreakpointId++, kind: 'line', key, label: String(item.label || key), paths,
-        enabled: item.enabled !== false, times: same ? before.times : null, timesFor: same ? before.timesFor : null });
+        enabled: item.enabled !== false, times: same ? before.times : null, timesFor: same ? before.timesFor : null,
+        condition: checked.condition || null, scope });
     }
     if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId) && !lines.some((b) => b.id === lastHitId)) { lastHitId = null; }
     breakpoints.push(...lines);
@@ -896,15 +912,21 @@
       window.cmuxUI.toast(format(S().debuggerBadValue, value, number(Number(v.width) || 1)), 'warning');
       return null;
     }
+    const checked = checkCondition(q.condition);
+    if (checked.error) {
+      window.cmuxUI.toast(format(S().debuggerConditionError, path.join('.'), checked.message), 'warning');
+      return null;
+    }
+    const condition = checked.condition || null;
     const width = Number(v.width) || 1;
     const same = breakpoints.find((b) => b.kind === kind && JSON.stringify(b.path) === JSON.stringify(path)
-      && (kind !== 'equals' || parseValue(b.value, width) === pattern));
+      && (kind !== 'equals' || parseValue(b.value, width) === pattern) && (b.condition || null) === condition);
     if (same) {
       same.enabled = true;
       breakpointsChanged();
       return publicBreakpoint(same);
     }
-    const bp = { id: nextBreakpointId++, path, kind, value, pattern, enabled: true, times: null, timesFor: null };
+    const bp = { id: nextBreakpointId++, path, kind, value, pattern, enabled: true, times: null, timesFor: null, condition };
     breakpoints.push(bp);
     breakpointsChanged();
     return publicBreakpoint(bp);
@@ -930,6 +952,24 @@
     return true;
   }
 
+  // setBreakpointCondition({ id, condition }): '' clears it; one that does not parse is refused
+  // (said, and the old one kept). Line breakpoints' conditions are cmux's (it is told).
+  function setBreakpointCondition(query) {
+    const q = query || {};
+    const bp = breakpoints.find((b) => b.id === Number(q.id));
+    if (!bp) { return null; }
+    const checked = checkCondition(q.condition);
+    if (checked.error) {
+      window.cmuxUI.toast(format(S().debuggerConditionError, baseName(bp), checked.message), 'warning');
+      return { error: checked.error, at: checked.at, message: checked.message };
+    }
+    bp.condition = checked.condition || null;
+    bp.warned = null;
+    if (bp.kind === 'line') { toldLine(bp, { condition: bp.condition }); }
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
   function breakpointsChanged() {
     // Changes no breakpoint watches any more are let go (each may hold up to 1M).
     const watched = new Set();
@@ -937,7 +977,8 @@
     for (const key of Array.from(changeCache.keys())) { if (!watched.has(key)) { changeCache.delete(key); } }
     // cmux keeps the signal breakpoints for the workspace's session (restoreBreakpoints).
     host.toNative({ type: 'debugger', event: 'breakpoints', items: breakpoints.filter((b) => b.kind !== 'line')
-      .map((b) => ({ path: b.path.slice(), kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled })) });
+      .map((b) => ({ path: b.path.slice(), kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled,
+        condition: b.condition || null })) });
     renderBreakpoints();
     if (state.playing) { refreshPlayStop(); }
   }
@@ -1055,13 +1096,68 @@
     return i >= 0 ? { time: times[i], index: landingIndex(edges, times[i]) } : null;
   }
 
+  // A breakpoint's condition as a test of a landing time (true when some known bit is 1, as an
+  // SV if takes it); null when it has none, false when it cannot be evaluated (said once). Names
+  // are looked up in the breakpoint's scope (a signal's own, a line's instance), then from the top.
+  async function conditionTest(bp, backend) {
+    if (!bp.condition) { return null; }
+    const say = (message) => { warnOnce(bp, format(S().debuggerConditionError, baseName(bp), message)); return false; };
+    const parsed = X.parse(bp.condition);
+    if (parsed.error) { return say(exprMessage(parsed.error, parsed.at)); }
+    const scope = bp.kind === 'line' ? (bp.scope || (bp.paths[0] ? bp.paths[0].slice(0, -1) : null)) : bp.path.slice(0, -1);
+    const paths = X.names(parsed.ast);
+    const vars = await resolveNames(paths, scope);
+    for (const path of paths) {
+      if (!vars.has(JSON.stringify(path))) { return say(exprMessage('unknownName', null, path.join('.'))); }
+    }
+    const series = new Map();
+    for (const v of new Set(vars.values())) {
+      const entry = await changesOf(host.pathOf(v), backend);
+      if (host.currentBackend !== backend || !entry || entry.changes === undefined) { return false; }
+      if (!entry.changes) { return say(format(S().debuggerTooManyChanges, host.pathOf(v).join('.'))); }
+      series.set(v.netlistId, entry.changes);
+    }
+    const env = (time) => (path) => {
+      const v = vars.get(JSON.stringify(path));
+      if (!v) { return null; }
+      const width = Number(v.width) || 1;
+      const bits = valueIn(series.get(v.netlistId), time);
+      return { width, msb: v.msb, lsb: v.lsb, value: X.fromBits(bits === undefined ? 'x' : String(bits), width) };
+    };
+    return (time) => {
+      const r = X.evaluate(parsed.ast, env(time));
+      if (r.error) { say(exprMessage(r.error, r.at)); return false; }
+      return X.truthy(r.value);
+    };
+  }
+
+  // nearestHit for a conditional breakpoint: the nearest whose condition holds at its landing
+  // posedge (a hit past the last posedge has none, so it never holds). Yields now and then.
+  async function nearestTrueHit(times, edges, from, dir, test) {
+    const first = nearestHit(times, edges, from, dir);
+    if (!first) { return null; }
+    let i = times.indexOf(first.time);
+    const tried = new Map();
+    for (let n = 0; i >= 0 && i < times.length; i += dir, n++) {
+      if (n && n % 4000 === 0) { await new Promise((r) => setTimeout(r, 0)); }
+      const index = landingIndex(edges, times[i]);
+      if (index >= edges.length) { if (dir > 0) { return null; } continue; }
+      if (!tried.has(index)) { tried.set(index, test(edges[index])); }
+      if (tried.get(index)) { return { time: times[i], index }; }
+    }
+    return null;
+  }
+
   // The nearest hit of the enabled breakpoints: { bp, time, index } or null.
   async function findHit(edges, from, dir) {
     let best = null;
+    const backend = host.currentBackend;
     for (const bp of breakpoints.filter((b) => b.enabled)) {
       const times = await hitTimes(bp);
       if (!times) { continue; }
-      const hit = nearestHit(times, edges, from, dir);
+      const test = await conditionTest(bp, backend);
+      if (test === false) { continue; }
+      const hit = test ? await nearestTrueHit(times, edges, from, dir, test) : nearestHit(times, edges, from, dir);
       if (!hit) { continue; }
       const nearer = !best || (dir > 0 ? hit.index < best.index || (hit.index === best.index && hit.time < best.time)
         : hit.index > best.index || (hit.index === best.index && hit.time > best.time));
@@ -1165,9 +1261,29 @@
       remove.style.cursor = 'pointer';
       remove.title = S().debuggerRemoveBreakpoint || '';
       remove.addEventListener('click', () => removeBreakpoint({ id: bp.id }));
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        window.cmuxUI.showMenu(breakpointMenuItems(bp), e.clientX, e.clientY);
+      });
       row.append(box, label, remove);
       breakpointList.appendChild(row);
     }
+  }
+
+  // The list row's menu: the condition, and remove.
+  function breakpointMenuItems(bp) {
+    const s = S();
+    return [
+      { label: s.debuggerEditCondition || '', run: async () => {
+        try {
+          const text = await window.cmuxUI.prompt({ title: s.debuggerConditionPrompt || '', value: bp.condition || '', placeholder: 'state == 3' });
+          if (text !== undefined) { setBreakpointCondition({ id: bp.id, condition: text }); }
+        } catch (error) {
+          host.log(error);
+        }
+      } },
+      { label: s.debuggerRemoveBreakpoint || '', run: () => removeBreakpoint({ id: bp.id }) },
+    ];
   }
 
   // The waveform row's menu items (cmux-commands.js adds them to the viewer's context menu).
@@ -1658,7 +1774,7 @@
     },
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
-    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setLineBreakpoints, restoreBreakpoints,
+    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
     evaluate, addWatch, removeWatch, editWatch, restoreWatches, watches: () => watches.map(publicWatch),
   });
