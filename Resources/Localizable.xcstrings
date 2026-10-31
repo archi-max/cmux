@@ -227968,6 +227968,65 @@
         }
       }
     },
+    "filePreview.waveform.saveSessionRemote.notSession": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ exists and is not a VaporView session, so cmux left it alone. Save on this Mac instead."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は既にあり、VaporView のセッションではないため、cmux は変更しませんでした。代わりにこの Mac に保存してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ existiert und ist keine VaporView-Sitzung, daher hat cmux die Datei nicht verändert. Speichere stattdessen auf diesem Mac."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ existe et n’est pas une session VaporView : cmux n’y a pas touché. Enregistrez plutôt sur ce Mac."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الملف %@ موجود وليس جلسة VaporView، لذا لم يغيّره cmux. احفظ على هذا الـMac بدلًا من ذلك."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ existe y no es una sesión de VaporView, así que cmux no lo modificó. Guarda en este Mac en su lugar."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 已存在且不是 VaporView 工作階段，因此 cmux 未變更它。請改為儲存在這台 Mac 上。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 已存在且不是 VaporView 会话，因此 cmux 未更改它。请改为保存在这台 Mac 上。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 파일이 이미 있으며 VaporView 세션이 아니므로 cmux가 변경하지 않았습니다. 대신 이 Mac에 저장하세요."
+          }
+        }
+      }
+    },
     "filePreview.waveform.saveSessionRemote.save": {
       "extractionState": "manual",
       "localizations": {
