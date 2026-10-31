@@ -204,6 +204,12 @@ extension ShortcutAction {
             return String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")
         case .navigateSourceForward:
             return String(localized: "shortcut.navigateSourceForward.label", defaultValue: "Go Forward in Editor")
+        case .stepWaveformCycleForward:
+            return String(localized: "shortcut.stepWaveformCycleForward.label", defaultValue: "Step Forward One Cycle")
+        case .stepWaveformCycleBack:
+            return String(localized: "shortcut.stepWaveformCycleBack.label", defaultValue: "Step Back One Cycle")
+        case .toggleWaveformPlayback:
+            return String(localized: "shortcut.toggleWaveformPlayback.label", defaultValue: "Play or Pause Waveform")
         case .openBrowser: return "Open Browser"
         case .focusBrowserAddressBar: return "Focus Address Bar"
         case .browserBack: return "Back"

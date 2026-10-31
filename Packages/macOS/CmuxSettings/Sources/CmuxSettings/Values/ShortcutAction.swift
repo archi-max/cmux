@@ -194,6 +194,12 @@ public enum ShortcutAction: String, CaseIterable, Sendable, Hashable, SettingCod
     case navigateSourceBack
     /// Redoes a jump undone with `navigateSourceBack`.
     case navigateSourceForward
+    /// Moves the waveform marker to the stepping clock's next rising edge.
+    case stepWaveformCycleForward
+    /// Moves the waveform marker to the stepping clock's previous rising edge.
+    case stepWaveformCycleBack
+    /// Plays the waveform cycle by cycle, or pauses it.
+    case toggleWaveformPlayback
     case openBrowser
     case focusBrowserAddressBar
     case browserBack
@@ -356,7 +362,7 @@ extension ShortcutAction {
             return .or(.atom(.browserFocus), .atom(.filePreviewTextEditorFocus))
         case .toggleFileEditorWordWrap, .addSignalToWaveform, .navigateSourceBack, .navigateSourceForward:
             return .atom(.filePreviewTextEditorFocus)
-        case .revealWaveformSignalInSource:
+        case .revealWaveformSignalInSource, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback:
             return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))
         case .markdownZoomIn, .markdownZoomOut, .markdownZoomReset:
             return .atom(.markdownFocus)

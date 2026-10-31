@@ -674,10 +674,19 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     /// Calls `window.cmuxWaveform.link.<function>(argument)` and returns its
     /// (awaited) result; nil when the page is not ready, the call threw, or it returned null.
     func callLink(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "link", function, argument: argument)
+    }
+
+    /// Like `callLink`, on `window.cmuxWaveform.debugger` (cmux-debugger.js).
+    func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "debugger", function, argument: argument)
+    }
+
+    private func callPage(api: String, _ function: String, argument: Any?) async -> Any? {
         guard let webView, isPageReady else { return nil }
         var arguments: [String: Any] = [:]
         if let argument { arguments["argument"] = argument }
-        let body = "const link = window.cmuxWaveform && window.cmuxWaveform.link;\n"
+        let body = "const link = window.cmuxWaveform && window.cmuxWaveform.\(api);\n"
             + "return link ? await link.\(function)(\(argument == nil ? "" : "argument")) : null;"
         do {
             let result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: .page)
@@ -701,7 +710,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     }
 
     private static func localizedStrings() -> [String: String] {
-        WaveformViewerStrings.all().merging([
+        WaveformViewerStrings.all().merging(WaveformDebugger.pageStrings()) { _, new in new }.merging([
             "netlist": String(localized: "filePreview.waveform.netlist", defaultValue: "Netlist"),
             "loading": String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…"),
             "openFailed": String(localized: "filePreview.waveform.openFailed", defaultValue: "Unable to open waveform"),
@@ -766,6 +775,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 let time = (body["eventData"] as? [String: Any])?["time"] as? NSNumber
                 WaveformSourceLink.markerMoved(in: panel, time: time?.int64Value)
             }
+            if body["eventType"] as? String == "signalSelect", let panel { WaveformDebugger.rowSelected(in: panel) }
+        case "debugger":
+            if let panel { WaveformDebugger.pageReported(body, waveform: panel) }
         case "settings":
             if let values = body["values"] as? [String: Any] {
                 Self.storeSettings(values)

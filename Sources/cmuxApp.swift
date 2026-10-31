@@ -1261,6 +1261,7 @@ struct cmuxApp: App {
                 WaveformSourceLink.resetTopLevel()
             }
             WaveformInlineValuesMenu()
+            WaveformDebuggerMenu()
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {
                 BrowserHistoryStore.shared.clearHistory()
             }

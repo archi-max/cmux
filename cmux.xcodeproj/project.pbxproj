@@ -4449,6 +4449,9 @@
 		5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */; };
 		5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */; };
 		5A7EF000000000000000B001 /* WaveformViewerStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000B002 /* WaveformViewerStrings.swift */; };
+		5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */; };
+		5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */; };
+		5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B002 /* WaveformDebugger.swift */; };
 		C7B206ECEE3E020A96259AFF /* WebKitBrowserReplDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F63189EE1BF0052D9BDC241 /* WebKitBrowserReplDriver.swift */; };
 		A10020000000000000000019 /* WebSurfaceSelectionEvaluationOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1002000000000000000001A /* WebSurfaceSelectionEvaluationOwner.swift */; };
 		A10020000000000000000011 /* WebSurfaceSelectionReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10020000000000000000012 /* WebSurfaceSelectionReader.swift */; };
@@ -9115,6 +9118,9 @@
 		5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTerminalLinks.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformViewerSchemeHandler.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000B002 /* WaveformViewerStrings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformViewerStrings.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerMenu.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEditorHighlights.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B002 /* WaveformDebugger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebugger.swift; sourceTree = "<group>"; };
 		9F63189EE1BF0052D9BDC241 /* WebKitBrowserReplDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserRepl/WebKitBrowserReplDriver.swift; sourceTree = "<group>"; };
 		A1002000000000000000001A /* WebSurfaceSelectionEvaluationOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebSurfaceSelectionEvaluationOwner.swift; sourceTree = "<group>"; };
 		A10020000000000000000012 /* WebSurfaceSelectionReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebSurfaceSelectionReader.swift; sourceTree = "<group>"; };
@@ -11981,6 +11987,9 @@
 				5A7EF000000000000000A1BA /* SlangCommandPalette.swift */,
 				5A7EF000000000000000A1B8 /* SlangProfileActions.swift */,
 				5A7EF000000000000000B002 /* WaveformViewerStrings.swift */,
+				5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */,
+				5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */,
+				5A7EF0000000000000D0B002 /* WaveformDebugger.swift */,
 				5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */,
 				C0DE86520000000000000106 /* FilePreviewPDFLoadResult.swift */,
 				C0DE86520000000000000108 /* FilePreviewPDFPageRotationState.swift */,
@@ -17718,6 +17727,9 @@
 				7A0CE1000000000000000044 /* VMClientSocketCommands+Tunnel.swift in Sources */,
 				ACE4FE2A8F1CC6C0B6A673AB /* VMClientSocketCommands.swift in Sources */,
 				C10DC1000000000000000013 /* VMClientTelemetry+Live.swift in Sources */,
+				5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */,
+				5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */,
+				5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */,
 				5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */,
 				5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */,
 				5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */,
