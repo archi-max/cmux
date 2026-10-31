@@ -126,6 +126,33 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     WaveformDebuggerEditorHighlights.showSelection(nil, drivers: [], near: nil)
     textView.string = source
 
+    // The text view swaps in another text storage (a reload): what was drawn on the old one is not drawn on it.
+    let other = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+    other.layoutManager!.replaceTextStorage(NSTextStorage(string: source))
+    let otherEditor = FilePreviewLanguageFeatures(textView: other, path: "/rtl/other.sv")
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
+    let otherDecl = LSPLocation(uri: URL(fileURLWithPath: "/rtl/other.sv"), range: LSPRange(start: LSPPosition(line: 2, character: 15), end: LSPPosition(line: 2, character: 27)))
+    // Edits on the old storage first, so the new one can catch up to the same count below.
+    for _ in 0..<6 { other.textStorage!.replaceCharacters(in: NSRange(location: 0, length: 1), with: (source as NSString).substring(to: 1)) }
+    WaveformDebuggerEditorHighlights.showSelection(otherDecl, drivers: [], near: otherEditor)
+    let before = other.layoutManager!.temporaryAttribute(.backgroundColor, atCharacterIndex: lineRanges[2].location + 4, effectiveRange: nil)
+    expect(before != nil, "the selection is drawn in the other editor before the swap")
+    let drawnRevision = WaveformDebuggerEditorHighlights.revision(of: other)
+    let swappedIn = NSTextStorage(string: source)
+    other.layoutManager!.replaceTextStorage(swappedIn)
+    // Make the new storage's edit count equal the old one's, so only its identity tells them apart.
+    var guardCount = 0
+    while WaveformDebuggerEditorHighlights.revision(of: other) < drawnRevision, guardCount < 20 {
+        swappedIn.replaceCharacters(in: NSRange(location: 0, length: 1), with: (source as NSString).substring(to: 1))
+        guardCount += 1
+    }
+    expect(WaveformDebuggerEditorHighlights.revision(of: other) == drawnRevision, "the swapped-in storage reaches the same edit count: \(WaveformDebuggerEditorHighlights.revision(of: other)) vs \(drawnRevision), \(guardCount) edits")
+    WaveformDebuggerEditorHighlights.clear(in: other)
+    let swapped = other.layoutManager!.temporaryAttribute(.backgroundColor, atCharacterIndex: lineRanges[2].location + 4, effectiveRange: nil)
+    expect(swapped == nil, "a swapped-in text storage gets nothing drawn from the old one")
+    WaveformDebuggerEditorHighlights.showSelection(nil, drivers: [], near: nil)
+    FilePreviewLanguageFeatures.all = [editor]
+
     // A newer refresh while an older one still waits for the page: the newer one draws.
     page.delay = 150_000_000
     WaveformDebuggerEditorHighlights.valuesShown(shown())
