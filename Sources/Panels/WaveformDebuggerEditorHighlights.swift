@@ -88,6 +88,22 @@ enum WaveformDebuggerEditorHighlights {
 
     /// Most driver cones asked of slang-server per refresh (each is cached).
     private static let maxConeRequests = 16
+
+    private struct ConeBudget {
+        let waveform: ObjectIdentifier
+        let time: Int64
+        let generation: Int
+        var left: Int
+    }
+
+    /// Cone lookups left for the cycle shown (`maxConeRequests` per cycle across editors).
+    private static var coneBudget: ConeBudget?
+
+    /// How long an editor waits after the marker moves before it reads values again: none
+    /// while playing (the throttle still runs one refresh at a time), else enough to let quick moves settle.
+    static func refreshDelay(playing: Bool) -> Duration {
+        playing ? .zero : .milliseconds(120)
+    }
     private static let maxCachedCones = 4000
     /// Most waveform rows lit per editor.
     private static let maxRows = 200
@@ -193,7 +209,11 @@ enum WaveformDebuggerEditorHighlights {
     ) async {
         guard let session = shown.editor.linkSession?.session else { return }
         let server = ObjectIdentifier(session)
-        var requests = 0
+        // One budget per cycle shown, shared by every editor (forgotten cones start a new one).
+        let cycle = ConeBudget(waveform: ObjectIdentifier(shown.waveform), time: shown.time, generation: coneGeneration, left: 0)
+        if coneBudget.map({ $0.waveform != cycle.waveform || $0.time != cycle.time || $0.generation != cycle.generation }) ?? true {
+            coneBudget = ConeBudget(waveform: cycle.waveform, time: cycle.time, generation: cycle.generation, left: maxConeRequests)
+        }
         var lines = Set(result.driverLines.map(\.location))
         for module in changed.keys.sorted() {
             guard let instance = shown.instances[module], !instance.design.isEmpty else { continue }
@@ -204,8 +224,8 @@ enum WaveformDebuggerEditorHighlights {
                 if cone == nil {
                     // A failure (often: the design isn't compiled yet) is asked again after a while.
                     if let failedAt = failedCones[key], Date().timeIntervalSince(failedAt) < failedConeRetryInterval { continue }
-                    guard requests < maxConeRequests else { continue }
-                    requests += 1
+                    guard let budget = coneBudget, budget.left > 0 else { continue }
+                    coneBudget?.left = budget.left - 1
                     let generation = coneGeneration
                     guard let found = try? await session.slangDriverCone(path) else {
                         if generation == coneGeneration { failedCones[key] = Date() }
