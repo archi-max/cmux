@@ -565,6 +565,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             self.appendStderr(data)
         }
         process.terminationHandler = { [weak self] process in
+            // What stderr still holds (the exit-87 machine line) before the exit is handled.
+            self?.drainStderr(stderr.fileHandleForReading)
             self?.helperDidExit(status: process.terminationStatus, generation: generation)
         }
 
@@ -618,6 +620,26 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             reader.name = "cmux FSDB helper reader"
             reader.start()
         }
+    }
+
+    /// Reads what is left on the helper's stderr without blocking (a child still holding
+    /// it open must not stall the exit).
+    private func drainStderr(_ handle: FileHandle) {
+        handle.readabilityHandler = nil
+        let fd = handle.fileDescriptor
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        var buffer = [UInt8](repeating: 0, count: 16384)
+        while true {
+            let n = read(fd, &buffer, buffer.count)
+            guard n > 0 else { break }
+            appendStderr(Data(buffer[0..<n]))
+        }
+    }
+
+    /// Whether the page's request `pageId` is on its way to the helper (its id mapped).
+    /// For the checks' cancel race.
+    func isMapped(pageId: Int) -> Bool {
+        lock.withLock { helperIdForPage[pageId] != nil }
     }
 
     /// Fails the wait for the ready line of launch `generation`, if it is

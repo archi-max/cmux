@@ -77,7 +77,8 @@ trap 'rm -rf "$WORK"' EXIT
 # heartbeat (an empty line every 5 s, which cmux's log ignores) ends the build.
 # The compiler runs in its own session (setsid, util-linux), so stopping it
 # stops cc1plus and the linker too, not only the g++ driver.
-trap 'kill -TERM -- "-$CC" 2>/dev/null || kill "$CC" 2>/dev/null; exit 1' TERM HUP
+# (`kill -s TERM -- -PID`: dash rejects `--` after `-TERM`.)
+trap 'kill -s TERM -- "-$CC" 2>/dev/null || kill "$CC" 2>/dev/null; exit 1' TERM HUP
 CC=
 BUILD=$$
 # The sleep gets its own descriptors: when the build ends it is orphaned, and
