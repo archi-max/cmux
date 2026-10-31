@@ -5,6 +5,16 @@ import Testing
 @Suite struct SlangWorkspaceRootTests {
     static let file = "/home/u/class/ece411/mp_pipeline/rtl/cpu.sv"
 
+    @Test func wrappingAPOSIXCommandAgainChangesNothing() throws {
+        let once = SlangWorkspaceRoot.posixShellCommand("printf '%s' ok; exit 3")
+        #expect(SlangWorkspaceRoot.posixShellCommand(once) == once)
+        // Not a wrapper: wrapped like any script.
+        #expect(SlangWorkspaceRoot.posixShellCommand("sh -c 'true'") != "sh -c 'true'")
+        let (status, output) = try Self.run(SlangWorkspaceRoot.posixShellCommand(once), shell: "/bin/csh")
+        #expect(status == 3)
+        #expect(output == "ok")
+    }
+
     @Test func ancestorsStopBelowTheFilesystemRoot() {
         #expect(SlangWorkspaceRoot.ancestors(ofFile: "/a/b//c/./x.sv") == ["/a/b/c", "/a/b", "/a"])
         #expect(SlangWorkspaceRoot.ancestors(ofFile: "/x.sv").isEmpty)
