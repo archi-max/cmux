@@ -22,6 +22,8 @@ enum WaveformDebuggerLineBreakpoints {
         var anyInstance = false
         /// The line's text was not found when the file was opened again: kept disabled at its old line.
         var lost = false
+        /// A SystemVerilog expression (cmux-expr.js) that must be true at the landing posedge; absent before B3.
+        var condition: String? = nil
     }
 
     /// Per workspace, in the order they were added.
@@ -89,21 +91,29 @@ enum WaveformDebuggerLineBreakpoints {
         update(id, in: workspace) { $0.anyInstance = any }
     }
 
+    /// The breakpoint's condition; nil or blank clears it. The page checks it parses (and says why not).
+    static func setCondition(_ id: UUID, _ condition: String?, in workspace: UUID) {
+        let trimmed = condition?.trimmingCharacters(in: .whitespacesAndNewlines)
+        update(id, in: workspace) { $0.condition = trimmed?.isEmpty == false ? trimmed : nil }
+    }
+
     private static func update(_ id: UUID, in workspace: UUID, _ change: (inout Mark) -> Void) {
         guard let index = marks[workspace]?.firstIndex(where: { $0.id == id }) else { return }
         change(&marks[workspace]![index])
         changed(workspace)
     }
 
-    /// The page's list toggled or removed one: `{ event: 'lineBreakpoint', key, enabled, removed }`.
+    /// The page's list toggled, removed or edited the condition of one:
+    /// `{ event: 'lineBreakpoint', key, enabled, removed, condition? }` (condition null: cleared).
     static func pageReported(_ body: [String: Any], waveform: FilePreviewPanel) {
         guard let key = body["key"] as? String, let id = UUID(uuidString: key) else { return }
         let workspace = waveform.workspaceId
         if body["removed"] as? Bool == true {
             remove(id, in: workspace)
-        } else if let enabled = body["enabled"] as? Bool {
-            setEnabled(id, enabled, in: workspace)
+            return
         }
+        if let enabled = body["enabled"] as? Bool { setEnabled(id, enabled, in: workspace) }
+        if body.keys.contains("condition") { setCondition(id, body["condition"] as? String, in: workspace) }
     }
 
     // MARK: Gutter
@@ -116,7 +126,7 @@ enum WaveformDebuggerLineBreakpoints {
         var styles: [Int: FilePreviewLineNumberGutterView.BreakpointMark] = [:]
         for (id, offset) in tracker.offsets {
             guard let mark = byId[id] else { continue }
-            styles[offset] = mark.lost ? .lost : (mark.enabled ? .enabled : .disabled)
+            styles[offset] = mark.lost ? .lost : (mark.enabled ? (mark.condition == nil ? .enabled : .conditional) : .disabled)
         }
         return styles
     }
@@ -145,6 +155,19 @@ enum WaveformDebuggerLineBreakpoints {
         ) { setAnyInstance(id, !mark.anyInstance, in: workspace) }
         any.state = mark.anyInstance ? .on : .off
         menu.addItem(any)
+        let label = "\((mark.path as NSString).lastPathComponent):\(mark.line + 1)"
+        menu.addItem(GutterMenuItem(
+            title: String(localized: "waveformDebugger.lineBreakpoint.editCondition", defaultValue: "Edit Condition…")
+        ) { [weak textView] in
+            guard let answer = WaveformDebuggerEvaluate.promptCondition(current: mark.condition, for: label, window: textView?.window)
+            else { return }
+            setCondition(id, answer, in: workspace)
+        })
+        if mark.condition != nil {
+            menu.addItem(GutterMenuItem(
+                title: String(localized: "waveformDebugger.lineBreakpoint.removeCondition", defaultValue: "Remove Condition")
+            ) { setCondition(id, nil, in: workspace) })
+        }
         menu.addItem(.separator())
         menu.addItem(GutterMenuItem(
             title: String(localized: "waveformDebugger.removeBreakpoint", defaultValue: "Remove Breakpoint")
@@ -351,18 +374,24 @@ enum WaveformDebuggerLineBreakpoints {
         return (marks[workspace] ?? []).map { mark in
             let label = "\((mark.path as NSString).lastPathComponent):\(mark.line + 1)"
             var paths: [[String]] = []
+            var scope: [String]?
             if let editor = editors.first(where: { $0.filePath == mark.path }), let textView = editor.debuggerTextView,
                let offset = trackers.object(forKey: textView)?.offsets[mark.id], let storage = textView.textStorage,
                let line = editor.breakpointLine(at: offset), let module = line.module {
                 let signals = WaveformLineBreakpoint.watchedSignals(of: line, in: storage.string as NSString)
                 let instances = editor.breakpointInstances(ofModule: module)
                 let dumps = mark.anyInstance ? instances.all : instances.shown.map { [$0] } ?? []
+                // A condition's names are looked up in the (first) instance the line is watched in.
+                scope = dumps.first.map { HierarchyPathMapping.segments($0) }
                 for dump in dumps {
                     let scope = HierarchyPathMapping.segments(dump)
                     paths += signals.map { scope + [$0] }
                 }
             }
-            return ["key": mark.id.uuidString, "label": label, "paths": paths, "enabled": mark.enabled && !mark.lost]
+            var item: [String: Any] = ["key": mark.id.uuidString, "label": label, "paths": paths, "enabled": mark.enabled && !mark.lost]
+            if let condition = mark.condition { item["condition"] = condition }
+            if let scope { item["scope"] = scope }
+            return item
         }
     }
 
@@ -380,10 +409,12 @@ enum WaveformDebuggerLineBreakpoints {
         var kind: String
         var value: String?
         var enabled: Bool
+        var condition: String? = nil
 
         var pageItem: [String: Any] {
             var item: [String: Any] = ["path": path, "kind": kind, "enabled": enabled]
             if let value { item["value"] = value }
+            if let condition { item["condition"] = condition }
             return item
         }
     }
@@ -397,7 +428,10 @@ enum WaveformDebuggerLineBreakpoints {
         signals[waveform.workspaceId] = items.compactMap { item in
             guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
                   kind == "change" || kind == "equals" else { return nil }
-            return SignalBreakpoint(path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true)
+            let condition = (item["condition"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return SignalBreakpoint(
+                path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true, condition: condition
+            )
         }
     }
 

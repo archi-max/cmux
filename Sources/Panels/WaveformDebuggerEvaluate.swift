@@ -90,6 +90,34 @@ enum WaveformDebuggerEvaluate {
         watches[workspace] = items
     }
 
+    // MARK: Prompts
+
+    /// Asks for a line breakpoint's condition: the new text ("" clears), or nil when cancelled.
+    static func promptCondition(current: String?, for label: String, window: NSWindow?) -> String? {
+        let alert = NSAlert()
+        alert.messageText = String(
+            format: String(localized: "waveformDebugger.conditionTitle", defaultValue: "Condition for %@"), label
+        )
+        alert.informativeText = String(
+            localized: "waveformDebugger.conditionPrompt",
+            defaultValue: "Break only when this is true at the clock edge"
+        )
+        let input = NSTextField(string: current ?? "")
+        input.placeholderString = "state == 3"
+        input.frame = NSRect(x: 0, y: 0, width: 320, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "waveformDebugger.conditionApply", defaultValue: "Apply"))
+        alert.addButton(withTitle: String(localized: "waveformDebugger.conditionCancel", defaultValue: "Cancel"))
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = input
+        let response = alert.runCmuxModal(presentingWindow: window) { _ in
+            alertWindow.makeFirstResponder(input)
+            input.selectText(nil)
+        }
+        guard response == .alertFirstButtonReturn else { return nil }
+        return String(input.stringValue.prefix(maxExpressionLength))
+    }
+
     @MainActor private final class ActionMenuItem: NSMenuItem {
         private let run: @MainActor () -> Void
         init(title: String, run: @escaping @MainActor () -> Void) {

@@ -1421,6 +1421,23 @@
     return out;
   }
 
+  // The palette's Evaluate Expression…: asks, then shows it in the strip (or a toast when not stepping).
+  async function promptEvaluate() {
+    const s = S();
+    let text;
+    try { text = await window.cmuxUI.prompt({ title: s.debuggerEvaluate || '', placeholder: s.debuggerEvaluateTooltip || '', value: evalHistory[evalHistory.length - 1] || '' }); } catch (error) { host.log(error); return null; }
+    if (text === undefined || text === null || !String(text).trim()) { return null; }
+    return evaluate({ expr: String(text).trim(), show: true });
+  }
+
+  // The palette's Add Watch….
+  async function promptAddWatch() {
+    let text;
+    try { text = await window.cmuxUI.prompt({ title: S().debuggerAddWatch || '', placeholder: 'state == 3' }); } catch (error) { host.log(error); return null; }
+    if (text === undefined || text === null || !String(text).trim()) { return null; }
+    return addWatch({ expr: String(text) });
+  }
+
   // ---- the strip's Evaluate field: Enter evaluates, up and down go through the history ----
   const evalHistory = [];
   let historyAt = null;
@@ -1776,7 +1793,7 @@
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
-    evaluate, addWatch, removeWatch, editWatch, restoreWatches, watches: () => watches.map(publicWatch),
+    evaluate, promptEvaluate, promptAddWatch, addWatch, removeWatch, editWatch, restoreWatches, watches: () => watches.map(publicWatch),
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved,
