@@ -467,6 +467,11 @@
     if (reloading) {
       const before = reloadBaseline || {};
       const next = contextSession(Object.assign({}, before, m));
+      // Once the old viewer has handled the unload it shows no rows: what it
+      // sends then (a key, Auto Reload) must not empty the view kept.
+      if (!next.displayedSignals.length && before.displayedSignals && before.displayedSignals.length) {
+        next.displayedSignals = before.displayedSignals;
+      }
       // A selection changed now can't be named: the old netlist is gone.
       reloadBaseline = Object.assign(next, { cmuxSelected: next.selectedSignal === before.selectedSignal ? before.cmuxSelected : null });
       return;
@@ -759,9 +764,9 @@
   }
 
   function undo(stack, other, type) {
-    // A reloading viewer has no rows to apply a view to, and its restore would
-    // overwrite one: the history waits for the reload.
-    if (!stack.length || reloading) { return; }
+    // A reloading viewer has no rows to apply a view to, and its restore (until
+    // the viewer answers it) would overwrite one: the history waits for both.
+    if (!stack.length || reloading || restorePending) { return; }
     const state = JSON.parse(stack.pop());
     other.push(JSON.stringify(undoState()));
     applySession(state, type);
