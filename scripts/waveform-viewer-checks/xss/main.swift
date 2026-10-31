@@ -13,6 +13,9 @@ let waveURL = URL(fileURLWithPath: args[2])
 let out = URL(fileURLWithPath: args[3])
 let light = args.count > 4 && args[4] == "light"
 
+// The variables in xss-signal-names.vcd's top scope: clk and two names with markup.
+let signalPaths = ["clk", "x><svg/onload=document.title='PWNED1'>", "q\"><img/src/onerror=document.title='PWNED2'>"]
+
 // Unit checks for the pure helpers.
 func check(_ c: Bool, _ m: String) { if !c { print("CHECK FAILED:", m); exit(2) } }
 check(WaveformByteRange.parse("bytes=0-9", size: 100) == 0...9, "range a-b")
@@ -40,6 +43,38 @@ check(r(base + "codicons") == nil, "directory")
 check(r("cmux-waveform://other/index.html") == nil, "host")
 check(r("https://viewer/index.html") == nil, "scheme")
 check(r(base + "nope.js") == nil, "missing")
+
+// FrameParser: shell noise before a line, a header and binary split across
+// chunks, an over-long binLength, and compaction over many frames.
+func frames(_ chunks: [Data]) -> [FrameParser.Event] {
+  var parser = FrameParser()
+  var out: [FrameParser.Event] = []
+  for chunk in chunks {
+    parser.append(chunk)
+    while let event = parser.next() { out.append(event) }
+  }
+  return out
+}
+func frame(_ e: FrameParser.Event?) -> FrameParser.Frame? { if case .frame(let f)? = e { return f }; return nil }
+let ready = frames([Data("\u{1b}]0;title\u{07}{\"id\":0,\"ready\":true}\n".utf8)])
+check(ready.count == 1 && frame(ready.first)?.isReady == true, "ready after noise without newline")
+let noise = frames([Data("Welcome to EWS\n{\"id\":0,\"ready\":true}\n".utf8)])
+if case .unreadableLine? = noise.first {} else { check(false, "noise line") }
+check(noise.count == 2 && frame(noise.last)?.isReady == true, "ready after noise line")
+let wire = Data("{\"id\":3,\"binLength\":5}\nABCDE{\"id\":4}\n".utf8)
+for cut in 1..<wire.count {
+  let split = frames([wire.prefix(cut), wire.suffix(from: cut)])
+  check(split.count == 2 && frame(split[0])?.id == 3 && frame(split[0])?.binary == Data("ABCDE".utf8)
+        && frame(split[1])?.id == 4 && frame(split[1])?.binary == nil, "split at \(cut)")
+}
+let huge = frames([Data("{\"id\":1,\"binLength\":\(FrameParser.maxBinaryLength + 1)}\n".utf8)])
+if case .tooLarge? = huge.first {} else { check(false, "binLength cap") }
+var many = FrameParser(), count = 0
+for i in 1...2000 {
+  many.append(Data("{\"id\":\(i),\"binLength\":3}\nxyz".utf8))
+  while let e = many.next() { if frame(e)?.id == count + 1, frame(e)?.binary == Data("xyz".utf8) { count += 1 } }
+}
+check(count == 2000, "compaction over many frames")
 print("helper checks passed")
 
 @MainActor
@@ -84,26 +119,48 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let fmt = waveURL.pathExtension.lowercased()
       web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'\(fmt)', strings:{netlist:'Netlist', loading:'Loading…', openFailed:'Could not open', addSignal:'Add'}})")
     } else if type == "opened" {
-      // Add the first two variables in the tree, like a user click.
-      web.evaluateJavaScript("Array.from(document.querySelectorAll('#tree .var')).forEach(e=>e.click()); document.querySelectorAll('#tree .var').length") { n, e in
-        print("vars in tree:", n ?? "nil", e ?? "")
+      // Add every top-level variable, as a user would from the netlist.
+      // Through the netlist items: the names hold dots, so a dotted path can't name them.
+      web.callAsyncJavaScript("const h = cmuxWaveform.host; const vars = (await h.getChildren(h.doc.netlist[0])).filter((x) => x.kind === 'var'); h.addVariables(vars); return vars.length;",
+                              arguments: [:], in: nil, in: .page) { result in
+        let n = (try? result.get()) as? Int ?? 0
+        print("signals added:", n)
+        if n != signalPaths.count { print("CHECK FAILED: could not add the signals"); exit(2) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
           // Dispatch a drag-start style render too: the labels and value display re-render on marker moves.
-          self.web.evaluateJavaScript("(() => { const d = document.getElementById('viewer').contentDocument; return JSON.stringify({html: Array.from(d.querySelectorAll('img, [onload], [onerror]')).map(i => i.outerHTML).join(' | '), frameTitle: d.title, topTitle: document.title, labels: Array.from(d.querySelectorAll('.waveform-label')).map(e => e.getAttribute('data-vscode-context') ? 'ctx-ok' : 'ctx-missing')}); })()") { r, e in
+          self.web.evaluateJavaScript("(() => { const d = document.getElementById('viewer').contentDocument; return JSON.stringify({html: Array.from(d.querySelectorAll('img, svg[onload], [onload], [onerror]')).concat(Array.from(document.querySelectorAll('img, svg[onload], [onload], [onerror]'))).map(i => i.outerHTML).join(' | '), frameTitle: d.title, topTitle: document.title, labels: Array.from(d.querySelectorAll('.waveform-label')).map(e => e.getAttribute('data-vscode-context') ? 'ctx-ok' : 'ctx-missing')}); })()") { r, e in
             print("XSS-CHECK", r ?? "nil", e ?? "")
             if let json = (r as? String)?.data(using: .utf8),
                let result = try? JSONSerialization.jsonObject(with: json) as? [String: Any] {
               let injected = (result["html"] as? String).map { !$0.isEmpty } ?? true
+              if (result["labels"] as? [String])?.filter({ $0 == "ctx-ok" }).count != signalPaths.count {
+                print("CHECK FAILED: signal labels not rendered"); exit(2)
+              }
               let ran = result["frameTitle"] as? String != "VaporView - Waveform Viewer" || result["topTitle"] as? String != "Waveform"
               if injected || ran { print("XSS CHECK FAILED"); exit(3) }
               print("xss check passed")
             }
-            self.snap()
+            self.checkCSP()
           }
         }
       }
     } else if type == "error" {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.snap() }
+    }
+  }
+
+  // The CSP on its own: markup inserted past the escaping must not run its handler.
+  func checkCSP() {
+    web.evaluateJavaScript("(() => { const d = document.getElementById('viewer').contentDocument; d.body.insertAdjacentHTML('beforeend', '<img src=\"missing.png\" onerror=\"document.title=\\'PWNED3\\'\">'); return 1; })()") { _, e in
+      if let e { print("csp check could not inject:", e); exit(2) }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        self.web.evaluateJavaScript("document.getElementById('viewer').contentDocument.title") { title, _ in
+          print("CSP-CHECK frame title:", title ?? "nil")
+          if title as? String == "PWNED3" { print("CSP CHECK FAILED"); exit(3) }
+          print("csp check passed")
+          self.snap()
+        }
+      }
     }
   }
 

@@ -33,8 +33,8 @@ The bundled npm and Rust dependencies, with their licenses, are listed under
 
 ## Local modifications
 
-Made by cmux on 2026-10-30 (viewer, host, FSDB helper) and 2026-10-31
-(escaping, Content-Security-Policy, FSDB helper hardening).
+Made by cmux on 2026-10-30 (viewer, host, FSDB helper; then escaping,
+Content-Security-Policy and FSDB helper hardening).
 
 - `webview.js`: waveform data reaches `innerHTML` unescaped in four places in
   upstream `src/webview/` (an upstream bug, to be reported): the
@@ -104,7 +104,8 @@ Made by cmux on 2026-10-30 (viewer, host, FSDB helper) and 2026-10-31
   `getValueChangesPacked`, which returns a signal's value changes as one
   packed buffer, and `build.sh` splices it in before `Init()` and compiles
   the addon on the host with `g++` against that host's Verdi (in place of
-  `binding.gyp`/node-gyp, without `-static-libstdc++`). `fsdb-helper.sh`
+  `binding.gyp`/node-gyp, without `-static-libstdc++`), installing under a
+  lock and never replacing a working install. `fsdb-helper.sh`
   starts it in a private run directory, and exits 87 so cmux rebuilds when
   the Node.js or Verdi it was built for is gone. `getValueChangesPacked`
   also returns the signal's bit size, throws for an unknown signal or no

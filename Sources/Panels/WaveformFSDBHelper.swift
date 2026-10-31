@@ -50,8 +50,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     static let sshPath = "/usr/bin/ssh"
     /// Exit status of the launch command when this version is not installed.
     static let notInstalledStatus: Int32 = 87
-    static let readyTimeout: TimeInterval = 30
+    /// Verdi's libraries load slowly from NFS on a busy host.
+    static let readyTimeout: TimeInterval = 90
     static let installTimeout: TimeInterval = 10 * 60
+    /// A reply that takes longer (Verdi stuck on an NFS read) fails its request.
+    static let requestTimeout: TimeInterval = 5 * 60
 
     private let sshArguments: SSHArguments
     private let resourceRoot: URL
@@ -69,6 +72,10 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     private var pending: [Int: CheckedContinuation<Reply, Error>] = [:]
     private var readyContinuation: CheckedContinuation<Void, Error>?
     private var stderrTail = Data()
+    /// The last `open` the page sent, replayed into a helper started after it
+    /// (a retry after a timeout or a dropped connection) so that one has the file open too.
+    private var lastOpen: [String: Any]?
+    private var openGeneration = 0
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.waveform-fsdb.write")
 
     init(
@@ -106,10 +113,28 @@ final class WaveformFSDBHelper: @unchecked Sendable {
 
     /// Sends one request (a JSON object from the viewer) and waits for its reply.
     func request(_ body: Data) async throws -> Reply {
-        guard var object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             throw Failure.protocolError
         }
         try await ensureRunning()
+        if object["cmd"] as? String == "open" {
+            lock.withLock { lastOpen = object }
+            let reply = try await send(object)
+            lock.withLock { openGeneration = generation }
+            return reply
+        }
+        let reopen: [String: Any]? = lock.withLock {
+            openGeneration == generation ? nil : lastOpen
+        }
+        if let reopen {
+            _ = try await send(reopen)
+            lock.withLock { openGeneration = generation }
+        }
+        return try await send(object)
+    }
+
+    private func send(_ request: [String: Any]) async throws -> Reply {
+        var object = request
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             guard !isStopped, let input else {
@@ -130,6 +155,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             line.append(0x0A)
             let message = line
             writeQueue.async { try? input.write(contentsOf: message) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+                guard let self else { return }
+                let waiting = self.lock.withLock { self.pending.removeValue(forKey: id) }
+                waiting?.resume(throwing: Failure.timedOut(detail: ""))
+            }
         }
     }
 
@@ -361,6 +391,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         }
         lock.withLock { installProcesses = [] }
         if tar.isRunning { tar.terminate() }
+        // The handler may not have had the last lines yet; they are usually the useful ones.
+        stderr.fileHandleForReading.readabilityHandler = nil
+        log.append(stderr.fileHandleForReading.readDataToEndOfFile())
         if lock.withLock({ isStopped }) { throw Failure.stopped }
         let detail = Self.tail(of: log.data)
         if log.timedOut { throw Failure.timedOut(detail: detail) }
