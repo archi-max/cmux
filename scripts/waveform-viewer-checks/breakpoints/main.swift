@@ -20,6 +20,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   let scheme = WaveformViewerSchemeHandler(assetRoot: assetRoot)
   var web: WKWebView!
   var lineEvents: [[String: Any]] = []
+  var listEvents: [[[String: Any]]] = []
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -308,6 +309,37 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("return cmuxWaveform.debugger.setLineBreakpoints({ items: [{ key: 'core.sv:5', label: 'core.sv:5', paths: [['top', 'data']], enabled: true }] })")
     let replaced = (await list()).map { ($0["kind"] as? String ?? "") + ":" + ($0["label"] as? String ?? "") }
     expect(replaced == ["change:top.busy changes", "line:core.sv:5"], "lines replaced, the signal breakpoint kept: \(replaced)")
+    await runRestoreChecks()
+  }
+
+  /// cmux keeps the signal breakpoints for the session: the page says when they change, and a
+  /// new page gets them back (restoreBreakpoints) before its file is open.
+  func runRestoreChecks() async {
+    let last = listEvents.last ?? []
+    let told = last.map { "\(($0["path"] as? [String] ?? []).joined(separator: ".")):\($0["kind"] as? String ?? ""):\($0["enabled"] as? Bool ?? false)" }
+    expect(told == ["top.busy:change:true"], "the page tells cmux its signal breakpoints (not the lines): \(told)")
+    _ = await call("""
+      return cmuxWaveform.debugger.restoreBreakpoints({ items: [
+        { path: ['top', 'data'], kind: 'equals', value: "'h5a", enabled: true },
+        { path: ['top', 'state'], kind: 'change', enabled: false },
+        { path: ['top', 'gone'], kind: 'change', enabled: true },
+      ] })
+    """)
+    let restored = (await list()).map { ($0["label"] as? String ?? "") + ":" + String(describing: $0["enabled"] as? Bool ?? false) }
+    expect(restored == ["top.data == 'h5a:true", "top.state changes:false", "top.gone changes:true", "core.sv:5:true"],
+           "restored in place of the signal breakpoints, lines kept: \(restored)")
+    _ = await call("""
+      for (const b of cmuxWaveform.debugger.breakpoints()) {
+        cmuxWaveform.debugger.setBreakpointEnabled({ id: b.id, enabled: b.label === "top.data == 'h5a" || b.label === 'top.gone changes' });
+      }
+      return null
+    """)
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    await clearToasts()
+    let (hit, _) = await go(1, expect: 605)
+    expect(hit?["time"] as? Int == 605, "a restored equals breakpoint searches: \(String(describing: hit))")
+    expect(await toasts().contains("top.gone is not in this waveform."), "a restored one whose signal is gone says so when searched: \(await toasts())")
   }
 
   func start() {
@@ -340,6 +372,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return
     }
     if type == "debugger", body["event"] as? String == "lineBreakpoint" { lineEvents.append(body); return }
+    if type == "debugger", body["event"] as? String == "breakpoints" { listEvents.append(body["items"] as? [[String: Any]] ?? []); return }
     if ["debugger", "event", "sessionState", "log", "keyState", "context", "signalData"].contains(type) { return }
     print("[\(m.name)]", type)
     if type == "ready" {
