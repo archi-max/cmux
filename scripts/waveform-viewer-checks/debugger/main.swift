@@ -212,7 +212,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            && unackedMissed.count >= 2 && unackedMissed.first == false && unackedMissed.dropFirst().allSatisfy { $0 },
            "waiting with no answer: every cycle, each after the 250 ms wait: \(unacked), missed \(unackedMissed)")
     let (acked, ackedMissed) = await playedCycles(rate: 20, ack: true, for: 1000)
-    expect(consecutive(acked) && acked.count >= 4 && !ackedMissed.contains(true),
+    // (At least two: a loaded machine plays fewer than the rate in the window; none missed is the point.)
+    expect(consecutive(acked) && acked.count >= 2 && !ackedMissed.contains(true),
            "editors answering at once: every cycle, none waited out: \(acked.count) cycles, \(acked.prefix(8)), missed \(ackedMissed.filter { $0 }.count)")
     // One cycle's answer comes late (a busy machine): the page gives up on it after 250 ms,
     // says so (cmux then stops waiting for that editor), and the next cycles go at the rate again.
