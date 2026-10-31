@@ -90,6 +90,9 @@ enum WaveformDebuggerRTLStatus {
         report(waveform)
     }
 
+    /// While playing, the page moved to the cycle at `time`. (Not yet implemented.)
+    static func pageMoved(_ waveform: FilePreviewPanel, to time: Int64) {}
+
     /// `editor` closed or stopped linking: the viewers it followed no longer wait for it.
     static func editorGone(_ editor: FilePreviewLanguageFeatures) {
         reports.removeObject(forKey: editor)

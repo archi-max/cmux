@@ -270,9 +270,6 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(page.highlightCalls.last == [["tb_wrapper", "dfp_ready"]], "its row lights up: \(String(describing: page.highlightCalls.last))")
 
     // The RTL item in the debugger's strip: what the editors did with this cycle, or why not.
-    // (The harness's settles would make reports stale, which only matters while playing: time stands still.)
-    let frozen = Date()
-    WaveformDebuggerRTLStatus.now = { frozen }
     page.rtlStatuses.removeAll()
     page.rtlShownTimes.removeAll()
     FilePreviewLanguageFeatures.all = []
@@ -378,53 +375,69 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
            "nor in the strip: \(String(describing: page.rtlStatuses.last))")
     otherEditor.linkPanel = nil
 
-    // Play starts again: reports from before don't count, and the strip waits for the editors.
-    page.previousTimes[65] = 55
-    for (each, view) in [(editor, textView), (otherEditor, other)] {
-        WaveformDebuggerEditorHighlights.valuesShown(.init(
-            editor: each, textView: view, lines: lines, waveform: waveform, time: 65, values: [:], instances: [:]
-        ))
-    }
-    await settle()
-    WaveformDebuggerRTLStatus.playStarted(waveform)
-    await settle()
-    expect((page.rtlStatuses.last?["text"] as? String)?.contains("waiting") == true,
-           "before any editor reports, the strip says it waits for them: \(String(describing: page.rtlStatuses.last))")
-    page.rtlShownTimes.removeAll()
-    WaveformDebuggerEditorHighlights.valuesShown(.init(
-        editor: editor, textView: textView, lines: lines, waveform: waveform, time: 65, values: [:], instances: [:]
-    ))
-    await settle()
-    expect(page.rtlShownTimes.isEmpty, "the other editor's report from before play doesn't count: \(page.rtlShownTimes)")
-
-    // An editor that stops reporting (its refreshes stall) holds play for a second at most,
-    // then the others' cycles count as shown without it.
-    let start = Date()
-    WaveformDebuggerRTLStatus.now = { start }
-    WaveformDebuggerRTLStatus.playStarted(waveform)
-    page.rtlShownTimes.removeAll()
-    page.previousTimes[75] = 65
-    page.previousTimes[85] = 75
-    page.previousTimes[95] = 85
     func draw(_ each: FilePreviewLanguageFeatures, _ view: NSTextView, at time: Int64) async {
         WaveformDebuggerEditorHighlights.valuesShown(.init(
             editor: each, textView: view, lines: lines, waveform: waveform, time: time, values: [:], instances: [:]
         ))
         await settle()
     }
+    func lastStatus() -> [String: Any] { page.rtlStatuses.last ?? [:] }
+
+    // Before any editor ever reported, the strip says it waits for them.
+    let fresh = FilePreviewLanguageFeatures(textView: NSTextView(frame: .zero), path: "/rtl/fresh.sv")
+    FilePreviewLanguageFeatures.all = [fresh]
+    WaveformDebuggerRTLStatus.report(waveform)
+    await settle()
+    expect((lastStatus()["text"] as? String)?.contains("waiting") == true, "never reported: waiting: \(lastStatus())")
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
+
+    // Play starts again: reports from before don't count for the wait, but the strip keeps them.
+    for t in [65, 75, 85, 95, 105] as [Int64] { page.previousTimes[t] = t - 10 }
+    await draw(editor, textView, at: 65)
+    await draw(otherEditor, other, at: 65)
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    await settle()
+    expect((lastStatus()["text"] as? String)?.contains("waiting") == false,
+           "play starting doesn't blank the strip: \(lastStatus())")
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 65)
+    expect(page.rtlShownTimes.isEmpty, "the other editor's report from before play doesn't count: \(page.rtlShownTimes)")
+
+    // The page moved on without an editor (it timed out on the cycle): that editor isn't
+    // waited for until it reports the page's cycle again, late reports for cycles left included.
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75)
+    page.rtlShownTimes.removeAll()
     await draw(editor, textView, at: 75)
-    expect(page.rtlShownTimes.isEmpty, "just after play starts, the other editor is waited for: \(page.rtlShownTimes)")
-    WaveformDebuggerRTLStatus.now = { start.addingTimeInterval(2) }
+    expect(page.rtlShownTimes.isEmpty, "at first the other editor is waited for: \(page.rtlShownTimes)")
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85)
     await draw(editor, textView, at: 85)
-    expect(page.rtlShownTimes == [85], "two seconds without a report: it no longer holds play: \(page.rtlShownTimes)")
-    await draw(otherEditor, other, at: 85)
-    WaveformDebuggerRTLStatus.now = { start.addingTimeInterval(2.1) }
+    expect(page.rtlShownTimes == [85], "it missed 75: it no longer holds play: \(page.rtlShownTimes)")
+    await draw(otherEditor, other, at: 75)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 95)
     page.rtlShownTimes.removeAll()
     await draw(editor, textView, at: 95)
-    expect(page.rtlShownTimes.isEmpty, "it reported again: it is waited for again: \(page.rtlShownTimes)")
-    WaveformDebuggerRTLStatus.now = { Date() }
-    // (Drawn by both at 65 for the checks below.)
-    await draw(editor, textView, at: 65)
+    expect(page.rtlShownTimes == [95], "a late report for a cycle the page left doesn't bring it back: \(page.rtlShownTimes)")
+    await draw(otherEditor, other, at: 95)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 105)
+    page.rtlShownTimes.removeAll()
+    await draw(editor, textView, at: 105)
+    expect(page.rtlShownTimes.isEmpty, "it reported the page's cycle: waited for again: \(page.rtlShownTimes)")
+
+    // One editor, stalled: after the first cycle it missed, the page doesn't wait at all.
+    FilePreviewLanguageFeatures.all = [otherEditor]
+    WaveformDebuggerRTLStatus.playStarted(waveform)
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == true, "play waits for it at first: \(lastStatus())")
+    WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85)
+    await settle()
+    expect(lastStatus()["wait"] as? Bool == false, "it missed 75: play runs at its rate: \(lastStatus())")
+    await draw(otherEditor, other, at: 85)
+    expect(lastStatus()["wait"] as? Bool == true, "it caught up: play waits again: \(lastStatus())")
+
+    // (Both editors; this one at 65 since play started, the other not, for the checks below.)
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
     WaveformDebuggerRTLStatus.playStarted(waveform)
     await draw(editor, textView, at: 65)
     page.rtlShownTimes.removeAll()
