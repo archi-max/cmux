@@ -206,6 +206,7 @@ enum KeyboardShortcutSettings {
         // Panels
         case saveFilePreview, toggleFileEditorWordWrap
         case addSignalToWaveform, revealWaveformSignalInSource
+        case navigateSourceBack, navigateSourceForward
         case openBrowser
         case focusBrowserAddressBar
         case browserBack, browserForward, browserReload
@@ -387,6 +388,8 @@ enum KeyboardShortcutSettings {
             case .toggleFileEditorWordWrap: return String(localized: "shortcut.toggleFileEditorWordWrap.label", defaultValue: "Toggle File Editor Word Wrap")
             case .addSignalToWaveform: return String(localized: "shortcut.addSignalToWaveform.label", defaultValue: "Add Signal to Waveform")
             case .revealWaveformSignalInSource: return String(localized: "shortcut.revealWaveformSignalInSource.label", defaultValue: "Show Waveform Signal in Source")
+            case .navigateSourceBack: return String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")
+            case .navigateSourceForward: return String(localized: "shortcut.navigateSourceForward.label", defaultValue: "Go Forward in Editor")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .focusBrowserAddressBar: return String(localized: "command.browserFocusAddressBar.title", defaultValue: "Focus Address Bar")
             case .browserBack: return String(localized: "menu.view.back", defaultValue: "Back")
@@ -702,6 +705,9 @@ enum KeyboardShortcutSettings {
             case .addSignalToWaveform: return StoredShortcut(key: "w", command: false, shift: false, option: false, control: true)
             // Verdi's Alt+Shift+D "trace driver"; only claimed while a waveform viewer is focused.
             case .revealWaveformSignalInSource: return StoredShortcut(key: "d", command: false, shift: true, option: true, control: false)
+            // VS Code's Go Back / Go Forward; only claimed in a file editor with history to go to.
+            case .navigateSourceBack: return StoredShortcut(key: "-", command: false, shift: false, option: false, control: true)
+            case .navigateSourceForward: return StoredShortcut(key: "-", command: false, shift: true, option: false, control: true)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .focusBrowserAddressBar:

@@ -97,6 +97,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     }
 
     func close() {
+        if let panel {
+            WaveformSourceLink.waveformClosed(panel)
+        }
         if let webView {
             webView.stopLoading()
             webView.configuration.userContentController.removeScriptMessageHandler(forName: Self.messageHandlerName)
@@ -119,6 +122,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     func holdsResponder(_ responder: NSResponder) -> Bool {
         guard let webView, let view = responder as? NSView else { return false }
         return view.isDescendant(of: webView)
+    }
+
+    /// Whether one of the viewer's text fields (search, value entry) has focus, so its keys are typing.
+    var isEditableElementFocused: Bool {
+        webView?.isViewerNavigationEditableElementFocused ?? false
     }
 
     /// Runs a VaporView command id in the page (`cmux-commands.js`).
@@ -541,6 +549,12 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         case "revealInSource":
             if let path = WaveformSourceLink.dumpPath(fromPage: body["path"]), let panel {
                 WaveformSourceLink.revealInSource(dumpPath: path, waveformPanel: panel)
+            }
+        case "event":
+            // VaporView's API events; the marker drives the SV editor's inline values.
+            if body["eventType"] as? String == "markerSet", let panel {
+                let time = (body["eventData"] as? [String: Any])?["time"] as? NSNumber
+                WaveformSourceLink.markerMoved(in: panel, time: time?.int64Value)
             }
         case "settings":
             if let values = body["values"] as? [String: Any] {

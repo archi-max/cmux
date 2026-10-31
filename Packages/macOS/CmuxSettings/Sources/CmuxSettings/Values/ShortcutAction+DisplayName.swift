@@ -200,6 +200,10 @@ extension ShortcutAction {
             return String(localized: "shortcut.addSignalToWaveform.label", defaultValue: "Add Signal to Waveform")
         case .revealWaveformSignalInSource:
             return String(localized: "shortcut.revealWaveformSignalInSource.label", defaultValue: "Show Waveform Signal in Source")
+        case .navigateSourceBack:
+            return String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")
+        case .navigateSourceForward:
+            return String(localized: "shortcut.navigateSourceForward.label", defaultValue: "Go Forward in Editor")
         case .openBrowser: return "Open Browser"
         case .focusBrowserAddressBar: return "Focus Address Bar"
         case .browserBack: return "Back"

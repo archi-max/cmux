@@ -190,6 +190,10 @@ public enum ShortcutAction: String, CaseIterable, Sendable, Hashable, SettingCod
     case addSignalToWaveform
     /// Opens the waveform viewer's selected signal in the SystemVerilog editor.
     case revealWaveformSignalInSource
+    /// Returns to where the file editor's last go-to-source jump started.
+    case navigateSourceBack
+    /// Redoes a jump undone with `navigateSourceBack`.
+    case navigateSourceForward
     case openBrowser
     case focusBrowserAddressBar
     case browserBack
@@ -350,7 +354,7 @@ extension ShortcutAction {
             return .or(.atom(.browserFocus), .atom(.markdownFocus))
         case .browserZoomIn, .browserZoomOut, .browserZoomReset:
             return .or(.atom(.browserFocus), .atom(.filePreviewTextEditorFocus))
-        case .toggleFileEditorWordWrap, .addSignalToWaveform:
+        case .toggleFileEditorWordWrap, .addSignalToWaveform, .navigateSourceBack, .navigateSourceForward:
             return .atom(.filePreviewTextEditorFocus)
         case .revealWaveformSignalInSource:
             return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))

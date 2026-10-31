@@ -205,6 +205,8 @@ extension ShortcutAction {
         case .toggleFileEditorWordWrap: return ShortcutStroke(key: "z", option: true)
         case .addSignalToWaveform: return ShortcutStroke(key: "w", control: true)
         case .revealWaveformSignalInSource: return ShortcutStroke(key: "d", shift: true, option: true)
+        case .navigateSourceBack: return ShortcutStroke(key: "-", control: true)
+        case .navigateSourceForward: return ShortcutStroke(key: "-", shift: true, control: true)
         case .openBrowser: return ShortcutStroke(key: "l", command: true, shift: true)
         case .focusBrowserAddressBar: return ShortcutStroke(key: "l", command: true)
         case .browserBack: return ShortcutStroke(key: "[", command: true)

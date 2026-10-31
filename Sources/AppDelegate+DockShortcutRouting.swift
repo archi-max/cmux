@@ -73,6 +73,7 @@ extension KeyboardShortcutSettings.Action {
              .saveFilePreview,
              .toggleFileEditorWordWrap,
              .addSignalToWaveform, .revealWaveformSignalInSource,
+             .navigateSourceBack, .navigateSourceForward,
              .browserBack, .browserForward,
              .browserReload, .browserHardReload,
              .browserZoomIn, .browserZoomOut, .browserZoomReset,

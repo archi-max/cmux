@@ -2711,6 +2711,8 @@ enum CmuxEmbeddedConfigSchema {
               "toggleFileEditorWordWrap",
               "addSignalToWaveform",
               "revealWaveformSignalInSource",
+              "navigateSourceBack",
+              "navigateSourceForward",
               "openBrowser",
               "focusBrowserAddressBar",
               "browserBack",

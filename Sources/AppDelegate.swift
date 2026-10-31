@@ -16826,6 +16826,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if matchConfiguredShortcut(event: event, action: .addSignalToWaveform) {
             return shortcutFocusedSavingTextView(in: resolvedShortcutEventWindow(event))?.languageFeatures?.addSignalUnderCaretToWaveform() ?? false
         }
+        if matchConfiguredShortcut(event: event, action: .navigateSourceBack),
+           let features = shortcutFocusedSavingTextView(in: resolvedShortcutEventWindow(event))?.languageFeatures,
+           features.canNavigateBack {
+            return features.navigateBack()
+        }
+        if matchConfiguredShortcut(event: event, action: .navigateSourceForward),
+           let features = shortcutFocusedSavingTextView(in: resolvedShortcutEventWindow(event))?.languageFeatures,
+           features.canNavigateForward {
+            return features.navigateForward()
+        }
         if matchConfiguredShortcut(event: event, action: .revealWaveformSignalInSource) {
             return WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel(in: resolvedShortcutEventWindow(event)))
         }

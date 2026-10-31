@@ -156,28 +156,26 @@ enum WaveformSourceLink {
                 defaultValue: "Open a waveform (VCD, FST, GHW or FSDB) in this workspace first."
             )
         }
-        var paths: [String]
-        do {
-            paths = try await session.slangInstancePaths(uri: documentURI, position: position)
-            if paths.isEmpty, await Self.elaborateDesign(session: session, waveform: waveform, progress: progress) {
-                paths = try await session.slangInstancePaths(uri: documentURI, position: position)
-            }
-        } catch {
-            waveformSourceLinkLogger.error("getInstances failed: \(String(describing: error), privacy: .public)")
-            return String(
-                localized: "waveformLink.serverFailed",
-                defaultValue: "The language server did not answer. Try again in a moment."
-            )
+        let chosen: [String]
+        switch await Self.chosenDesignPaths(
+            session: session,
+            documentURI: documentURI,
+            position: position,
+            waveform: waveform,
+            chooseInstance: chooseInstance,
+            progress: progress
+        ) {
+        case .message(let message):
+            return message
+        case .paths(let paths):
+            chosen = paths
         }
-        guard !Task.isCancelled else { return nil }
-        guard !paths.isEmpty else {
-            return String(
-                localized: "waveformLink.notInDesign",
-                defaultValue: "slang-server could not place this signal in the design. Set a top level or a build file in .slang/server.json if the waveform’s top module is not in this folder."
-            )
-        }
-        let chosen = paths.count > 1 ? await chooseInstance(paths) : paths
         guard !chosen.isEmpty, !Task.isCancelled else { return nil }
+        // Inline values follow the instance last added from.
+        let chosenSegments = HierarchyPathMapping.segments(chosen[0])
+        if chosenSegments.count >= 2 {
+            editor.linkInstancePath = HierarchyPathMapping.join(Array(chosenSegments.dropLast()))
+        }
         guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else {
             return Task.isCancelled ? nil : Self.waveformLoadingMessage
         }
@@ -251,6 +249,130 @@ enum WaveformSourceLink {
             ))
         }
         return messages.isEmpty ? nil : messages.joined(separator: "\n\n")
+    }
+
+    private enum DesignPaths {
+        case paths([String])
+        case message(String)
+    }
+
+    /// The design paths of the symbol at `position`, for the instances the user picks when
+    /// the module has several (empty when the menu is dismissed). Offers to elaborate in explore mode.
+    private static func chosenDesignPaths(
+        session: LanguageServerSession,
+        documentURI: URL,
+        position: LSPPosition,
+        waveform: FilePreviewPanel,
+        chooseInstance: ([String]) async -> [String],
+        progress: @escaping @MainActor @Sendable (String) -> Void
+    ) async -> DesignPaths {
+        var paths: [String]
+        do {
+            paths = try await session.slangInstancePaths(uri: documentURI, position: position)
+            if paths.isEmpty, await Self.elaborateDesign(session: session, waveform: waveform, progress: progress) {
+                paths = try await session.slangInstancePaths(uri: documentURI, position: position)
+            }
+        } catch {
+            waveformSourceLinkLogger.error("getInstances failed: \(String(describing: error), privacy: .public)")
+            return .message(String(
+                localized: "waveformLink.serverFailed",
+                defaultValue: "The language server did not answer. Try again in a moment."
+            ))
+        }
+        guard !Task.isCancelled else { return .paths([]) }
+        guard !paths.isEmpty else {
+            return .message(String(
+                localized: "waveformLink.notInDesign",
+                defaultValue: "slang-server could not place this signal in the design. Set a top level or a build file in .slang/server.json if the waveform’s top module is not in this folder."
+            ))
+        }
+        return .paths(paths.count > 1 ? await chooseInstance(paths) : paths)
+    }
+
+    /// Adds every signal of the instance at `position` (an instance name), or of the
+    /// instance the signal at `position` is in, using VaporView's Add All in Scope.
+    static func addScope(
+        session: LanguageServerSession,
+        documentURI: URL,
+        position: LSPPosition,
+        editor: FilePreviewLanguageFeatures,
+        rootKey: String,
+        chooseInstance: ([String]) async -> [String],
+        progress: @escaping @MainActor @Sendable (String) -> Void
+    ) async -> String? {
+        guard let waveform = Self.waveformPanel(near: editor.linkPanel) else {
+            return String(
+                localized: "waveformLink.noWaveform",
+                defaultValue: "Open a waveform (VCD, FST, GHW or FSDB) in this workspace first."
+            )
+        }
+        let chosen: [String]
+        switch await Self.chosenDesignPaths(
+            session: session,
+            documentURI: documentURI,
+            position: position,
+            waveform: waveform,
+            chooseInstance: chooseInstance,
+            progress: progress
+        ) {
+        case .message(let message):
+            return message
+        case .paths(let paths):
+            chosen = paths
+        }
+        guard !chosen.isEmpty, !Task.isCancelled else { return nil }
+        guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else {
+            return Task.isCancelled ? nil : Self.waveformLoadingMessage
+        }
+        var missing: [String] = []
+        for designPath in chosen {
+            guard !Task.isCancelled else { return nil }
+            let segments = HierarchyPathMapping.segments(designPath)
+            let parent = HierarchyPathMapping.join(Array(segments.dropLast()))
+            let parentItems = (try? await session.slangScopeChildren(parent)) ?? []
+            let isInstance = parentItems.first { $0.name == segments.last }?.isScope == true
+            let scope = isInstance ? designPath : parent
+            guard !scope.isEmpty else {
+                missing.append(designPath)
+                continue
+            }
+            // The dump scope is found through one of its signals, like Add to Waveform.
+            guard let probe = ((try? await session.slangScopeChildren(scope)) ?? []).first(where: { !$0.isScope }) else {
+                missing.append(scope)
+                continue
+            }
+            var dumpScopes: [String]
+            switch await Self.resolveDumpPaths(scope + "." + probe.name, session: session, waveform: waveform, key: key, progress: progress) {
+            case .found(let dumpPaths):
+                dumpScopes = dumpPaths.map { HierarchyPathMapping.join(Array(HierarchyPathMapping.segments($0).dropLast())) }
+            case .notDumped(let dumpScope):
+                dumpScopes = [dumpScope]
+            case .instance, .notFound:
+                missing.append(scope)
+                continue
+            }
+            if dumpScopes.count > 1, chosen.count == 1 {
+                dumpScopes = await chooseInstance(dumpScopes)
+            }
+            for dumpScope in dumpScopes {
+                let added = await waveform.nativeViewSessions.waveform.callLink(
+                    "addScope",
+                    argument: HierarchyPathMapping.segments(dumpScope)
+                ) as? Bool == true
+                if !added { missing.append(scope) }
+            }
+            if !isInstance { editor.linkInstancePath = scope }
+        }
+        lastWaveformPanel = waveform
+        pairedEditors.setObject(editor, forKey: waveform)
+        guard !missing.isEmpty else { return nil }
+        return String(
+            format: String(
+                localized: "waveformLink.notInWaveform",
+                defaultValue: "%@ is not in this waveform. If the dump names the design differently, edit View > Waveform Path Mapping…"
+            ),
+            ListFormatter.localizedString(byJoining: missing)
+        )
     }
 
     private enum DumpResolution {
@@ -452,10 +574,13 @@ enum WaveformSourceLink {
 
     // MARK: Waveform → editor
 
-    /// Opens the selected waveform signal of `panel` in the editor. False when `panel` is not a waveform viewer.
+    /// Opens the selected waveform signal of `panel` in the editor. False when `panel` is not a
+    /// waveform viewer or one of its text fields has focus.
     @discardableResult
     static func revealSelectedSignal(in panel: FilePreviewPanel?) -> Bool {
-        guard let panel, panel.previewMode == .waveform else { return false }
+        // In the viewer's search or value field the key is typing (Opt+Shift+D is `Î`).
+        guard let panel, panel.previewMode == .waveform,
+              !panel.nativeViewSessions.waveform.isEditableElementFocused else { return false }
         Task { @MainActor in
             guard let path = Self.dumpPath(fromPage: await panel.nativeViewSessions.waveform.callLink("selectedSignal")) else {
                 NSSound.beep()
@@ -606,6 +731,84 @@ enum WaveformSourceLink {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return nil
+    }
+
+    // MARK: Inline values
+
+    /// Each waveform viewer's marker time, while it has one.
+    private static let markerTimes = NSMapTable<FilePreviewPanel, NSNumber>.weakToStrongObjects()
+    /// Most values shown per refresh, and the longest value string kept.
+    private static let maxInlineValues = 300
+    private static let maxInlineValueLength = 64
+
+    static func markerTime(of waveform: FilePreviewPanel) -> Int64? {
+        markerTimes.object(forKey: waveform)?.int64Value
+    }
+
+    /// The viewer's marker moved (nil: removed). The workspace's SV editors redraw their values.
+    static func markerMoved(in waveform: FilePreviewPanel, time: Int64?) {
+        if let time {
+            markerTimes.setObject(NSNumber(value: time), forKey: waveform)
+        } else {
+            markerTimes.removeObject(forKey: waveform)
+        }
+        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId) {
+            editor.waveformMarkerDidMove()
+        }
+    }
+
+    /// The viewer is closing: its editors' values go away with it.
+    static func waveformClosed(_ waveform: FilePreviewPanel) {
+        markerTimes.removeObject(forKey: waveform)
+        if lastWaveformPanel === waveform { lastWaveformPanel = nil }
+        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId) {
+            editor.waveformMarkerDidMove()
+        }
+    }
+
+    /// The design instances a file's module is elaborated as, from slang's paths of
+    /// signals declared in it (`probes`: names and where they appear). Never changes the top level.
+    static func instancePaths(
+        session: LanguageServerSession,
+        documentURI: URL,
+        probes: [(name: String, position: LSPPosition)]
+    ) async -> [String] {
+        for probe in probes.prefix(6) {
+            guard let paths = try? await session.slangInstancePaths(uri: documentURI, position: probe.position) else { return [] }
+            var instances: [String] = []
+            for path in paths {
+                let segments = HierarchyPathMapping.segments(path)
+                guard segments.count >= 2, segments.last == probe.name else { continue }
+                let instance = HierarchyPathMapping.join(Array(segments.dropLast()))
+                if !instances.contains(instance) { instances.append(instance) }
+            }
+            if !instances.isEmpty { return instances }
+        }
+        return []
+    }
+
+    /// Values at `time` in `waveform` of the signals `names` of design instance
+    /// `instancePath`, mapped to the dump; nil where the dump has no such signal.
+    static func inlineValues(
+        names: [String],
+        instancePath: String,
+        waveform: FilePreviewPanel,
+        rootKey: String,
+        time: Int64
+    ) async -> [String?] {
+        let names = Array(names.prefix(maxInlineValues))
+        // No hierarchy yet (the viewer is reloading): no values.
+        guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else { return names.map { _ in nil } }
+        let mapping = Self.mapping(forKey: key)
+        let paths = names.map { HierarchyPathMapping.segments(mapping.dumpPath(forDesignPath: instancePath + "." + $0)) }
+        let result = await waveform.nativeViewSessions.waveform.callLink(
+            "valuesAt",
+            argument: ["time": NSNumber(value: time), "paths": paths]
+        ) as? [Any] ?? []
+        return names.indices.map { index in
+            guard index < result.count, let value = result[index] as? String else { return nil }
+            return String(value.prefix(maxInlineValueLength))
+        }
     }
 
     // MARK: Mapping editor

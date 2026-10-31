@@ -54,6 +54,15 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var requestTask: Task<Void, Never>?
     /// Add to Waveform; separate from `requestTask` so it and go-to-definition don't cancel each other.
     private var linkTask: Task<Void, Never>?
+    /// Waveform values drawn after the visible lines, at the waveform's marker.
+    private var inlineValueTask: Task<Void, Never>?
+    private var inlineValueOverlay: FilePreviewInlineValueOverlay?
+    /// slang's instance paths for this file's module, once found.
+    private var inlineInstancePaths: [String] = []
+    private var inlineInstanceLookupDate = Date.distantPast
+    private var inlineScrollObserver: NSObjectProtocol?
+    /// The design instance whose values are shown: the one last added to the waveform from here.
+    var linkInstancePath: String?
     private var completionTask: Task<Void, Never>?
     private var formatTask: Task<Void, Never>?
 
@@ -116,6 +125,11 @@ final class FilePreviewLanguageFeatures: NSObject {
         requestTask?.cancel()
         linkTask?.cancel()
         completionTask?.cancel()
+        clearInlineValues()
+        if let inlineScrollObserver {
+            NotificationCenter.default.removeObserver(inlineScrollObserver)
+            self.inlineScrollObserver = nil
+        }
         hideHover()
         if let textView {
             if let trackingArea { textView.removeTrackingArea(trackingArea) }
@@ -155,6 +169,11 @@ final class FilePreviewLanguageFeatures: NSObject {
                 await self?.startSession()
             }
             return
+        }
+        // Edits move the lines the values were drawn after.
+        if inlineValueOverlay != nil {
+            clearInlineValues()
+            scheduleInlineValues(after: .milliseconds(600))
         }
         changeTask?.cancel()
         changeTask = Task { [weak self] in
@@ -503,6 +522,14 @@ final class FilePreviewLanguageFeatures: NSObject {
             addToWaveform.target = self
             menu.insertItem(addToWaveform, at: separatorIndex)
             separatorIndex += 1
+            let addScope = NSMenuItem(
+                title: String(localized: "filePreview.language.addScopeToWaveform", defaultValue: "Add All Signals in Scope to Waveform"),
+                action: #selector(addScopeToWaveformFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            addScope.target = self
+            menu.insertItem(addScope, at: separatorIndex)
+            separatorIndex += 1
         }
         menu.insertItem(.separator(), at: separatorIndex)
     }
@@ -510,6 +537,19 @@ final class FilePreviewLanguageFeatures: NSObject {
     @objc private func addToWaveformFromMenu(_ sender: Any?) {
         guard let textView else { return }
         addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location)
+    }
+
+    @objc private func addScopeToWaveformFromMenu(_ sender: Any?) {
+        guard let textView else { return }
+        addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location, wholeScope: true)
+    }
+
+    /// Adds every signal of the instance at (or around) the caret to the waveform. False when there is no waveform.
+    @discardableResult
+    func addScopeUnderCaretToWaveform() -> Bool {
+        guard canAddToWaveform, let textView else { return false }
+        addSignalToWaveform(at: textView.selectedRange().location, wholeScope: true)
+        return true
     }
 
     /// Whether the workspace has a waveform viewer to add signals to. The
@@ -526,7 +566,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         return true
     }
 
-    private func addSignalToWaveform(at index: Int) {
+    /// `wholeScope`: the instance's signals rather than the one signal.
+    private func addSignalToWaveform(at index: Int, wholeScope: Bool = false) {
         guard let textView else { return }
         guard let session, let documentURI, let storage = textView.textStorage,
               let identifier = FilePreviewLanguageIdentifier.range(containing: index, in: storage.string as NSString)
@@ -540,15 +581,31 @@ final class FilePreviewLanguageFeatures: NSObject {
             // The server must see the current text.
             await self?.sendCurrentText()
             guard let self, !Task.isCancelled else { return }
-            let message = await WaveformSourceLink.addSignal(
-                session: session,
-                documentURI: documentURI,
-                position: position,
-                editor: self,
-                rootKey: self.linkRootKey,
-                chooseInstance: { [weak self] paths in await self?.chooseInstance(paths, anchoredAt: identifier.location) ?? [] },
-                progress: { [weak self] note in self?.showLinkMessage(note, at: identifier.location) }
-            )
+            let chooseInstance: ([String]) async -> [String] = { [weak self] paths in
+                await self?.chooseInstance(paths, anchoredAt: identifier.location) ?? []
+            }
+            let progress: @MainActor @Sendable (String) -> Void = { [weak self] note in
+                self?.showLinkMessage(note, at: identifier.location)
+            }
+            let message = wholeScope
+                ? await WaveformSourceLink.addScope(
+                    session: session,
+                    documentURI: documentURI,
+                    position: position,
+                    editor: self,
+                    rootKey: self.linkRootKey,
+                    chooseInstance: chooseInstance,
+                    progress: progress
+                )
+                : await WaveformSourceLink.addSignal(
+                    session: session,
+                    documentURI: documentURI,
+                    position: position,
+                    editor: self,
+                    rootKey: self.linkRootKey,
+                    chooseInstance: chooseInstance,
+                    progress: progress
+                )
             guard !Task.isCancelled, let message else { return }
             self.showLinkMessage(message, at: identifier.location)
         }
@@ -582,6 +639,11 @@ final class FilePreviewLanguageFeatures: NSObject {
         context?.remote?.providerIdentity ?? "local"
     }
 
+    /// Live editors with a language server in `workspaceId`.
+    static func linkables(inWorkspace workspaceId: UUID) -> [FilePreviewLanguageFeatures] {
+        liveInstances.allObjects.filter { $0.linkWorkspaceId == workspaceId && $0.linkSession != nil }
+    }
+
     /// The most recently used live editor with a language server in `workspaceId`.
     static func mostRecentLinkable(inWorkspace workspaceId: UUID) -> FilePreviewLanguageFeatures? {
         liveInstances.allObjects
@@ -596,6 +658,213 @@ final class FilePreviewLanguageFeatures: NSObject {
             $0.linkHostIdentity == editor.linkHostIdentity && $0.linkSession?.documentURI.standardizedFileURL.path == path
         }
         return matches.first { $0.linkWorkspaceId == editor.linkWorkspaceId } ?? matches.first
+    }
+
+    // MARK: - Navigation history
+
+    /// The caret (or selection) as a location, for the navigation history.
+    var currentLocation: LSPLocation? {
+        guard !isDetached, let textView, let documentURI else { return nil }
+        let lineIndex = FilePreviewLSPLineIndex(textView.string)
+        let selection = textView.selectedRange()
+        return LSPLocation(
+            uri: documentURI,
+            range: LSPRange(start: lineIndex.position(at: selection.location), end: lineIndex.position(at: NSMaxRange(selection)))
+        )
+    }
+
+    var canNavigateBack: Bool { linkWorkspaceId.map { FilePreviewNavigationHistory.canGoBack(inWorkspace: $0) } ?? false }
+    var canNavigateForward: Bool { linkWorkspaceId.map { FilePreviewNavigationHistory.canGoForward(inWorkspace: $0) } ?? false }
+
+    /// Returns to where the last go-to-source jump in this workspace started. False when there is none.
+    @discardableResult
+    func navigateBack() -> Bool { FilePreviewNavigationHistory.step(.back, from: self) }
+
+    /// Redoes the jump the last Go Back undid. False when there is none.
+    @discardableResult
+    func navigateForward() -> Bool { FilePreviewNavigationHistory.step(.forward, from: self) }
+
+    // MARK: - Inline waveform values
+
+    /// The linked waveform's marker moved, or the waveform went away.
+    func waveformMarkerDidMove() {
+        scheduleInlineValues(after: .milliseconds(120))
+    }
+
+    private func scheduleInlineValues(after delay: Duration) {
+        inlineValueTask?.cancel()
+        inlineValueTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.refreshInlineValues()
+        }
+    }
+
+    private func clearInlineValues() {
+        inlineValueTask?.cancel()
+        inlineValueOverlay?.clear()
+    }
+
+    /// Draws, after each visible line, the values its signals have at the marker of the workspace's waveform.
+    private func refreshInlineValues() async {
+        guard !isDetached, let textView, let session, let documentURI,
+              let waveform = WaveformSourceLink.waveformPanel(near: linkPanel),
+              let time = WaveformSourceLink.markerTime(of: waveform) else {
+            inlineValueOverlay?.clear()
+            return
+        }
+        observeScrollingForInlineValues(textView)
+        let lines = Self.visibleIdentifierLines(in: textView)
+        var names: [String] = []
+        var firstOffsets: [String: Int] = [:]
+        for line in lines {
+            for (name, offset) in line.identifiers where firstOffsets[name] == nil {
+                firstOffsets[name] = offset
+                names.append(name)
+            }
+        }
+        guard !names.isEmpty else {
+            inlineValueOverlay?.clear()
+            return
+        }
+        let text = textView.string
+        // In explore mode slang knows no instances; ask again at most every 10 s.
+        if inlineInstancePaths.isEmpty, Date().timeIntervalSince(inlineInstanceLookupDate) > 10 {
+            inlineInstanceLookupDate = Date()
+            let lineIndex = FilePreviewLSPLineIndex(text)
+            let probes = names.prefix(12).compactMap { name in firstOffsets[name].map { (name: name, position: lineIndex.position(at: $0)) } }
+            inlineInstancePaths = await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: probes)
+        }
+        guard !Task.isCancelled, let instance = linkInstancePath.flatMap({ inlineInstancePaths.contains($0) ? $0 : nil })
+            ?? inlineInstancePaths.first else {
+            inlineValueOverlay?.clear()
+            return
+        }
+        let values = await WaveformSourceLink.inlineValues(
+            names: names,
+            instancePath: instance,
+            waveform: waveform,
+            rootKey: linkRootKey,
+            time: time
+        )
+        // A newer refresh, an edit or a scroll since: the positions are stale.
+        guard !Task.isCancelled, !isDetached, self.textView === textView, textView.string == text,
+              let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
+        var valueByName: [String: String] = [:]
+        for (name, value) in zip(names, values) where value != nil {
+            valueByName[name] = value
+        }
+        var annotations: [FilePreviewInlineValueOverlay.Annotation] = []
+        let origin = textView.textContainerOrigin
+        for line in lines {
+            var seen: Set<String> = []
+            var pairs: [(name: String, value: String)] = []
+            for (name, _) in line.identifiers where seen.insert(name).inserted {
+                if let value = valueByName[name] { pairs.append((name, value)) }
+            }
+            guard !pairs.isEmpty, line.contentRange.length > 0 else { continue }
+            let glyphs = layoutManager.glyphRange(forCharacterRange: line.contentRange, actualCharacterRange: nil)
+            // The line's last fragment: a wrapped line ends there.
+            let lastGlyph = max(glyphs.location, NSMaxRange(glyphs) - 1)
+            let fragment = layoutManager.lineFragmentUsedRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+            let end = layoutManager.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: container)
+            annotations.append(.init(
+                origin: NSPoint(x: origin.x + end.maxX + 24, y: origin.y + fragment.minY + 1),
+                pairs: pairs
+            ))
+        }
+        let overlay = inlineValueOverlay ?? FilePreviewInlineValueOverlay()
+        inlineValueOverlay = overlay
+        let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: max(9, baseFont.pointSize - 1), weight: .regular)
+        overlay.show(annotations, font: font, in: textView)
+    }
+
+    /// New lines scroll into view: fetch their values.
+    private func observeScrollingForInlineValues(_ textView: NSTextView) {
+        guard inlineScrollObserver == nil, let clipView = textView.enclosingScrollView?.contentView else { return }
+        clipView.postsBoundsChangedNotifications = true
+        inlineScrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.scheduleInlineValues(after: .milliseconds(150))
+            }
+        }
+    }
+
+    private struct IdentifierLine {
+        /// The line without its line break.
+        var contentRange: NSRange
+        /// Identifiers in order, with their UTF-16 offsets.
+        var identifiers: [(String, Int)]
+    }
+
+    /// Identifier-looking words outside comments and strings, skipping keywords,
+    /// system tasks, macros, numbers' bases and member names after a dot.
+    private static let identifierPattern = try? NSRegularExpression(pattern: "(?<![\\w$'`.])[A-Za-z_][A-Za-z0-9_$]*")
+    private static let keywords: Set<String> = [
+        "always", "always_comb", "always_ff", "always_latch", "and", "assign", "automatic", "begin", "bit", "break",
+        "byte", "case", "casex", "casez", "class", "const", "continue", "default", "do", "else", "end", "endcase",
+        "endclass", "endfunction", "endgenerate", "endinterface", "endmodule", "endpackage", "endtask", "enum", "for",
+        "foreach", "forever", "function", "generate", "genvar", "if", "import", "initial", "inout", "input", "int",
+        "integer", "interface", "localparam", "logic", "longint", "modport", "module", "negedge", "not", "or", "output",
+        "package", "packed", "parameter", "posedge", "priority", "real", "reg", "repeat", "return", "shortint", "signed",
+        "struct", "task", "typedef", "union", "unique", "unique0", "unsigned", "var", "void", "while", "wire", "xor",
+    ]
+
+    private static func visibleIdentifierLines(in textView: NSTextView) -> [IdentifierLine] {
+        guard let layoutManager = textView.layoutManager, let container = textView.textContainer,
+              let pattern = identifierPattern else { return [] }
+        let text = textView.string as NSString
+        var visible = textView.visibleRect
+        visible.origin.x -= textView.textContainerOrigin.x
+        visible.origin.y -= textView.textContainerOrigin.y
+        let glyphs = layoutManager.glyphRange(forBoundingRect: visible, in: container)
+        let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        guard characters.length > 0 else { return [] }
+        var lines: [IdentifierLine] = []
+        var inBlockComment = false
+        text.enumerateSubstrings(in: text.lineRange(for: characters), options: [.byLines]) { line, lineRange, _, _ in
+            guard let line else { return }
+            // Blank out comments and strings, keeping the offsets.
+            var code = Array(line.utf16)
+            var index = 0
+            var inString = false
+            while index < code.count {
+                let unit = code[index]
+                let next = index + 1 < code.count ? code[index + 1] : 0
+                if inBlockComment {
+                    if unit == 0x2A, next == 0x2F { inBlockComment = false; code[index] = 0x20; code[index + 1] = 0x20; index += 2; continue } // */
+                    code[index] = 0x20
+                } else if inString {
+                    if unit == 0x5C, index + 1 < code.count { code[index] = 0x20; code[index + 1] = 0x20; index += 2; continue }
+                    if unit == 0x22 { inString = false }
+                    code[index] = 0x20
+                } else if unit == 0x2F, next == 0x2F { // //
+                    for rest in index..<code.count { code[rest] = 0x20 }
+                    break
+                } else if unit == 0x2F, next == 0x2A { // /*
+                    inBlockComment = true
+                    code[index] = 0x20
+                } else if unit == 0x22 {
+                    inString = true
+                    code[index] = 0x20
+                }
+                index += 1
+            }
+            let cleaned = String(decoding: code, as: UTF16.self)
+            var identifiers: [(String, Int)] = []
+            for match in pattern.matches(in: cleaned, range: NSRange(location: 0, length: (cleaned as NSString).length)) {
+                let name = (cleaned as NSString).substring(with: match.range)
+                guard !keywords.contains(name) else { continue }
+                identifiers.append((name, lineRange.location + match.range.location))
+            }
+            lines.append(IdentifierLine(contentRange: lineRange, identifiers: identifiers))
+        }
+        return lines
     }
 
     /// The editor's current text.
@@ -752,8 +1021,12 @@ final class FilePreviewLanguageFeatures: NSObject {
         return (path as NSString).lastPathComponent
     }
 
-    func navigate(to location: LSPLocation) {
+    /// Opens `location`, recording where this editor was for Go Back unless the jump is a history step.
+    func navigate(to location: LSPLocation, recordingHistory: Bool = true) {
         guard let textView, let context else { return }
+        if recordingHistory, let here = currentLocation, here != location {
+            FilePreviewNavigationHistory.record(here, from: self)
+        }
         let targetPath = location.uri.standardizedFileURL.path
         if targetPath == context.documentURI.standardizedFileURL.path {
             Self.select(location.range, in: textView)
@@ -1056,5 +1329,59 @@ final class FilePreviewLanguageFeatures: NSObject {
         rect.origin.y += textView.textContainerOrigin.y
         if rect.width < 1 { rect.size.width = 1 }
         return rect
+    }
+}
+
+/// Where go-to-source jumps (Go to Definition, references, drivers, waveform
+/// reveals) started, per workspace: Go Back returns there, Go Forward redoes.
+@MainActor
+enum FilePreviewNavigationHistory {
+    enum Direction { case back, forward }
+
+    struct Entry {
+        var location: LSPLocation
+        /// The editor that was there; it (or another on the same host) opens the location again.
+        weak var editor: FilePreviewLanguageFeatures?
+        var host: String
+    }
+
+    private static let limit = 50
+    private static var backStacks: [UUID: [Entry]] = [:]
+    private static var forwardStacks: [UUID: [Entry]] = [:]
+
+    static func canGoBack(inWorkspace id: UUID) -> Bool { !(backStacks[id] ?? []).isEmpty }
+    static func canGoForward(inWorkspace id: UUID) -> Bool { !(forwardStacks[id] ?? []).isEmpty }
+
+    /// A jump leaves `location` in `editor`: remember it, and drop what Go Forward could redo.
+    static func record(_ location: LSPLocation, from editor: FilePreviewLanguageFeatures) {
+        guard let workspace = editor.linkWorkspaceId else { return }
+        var stack = backStacks[workspace] ?? []
+        if stack.last?.location != location {
+            stack.append(Entry(location: location, editor: editor, host: editor.linkHostIdentity))
+        }
+        backStacks[workspace] = Array(stack.suffix(limit))
+        forwardStacks[workspace] = []
+    }
+
+    /// Moves one step from `editor`'s current location. False when there is nowhere to go.
+    static func step(_ direction: Direction, from editor: FilePreviewLanguageFeatures) -> Bool {
+        guard let workspace = editor.linkWorkspaceId else { return false }
+        var from = direction == .back ? backStacks[workspace] ?? [] : forwardStacks[workspace] ?? []
+        var to = direction == .back ? forwardStacks[workspace] ?? [] : backStacks[workspace] ?? []
+        while let entry = from.popLast() {
+            // This editor opens it in its pane; a file from another host needs an editor on that host.
+            guard let opener = [editor, entry.editor].compactMap({ $0 }).first(where: { $0.linkHostIdentity == entry.host })
+                ?? FilePreviewLanguageFeatures.linkables(inWorkspace: workspace).first(where: { $0.linkHostIdentity == entry.host })
+            else { continue }
+            if let here = editor.currentLocation {
+                to.append(Entry(location: here, editor: editor, host: editor.linkHostIdentity))
+            }
+            opener.navigate(to: entry.location, recordingHistory: false)
+            backStacks[workspace] = Array((direction == .back ? from : to).suffix(limit))
+            forwardStacks[workspace] = Array((direction == .back ? to : from).suffix(limit))
+            return true
+        }
+        if direction == .back { backStacks[workspace] = from } else { forwardStacks[workspace] = from }
+        return false
     }
 }

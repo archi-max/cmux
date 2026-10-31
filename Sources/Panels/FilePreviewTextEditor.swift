@@ -730,6 +730,22 @@ final class SavingTextView: NSTextView {
                 { [weak self] in _ = self?.languageFeatures?.addSignalUnderCaretToWaveform() }
             ))
         }
+        for (action, canGo) in [
+            (KeyboardShortcutSettings.Action.navigateSourceBack, languageFeatures?.canNavigateBack == true),
+            (.navigateSourceForward, languageFeatures?.canNavigateForward == true),
+        ] where canGo {
+            let shortcut = KeyboardShortcutSettings.shortcut(for: action)
+            guard !shortcut.isUnbound else { continue }
+            candidates.append((
+                shortcut,
+                { [weak self] event in
+                    self?.previewFontZoomShortcutWhenClauseAllows(action: action, event: event) ?? false
+                },
+                { [weak self] in
+                    _ = action == .navigateSourceBack ? self?.languageFeatures?.navigateBack() : self?.languageFeatures?.navigateForward()
+                }
+            ))
+        }
         return candidates + filePreviewWordWrapShortcutCandidates()
     }
 
