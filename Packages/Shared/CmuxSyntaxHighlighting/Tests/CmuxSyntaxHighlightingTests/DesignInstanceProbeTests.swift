@@ -21,6 +21,12 @@ import CmuxSyntaxHighlighting
         #expect(found == [])
     }
 
+    @Test func everyProbeFailingIsNilNotEmpty() async {
+        // No probe got an answer (the server isn't ready): not a miss either.
+        let found = await DesignInstanceProbe.firstFound(["a", "b"]) { _ -> [String] in throw Failed() }
+        #expect(found == nil)
+    }
+
     @Test func cancelledIsNilNotEmpty() async {
         // Cancelled (a scroll, an edit): nothing was learned, so it isn't a miss to cache.
         let task = Task { () -> [String]? in
