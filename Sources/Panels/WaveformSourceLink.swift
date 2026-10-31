@@ -625,6 +625,8 @@ enum WaveformSourceLink {
             state.setByLink = false
             return true
         }
+        // A profile build (or the user's own choice) is running: don't guess a top level over it.
+        guard !SlangCompilationActions.isBusy(session) else { return false }
         var candidate: (module: String, file: String)?
         search: for top in await Self.dumpChildren([], in: waveform) ?? [] where top.isScope {
             if let file = (try? await session.slangFilesContainingModule(top.name))?.first {

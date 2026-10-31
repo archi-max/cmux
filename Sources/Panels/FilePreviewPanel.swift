@@ -1738,12 +1738,12 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
         }
     }
 
-    @discardableResult
     /// Opens the slang menu of the SystemVerilog editor at the mouse (the header's button).
     func showSlangMenu() {
         (textView as? SavingTextView)?.languageFeatures?.showSlangMenu(atCaret: false)
     }
 
+    @discardableResult
     func saveTextContent() -> Task<Void, Never>? {
         guard !isReadOnlyPreview else { return nil }
         guard previewMode == .text else { return nil }

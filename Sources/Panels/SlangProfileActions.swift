@@ -33,7 +33,7 @@ extension SlangCompilationActions {
     }
 
     private static var listings: [String: CachedListing] = [:]
-    private static var listingTasks: [String: Task<SlangProfileCatalog.Listing?, Never>] = [:]
+    private static var listingTasks: [String: (token: UUID, task: Task<SlangProfileCatalog.Listing?, Never>)] = [:]
 
     // MARK: Header
 
@@ -69,11 +69,13 @@ extension SlangCompilationActions {
 
     /// The server's compilation changed (or it restarted): read its tops again and update the headers.
     static func compilationDidChange(session: LanguageServerSession) {
-        let entry = entry(for: session)
-        if entry.target != nil { entry.isExplore = false }
         Task { @MainActor in
             let tops = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }.map(\.name)
-            Self.entry(for: session).tops = tops
+            let entry = Self.entry(for: session)
+            entry.tops = tops
+            // A restart that dropped what cmux set (or another target) ends a chosen explore mode.
+            let chosenExplore = await session.isInChosenExploreMode
+            entry.isExplore = entry.target == nil && chosenExplore
             updateHeaders(of: session)
         }
     }
@@ -176,11 +178,12 @@ extension SlangCompilationActions {
     static func refreshListing(for editor: FilePreviewLanguageFeatures, force: Bool = false) -> Task<SlangProfileCatalog.Listing?, Never>? {
         let key = listingKey(for: editor)
         if !force, let cached = listings[key], Date().timeIntervalSince(cached.at) < listingLifetime { return nil }
-        if let running = listingTasks[key] { return running }
+        if !force, let running = listingTasks[key] { return running.task }
         guard let context = editor.linkContext, let root = context.rootURI?.path else { return nil }
         let remote = context.remote
+        let token = UUID()
         let task = Task { @MainActor () -> SlangProfileCatalog.Listing? in
-            defer { listingTasks[key] = nil }
+            defer { if listingTasks[key]?.token == token { listingTasks[key] = nil } }
             let listing: SlangProfileCatalog.Listing?
             if let remote {
                 listing = await FilePreviewLanguageDocumentContext.runRemoteShell(
@@ -201,7 +204,7 @@ extension SlangCompilationActions {
             }
             return listing
         }
-        listingTasks[key] = task
+        listingTasks[key] = (token, task)
         return task
     }
 
@@ -339,8 +342,8 @@ extension SlangCompilationActions {
         Task { @MainActor in
             defer { release([session]) }
             do {
-                // Both commands' empty argument is slang-server's explore mode.
-                try await session.slangSetTopLevel("")
+                // Sent again after a restart, unlike setTopLevel("").
+                try await session.slangExplore()
                 let entry = entry(for: session)
                 entry.target = nil
                 entry.isExplore = true
@@ -472,7 +475,7 @@ extension SlangCompilationActions {
         let path = (directory as NSString).appendingPathComponent(module + ".f")
         let contents = "// slang profile for cmux: a slang command file (see slang --help).\n"
             + "--top \(module)\n"
-            + "\(context.documentURI.path)\n"
+            + quotedBuildFileWord(context.documentURI.path) + "\n"
         do {
             try await writeNewFile(path, contents: Data(contents.utf8), context: context)
             if directory == repoDirectory, excludeBox?.state == .on, let gitExclude {
@@ -492,18 +495,24 @@ extension SlangCompilationActions {
 
     private enum ProfileFileError: LocalizedError {
         case remoteFailed(String)
+        case changed(String)
 
         var errorDescription: String? {
             switch self {
             case .remoteFailed(let path):
                 return String(format: String(localized: "slangProfile.error.remoteWrite", defaultValue: "cmux couldn’t write %@ on the SSH host."), path)
+            case .changed(let path):
+                return String(format: String(localized: "slangProfile.error.changed", defaultValue: "%@ is no longer empty, so cmux left it unchanged."), path)
             }
         }
     }
 
     private static func homeDirectory(context: FilePreviewLanguageDocumentContext) async -> String? {
         guard let remote = context.remote else { return NSHomeDirectory() }
-        let output = await FilePreviewLanguageDocumentContext.runRemoteShell("printf %s \"$HOME\"", configuration: remote.configuration)
+        let output = await FilePreviewLanguageDocumentContext.runRemoteShell(
+            SlangWorkspaceRoot.posixShellCommand("printf %s \"$HOME\""),
+            configuration: remote.configuration
+        )
         return output.flatMap { $0.isEmpty ? nil : $0 }
     }
 
@@ -512,11 +521,15 @@ extension SlangCompilationActions {
         let output: String?
         if let remote = context.remote {
             output = await FilePreviewLanguageDocumentContext.runRemoteShell(
-                "cd \(shellQuote(root)) && git rev-parse --git-path info/exclude",
+                SlangWorkspaceRoot.posixShellCommand("cd \(shellQuote(root)) && git rev-parse --git-path info/exclude"),
                 configuration: remote.configuration
             )
         } else {
-            output = await Task.detached { runLocal("/usr/bin/git", ["-C", root, "rev-parse", "--git-path", "info/exclude"]) }.value
+            // /usr/bin/git without the developer tools asks to install them: don't.
+            output = await Task.detached { () -> String? in
+                guard runLocal("/usr/bin/xcode-select", ["-p"]) != nil else { return nil }
+                return runLocal("/usr/bin/git", ["-C", root, "rev-parse", "--git-path", "info/exclude"])
+            }.value
         }
         guard let line = output?.split(whereSeparator: \.isNewline).first.map(String.init), !line.isEmpty else { return nil }
         return line.hasPrefix("/") ? line : (root as NSString).appendingPathComponent(line)
@@ -526,8 +539,10 @@ extension SlangCompilationActions {
     private static func writeNewFile(_ path: String, contents: Data, context: FilePreviewLanguageDocumentContext) async throws {
         let directory = (path as NSString).deletingLastPathComponent
         if let remote = context.remote {
-            let command = "[ -e \(shellQuote(path)) ] && exit 0; mkdir -p \(shellQuote(directory)) && "
-                + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            let command = SlangWorkspaceRoot.posixShellCommand(
+                "[ -e \(shellQuote(path)) ] && exit 0; mkdir -p \(shellQuote(directory)) && "
+                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            )
             guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration, input: contents) != nil else {
                 throw ProfileFileError.remoteFailed(path)
             }
@@ -541,20 +556,39 @@ extension SlangCompilationActions {
     /// Adds `pattern` as a line of the exclude file unless it is there already.
     private static func appendGitExclude(_ pattern: String, to path: String, context: FilePreviewLanguageDocumentContext) async throws {
         if let remote = context.remote {
-            let file = shellQuote(path)
-            let command = "mkdir -p \(shellQuote((path as NSString).deletingLastPathComponent)) && "
-                + "{ grep -qxF \(shellQuote(pattern)) \(file) 2>/dev/null || printf '%s\\n' \(shellQuote(pattern)) >> \(file); }"
-            guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration) != nil else {
+            // Read, add the line, and write it back through a temporary file renamed over it.
+            guard let existing = await FilePreviewLanguageDocumentContext.runRemoteShell(
+                SlangWorkspaceRoot.posixShellCommand("cat \(shellQuote(path)) 2>/dev/null; true"),
+                configuration: remote.configuration
+            ) else { throw ProfileFileError.remoteFailed(path) }
+            guard let contents = addingLine(pattern, to: existing) else { return }
+            let command = SlangWorkspaceRoot.posixShellCommand(
+                "mkdir -p \(shellQuote((path as NSString).deletingLastPathComponent)) && "
+                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            )
+            guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration, input: Data(contents.utf8)) != nil else {
                 throw ProfileFileError.remoteFailed(path)
             }
             return
         }
         let url = URL(fileURLWithPath: path)
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        guard !existing.split(whereSeparator: \.isNewline).contains(where: { $0 == pattern }) else { return }
-        let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
+        guard let contents = addingLine(pattern, to: existing) else { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data((existing + separator + pattern + "\n").utf8).write(to: url, options: .atomic)
+        try Data(contents.utf8).write(to: url, options: .atomic)
+    }
+
+    /// `text` with `line` added as its own line; nil when it has the line already.
+    private static func addingLine(_ line: String, to text: String) -> String? {
+        guard !text.split(whereSeparator: \.isNewline).contains(where: { $0 == line }) else { return nil }
+        let separator = text.isEmpty || text.hasSuffix("\n") ? "" : "\n"
+        return text + separator + line + "\n"
+    }
+
+    /// A path as one word of a slang command file: quoted when it has white space, quotes or backslashes.
+    static func quotedBuildFileWord(_ path: String) -> String {
+        guard path.contains(where: { $0.isWhitespace || $0 == "\"" || $0 == "'" || $0 == "\\" }) else { return path }
+        return "\"" + path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
     nonisolated private static func runLocal(_ executable: String, _ arguments: [String]) -> String? {
@@ -612,7 +646,7 @@ extension SlangCompilationActions {
             }
             guard config.health == .empty, response == .alertFirstButtonReturn else { return }
             do {
-                try await replaceFile(config.path, contents: Data("{}\n".utf8), context: context)
+                try await replaceEmptyFile(config.path, contents: Data("{}\n".utf8), context: context)
             } catch {
                 showAlert(
                     title: String(localized: "slangProfile.config.failed.title", defaultValue: "Couldn’t Fix the Config"),
@@ -626,16 +660,25 @@ extension SlangCompilationActions {
         }
     }
 
-    /// Writes `path` through a temporary file renamed over it.
-    private static func replaceFile(_ path: String, contents: Data, context: FilePreviewLanguageDocumentContext) async throws {
+    /// Writes `path` through a temporary file renamed over it, only while it is still empty
+    /// (white space only), so a config edited since the warning is never replaced.
+    private static func replaceEmptyFile(_ path: String, contents: Data, context: FilePreviewLanguageDocumentContext) async throws {
         if let remote = context.remote {
-            let command = SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            let quoted = shellQuote(path)
+            let command = SlangWorkspaceRoot.posixShellCommand(
+                "[ -f \(quoted) ] || exit 75; [ -z \"$(tr -d ' \\t\\r\\n' < \(quoted))\" ] || exit 75; "
+                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            )
             guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration, input: contents) != nil else {
                 throw ProfileFileError.remoteFailed(path)
             }
             return
         }
-        try contents.write(to: URL(fileURLWithPath: path).resolvingSymlinksInPath(), options: .atomic)
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard SlangServerConfigFile.health(of: FileManager.default.contents(atPath: url.path)) == .empty else {
+            throw ProfileFileError.changed(path)
+        }
+        try contents.write(to: url, options: .atomic)
     }
 
     // MARK: Saves
@@ -651,19 +694,27 @@ extension SlangCompilationActions {
         for editor in FilePreviewLanguageFeatures.allLinkables where editor.linkHostIdentity == hostIdentity {
             guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted,
                   let root = session.rootURI?.path else { continue }
-            if path.hasPrefix(root + "/") { listings[editor.linkRootKey] = nil }
+            // Profiles also live outside the root (~/.config/cmux-slang): list again.
+            listings[editor.linkRootKey] = nil
+            // The server's form of both paths (symlinks and /private resolved locally).
+            let savedPath = session.serverPath(for: URL(fileURLWithPath: path))
             if isConfig, [".slang/server.json", SlangServerConfigFile.relativePath].contains(where: {
-                SlangServerConfigFile.path(inWorkspace: root, relativePath: $0) == path
+                session.serverPath(for: URL(fileURLWithPath: SlangServerConfigFile.path(inWorkspace: root, relativePath: $0))) == savedPath
             }) {
                 slangProfileLogger.info("server.json saved: restarting the server of \(root, privacy: .public)")
                 restartLanguageServer(editor: editor)
                 continue
             }
             if isBuildFile, case .buildFile(let buildPath)? = target(of: session),
-               buildPath == session.serverPath(for: URL(fileURLWithPath: path)), claim([session]) {
+               buildPath == savedPath, claim([session]) {
                 Task { @MainActor in
                     defer { release([session]) }
-                    try? await session.slangSetBuildFile(buildPath)
+                    do {
+                        try await session.slangSetBuildFile(buildPath)
+                    } catch {
+                        slangProfileLogger.error("re-sending the saved build file failed: \(String(describing: error), privacy: .public)")
+                        editor.showLinkMessage(userMessage(for: error))
+                    }
                     FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 }
             }
@@ -689,6 +740,10 @@ extension SlangCompilationActions {
         guard let profile = SlangProfileCatalog.profile(matchingDumpTops: dumpTops, children: dumpChildren, in: profiles),
               claim([session]) else { return false }
         defer { release([session]) }
+        // The user may have chosen a top level, build file or explore mode while the profiles were listed.
+        guard entry.target == nil, !entry.isExplore, await session.slangCompilationTarget == nil,
+              await !session.isInChosenExploreMode,
+              ((try? await session.slangScopeChildren("")) ?? []).allSatisfy({ $0.kind == "Package" }) else { return false }
         progress(String(
             format: String(
                 localized: "slangProfile.autoPick",
