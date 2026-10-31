@@ -1,11 +1,16 @@
 import Foundation
 
 /// Keeps the last lines a child process wrote to stderr for error messages.
+///
+/// stderr is read on its own queue, so it can still be arriving when the exit is seen:
+/// `waitForEnd(timeout:)` waits for its end of file before the text is read.
 final class StderrTail: @unchecked Sendable {
     private let lock = NSLock()
     private var lines: [String] = []
     private var partial = ""
     private let limit: Int
+    private var ended = false
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     init(limit: Int = 100) {
         self.limit = limit
@@ -27,6 +32,47 @@ final class StderrTail: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return (lines + (partial.isEmpty ? [] : [partial])).joined(separator: "\n")
+    }
+
+    /// stderr reached end of file (or the tool failed to launch).
+    func finish() {
+        lock.lock()
+        ended = true
+        let resumed = waiters.values
+        waiters.removeAll()
+        lock.unlock()
+        resumed.forEach { $0.resume() }
+    }
+
+    /// Returns once stderr has ended, or after `timeout` (a grandchild may keep it open).
+    func waitForEnd(timeout: TimeInterval) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.end() }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(max(timeout, 0) * 1_000_000_000)) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func end() async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if ended || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                waiters[id] = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            lock.lock()
+            let continuation = waiters.removeValue(forKey: id)
+            lock.unlock()
+            continuation?.resume()
+        }
     }
 }
 
@@ -104,6 +150,7 @@ final class LanguageToolProcess: @unchecked Sendable {
             let data = handle.availableData
             if data.isEmpty {
                 handle.readabilityHandler = nil
+                tail.finish()
             } else {
                 tail.append(data)
             }
@@ -118,6 +165,7 @@ final class LanguageToolProcess: @unchecked Sendable {
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+            tool.stderrTail.finish()
             stdoutContinuation.finish()
             exitContinuation.finish()
             throw LanguageServerError.launchFailed("\(executable): \(error.localizedDescription)")
