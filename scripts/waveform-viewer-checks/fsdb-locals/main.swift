@@ -94,6 +94,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
   }
 
+  /// Longer than any deferred work after rows change (the viewer's context update included).
+  let settleMs: UInt64 = 2500
+
+  func value(of path: [String]) async -> String {
+    let json = String(data: try! JSONSerialization.data(withJSONObject: [path]), encoding: .utf8)!
+    let v = await call("return await cmuxWaveform.link.valuesAt({ time: 20, paths: \(json), unshown: false })") as? [Any] ?? []
+    return (v.first as? String) ?? "-"
+  }
+
   func values() async -> [String] {
     let v = await call("return await cmuxWaveform.link.valuesAt({ time: 20, paths: [['tb','dut','a'], ['tb','dut','cnt']], unshown: false })") as? [Any] ?? []
     return v.map { ($0 as? String) ?? "-" }
@@ -117,20 +126,33 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       });
       return out;
     """) as? [String] ?? []
-    expect(locals.count == 3, "Locals of tb.dut shown: \(String(describing: l)) \(locals)")
+    // (Locals may leave out signals pinned outside it; clk is never pinned here.)
+    expect(locals.contains("Locals/tb.dut.clk"), "Locals of tb.dut shown: \(String(describing: l)) \(locals)")
     let withLocals = await values()
     expect(withLocals == pinned, "values while Locals shows the same signals: \(withLocals)")
     // The caret moved to another scope: Locals is refilled (its rows removed, then the new scope's added).
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['tb'] })")
-    await sleep(1000)
+    await sleep(settleMs)
     let refilled = await values()
     expect(refilled == pinned, "pinned rows keep their values once Locals is refilled: \(refilled)")
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['tb','dut'] })")
     await sleep(1000)
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: null })")
-    await sleep(1000)
+    await sleep(settleMs)
     let afterLocals = await values()
     expect(afterLocals == pinned, "pinned rows keep their values once Locals is removed: \(afterLocals)")
+    // A signal only Locals showed (clk), gone with it, shown again: the viewer keeps its data and
+    // asks for none, so the page must still have its changes. Then pinned, the same.
+    let clkBefore = await value(of: ["tb", "dut", "clk"])
+    expect(clkBefore == "-", "clk, not shown, has no value (unshown off): \(clkBefore)")
+    _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['tb','dut'] })")
+    await sleep(settleMs)
+    let clkInLocals = await value(of: ["tb", "dut", "clk"])
+    expect(clkInLocals == "0", "Locals shows clk again: it has its value at 20: \(clkInLocals)")
+    _ = await call("return await cmuxWaveform.link.addSignal(['tb','dut','clk'])")
+    await sleep(settleMs)
+    let clkPinned = await value(of: ["tb", "dut", "clk"])
+    expect(clkPinned == "0", "clk pinned: it has its value at 20: \(clkPinned)")
     print(failures == 0 ? "FSDB LOCALS CHECKS PASSED" : "FSDB LOCALS CHECKS FAILED: \(failures)")
     finish()
   }
@@ -148,5 +170,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { h.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 60) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 120) { print("timeout"); exit(1) }
 app.run()
