@@ -89,7 +89,8 @@ public struct SlangBuildFile: Equatable, Sendable {
                 continue
             }
             if (char == "/" && next == "/") || (char == "#" && !hasWord) {
-                while index < chars.count, chars[index] != "\n" { index += 1 }
+                // `isNewline`: "\r\n" is one Character, not "\n".
+                while index < chars.count, !chars[index].isNewline { index += 1 }
                 finish()
                 continue
             }

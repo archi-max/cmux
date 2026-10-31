@@ -46,7 +46,7 @@ enum SlangCompilationActions {
     struct AutoPick {
         let profile: String
         let picked: SlangCompilationTarget?
-        let previous: SlangCompilationTarget?
+        let previous: CompilationState
         let at: Date
     }
 
@@ -98,25 +98,27 @@ enum SlangCompilationActions {
         for session in sessions { busySessions.remove(ObjectIdentifier(session)) }
     }
 
+    typealias CompilationState = LanguageServerSession.SlangCompilationState
+
     /// Puts `session` back to what it compiled before `previous`'s replacement failed:
     /// the config's build (by a restart that drops the runtime choice), a top level or
-    /// build file, or explore mode.
-    static func restore(_ previous: SlangCompilationTarget?, on session: LanguageServerSession) async {
-        if previous == nil, entry(for: session).configFile != nil {
+    /// build file, or explore mode (chosen again, so it outlives a restart).
+    static func restore(_ previous: CompilationState, on session: LanguageServerSession) async {
+        if previous.target == nil, !previous.isExplore, entry(for: session).configFile != nil {
             try? await session.restart(keepingCompilation: false)
             return
         }
-        switch previous {
-        case .topLevel(let path)?: try? await session.slangSetTopLevel(path)
-        case .buildFile(let path)?: try? await session.slangSetBuildFile(path)
-        case nil: try? await session.slangSetTopLevel("")
-        }
+        try? await session.slangRestore(previous)
     }
 
     /// What the session compiles as far as cmux knows: the mirror, else the session's own record.
-    static func currentTarget(of session: LanguageServerSession) async -> SlangCompilationTarget? {
-        if let target = target(of: session) { return target }
-        return await session.slangCompilationTarget
+    static func currentState(of session: LanguageServerSession) async -> CompilationState {
+        var state = await session.slangCompilationState
+        if let target = target(of: session) {
+            state.target = target
+            state.isExplore = false
+        }
+        return state
     }
 
     // MARK: Top level
@@ -139,7 +141,7 @@ enum SlangCompilationActions {
                 module
             ), at: anchor, isProgress: true)
             _ = await session.takeRecentErrorMessages()
-            let previous = await currentTarget(of: session)
+            let previous = await currentState(of: session)
             let outcome: Outcome
             do {
                 try await session.slangSetTopLevel(session.serverPath(for: documentURI))
@@ -207,7 +209,7 @@ enum SlangCompilationActions {
         if case .topLevel? = target(of: session) {
             recordTarget(nil, for: session)
         }
-        await restore(nil, on: session)
+        await restore(CompilationState(target: nil, isExplore: false), on: session)
     }
 
     // MARK: Build file
@@ -299,7 +301,7 @@ enum SlangCompilationActions {
         defer { progress.close() }
         var primaryOutcome = Outcome(tops: [], instanceCount: 0, summary: SlangDiagnosticsSummary(), serverErrors: [])
         for session in targets {
-            let previous = await currentTarget(of: session)
+            let previous = await currentState(of: session)
             let serverPath = session.serverPath(for: URL(fileURLWithPath: file.path))
             _ = await session.takeRecentErrorMessages()
             var result: Outcome

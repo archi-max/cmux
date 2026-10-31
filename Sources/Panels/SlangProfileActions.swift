@@ -288,7 +288,7 @@ extension SlangCompilationActions {
 
     /// `slang.setBuildFile` with the profile; back to what the server compiled when nothing elaborates.
     private static func applyProfile(_ profile: SlangProfile, to session: LanguageServerSession, editor: FilePreviewLanguageFeatures) async -> Outcome {
-        let previous = await currentTarget(of: session)
+        let previous = await currentState(of: session)
         let serverPath = session.serverPath(for: URL(fileURLWithPath: profile.path))
         _ = await session.takeRecentErrorMessages()
         var outcome: Outcome
@@ -754,7 +754,7 @@ extension SlangCompilationActions {
         Task { @MainActor in
             defer { release([session]) }
             await restore(autoPick.previous, on: session)
-            entry.target = autoPick.previous
+            entry.target = autoPick.previous.target
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         }
     }
@@ -804,7 +804,7 @@ extension SlangCompilationActions {
             ),
             profile.name
         ))
-        let previous = await currentTarget(of: session)
+        let previous = await currentState(of: session)
         let outcome = await applyProfile(profile, to: session, editor: editor)
         slangProfileLogger.info("auto-picked slang profile \(profile.path, privacy: .public): \(outcome.tops.count) tops")
         guard !outcome.tops.isEmpty else { return false }
