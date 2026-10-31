@@ -146,9 +146,14 @@
     return overlay;
   }
 
+  // Tells cmux-commands.js that a menu or dialog opened or closed.
+  function overlayChanged() { document.dispatchEvent(new Event('cmux-overlay-change')); }
+
   function closeMenus() {
+    const hadMenus = openMenus.length > 0;
     openMenus.forEach((m) => m.remove());
     openMenus = [];
+    if (hadMenus) { overlayChanged(); }
     document.removeEventListener('mousedown', onOutsideMouseDown, true);
     document.removeEventListener('keydown', onMenuKey, true);
   }
@@ -246,6 +251,7 @@
     closeMenus();
     if (!items.length) { return; }
     renderMenu(items, x, y, 0, null);
+    overlayChanged();
     document.addEventListener('mousedown', onOutsideMouseDown, true);
     document.addEventListener('keydown', onMenuKey, true);
   }
@@ -257,6 +263,7 @@
     return new Promise((resolve) => {
       closeMenus();
       dialogCount++;
+      overlayChanged();
       const backdrop = document.createElement('div');
       backdrop.className = 'cmux-dialog-backdrop';
       const box = document.createElement('div');
@@ -268,6 +275,7 @@
         done = true;
         dialogCount--;
         backdrop.remove();
+        overlayChanged();
         resolve(value);
       };
       backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) { finish(undefined); } });
