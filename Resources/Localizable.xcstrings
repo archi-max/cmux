@@ -234517,6 +234517,65 @@
         }
       }
     },
+    "filePreview.waveform.message.sessionLoadInterrupted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The waveform file reloaded while the session was loading, so it wasn't loaded. Load it again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "セッションの読み込み中に波形ファイルが再読み込みされたため、セッションは読み込まれませんでした。もう一度読み込んでください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Wellenformdatei wurde neu geladen, während die Sitzung geladen wurde, daher wurde sie nicht geladen. Lade sie erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le fichier de formes d’onde a été rechargé pendant le chargement de la session, qui n’a donc pas été chargée. Chargez-la à nouveau."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أُعيد تحميل ملف الموجة أثناء تحميل الجلسة، لذا لم تُحمَّل. حمّلها مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El archivo de formas de onda se recargó mientras se cargaba la sesión, así que no se cargó. Vuelve a cargarla."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "載入工作階段時波形檔案已重新載入，因此未載入工作階段。請再載入一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载会话时波形文件已重新加载，因此未加载会话。请再次加载。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "세션을 불러오는 동안 파형 파일이 다시 로드되어 세션을 불러오지 못했습니다. 다시 불러오세요."
+          }
+        }
+      }
+    },
     "filePreview.waveform.message.sessionMismatch": {
       "extractionState": "manual",
       "localizations": {

@@ -121,6 +121,7 @@ enum WaveformViewerStrings {
             "messageManySignals": String(localized: "filePreview.waveform.message.manySignals", defaultValue: "You are about to add a large number of signals to the waveform viewer. This may cause performance issues. Do you want to continue?"),
             "messageNotASession": String(localized: "filePreview.waveform.message.notASession", defaultValue: "The file is not a VaporView session."),
             "messageSessionMismatch": String(localized: "filePreview.waveform.message.sessionMismatch", defaultValue: "The session file may not match the active viewer"),
+            "messageSessionLoadInterrupted": String(localized: "filePreview.waveform.message.sessionLoadInterrupted", defaultValue: "The waveform file reloaded while the session was loading, so it wasn't loaded. Load it again."),
             "messageRestoreSession": String(localized: "filePreview.waveform.message.restoreSession", defaultValue: "Restore state from file: %@?"),
             "messageRestoreSessionDetail": String(localized: "filePreview.waveform.message.restoreSessionDetail", defaultValue: "You can set a default behavior and disable this prompt in the settings."),
             "messageMissingSignals": String(localized: "filePreview.waveform.message.missingSignals", defaultValue: "Missing signals: %@"),

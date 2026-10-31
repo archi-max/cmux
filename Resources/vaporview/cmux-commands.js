@@ -466,7 +466,7 @@
     clearTimeout(snapshotTimer);
     snapshotTimer = setTimeout(() => {
       const state = plainJSON(contextSession(webviewContext));
-      if (state) { host().toNative({ type: 'sessionState', state, dirty }); }
+      if (state && !restorePending) { host().toNative({ type: 'sessionState', state, dirty }); }
     }, 250);
   }
 
@@ -556,8 +556,10 @@
       signalName: parts.pop(), scopePath: parts });
   }
 
+  // Resolves to whether the state reached the viewer: false when there was none,
+  // or a reload or open overtook it.
   async function applySession(session, stateChangeType) {
-    if (!session) { return; }
+    if (!session) { return false; }
     // A reload or open that starts while this resolves rows makes it stale: its
     // rows would land in the next file's viewer, and its state would win there.
     const generation = host().loadGeneration;
@@ -571,7 +573,8 @@
       const v = s.name ? await host().findItem(s.name, s.msb, s.lsb, true).catch(() => null) : null;
       selectedSignal = v && v.kind === 'var' ? v.netlistId : undefined;
     }
-    if (host().loadGeneration !== generation) { return; }
+    if (host().loadGeneration !== generation) { return false; }
+    restorePending = false;
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
       extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
       altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
@@ -583,6 +586,7 @@
       host().log(text);
       ui().toast(text, 'warning');
     }
+    return true;
   }
 
   // The webview asks for its state after initViewport (restoreState). Its own
@@ -592,22 +596,29 @@
   // state and cmux has read the file (setSessionFile), whichever comes last.
   let restoreAsked = false;
   let sessionFileOffered = false;
+  // While a restore resolves, the viewer's context is empty: cmux keeps its copy.
+  let restorePending = false;
 
   async function restoreState(m) {
     const config = host().config;
     restoreAsked = true;
+    restorePending = false;
+    // cmux's kept state is cleared only once it reached the viewer: a reload
+    // that overtakes the apply carries it on (host.js reload).
     if (m.state) {
       sessionFileOffered = true;
-      config.restore = null;
-      await applySession(m.state, StateChangeType.Restore);
+      restorePending = true;
+      if (await applySession(m.state, StateChangeType.Restore)) { config.restore = null; }
       return;
     }
     if (config.restore && config.restore.state) {
       sessionFileOffered = true;
+      restorePending = true;
       const restore = config.restore;
-      config.restore = null;
-      await applySession(restore.state, StateChangeType.Restore);
-      setDirty(!!restore.dirty);
+      if (await applySession(restore.state, StateChangeType.Restore)) {
+        config.restore = null;
+        setDirty(!!restore.dirty);
+      }
       return;
     }
     await offerSessionFile();
@@ -634,10 +645,11 @@
       if (answer === 'settings') { showSettings(); return; }
       if (answer !== 'yes') { return; }
     }
-    await loadSessionText(file.text, file.path);
+    await loadSessionText(file.text, file.path, mode === 'Ask');
   }
 
-  async function loadSessionText(text, path) {
+  // userStarted: the user picked the file or said yes, so an interrupted load is reported.
+  async function loadSessionText(text, path, userStarted) {
     let data;
     try {
       data = JSON.parse(text);
@@ -652,8 +664,11 @@
     if (data.fileName && host().config.path && data.fileName !== host().config.path) {
       ui().toast(S().messageSessionMismatch, 'warning');
     }
-    await applySession(data, StateChangeType.File);
-    setDirty(false);
+    if (await applySession(data, StateChangeType.File)) {
+      setDirty(false);
+    } else if (userStarted) {
+      ui().toast(S().messageSessionLoadInterrupted, 'warning');
+    }
   }
 
   // Save Vaporview Session...: cmux always asks where, as VaporView's command does.
@@ -1080,6 +1095,7 @@
     setDirty(false);
     restoreAsked = false;
     sessionFileOffered = false;
+    restorePending = false;
     if (listenersInstalled) { return; }
     listenersInstalled = true;
     document.addEventListener('keydown', (e) => handleKey(e, false), true);
@@ -1107,7 +1123,7 @@
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
     sessionFailed: ({ message }) => ui().toast(format(S().messageSessionSaveFailed, message), 'error'),
     applySessionFile: ({ text, path, error }) => (error
-      ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path)),
+      ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path, true)),
     sessionSnapshot: () => ({ state: plainJSON(contextSession(webviewContext)), dirty }),
     commandIds: () => Object.keys(COMMANDS),
     menus: MENUS,

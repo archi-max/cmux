@@ -592,7 +592,10 @@
     if (!frameLoaded) { return open(Object.assign({}, config, next || {})); }
     const generation = ++loadGeneration;
     const snapshot = window.cmuxCommands.sessionSnapshot();
-    config = Object.assign({}, config, next || {}, { restore: snapshot.state ? snapshot : config.restore || null });
+    // A restore that hasn't reached the viewer yet wins over the viewer's
+    // (still empty) context; otherwise the context is the state to bring back.
+    const unapplied = config.restore && config.restore.state ? config.restore : null;
+    config = Object.assign({}, config, next || {}, { restore: unapplied || (snapshot.state ? snapshot : null) });
     window.cmuxCommands.willReload();
     closeBackend();
     doc.metadata = null;
