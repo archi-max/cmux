@@ -269,6 +269,47 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(fragmentEditor.session.asked == ["tb_wrapper.dfp_ready"], "the cone asked at the fragment's place: \(fragmentEditor.session.asked)")
     expect(page.highlightCalls.last == [["tb_wrapper", "dfp_ready"]], "its row lights up: \(String(describing: page.highlightCalls.last))")
 
+    // The RTL item in the debugger's strip: what the editors did with this cycle, or why not.
+    page.rtlStatuses.removeAll()
+    page.rtlShownTimes.removeAll()
+    FilePreviewLanguageFeatures.all = []
+    WaveformDebuggerRTLStatus.report(waveform)
+    let none = page.rtlStatuses.last
+    expect(none?["ok"] as? Bool == false && none?["wait"] as? Bool == false && (none?["text"] as? String)?.contains("SystemVerilog") == true,
+           "no editor: says to open one, and play does not wait: \(String(describing: none))")
+    FilePreviewLanguageFeatures.all = [editor]
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: editor, textView: textView, lines: lines, waveform: waveform, time: 15,
+        values: [:], instances: [:], reasons: ["cpu": .notPlaced]
+    ))
+    await settle()
+    let unplaced = page.rtlStatuses.last
+    expect(unplaced?["ok"] as? Bool == false && unplaced?["wait"] as? Bool == true
+           && (unplaced?["text"] as? String)?.contains("cpu.sv") == true && (unplaced?["text"] as? String)?.contains("placed") == true,
+           "a file slang can't place: says so and how to fix it: \(String(describing: unplaced))")
+    expect(page.rtlShownTimes == [15], "and the cycle counts as shown (nothing to draw): \(page.rtlShownTimes)")
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    let drawn = page.rtlStatuses.last
+    expect(drawn?["ok"] as? Bool == true && drawn?["text"] as? String == "RTL: cpu.sv", "highlights drawn: names the file: \(String(describing: drawn))")
+    // Two editors: the cycle is shown once both drew it; the one that can't is in the tooltip.
+    FilePreviewLanguageFeatures.all = [editor, otherEditor]
+    page.rtlShownTimes.removeAll()
+    page.previousTimes = [25: 15]
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: editor, textView: textView, lines: lines, waveform: waveform, time: 25, values: [:], instances: [:]
+    ))
+    await settle()
+    expect(page.rtlShownTimes.isEmpty, "one of two editors drew cycle 25: not shown yet: \(page.rtlShownTimes)")
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: otherEditor, textView: other, lines: lines, waveform: waveform, time: 25,
+        values: [:], instances: [:], reasons: ["cpu": .severalInstances(module: "cpu")]
+    ))
+    await settle()
+    let both = page.rtlStatuses.last
+    expect(page.rtlShownTimes == [25], "both drew it: shown: \(page.rtlShownTimes)")
+    expect((both?["tooltip"] as? String)?.contains("other.sv") == true, "the other editor's reason is in the tooltip: \(String(describing: both))")
+
     print(failures == 0 ? "DEBUGGER EDITOR CHECKS PASSED" : "DEBUGGER EDITOR CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
 }

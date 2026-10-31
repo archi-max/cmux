@@ -11,6 +11,8 @@ enum PreviewMode { case text, waveform }
     /// How long cycleAt takes to answer.
     var delay: UInt64 = 0
     var highlightCalls: [[[String]]] = []
+    var rtlStatuses: [[String: Any]] = []
+    var rtlShownTimes: [Int64] = []
     func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
         switch function {
         case "cycleAt":
@@ -19,6 +21,12 @@ enum PreviewMode { case text, waveform }
             var cycle: [String: Any] = ["time": time]
             cycle["previousTime"] = previousTimes[time]
             return cycle
+        case "setRtlStatus":
+            rtlStatuses.append(argument as? [String: Any] ?? [:])
+            return nil
+        case "rtlShown":
+            if let time = ((argument as? [String: Any])?["time"] as? NSNumber)?.int64Value { rtlShownTimes.append(time) }
+            return nil
         case "highlightRows":
             highlightCalls.append((argument as? [String: Any])?["paths"] as? [[String]] ?? [])
             return highlightCalls.last?.count
@@ -58,6 +66,7 @@ final class LanguageServerSession: @unchecked Sendable {
     static func linkable(showingDocumentPath path: String, like editor: FilePreviewLanguageFeatures) -> FilePreviewLanguageFeatures? {
         all.first { $0.path == path }
     }
+    var filePath: String { path }
     var linkPanel: FilePreviewPanel? { nil }
     var linkSession: (session: LanguageServerSession, documentURI: URL)? { (session, URL(fileURLWithPath: path)) }
     var debuggerTextView: NSTextView? { textView }
