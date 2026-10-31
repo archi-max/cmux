@@ -38,6 +38,20 @@
 #                                        relay partial/cancel/fallback, page
 #                                        windowing, hybrid, edges, values, debugger;
 #                                        needs node
+#   ./run.sh windowed-fsdb <ssh-host> <remote-home> <remote.fsdb> <scopes> <signals> [runs]
+#                                        ship gate: windowed (helper v2) vs whole
+#                                        (helper v1) on a real dump, side by side:
+#                                        first draw, pan in the first 5 s, pan,
+#                                        zoom, jumps, next edge, peak RSS. Helpers
+#                                        install under <remote-home> on the host;
+#                                        scopes/signals are comma-separated paths
+#   ./run.sh windowed-launcher <ssh-host> <remote-dir>
+#                                        the real fsdb-helper-v2 build.sh and
+#                                        cmux-helper-v2.sh on the host, in a
+#                                        scratch HOME under <remote-dir>: build,
+#                                        launch, privacy refusals (86), 87,
+#                                        rebuild of a non-private install, a
+#                                        build stopping when its ssh goes away
 #   ./run.sh parity                      terminal-link matcher (50k-char lines),
 #                                        link misses fall through, settings
 #                                        clamps, no page-named save path,
@@ -87,11 +101,26 @@ case "${1:-}" in
     ;;
   windowed)
     command -v node >/dev/null || { echo "windowed: needs node"; exit 2; }
+    # The app builds these in Swift 6 mode; the harness itself is built in 5.
+    swiftc -swift-version 6 -typecheck "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift"
     swiftc -O "$HERE/windowed/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/windowed"
     "$OUT/windowed" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/windowed/mock-helper-v2.cjs" \
       "$OUT" "$OUT/windowed.png" | grep -v '^\[log\]' | tee "$OUT/windowed.log"
     grep -q '^WINDOWED CHECKS PASSED' "$OUT/windowed.log"
+    ;;
+  windowed-launcher)
+    shift
+    if [ $# -lt 2 ]; then echo "windowed-launcher: needs <ssh-host> <remote-dir>"; exit 2; fi
+    bash "$HERE/windowed-fsdb/launcher-check.sh" "$ASSETS/fsdb-helper-v2" "$1" "$2"
+    ;;
+  windowed-fsdb)
+    shift
+    if [ $# -lt 5 ]; then echo "windowed-fsdb: needs <ssh-host> <remote-home> <remote.fsdb> <scopes> <signals> [runs]"; exit 2; fi
+    swiftc -O "$HERE/windowed-fsdb/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/windowed-fsdb"
+    "$OUT/windowed-fsdb" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/windowed-fsdb/bench.js" \
+      "$1" "$2" "$3" "$4" "$5" "${6:-1}" "${GATE_OUT:-$OUT/windowed-fsdb.json}" | grep -v '^\[log\]'
     ;;
   debugger)
     swiftc -O "$HERE/debugger/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
