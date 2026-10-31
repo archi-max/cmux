@@ -268,6 +268,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await runReviewChecks()
     await runEvaluateChecks()
     await runConditionChecks()
+    await runReview42Checks()
     await runLineChecks()
     print(failures == 0 ? "BREAKPOINT CHECKS PASSED" : "BREAKPOINT CHECKS FAILED: \(failures)")
     snap()
@@ -591,6 +592,51 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("stop()")
   }
 
+  /// Review of 42ef706: M4 (sized equals values zero-extend), M5 (no raw changes kept; line paths capped).
+  func runReview42Checks() async {
+    await removeAll()
+    _ = await dbg("stop()")
+    // M4: 4'b?1 on the 8-bit data is 0000???1: 'ha5 (305) and 'h5a (605) do not match.
+    let sized = await add("data", "equals", value: "4'b?1")
+    await setMarker(0)
+    let none = await dbg("continue({ dir: 1 })")
+    expect(sized != nil && none?["reason"] as? String == "end", "4'b?1 zero-extends (no hit on 'ha5): \(String(describing: none?["hit"]))")
+    await removeAll()
+    // 4'bx1 is 0000xxx1, not all x: no hit where data is all x (505).
+    _ = await add("data", "equals", value: "4'bx1")
+    await setMarker(0)
+    let xs = await dbg("continue({ dir: 1 })")
+    expect(xs?["reason"] as? String == "end", "4'bx1 zero-extends: \(String(describing: xs?["hit"]))")
+    await removeAll()
+    // A decimal x digit is a value (4'dx); unsized 'hx fills the width.
+    expect(await add("data", "equals", value: "4'dx") != nil, "4'dx is accepted")
+    await removeAll()
+    _ = await add("data", "equals", value: "'hx")
+    await setMarker(0)
+    let allX = await go(1, expect: 5)
+    expect(allX.hit?["landed"] as? Int == 5 || allX.hit?["landed"] as? Int == 505, "'hx matches the all-x data: \(String(describing: allX.hit))")
+    await removeAll()
+
+    // M5: once a search has its hit times, the signals' raw changes are let go.
+    _ = await add("mode")
+    _ = await add("state")
+    await setMarker(0)
+    _ = await dbg("continue({ dir: 1 })")
+    let cached = await call("return cmuxWaveform.debugger.cacheSizes()") as? [String: Any]
+    expect(cached?["changes"] as? Int == 0, "no raw changes kept after the search: \(String(describing: cached))")
+    await removeAll()
+    // A line breakpoint watches at most 64 signals, and its row says so.
+    let many = (0..<100).map { _ in "['top', 'mode']" }.joined(separator: ", ")
+    _ = await dbg("setLineBreakpoints({ items: [{ key: 'big', label: 'core.sv:9', paths: [\(many)], enabled: true }] })")
+    let capped = await call("""
+      const b = cmuxWaveform.debugger.breakpoints()[0];
+      const row = document.querySelector('#cmux-breakpoints .cmux-breakpoint .label');
+      return [b.paths.length, row ? row.title : ''];
+    """) as? [Any]
+    expect(capped?.first as? Int == 64 && (capped?.last as? String)?.contains("64 of 100") == true, "line paths capped at 64, said: \(String(describing: capped))")
+    _ = await dbg("setLineBreakpoints({ items: [] })")
+  }
+
   /// Conditional breakpoints: a hit counts only when its condition is true at the posedge it lands on.
   func runConditionChecks() async {
     await removeAll()
@@ -865,7 +911,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerExprBadReplication:'A replication count must be at least 1', debuggerExprUnknownName:'%@ is not in this waveform',
    debuggerExprNoValue:'%@ has no value at the marker', debuggerExprNoMarker:'Put the marker on a cycle first.',
    debuggerBreakpointIf:'%1$@ if %2$@', debuggerEditCondition:'Edit Condition…', debuggerConditionPrompt:'Break only when this is true at the clock edge',
-   debuggerConditionError:'Condition of %1$@: %2$@',
+   debuggerConditionError:'Condition of %1$@: %2$@', debuggerLinePathsCapped:'%1$@: watching the first %2$@ of %3$@ signals',
    debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
   """
 
