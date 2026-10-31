@@ -41,8 +41,9 @@ enum WaveformDebugger {
 
     private final class Box {
         var state = PageState()
-        /// A Locals request is on its way to the page (the page itself skips one for the same scope).
-        var settingLocals = false
+        /// One Locals request at a time; the caret's newest scope is sent after it
+        /// (the page itself skips a request for the scope it shows).
+        var locals = LatestRequestCoalescer<[String]>()
         /// The row selection last highlighted in the editor.
         var selectedPath: [String]?
     }
@@ -238,11 +239,14 @@ enum WaveformDebugger {
               let instance = editor.instanceAtCaret else { return }
         let path = HierarchyPathMapping.segments(instance.dump)
         let box = box(waveform)
-        guard !path.isEmpty, !box.settingLocals else { return }
-        box.settingLocals = true
+        guard !path.isEmpty, let send = box.locals.want(path) else { return }
+        sendLocals(send, to: waveform, box: box)
+    }
+
+    private static func sendLocals(_ path: [String], to waveform: FilePreviewPanel, box: Box) {
         Task { @MainActor in
             _ = await waveform.nativeViewSessions.waveform.callDebugger("setLocals", argument: ["path": path])
-            box.settingLocals = false
+            if let next = box.locals.finished() { sendLocals(next, to: waveform, box: box) }
         }
     }
 

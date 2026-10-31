@@ -507,6 +507,11 @@
 
   function addVariables(vars, groupPath, index) {
     if (!vars.length) { return; }
+    // Next to a selected row of the debugger's Locals, a new row would land in
+    // Locals (and go with its next refill): it goes to the top level instead.
+    if (groupPath === undefined && index === undefined && hostApi.topLevelIndexOutsideTransient) {
+      index = hostApi.topLevelIndexOutsideTransient();
+    }
     toWebview({ command: 'add-variable', signalList: vars.map((v) => ({ signalId: v.signalId, signalWidth: v.width,
       signalName: v.name, scopePath: v.scopePath, netlistId: v.netlistId, type: v.type, encoding: v.encoding,
       enumType: v.enumType, msb: v.msb, lsb: v.lsb })), groupPath, index });
@@ -687,6 +692,7 @@
     contextListeners: [],
     quietEvents: 0,
     isTransientGroup: null,
+    topLevelIndexOutsideTransient: null,
     log: (message) => toNative({ type: 'log', message: String(message) }),
     get config() { return config; },
     // Bumped by every open and reload: work started for an older one is stale.
