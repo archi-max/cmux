@@ -66,7 +66,14 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
         .init(editor: editor, textView: textView, lines: lines, waveform: waveform, time: 15,
               values: ["cpu": now], instances: ["cpu": .init(design: "tb.dut", dump: scope)])
     }
-    func settle() async { try? await Task.sleep(nanoseconds: 300_000_000) }
+    // The highlight jobs, then the page calls they (and the RTL status) queued on the main actor:
+    // the stand-in page answers those at once, so letting the queue run once is enough.
+    func settle() async {
+        for _ in 0..<3 {
+            await WaveformDebuggerEditorHighlights.settled()
+            for _ in 0..<10 { await Task.yield() }
+        }
+    }
 
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
@@ -116,7 +123,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     try? await Task.sleep(nanoseconds: 100_000_000)
     WaveformDebuggerEditorHighlights.recompiled(editor.session)
-    try? await Task.sleep(nanoseconds: 700_000_000)
+    await settle()
     editor.session.delay = 0
     let askedBefore = editor.session.asked.count
     WaveformDebuggerEditorHighlights.valuesShown(shown())
@@ -182,7 +189,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     try? await Task.sleep(nanoseconds: 50_000_000)
     WaveformDebuggerEditorHighlights.valuesShown(shown())
-    try? await Task.sleep(nanoseconds: 400_000_000)
+    await settle()
     page.delay = 0
     expect(isWarm(attribute(.backgroundColor, line: 4)), "a superseded refresh does not wipe the newer one")
 
@@ -627,7 +634,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
             editor: editor, textView: textView, lines: lines, waveform: waveform, time: 25,
             values: ["core": shownValues], instances: ["core": .init(design: "tb.core", dump: scope)]
         ))
-        await WaveformDebuggerEditorHighlights.settled(textView)
+        await WaveformDebuggerEditorHighlights.settled()
     }
     let bottom = (all.count - 6)..<all.count
     // The top: count changed and is declared here, but its driver line is off screen.
@@ -690,7 +697,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
         values: ["a": ["x": "01", "y": "01", "clk": "1"], "b": ["z": "00", "clk": "1"]],
         instances: ["a": .init(design: "a", dump: "TOP.a"), "b": .init(design: "b", dump: "TOP.b")]
     ))
-    await WaveformDebuggerEditorHighlights.settled(textView)
+    await WaveformDebuggerEditorHighlights.settled()
     let layout = textView.layoutManager!
     let dimmed = lines.indices.filter {
         layout.temporaryAttribute(.foregroundColor, atCharacterIndex: lines[$0].contentRange.location, effectiveRange: nil) != nil
