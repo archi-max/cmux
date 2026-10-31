@@ -19,6 +19,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
                         styleMask: [.titled], backing: .buffered, defer: false)
   let scheme = WaveformViewerSchemeHandler(assetRoot: assetRoot)
   var web: WKWebView!
+  var lineEvents: [[String: Any]] = []
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -260,8 +261,53 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(shown?.contains("Break When Changes") == true && shown?.contains("Break When Equals…") == true,
            "a signal row's context menu has both: \(String(describing: shown))")
 
+    await runLineChecks()
     print(failures == 0 ? "BREAKPOINT CHECKS PASSED" : "BREAKPOINT CHECKS FAILED: \(failures)")
     snap()
+  }
+
+  /// Line breakpoints (cmux sends them: the editor's gutter and F9): any of the line's signals changing hits.
+  func runLineChecks() async {
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
+    _ = await call("""
+      return cmuxWaveform.debugger.setLineBreakpoints({ items: [
+        { key: 'core.sv:4', label: 'core.sv:4', paths: [['top', 'state'], ['top', 'irq']], enabled: true },
+        { key: 'core.sv:9', label: 'core.sv:9', paths: [], enabled: true },
+      ] })
+    """)
+    let listed = await list()
+    expect(listed.map { $0["kind"] as? String } == ["line", "line"] && listed.first?["key"] as? String == "core.sv:4"
+           && listed.first?["label"] as? String == "core.sv:4", "line breakpoints listed: \(listed)")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    var hits: [Int] = []
+    for expected in [55, 95, 195] {
+      let (hit, _) = await go(1, expect: expected)
+      hits.append(hit?["landed"] as? Int ?? -1)
+    }
+    expect(hits == [55, 95, 195], "a line hits when any of its signals changes (irq, then state): \(hits)")
+    let (back, _) = await go(-1, expect: 95)
+    expect(back?["landed"] as? Int == 95, "and in reverse: \(String(describing: back))")
+    let message = await toasts()
+    expect(message.contains { $0.hasPrefix("Breakpoint: core.sv:4 at ") }, "the hit names the line: \(message)")
+    let unplaced = await call("""
+      const rows = Array.from(document.querySelectorAll('#cmux-breakpoints .cmux-breakpoint'));
+      return rows.map((r) => r.querySelector('.label').title);
+    """) as? [String]
+    expect(unplaced?.last?.contains("not placed") == true, "a line with no signals in the waveform says so: \(String(describing: unplaced))")
+    // The list's checkbox and remove button tell cmux, which owns line breakpoints.
+    lineEvents.removeAll()
+    _ = await call("document.querySelector('#cmux-breakpoints .cmux-breakpoint input').click(); return null")
+    _ = await call("document.querySelectorAll('#cmux-breakpoints .cmux-breakpoint .remove')[1].click(); return null")
+    await sleep(100)
+    let told = lineEvents.map { "\($0["key"] as? String ?? "?"):\($0["enabled"] as? Bool ?? true):\($0["removed"] as? Bool ?? false)" }
+    expect(told == ["core.sv:4:false:false", "core.sv:9:true:true"], "cmux is told: \(told)")
+    expect((await list()).map { $0["enabled"] as? Bool } == [false], "and the page shows it: \(await list())")
+    // A new set replaces the lines, and leaves signal breakpoints alone.
+    _ = await call("return cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'busy'], kind: 'change' })")
+    _ = await call("return cmuxWaveform.debugger.setLineBreakpoints({ items: [{ key: 'core.sv:5', label: 'core.sv:5', paths: [['top', 'data']], enabled: true }] })")
+    let replaced = (await list()).map { ($0["kind"] as? String ?? "") + ":" + ($0["label"] as? String ?? "") }
+    expect(replaced == ["change:top.busy changes", "line:core.sv:5"], "lines replaced, the signal breakpoint kept: \(replaced)")
   }
 
   func start() {
@@ -293,6 +339,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       print("[\(m.name)]", m.body)
       return
     }
+    if type == "debugger", body["event"] as? String == "lineBreakpoint" { lineEvents.append(body); return }
     if ["debugger", "event", "sessionState", "log", "keyState", "context", "signalData"].contains(type) { return }
     print("[\(m.name)]", type)
     if type == "ready" {
@@ -320,7 +367,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerBreakpointHit:'Breakpoint: %1$@ at %2$@ (cycle %3$@)', debuggerNoHitForward:'No breakpoint hit before the end.',
    debuggerNoHitBack:'No breakpoint hit before the start.', debuggerNoBreakpoints:'No breakpoints are enabled.',
    debuggerBadValue:'“%1$@” is not a value for a %2$@-bit signal.', debuggerTooManyChanges:'%@ changes too often to search here.',
-   debuggerBreakpointSignalGone:'%@ is not in this waveform.'}
+   debuggerBreakpointSignalGone:'%@ is not in this waveform.',
+   debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
   """
 
   func snap() {
