@@ -233,9 +233,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     snapImage(suffix: "-highlight")
     await sleep(300)
     // Locals refilled: state's new row is lit too.
+    viewerEvents.removeAll()
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core', 'alu'] })")
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })")
     await sleep(400)
+    let leaked = viewerEvents.filter { $0 == "signalSelect" }.count
+    expect(leaked == 0, "refilling Locals raises no signalSelect for cmux: \(leaked)")
     let relit = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
     expect((relit ?? 0) >= 2, "rows made again stay lit: \(String(describing: relit))")
     // An earlier, slower highlight call does not undo a later one.
@@ -309,8 +312,6 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return cmuxWaveform.debugger === before && Object.isFrozen(before);
     """) as? Bool
     expect(tamper == true, "debugger API is frozen and non-writable")
-    let leaked = viewerEvents.filter { $0 == "signalSelect" }.count
-    expect(leaked == 0, "the debugger's own row changes raise no signalSelect for cmux: \(leaked)")
     print(failures == 0 ? "DEBUGGER CHECKS PASSED" : "DEBUGGER CHECKS FAILED: \(failures)")
     snap()
   }
