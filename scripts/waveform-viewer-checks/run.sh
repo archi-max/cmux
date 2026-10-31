@@ -9,6 +9,8 @@
 #                                        range/router/FrameParser unit checks
 #   ./run.sh link                        the SystemVerilog editor's source link
 #                                        API (link.* in host.js) on link.vcd
+#   ./run.sh debugger                    the waveform debugger (cmux-debugger.js):
+#                                        clock, stepping, play, Locals, highlights
 #   ./run.sh fsdb-values <ssh-host> <shown> <unshown> <over-cap> <mid1> <mid2> <mid3>
 #                                        inline values from a remote FSDB (dump
 #                                        paths of: a signal to show, one not
@@ -29,7 +31,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ASSETS="$ROOT/Resources/vaporview"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/cmux-waveform-checks.XXXXXX")"
-trap 'rm -rf "$OUT"' EXIT
+trap '[ -n "${KEEP_OUT:-}" ] || rm -rf "$OUT"' EXIT
 case "${1:-}" in
   xss)
     swiftc -O "$HERE/xss/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
@@ -41,6 +43,15 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/link"
     "$OUT/link" "$ASSETS" "$HERE/link/link.vcd" "$OUT/link.png" | tee "$OUT/link.log"
     grep -q '^LINK CHECKS PASSED' "$OUT/link.log"
+    ;;
+  debugger)
+    swiftc -O "$HERE/debugger/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger"
+    python3 "$HERE/debugger/make-vcd.py" "$OUT"
+    for dump in small stepping; do
+      "$OUT/debugger" "$ASSETS" "$OUT/$dump.vcd" "$OUT/$dump.png" | tee "$OUT/$dump.log"
+      grep -q '^DEBUGGER CHECKS PASSED' "$OUT/$dump.log"
+    done
     ;;
   fsdb-values)
     shift
@@ -71,5 +82,5 @@ case "${1:-}" in
       -o "$OUT/parity"
     "$OUT/parity" "$ASSETS" "$HERE/parity/parity.vcd"
     ;;
-  *) sed -n '2,28p' "$0"; exit 2 ;;
+  *) sed -n "2,$(( $(grep -n '^set -euo' "$0" | cut -d: -f1) - 1 ))p" "$0"; exit 2 ;;
 esac
