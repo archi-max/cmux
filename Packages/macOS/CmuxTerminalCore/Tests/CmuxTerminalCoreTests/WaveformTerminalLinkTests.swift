@@ -33,6 +33,15 @@ import Testing
         #expect(link("open main.sv now", at: "main") == nil)
     }
 
+    @Test func signalsNamedLikeExtensionsAndMultiDimIndexes() {
+        #expect(link("mismatch on tb.dut.c now", at: "dut") == .instancePath("tb.dut.c"))
+        #expect(link("check tb.u_fifo.do here", at: "u_fifo") == .instancePath("tb.u_fifo.do"))
+        #expect(link("read tb.mem[3][2] =", at: "mem") == .instancePath("tb.mem[3][2]"))
+        #expect(link("at tb.dut.pc.", at: "dut") == .instancePath("tb.dut.pc"))
+        // Not a prefix of a longer word: the path runs on into `/x`.
+        #expect(link("see top.core.alu/x", at: "core") == nil)
+    }
+
     @Test func instancePathsFollowTheSettingAndTopScopes() {
         #expect(link("signal top.core.acc", at: "core", instancePaths: false) == nil)
         #expect(link("signal top.core.acc", at: "core", tops: ["dut"]) == nil)
@@ -62,7 +71,9 @@ import Testing
             for column in [0, 25_000, 49_999] {
                 _ = WaveformTerminalLink.detect(in: line, column: column, topScopes: ["top"], instancePaths: true)
             }
-            #expect(Date().timeIntervalSince(start) < 0.5)
+            // Quadratic scanning took about a minute here; linear is milliseconds,
+            // so this bound holds in a debug build on a loaded CI machine.
+            #expect(Date().timeIntervalSince(start) < 3)
         }
         let line = String(repeating: "top.a ", count: 10_000) + "@ 5"
         #expect(WaveformTerminalLink.detect(

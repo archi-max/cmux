@@ -51,6 +51,11 @@ for (line, target) in [
   check(link(line, at: target) == nil, "time inside a word: \(line)")
 }
 check(link("signal top.core.acc", at: "core", instancePaths: false) == nil, "setting off")
+check(link("mismatch on tb.dut.c now", at: "dut") == .instancePath("tb.dut.c"), "signal named c")
+check(link("check tb.u_fifo.do here", at: "u_fifo") == .instancePath("tb.u_fifo.do"), "signal named do")
+check(link("read tb.mem[3][2] =", at: "mem") == .instancePath("tb.mem[3][2]"), "multi-dim index")
+check(link("at tb.dut.pc.", at: "dut") == .instancePath("tb.dut.pc"), "sentence period")
+check(link("see top.core.alu/x", at: "core") == nil, "prefix of a path")
 check(WaveformTerminalLink.detect(in: String(repeating: "9", count: 400) + " ns", column: 399, topScopes: [], instancePaths: false) == nil,
       "non-finite or cut time")
 for filler in ["1", ".", ",", "1 "] {
