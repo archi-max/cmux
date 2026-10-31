@@ -506,35 +506,73 @@
   };
 
   // ---- source link (SystemVerilog editor <-> waveform) ----
-  // cmux calls these through callAsyncJavaScript. Paths are dump paths
-  // ("top_tb.dut.pc"); cmux maps them to and from design paths.
-  //   scopeChildren(path) -> [{ name, isScope }] | null   ('' lists the tops)
+  // cmux calls these through callAsyncJavaScript. A path is a dump path as an
+  // array of segments (["top_tb", "dut", "pc"]), so names holding dots
+  // (escaped identifiers, "\a.b ") survive; cmux maps them to and from design
+  // paths. Escaped names match with or without their backslash and trailing space.
+  //   scopeChildren(path) -> [{ name, isScope }] | null   ([] lists the tops; at most 5000)
   //   hasSignal(path) -> bool
   //   addSignal(path) -> bool   adds it unless shown, then selects it
   //   selectSignal(path) -> bool
   //   setMarker(time)
-  //   selectedSignal() -> path | null
+  //   selectedSignal() -> path | null   (null once the selected row is gone)
   // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
   const link = (() => {
-    let selectedPath = null;
+    const maxChildren = 5000;
+    let selectedId = null;
+    // netlistId -> time of an add the viewer has not reported back yet.
+    const pendingAdds = new Map();
 
+    // eventData.netlistId is an array of the rows' ids.
+    const firstId = (data) => [].concat(data && data.netlistId != null ? data.netlistId : [])[0] ?? null;
     const forwardEvent = webviewHandlers.emitEvent;
     webviewHandlers.emitEvent = (m) => {
       forwardEvent(m);
-      if (m.eventType === 'signalSelect' && m.eventData && m.eventData.instancePath) {
-        selectedPath = m.eventData.instancePath[0] || null;
+      if (m.eventType === 'signalSelect') { selectedId = firstId(m.eventData); }
+      if (m.eventType === 'removeVariable') {
+        const removed = firstId(m.eventData);
+        pendingAdds.delete(removed);
+        if (removed === selectedId) { selectedId = null; }
       }
     };
+
+    const plainName = (name) => {
+      const s = String(name);
+      return s.startsWith('\\') ? s.slice(1).trimEnd() : s;
+    };
+
+    function segments(path) {
+      if (Array.isArray(path)) { return path.map(String); }
+      return path ? String(path).split('.') : [];
+    }
+
+    // Like findItem, over segments; an exact name wins over an escaped spelling of it.
+    async function findLinkItem(path, varOnly) {
+      const parts = segments(path);
+      let items = doc.netlist;
+      for (let i = 0; i < parts.length; i++) {
+        const last = i === parts.length - 1;
+        let named = items.filter((x) => x.name === parts[i]);
+        if (!named.length) { named = items.filter((x) => plainName(x.name) === plainName(parts[i])); }
+        if (last) {
+          return named.find((x) => x.kind === 'var') || (varOnly ? null : named.find((x) => x.kind === 'scope') || null);
+        }
+        const scope = named.find((x) => x.kind === 'scope');
+        if (!scope) { return null; }
+        items = await getChildren(scope);
+      }
+      return null;
+    }
 
     async function scopeChildren(path) {
       if (!backend) { return null; }
       let items = doc.netlist;
-      for (const part of path ? path.split('.') : []) {
-        const item = items.find((x) => x.name === part);
-        if (!item || item.kind !== 'scope') { return null; }
-        items = await getChildren(item);
+      if (segments(path).length) {
+        const scope = await findLinkItem(path, false);
+        if (!scope || scope.kind !== 'scope') { return null; }
+        items = await getChildren(scope);
       }
-      return items.map((x) => ({ name: x.name, isScope: x.kind === 'scope' }));
+      return items.slice(0, maxChildren).map((x) => ({ name: x.name, isScope: x.kind === 'scope' }));
     }
 
     function isShown(v) {
@@ -543,19 +581,32 @@
     }
 
     async function selectSignal(path) {
-      const v = await findVariable(path);
+      const v = await findLinkItem(path, true);
       if (!v || !initSent) { return false; }
       toWebview({ command: 'setSelectedSignal', netlistId: v.netlistId });
       return true;
     }
 
     async function addSignal(path) {
-      const v = await findVariable(path);
+      const v = await findLinkItem(path, true);
       if (!v || !initSent) { return false; }
-      if (!isShown(v)) { addVariable(v); }
+      // displayedSignals arrives with the next contextUpdate; a second add before it would duplicate the row.
+      const pending = pendingAdds.get(v.netlistId);
+      if (!isShown(v) && !(pending && Date.now() - pending < 2000)) {
+        pendingAdds.set(v.netlistId, Date.now());
+        addVariable(v);
+      }
       // add-variable is handled before this message, so the new row exists.
       toWebview({ command: 'setSelectedSignal', netlistId: v.netlistId });
       return true;
+    }
+
+    const pathOf = (v) => (v.scopePath || []).concat([v.name]);
+
+    function selectedSignal() {
+      const v = selectedId == null ? null : doc.items.get(selectedId);
+      if (!v || !isShown(v)) { selectedId = null; return null; }
+      return pathOf(v);
     }
 
     // Double-click on a signal's name in the viewer's label column.
@@ -572,20 +623,21 @@
           return;
         }
         if (context.webviewSection !== 'signal' || !context.signalName) { return; }
-        const path = context.scopePath ? context.scopePath + '.' + context.signalName : context.signalName;
+        const v = doc.items.get(context.netlistId);
+        const path = v ? pathOf(v) : segments(context.scopePath).concat([String(context.signalName)]);
         toNative({ type: 'revealInSource', path });
       });
     }
     iframe.addEventListener('load', attachToFrame);
 
-    return {
+    return Object.freeze({
       scopeChildren,
-      hasSignal: async (path) => !!(await findVariable(path)),
+      hasSignal: async (path) => !!(await findLinkItem(path, true)),
       addSignal,
       selectSignal,
       setMarker: (time) => { toWebview({ command: 'setMarker', time: Number(time), markerType: 0 }); },
-      selectedSignal: () => selectedPath,
-    };
+      selectedSignal,
+    });
   })();
 
   window.cmuxWaveform = { open, reload, setTheme, setStatus, applyThemeTo, fromWebview, viewerContext, commandHandlers,
@@ -594,7 +646,10 @@
     runCommand: ({ command, args }) => window.cmuxCommands.run(command, args),
     sessionSaved: (m) => window.cmuxCommands.sessionSaved(m),
     sessionFailed: (m) => window.cmuxCommands.sessionFailed(m),
-    applySessionFile: (m) => window.cmuxCommands.applySessionFile(m), link };
+    applySessionFile: (m) => window.cmuxCommands.applySessionFile(m) };
+  // Fixed before the viewer frame loads, so a script in it can't swap the link cmux trusts.
+  Object.defineProperty(window.cmuxWaveform, 'link', { value: link, writable: false, configurable: false, enumerable: true });
+  Object.defineProperty(window, 'cmuxWaveform', { value: window.cmuxWaveform, writable: false, configurable: false });
   applyThemeTo(document);
   toNative({ type: 'ready' });
 })();
