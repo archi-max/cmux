@@ -284,9 +284,14 @@ enum WaveformDebuggerEditorHighlights {
             drawn.attributes.append((range, key, value))
         }
         let driverStarts = Set(result.driverLines.map(\.location))
-        let drivingModules = Set(lines.filter { driverStarts.contains($0.contentRange.location) }.compactMap(\.module))
+        // A module with anything lit on screen (a driver line, or a changed signal whose driver
+        // is scrolled away) has its other lines dimmed, so every screen of it reads the same.
+        let litModules = Set(lines.filter { line in
+            driverStarts.contains(line.contentRange.location)
+                || result.changedIdentifiers.contains { NSLocationInRange($0.location, line.contentRange) }
+        }.compactMap(\.module))
         let dimmed = (textView.textColor ?? .textColor).withAlphaComponent(0.4)
-        for line in lines where line.module.map(drivingModules.contains) == true && !driverStarts.contains(line.contentRange.location) {
+        for line in lines where line.module.map(litModules.contains) == true && !driverStarts.contains(line.contentRange.location) {
             add(.foregroundColor, dimmed, line.contentRange)
         }
         for range in result.driverLines {
