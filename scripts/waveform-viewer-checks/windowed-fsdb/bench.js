@@ -121,6 +121,34 @@
     }
     R.nextEdgeNearMs = summary(near);
     R.nextEdgeFarMs = summary(far);
+    // Text-format value search far from anything loaded (windowed: no host bit pattern, so
+    // exact chunks are fetched and scanned in the page): RISC-V text on a 32-bit row.
+    if (wc()) {
+      const insn = vars.find((v) => v.width === 32 && /insn|inst/i.test(v.name) && wc().isWindowed(v.signalId))
+        || vars.find((v) => v.width === 32 && wc().isWindowed(v.signalId));
+      if (insn) {
+        toViewer({ command: 'setDisplayFormat', netlistId: insn.netlistId, numberFormat: 'riscv' });
+        toViewer({ command: 'setSelectedSignal', netlistId: insn.netlistId });
+        await sleep(400);
+        const item = vw().__vvRows.rowItems.find((r) => r && r.signalId === insn.signalId);
+        R.textSearch = { signal: insn.name, format: item && item.valueFormat.id, cases: [] };
+        // A match known to be far: the instruction in effect at 90% of the dump, as text.
+        const farBits = (await host().currentBackend.valuesAt([insn], Math.floor(T * 0.9)))[0];
+        const farText = item.valueFormat.formatString(farBits, 32, !item.valueFormat.is9State(farBits));
+        R.textSearch.farText = farText;
+        const exactText = '^' + farText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$';
+        for (const [text, at] of [[exactText, 0.05], ['csrr', 0.05], ['ecall|ebreak', 0.02], ['fence\\.i', 0.02]]) {
+          toViewer({ command: 'setMarker', time: Math.floor(T * at) + 5, markerType: 0 });
+          await nextMarker(); await sleep(100);
+          const before = lastMarker, t0 = performance.now();
+          wc().searchValue(item, item.valueFormat.parseSearchValue(text), 1);
+          await sleep(5);
+          await waitFor(() => !wc().navBusy, 180000);
+          await sleep(50);
+          R.textSearch.cases.push({ text, from: Math.floor(T * at), ms: Math.round(performance.now() - t0), found: lastMarker !== before ? lastMarker : null });
+        }
+      }
+    }
     R.relay = window.cmuxWaveform.v2Stats();
     return R;
   };

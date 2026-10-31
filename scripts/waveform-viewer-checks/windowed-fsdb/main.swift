@@ -119,7 +119,9 @@ final class Run: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 func main() async {
   var all: [[String: Any]] = []
   for run in 1...runs {
-    for loading in [WaveformFSDBHelper.Loading.auto, .whole] {
+    // GATE_LOADINGS=auto (or whole) runs one side only.
+    let only = ProcessInfo.processInfo.environment["GATE_LOADINGS"]
+    for loading in [WaveformFSDBHelper.Loading.auto, .whole] where only == nil || only == loading.rawValue {
       let r = Run(loading: loading)
       if let error = await r.open() {
         print("run \(run) \(loading.rawValue): open failed: \(error)")
