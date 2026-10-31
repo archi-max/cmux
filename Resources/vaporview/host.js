@@ -87,6 +87,21 @@
     messageEl.classList.toggle('visible', !!(title || detail));
   }
 
+  // Why a remote FSDB runs the classic (whole-signal) helper, with a Retry
+  // Windowed button; an empty argument hides it.
+  function setFallbackNotice(notice) {
+    const el = document.getElementById('status-fallback');
+    if (!el) { return; }
+    const shown = !!(notice && notice.message);
+    el.hidden = !shown;
+    if (!shown) { return; }
+    el.querySelector('.text').textContent = notice.message;
+    el.title = notice.detail || '';
+    const retry = el.querySelector('button');
+    retry.textContent = notice.retry || '';
+    retry.onclick = () => { el.hidden = true; toNative({ type: 'retryWindowed' }); };
+  }
+
   function setStatus(status) {
     if (doc.metadata) { return; }
     showMessage(status.title, status.detail);
@@ -267,6 +282,8 @@
     return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
+  const V2_COMMANDS = new Set(['window', 'valueAt', 'edge', 'search', 'count', 'cancel']);
+
   function fsdbBackend(config) {
     // Whether the helper answers valueAt (v2); unknown until the first ask.
     let pointQuery;
@@ -292,16 +309,16 @@
     // [u32 LE header length][header JSON][deflate-raw records].
     async function request(req) {
       if (closed) { throw closedError(); }
-      let response, all;
+      let response, all, reply, bin;
       try {
         response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
         all = new Uint8Array(await response.arrayBuffer());
+        if (closed) { throw closedError(); }
+        noteProtocol(response);
+        ({ reply, bin } = parseReply(response, all));
       } catch (error) {
         throw closed ? closedError() : error;
       }
-      noteProtocol(response);
-      const { reply, bin } = parseReply(response, all);
-      if (closed) { throw closedError(); }
       if (reply.error) { throw new Error(reply.error); }
       return { result: reply.result, helperMs: reply.ms || 0, bin, wireBytes: all.length };
     }
@@ -316,17 +333,18 @@
       // so the viewer never waits on it; null once closed (the viewer was reset).
       async v2(req) {
         if (closed) { return null; }
-        let response, all;
+        // Only what the windowed viewer asks (cmux's relay allows no more).
+        if (!V2_COMMANDS.has(req.cmd)) { return { reply: { id: req.id, error: 'not relayed: ' + String(req.cmd) } }; }
         try {
-          response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
-          all = new Uint8Array(await response.arrayBuffer());
+          const response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
+          const all = new Uint8Array(await response.arrayBuffer());
+          if (closed) { return null; }
+          noteProtocol(response);
+          const { reply, bin } = parseReply(response, all);
+          return { reply: { ...reply, id: req.id }, bin: bin && bin.length ? bin.slice().buffer : null };
         } catch (error) {
           return closed ? null : { reply: { id: req.id, error: String((error && error.message) || error) } };
         }
-        if (closed) { return null; }
-        noteProtocol(response);
-        const { reply, bin } = parseReply(response, all);
-        return { reply: { ...reply, id: req.id }, bin: bin && bin.length ? bin.slice().buffer : null };
       },
       async open(showTop) {
         const { result } = await request({ cmd: 'open', file: config.fsdb.path });
@@ -471,7 +489,9 @@
     if (initSent || !webviewReady || !doc.metadata || !doc.metadata.timeTableLoaded) { return; }
     initSent = true;
     // Before initViewport: the viewer starts windowed or whole (upstream) with the file.
-    toWebview({ command: 'set-windowing', enabled: !!(backend && backend.windowed && backend.windowed()) });
+    if (config.format === 'fsdb') {
+      toWebview({ command: 'set-windowing', enabled: !!(backend && backend.windowed && backend.windowed()) });
+    }
     toWebview(window.cmuxCommands.configMessage());
     const autoReload = autoReloadState !== null ? autoReloadState : !!window.cmuxCommands.settings().defaultAutoReload;
     toWebview({ command: 'initViewport', metadata: doc.metadata, documentId: doc.documentId, uri: doc.uri,
@@ -1139,7 +1159,7 @@
     });
   })();
 
-  window.cmuxWaveform = { open, reload, setTheme, setStatus, applyThemeTo, fromWebview, viewerContext, commandHandlers,
+  window.cmuxWaveform = { open, reload, setTheme, setStatus, setFallbackNotice, applyThemeTo, fromWebview, viewerContext, commandHandlers,
     deliverValueChanges, addVariableByPath, stats, strings, host: hostApi, v2Stats: () => ({ ...v2Stats }),
     fileChanged: () => window.cmuxCommands.fileChanged(),
     runCommand: ({ command, args }) => window.cmuxCommands.run(command, args),

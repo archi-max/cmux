@@ -2,8 +2,8 @@
 // (https://github.com/Lramseyer/vaporview), whose addon it extends; see ../../LICENSE.
 // ---- cmux additions (helper v2): derived-signal evaluator core ----
 //
-// No Napi or FsdbReader here, so test/deval-test.cpp can build it standalone
-// with ASan/UBSan and fuzz it against test/svref.js.
+// No Napi or FsdbReader here, so it builds standalone (helper-v2's own test
+// suite fuzzes it under ASan/UBSan against a reference evaluator).
 //
 // A program is a flat list of nodes (operands before users, last = result),
 // produced by expr.js with SystemVerilog (IEEE 1800 §11.6) sizing already

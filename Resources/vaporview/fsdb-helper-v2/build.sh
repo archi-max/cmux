@@ -72,6 +72,15 @@ LIBS="$VERDI/share/FsdbReader/linux64"
 # Build on node-local /tmp, never on an NFS home.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cmux-fsdb-build.XXXXXX") || exit 13
 trap 'rm -rf "$WORK"' EXIT
+# A build whose cmux went away (the viewer closed, the loading setting changed)
+# stops: once the ssh channel is gone, writing to stderr fails, and the
+# heartbeat (an empty line every 5 s, which cmux's log ignores) ends the build.
+trap 'kill "$CC" 2>/dev/null; exit 1' TERM HUP
+CC=
+BUILD=$$
+( trap '' PIPE; while sleep 5; do printf '\n' >&2 2>/dev/null || { kill -TERM "$BUILD" 2>/dev/null; exit 0; }; done ) &
+WATCH=$!
+trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # The cmux additions go in before Init(), and their functions into its exports.
 "$NODE" -e '
@@ -94,12 +103,15 @@ trap 'rm -rf "$WORK"' EXIT
 
 say "compiling the FSDB reader (one or two minutes, first open only)"
 # The flags node-gyp uses for this addon, without -static-libstdc++.
+# In the background, so the TERM trap above runs (and ends the compiler) at once.
 nice -n 10 "$CXX" -std=gnu++17 -O2 -fPIC -shared -pthread \
   -DNAPI_VERSION=8 -DNAPI_DISABLE_CPP_EXCEPTIONS -DBUILDING_NODE_EXTENSION \
   -I"$SRC/third_party/node-addon-api" -I"$SRC/third_party/node-api-headers" -I"$SRC/addon" -I"$VERDI/share/FsdbReader" \
   "$WORK/fsdb_reader.cpp" -o "$WORK/fsdb_reader.node" \
-  -L"$LIBS" -Wl,-rpath,"$LIBS" -lnffr -lnsys -ldl -lz >"$WORK/build.log" 2>&1 \
-  || { tail -20 "$WORK/build.log" >&2; say "compile failed"; exit 13; }
+  -L"$LIBS" -Wl,-rpath,"$LIBS" -lnffr -lnsys -ldl -lz >"$WORK/build.log" 2>&1 &
+CC=$!
+wait "$CC" || { tail -20 "$WORK/build.log" >&2; say "compile failed"; exit 13; }
+CC=
 
 LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$NODE" -e '
   const a = require(process.argv[1]);
@@ -110,11 +122,20 @@ LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$NODE" -e '
 # never used.
 PARENT=$(dirname "$DEST")
 mkdir -p "$PARENT" && chmod 700 "$PARENT" 2>/dev/null
+# The launcher refuses an install below a folder others can write (~/.cache/cmux too).
+chmod go-w "$(dirname "$PARENT")" 2>/dev/null
 # Leftovers of builds that died mid-install.
 find "$PARENT" -mindepth 1 -maxdepth 1 \( -name '.install.*' -o -name '.stale.*' -o -name '*.lock' \) -mmin +1440 \
   -exec rm -rf {} + 2>/dev/null
 # The checks the launcher and cmux-helper-v2.sh make before they run an install.
+ME=$(id -u)
+# Every entry ours and not group/world writable; a folder find can't read is not clean.
+private() {
+  out=$(find "$1" \( ! -user "$ME" -o -perm -g+w -o -perm -o+w \) ! -type l -print 2>&1) || return 1
+  [ -z "$out" ]
+}
 usable() {
+  private "$1" || return 1
   [ -f "$1/addon/build/Release/fsdb_reader.node" ] && [ -f "$1/cmux-helper-v2.sh" ] && [ -f "$1/helper.js" ] \
     && [ -f "$1/worker.js" ] && [ -f "$1/expr.js" ] || return 1
   ( . "$1/helper.env" 2>/dev/null && [ -x "$NODE" ] && [ -f "$VERDI_HOME/share/FsdbReader/linux64/libnffr.so" ] )
@@ -125,7 +146,7 @@ discard() { rm -rf "$1" 2>/dev/null || { sleep 1; rm -rf "$1" 2>/dev/null; } || 
 # first: use its install, never replace one that works.
 if usable "$DEST"; then say "installed in $DEST"; exit 0; fi
 STAGE=$(mktemp -d "$PARENT/.install.XXXXXX") || exit 15
-trap 'rm -rf "$WORK"; discard "$STAGE"' EXIT
+trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"; discard "$STAGE"' EXIT
 mkdir -p "$STAGE/addon/build/Release" \
   && cp "$WORK/fsdb_reader.node" "$STAGE/addon/build/Release/" \
   && cp "$SRC/helper.js" "$SRC/worker.js" "$SRC/expr.js" "$SRC/cmux-helper-v2.sh" "$STAGE/" || exit 15
@@ -145,7 +166,7 @@ until mkdir "$LOCK" 2>/dev/null; do
   [ "$tries" -le 120 ] || { say "could not lock $DEST"; exit 15; }
   sleep 1
 done
-trap 'rm -rf "$WORK"; discard "$STAGE"; rmdir "$LOCK" 2>/dev/null' EXIT
+trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"; discard "$STAGE"; rmdir "$LOCK" 2>/dev/null' EXIT
 if ! usable "$DEST"; then
   # What is left at DEST is broken, so it is moved aside rather than built
   # into. mv -T never moves STAGE inside an existing DEST.

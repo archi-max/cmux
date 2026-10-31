@@ -238647,6 +238647,242 @@
         }
       }
     },
+    "filePreview.waveform.fsdbFallback": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Using the classic viewer: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "従来のビューアを使用しています: %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klassische Ansicht wird verwendet: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utilisation de la visionneuse classique : %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يتم استخدام العارض الكلاسيكي: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se usa el visor clásico: %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在使用傳統檢視器：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在使用经典查看器：%@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기존 뷰어 사용 중: %@"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbRetryWindowed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Windowed"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウィンドウ方式を再試行"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fensterweise erneut versuchen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réessayer par fenêtres"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إعادة محاولة العرض على شكل نوافذ"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reintentar por ventanas"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重試視窗化"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试窗口化"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "윈도우 방식 다시 시도"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbRefused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux did not start the FSDB reader on %@: its folder there can be changed by other users. Make ~/.cache/cmux private to you, or delete it to reinstall."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux は %@ の FSDB リーダーを起動しませんでした: そのフォルダは他のユーザーが変更できます。~/.cache/cmux を自分専用にするか、削除して再インストールしてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux hat den FSDB-Leser auf %@ nicht gestartet: Sein Ordner dort kann von anderen Benutzern geändert werden. Machen Sie ~/.cache/cmux privat oder löschen Sie den Ordner, um neu zu installieren."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux n’a pas démarré le lecteur FSDB sur %@ : son dossier peut y être modifié par d’autres utilisateurs. Rendez ~/.cache/cmux privé ou supprimez-le pour réinstaller."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يشغّل cmux قارئ FSDB على %@: يمكن لمستخدمين آخرين تغيير مجلده هناك. اجعل ~/.cache/cmux خاصًا بك، أو احذفه لإعادة التثبيت."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux no inició el lector FSDB en %@: otros usuarios pueden modificar su carpeta allí. Haz que ~/.cache/cmux sea privada o elimínala para reinstalar."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 未在 %@ 上啟動 FSDB 讀取器：其他使用者可以變更那裡的資料夾。請將 ~/.cache/cmux 設為僅限自己使用，或刪除它以重新安裝。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 未在 %@ 上启动 FSDB 读取器：其他用户可以更改那里的文件夹。请将 ~/.cache/cmux 设为仅自己可用，或删除它以重新安装。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux가 %@에서 FSDB 리더를 시작하지 않았습니다: 그곳의 폴더를 다른 사용자가 변경할 수 있습니다. ~/.cache/cmux를 본인 전용으로 만들거나 삭제한 뒤 다시 설치하세요."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbNotAllowed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The waveform viewer sent a request cmux does not pass to the FSDB reader on %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形ビューアが、cmux が %@ の FSDB リーダーに渡さない要求を送信しました。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Wellenform-Viewer hat eine Anfrage gesendet, die cmux nicht an den FSDB-Leser auf %@ weitergibt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La visionneuse de chronogrammes a envoyé une requête que cmux ne transmet pas au lecteur FSDB sur %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أرسل عارض الأشكال الموجية طلبًا لا يمرّره cmux إلى قارئ FSDB على %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El visor de formas de onda envió una solicitud que cmux no pasa al lector FSDB en %@."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形檢視器送出了 cmux 不會轉給 %@ 上 FSDB 讀取器的要求。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形查看器发送了 cmux 不会转给 %@ 上 FSDB 读取器的请求。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 뷰어가 cmux가 %@의 FSDB 리더에 전달하지 않는 요청을 보냈습니다."
+          }
+        }
+      }
+    },
     "filePreview.waveform.fsdbBuildingDetail": {
       "extractionState": "manual",
       "localizations": {
