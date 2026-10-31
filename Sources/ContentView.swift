@@ -18630,16 +18630,20 @@ extension TabManager {
         if selectedTabId != workspace.id {
             selectWorkspace(workspace)
         }
-        let panel = workspace.newTerminalSurfaceInFocusedPane(focus: true, initialInput: nil, userInitiated: true)
-        if panel == nil, workspace.isRemoteTmuxMirror {
-            // Routed to the remote as a tmux `new-window`; the tab arrives
-            // asynchronously via the mirror, so this is success, not failure.
+        let outcome = workspace.newTerminalSurfaceInFocusedPaneOutcome(focus: true, initialInput: nil, userInitiated: true)
+        if let panel = outcome.panel {
+            return CmuxSidebarActionResult(accepted: true, message: panel.id.uuidString)
+        }
+        if outcome.isAccepted || workspace.isRemoteTmuxMirror {
+            // Routed to a remote owner (a tmux `new-window`, or the SSH host);
+            // the tab arrives asynchronously, so this is success, not failure.
             return CmuxSidebarActionResult(
                 accepted: true,
-                message: String(localized: "sidebar.extensions.action.remoteTmuxWindowRequested", defaultValue: "Remote tmux window requested")
+                message: workspace.isRemoteTmuxMirror
+                    ? String(localized: "sidebar.extensions.action.remoteTmuxWindowRequested", defaultValue: "Remote tmux window requested")
+                    : nil
             )
         }
-        return panel.map { CmuxSidebarActionResult(accepted: true, message: $0.id.uuidString) }
-            ?? .rejected(String(localized: "sidebar.extensions.action.surfaceCreateRejected", defaultValue: "Surface could not be created"))
+        return .rejected(String(localized: "sidebar.extensions.action.surfaceCreateRejected", defaultValue: "Surface could not be created"))
     }
 }

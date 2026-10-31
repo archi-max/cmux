@@ -52,7 +52,8 @@ extension AppDelegate {
             didCreate = workspace.openNewCanvasPane(
                 type: .terminal,
                 focus: true,
-                direction: SplitDirection.right.canvasDirection
+                direction: SplitDirection.right.canvasDirection,
+                userInitiated: true
             ) != nil
         } else if let terminalContext {
             didCreate = terminalContext.tabManager.createAutoLayoutPaneOutcome(
