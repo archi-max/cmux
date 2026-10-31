@@ -35,7 +35,8 @@
   const truth = (v) => (ones(v) !== 0n ? 1 : (v.b === 0n ? 0 : 'x'));
 
   // '10x1' (most significant first) as a value of `width` bits: shorter is extended with its top
-  // bit when that is x or z, else 0; longer keeps the low bits.
+  // bit when that is x or z, else 0; longer keeps the low bits. A dump's other states: h is 1,
+  // l is 0, z (and ?) z, anything else (u, w, -) x.
   function fromBits(text, width) {
     let s = String(text).toLowerCase();
     if (s.length < width) { s = (s[0] === 'x' || s[0] === 'z' ? s[0] : '0').repeat(width - s.length) + s; }
@@ -43,9 +44,7 @@
     let a = 0n, b = 0n;
     for (const c of s) {
       a <<= 1n; b <<= 1n;
-      if (c === '1' || c === 'x') { a |= 1n; }
-      if (c === 'x' || c === 'z' || c === '?') { b |= 1n; }
-      if (c === '?' ) { a &= ~1n; }
+      if (c === '1' || c === 'h') { a |= 1n; } else if (c === 'z' || c === '?') { b |= 1n; } else if (c !== '0' && c !== 'l') { a |= 1n; b |= 1n; }
     }
     return val(width, a, b);
   }
