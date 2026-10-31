@@ -134,10 +134,18 @@ enum WaveformDebugger {
 
     /// `{ type: 'debugger', event: 'cycle' | 'state', ...state }` from the viewer page.
     static func pageReported(_ body: [String: Any], waveform: FilePreviewPanel) {
+        // A played move, posted by the page as it moves (before the viewer's markerSet).
+        if body["event"] as? String == "moved" {
+            if isStepping(waveform), let time = (body["movedTo"] as? NSNumber)?.int64Value {
+                WaveformDebuggerRTLStatus.pageMoved(
+                    waveform, to: time, left: (body["left"] as? NSNumber)?.int64Value, missed: body["missed"] as? Bool ?? false
+                )
+            }
+            return
+        }
         let box = box(waveform)
         let wasStepping = box.state.stepping
         let wasPlaying = box.state.playing
-        let wasAt = box.state.time
         box.state = PageState(
             stepping: body["stepping"] as? Bool ?? false,
             playing: body["playing"] as? Bool ?? false,
@@ -157,9 +165,6 @@ enum WaveformDebugger {
         }
         if box.state.stepping, box.state.playing, !wasPlaying {
             WaveformDebuggerRTLStatus.playStarted(waveform)
-        }
-        if box.state.stepping, box.state.playing, let time = box.state.time, time != wasAt || !wasPlaying {
-            WaveformDebuggerRTLStatus.pageMoved(waveform, to: time)
         }
     }
 

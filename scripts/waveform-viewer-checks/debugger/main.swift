@@ -173,20 +173,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "the strip shows the RTL status: \(String(describing: rtlShown))")
     // Waiting for the editor: every cycle is played, each as soon as the editors drew it
     // (here right away), else after at most 250 ms.
-    func playedCycles(rate: Int, ack: Bool, for ms: UInt64) async -> [Int] {
+    func playedCycles(rate: Int, ack: Bool, for ms: UInt64) async -> (cycles: [Int], missed: [Bool]) {
       _ = await dbg("jump({ to: 'first' })")
       await sleep(200)
       _ = await call("""
         window.__ack = \(ack);
         if (!window.__ackInstalled) {
           window.__ackInstalled = true;
-          cmuxWaveform.host.viewerEventListeners.push((m) => {
-            if (window.__ack && m.eventType === 'markerSet') {
-              const time = Number(m.eventData.time);
-              // A microtask, not a timer: the occluded page fires timers late, which isn't the editors' doing.
+          // The editors answer each move the page posts, at once (a microtask: the occluded page
+          // fires timers late, and the viewer's markerSet lags when busy; neither is the editors' doing).
+          const original = cmuxWaveform.host.toNative;
+          cmuxWaveform.host.toNative = (m) => {
+            if (window.__ack && m && m.type === 'debugger' && m.event === 'moved') {
+              const time = m.movedTo;
               Promise.resolve().then(() => cmuxWaveform.debugger.rtlShown({ time }));
             }
-          });
+            return original(m);
+          };
         }
         return null;
       """)
@@ -195,17 +198,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       await sleep(ms)
       _ = await dbg("pause()")
       await sleep(100)
-      return debuggerEvents.filter { $0["event"] as? String == "cycle" }.compactMap { $0["cycle"] as? Int }
+      let cycles = debuggerEvents.filter { $0["event"] as? String == "cycle" }.compactMap { $0["cycle"] as? Int }
+      // Whether the page gave up waiting on the cycle each move left (from its own 'moved' posts).
+      let missed = debuggerEvents.filter { $0["event"] as? String == "moved" }.map { $0["missed"] as? Bool ?? false }
+      return (cycles, missed)
     }
     _ = await call("await cmuxWaveform.debugger.setRtlStatus({ text: 'RTL: cpu.sv', ok: true, wait: true }); return null")
-    let unacked = await playedCycles(rate: 100, ack: false, for: 1200)
+    // (Judged by whether the page gave up waiting, not by counts: an occluded page, or a busy
+    // machine, fires its timers late.)
+    let (unacked, unackedMissed) = await playedCycles(rate: 100, ack: false, for: 1200)
     let consecutive = { (c: [Int]) in zip(c, c.dropFirst()).allSatisfy { $1 == $0 + 1 } }
-    expect(consecutive(unacked) && unacked.count >= 3 && unacked.count <= 7,
-           "waiting with no answer: every cycle, about one per 250 ms: \(unacked)")
-    let acked = await playedCycles(rate: 20, ack: true, for: 1000)
-    // (An occluded off-screen page fires timers late, so fewer than 20 land; still well above the 250 ms wait's.)
-    expect(consecutive(acked) && acked.count >= 8 && acked.count > unacked.count + 2,
-           "editors answering at once: every cycle at the play rate: \(acked.count) cycles, \(acked.prefix(8))")
+    expect(consecutive(unacked) && unacked.count >= 2 && unacked.count <= 7
+           && unackedMissed.count >= 2 && unackedMissed.dropFirst().allSatisfy { $0 },
+           "waiting with no answer: every cycle, each after the 250 ms wait: \(unacked), missed \(unackedMissed)")
+    let (acked, ackedMissed) = await playedCycles(rate: 20, ack: true, for: 1000)
+    expect(consecutive(acked) && acked.count >= 4 && !ackedMissed.contains(true),
+           "editors answering at once: every cycle, none waited out: \(acked.count) cycles, \(acked.prefix(8)), missed \(ackedMissed.filter { $0 }.count)")
     // One cycle's answer comes late (a busy machine): the page gives up on it after 250 ms,
     // says so (cmux then stops waiting for that editor), and the next cycles go at the rate again.
     let late = await call("""
@@ -226,18 +234,21 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       try {
         await d.play({ rate: 20 });
-        await new Promise((r) => setTimeout(r, 1500));
+        const started = performance.now();
+        while (moves.length < 6 && performance.now() - started < 4000) { await new Promise((r) => setTimeout(r, 50)); }
         await d.pause();
       } finally { cmuxWaveform.host.toNative = original; }
       return moves.map((m) => ({ time: m.time, left: m.left, missed: m.missed }));
     """) as? [[String: Any]]
     let lateMissed = (late ?? []).enumerated().filter { $0.element["missed"] as? Bool == true }.map(\.offset)
-    expect((late?.count ?? 0) >= 8 && lateMissed == [3],
+    // (Moves after the late one that aren't missed got their answer before the 250 ms wait ran out:
+    // play went on at its rate. Counted that way, as a busy machine fires the page's timers late.)
+    expect((late?.count ?? 0) >= 6 && lateMissed == [3],
            "a late answer: only the move after it says the page gave up waiting, and play goes on at its rate: \(lateMissed) of \(late?.count ?? 0) moves")
     expect(late.map { moves in zip(moves, moves.dropFirst()).allSatisfy { ($1["left"] as? NSNumber) == ($0["time"] as? NSNumber) } } == true,
            "each move names the cycle it left: \(String(describing: late?.prefix(4)))")
     _ = await call("await cmuxWaveform.debugger.setRtlStatus({ text: 'RTL: cpu.sv', ok: true, wait: false }); return null")
-    let free = await playedCycles(rate: 500, ack: false, for: 600)
+    let (free, _) = await playedCycles(rate: 500, ack: false, for: 600)
     expect(!consecutive(free) && (free.last ?? 0) > 30, "not waiting: play skips cycles to keep pace: \(free.count) moves to \(free.last ?? 0)")
     // The user's own edits during play are still undoable and unsaved; a click on the waveform pauses.
     _ = await call("cmuxCommands.sessionSaved({}); return null")
