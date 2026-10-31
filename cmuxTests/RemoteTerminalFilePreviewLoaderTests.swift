@@ -148,14 +148,48 @@ import Testing
         }
     }
 
-    private func makeLoader(transport: PreviewDownloadTransport, cache: URL) -> RemoteTerminalFilePreviewLoader {
+    @Test func evictionSparesFilesOpenPanelsShowWhateverTheirAge() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let shown = root.appendingPathComponent("other/a/open.sv")
+        let stale = root.appendingPathComponent("other/b/stale.sv")
+        for url in [shown, stale] {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(count: 500).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-86_400)], ofItemAtPath: url.path)
+        }
+        let transport = PreviewDownloadTransport(files: ["/home/u/new.sv": Data(count: 10)])
+        let shownPath = shown.path
+        let loader = makeLoader(transport: transport, cache: root, budgetBytes: 100, shownPaths: { [shownPath] })
+        let fetched = try await loader.load(exactPath: "/home/u/new.sv", maxBytes: 1_000)
+        #expect(FileManager.default.fileExists(atPath: fetched.path))
+        #expect(FileManager.default.fileExists(atPath: shown.path), "a file an open preview shows must stay")
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    @Test func commandLineOpensSendWaveformsReadInPlaceToTheFilesPanel() {
+        // FSDB is read by Verdi's reader on the host; a downloaded copy can't be read locally.
+        #expect(FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/wave.fsdb"))
+        #expect(FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/page.webarchive"))
+        #expect(!FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/wave.vcd"))
+        #expect(!FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: "/h/alu.sv"))
+    }
+
+    private func makeLoader(
+        transport: PreviewDownloadTransport,
+        cache: URL,
+        budgetBytes: Int64 = RemotePreviewCacheBudget.defaultBudgetBytes,
+        shownPaths: @escaping @MainActor @Sendable () -> Set<String> = { [] }
+    ) -> RemoteTerminalFilePreviewLoader {
         RemoteTerminalFilePreviewLoader(
             provider: SSHFileExplorerProvider(
                 destination: "fixture@host", port: 2200, identityFile: nil, sshOptions: [],
                 homePath: "", isAvailable: true, transport: transport
             ),
             cacheDirectory: cache,
-            fileManager: FileManager()
+            fileManager: FileManager(),
+            budgetBytes: budgetBytes,
+            shownPaths: shownPaths
         )
     }
 }
