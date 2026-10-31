@@ -766,11 +766,13 @@
     };
     // FSDB from VCS names a 1-bit vector declared [N-1:0] with N=1 with its range (dfp_read[0:0]).
     // Only a [msb:lsb] as wide as the variable is its own range: an index (mem[3]) or a narrower
-    // part-select is another signal.
+    // part-select is another signal. As Swift's signalName: an escaped name's brackets are part of
+    // it, a bound has at most 9 digits, and the width must be a number.
     const withoutRange = (item) => {
-      const name = plainName(item.name);
-      const m = /^(.*)\[(\d+):(\d+)\]$/.exec(name);
-      return m && m[1] && Math.abs(Number(m[2]) - Number(m[3])) + 1 === Number(item.width) ? m[1] : name;
+      const name = String(item.name);
+      if (name.startsWith('\\') || typeof item.width !== 'number') { return plainName(name); }
+      const m = /^(.+)\[(\d{1,9}):(\d{1,9})\]$/.exec(name);
+      return m && Math.abs(Number(m[2]) - Number(m[3])) + 1 === item.width ? m[1] : name;
     };
 
     function segments(path) {
