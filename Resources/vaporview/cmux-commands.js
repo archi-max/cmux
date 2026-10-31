@@ -447,7 +447,8 @@
     // The debugger's own edits (Locals, while it dispatches quietly) and its play ticks are not the user's:
     // no undo entries, not unsaved.
     const playing = !!(window.cmuxDebugger && window.cmuxDebugger.isPlaying());
-    const debuggerChange = host().quietEvents > 0 || (playing && webviewContext && onlyMarkerMoved(webviewContext, m));
+    // While playing, a first context (none kept yet) counts as the debugger's too: nothing to compare.
+    const debuggerChange = host().quietEvents > 0 || (playing && (!webviewContext || onlyMarkerMoved(webviewContext, m)));
     if (debuggerChange && change === StateChangeType.User) { change = null; }
     if ((change === StateChangeType.User || change === StateChangeType.File)) {
       undoStack.push(JSON.stringify(undoState()));
