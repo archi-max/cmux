@@ -143,9 +143,9 @@ struct FilePreviewLanguageDocumentContext {
         languageId: String,
         panel: FilePreviewPanel?,
         filePath: String
-    ) -> FilePreviewLanguageDocumentContext? {
+    ) async -> FilePreviewLanguageDocumentContext? {
         let workspace = panel.flatMap { AppDelegate.shared?.workspaceFor(tabId: $0.workspaceId) }
-        return resolve(
+        return await resolve(
             languageId: languageId,
             workspace: workspace,
             filePath: filePath,
@@ -163,7 +163,8 @@ struct FilePreviewLanguageDocumentContext {
         filePath: String,
         remotePath: String?,
         providerIdentity: String?
-    ) -> FilePreviewLanguageDocumentContext? {
+    ) async -> FilePreviewLanguageDocumentContext? {
+        let pinned = workspace?.fileExplorerPinnedRootPath
         if let remotePath {
             // Only SSH workspaces can run a remote language server.
             guard let providerIdentity,
@@ -174,11 +175,14 @@ struct FilePreviewLanguageDocumentContext {
                 return nil
             }
             // The terminal directory is often the remote home, where the server
-            // would index every checkout; use the pinned Files root or the file's folder.
-            let root = rootDirectory(for: remotePath, workspaceDirectory: workspace?.fileExplorerPinnedRootPath)
+            // would index every checkout; use the pinned Files root, else the
+            // project around the file (see SlangWorkspaceRoot), else its folder.
+            var root = containingDirectory(pinned, of: remotePath)
+            if root == nil { root = await discoveredRemoteRoot(for: remotePath, configuration: configuration) }
+            let resolvedRoot = root ?? (remotePath as NSString).deletingLastPathComponent
             return FilePreviewLanguageDocumentContext(
                 documentURI: URL(fileURLWithPath: remotePath),
-                rootURI: URL(fileURLWithPath: root, isDirectory: true),
+                rootURI: URL(fileURLWithPath: resolvedRoot, isDirectory: true),
                 serverLaunch: launch,
                 remote: RemoteRoute(configuration: configuration, providerIdentity: providerIdentity)
             )
@@ -186,9 +190,13 @@ struct FilePreviewLanguageDocumentContext {
         guard let launch = LanguageToolRegistry.languageServer(forLanguage: languageId, remoteDestination: nil) else {
             return nil
         }
-        // A remote workspace's directory is a path on the remote host.
-        let workspaceDirectory = workspace?.usesRemoteDirectoryProvenance == true ? nil : workspace?.currentDirectory
-        let root = rootDirectory(for: filePath, workspaceDirectory: workspaceDirectory)
+        // A remote workspace's directory and pin are paths on the remote host.
+        let isRemoteWorkspace = workspace?.usesRemoteDirectoryProvenance == true
+        let workspaceDirectory = isRemoteWorkspace ? nil : workspace?.currentDirectory
+        let root = (isRemoteWorkspace ? nil : containingDirectory(pinned, of: filePath))
+            ?? discoveredLocalRoot(for: filePath)
+            ?? containingDirectory(workspaceDirectory, of: filePath)
+            ?? (filePath as NSString).deletingLastPathComponent
         return FilePreviewLanguageDocumentContext(
             documentURI: URL(fileURLWithPath: filePath),
             rootURI: URL(fileURLWithPath: root, isDirectory: true),
@@ -215,16 +223,96 @@ struct FilePreviewLanguageDocumentContext {
         return .remote(executablePath: "/usr/bin/ssh", arguments: arguments)
     }
 
-    /// The workspace directory when it contains the file, else the file's parent.
-    private static func rootDirectory(for filePath: String, workspaceDirectory: String?) -> String {
-        if let workspaceDirectory {
-            let trimmed = workspaceDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-            let prefix = trimmed.hasSuffix("/") ? trimmed : trimmed + "/"
-            if !trimmed.isEmpty, filePath.hasPrefix(prefix) {
-                return trimmed
+    /// `directory` when it contains the file.
+    private static func containingDirectory(_ directory: String?, of filePath: String) -> String? {
+        guard let directory else { return nil }
+        let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = trimmed.hasSuffix("/") ? trimmed : trimmed + "/"
+        return !trimmed.isEmpty && filePath.hasPrefix(prefix) ? trimmed : nil
+    }
+
+    // MARK: Root discovery
+
+    /// How long a discovered root is reused for files of the same folder.
+    private static let discoveredRootLifetime: TimeInterval = 120
+    private static let remoteProbeTimeout: TimeInterval = 10
+    /// Per host and folder: the root found (nil: no marker) and when.
+    private static var discoveredRoots: [String: (root: String?, at: Date)] = [:]
+
+    private static func cachedRoot(_ key: String) -> String?? {
+        guard let entry = discoveredRoots[key], Date().timeIntervalSince(entry.at) < discoveredRootLifetime else { return nil }
+        return .some(entry.root)
+    }
+
+    private static func discoveredLocalRoot(for filePath: String) -> String? {
+        let key = "local|" + (filePath as NSString).deletingLastPathComponent
+        if let cached = cachedRoot(key) { return cached }
+        let root = SlangWorkspaceRoot.root(forFile: filePath, markers: SlangWorkspaceRoot.localMarkers(forFile: filePath))
+        discoveredRoots[key] = (root, Date())
+        return root
+    }
+
+    /// One ssh round trip over the workspace's batch route for every ancestor of the file.
+    private static func discoveredRemoteRoot(for remotePath: String, configuration: WorkspaceRemoteConfiguration) async -> String? {
+        let key = configuration.destination + "|" + (remotePath as NSString).deletingLastPathComponent
+        if let cached = cachedRoot(key) { return cached }
+        let arguments = configuration.batchSSHCommandArguments(
+            command: SlangWorkspaceRoot.probeCommand(forFile: remotePath),
+            effectiveSSHOptions: configuration.fileOperationSSHOptions
+        )
+        guard let output = await runProbe(arguments: arguments, timeout: remoteProbeTimeout) else {
+            // Unreachable host: don't cache, so the next file tries again.
+            return nil
+        }
+        let root = SlangWorkspaceRoot.root(forFile: remotePath, markers: SlangWorkspaceRoot.parseProbe(output))
+        discoveredRoots[key] = (root, Date())
+        return root
+    }
+
+    /// Runs `/usr/bin/ssh arguments`; its stdout, or nil on failure or after `timeout`.
+    nonisolated private static func runProbe(arguments: [String], timeout: TimeInterval) async -> String? {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = arguments
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            process.standardInput = FileHandle.nullDevice
+            let once = FilePreviewProbeOnce(continuation)
+            process.terminationHandler = { process in
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                once.resume(process.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil)
+            }
+            do {
+                try process.run()
+            } catch {
+                once.resume(nil)
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                if process.isRunning { process.terminate() }
+                once.resume(nil)
             }
         }
-        return (filePath as NSString).deletingLastPathComponent
+    }
+}
+
+/// Resumes a probe's continuation once, from its exit or its timeout.
+private final class FilePreviewProbeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String?, Never>?
+
+    init(_ continuation: CheckedContinuation<String?, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: String?) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
     }
 }
 
