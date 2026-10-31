@@ -32,6 +32,12 @@
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
 #                                        (helper stand-in, no host)
+#   ./run.sh windowed                    windowed FSDB viewing (protocol v2) with a mock
+#                                        helper run locally through the real
+#                                        WaveformFSDBHelper (sh in place of ssh):
+#                                        relay partial/cancel/fallback, page
+#                                        windowing, hybrid, edges, values, debugger;
+#                                        needs node
 #   ./run.sh parity                      terminal-link matcher (50k-char lines),
 #                                        link misses fall through, settings
 #                                        clamps, no page-named save path,
@@ -78,6 +84,14 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/fsdb-locals"
     "$OUT/fsdb-locals" "$ASSETS" "$OUT/fsdb-locals.png" | grep -v '^\[log\]' | tee "$OUT/fsdb-locals.log"
     grep -q '^FSDB LOCALS CHECKS PASSED' "$OUT/fsdb-locals.log"
+    ;;
+  windowed)
+    command -v node >/dev/null || { echo "windowed: needs node"; exit 2; }
+    swiftc -O "$HERE/windowed/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/windowed"
+    "$OUT/windowed" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/windowed/mock-helper-v2.cjs" \
+      "$OUT" "$OUT/windowed.png" | grep -v '^\[log\]' | tee "$OUT/windowed.log"
+    grep -q '^WINDOWED CHECKS PASSED' "$OUT/windowed.log"
     ;;
   debugger)
     swiftc -O "$HERE/debugger/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
