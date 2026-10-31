@@ -160,54 +160,19 @@ public struct SSHTuiHostOpenCommand: Sendable {
     }
 }
 
-/// What one daemon notification row means to the `cmux open` ingress.
+/// What a marked body asks for (placeholder, implemented next).
 public enum SSHTuiHostOpenRequest: Equatable, Sendable {
-    /// An ordinary notification; deliver it as usual.
     case notARequest
-    /// Marked as a request but not honored; consume it without opening.
-    case refused(String)
-    /// Open `path` (a canonical host path) from the pane showing `terminalID`.
+    case refused(SSHTuiHostOpenAnswer)
     case open(path: String, terminalID: String)
 
-    /// - Parameter pathIsAcceptable: The app passes
-    ///   `RemoteRelayCommandPolicy.isAcceptableRemoteFileOpenPath`, the check
-    ///   `file.open_remote` applies to every caller.
-    public init(
-        title: String, body: String, terminalID: String?, createdAtMs: UInt64, now: Date,
-        pathIsAcceptable: (String) -> Bool
-    ) {
-        guard body.hasPrefix(SSHTuiHostOpenCommand.bodyPrefix) else {
-            self = .notARequest
-            return
-        }
-        guard let terminalID, CloudMachineNotificationEvent.isPublicID(terminalID, prefix: "term") else {
-            self = .refused("no terminal")
-            return
-        }
-        let age = now.timeIntervalSince1970 - Double(createdAtMs) / 1000
-        guard abs(age) <= SSHTuiHostOpenCommand.maximumRequestAge else {
-            self = .refused("stale")
-            return
-        }
-        let encoded = body.dropFirst(SSHTuiHostOpenCommand.bodyPrefix.count)
-        guard let data = Data(base64Encoded: String(encoded)),
-              data.count <= SSHTuiHostOpenCommand.maximumPathBytes,
-              let path = String(data: data, encoding: .utf8),
-              Data(path.utf8) == data else {
-            self = .refused("malformed")
-            return
-        }
-        guard pathIsAcceptable(path) else {
-            self = .refused("path")
-            return
-        }
-        self = .open(path: path, terminalID: terminalID)
+    public init(body: String, pathIsAcceptable: (String) -> Bool) {
+        self = .notARequest
     }
+}
 
-    public init(row: CloudVMNotificationRow, now: Date, pathIsAcceptable: (String) -> Bool) {
-        self.init(title: row.title, body: row.body, terminalID: row.terminalID, createdAtMs: row.createdAtMs,
-                  now: now, pathIsAcceptable: pathIsAcceptable)
-    }
+extension SSHTuiHostOpenCommand {
+    public static func requestBody(path: String, terminalID: String) -> String { "" }
 }
 
 extension SSHTuiConnection {

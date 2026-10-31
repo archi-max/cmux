@@ -6,14 +6,16 @@ import Testing
 /// `cmux open` in a cmux-tui SSH terminal. Those terminals have no
 /// cmuxd-remote relay and no `cmux` on PATH, so the app installs a small
 /// host `cmux` from the terminal's launch command. It resolves the path on the
-/// host and posts it as a marked `notification.create` on the session's own
-/// daemon socket; the Mac turns that row into a file preview.
+/// host, posts it as a session-wide marked `notification.create` on the
+/// session's own daemon socket (no terminal marker), and waits for the Mac's
+/// answer: an ack under a reserved `cmux-open:<outcome>` client id.
 ///
 /// The script tests run the real script under real shells against a fake
 /// cmux-tui that records its argv.
 @Suite("cmux open in cmux-tui SSH terminals")
 struct SSHTuiHostOpenCommandTests {
     static let terminalID = "term_0123456789abcdef0123456789abcdef"
+    static let otherTerminalID = "term_fedcba9876543210fedcba9876543210"
     static let notificationID = "notification_0123456789abcdef0123456789abcdef"
     static let shells = ["/bin/sh", "/bin/bash"]
 
@@ -28,8 +30,7 @@ struct SSHTuiHostOpenCommandTests {
         #expect(argv.last?.hasSuffix("exec \"${SHELL:-/bin/sh}\" -l") == true)
         let result = try sandbox.run(argv, environment: sandbox.loginEnvironment)
         #expect(result.status == 0, "\(result.stderr)")
-        let expected = sandbox.home + "/" + connection.hostOpenCommand.installDirectory
-            .replacingOccurrences(of: "$HOME/", with: "") + "/cmux"
+        let expected = sandbox.installedPath(connection.hostOpenCommand)
         #expect(result.stdout.contains("cmux=\(expected)"), "\(result.stdout)")
         #expect(result.stdout.contains("args=-l"), "\(result.stdout)")
         let installed = try String(contentsOfFile: expected, encoding: .utf8)
@@ -60,7 +61,24 @@ struct SSHTuiHostOpenCommandTests {
         let result = try sandbox.run(connection().shellCommand, environment: sandbox.loginEnvironment)
         #expect(result.status == 0)
         #expect(result.stdout.contains("args=-l"))
-        #expect(result.stdout.contains("cmux=\n") || result.stdout.contains("cmux=missing"), "\(result.stdout)")
+        #expect(result.stdout.contains("cmux=missing"), "\(result.stdout)")
+    }
+
+    @Test("A failed install leaves no temporary file behind")
+    func failedInstallRemovesTemporaryFile() throws {
+        let sandbox = try Sandbox()
+        let command = connection().hostOpenCommand
+        // A non-searchable directory where the CLI goes: the install runs,
+        // writes its temporary copy, and the final move fails.
+        let directory = (sandbox.installedPath(command) as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: directory + "/cmux", withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: directory + "/cmux")
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory + "/cmux") }
+        let result = try sandbox.run(connection().shellCommand, environment: sandbox.loginEnvironment)
+        #expect(result.status == 0)
+        #expect(result.stdout.contains("cmux=missing"), "\(result.stdout)")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory).filter { $0.hasPrefix(".cmux.") }
+        #expect(leftovers.isEmpty, "\(leftovers)")
     }
 
     @Test("The release and a tagged build keep separate CLIs, both outside ~/.cmux/bin")
@@ -74,10 +92,10 @@ struct SSHTuiHostOpenCommandTests {
         #expect(release.script.contains("$HOME/.local/bin/cmux-tui}\""))
     }
 
-    // MARK: Host script
+    // MARK: Host script: request
 
-    @Test("cmux open resolves the path on the host and posts one marked row for this terminal", arguments: shells)
-    func openPostsMarkedRow(shell: String) throws {
+    @Test("cmux open posts one session-wide row naming its terminal, and succeeds on the Mac's ok", arguments: shells)
+    func openPostsSessionWideRow(shell: String) throws {
         let sandbox = try Sandbox()
         let file = try sandbox.makeFile("src/top.sv")
         let result = try sandbox.open(["src/top.sv:12"], shell: shell, cwd: sandbox.work)
@@ -86,7 +104,9 @@ struct SSHTuiHostOpenCommandTests {
         #expect(argv.starts(with: ["--json", "notification", "create"]))
         #expect(sandbox.value(after: "--title", in: argv) == SSHTuiHostOpenCommand.notificationTitle)
         #expect(sandbox.value(after: "--subtitle", in: argv) == "top.sv")
-        #expect(sandbox.value(after: "--terminal", in: argv) == Self.terminalID)
+        // No --terminal: a terminal-scoped row would replace that terminal's
+        // pending marker (an agent waiting for input, say).
+        #expect(!argv.contains("--terminal"))
         let body = try #require(sandbox.value(after: "--body", in: argv))
         #expect(request(body: body) == .open(path: file, terminalID: Self.terminalID))
     }
@@ -96,12 +116,10 @@ struct SSHTuiHostOpenCommandTests {
         let sandbox = try Sandbox()
         let literal = try sandbox.makeFile("log:3")
         #expect(try sandbox.open(["log:3"], shell: shell, cwd: sandbox.work).status == 0)
-        #expect(request(body: try #require(sandbox.value(after: "--body", in: sandbox.createArgv())))
-                == .open(path: literal, terminalID: Self.terminalID))
+        #expect(request(body: try sandbox.postedBody()) == .open(path: literal, terminalID: Self.terminalID))
         let plain = try sandbox.makeFile("a b.v")
         #expect(try sandbox.open(["a b.v:4:9"], shell: shell, cwd: sandbox.work).status == 0)
-        #expect(request(body: try #require(sandbox.value(after: "--body", in: sandbox.createArgv())))
-                == .open(path: plain, terminalID: Self.terminalID))
+        #expect(request(body: try sandbox.postedBody()) == .open(path: plain, terminalID: Self.terminalID))
     }
 
     @Test("A symlink opens its target, the canonical host path", arguments: shells)
@@ -110,8 +128,7 @@ struct SSHTuiHostOpenCommandTests {
         let target = try sandbox.makeFile("real/wave.vcd")
         try FileManager.default.createSymbolicLink(atPath: sandbox.work + "/link.vcd", withDestinationPath: target)
         #expect(try sandbox.open(["link.vcd"], shell: shell, cwd: sandbox.work).status == 0)
-        #expect(request(body: try #require(sandbox.value(after: "--body", in: sandbox.createArgv())))
-                == .open(path: target, terminalID: Self.terminalID))
+        #expect(request(body: try sandbox.postedBody()) == .open(path: target, terminalID: Self.terminalID))
     }
 
     @Test("Refusals post nothing", arguments: shells)
@@ -120,11 +137,19 @@ struct SSHTuiHostOpenCommandTests {
         try FileManager.default.createDirectory(atPath: sandbox.work + "/dir", withIntermediateDirectories: true)
         let big = try sandbox.makeFile("big.bin")
         try sandbox.truncate(big, to: 32 * 1024 * 1024 + 1)
+        let unreadable = try sandbox.makeFile("secret.sv")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: unreadable) }
+        // realpath and $(...) drop a trailing newline, which would name another file.
+        _ = try sandbox.makeFile("nl\n")
+        _ = try sandbox.makeFile("nl")
         let cases: [([String], String, Int32)] = [
             (["dir"], "is a directory", 1),
             (["missing.sv"], "no such file", 1),
             (["https://example.com/a"], "is not a file path", 1),
             (["big.bin"], "larger than 32 MB", 1),
+            (["secret.sv"], "is not readable", 1),
+            (["nl\n"], "line break", 1),
             ([], "Usage: cmux open", 2),
             (["a", "b"], "Usage: cmux open", 2),
             (["-x"], "Usage: cmux open", 2),
@@ -153,7 +178,7 @@ struct SSHTuiHostOpenCommandTests {
         #expect(sandbox.posted)
     }
 
-    @Test("Outside a cmux-tui terminal, or for another verb, nothing is posted")
+    @Test("Outside a cmux-tui terminal nothing is posted")
     func needsDaemonTerminal() throws {
         let sandbox = try Sandbox()
         _ = try sandbox.makeFile("a.sv")
@@ -162,81 +187,172 @@ struct SSHTuiHostOpenCommandTests {
         let outside = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment, cwd: sandbox.work)
         #expect(outside.status == 1)
         #expect(outside.stderr.contains("CMUX_TUI_TERMINAL_ID"))
-        let other = try sandbox.run(["/bin/sh", sandbox.scriptPath, "notify", "--title", "x"], environment: sandbox.openEnvironment)
-        #expect(other.status == 2)
-        #expect(other.stderr.contains("only cmux open"))
         #expect(!sandbox.posted)
     }
 
-    @Test("No Mac taking the row within the wait is an error")
-    func unacknowledgedIsAnError() throws {
+    @Test("Another verb runs the next cmux on PATH, or is refused when there is none")
+    func otherVerbsPassThrough() throws {
+        let sandbox = try Sandbox()
+        let refused = try sandbox.run([sandbox.scriptPath, "notify", "--title", "x"], environment: sandbox.openEnvironment)
+        #expect(refused.status == 2)
+        #expect(refused.stderr.contains("only cmux open"))
+        let other = sandbox.root + "/other-bin"
+        try FileManager.default.createDirectory(atPath: other, withIntermediateDirectories: true)
+        try sandbox.writeExecutable(other + "/cmux", "#!/bin/sh\nprintf 'other cmux:%s\\n' \"$*\"\n")
+        var environment = sandbox.openEnvironment
+        environment["PATH"] = sandbox.root + ":" + other + ":/usr/bin:/bin"
+        let passed = try sandbox.run(["/bin/sh", "-c", "cmux notify --title x"], environment: environment)
+        #expect(passed.status == 0, "\(passed.stderr)")
+        #expect(passed.stdout == "other cmux:notify --title x\n")
+        #expect(!sandbox.posted)
+    }
+
+    @Test("Under tmux the attaching client's terminal is used; without one, and under screen, nothing is posted")
+    func tmuxAndScreen() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        let bin = sandbox.root + "/fake-tmux-bin"
+        try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+        try sandbox.writeExecutable(bin + "/tmux", "#!/bin/sh\nprintf '%s\\n' \"$FAKE_TMUX_ENV\"\n")
+        var environment = sandbox.openEnvironment
+        environment["PATH"] = bin + ":/usr/bin:/bin"
+        environment["TMUX"] = "/tmp/tmux-1/default,1,0"
+        environment["FAKE_TMUX_ENV"] = "CMUX_TUI_TERMINAL_ID=\(Self.otherTerminalID)"
+        let attached = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment, cwd: sandbox.work)
+        #expect(attached.status == 0, "\(attached.stderr)")
+        guard case .open(_, let terminal) = request(body: try sandbox.postedBody()) else {
+            Issue.record("no request posted")
+            return
+        }
+        #expect(terminal == Self.otherTerminalID)
+
+        try sandbox.forgetPost()
+        environment["FAKE_TMUX_ENV"] = "-CMUX_TUI_TERMINAL_ID"
+        let unknown = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment, cwd: sandbox.work)
+        #expect(unknown.status == 1)
+        #expect(unknown.stderr.contains("update-environment"), "\(unknown.stderr)")
+        #expect(!sandbox.posted)
+
+        var screen = sandbox.openEnvironment
+        screen["STY"] = "1234.pts-0.host"
+        let underScreen = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: screen, cwd: sandbox.work)
+        #expect(underScreen.status == 1)
+        #expect(underScreen.stderr.contains("screen"), "\(underScreen.stderr)")
+        #expect(!sandbox.posted)
+    }
+
+    @Test("The usage text says :line is ignored and names the tmux limit")
+    func usageText() throws {
+        let sandbox = try Sandbox()
+        let help = try sandbox.run(["/bin/sh", sandbox.scriptPath, "--help"], environment: sandbox.openEnvironment)
+        #expect(help.status == 0)
+        #expect(help.stdout.contains("Usage: cmux open <path>\n"), "\(help.stdout)")
+        #expect(help.stdout.contains(":line"))
+        #expect(help.stdout.contains("tmux"))
+    }
+
+    // MARK: Host script: the Mac's answer
+
+    @Test("A Mac refusal is reported with its reason and a non-zero exit")
+    func refusalIsReported() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        let reasons: [(SSHTuiHostOpenAnswer, String)] = [
+            (.stale, "too old"),
+            (.malformed, "could not read"),
+            (.path, "refused this path"),
+            (.notOpenHere, "not open in a cmux window"),
+            (.previewsOff, "file previews are off"),
+            (.unsupportedType, "Files panel"),
+        ]
+        for (answer, message) in reasons {
+            var environment = sandbox.openEnvironment
+            environment["FAKE_READ_BY"] = "\"mac-1\",\"\(answer.clientID)\""
+            let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment, cwd: sandbox.work)
+            #expect(result.status == 1, "\(answer)")
+            #expect(result.stderr.contains(message), "\(answer): \(result.stderr)")
+        }
+    }
+
+    @Test("Only the Mac's ok is success: another client's read is not")
+    func onlyMacOkIsSuccess() throws {
         let sandbox = try Sandbox()
         _ = try sandbox.makeFile("a.sv")
         var environment = sandbox.openEnvironment
-        environment["FAKE_READ_BY"] = ""
+        environment["FAKE_READ_BY"] = "\"phone-7\",\"mac-1\""
         let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment, cwd: sandbox.work)
         #expect(result.status == 1)
         #expect(result.stderr.contains("no cmux window took"), "\(result.stderr)")
-        #expect(sandbox.posted)
+        // Giving up withdraws the request, so the Mac cannot open it later.
+        #expect(try sandbox.ackLog().contains("--client \(SSHTuiHostOpenAnswer.cancelledClientID)"))
+    }
+
+    @Test("An unreadable daemon reply fails closed")
+    func unparsableReplyFailsClosed() throws {
+        let sandbox = try Sandbox()
+        _ = try sandbox.makeFile("a.sv")
+        var environment = sandbox.openEnvironment
+        environment["FAKE_CREATE_REPLY"] = "{\"value\":{}}"
+        let result = try sandbox.run(["/bin/sh", sandbox.scriptPath, "open", "a.sv"], environment: environment, cwd: sandbox.work)
+        #expect(result.status == 1)
+        #expect(result.stderr.contains("request id"), "\(result.stderr)")
     }
 
     // MARK: Mac-side decoding
 
-    @Test("Only a fresh, terminal-scoped, well-formed row with an acceptable path opens")
+    @Test("Only a well-formed body with a terminal and an acceptable path opens")
     func requestDecoding() {
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let nowMs = UInt64(now.timeIntervalSince1970 * 1000)
-        let body = SSHTuiHostOpenCommand.bodyPrefix + Data("/home/u/top.sv".utf8).base64EncodedString()
-        func decide(title: String = SSHTuiHostOpenCommand.notificationTitle, body: String = body,
-                    terminal: String? = Self.terminalID, createdAtMs: UInt64 = nowMs,
-                    accept: @escaping (String) -> Bool = { $0.hasPrefix("/") }) -> SSHTuiHostOpenRequest {
-            SSHTuiHostOpenRequest(title: title, body: body, terminalID: terminal, createdAtMs: createdAtMs,
-                                  now: now, pathIsAcceptable: accept)
+        let body = SSHTuiHostOpenCommand.requestBody(path: "/home/u/top.sv", terminalID: Self.terminalID)
+        func decide(_ body: String, accept: @escaping (String) -> Bool = { $0.hasPrefix("/") }) -> SSHTuiHostOpenRequest {
+            SSHTuiHostOpenRequest(body: body, pathIsAcceptable: accept)
         }
-        #expect(decide() == .open(path: "/home/u/top.sv", terminalID: Self.terminalID))
-        #expect(decide(title: "Build done", body: "ok") == .notARequest)
-        #expect(decide(title: "Build done", body: "cmux open me") == .notARequest)
-        let refusals: [SSHTuiHostOpenRequest] = [
-            decide(terminal: nil),
-            decide(terminal: "term_bad"),
-            decide(createdAtMs: nowMs - 61_000),
-            decide(createdAtMs: nowMs + 61_000),
-            decide(body: SSHTuiHostOpenCommand.bodyPrefix + "!!!"),
-            decide(body: SSHTuiHostOpenCommand.bodyPrefix + Data([0xFF, 0xFE]).base64EncodedString()),
-            decide(body: String(body.dropLast(4)) + "\u{2026}"),
-            decide(accept: { _ in false }),
-            decide(body: SSHTuiHostOpenCommand.bodyPrefix
-                   + Data(("/" + String(repeating: "a", count: 800)).utf8).base64EncodedString()),
+        #expect(decide(body) == .open(path: "/home/u/top.sv", terminalID: Self.terminalID))
+        #expect(decide("ok") == .notARequest)
+        #expect(decide("cmux open me") == .notARequest)
+        let prefix = SSHTuiHostOpenCommand.bodyPrefix
+        let encodedPath = Data("/home/u/top.sv".utf8).base64EncodedString()
+        let refusals: [(String, SSHTuiHostOpenAnswer)] = [
+            (prefix + encodedPath, .malformed),
+            (prefix + "term_bad:" + encodedPath, .malformed),
+            (prefix + Self.terminalID + ":!!!", .malformed),
+            (prefix + Self.terminalID + ":" + Data([0xFF, 0xFE]).base64EncodedString(), .malformed),
+            (String(body.dropLast(4)) + "\u{2026}", .malformed),
+            (prefix + Self.terminalID + ":" + Data(("/" + String(repeating: "a", count: 800)).utf8).base64EncodedString(), .malformed),
         ]
-        for refusal in refusals {
-            guard case .refused = refusal else {
-                Issue.record("expected a refusal, got \(refusal)")
-                continue
-            }
+        for (refused, answer) in refusals {
+            #expect(decide(refused) == .refused(answer), "\(refused)")
         }
+        #expect(decide(body, accept: { _ in false }) == .refused(.path))
+    }
+
+    @Test("The longest accepted path still fits the body the Mac keeps")
+    func longestPathFits() throws {
+        let path = "/" + String(repeating: "p", count: SSHTuiHostOpenCommand.maximumPathBytes - 1)
+        let body = SSHTuiHostOpenCommand.requestBody(path: path, terminalID: Self.terminalID)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "id": Self.notificationID, "title": "cmux open", "body": body, "created_at_ms": "1", "read_by": [String](),
+        ])
+        let row = try #require(CloudVMNotificationRow.row(fromPayload: payload))
+        #expect(SSHTuiHostOpenRequest(body: row.body, pathIsAcceptable: { _ in true }) == .open(path: path, terminalID: Self.terminalID))
     }
 
     @Test("A row as the Mac parses it from the daemon feed still decodes")
     func rowFromFeedDecodes() throws {
         let path = "/home/u/dir with space/ünï.sv"
-        let body = SSHTuiHostOpenCommand.bodyPrefix + Data(path.utf8).base64EncodedString()
-        let now = Date()
         let payload = try JSONSerialization.data(withJSONObject: [
-            "id": Self.notificationID, "title": "cmux open", "subtitle": "ünï.sv", "body": body,
-            "created_at_ms": String(UInt64(now.timeIntervalSince1970 * 1000)), "terminal_id": Self.terminalID,
-            "read_by": [String](),
+            "id": Self.notificationID, "title": "cmux open", "subtitle": "ünï.sv",
+            "body": SSHTuiHostOpenCommand.requestBody(path: path, terminalID: Self.terminalID),
+            "created_at_ms": "1", "read_by": [String](),
         ])
         let row = try #require(CloudVMNotificationRow.row(fromPayload: payload))
-        #expect(SSHTuiHostOpenRequest(row: row, now: now, pathIsAcceptable: { _ in true })
+        #expect(SSHTuiHostOpenRequest(body: row.body, pathIsAcceptable: { _ in true })
                 == .open(path: path, terminalID: Self.terminalID))
     }
 
     // MARK: Helpers
 
     private func request(body: String) -> SSHTuiHostOpenRequest {
-        SSHTuiHostOpenRequest(title: SSHTuiHostOpenCommand.notificationTitle, body: body, terminalID: Self.terminalID,
-                              createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000), now: Date(),
-                              pathIsAcceptable: { $0.hasPrefix("/") })
+        SSHTuiHostOpenRequest(body: body, pathIsAcceptable: { $0.hasPrefix("/") })
     }
 
     private func connection(bundleIdentifier: String = "com.cmuxterm.app.debug.svedit") -> SSHTuiConnection {
@@ -256,31 +372,35 @@ private final class Sandbox {
     var scriptPath: String { root + "/cmux" }
     private var fakeBinary: String { root + "/fake-cmux-tui" }
     private var argvFile: String { root + "/create-argv" }
+    private var ackFile: String { root + "/ack-log" }
 
     init() throws {
         root = Sandbox.canonical(NSTemporaryDirectory()) + "/cmux-open-\(UUID().uuidString.prefix(8))"
         let fm = FileManager.default
         for dir in [home, work] { try fm.createDirectory(atPath: dir, withIntermediateDirectories: true) }
         // `exec "$SHELL" -l` lands here and reports what the terminal would get.
-        try write(root + "/login-shell", """
+        try writeExecutable(root + "/login-shell", """
             #!/bin/sh
             printf 'cmux=%s\\n' "$(command -v cmux || echo missing)"
             printf 'args=%s\\n' "$*"
             """)
-        try write(fakeBinary, """
+        let id = SSHTuiHostOpenCommandTests.notificationID
+        try writeExecutable(fakeBinary, """
             #!/bin/sh
             case "$*" in
               *"notification create"*)
                 : > "\(argvFile)"
                 for a in "$@"; do printf '%s\\0' "$a" >> "\(argvFile)"; done
-                printf '{"value":{"body":"x","id":"\(SSHTuiHostOpenCommandTests.notificationID)","read_by":[]}}\\n' ;;
+                printf '%s\\n' "${FAKE_CREATE_REPLY-{\\"value\\":{\\"body\\":\\"x\\",\\"id\\":\\"\(id)\\",\\"read_by\\":[]}}}" ;;
               *"notification list"*)
-                printf '[{"body":"x","id":"\(SSHTuiHostOpenCommandTests.notificationID)","read_by":[%s]}]\\n' "${FAKE_READ_BY-\\"mac\\"}" ;;
+                printf '[{"body":"x","id":"\(id)","read_by":[%s]}]\\n' "${FAKE_READ_BY-\\"mac-1\\",\\"cmux-open:ok\\"}" ;;
+              *"notification ack"*)
+                printf '%s\\n' "$*" >> "\(ackFile)" ;;
               *) exit 9 ;;
             esac
             """)
         let script = SSHTuiHostOpenCommand(session: "cmux-svedit", remoteBinary: "~/.local/bin/cmux-tui-svedit").script
-        try write(scriptPath, script)
+        try writeExecutable(scriptPath, script)
     }
 
     deinit { try? FileManager.default.removeItem(atPath: root) }
@@ -296,6 +416,12 @@ private final class Sandbox {
 
     var posted: Bool { FileManager.default.fileExists(atPath: argvFile) }
 
+    func forgetPost() throws { try FileManager.default.removeItem(atPath: argvFile) }
+
+    func installedPath(_ command: SSHTuiHostOpenCommand) -> String {
+        home + "/" + command.installDirectory.replacingOccurrences(of: "$HOME/", with: "") + "/cmux"
+    }
+
     func open(_ arguments: [String], shell: String, cwd: String) throws -> ProcessResult {
         try? FileManager.default.removeItem(atPath: argvFile)
         return try run([shell, scriptPath, "open"] + arguments, environment: openEnvironment, cwd: cwd)
@@ -305,6 +431,14 @@ private final class Sandbox {
         let data = try Data(contentsOf: URL(fileURLWithPath: argvFile))
         return data.split(separator: 0, omittingEmptySubsequences: false).dropLast()
             .map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    func postedBody() throws -> String {
+        try #require(value(after: "--body", in: createArgv()))
+    }
+
+    func ackLog() throws -> String {
+        (try? String(contentsOfFile: ackFile, encoding: .utf8)) ?? ""
     }
 
     func value(after flag: String, in argv: [String]) -> String? {
@@ -352,7 +486,7 @@ private final class Sandbox {
                              stderr: String(decoding: stderr, as: UTF8.self))
     }
 
-    private func write(_ path: String, _ contents: String) throws {
+    func writeExecutable(_ path: String, _ contents: String) throws {
         try contents.write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
     }
