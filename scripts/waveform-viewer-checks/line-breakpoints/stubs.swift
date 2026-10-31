@@ -59,12 +59,19 @@ final class SavingTextView: NSTextView {
 }
 
 @MainActor final class FilePreviewLineNumberGutterView {
-    enum BreakpointMark { case enabled, disabled, lost }
+    enum BreakpointMark { case enabled, conditional, disabled, lost }
 }
 
 /// The watches part of WaveformDebuggerEvaluate (the real one needs the app): kept per workspace.
 @MainActor enum WaveformDebuggerEvaluate {
     static var watches: [UUID: [String]] = [:]
+    /// The condition prompt: what it was shown, what it answers (nil: cancelled).
+    static var prompted: [String?] = []
+    static var promptAnswer: String?
+    static func promptCondition(current: String?, for label: String, window: NSWindow?) -> String? {
+        prompted.append(current)
+        return promptAnswer
+    }
     static func snapshot(of workspace: UUID) -> [String]? { watches[workspace].flatMap { $0.isEmpty ? nil : $0 } }
     static func restore(_ items: [String]?, in workspace: UUID) {
         guard let items, !items.isEmpty else { return }
