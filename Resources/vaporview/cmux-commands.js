@@ -424,6 +424,8 @@
   let webviewContext = null;   // latest contextUpdate, as VaporviewDocument.webviewContext
   let undoStack = [];
   let redoStack = [];
+  // The view before a reload, while the reloading viewer has no context yet.
+  let reloadBaseline = null;
   let dirty = false;
 
   function contextSession(context) {
@@ -457,6 +459,7 @@
     }
     if (change === StateChangeType.User) { setDirty(true); }
     webviewContext = Object.assign({}, webviewContext || {}, m);
+    reloadBaseline = null;
     // The viewer answers apply-state with a Restore context (initComplete is set
     // right after it asks for its state, so the answer always comes).
     if (appliedRestoreConfig && change === StateChangeType.Restore) {
@@ -711,14 +714,23 @@
     host().toNative({ type: 'saveSession', text: JSON.stringify(sessionFile(), null, 2), suggestedName: name });
   }
 
-  // The view to go back to: before the viewer's first context, VaporView's
-  // document holds an empty one (new WebviewState()), so the first change undoes.
+  // The view to go back to. During a reload's gap it is the view before the
+  // reload. Before the viewer's first context, VaporView's document holds an
+  // empty one (new WebviewState(), document.ts), so the first change undoes;
+  // its display unit is the file's rather than a fixed "ns".
   function undoState() {
-    return contextSession(webviewContext) || { displayedSignals: [] };
+    const metadata = host().doc.metadata;
+    return contextSession(webviewContext) || reloadBaseline || {
+      markerTime: null, altMarkerTime: null, displayTimeUnit: (metadata && metadata.timeUnit) || 'ns',
+      selectedSignal: null, zoomRatio: 1, scrollLeft: 0, defaultPixelTime: 1,
+      autoReload: !!settings().defaultAutoReload, displayedSignals: [],
+    };
   }
 
   function undo(stack, other, type) {
-    if (!stack.length) { return; }
+    // A reloading viewer has no rows to apply a view to, and its restore would
+    // overwrite one: the history waits for the reload.
+    if (!stack.length || (reloadBaseline && !webviewContext)) { return; }
     const state = JSON.parse(stack.pop());
     other.push(JSON.stringify(undoState()));
     applySession(state, type);
@@ -1131,6 +1143,7 @@
     webviewContext = null;
     undoStack = [];
     redoStack = [];
+    reloadBaseline = null;
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
@@ -1153,10 +1166,12 @@
   // Before an in-page reload: the frame keeps its own state, the rest restarts.
   // host.js reload() calls this after taking its snapshot, just before the
   // viewer unloads its rows: cmux's copy of the old context is dropped with
-  // them, so nothing reports or saves rows the viewer no longer has.
+  // them, so nothing reports or saves rows the viewer no longer has. The undo
+  // history keeps that view as the one to go back to.
   function willReload() {
     pendingReload = false;
     document.getElementById('status-reload').hidden = true;
+    reloadBaseline = undoState();
     webviewContext = null;
     clearTimeout(snapshotTimer);
   }
