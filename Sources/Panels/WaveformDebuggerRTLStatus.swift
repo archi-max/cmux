@@ -34,15 +34,25 @@ enum WaveformDebuggerRTLStatus {
         }
     }
 
+    /// The clock moves and reports are timed by (the checks set it).
+    static var now: () -> Date = { Date() }
+    /// The page's wait for the editors on a played cycle (RTL_WAIT_MS in cmux-debugger.js).
+    static let pageWait: TimeInterval = 0.25
+    /// Plays started on any viewer: a report's play tells which one it was made in, across pages too.
+    private static var plays = 0
+
     /// Per viewer: what its page was told, and the editors play waits for.
     private final class Sent {
         var status: [String: AnyHashable]?
-        /// Counts plays started, so reports made before this one are known.
+        /// The play going on (or last), from `plays`: reports made before it don't count.
         var play = 0
+        /// When the page moved to each recent played cycle.
+        var movedAt: [Int64: Date] = [:]
         /// While playing, the cycle the page is on (it waits for the editors there).
         var pageTime: Int64?
-        /// Editors the page moved on without (they missed a cycle): not waited for until
-        /// they report the page's cycle again. Else one stalled editor caps every cycle at 250 ms.
+        /// Editors the page moved on without (they missed a cycle): not waited for until they
+        /// draw a played cycle within the page's wait of its move. Else one stalled editor caps
+        /// every cycle at 250 ms.
         let behind = NSHashTable<FilePreviewLanguageFeatures>.weakObjects()
     }
 
@@ -73,8 +83,12 @@ enum WaveformDebuggerRTLStatus {
     static func editorDone(_ editor: FilePreviewLanguageFeatures, waveform: FilePreviewPanel, time: Int64, drew: Bool, reasons: [String: Reason]) {
         let mine = state(waveform)
         reports.setObject(Report(time: time, drew: drew, reasons: reasons, play: mine.play), forKey: editor)
-        // At the page's cycle again (or not playing): it keeps up.
-        if mine.pageTime == nil || mine.pageTime == time { mine.behind.remove(editor) }
+        // Not playing, or it drew a played cycle in time: it keeps up again.
+        if mine.pageTime == nil {
+            mine.behind.remove(editor)
+        } else if let movedAt = mine.movedAt[time], now().timeIntervalSince(movedAt) < pageWait {
+            mine.behind.remove(editor)
+        }
         report(waveform)
         ackIfAllShown(waveform)
     }
@@ -98,8 +112,10 @@ enum WaveformDebuggerRTLStatus {
     /// (the strip still shows it), and every editor is waited for again.
     static func playStarted(_ waveform: FilePreviewPanel) {
         let mine = state(waveform)
-        mine.play += 1
+        plays += 1
+        mine.play = plays
         mine.pageTime = nil
+        mine.movedAt = [:]
         mine.behind.removeAllObjects()
         report(waveform)
     }
@@ -111,17 +127,28 @@ enum WaveformDebuggerRTLStatus {
         let mine = state(waveform)
         if missed, let left = left ?? mine.pageTime {
             for editor in editors(of: waveform) {
-                let report = reports.object(forKey: editor)
-                if report?.play != mine.play || report?.time != left { mine.behind.add(editor) }
+                guard let report = reports.object(forKey: editor), report.play == mine.play,
+                      report.time == left || report.time == time else {
+                    mine.behind.add(editor)
+                    continue
+                }
             }
         }
         mine.pageTime = time
+        mine.movedAt[time] = now()
+        if mine.movedAt.count > 64, let oldest = mine.movedAt.min(by: { $0.value < $1.value })?.key {
+            mine.movedAt[oldest] = nil
+        }
         report(waveform)
+        // Every editor may have drawn this cycle already.
+        ackIfAllShown(waveform)
     }
 
-    /// (Not yet implemented: the checks compile against these.)
-    static var now: () -> Date = { Date() }
-    static func waitSettingChanged(_ waveform: FilePreviewPanel) {}
+    /// "Play Waits for the Editor" changed: every editor is waited for again.
+    static func waitSettingChanged(_ waveform: FilePreviewPanel) {
+        state(waveform).behind.removeAllObjects()
+        report(waveform)
+    }
 
     /// `editor` closed or stopped linking: the viewers it followed no longer wait for it.
     static func editorGone(_ editor: FilePreviewLanguageFeatures) {
@@ -174,7 +201,8 @@ enum WaveformDebuggerRTLStatus {
             if report.drew { drawn.append(file) }
             for (_, reason) in report.reasons.sorted(by: { $0.key < $1.key }) {
                 let text = self.text(of: reason, file: file)
-                notes.append(note(file, text))
+                // (Not placed already names the file.)
+                notes.append(reason == .notPlaced ? text : note(file, text))
                 if firstReason == nil, !report.drew { firstReason = rtl(text) }
             }
         }

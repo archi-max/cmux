@@ -90,14 +90,14 @@ enum WaveformDebuggerEditorHighlights {
     private static let maxConeRequests = 16
 
     private struct ConeBudget {
-        let waveform: ObjectIdentifier
         let time: Int64
         let generation: Int
         var left: Int
     }
 
-    /// While playing: cone lookups left for the cycle shown (`maxConeRequests` per cycle across editors).
-    private static var coneBudget: ConeBudget?
+    /// While playing, per viewer: cone lookups left for the cycle shown (`maxConeRequests` per
+    /// cycle across its editors).
+    private static var coneBudgets: [ObjectIdentifier: ConeBudget] = [:]
 
     /// How long an editor waits after the marker moves before it reads values again: none
     /// while playing (the throttle still runs one refresh at a time), else enough to let quick moves settle.
@@ -168,7 +168,8 @@ enum WaveformDebuggerEditorHighlights {
         // Superseded: the newer refresh draws (clearing here would cancel it).
         if Task.isCancelled { return nil }
         guard let previous = (cycle?["previousTime"] as? NSNumber)?.int64Value else {
-            clear(in: shown.textView)
+            // (Not `clear`: that cancels this job, and the editor would never say it drew the cycle.)
+            removeCycleHighlights(from: shown.textView)
             return nil
         }
         var changed: [String: Set<String>] = [:]
@@ -213,16 +214,19 @@ enum WaveformDebuggerEditorHighlights {
         // start a new one); else each refresh (a scroll, an edit, a step) has its own.
         let playing = WaveformDebugger.state(of: shown.waveform).playing
         var ownBudget = maxConeRequests
-        if playing {
-            let cycle = ConeBudget(waveform: ObjectIdentifier(shown.waveform), time: shown.time, generation: coneGeneration, left: 0)
-            if coneBudget.map({ $0.waveform != cycle.waveform || $0.time != cycle.time || $0.generation != cycle.generation }) ?? true {
-                coneBudget = ConeBudget(waveform: cycle.waveform, time: cycle.time, generation: cycle.generation, left: maxConeRequests)
-            }
-        }
+        let viewer = ObjectIdentifier(shown.waveform)
+        let budgetGeneration = coneGeneration
         func takeLookup() -> Bool {
             if playing {
-                guard let budget = coneBudget, budget.left > 0 else { return false }
-                coneBudget?.left = budget.left - 1
+                // This cycle's budget (a new cycle, or forgotten cones, start a new one).
+                var budget = coneBudgets[viewer] ?? ConeBudget(time: shown.time, generation: budgetGeneration, left: maxConeRequests)
+                if budget.time != shown.time || budget.generation != budgetGeneration {
+                    budget = ConeBudget(time: shown.time, generation: budgetGeneration, left: maxConeRequests)
+                }
+                guard budget.left > 0 else { return false }
+                budget.left -= 1
+                if coneBudgets.count > 32, coneBudgets[viewer] == nil { coneBudgets.removeAll() }
+                coneBudgets[viewer] = budget
                 return true
             }
             guard ownBudget > 0 else { return false }
@@ -296,6 +300,10 @@ enum WaveformDebuggerEditorHighlights {
     static func clear(in textView: NSTextView?) {
         guard let textView else { return }
         work.object(forKey: textView)?.task?.cancel()
+        removeCycleHighlights(from: textView)
+    }
+
+    private static func removeCycleHighlights(from textView: NSTextView) {
         cycleDrawn.removeObject(forKey: textView)
         removeAll(from: textView)
         drawSelection(in: textView)

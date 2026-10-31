@@ -426,39 +426,50 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     expect(page.rtlShownTimes.isEmpty, "the other editor's report from before play doesn't count: \(page.rtlShownTimes)")
 
     // The page moved on without an editor (it timed out on the cycle): that editor isn't
-    // waited for until it reports the page's cycle again, late reports for cycles left included.
+    // waited for until it draws a played cycle within the page's 250 ms wait of its move.
+    let tm = Date()
+    func at(_ seconds: Double) { WaveformDebuggerRTLStatus.now = { tm.addingTimeInterval(seconds) } }
+    at(0)
     WaveformDebuggerRTLStatus.playStarted(waveform)
     WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75, left: nil, missed: false)
     page.rtlShownTimes.removeAll()
     await draw(editor, textView, at: 75)
     expect(page.rtlShownTimes.isEmpty, "at first the other editor is waited for: \(page.rtlShownTimes)")
+    at(0.3)
     WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85, left: 75, missed: true)
     await draw(editor, textView, at: 85)
     expect(page.rtlShownTimes == [85], "it missed 75: it no longer holds play: \(page.rtlShownTimes)")
+    at(0.35)
     await draw(otherEditor, other, at: 75)
+    at(0.4)
     WaveformDebuggerRTLStatus.pageMoved(waveform, to: 95, left: 85, missed: false)
     page.rtlShownTimes.removeAll()
     await draw(editor, textView, at: 95)
     expect(page.rtlShownTimes == [95], "a late report for a cycle the page left doesn't bring it back: \(page.rtlShownTimes)")
+    at(0.45)
     await draw(otherEditor, other, at: 95)
+    at(0.5)
     WaveformDebuggerRTLStatus.pageMoved(waveform, to: 105, left: 95, missed: false)
     page.rtlShownTimes.removeAll()
     await draw(editor, textView, at: 105)
-    expect(page.rtlShownTimes.isEmpty, "it reported the page's cycle: waited for again: \(page.rtlShownTimes)")
+    expect(page.rtlShownTimes.isEmpty, "it drew 95 50 ms after its move: waited for again: \(page.rtlShownTimes)")
 
     // One editor, stalled: after the first cycle it missed, the page doesn't wait at all.
     FilePreviewLanguageFeatures.all = [otherEditor]
+    at(1)
     WaveformDebuggerRTLStatus.playStarted(waveform)
     WaveformDebuggerRTLStatus.pageMoved(waveform, to: 75, left: nil, missed: false)
     await settle()
     expect(lastStatus()["wait"] as? Bool == true, "play waits for it at first: \(lastStatus())")
+    at(1.3)
     WaveformDebuggerRTLStatus.pageMoved(waveform, to: 85, left: 75, missed: true)
     await settle()
     expect(lastStatus()["wait"] as? Bool == false, "it missed 75: play runs at its rate: \(lastStatus())")
+    at(1.35)
     await draw(otherEditor, other, at: 85)
     expect(lastStatus()["wait"] as? Bool == true, "it caught up: play waits again: \(lastStatus())")
+    WaveformDebuggerRTLStatus.now = { Date() }
 
-    for t in [115, 125, 135, 145] as [Int64] { page.previousTimes[t] = t - 10 }
     // Play starts from a cycle the editors drew before: the first move doesn't count as missed.
     FilePreviewLanguageFeatures.all = [editor, otherEditor]
     await draw(editor, textView, at: 65)

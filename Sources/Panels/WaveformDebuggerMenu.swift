@@ -88,9 +88,15 @@ struct WaveformDebuggerMenu: View {
             Divider()
             Toggle(
                 String(localized: "waveformDebugger.waitForEditor", defaultValue: "Play Waits for the Editor"),
-                isOn: $waitsForEditor
+                // The setter tells the stepping viewers (onChange may not run inside .commands).
+                isOn: Binding(
+                    get: { waitsForEditor },
+                    set: { value in
+                        waitsForEditor = value
+                        WaveformDebugger.waitForEditorChanged()
+                    }
+                )
             )
-            .onChange(of: waitsForEditor) { _, _ in WaveformDebugger.waitForEditorChanged() }
         }
     }
 }
