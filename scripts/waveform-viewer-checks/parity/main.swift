@@ -402,16 +402,30 @@ extension Harness {
           // contextUpdate comes back (a message event, a later task).
           let p = Promise.resolve();
           for (let i = 0; i < 20; i++) { p = p.then(() => {}); }
-          p.then(() => window.cmuxWaveform.reload({}));
+          p.then(() => {
+            // As if the frame had no saved state of its own (a new page after a
+            // WebContent crash): only cmux's kept restore can bring the rows back.
+            const C = window.cmuxCommands, restoreState = C.restoreState;
+            C.restoreState = (m) => { C.restoreState = restoreState; return restoreState(Object.assign({}, m, { state: undefined })); };
+            window.cmuxWaveform.reload({});
+          });
         }
       };
       return 1;
     })()
     """)
+    let nativeBefore = native.count
     openFresh(restore: restore) {
       DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-        self.js("const st = C.sessionSnapshot().state; R.rows = st ? st.displayedSignals.length : 0;") { r in
-          check(r["rows"] as? Int == 2, "a reload just after the restore was posted keeps it (rows \(r["rows"] ?? "nil"))")
+        // cmux's kept copy (sessionState) must never become the empty context
+        // of the gap: a WebContent crash then would lose the rows.
+        let posted = self.native[nativeBefore...].filter { $0["type"] as? String == "sessionState" }
+        let rowCounts = posted.map { (($0["state"] as? [String: Any])?["displayedSignals"] as? [Any])?.count ?? -1 }
+        check(!rowCounts.isEmpty && rowCounts.allSatisfy { $0 == 2 },
+              "cmux's kept copy always holds the restored rows (sessionState rows \(rowCounts))")
+        // The rows the viewer draws, not cmux's view of its context.
+        self.js("R.rows = document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;") { r in
+          check(r["rows"] as? Int == 2, "a reload just after the restore was posted keeps it (rows drawn \(r["rows"] ?? "nil"))")
           self.phaseK()
         }
       }
