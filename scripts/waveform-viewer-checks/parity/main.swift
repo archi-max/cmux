@@ -149,6 +149,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let wrapped = "const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n"
       + "const C = window.cmuxCommands, H = window.cmuxWaveform.host, R = {};\n"
       + "const toasts = () => document.querySelectorAll('.cmux-toast').length;\n"
+      // A reload is done once the viewer's context is back (its Restore answer);
+      // a fixed wait is not enough on a loaded machine.
+      + "const reloaded = async () => { const t = Date.now(); while (!C.sessionSnapshot().state && Date.now() - t < 8000) { await sleep(50); } await sleep(300); };\n"
       + body + "\nreturn JSON.stringify(R);"
     web.callAsyncJavaScript(wrapped, arguments: [:], in: nil, in: .page) { result in
       switch result {
@@ -500,7 +503,7 @@ extension Harness {
         await sleep(600);
         window.cmuxWaveform.reload({});
         R.during = rows();
-        await sleep(1500);
+        await reloaded();
         R.after = [rows(), drawn()];
         """) { r in
           check(r["during"] as? Int == 0, "no stale context while the viewer reloads (rows \(r["during"] ?? "nil"))")
@@ -522,7 +525,7 @@ extension Harness {
         await sleep(600);
         window.cmuxWaveform.reload({});
         await C.run('cmux.undo');
-        await sleep(1500);
+        await reloaded();
         R.reloaded = drawn();
         await C.run('cmux.undo');
         await sleep(800);
@@ -610,12 +613,12 @@ extension Harness {
         R.flushed = kept ? kept.state.displayedSignals.length : 0;
         vd().getElementById('autoReload').click();
         R.during = rows();
-        await sleep(1500);
+        await reloaded();
         R.reloaded = drawn();
         window.cmuxWaveform.reload({});
         const reloadsBefore = reloads();
         C.fileChanged();
-        await sleep(1500);
+        await reloaded();
         R.gapReloads = reloads() - reloadsBefore;
         R.bar = bar();
         await C.run('cmux.undo');
@@ -653,11 +656,11 @@ extension Harness {
         const file = save ? JSON.parse(save.text) : null;
         R.saved = file ? file.displayedSignals.length : -1;
         R.selected = file && file.selectedSignal ? file.selectedSignal.name : null;
-        await sleep(1500);
+        await reloaded();
         window.cmuxWaveform.reload({});
         await sleep(30);
         window.cmuxWaveform.reload({});
-        await sleep(1500);
+        await reloaded();
         R.reloaded = drawn();
         await C.run('cmux.undo');
         await sleep(800);
@@ -775,7 +778,7 @@ extension Harness {
           return p;
         };
         window.cmuxWaveform.reload({});
-        await sleep(1500);
+        await reloaded();
         R.reloaded = drawn();
         await C.run('cmux.undo');
         await sleep(800);
