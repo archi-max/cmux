@@ -13,7 +13,8 @@ import (
 var lineSuffix = regexp.MustCompile(`:[0-9]+(:[0-9]+)?$`)
 
 // maxOpenFileBytes matches the app's cap on what `cmux open` downloads
-// without a click (RemoteTerminalFilePreviewCoordinator).
+// without a click (RemoteTerminalFilePreviewCoordinator). FSDB dumps are
+// read in place on the host and have no cap.
 const maxOpenFileBytes = 32 << 20
 
 // runOpenRelay handles "cmux open <path>[:line]" in an SSH session. The path
@@ -78,7 +79,9 @@ func resolveOpenPath(raw string) (string, error) {
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("%s is not a regular file", abs)
 		}
-		if info.Size() > maxOpenFileBytes {
+		// The app reads FSDB in place on this host (nothing is downloaded).
+		readInPlace := strings.EqualFold(filepath.Ext(abs), ".fsdb")
+		if !readInPlace && info.Size() > maxOpenFileBytes {
 			return "", fmt.Errorf("%s is larger than %d MB; open it from the Files panel instead", abs, maxOpenFileBytes>>20)
 		}
 		return abs, nil

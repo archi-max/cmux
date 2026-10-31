@@ -17,7 +17,7 @@ actor RemoteTerminalFilePreviewLoader {
         cacheDirectory: URL,
         fileManager: FileManager,
         budgetBytes: Int64 = RemotePreviewCacheBudget.defaultBudgetBytes,
-        shownPaths: @escaping @MainActor @Sendable () -> Set<String> = { [] }
+        shownPaths: @escaping @MainActor @Sendable () -> Set<String>
     ) {
         self.provider = provider
         self.cacheDirectory = cacheDirectory
@@ -26,7 +26,7 @@ actor RemoteTerminalFilePreviewLoader {
         self.shownPaths = shownPaths
     }
 
-    func load(tokens: [String], workingDirectory: String?) async throws -> URL {
+    func load(tokens: [String], workingDirectory: String?) async throws -> RemotePreviewDownload {
         try Task.checkCancellation()
         let resolver = RemoteTerminalPathResolver()
         let needsHome = tokens.contains {
@@ -50,14 +50,14 @@ actor RemoteTerminalFilePreviewLoader {
     /// costs no transfer; the download itself also stops after `maxBytes + 1`
     /// bytes, so a file that grew meanwhile is refused too, leaving nothing
     /// in the cache.
-    func load(exactPath path: String, maxBytes: Int64) async throws -> URL {
+    func load(exactPath path: String, maxBytes: Int64) async throws -> RemotePreviewDownload {
         try Task.checkCancellation()
         let stamp = try await provider.fileStamp(path: path)
         guard stamp.size <= maxBytes else { throw RemoteTerminalFilePreviewError.fileTooLarge }
         return try await download(candidates: [path], maxBytes: maxBytes)
     }
 
-    private func download(candidates: [String], maxBytes: Int64? = nil) async throws -> URL {
+    private func download(candidates: [String], maxBytes: Int64? = nil) async throws -> RemotePreviewDownload {
         let identity = [provider.destination, provider.port.map(String.init) ?? "", provider.identityFile ?? ""]
             + provider.sshOptions
         let identityData = try JSONSerialization.data(withJSONObject: identity)
@@ -84,6 +84,7 @@ actor RemoteTerminalFilePreviewLoader {
                 }
                 try Task.checkCancellation()
                 let destination = directory.appendingPathComponent((path as NSString).lastPathComponent)
+                let isNew = !fileManager.fileExists(atPath: destination.path)
                 // Publish a complete file atomically; an existing preview never sees a partial download.
                 guard rename(staging.path, destination.path) == 0 else {
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
@@ -96,7 +97,7 @@ actor RemoteTerminalFilePreviewLoader {
                     recentUseGrace: RemotePreviewCacheBudget.defaultRecentUseGrace,
                     fileManager: fileManager
                 )
-                return destination
+                return RemotePreviewDownload(url: destination, isNew: isNew)
             } catch let error as RemoteTerminalFilePreviewError {
                 throw error
             } catch {

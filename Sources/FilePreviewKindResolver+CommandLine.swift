@@ -17,10 +17,20 @@ extension FilePreviewKindResolver {
         return !type.conforms(to: .text)
     }
 
-    /// Whether `cmux open` sends `path` to the Files panel instead of
-    /// downloading it: Quick-Look-only types, and waveforms read in place on
-    /// the host (FSDB), whose downloaded copy the local viewer can't read.
-    static func commandLineOpenNeedsFilesPanel(path: String) -> Bool {
-        opensOnlyThroughQuickLook(path: path) || isReadInPlaceOnRemoteHost(path)
+    /// How `cmux open` opens `path`, judged from the extension alone.
+    static func commandLineOpenRoute(path: String) -> CommandLineOpenRoute {
+        if isReadInPlaceOnRemoteHost(path) { return .readInPlaceOnHost }
+        if opensOnlyThroughQuickLook(path: path) { return .filesPanelOnly }
+        return .download
     }
+}
+
+/// How `cmux open` opens a host file.
+enum CommandLineOpenRoute: Equatable {
+    /// The waveform viewer reads it on the host (FSDB), as the Files panel does; nothing is downloaded.
+    case readInPlaceOnHost
+    /// Quick Look only: refused; it opens with a click in the Files panel.
+    case filesPanelOnly
+    /// A capped download into the remote preview cache, shown in the native preview.
+    case download
 }

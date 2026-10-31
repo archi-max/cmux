@@ -13,6 +13,9 @@ final class RemoteTerminalFilePreviewCoordinator {
     private let clock: any Clock<Duration>
     private let timeout: Duration
     private var tasks: [UUID: (id: UUID, task: Task<Void, Never>)] = [:]
+    /// Serves `cmux open` of dumps read in place, through the Files panel's preview path.
+    private lazy var inPlaceStore = FileExplorerStore()
+    private var inPlaceRoot: FileExplorerWorkspaceRoot?
 
     init(
         defaults: UserDefaults,
@@ -45,12 +48,16 @@ final class RemoteTerminalFilePreviewCoordinator {
 
     /// What a `cmux open` request led to, for the socket reply.
     enum CommandLineOpenOutcome: Equatable {
-        /// The download started; the preview opens when it lands (if the
-        /// terminal is still focused), else a notice says why it didn't.
+        /// The download started, and the preview opens when it lands; or the
+        /// waveform viewer is opening the dump in place on the host. When
+        /// the preview can't open, a notice on the terminal says why, except
+        /// when the terminal lost focus meanwhile (then nothing opens).
         case started
         /// Not an SSH terminal, or file previews are off.
         case unavailable
-        /// The type previews only through Quick Look; open it from the Files panel.
+        /// Refused by extension before anything is downloaded: the type
+        /// previews only through Quick Look, so it opens with a click in the
+        /// Files panel.
         case unsupportedType
     }
 
@@ -80,9 +87,16 @@ final class RemoteTerminalFilePreviewCoordinator {
             }
         case .commandLine(let path):
             guard !ManagedFileTransferPolicy.isDisabled, settings.supportedFileRouteEnabled else { return .unavailable }
-            // Refused before any transfer when the extension already says so.
-            guard !FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: path) else { return .unsupportedType }
-            tasks[sourcePanelID]?.task.cancel()
+            switch FilePreviewKindResolver.commandLineOpenRoute(path: path) {
+            case .readInPlaceOnHost:
+                tasks[sourcePanelID]?.task.cancel()
+                return openInPlaceOnHost(path: path, workspace: workspace, sourcePanelID: sourcePanelID)
+            case .filesPanelOnly:
+                // Refused before any transfer when the extension already says so.
+                return .unsupportedType
+            case .download:
+                tasks[sourcePanelID]?.task.cancel()
+            }
         }
         let cacheRoot = cacheDirectory
         let directory = workspace.effectivePanelDirectory(panelId: sourcePanelID)
@@ -120,7 +134,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                 }
             }
             do {
-                let localURL = try await withThrowingTaskGroup(of: URL.self) { group in
+                let download = try await withThrowingTaskGroup(of: RemotePreviewDownload.self) { group in
                     group.addTask {
                         switch request {
                         case .click(let tokens):
@@ -137,9 +151,10 @@ final class RemoteTerminalFilePreviewCoordinator {
                     defer { group.cancelAll() }
                     return try await group.next()!
                 }
+                let localURL = download.url
                 if Task.isCancelled {
                     // A newer open replaced this one after the file arrived.
-                    Self.discardUnlessShown(localURL, cacheRoot: cacheRoot)
+                    Self.discardUnlessShown(download, cacheRoot: cacheRoot)
                     return
                 }
                 guard let self, let workspace, let panel, let sourceSurface,
@@ -159,7 +174,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                     #if DEBUG
                     cmuxDebugLog("remotePreview.discarded request=\(requestID.uuidString)")
                     #endif
-                    Self.discardUnlessShown(localURL, cacheRoot: cacheRoot)
+                    Self.discardUnlessShown(download, cacheRoot: cacheRoot)
                     return
                 }
                 let opened: Bool
@@ -171,6 +186,10 @@ final class RemoteTerminalFilePreviewCoordinator {
                         filePath: localURL.path,
                         defaults: self.defaults
                     )
+                    if !opened {
+                        NSSound.beep()
+                        Self.discardUnlessShown(download, cacheRoot: cacheRoot)
+                    }
                 case .commandLine:
                     // Never the markdown viewer or the browser: the host chose
                     // this file, so it opens only in the native preview.
@@ -185,7 +204,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                             && workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localURL.path) != nil
                         if !opened { panel.hostedView.showTerminalNotice(RemotePreviewNotice.couldNotOpen) }
                     }
-                    if !opened { Self.discardUnlessShown(localURL, cacheRoot: cacheRoot) }
+                    if !opened { Self.discardUnlessShown(download, cacheRoot: cacheRoot) }
                 }
                 #if DEBUG
                 cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) opened=\(opened)")
@@ -220,10 +239,46 @@ final class RemoteTerminalFilePreviewCoordinator {
         return .started
     }
 
-    /// Deletes a download that won't be shown, unless a panel in any window
-    /// already shows that cache file (the same host path opened before).
-    private static func discardUnlessShown(_ url: URL, cacheRoot: URL) {
-        RemotePreviewCacheBudget.discard(url, cacheRoot: cacheRoot, keeping: RemotePreviewCacheBudget.pathsShownInPanels())
+    /// Deletes a download that won't be shown, if it created its cache file
+    /// and no panel in any window shows that file.
+    private static func discardUnlessShown(_ download: RemotePreviewDownload, cacheRoot: URL) {
+        RemotePreviewCacheBudget.discard(download, cacheRoot: cacheRoot, keeping: RemotePreviewCacheBudget.pathsShownInPanels())
+    }
+
+    /// Opens a dump the waveform viewer reads on the host (FSDB) the way the
+    /// Files panel does: a placeholder lease, the helper on the host, no
+    /// download. It opens beside the terminal, in the pane to its right if any.
+    private func openInPlaceOnHost(path: String, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
+        guard case .remoteSSH(let workspaceId, let connection, let displayTarget, let rootPath, let isAvailable, let detail) =
+                FileExplorerWorkspaceRootResolver().resolve(workspace),
+              isAvailable,
+              let pane = workspace.preferredRightSideTargetPane(fromPanelId: sourcePanelID)
+                ?? workspace.paneId(forPanelId: sourcePanelID) else { return .unavailable }
+        let pinned = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let root = FileExplorerWorkspaceRoot.remoteSSH(
+            workspaceId: workspaceId,
+            connection: connection,
+            displayTarget: displayTarget,
+            rootPath: pinned.isEmpty ? (path as NSString).deletingLastPathComponent : pinned,
+            isAvailable: isAvailable,
+            unavailableDetail: detail
+        )
+        // Rebind when the workspace, connection, root folder or availability changed.
+        if inPlaceStore.workspaceRootIdentity != workspace.id || inPlaceRoot != root {
+            inPlaceStore.applyWorkspaceRoot(root, sshTransport: transport)
+            inPlaceRoot = root
+        }
+        let workspaceID = workspace.id
+        FileExplorerPreviewCoordinator(store: inPlaceStore).open(
+            path: path,
+            workspace: workspace,
+            pane: pane,
+            isCurrent: { [weak workspace] in
+                guard let workspace else { return false }
+                return workspace.id == workspaceID && !workspace.isRetiredFromOwningTabManager
+            }
+        )
+        return .started
     }
 
     deinit {

@@ -1,5 +1,13 @@
 import Foundation
 
+/// A remote preview download in the cache.
+struct RemotePreviewDownload: Equatable, Sendable {
+    let url: URL
+    /// This download created the cache file. Otherwise it replaced the file
+    /// an earlier open of the same host file made, which may still be shown.
+    let isNew: Bool
+}
+
 /// Keeps the remote preview cache (⌘-click and `cmux open` downloads, one
 /// `<connection>/<path digest>/<name>` directory per host file) bounded.
 enum RemotePreviewCacheBudget {
@@ -62,6 +70,18 @@ enum RemotePreviewCacheBudget {
         guard !keeping.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == resolved }) else { return }
         try? fileManager.removeItem(at: file)
         removeEmptyParents(of: file, below: cacheRoot, fileManager: fileManager)
+    }
+
+    /// Deletes `download` when nobody will show it: only a file it created,
+    /// and not one a panel shows.
+    static func discard(
+        _ download: RemotePreviewDownload,
+        cacheRoot: URL,
+        keeping: Set<String>,
+        fileManager: FileManager = .default
+    ) {
+        guard download.isNew else { return }
+        discard(download.url, cacheRoot: cacheRoot, keeping: keeping, fileManager: fileManager)
     }
 
     private static func removeEmptyParents(of file: URL, below root: URL, fileManager: FileManager) {
