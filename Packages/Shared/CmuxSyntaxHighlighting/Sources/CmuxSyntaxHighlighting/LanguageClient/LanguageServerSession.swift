@@ -83,6 +83,8 @@ public actor LanguageServerSession {
     var declarationHoverErrorForTesting: LanguageServerError?
     /// Tests: the error the RTL link's first getInstances fails with instead of asking the server.
     var directInstancePathsErrorForTesting: LanguageServerError?
+    /// Tests: the error a port alias's instance count (getInstances on a declaration) fails with.
+    var declarationInstancesErrorForTesting: LanguageServerError?
     private var pending: [Int: PendingRequest] = [:]
     private var framer = LSPMessageFramer()
     private var documents: [URL: OpenDocument] = [:]
