@@ -1467,7 +1467,8 @@ extension Harness {
         await d.setLocals({ path: ['top', 'core'] });
         await sleep(600);
         R.locals = tr();
-        await C.run('vaporview.addAllInScopeShallow', core);
+        // The user's path: the editor's right-click Add All Signals in Scope (WaveformSourceLink -> link.addScope).
+        await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] });
         await sleep(800);
         R.pinned = tr();
         C.run('cmux.undo');
@@ -1479,7 +1480,7 @@ extension Harness {
         H.toWebview({ command: 'remove-signal', netlistId: acc.netlistId, rowId: undefined, removeAllSelected: false });
         await sleep(800);
         R.unpinned = tr();
-        await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] });
+        await C.run('vaporview.addAllInScopeShallow', core);
         await sleep(800);
         R.link = tr();
         await d.setLocals({ path: ['top'] });
@@ -1494,12 +1495,12 @@ extension Harness {
           check(s("api") == "top.clk,top.core.acc" && r["apiSel"] as? Bool == true, "the API selects a shown signal: \(s("api"))")
           check(s("locals") == "top.clk,[Locals],Locals/top.core.acc", "Locals shows the scope: \(s("locals"))")
           check(s("pinned").components(separatedBy: ",").filter { $0.hasSuffix("top.core.acc") } == ["top.core.acc"],
-                "adding the Locals scope pins its signals once, outside Locals: \(s("pinned"))")
+                "the editor's Add All Signals in Scope on the Locals scope pins its signals once, outside Locals: \(s("pinned"))")
           check(s("undone") == "top.clk,[Locals],Locals/top.core.acc", "Undo of the pin gives the signal back to Locals, once: \(s("undone"))")
           check(s("redone") == s("pinned"), "Redo pins it again: \(s("redone"))")
           check(s("unpinned") == "top.clk,[Locals],Locals/top.core.acc", "a removed pinned signal goes back to Locals: \(s("unpinned"))")
           check(s("link").components(separatedBy: ",").filter { $0.hasSuffix("top.core.acc") } == ["top.core.acc"],
-                "the editor's Add All in Scope pins once too: \(s("link"))")
+                "the netlist menu's Add All in Scope pins once too: \(s("link"))")
           check(s("top").components(separatedBy: ",").filter { $0.hasSuffix("top.clk") } == ["top.clk"],
                 "Locals leaves out a signal already shown: \(s("top"))")
           print("PARITY CHECKS PASSED")
