@@ -59,6 +59,13 @@ public enum SystemVerilogInlineScan {
     public struct Cache: Sendable {
         public private(set) var units: [UInt16]
         private var checkpoints: [Checkpoint] = []
+        /// An `include`d fragment (no module header of its own, such as a testbench body):
+        /// its top-level lines belong to this pseudo-module and give identifiers. Nil: they belong to none.
+        public var fragmentModule: String? {
+            didSet { if fragmentModule != oldValue { checkpoints.removeAll() } }
+        }
+        /// The reader's state after the last `lines(in:)`.
+        private var lastState = State()
         /// Lines between checkpoints.
         static let checkpointLines = 256
 
@@ -78,7 +85,7 @@ public enum SystemVerilogInlineScan {
             let rangeStart = max(0, min(range.location, count))
             let rangeEnd = max(rangeStart, min(NSMaxRange(range), count))
             let resume = checkpoints.last { $0.offset <= rangeStart }
-            var reader = Reader(units: units, state: resume?.state ?? State())
+            var reader = Reader(units: units, state: resume?.state ?? State(fragmentModule: fragmentModule))
             var index = resume?.offset ?? 0
             var linesSinceCheckpoint = 0
             var lines: [Line] = []
@@ -109,7 +116,14 @@ public enum SystemVerilogInlineScan {
                 index = lineEnd + 1
                 linesSinceCheckpoint += 1
             }
+            lastState = reader.state
             return lines
+        }
+
+        /// Whether the file opens a module, interface or program anywhere (false: a fragment).
+        public mutating func opensModule() -> Bool {
+            _ = lines(in: NSRange(location: units.count, length: 0))
+            return lastState.openedModule
         }
     }
 
@@ -137,6 +151,8 @@ public enum SystemVerilogInlineScan {
 
     private struct State: Sendable {
         var structure = Structure()
+        /// A module header was read (a fragment's pseudo-module does not count).
+        var openedModule = false
         var directives: [Structure] = []
         var inBlockComment = false
         var inDefine = false
@@ -147,6 +163,10 @@ public enum SystemVerilogInlineScan {
         /// A procedural statement just ended with `;`; an `else` continues it.
         var proceduralMayContinue = false
         var lastKeyword: Keyword?
+
+        init(fragmentModule: String? = nil) {
+            if let fragmentModule { structure.modules = [fragmentModule] }
+        }
     }
 
     private enum Keyword: Sendable {
@@ -345,6 +365,7 @@ public enum SystemVerilogInlineScan {
                 state.expectsModuleName = false
                 let name = String(decoding: units[start..<end], as: UTF16.self)
                 state.structure.modules.append(name)
+                state.openedModule = true
                 lastModuleOpened = name
                 return nil
             }
