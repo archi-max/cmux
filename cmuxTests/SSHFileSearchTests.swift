@@ -226,6 +226,27 @@ struct SSHFileSearchTests {
     }
 
     @Test
+    func testLoginShellNoiseNeverBecomesTheError() {
+        let noise = "/home/u/.bashrc: line 36: export: `/home/u/.bashrc': not a valid identifier\n"
+        func finish(_ status: Int32, stderr: String, sawMarker: Bool = true) -> FileSearchSnapshot.Status {
+            var accumulator = SSHFileSearchAccumulator(rootPath: "/r", query: "n", maxResults: 10, snapshotInterval: 60)
+            if sawMarker { _ = accumulator.consume(Data((SSHFileSearchCommand.grepMarker + "\n").utf8)) }
+            accumulator.consumeStderr(Data(stderr.utf8))
+            return accumulator.finish(status: status).status
+        }
+        // grep -s exits 2 for unreadable files; rc-file chatter is not a failure.
+        #expect(finish(2, stderr: noise) == .noMatches)
+        #expect(finish(2, stderr: noise + "rg: ./x: Permission denied (os error 13)\n")
+            == .failed("rg: ./x: Permission denied (os error 13)"))
+        #expect(finish(9, stderr: noise) == .failed(SSHFileSearchMessages.exited(status: 9)))
+        #expect(finish(255, stderr: noise + "client_loop: send disconnect: Broken pipe\n")
+            == .failed("client_loop: send disconnect: Broken pipe"))
+        // Before the tool runs, everything ssh printed is the diagnosis.
+        #expect(finish(255, stderr: "ssh: Could not resolve hostname nohost\n", sawMarker: false)
+            == .failed("ssh: Could not resolve hostname nohost"))
+    }
+
+    @Test
     func testTrailingLineWithoutNewlineIsKept() {
         var accumulator = SSHFileSearchAccumulator(rootPath: "/r", query: "n", maxResults: 10, snapshotInterval: 60)
         var output = Data((SSHFileSearchCommand.grepMarker + "\n").utf8) + Self.grepLine("/r/a", 1, "n")
