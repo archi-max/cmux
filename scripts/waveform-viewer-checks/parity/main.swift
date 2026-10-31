@@ -17,7 +17,8 @@
 //   - a kept restore survives a reload during it, and an interrupted user load
 //     keeps the unsaved marker and says it was interrupted (by a reload or by
 //     opening another file), also when the reload comes right after the apply;
-//   - undo and redo of the first signal added to a new viewer.
+//   - undo and redo of the first signal added to a new viewer;
+//   - no stale viewer context while the viewer reloads.
 // Exits 0 and prints PARITY CHECKS PASSED, or prints CHECK FAILED and exits 2.
 // Usage: parity <assetRoot> <parity.vcd>
 import AppKit
@@ -481,6 +482,29 @@ extension Harness {
           check(r["start"] as? Int == 0 && r["added"] as? Int == 1, "a new viewer shows the added signal")
           check(r["undone"] as? Int == 0, "undo removes the first added signal (rows drawn \(r["undone"] ?? "nil"))")
           check(r["redone"] as? Int == 1, "redo brings it back (rows drawn \(r["redone"] ?? "nil"))")
+          self.phaseM()
+        }
+      }
+    }
+  }
+
+  // While the viewer reloads, cmux holds no copy of its old context: what it
+  // reports (and saves) matches what the viewer draws.
+  func phaseM() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const drawn = () => document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;
+        const rows = () => { const st = C.sessionSnapshot().state; return st ? st.displayedSignals.length : 0; };
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({});
+        R.during = rows();
+        await sleep(1500);
+        R.after = [rows(), drawn()];
+        """) { r in
+          check(r["during"] as? Int == 0, "no stale context while the viewer reloads (rows \(r["during"] ?? "nil"))")
+          check((r["after"] as? [Int]) == [1, 1], "after the reload the context matches the viewer (\(r["after"] ?? "nil"))")
           self.phaseO()
         }
       }
