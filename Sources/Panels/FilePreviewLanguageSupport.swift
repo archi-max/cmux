@@ -265,24 +265,38 @@ struct FilePreviewLanguageDocumentContext {
         return root
     }
 
-    /// Runs a POSIX shell command on the workspace's SSH host over its batch route (the
-    /// `cmux ssh` ControlPath). Its stdout, or nil when ssh or the command fails or after `timeout`.
+    /// Runs a POSIX shell script on the workspace's SSH host over its batch route (the
+    /// `cmux ssh` ControlPath). Its stdout, or nil when ssh or the script fails or after `timeout`.
     static func runRemoteShell(
-        _ command: String,
+        _ script: String,
         configuration: WorkspaceRemoteConfiguration,
         input: Data? = nil,
         timeout: TimeInterval = remoteProbeTimeout
     ) async -> String? {
+        guard let result = await runRemoteShellWithStatus(script, configuration: configuration, input: input, timeout: timeout),
+              result.status == 0 else { return nil }
+        return result.output
+    }
+
+    /// `runRemoteShell` with the script's exit status (ssh's own failures are 255); nil when ssh
+    /// could not run or after `timeout`. The script is wrapped with `posixShellCommand` here, so
+    /// it runs the same under any login shell (tcsh, fish, ...).
+    static func runRemoteShellWithStatus(
+        _ script: String,
+        configuration: WorkspaceRemoteConfiguration,
+        input: Data? = nil,
+        timeout: TimeInterval = remoteProbeTimeout
+    ) async -> FilePreviewRemoteShellResult? {
         let arguments = configuration.batchSSHCommandArguments(
-            command: command,
+            command: SlangWorkspaceRoot.posixShellCommand(script),
             effectiveSSHOptions: configuration.fileOperationSSHOptions
         )
         return await runProbe(arguments: arguments, input: input, timeout: timeout)
     }
 
-    /// Runs `/usr/bin/ssh arguments`; its stdout, or nil on failure or after `timeout`.
-    /// Output is read while the command runs, so a large listing can't fill the pipe and stall it.
-    nonisolated private static func runProbe(arguments: [String], input: Data? = nil, timeout: TimeInterval) async -> String? {
+    /// Runs `/usr/bin/ssh arguments`; its exit status and stdout, or nil when it can't start or after
+    /// `timeout`. Output is read while the command runs, so a large listing can't fill the pipe and stall it.
+    nonisolated private static func runProbe(arguments: [String], input: Data? = nil, timeout: TimeInterval) async -> FilePreviewRemoteShellResult? {
         await withCheckedContinuation { continuation in
             let once = FilePreviewProbeOnce(continuation)
             DispatchQueue.global().async {
@@ -314,22 +328,28 @@ struct FilePreviewLanguageDocumentContext {
                 }
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                once.resume(process.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil)
+                once.resume(FilePreviewRemoteShellResult(status: process.terminationStatus, output: String(decoding: data, as: UTF8.self)))
             }
         }
     }
 }
 
+/// A remote shell script's exit status and stdout.
+struct FilePreviewRemoteShellResult: Sendable {
+    let status: Int32
+    let output: String
+}
+
 /// Resumes a probe's continuation once, from its exit or its timeout.
 private final class FilePreviewProbeOnce: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<String?, Never>?
+    private var continuation: CheckedContinuation<FilePreviewRemoteShellResult?, Never>?
 
-    init(_ continuation: CheckedContinuation<String?, Never>) {
+    init(_ continuation: CheckedContinuation<FilePreviewRemoteShellResult?, Never>) {
         self.continuation = continuation
     }
 
-    func resume(_ value: String?) {
+    func resume(_ value: FilePreviewRemoteShellResult?) {
         lock.lock()
         let pending = continuation
         continuation = nil
