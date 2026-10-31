@@ -281,10 +281,12 @@ extension LanguageServerSession {
             if word == "class", previous == "interface", containers.last == "interface" {
                 // `interface class`: a class, closed by endclass.
                 containers[containers.count - 1] = "class"
-            } else if opens.contains(word), !(word == "class" && previous == "typedef"), !(word == "interface" && previous == "virtual") {
-                // (Not a forward `typedef class C;` or a `virtual interface` variable.)
+            } else if opens.contains(word), !((word == "class" || word == "interface") && previous == "typedef"),
+                      !(word == "class" && previous == "interface" && containers.last != "interface"),
+                      !(word == "interface" && previous == "virtual") {
+                // (Not a forward `typedef class C;` / `typedef interface class C;` or a `virtual interface` variable.)
                 containers.append(word)
-            } else if let last = containers.last, word == "end" + last {
+            } else if let last = containers.last, word == "end" + (last == "macromodule" ? "module" : last) {
                 containers.removeLast()
             }
             previous = word
