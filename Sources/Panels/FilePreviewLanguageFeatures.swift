@@ -570,7 +570,66 @@ final class FilePreviewLanguageFeatures: NSObject {
                 separatorIndex += 1
             }
         }
+        for item in compilationMenuItems(at: contextMenuCharacterIndex) {
+            menu.insertItem(item, at: separatorIndex)
+            separatorIndex += 1
+        }
         menu.insertItem(.separator(), at: separatorIndex)
+    }
+
+    /// Set as SystemVerilog Top Level on a module, and the undo of what cmux set the server to compile.
+    private func compilationMenuItems(at index: Int?) -> [NSMenuItem] {
+        guard let textView, let session = linkSession?.session else { return [] }
+        var items: [NSMenuItem] = []
+        if let index, let declaration = SystemVerilogModuleLocator.declaration(at: index, in: textView.string) {
+            let item = NSMenuItem(
+                title: String(localized: "filePreview.language.setTopLevel", defaultValue: "Set as SystemVerilog Top Level"),
+                action: #selector(setTopLevelFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = declaration.name
+            item.toolTip = declaration.name
+            items.append(item)
+        }
+        if WaveformSourceLink.canResetTopLevel(session: session) {
+            let item = NSMenuItem(
+                title: String(localized: "filePreview.language.resetTopLevel", defaultValue: "Reset Top Level"),
+                action: #selector(resetTopLevelFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            items.append(item)
+        }
+        if case .buildFile? = SlangCompilationActions.target(of: session) {
+            let item = NSMenuItem(
+                title: String(localized: "slangTop.clearBuildFile", defaultValue: "Clear Build File"),
+                action: #selector(clearBuildFileFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            items.append(item)
+        }
+        return items
+    }
+
+    @objc private func setTopLevelFromMenu(_ sender: NSMenuItem) {
+        guard let module = sender.representedObject as? String, let textView else { return }
+        SlangCompilationActions.setTopLevel(
+            module: module,
+            editor: self,
+            anchor: contextMenuCharacterIndex ?? textView.selectedRange().location
+        )
+    }
+
+    @objc private func resetTopLevelFromMenu(_ sender: Any?) {
+        guard let session = linkSession?.session else { return }
+        SlangCompilationActions.resetTopLevel(session: session)
+    }
+
+    @objc private func clearBuildFileFromMenu(_ sender: Any?) {
+        guard let workspaceId = linkWorkspaceId else { return }
+        SlangCompilationActions.clearBuildFile(workspaceId: workspaceId, window: textView?.window)
     }
 
     /// Show Waveform Values For ▸ the dump instances of the module at `index`, when there are several.
@@ -1155,6 +1214,11 @@ final class FilePreviewLanguageFeatures: NSObject {
         guard linkMessagePopover != nil,
               Date().timeIntervalSince(linkMessageShownAt) >= Self.linkMessageMinimumDuration else { return }
         closeLinkMessage()
+    }
+
+    /// The window showing this editor, for sheets.
+    var linkPanelWindow: NSWindow? {
+        textView?.window
     }
 
     /// Asks which instance's signal to add when the module is instantiated more than once.

@@ -657,6 +657,7 @@ enum WaveformSourceLink {
             if let roots = try? await session.slangScopeChildren(""), roots.contains(where: { $0.kind != "Package" }) {
                 waveformSourceLinkLogger.info("set slang top level to \(candidate.module, privacy: .public)")
                 state.setByLink = true
+                SlangCompilationActions.recordTarget(.topLevel(candidate.file), for: session)
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 return true
             }
@@ -687,20 +688,42 @@ enum WaveformSourceLink {
         return response == .alertFirstButtonReturn
     }
 
-    /// Puts the language server of the focused (or last-used) editor back in explore mode, if the link set its top level.
+    /// Puts the language server of the focused (or last-used) editor back in explore mode,
+    /// if the link or Set as SystemVerilog Top Level set its top level.
     static func resetTopLevel() {
         guard let workspace = AppDelegate.shared?.tabManager?.selectedWorkspace,
               let session = FilePreviewLanguageFeatures.mostRecentLinkable(inWorkspace: workspace.id)?.linkSession?.session,
-              let state = topLevelStates.first(where: { $0.session === session }), state.setByLink else {
+              canResetTopLevel(session: session) else {
             NSSound.beep()
             return
         }
+        resetTopLevel(session: session)
+    }
+
+    /// Whether cmux set `session`'s top level (so Reset Top Level has something to undo).
+    static func canResetTopLevel(session: LanguageServerSession) -> Bool {
+        if topLevelStates.first(where: { $0.session === session })?.setByLink == true { return true }
+        if case .topLevel? = SlangCompilationActions.target(of: session) { return true }
+        return false
+    }
+
+    /// Back to explore mode; the link stops offering to elaborate for this session.
+    static func resetTopLevel(session: LanguageServerSession) {
+        let state = Self.topLevelState(for: session)
         state.setByLink = false
         state.declined = true
+        SlangCompilationActions.topLevelWasReset(session: session)
         Task { @MainActor in
             try? await session.slangSetTopLevel("")
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         }
+    }
+
+    /// The user chose a top level themselves: the link's own choice no longer applies.
+    static func topLevelWasChosen(session: LanguageServerSession) {
+        let state = Self.topLevelState(for: session)
+        state.setByLink = false
+        state.failedAt = nil
     }
 
     // MARK: Waveform → editor
