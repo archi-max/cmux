@@ -8,11 +8,22 @@ actor RemoteTerminalFilePreviewLoader {
     private let provider: SSHFileExplorerProvider
     private let cacheDirectory: URL
     private let fileManager: FileManager
+    private let budgetBytes: Int64
+    /// Local files open panels show; eviction never removes them.
+    private let shownPaths: @MainActor @Sendable () -> Set<String>
 
-    init(provider: SSHFileExplorerProvider, cacheDirectory: URL, fileManager: FileManager) {
+    init(
+        provider: SSHFileExplorerProvider,
+        cacheDirectory: URL,
+        fileManager: FileManager,
+        budgetBytes: Int64 = RemotePreviewCacheBudget.defaultBudgetBytes,
+        shownPaths: @escaping @MainActor @Sendable () -> Set<String> = { [] }
+    ) {
         self.provider = provider
         self.cacheDirectory = cacheDirectory
         self.fileManager = fileManager
+        self.budgetBytes = budgetBytes
+        self.shownPaths = shownPaths
     }
 
     func load(tokens: [String], workingDirectory: String?) async throws -> URL {
@@ -77,10 +88,11 @@ actor RemoteTerminalFilePreviewLoader {
                 guard rename(staging.path, destination.path) == 0 else {
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
                 }
+                let shown = await shownPaths()
                 RemotePreviewCacheBudget.evict(
                     in: cacheDirectory,
-                    budgetBytes: RemotePreviewCacheBudget.defaultBudgetBytes,
-                    keeping: [destination.path],
+                    budgetBytes: budgetBytes,
+                    keeping: shown.union([destination.path]),
                     recentUseGrace: RemotePreviewCacheBudget.defaultRecentUseGrace,
                     fileManager: fileManager
                 )

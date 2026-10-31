@@ -99,15 +99,16 @@ enum GoToFileSnapshotLoader {
             run.terminate()
         }
         try Task.checkCancellation()
-        if outcome.timedOut || outcome.status == SSHFileSearchCommand.remoteTimeoutStatus {
-            throw GoToFileSnapshotError.timedOut
-        }
+        // The cap first: the deadline may fire while the capped listing exits.
         if outcome.hitByteCap {
             var snapshot = GoToFileSnapshot.parse(listOutput: outcome.stdout)
             // The last path may be cut mid-name.
             if !snapshot.paths.isEmpty { snapshot.paths.removeLast() }
             snapshot.isTruncated = true
             return snapshot
+        }
+        if outcome.timedOut || outcome.status == SSHFileSearchCommand.remoteTimeoutStatus {
+            throw GoToFileSnapshotError.timedOut
         }
         let toolRan = GoToFileSnapshot.markerEnd(in: outcome.stdout) != nil
         switch outcome.status {

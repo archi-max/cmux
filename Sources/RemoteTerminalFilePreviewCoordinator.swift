@@ -81,7 +81,7 @@ final class RemoteTerminalFilePreviewCoordinator {
         case .commandLine(let path):
             guard !ManagedFileTransferPolicy.isDisabled, settings.supportedFileRouteEnabled else { return .unavailable }
             // Refused before any transfer when the extension already says so.
-            guard !FilePreviewKindResolver.opensOnlyThroughQuickLook(path: path) else { return .unsupportedType }
+            guard !FilePreviewKindResolver.commandLineOpenNeedsFilesPanel(path: path) else { return .unsupportedType }
             tasks[sourcePanelID]?.task.cancel()
         }
         let cacheRoot = cacheDirectory
@@ -99,7 +99,8 @@ final class RemoteTerminalFilePreviewCoordinator {
         let loader = RemoteTerminalFilePreviewLoader(
             provider: provider,
             cacheDirectory: cacheDirectory,
-            fileManager: FileManager()
+            fileManager: FileManager(),
+            shownPaths: { RemotePreviewCacheBudget.pathsShownInPanels() }
         )
         let clock = self.clock
         let timeout = self.timeout
@@ -136,7 +137,11 @@ final class RemoteTerminalFilePreviewCoordinator {
                     defer { group.cancelAll() }
                     return try await group.next()!
                 }
-                try Task.checkCancellation()
+                if Task.isCancelled {
+                    // A newer open replaced this one after the file arrived.
+                    Self.discardUnlessShown(localURL, cacheRoot: cacheRoot)
+                    return
+                }
                 guard let self, let workspace, let panel, let sourceSurface,
                       !ManagedFileTransferPolicy.isDisabled,
                       !workspace.isRetiredFromOwningTabManager,
@@ -154,7 +159,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                     #if DEBUG
                     cmuxDebugLog("remotePreview.discarded request=\(requestID.uuidString)")
                     #endif
-                    Self.discardUnlessShown(localURL, workspace: workspace, cacheRoot: cacheRoot)
+                    Self.discardUnlessShown(localURL, cacheRoot: cacheRoot)
                     return
                 }
                 let opened: Bool
@@ -178,8 +183,9 @@ final class RemoteTerminalFilePreviewCoordinator {
                     } else {
                         opened = FileRouteSettingsStore(defaults: self.defaults).shouldRouteSupportedFile(path: localURL.path)
                             && workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localURL.path) != nil
+                        if !opened { panel.hostedView.showTerminalNotice(RemotePreviewNotice.couldNotOpen) }
                     }
-                    if !opened { Self.discardUnlessShown(localURL, workspace: workspace, cacheRoot: cacheRoot) }
+                    if !opened { Self.discardUnlessShown(localURL, cacheRoot: cacheRoot) }
                 }
                 #if DEBUG
                 cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) opened=\(opened)")
@@ -214,14 +220,10 @@ final class RemoteTerminalFilePreviewCoordinator {
         return .started
     }
 
-    /// Deletes a download that won't be shown, unless a preview in this
-    /// window already shows that cache file (the same host path opened before).
-    private static func discardUnlessShown(_ url: URL, workspace: Workspace?, cacheRoot: URL) {
-        let workspaces = workspace?.owningTabManager?.tabs ?? workspace.map { [$0] } ?? []
-        let shown = workspaces.contains { candidate in
-            candidate.panels.values.contains { ($0 as? FilePreviewPanel)?.filePath == url.path }
-        }
-        if !shown { RemotePreviewCacheBudget.discard(url, cacheRoot: cacheRoot) }
+    /// Deletes a download that won't be shown, unless a panel in any window
+    /// already shows that cache file (the same host path opened before).
+    private static func discardUnlessShown(_ url: URL, cacheRoot: URL) {
+        RemotePreviewCacheBudget.discard(url, cacheRoot: cacheRoot, keeping: RemotePreviewCacheBudget.pathsShownInPanels())
     }
 
     deinit {
@@ -237,6 +239,10 @@ enum RemotePreviewNotice {
 
     static var typeOpensFromFilesPanel: String {
         String(localized: "remotePreview.notice.typeOpensFromFilesPanel", defaultValue: "This file type opens from the Files panel")
+    }
+
+    static var couldNotOpen: String {
+        String(localized: "remotePreview.notice.couldNotOpen", defaultValue: "Couldn’t open the file in cmux")
     }
 
     static var downloadFailed: String {
