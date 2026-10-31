@@ -145,6 +145,7 @@ enum WaveformSourceLink {
         session: LanguageServerSession,
         documentURI: URL,
         position: LSPPosition,
+        symbol: LinkSymbol,
         editor: FilePreviewLanguageFeatures,
         rootKey: String,
         chooseInstance: ([String]) async -> [String],
@@ -161,6 +162,7 @@ enum WaveformSourceLink {
             session: session,
             documentURI: documentURI,
             position: position,
+            symbol: symbol,
             waveform: waveform,
             chooseInstance: chooseInstance,
             progress: progress
@@ -252,6 +254,13 @@ enum WaveformSourceLink {
         return messages.isEmpty ? nil : messages.joined(separator: "\n\n")
     }
 
+    /// The identifier the link acts on, and whether its line is inside a module
+    /// (false in an `include`d fragment).
+    struct LinkSymbol {
+        let name: String
+        let isInModule: Bool
+    }
+
     private enum DesignPaths {
         case paths([String])
         case message(String)
@@ -263,15 +272,16 @@ enum WaveformSourceLink {
         session: LanguageServerSession,
         documentURI: URL,
         position: LSPPosition,
+        symbol: LinkSymbol,
         waveform: FilePreviewPanel,
         chooseInstance: ([String]) async -> [String],
         progress: @escaping @MainActor @Sendable (String) -> Void
     ) async -> DesignPaths {
         var paths: [String]
         do {
-            paths = try await session.slangInstancePaths(uri: documentURI, position: position)
+            paths = try await session.slangDesignPaths(uri: documentURI, position: position, identifier: symbol.name)
             if paths.isEmpty, await Self.elaborateDesign(session: session, waveform: waveform, progress: progress) {
-                paths = try await session.slangInstancePaths(uri: documentURI, position: position)
+                paths = try await session.slangDesignPaths(uri: documentURI, position: position, identifier: symbol.name)
             }
         } catch {
             waveformSourceLinkLogger.error("getInstances failed: \(String(describing: error), privacy: .public)")
@@ -282,9 +292,29 @@ enum WaveformSourceLink {
         }
         guard !Task.isCancelled else { return .paths([]) }
         guard !paths.isEmpty else {
+            let hasTops = !((try? await session.slangScopeChildren("")) ?? []).isEmpty
+            guard !Task.isCancelled else { return .paths([]) }
+            if !hasTops {
+                return .message(String(
+                    localized: "waveformLink.notInDesign",
+                    defaultValue: "slang-server could not place this signal in the design. Set a top level or a build file in .slang/server.json if the waveform’s top module is not in this folder."
+                ))
+            }
+            if !symbol.isInModule {
+                return .message(String(
+                    format: String(
+                        localized: "waveformLink.notInDesign.fragment",
+                        defaultValue: "This file has no module of its own; it is `include’d into another file. slang-server found no %@ in the design it is included into."
+                    ),
+                    symbol.name
+                ))
+            }
             return .message(String(
-                localized: "waveformLink.notInDesign",
-                defaultValue: "slang-server could not place this signal in the design. Set a top level or a build file in .slang/server.json if the waveform’s top module is not in this folder."
+                format: String(
+                    localized: "waveformLink.notInDesign.elaborated",
+                    defaultValue: "slang-server found no %@ in the elaborated design. Its module may not be instantiated under the current top level."
+                ),
+                symbol.name
             ))
         }
         return .paths(paths.count > 1 ? await chooseInstance(paths) : paths)
@@ -296,6 +326,7 @@ enum WaveformSourceLink {
         session: LanguageServerSession,
         documentURI: URL,
         position: LSPPosition,
+        symbol: LinkSymbol,
         editor: FilePreviewLanguageFeatures,
         rootKey: String,
         chooseInstance: ([String]) async -> [String],
@@ -312,6 +343,7 @@ enum WaveformSourceLink {
             session: session,
             documentURI: documentURI,
             position: position,
+            symbol: symbol,
             waveform: waveform,
             chooseInstance: chooseInstance,
             progress: progress
@@ -686,8 +718,9 @@ enum WaveformSourceLink {
                 session: session,
                 waveform: waveformPanel,
                 rootKey: rootKey,
-                progress: { [weak editor] message in editor?.showLinkMessage(message) }
+                progress: { [weak editor] message in editor?.showLinkMessage(message, isProgress: true) }
             ) else {
+                editor.closeLinkProgress()
                 Self.showAlert(String(
                     format: String(
                         localized: "waveformLink.notFoundInDesign",
@@ -698,6 +731,7 @@ enum WaveformSourceLink {
                 return
             }
             pairedEditors.setObject(editor, forKey: waveformPanel)
+            editor.closeLinkProgress()
             editor.navigate(to: declaration)
             await Self.showDrivers(of: declaration, session: session, near: editor)
         }
@@ -1022,6 +1056,11 @@ enum WaveformSourceLink {
         let alert = NSAlert()
         alert.messageText = String(localized: "waveformLink.alertTitle", defaultValue: "Waveform Link")
         alert.informativeText = message
+        // The message can be selected and copied.
+        alert.layout()
+        for case let field as NSTextField in alert.window.contentView?.subviews ?? [] where field.stringValue == message {
+            field.isSelectable = true
+        }
         Task { @MainActor in
             _ = await Self.runAlert(alert)
         }

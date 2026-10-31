@@ -46,7 +46,62 @@ extension LanguageServerSession {
     /// places symbols of an `` `include ``d fragment (a file with no module of
     /// its own, which slang cannot place by position).
     public func slangDesignPaths(uri: URL, position: LSPPosition, identifier: String) async throws -> [String] {
-        try await slangInstancePaths(uri: uri, position: position)
+        let direct = try await slangInstancePaths(uri: uri, position: position)
+        guard direct.isEmpty else { return direct }
+        // A symbol the includer (or another module) declares: place its declaration.
+        let file = uri.standardizedFileURL.path
+        for declaration in (try? await definition(uri: uri, position: position)) ?? [] {
+            if declaration.uri.standardizedFileURL.path == file, declaration.range.start.line == position.line,
+               declaration.range.start.character <= position.character,
+               position.character <= declaration.range.end.character {
+                continue
+            }
+            let paths = try await slangInstancePaths(uri: declaration.uri, position: declaration.range.start)
+            if !paths.isEmpty { return paths }
+        }
+        guard !identifier.isEmpty else { return [] }
+        return try await slangFragmentPaths(of: identifier, inFile: uri)
+    }
+
+    /// Scopes `slangFragmentPaths` reads at most, and how deep it goes.
+    private static let fragmentSearchScopeLimit = 300
+    private static let fragmentSearchDepthLimit = 12
+    private static let fragmentSearchResultLimit = 64
+
+    /// Paths of `identifier` in the scopes `file` is included into: a child
+    /// of that name declared in the file, else (for a name the includer
+    /// declares) a child of that name of a scope with anything declared in
+    /// the file. Breadth first from the design's tops, bounded.
+    private func slangFragmentPaths(of identifier: String, inFile uri: URL) async throws -> [String] {
+        let file = uri.standardizedFileURL.path
+        var declaredInFile: [String] = []
+        var inIncludingScope: [String] = []
+        var queue: [(path: String, depth: Int)] = [("", 0)]
+        var visited = 0
+        while !queue.isEmpty, visited < Self.fragmentSearchScopeLimit {
+            try Task.checkCancellation()
+            let (path, depth) = queue.removeFirst()
+            visited += 1
+            // A scope slang cannot resolve by path is skipped, not fatal.
+            guard let children = try? await slangScopeChildren(path) else { continue }
+            let includesFile = !path.isEmpty && children.contains { $0.location?.uri.standardizedFileURL.path == file }
+            for child in children {
+                // Array elements are named `[0]` and join without a dot.
+                let childPath = path.isEmpty || child.name.hasPrefix("[") ? path + child.name : path + "." + child.name
+                if child.name == identifier, !path.isEmpty {
+                    if child.location?.uri.standardizedFileURL.path == file {
+                        declaredInFile.append(childPath)
+                    } else if includesFile {
+                        inIncludingScope.append(childPath)
+                    }
+                }
+                if child.isScope, child.kind != "Package", depth < Self.fragmentSearchDepthLimit {
+                    queue.append((childPath, depth + 1))
+                }
+            }
+            if declaredInFile.count + inIncludingScope.count >= Self.fragmentSearchResultLimit { break }
+        }
+        return declaredInFile.isEmpty ? inIncludingScope : declaredInFile
     }
 
     /// Children of the scope at `hierPath`; the empty path lists the design's top instances.
