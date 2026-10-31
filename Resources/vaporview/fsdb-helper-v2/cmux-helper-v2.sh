@@ -8,13 +8,24 @@
 # Verdi it was built for.
 #
 # Exits 87, which makes cmux rebuild, when that Node.js or Verdi is gone (an
-# editor server's node deleted, or another node of a shared NFS home).
+# editor server's node deleted, or another node of a shared NFS home), and 86
+# when the install is not private (cmux then shows an error and runs nothing).
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
+ME="$(id -u)"
+# The helper runs code from this folder, and helper.env names the Node.js and
+# libraries it loads: refuse (exit 86, before reading anything here) an install
+# anyone else could have changed. Every entry must be ours and not group/world
+# writable (a folder find can't read counts as changed), and so must the two
+# folders above it (~/.cache/cmux/fsdb-helper-v2 and ~/.cache/cmux), which
+# build.sh makes private.
+refuse() { echo "cmux-helper-v2: refusing to run, $1 is not private to $(id -un)" >&2; exit 86; }
+out=$(find "$HERE" \( ! -user "$ME" -o -perm -g+w -o -perm -o+w \) ! -type l -print 2>&1) || refuse "$HERE"
+[ -z "$out" ] || refuse "$(printf '%s' "$out" | head -1)"
+for d in "$(dirname "$HERE")" "$(dirname "$(dirname "$HERE")")"; do
+  [ -n "$(find "$d" -maxdepth 0 -user "$ME" ! -perm -g+w ! -perm -o+w 2>/dev/null)" ] || refuse "$d"
+done
 . "$HERE/helper.env" 2>/dev/null || exit 87
 [ -x "$NODE" ] && [ -f "$VERDI_HOME/share/FsdbReader/linux64/libnffr.so" ] || exit 87
-# The helper runs code from this folder: refuse one that anyone else could change.
-bad="$(find "$HERE" \( ! -user "$(id -u)" -o -perm -g+w -o -perm -o+w \) ! -type l -print -quit 2>/dev/null)"
-if [ -n "$bad" ]; then echo "cmux-helper-v2: refusing to run, $bad is not private to $(id -un)" >&2; exit 1; fi
 export VERDI_HOME
 export LD_LIBRARY_PATH="$VERDI_HOME/share/FsdbReader/linux64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # FsdbReader writes its logDir into the working directory: give it a private

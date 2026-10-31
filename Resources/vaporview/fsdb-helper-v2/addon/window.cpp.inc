@@ -1329,7 +1329,7 @@ Napi::Value coldValueAt(const Napi::CallbackInfo &info) {
         on = FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g);  // t is past the last change: the value is the last one
       if (on) {
         // The value at t is the LAST change <= t. This reader lands on the last
-        // of same-time changes (test/test-glitch.js), but don't rely on it: step
+        // of same-time changes (helper-v2's glitch test), but don't rely on it: step
         // forward while the next change is still <= t.
         for (;;) {
           if (FSDB_RC_SUCCESS != h->ffrGotoNextVC()) break;
