@@ -284,6 +284,10 @@ enum WaveformDebugger {
                 defaultValue: "Breakpoint: %1$@ at %2$@ (cycle %3$@)"
             ),
             "debuggerNoHitForward": String(localized: "waveformDebugger.noHitForward", defaultValue: "No breakpoint hit before the end."),
+            "debuggerHitAfterLastEdge": String(
+                localized: "waveformDebugger.hitAfterLastEdge",
+                defaultValue: "Breakpoint: %1$@ at %2$@, after the last clock edge."
+            ),
             "debuggerNoHitBack": String(localized: "waveformDebugger.noHitBack", defaultValue: "No breakpoint hit before the start."),
             "debuggerNoBreakpoints": String(localized: "waveformDebugger.noBreakpoints", defaultValue: "No breakpoints are enabled."),
             "debuggerBadValue": String(

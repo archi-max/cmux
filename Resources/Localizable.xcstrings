@@ -695258,6 +695258,65 @@
           }
         }
       }
+    },
+    "waveformDebugger.hitAfterLastEdge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Breakpoint: %1$@ at %2$@, after the last clock edge."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نقطة التوقف: %1$@ عند %2$@، بعد آخر حافة للساعة."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haltepunkt: %1$@ bei %2$@, nach der letzten Taktflanke."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Punto de interrupción: %1$@ en %2$@, después del último flanco de reloj."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Point d’arrêt : %1$@ à %2$@, après le dernier front d’horloge."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブレークポイント: %1$@（%2$@）は最後のクロックエッジより後です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중단점: %1$@이(가) %2$@에 있으며, 마지막 클록 에지 이후입니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断点：%1$@ 在 %2$@，晚于最后一个时钟沿。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中斷點：%1$@ 在 %2$@，晚於最後一個時脈邊緣。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

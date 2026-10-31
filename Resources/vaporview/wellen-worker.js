@@ -122,11 +122,17 @@ const api = {
   },
   getchildren({ id, startIndex }) { return JSON.parse(liftString('getchildren', ex.getchildren(id, startIndex))); },
   getsignaldata({ signalIds }) { ex.getsignaldata(...lowerU32List(signalIds)); return 'ok'; },
-  // cmux: one signal's value changes as [[time, value], ...], kept in the page.
-  getsignalchanges({ signalId }) {
+  // cmux: one signal's value changes as [[time, value], ...], kept in the page; null
+  // past maxChanges (packed data is counted before it is unpacked).
+  getsignalchanges({ signalId, maxChanges }) {
+    const limit = Number(maxChanges) || Infinity;
     const c = captureSignal(signalId);
-    if (c.lz4.length) { return decodeRecords(lz4Frame(concat(c.lz4), c.size), c.width); }
-    return c.json.length ? JSON.parse(c.json.join('')) : [];
+    if (c.lz4.length) {
+      if (c.size / (8 + c.width) > limit) { return null; }
+      return decodeRecords(lz4Frame(concat(c.lz4), c.size), c.width);
+    }
+    const changes = c.json.length ? JSON.parse(c.json.join('')) : [];
+    return changes.length > limit ? null : changes;
   },
   // cmux: the times a 1-bit signal rises (to 1 from 0, x or z) as a Float64Array,
   // found in wellen's data without building a value per change (a clock can have millions).
