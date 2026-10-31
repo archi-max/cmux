@@ -183,7 +183,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           cmuxWaveform.host.viewerEventListeners.push((m) => {
             if (window.__ack && m.eventType === 'markerSet') {
               const time = Number(m.eventData.time);
-              setTimeout(() => cmuxWaveform.debugger.rtlShown({ time }), 5);
+              // A microtask, not a timer: the occluded page fires timers late, which isn't the editors' doing.
+              Promise.resolve().then(() => cmuxWaveform.debugger.rtlShown({ time }));
             }
           });
         }
