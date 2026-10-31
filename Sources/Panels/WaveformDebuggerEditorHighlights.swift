@@ -272,8 +272,10 @@ enum WaveformDebuggerEditorHighlights {
     }
 
     private static func apply(_ result: WaveformCycleHighlights.Result, lines: [SystemVerilogInlineScan.Line], in textView: NSTextView) {
-        // (Not `clear`: that cancels the job drawing these, before it says it drew the cycle.)
-        removeCycleHighlights(from: textView)
+        // (Not `clear`: that cancels the job drawing these, before it says it drew the cycle.
+        // Not `removeCycleHighlights`: the selection is drawn once, at the end.)
+        cycleDrawn.removeObject(forKey: textView)
+        removeAll(from: textView)
         guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length else { return }
         let drawn = Drawn(textView)
         func add(_ key: NSAttributedString.Key, _ value: Any, _ range: NSRange) {
