@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..da20b41
+index 0000000..d6a04cf
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,168 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -157,6 +157,21 @@ index 0000000..da20b41
 +- **N3:** A 3-column CSV row is value,name,color only when the third field is a `#rgb` color and the first field parses as a value. Otherwise it is table,value,name, so `t,1,NULL` names the value `NULL`.
 +- **N4:** A `#rgb` token that ends a Verdi line is a color, not a comment. The CHANGES.md color text is corrected.
 +- **N5:** Documented under Host interface (value-link `formattedValue` is plain text for these formats).
++
++## Exact value search
++
++Upstream's numeric `checkSearchValue` (`regexMatchBinary` in `value_format.ts`) tests the
++parsed search as an unanchored regex over the value's bits, so a hex search for 5
++("0101") also matched 0x15, 0x50 and 0x55. Verdi searches for the value itself.
++
++| File | Change |
++|---|---|
++| `src/webview/value_search.ts` | **New.** `matchBinaryExact`: upstream's regex, anchored to the whole value, with zero extension (sign extension for signed). A search longer than the signal matches when its extra high bits are that extension. Wildcards (`.`, hex/decimal `x`/`z`) and regexes still work, so `.*0101.*` is still a substring search. `signedSearchBits`: the signed format's parsed search keeps its sign bit, so +5 ("0101") is no longer -3 ("101"). Negative values are parsed as upstream. |
++| `src/webview/value_format.ts` | Hex, octal, binary, decimal, signed and the float formats use it; ASCII, string and enum searches are unchanged. |
++
++The windowed path (`toHostPattern` in `window_cache.ts`) already searched exact values; its
++text-format fallback calls `checkSearchValue`, so it is exact now too.
++`test/riscv/search.test.ts` (45 checks, run by `node test/riscv/run.cjs`) covers it.
 diff --git a/src/webview/control_bar.ts b/src/webview/control_bar.ts
 index 54acd7a..4bf8c32 100644
 --- a/src/webview/control_bar.ts
@@ -1802,10 +1817,10 @@ index 0000000..37393bf
 +  return parsed;
 +}
 diff --git a/src/webview/value_format.ts b/src/webview/value_format.ts
-index b373541..5009469 100644
+index b373541..1fade17 100644
 --- a/src/webview/value_format.ts
 +++ b/src/webview/value_format.ts
-@@ -11,8 +11,9 @@
+@@ -11,8 +11,10 @@
  
  import { Temporal } from '@js-temporal/polyfill';
  import { WindowMessageType } from "../common/types";
@@ -1813,10 +1828,28 @@ index b373541..5009469 100644
 +import { type NetlistVariable, type CustomVariable } from "./signal_item";
  import { dataManager, vscodeWrapper } from "./vaporview";
 +import { getExtraValueFormat } from "./extra_formats";
++import { matchBinaryExact, signedSearchBits } from "./value_search";
  
  export function  valueIs9State(value: string): boolean {
    if (value.match(/[uxzwlh-]/)) {return true;}
-@@ -125,6 +126,10 @@ export interface ValueFormat {
+@@ -91,6 +93,16 @@ function regexMatchBinary(inputString: string, binaryString: string, formattedSt
+   return binaryString.match(new RegExp(inputString, 'ig')) !== null;
+ }
+ 
++// cmux: numeric formats match the whole value (value_search.ts); upstream's
++// regexMatchBinary above stays for ASCII, string and enum values.
++function matchExact(inputString: string, binaryString: string, formattedString: string): boolean {
++  return matchBinaryExact(inputString, binaryString);
++}
++
++function matchExactSigned(inputString: string, binaryString: string, formattedString: string): boolean {
++  return matchBinaryExact(inputString, binaryString, true);
++}
++
+ function regexMatchString(inputString: string, binaryString: string, formattedString: string): boolean {
+   return formattedString.match(new RegExp(inputString, 'ig')) !== null;
+ }
+@@ -125,6 +137,10 @@ export interface ValueFormat {
  
    // Function to check if the value format can be applied to a signal
    checkWidth: (width: number) => boolean;
@@ -1827,7 +1860,134 @@ index b373541..5009469 100644
  }
  
  // #region Format Hexadecimal
-@@ -534,11 +539,13 @@ export class EnumValueFormat implements ValueFormat {
+@@ -171,7 +187,7 @@ export const formatHex: ValueFormat = {
+     return result;
+   },
+ 
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+ 
+   is9State: valueIs9State,
+ 
+@@ -222,7 +238,7 @@ export const formatOctal: ValueFormat = {
+     return result;
+   },
+ 
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+ 
+   is9State: valueIs9State,
+ 
+@@ -246,7 +262,7 @@ export const formatBinary: ValueFormat = {
+     return searchString.replace(/_/g, '').replace(/[dD]/g, '.');
+   },
+ 
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+ 
+   is9State: valueIs9State,
+ 
+@@ -282,7 +298,7 @@ const formatDecimal: ValueFormat = {
+     return BigInt(result).toString(2);
+   },
+ 
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+ 
+   is9State: valueIs9State,
+ 
+@@ -314,24 +330,10 @@ const formatSignedInt: ValueFormat = {
+     else {return false;}
+   },
+ 
+-  parseSearchValue: (searchString: string) => {
+-    const result = searchString.replace(/[,_]/g, '');
+-    if (result.match(/[xXzZ]/)) {
+-      return '.*';
+-    }
+-    if (result[0] === "-") {
+-      // Convert negative number to 2's complement with the minimum number of bits
+-      const positive = BigInt(result.slice(1));
+-      const positiveBinary = positive.toString(2);
+-      const length = positiveBinary.length + 1; // Need one more bit for sign
+-      const negativeBinary = (BigInt(2) ** BigInt(length) - positive).toString(2);
+-      return negativeBinary;
+-    } else {
+-      return BigInt(result).toString(2);
+-    }
+-  },
++  // cmux: with a sign bit, so +5 ("0101") is not -3 ("101"). value_search.ts
++  parseSearchValue: signedSearchBits,
+ 
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExactSigned,
+ 
+   is9State: valueIs9State,
+ 
+@@ -353,7 +355,7 @@ export const formatFloat4: ValueFormat = {
+   },
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 4, 3);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 4;},
+ };
+@@ -366,7 +368,7 @@ export const formatFloat8: ValueFormat = {
+   formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 4, 3, is2State);},
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 4, 3);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 8;},
+ };
+@@ -379,7 +381,7 @@ export const formatFloat16: ValueFormat = {
+   formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 5, 10, is2State);},
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 5, 10);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 16;},
+ };
+@@ -392,7 +394,7 @@ export const formatBFloat16: ValueFormat = {
+   formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 8, 7, is2State);},
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 8, 7);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 16;},
+ };
+@@ -405,7 +407,7 @@ export const formatTensorFloat32: ValueFormat = {
+   formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 8, 10, is2State);},
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 8, 10);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 19;},
+ };
+@@ -418,7 +420,7 @@ export const formatFloat32: ValueFormat = {
+   formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 8, 23, is2State);},
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 8, 23);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 32;},
+ };
+@@ -431,7 +433,7 @@ export const formatFloat64: ValueFormat = {
+   formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 11, 52, is2State);},
+   checkValidSearch: checkValidFloat,
+   parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 11, 52);},
+-  checkSearchValue: regexMatchBinary,
++  checkSearchValue: matchExact,
+   is9State: valueIs9State,
+   checkWidth: (width: number) => {return width === 64;},
+ };
+@@ -534,11 +536,13 @@ export class EnumValueFormat implements ValueFormat {
  
    public formatString = (inputString: string, width: number, is2State: boolean) => {
      // This function is a placeholder and will be replaced in the NetlistVariable class
@@ -1844,7 +2004,7 @@ index b373541..5009469 100644
    };
  
    public checkValidSearch = (searchString: string) => {return dataManager.enumTable[this.enumType].find((entry) => {return entry[0] === searchString;}) !== undefined;};
-@@ -631,6 +638,9 @@ export function getNumberFormatById(netlistData: NetlistVariable | CustomVariabl
+@@ -631,6 +635,9 @@ export function getNumberFormatById(netlistData: NetlistVariable | CustomVariabl
      const offset = parseInt(args[2]);
      return new FixedPointValueFormat(offset, signed, netlistData.signalWidth);
    }
@@ -1854,6 +2014,59 @@ index b373541..5009469 100644
  
    vscodeWrapper.showMessage(WindowMessageType.Warning, "Unknown number format: " + numberFormatId);
    vscodeWrapper.outputLog("Unknown number format: " + numberFormatId);
+diff --git a/src/webview/value_search.ts b/src/webview/value_search.ts
+new file mode 100644
+index 0000000..dfc9b0a
+--- /dev/null
++++ b/src/webview/value_search.ts
+@@ -0,0 +1,47 @@
++// cmux: exact value search, as Verdi searches. Upstream's numeric checkSearchValue
++// (regexMatchBinary in value_format.ts) tests the parsed search as an unanchored regex
++// over the value's bits, so hex 5 ("0101") also matches 0x15, 0x50 and 0x55. Here the
++// same regex is anchored to the whole value: the search must be the value, with as many
++// leading zeros as it needs (or ones, for a negative signed value: sign extension).
++// Wildcards ('.', hex/decimal x and z) and regexes still work, now over the whole value,
++// so ".*0101.*" is still a substring search. A search longer than the signal matches when
++// its extra high bits are what the value extends with (hex 05 on a 4-bit signal is 5).
++
++const cache = new Map<string, RegExp | null>();
++
++function anchored(pattern: string, pad: string): RegExp | null {
++  const key = pad + pattern;
++  let re = cache.get(key);
++  if (re === undefined) {
++    try {re = new RegExp('^' + pad + '*(?:' + pattern + ')$', 'i');} catch {re = null;}
++    if (cache.size > 64) {cache.clear();}
++    cache.set(key, re);
++  }
++  return re;
++}
++
++// `signed`: the pattern is two's complement (signedSearchBits) and is sign-extended by its
++// first bit; the value is too when the pattern is longer.
++export function matchBinaryExact(pattern: string, binaryString: string, signed = false): boolean {
++  if (pattern === '.*') {return true;}
++  const pad = signed && pattern[0] === '1' ? '1' : '0';
++  const extra = pattern.length - binaryString.length;
++  const value = extra > 0 ? (signed && binaryString[0] === '1' ? '1' : '0').repeat(extra) + binaryString : binaryString;
++  const re = anchored(pattern, pad);
++  return re !== null && re.test(value);
++}
++
++// The signed format's parsed search: the minimal two's complement bits (a sign bit
++// included, so +5 is "0101", not -3's "101"), or ".*" for an x/z digit. Negative values
++// as upstream's parseSearchValue computes them.
++export function signedSearchBits(searchString: string): string {
++  const result = searchString.replace(/[,_]/g, '');
++  if (result.match(/[xXzZ]/)) {return '.*';}
++  if (result[0] === '-') {
++    const positive = BigInt(result.slice(1));
++    const length = positive.toString(2).length + 1;
++    return (BigInt(2) ** BigInt(length) - positive).toString(2);
++  }
++  const bits = BigInt(result).toString(2);
++  return bits === '0' ? '0' : '0' + bits;
++}
 diff --git a/src/webview/vaporview.ts b/src/webview/vaporview.ts
 index c7771b9..fbb4c3c 100644
 --- a/src/webview/vaporview.ts
@@ -4257,7 +4470,7 @@ index 0000000..27c6289
 +GNU objdump (GNU Binutils) 2.43.1
 diff --git a/test/riscv/run.cjs b/test/riscv/run.cjs
 new file mode 100644
-index 0000000..7a7991c
+index 0000000..0496b01
 --- /dev/null
 +++ b/test/riscv/run.cjs
 @@ -0,0 +1,14 @@
@@ -4265,7 +4478,7 @@ index 0000000..7a7991c
 +const path = require("path");
 +const { execFileSync } = require("child_process");
 +const esbuild = require(path.join(__dirname, "../../node_modules/esbuild"));
-+const tests = process.argv.slice(2).length ? process.argv.slice(2) : ["disasm.test.ts", "alias.test.ts"];
++const tests = process.argv.slice(2).length ? process.argv.slice(2) : ["disasm.test.ts", "alias.test.ts", "search.test.ts"];
 +let failed = false;
 +for (const t of tests) {
 +  const src = path.resolve(__dirname, t);
@@ -4275,3 +4488,74 @@ index 0000000..7a7991c
 +  try { execFileSync(process.execPath, [out], { stdio: "inherit" }); } catch { failed = true; }
 +}
 +process.exit(failed ? 1 : 0);
+diff --git a/test/riscv/search.test.ts b/test/riscv/search.test.ts
+new file mode 100644
+index 0000000..47e499f
+--- /dev/null
++++ b/test/riscv/search.test.ts
+@@ -0,0 +1,65 @@
++// Unit tests for src/webview/value_search.ts (exact value search). Run: node test/riscv/run.cjs search.test.ts
++import { matchBinaryExact, signedSearchBits } from "../../src/webview/value_search";
++
++let failures = 0, checks = 0;
++function eq(label: string, got: unknown, want: unknown) {
++  checks++;
++  if (got !== want) { failures++; console.log(`FAIL ${label}: want ${want} got ${got}`); }
++}
++const bin = (v: number, w: number) => v.toString(2).padStart(w, "0");
++const hex = (s: string) => s.split("").map((c) => /[xz]/i.test(c) ? "...." : parseInt(c, 16).toString(2).padStart(4, "0")).join("");
++
++// A value equals the search, as Verdi searches: hex 5 is 0x05, not "contains 0101".
++eq("hex 5 = 0x05", matchBinaryExact(hex("5"), bin(0x05, 8)), true);
++eq("hex 5 != 0x15", matchBinaryExact(hex("5"), bin(0x15, 8)), false);
++eq("hex 5 != 0x50", matchBinaryExact(hex("5"), bin(0x50, 8)), false);
++eq("hex 5 != 0x55", matchBinaryExact(hex("5"), bin(0x55, 8)), false);
++eq("hex 15 = 0x15", matchBinaryExact(hex("15"), bin(0x15, 8)), true);
++eq("dec 21 = 21", matchBinaryExact((21).toString(2), bin(21, 16)), true);
++eq("dec 5 != 21", matchBinaryExact((5).toString(2), bin(21, 16)), false);
++eq("dec 1 != 3", matchBinaryExact("1", bin(3, 8)), false);
++eq("1-bit 1", matchBinaryExact("1", "1"), true);
++eq("1-bit 0 != 1", matchBinaryExact("0", "1"), false);
++// Longer than the signal: extra high zeros are fine, extra high ones don't fit.
++eq("hex 05 on 4 bits = 5", matchBinaryExact(hex("05"), bin(5, 4)), true);
++eq("hex 15 on 4 bits != 5", matchBinaryExact(hex("15"), bin(5, 4)), false);
++// Wildcards and regexes still work, anchored to the whole value.
++eq("hex x on 4 bits", matchBinaryExact(hex("x"), bin(9, 4)), true);
++eq("hex 1x = 0x1a", matchBinaryExact(hex("1x"), bin(0x1a, 8)), true);
++eq("hex 1x != 0x2a", matchBinaryExact(hex("1x"), bin(0x2a, 8)), false);
++eq("hex x != 0x15 (high nibble set)", matchBinaryExact(hex("x"), bin(0x15, 8)), false);
++eq("binary 1.1 = 101", matchBinaryExact("1.1", bin(5, 8)), true);
++eq("binary 1.1 = 111", matchBinaryExact("1.1", bin(7, 8)), true);
++eq("binary 1.1 != 1101", matchBinaryExact("1.1", bin(13, 8)), false);
++eq("dont-care .* matches all", matchBinaryExact(".*", bin(0x15, 8)), true);
++eq("regex .*0101.* is a substring search", matchBinaryExact(".*0101.*", bin(0x15, 8)), true);
++eq("regex .*0101.* misses", matchBinaryExact(".*0101.*", bin(0x33, 8)), false);
++eq("regex 0101.* is a prefix", matchBinaryExact("0101.*", "01010000"), true);
++eq("bad regex is no match", matchBinaryExact("(", "0101"), false);
++// x/z values are literal, any case.
++eq("binary x literal", matchBinaryExact("1x", "001x"), true);
++eq("binary x literal, upper", matchBinaryExact("1x", "001X"), true);
++eq("binary x != 1", matchBinaryExact("1x", "0011"), false);
++// Signed: the parsed form is minimal two's complement, sign-extended.
++eq("signed -3 = 11111101", matchBinaryExact("101", bin(0xfd, 8), true), true);
++eq("signed -3 != 00000101", matchBinaryExact("101", bin(0x05, 8), true), false);
++eq("signed +5 = 00000101", matchBinaryExact("0101", bin(0x05, 8), true), true);
++eq("signed +5 != 11111101", matchBinaryExact("0101", bin(0xfd, 8), true), false);
++eq("signed -1 = 1111", matchBinaryExact("11", "1111", true), true);
++eq("signed +5 on 4 bits", matchBinaryExact("0101", "0101", true), true);
++eq("signed -3 on 2 bits doesn't fit", matchBinaryExact("101", "01", true), false);
++eq("signed -1 on 1 bit", matchBinaryExact("11", "1", true), true);
++// The signed format's parsed form: +5 keeps its sign bit, so it isn't -3's "101".
++eq("signed parse +5", signedSearchBits("5"), "0101");
++eq("signed parse -3", signedSearchBits("-3"), "101");
++eq("signed parse -4", signedSearchBits("-4"), "1100");
++eq("signed parse 0", signedSearchBits("0"), "0");
++eq("signed parse -1", signedSearchBits("-1"), "11");
++eq("signed parse 1,000", signedSearchBits("1,000"), "0" + (1000).toString(2));
++eq("signed parse x", signedSearchBits("1x"), ".*");
++eq("signed 5 never matches -3", matchBinaryExact(signedSearchBits("5"), bin(0xfd, 8), true), false);
++eq("signed -3 never matches 5", matchBinaryExact(signedSearchBits("-3"), bin(0x05, 8), true), false);
++eq("unsigned 101 != 11111101", matchBinaryExact("101", bin(0xfd, 8)), false);
++
++console.log(`search: ${checks - failures}/${checks} passed`);
++if (failures) { process.exit(1); }
