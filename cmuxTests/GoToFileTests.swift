@@ -170,6 +170,20 @@ struct GoToFileTests {
     }
 
     @Test
+    func testLoaderFailureNamesTheToolNotTheLoginShell() async {
+        let noisy = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c",
+            "echo \"/home/u/.bashrc: line 1: noise\" >&2; echo \"fatal: not a git repository\" >&2; exit 3"])
+        await #expect(throws: GoToFileSnapshotError.failed("fatal: not a git repository")) {
+            _ = try await GoToFileSnapshotLoader.load(noisy)
+        }
+        let quiet = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c",
+            "echo cmux-files:find; echo \"/home/u/.bashrc: line 1: noise\" >&2; exit 3"])
+        await #expect(throws: GoToFileSnapshotError.failed(SSHFileSearchMessages.exited(status: 3))) {
+            _ = try await GoToFileSnapshotLoader.load(quiet)
+        }
+    }
+
+    @Test
     func testSSHInvocationRunsTheListScriptThroughSSH() {
         let connection = SSHFileExplorerConnection(destination: "ews-01", port: nil, identityFile: nil, sshOptions: [])
         let invocation = GoToFileSnapshotLoader.invocation(
