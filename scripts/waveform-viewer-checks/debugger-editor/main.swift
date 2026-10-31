@@ -89,16 +89,25 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     await settle()
     expect(editor.session.asked == ["tb.dut.ex_mem", "tb.dut.pc_next"] && page.highlightCalls.count == calls,
            "cones cached, a failed one for a while; unchanged rows not resent: \(editor.session.asked)")
+    // Another server's recompile keeps them; this server's recompile (new diagnostics) forgets them.
+    WaveformDebuggerEditorHighlights.recompiled(LanguageServerSession())
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    expect(editor.session.asked.count == 2, "another server's recompile keeps the cones: \(editor.session.asked)")
+    WaveformDebuggerEditorHighlights.recompiled(editor.session)
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    await settle()
+    expect(editor.session.asked.count == 4, "a recompile asks both again: \(editor.session.asked)")
     // A design change forgets them all; a failure is asked again once its wait is over.
     WaveformDebuggerEditorHighlights.forgetCones()
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
-    expect(editor.session.asked.count == 4, "after a design change both are asked again: \(editor.session.asked)")
+    expect(editor.session.asked.count == 6, "after a design change both are asked again: \(editor.session.asked)")
     WaveformDebuggerEditorHighlights.failedConeRetryInterval = 0.1
     try? await Task.sleep(nanoseconds: 200_000_000)
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
-    expect(editor.session.asked.suffix(1) == ["tb.dut.pc_next"] && editor.session.asked.count == 5, "a failed cone is asked again after its wait: \(editor.session.asked)")
+    expect(editor.session.asked.suffix(1) == ["tb.dut.pc_next"] && editor.session.asked.count == 7, "a failed cone is asked again after its wait: \(editor.session.asked)")
     WaveformDebuggerEditorHighlights.failedConeRetryInterval = 30
 
     // Typing above the highlights moves them with the text; clearing must still take them all away.
