@@ -185,4 +185,25 @@ enum GoToFileRanker {
     private static func alphabetical(_ lhs: String, _ rhs: String) -> Bool {
         lhs.localizedStandardCompare(rhs) == .orderedAscending
     }
+
+    // Stubs for the failing tests; the prepared index follows in the next commit.
+    struct Index: Sendable {
+        let paths: [String]
+        init(paths: [String]) { self.paths = paths }
+    }
+
+    struct Ranking: Sendable {
+        let paths: [String]
+        let matches: [Int]
+    }
+
+    static func rank(
+        index: Index,
+        query: String,
+        limit: Int,
+        within: [Int]? = nil,
+        shouldCancel: () -> Bool = { false }
+    ) -> Ranking {
+        Ranking(paths: rank(paths: index.paths, query: query, limit: limit, shouldCancel: shouldCancel), matches: [])
+    }
 }

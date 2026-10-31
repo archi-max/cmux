@@ -50,7 +50,7 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// and separates the path with a NUL so colons in names stay unambiguous.
     /// - Parameter remoteTimeoutSeconds: Passed to `timeout` when the host has it,
     ///   so an abandoned search cannot outlive the client by long.
-    static func contentSearch(query: String, rootPath: String, remoteTimeoutSeconds: Int) -> Self {
+    static func contentSearch(query: String, rootPath: String, remoteTimeoutSeconds: Int, watchdog: Bool = true) -> Self {
         let caseFlag = isCaseInsensitive(query: query) ? " -i" : ""
         let globs = excludedDirectoryNames
             .flatMap { ["--glob \"${x}\($0)/**\"", "--glob \"${x}**/\($0)/**\""] }
@@ -78,7 +78,7 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// Inside a Git work tree this is `git ls-files -co --exclude-standard`
     /// (tracked plus untracked, minus ignored). Elsewhere it is `find` limited
     /// to `maxDepth`, pruning the same directories as Find in Files.
-    static func fileList(rootPath: String, maxDepth: Int, remoteTimeoutSeconds: Int) -> Self {
+    static func fileList(rootPath: String, maxDepth: Int, remoteTimeoutSeconds: Int, watchdog: Bool) -> Self {
         let prunes = excludedDirectoryNames.map { "-name \($0) -prune -o" }.joined(separator: " ")
         return Self(lines: [
             decoder,

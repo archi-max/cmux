@@ -22,7 +22,8 @@ struct SSHFileSearchTests {
         let commands = [
             SSHFileSearchCommand.contentSearch(query: Self.hostileQuery, rootPath: root, remoteTimeoutSeconds: 27),
             SSHFileSearchCommand.contentSearch(query: "Upper", rootPath: root, remoteTimeoutSeconds: 27),
-            SSHFileSearchCommand.fileList(rootPath: root, maxDepth: 8, remoteTimeoutSeconds: 18),
+            SSHFileSearchCommand.fileList(rootPath: root, maxDepth: 8, remoteTimeoutSeconds: 18, watchdog: true),
+            SSHFileSearchCommand.fileList(rootPath: root, maxDepth: 8, remoteTimeoutSeconds: 18, watchdog: false),
         ]
         for search in commands {
             let command = search.command
@@ -114,6 +115,98 @@ struct SSHFileSearchTests {
         let found = try Self.search("x", root: "/nonexistent-cmux-\(UUID().uuidString)", shell: "/bin/sh",
                                     path: Self.pathWithoutRipgrep)
         #expect(found.status == .failed(SSHFileSearchMessages.folderNotFound))
+    }
+
+    @Test
+    func testWatchdogStopsTheRemoteCommandWhenTheClientGoesAway() throws {
+        let token = "31.\(Int.random(in: 1_000...9_999))"
+        let command = SSHRemoteShellScript.command(lines: ["sleep \(token)", "exit 7"], watchdog: true)
+        for shell in Self.availableShells {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+            process.arguments = ["-e", Self.setsidExec, shell] + (shell.hasSuffix("csh") ? ["-f", "-c", command] : ["-c", command])
+            let stdin = Pipe()
+            process.standardInput = stdin
+            process.standardOutput = FileHandle.nullDevice
+            try process.run()
+            Thread.sleep(forTimeInterval: 0.4)
+            #expect(Self.processCount(matching: "sleep \(token)") == 1, "shell \(shell)")
+            // ssh going away closes the channel: the remote stdin hits EOF.
+            try stdin.fileHandleForWriting.close()
+            let deadline = Date().addingTimeInterval(3)
+            while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+            #expect(!process.isRunning, "shell \(shell)")
+            Thread.sleep(forTimeInterval: 0.2)
+            #expect(Self.processCount(matching: "sleep \(token)") == 0, "shell \(shell)")
+            if process.isRunning { process.terminate() }
+        }
+        // A finished body keeps its exit status with the watchdog in place.
+        let quick = SSHRemoteShellScript.command(lines: ["exit 7"], watchdog: true)
+        let quickRun = try Self.run(quick, shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+        #expect(quickRun.status == 7)
+        #expect(SSHFileSearchCommand.contentSearch(query: "q", rootPath: "/r", remoteTimeoutSeconds: 5).command
+            .contains("kill 0"))
+    }
+
+    @Test
+    func testBannersBeforeTheMarkerAreIgnored() throws {
+        let root = try Self.makeSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let command = SSHFileSearchCommand.contentSearch(query: "hello", rootPath: root.path, remoteTimeoutSeconds: 20)
+        for banner in ["printf Welcome; ", "echo conda activated; "] {
+            let output = try Self.run(banner + command.command, shell: "/bin/sh", path: Self.pathWithoutRipgrep)
+            var accumulator = SSHFileSearchAccumulator(rootPath: root.path, query: "hello", maxResults: 500, snapshotInterval: 60)
+            _ = accumulator.consume(output.stdout)
+            let update = accumulator.finish(status: output.status)
+            #expect(update.status == .matches, "banner \(banner)")
+            #expect(update.results.count == 2, "banner \(banner)")
+        }
+    }
+
+    @Test
+    func testBusyBoxStyleTimeoutStillRuns() throws {
+        let root = try Self.makeSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bin = root.appendingPathComponent("fake-bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        // BusyBox before 1.30: only `timeout -t N cmd ...`.
+        let fake = "#!/bin/sh\n[ \"$1\" = -t ] || exit 1\nshift 2\nexec \"$@\"\n"
+        let fakeURL = bin.appendingPathComponent("timeout")
+        try Data(fake.utf8).write(to: fakeURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeURL.path)
+        let found = try Self.search("hello", root: root.path, shell: "/bin/sh", path: bin.path + ":" + Self.pathWithoutRipgrep)
+        #expect(found.status == .matches)
+        #expect(found.relativePaths == ["dir/a:b.txt", "Upper.txt"])
+    }
+
+    @Test
+    func testMissingMarkerAndDecodeFailuresAreFailures() {
+        func finish(_ status: Int32, output: String) -> FileSearchSnapshot.Status {
+            var accumulator = SSHFileSearchAccumulator(rootPath: "/r", query: "n", maxResults: 10, snapshotInterval: 60)
+            _ = accumulator.consume(Data(output.utf8))
+            return accumulator.finish(status: status).status
+        }
+        #expect(finish(0, output: "") == .failed(SSHFileSearchMessages.didNotRun))
+        #expect(finish(1, output: "motd line\n") == .failed(SSHFileSearchMessages.didNotRun))
+        #expect(finish(65, output: "") == .failed(SSHFileSearchMessages.decodeFailed))
+        #expect(finish(2, output: "") != .noMatches)
+        #expect(finish(0, output: "Welcome" + SSHFileSearchCommand.grepMarker + "\n") == .noMatches)
+    }
+
+    @Test
+    func testHugeLinesAreSkippedWithoutQuadraticRescans() {
+        var accumulator = SSHFileSearchAccumulator(rootPath: "/r", query: "n", maxResults: 10, snapshotInterval: 0)
+        _ = accumulator.consume(Data((SSHFileSearchCommand.grepMarker + "\n").utf8))
+        var head = Data("/r/min.js".utf8)
+        head.append(0)
+        head.append(contentsOf: Array("1:".utf8))
+        _ = accumulator.consume(head)
+        let chunk = Data(repeating: UInt8(ascii: "n"), count: 32 * 1024)
+        let started = Date()
+        for _ in 0..<128 { _ = accumulator.consume(chunk) } // a 4 MB line
+        _ = accumulator.consume(Data("\n".utf8) + Self.grepLine("/r/ok", 3, "n"))
+        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(accumulator.finish(status: 0).results.map(\.relativePath) == ["ok"])
     }
 
     // MARK: Parsing
@@ -268,6 +361,9 @@ struct SSHFileSearchTests {
         var data = Data()
     }
 
+    /// Perl one-liner: `setsid`, then exec the remaining arguments.
+    static let setsidExec = "use POSIX (); POSIX::setsid(); exec @ARGV or exit 127"
+
     private static let pathWithoutRipgrep = "/usr/bin:/bin:/usr/sbin:/sbin"
 
     static var availableShells: [String] {
@@ -283,23 +379,30 @@ struct SSHFileSearchTests {
         directory: String? = nil
     ) throws -> (stdout: Data, stderr: Data, status: Int32) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: shell)
         if let directory { process.currentDirectoryURL = URL(fileURLWithPath: directory) }
         // -f keeps csh from reading the runner's ~/.cshrc; fish gets --no-config.
+        let shellArguments: [String]
         if shell.hasSuffix("csh") {
-            process.arguments = ["-f", "-c", command]
+            shellArguments = ["-f", "-c", command]
         } else if shell.hasSuffix("fish") {
-            process.arguments = ["--no-config", "-c", command]
+            shellArguments = ["--no-config", "-c", command]
         } else {
-            process.arguments = ["-c", command]
+            shellArguments = ["-c", command]
         }
+        // Like sshd, start the command in a session of its own, so a script's
+        // watchdog `kill 0` can only reach that command.
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = ["-e", setsidExec, shell] + shellArguments
         process.environment = ["PATH": path, "HOME": NSTemporaryDirectory(), "LC_ALL": "en_US.UTF-8"]
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-        process.standardInput = FileHandle.nullDevice
+        // Like an ssh channel, stdin stays open until the command is done.
+        let stdin = Pipe()
+        process.standardInput = stdin
         try process.run()
+        defer { try? stdin.fileHandleForWriting.close() }
         // stderr drains on its own queue so neither pipe can fill and stall the shell.
         let errorBox = DataBox()
         let errorDone = DispatchSemaphore(value: 0)
@@ -325,6 +428,19 @@ struct SSHFileSearchTests {
         return Found(format: format, status: update.status, results: update.results)
     }
 
+    static func processCount(matching pattern: String) -> Int {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        // Anchored, so the shells whose own command line mentions it don't count.
+        process.arguments = ["-f", "^" + pattern]
+        let output = Pipe()
+        process.standardOutput = output
+        try? process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).count
+    }
+
     private static func grepLine(_ path: String, _ line: Int, _ text: String) -> Data {
         Data(path.utf8) + Data([0]) + Data("\(line):\(text)\n".utf8)
     }
@@ -340,6 +456,8 @@ struct SSHFileSearchTests {
             (".git/config", Data("hello from git\n".utf8)),
             ("node_modules/pkg/index.js", Data("hello from node_modules\n".utf8)),
             ("sub/build/out.txt", Data("hello from build\n".utf8)),
+            // A regular file named like an excluded directory.
+            ("src/build", Data("no match here\n".utf8)),
             ("blob.bin", Data([0x68, 0x65, 0x6C, 0x6C, 0x6F, 0x00, 0x01, 0x02, 0x0A])),
         ]
         for (relativePath, contents) in files {

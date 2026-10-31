@@ -25,6 +25,11 @@ final class GoToFilePaletteModel: ObservableObject {
     /// Serves SSH previews when the Files sidebar shows another workspace.
     private(set) lazy var remotePreviewStore = FileExplorerStore()
     private var snapshot: GoToFileSnapshot?
+    /// Stub for the failing tests: nothing is queued yet.
+    private(set) var opensWhenRanked = false
+    var onDeferredOpen: ((String) -> Void)?
+
+    func openSelectionOrQueue() -> String? { selectedRelativePath }
     private var query = ""
     private var resultsQuery: String?
     private var generation: UInt64 = 0

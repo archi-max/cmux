@@ -41,6 +41,13 @@ enum GoToFileSnapshotLoader {
     struct Invocation: Equatable, Sendable {
         let executable: String
         let arguments: [String]
+        let keepsStdinOpen: Bool
+
+        init(executable: String, arguments: [String], keepsStdinOpen: Bool = false) {
+            self.executable = executable
+            self.arguments = arguments
+            self.keepsStdinOpen = keepsStdinOpen
+        }
     }
 
     static func invocation(
@@ -52,7 +59,8 @@ enum GoToFileSnapshotLoader {
         let command = SSHFileSearchCommand.fileList(
             rootPath: source.rootPath,
             maxDepth: GoToFileSnapshot.maxFindDepth,
-            remoteTimeoutSeconds: max(1, timeoutSeconds - 2)
+            remoteTimeoutSeconds: max(1, timeoutSeconds - 2),
+            watchdog: false
         ).command
         switch source {
         case .local:
