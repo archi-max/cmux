@@ -34,6 +34,9 @@ final class CmuxTuiSurfaceProvider: SurfaceProvider {
     /// This machine's notification sync: VM rows in, local notifications and
     /// `notification.ack` round trips out. Fed after every accepted state.
     var notificationSync: CloudNotificationSync?
+    /// `cmux open` requests from this SSH machine's terminals (`+HostOpen`).
+    var hostOpenIngress: SSHTuiHostOpenIngress?
+    var hostOpenRecheck: Task<Void, Never>?
     var guestURLService: CloudGuestURLService?
     var guestURLProjectionVersion: UInt64?
     var guestURLTerminalIDs: [String] = []
@@ -237,6 +240,8 @@ final class CmuxTuiSurfaceProvider: SurfaceProvider {
         CloudNotificationSyncHub.shared.unregister(machineID: machineID)
         notificationSync?.retire()
         notificationSync = nil
+        hostOpenRecheck?.cancel()
+        hostOpenRecheck = nil
         if let notificationPlacementObserver {
             NotificationCenter.default.removeObserver(notificationPlacementObserver)
             self.notificationPlacementObserver = nil
