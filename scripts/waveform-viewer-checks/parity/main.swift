@@ -481,6 +481,47 @@ extension Harness {
           check(r["start"] as? Int == 0 && r["added"] as? Int == 1, "a new viewer shows the added signal")
           check(r["undone"] as? Int == 0, "undo removes the first added signal (rows drawn \(r["undone"] ?? "nil"))")
           check(r["redone"] as? Int == 1, "redo brings it back (rows drawn \(r["redone"] ?? "nil"))")
+          self.phaseO()
+        }
+      }
+    }
+  }
+
+  // Undo and redo with an expanded group that has a child shown. The viewer's
+  // applyState removes every visible row, group and child alike, recursively:
+  // the child must be disposed once, not twice.
+  func phaseO() {
+    let restore: [String: Any] = ["dirty": false, "state": ["displayedSignals": [
+      ["dataType": "signal-group", "groupName": "grp", "collapseState": 2, "children": [
+        ["dataType": "netlist-variable", "name": "top.clk"],
+      ]],
+    ]]]
+    openFresh(restore: restore) {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const frame = document.getElementById('viewer').contentWindow;
+        const errors = [];
+        const consoleError = frame.console.error;
+        frame.console.error = (...a) => { errors.push(a.map(String).join(' ')); consoleError.apply(frame.console, a); };
+        frame.addEventListener('error', (e) => errors.push(String(e.message)));
+        const drawn = () => frame.document.querySelectorAll('.waveform-label').length;
+        R.start = drawn();
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.core.acc' });
+        await sleep(600);
+        R.added = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undone = drawn();
+        await C.run('cmux.redo');
+        await sleep(800);
+        R.redone = drawn();
+        R.errors = errors;
+        """) { r in
+          let start = r["start"] as? Int ?? -1, added = r["added"] as? Int ?? -1
+          check(start >= 1 && added == start + 1, "the group's child is shown and the add draws a row (\(start) → \(added))")
+          check((r["errors"] as? [String])?.isEmpty == true, "undo/redo with an expanded group raise no viewer error (\(r["errors"] ?? "nil"))")
+          check(r["undone"] as? Int == start, "undo with an expanded group goes back to its rows (rows drawn \(r["undone"] ?? "nil"), want \(start))")
+          check(r["redone"] as? Int == added, "redo brings the added row back (rows drawn \(r["redone"] ?? "nil"), want \(added))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
@@ -497,5 +538,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let harness = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { harness.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 60) { print("CHECK FAILED: timeout"); exit(2) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 120) { print("CHECK FAILED: timeout"); exit(2) }
 app.run()
