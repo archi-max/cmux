@@ -374,6 +374,7 @@ extension TerminalController {
             "app.focus_override.set",
             "app.simulate_active",
             "file.open",
+            "file.open_remote",
             "markdown.open",
             "browser.open_split",
             "browser.navigate",

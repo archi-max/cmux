@@ -50,8 +50,27 @@ struct RemoteRelayRoutingSchema {
             ]
         case "notification.create_for_target":
             return surface.union(["title", "subtitle", "body", "effects"])
+        // `cmux open` in an SSH session: preview a file on that SSH host. The
+        // app downloads it over the workspace's own SSH connection, so the
+        // path never names a file on this Mac.
+        case "file.open_remote": return surface.union(["path"])
         default: return nil
         }
+    }
+
+    /// Longest host path `file.open_remote` accepts, in UTF-8 bytes (Linux PATH_MAX).
+    static let maximumRemoteFileOpenPathBytes = 4_096
+
+    /// Whether `value` is a plain absolute host path: a string starting with
+    /// `/`, without NUL or line breaks, within ``maximumRemoteFileOpenPathBytes``.
+    /// `~`, relative paths and URLs are refused; the remote CLI resolves them
+    /// on the host first.
+    static func isAcceptableRemoteFileOpenPath(_ value: Any?) -> Bool {
+        guard let path = value as? String,
+              path.hasPrefix("/"),
+              path.utf8.count <= maximumRemoteFileOpenPathBytes,
+              !path.contains("\0"), !path.contains("\n"), !path.contains("\r") else { return false }
+        return true
     }
 
     /// Effect names a relayed notification's `effects` patch may carry.

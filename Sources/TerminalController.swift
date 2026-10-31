@@ -3449,6 +3449,8 @@ class TerminalController {
             return v2Ok(id: id, result: ["pong": true])
         case "system.capabilities":
             return v2Ok(id: id, result: v2CapabilitiesWithBrowserDesignMode(params: params))
+        case "file.open_remote":
+            return v2Result(id: id, v2FileOpenRemote(params: params))
         case "automation.list":
             return v2Result(id: id, v2AutomationList())
         case "automation.show":

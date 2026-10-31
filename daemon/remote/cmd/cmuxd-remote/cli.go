@@ -194,6 +194,11 @@ doneFlags:
 		}
 	}
 
+	// "open <path>[:line]": preview a file on this host (see cli_open.go).
+	if cmdName == "open" {
+		return runOpenRelay(socketPath, cmdArgs, jsonOutput, refreshAddr)
+	}
+
 	// Browser subcommand delegation
 	if cmdName == "browser" {
 		return runBrowserRelay(socketPath, cmdArgs, jsonOutput, refreshAddr)
@@ -1354,6 +1359,7 @@ func cliUsage() {
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  ping                      Check connectivity")
 	fmt.Fprintln(os.Stderr, "  capabilities              List server capabilities")
+	fmt.Fprintln(os.Stderr, "  open <path>[:line]        Preview a file on this host in cmux")
 	fmt.Fprintln(os.Stderr, "  list-workspaces           List all workspaces")
 	fmt.Fprintln(os.Stderr, "  new-workspace             Create a new workspace")
 	fmt.Fprintln(os.Stderr, "    --name <title>          Workspace title")

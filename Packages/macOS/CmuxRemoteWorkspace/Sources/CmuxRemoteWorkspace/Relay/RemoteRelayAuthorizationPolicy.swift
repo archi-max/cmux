@@ -48,6 +48,7 @@ public struct RemoteRelayAuthorizationPolicy: Sendable {
         "surface.ports_kick",
         "notification.create_for_target",
         "agent.hook.enqueue",
+        "file.open_remote",
     ]).union(tmuxCompatibleMethods)
 
     private static let surfaceRequiredMethods: Set<String> = [
@@ -70,6 +71,7 @@ public struct RemoteRelayAuthorizationPolicy: Sendable {
         "agent.message.poll",
         "agent.message.claim",
         "agent.message.mark_read",
+        "file.open_remote",
     ]
 
     private static let exactSurfaceSelectorMethods: Set<String> = [
@@ -86,6 +88,7 @@ public struct RemoteRelayAuthorizationPolicy: Sendable {
         "agent.message.poll",
         "agent.message.claim",
         "agent.message.mark_read",
+        "file.open_remote",
     ]
 
     private static let workspaceSelectorKeys: Set<String> = [
@@ -285,6 +288,14 @@ public struct RemoteRelayAuthorizationPolicy: Sendable {
             return .denied(
                 code: "remote_relay_surface_denied",
                 message: "Relay notification delivery requires an explicit surface_id selector"
+            )
+        }
+
+        if method == "file.open_remote",
+           !RemoteRelayRoutingSchema.isAcceptableRemoteFileOpenPath(parameters["path"]) {
+            return .denied(
+                code: "remote_relay_method_denied",
+                message: "Relay file open requires an absolute host path"
             )
         }
 

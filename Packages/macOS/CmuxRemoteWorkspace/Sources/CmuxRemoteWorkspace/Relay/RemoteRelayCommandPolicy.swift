@@ -51,6 +51,13 @@ public struct RemoteRelayCommandPolicy: Sendable {
     /// Creates the stateless relay command policy.
     public init() {}
 
+    /// Whether `value` is a path `file.open_remote` accepts: absolute on the
+    /// SSH host, without NUL or line breaks, at most 4,096 bytes. The app's
+    /// handler applies the same check to local and relay callers.
+    public static func isAcceptableRemoteFileOpenPath(_ value: Any?) -> Bool {
+        RemoteRelayRoutingSchema.isAcceptableRemoteFileOpenPath(value)
+    }
+
     /// Filters discovery to reviewed relay methods without granting access.
     /// Each call still requires the method's parameter contract and live owner checks.
     /// - Parameter methods: Method names advertised by the local server.
@@ -101,6 +108,15 @@ public struct RemoteRelayCommandPolicy: Sendable {
                   let submitKey = params["submit_key"] as? String,
                   ["none", "return"].contains(submitKey) else {
                 return .deny(reason: "terminal.paste requires text and submit_key none|return")
+            }
+        }
+        if method == "file.open_remote" {
+            guard RemoteRelayRoutingSchema.isAcceptableRemoteFileOpenPath(params["path"]) else {
+                return .deny(reason: "file.open_remote requires an absolute host path")
+            }
+            guard ownedID(params["workspace_id"], aliases: workspaceAliases) != nil,
+                  ownedID(params["surface_id"], aliases: surfaceAliases) != nil else {
+                return .deny(reason: "file.open_remote requires the session's own workspace_id and surface_id")
             }
         }
         if method == "agent.resolve_delivery_target" {
