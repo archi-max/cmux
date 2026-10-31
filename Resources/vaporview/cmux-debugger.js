@@ -732,7 +732,9 @@
   // landing after the marker, reverse continue to the nearest landing before it, so each always
   // moves. Signals' changes come from host.signalChanges (what the viewer was given when shown).
   const MAX_BREAKPOINT_CHANGES = 1000000;
-  const breakpoints = [];  // { id, path, kind: 'change' | 'equals', value, pattern, enabled, times, timesFor }
+  // { id, path, kind: 'change' | 'equals', value, pattern, enabled, times, timesFor }, and the
+  // line breakpoints cmux sets (setLineBreakpoints): { id, kind: 'line', key, label, paths, ... }.
+  const breakpoints = [];
   let nextBreakpointId = 1;
   let lastHitId = null;
   let continueRequest = 0;
@@ -802,12 +804,38 @@
     return true;
   }
 
-  const breakpointName = (bp) => (bp.kind === 'equals'
+  const breakpointName = (bp) => (bp.kind === 'line' ? bp.label : (bp.kind === 'equals'
     ? format(S().debuggerBreakpointEquals, bp.path.join('.'), bp.value)
-    : format(S().debuggerBreakpointChanges, bp.path.join('.')));
+    : format(S().debuggerBreakpointChanges, bp.path.join('.'))));
 
-  const publicBreakpoint = (bp) => ({ id: bp.id, path: bp.path.slice(), kind: bp.kind,
-    value: bp.kind === 'equals' ? bp.value : null, enabled: bp.enabled, hit: bp.id === lastHitId, label: breakpointName(bp) });
+  const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: bp.id === lastHitId, label: breakpointName(bp),
+    path: bp.path ? bp.path.slice() : null, value: bp.kind === 'equals' ? bp.value : null,
+    key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null });
+
+  // cmux owns line breakpoints: the list's checkbox and remove button tell it.
+  const toldLine = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'lineBreakpoint', key: bp.key,
+    enabled: bp.enabled, removed: false }, extra || {}));
+
+  // The editors' line breakpoints (cmux): replaces the page's, keeps the signal breakpoints.
+  function setLineBreakpoints(query) {
+    const items = Array.isArray((query || {}).items) ? query.items : [];
+    const old = new Map(breakpoints.filter((b) => b.kind === 'line').map((b) => [b.key, b]));
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind === 'line') { breakpoints.splice(i, 1); } }
+    const lines = [];
+    for (const item of items) {
+      const key = String(item.key || '');
+      if (!key || lines.some((b) => b.key === key)) { continue; }
+      const paths = (Array.isArray(item.paths) ? item.paths : []).filter(Array.isArray).map((p) => p.map(String));
+      const before = old.get(key);
+      const same = before && JSON.stringify(before.paths) === JSON.stringify(paths);
+      lines.push({ id: before ? before.id : nextBreakpointId++, kind: 'line', key, label: String(item.label || key), paths,
+        enabled: item.enabled !== false, times: same ? before.times : null, timesFor: same ? before.timesFor : null });
+    }
+    if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId) && !lines.some((b) => b.id === lastHitId)) { lastHitId = null; }
+    breakpoints.push(...lines);
+    breakpointsChanged();
+    return lines.map(publicBreakpoint);
+  }
 
   const signalOf = async (path) => (await host.findLinkItem(path, true)) || null;
 
@@ -844,7 +872,7 @@
     if (i < 0) { return false; }
     const [bp] = breakpoints.splice(i, 1);
     if (bp.id === lastHitId) { lastHitId = null; }
-    if (!breakpoints.some((b) => JSON.stringify(b.path) === JSON.stringify(bp.path))) { changeCache.delete(JSON.stringify(bp.path)); }
+    if (bp.kind === 'line') { toldLine(bp, { removed: true }); }
     breakpointsChanged();
     return true;
   }
@@ -854,53 +882,80 @@
     const bp = breakpoints.find((b) => b.id === Number(q.id));
     if (!bp) { return false; }
     bp.enabled = !!q.enabled;
+    if (bp.kind === 'line') { toldLine(bp); }
     breakpointsChanged();
     return true;
   }
 
   function breakpointsChanged() {
+    // Changes no breakpoint watches any more are let go (each may hold up to 1M).
+    const watched = new Set();
+    for (const b of breakpoints) { for (const path of (b.kind === 'line' ? b.paths : [b.path])) { watched.add(JSON.stringify(path)); } }
+    for (const key of Array.from(changeCache.keys())) { if (!watched.has(key)) { changeCache.delete(key); } }
     renderBreakpoints();
     if (state.playing) { refreshPlayStop(); }
   }
 
-  // The times a breakpoint hits at (ascending), for the current backend; null when its signal
-  // is gone or changes too often, saying so.
-  async function hitTimes(bp) {
-    const backend = host.currentBackend;
-    if (bp.timesFor === backend && bp.times) { return bp.times; }
+  // A signal's changes for the current backend ({ changes, width }; changes null past the cap),
+  // or null when it is not in the file.
+  async function changesOf(path, backend) {
     for (const [key, entry] of changeCache) { if (entry.backend !== backend) { changeCache.delete(key); } }
-    const key = JSON.stringify(bp.path);
-    let entry = changeCache.get(key);
-    if (!entry) {
-      const v = await signalOf(bp.path);
-      if (!v) {
-        window.cmuxUI.toast(format(S().debuggerBreakpointSignalGone, bp.path.join('.')), 'warning');
-        return null;
-      }
-      const changes = await host.signalChanges(v, MAX_BREAKPOINT_CHANGES);
-      entry = { backend, changes: changes && changes.length <= MAX_BREAKPOINT_CHANGES ? changes : null, width: Number(v.width) || 1 };
-      if (host.currentBackend !== backend) { return null; }
-      changeCache.set(key, entry);
-    }
-    if (!entry.changes) {
-      window.cmuxUI.toast(format(S().debuggerTooManyChanges, bp.path.join('.')), 'warning');
-      return null;
-    }
+    const key = JSON.stringify(path);
+    const cached = changeCache.get(key);
+    if (cached) { return cached; }
+    const v = await signalOf(path);
+    if (!v) { return null; }
+    const changes = await host.signalChanges(v, MAX_BREAKPOINT_CHANGES);
+    const entry = { backend, changes: changes && changes.length <= MAX_BREAKPOINT_CHANGES ? changes : null, width: Number(v.width) || 1 };
+    if (host.currentBackend === backend) { changeCache.set(key, entry); }
+    return entry;
+  }
+
+  // The times `changes` hits a change (or equals, with `pattern`) breakpoint at.
+  function timesOf(entry, kind, pattern) {
     const out = [];
     let previous = null;
     let previousMatched = false;
     entry.changes.forEach(([time, value], i) => {
       const bits = valueBits(value, entry.width);
-      if (bp.kind === 'change') {
+      if (kind !== 'equals') {
         if (i > 0 && bits !== previous) { out.push(Number(time)); }
       } else {
-        const now = matches(bits, bp.pattern);
+        const now = matches(bits, pattern);
         if (now && (i === 0 || !previousMatched)) { out.push(Number(time)); }
         previousMatched = now;
       }
       previous = bits;
     });
-    bp.times = Float64Array.from(out);
+    return out;
+  }
+
+  // The times a breakpoint hits at (ascending), for the current backend; null when its signal
+  // is gone or changes too often, saying so. A line hits when any of its signals changes (those
+  // not in the file are left out: the line's list row says when none are).
+  async function hitTimes(bp) {
+    const backend = host.currentBackend;
+    if (bp.timesFor === backend && bp.times) { return bp.times; }
+    const paths = bp.kind === 'line' ? bp.paths : [bp.path];
+    let times = [];
+    let found = 0;
+    for (const path of paths) {
+      const entry = await changesOf(path, backend);
+      if (host.currentBackend !== backend) { return null; }
+      if (!entry) {
+        if (bp.kind !== 'line') { window.cmuxUI.toast(format(S().debuggerBreakpointSignalGone, path.join('.')), 'warning'); }
+        continue;
+      }
+      if (!entry.changes) {
+        window.cmuxUI.toast(format(S().debuggerTooManyChanges, path.join('.')), 'warning');
+        continue;
+      }
+      found++;
+      times = times.concat(timesOf(entry, bp.kind, bp.pattern));
+    }
+    if (!found) { return null; }
+    times.sort((a, b) => a - b);
+    bp.times = Float64Array.from(times.filter((t, i) => i === 0 || t !== times[i - 1]));
     bp.timesFor = backend;
     return bp.times;
   }
@@ -1034,7 +1089,7 @@
       label.className = 'label';
       label.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis;' + (bp.enabled ? '' : ' opacity: 0.6;');
       label.textContent = breakpointName(bp);
-      label.title = label.textContent;
+      label.title = bp.kind === 'line' && !bp.paths.length ? format(S().debuggerLineNotPlaced, bp.label) : label.textContent;
       const remove = document.createElement('span');
       remove.className = 'remove codicon codicon-close';
       remove.style.cursor = 'pointer';
@@ -1180,7 +1235,7 @@
     },
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
-    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled,
+    continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setLineBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
