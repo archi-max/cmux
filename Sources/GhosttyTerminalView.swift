@@ -3933,10 +3933,15 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         #endif
     }
 
+    /// Where a file ⌘-clicked in an SSH terminal is copied to preview it (the
+    /// waveform viewer treats files here as remote copies).
+    static let remoteTerminalPreviewCacheDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("cmux-remote-terminal-previews")
+
     private lazy var remoteFilePreviewCoordinator = RemoteTerminalFilePreviewCoordinator(
         defaults: .standard,
         transport: ProcessSSHFileExplorerTransport.shared,
-        cacheDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("cmux-remote-terminal-previews")
+        cacheDirectory: Self.remoteTerminalPreviewCacheDirectory
     )
 
     func openRemoteFilePreview(tokens: [String]) -> Bool {
@@ -9161,7 +9166,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
         // VaporView's terminal links: a time or an instance path, into the
         // workspace's waveform viewer. An existing file under the click wins;
-        // a link no viewer can use goes on to the remote file link below.
+        // a link no viewer can use goes on to the remote file link, or locally
+        // to the GitHub reference link, as a click without it would.
         if runtimeOutcome != .openURL,
            let resolvedPoint, let terminalSurface,
            let workspace = terminalSurface.owningWorkspace(),
@@ -9176,8 +9182,13 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             }()
             Task { @MainActor [weak self] in
                 let opened = await WaveformTerminalLinks.open(waveformLink.0, in: waveformLink.1)
-                guard !opened, let remoteTokens else { return }
-                _ = self?.openRemoteFilePreview(tokens: remoteTokens)
+                guard !opened else { return }
+                // No viewer could use it: the click gets cmux's own links.
+                if let remoteTokens {
+                    _ = self?.openRemoteFilePreview(tokens: remoteTokens)
+                } else {
+                    self?.attemptGitHubReferenceOpen(at: resolvedPoint, runtimeOutcome: runtimeOutcome)
+                }
             }
             return nil
         }

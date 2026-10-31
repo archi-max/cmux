@@ -41,7 +41,7 @@ enum WaveformTerminalLinks {
         let viewers = viewers(in: workspace)
         guard !viewers.isEmpty else { return nil }
         let utf16Column = Link.utf16Offset(ofCharacter: column, in: line)
-        let instancePaths = FilePreviewWaveformSession.storedSettings()["enableInstancePathTerminalLinks"] as? Bool ?? true
+        let instancePaths = FilePreviewWaveformSession.instancePathTerminalLinksEnabled
         let tops = Array(Set(viewers.flatMap { $0.nativeViewSessions.waveform.topScopes }))
         guard let link = Link.detect(in: line, column: utf16Column, topScopes: tops, instancePaths: instancePaths) else { return nil }
         if case .instancePath(let path) = link {

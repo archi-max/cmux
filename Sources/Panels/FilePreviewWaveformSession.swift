@@ -210,6 +210,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         } else if fileURL != url || loadedRevision != revision {
             if fileURL != url {
                 restoreState = nil
+                // The last session belonged to the previous file.
+                lastSessionURL = nil
             }
             fileURL = url
             loadedRevision = revision
@@ -223,6 +225,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         isPageReady = false
         isFileOpen = false
         pageLoadID += 1
+        // The new page reports its own focus; until then cmux keeps its shortcuts.
+        webView.waveformKeyState = WaveformViewerShortcuts.PageState()
         stopFSDBHelper()
         schemeHandler.stopServing()
         guard schemeHandler.hasAssets else {
@@ -297,6 +301,18 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         guard JSONSerialization.isValidJSONObject(values),
               let data = try? JSONSerialization.data(withJSONObject: values) else { return }
         UserDefaults.standard.set(data, forKey: settingsDefaultsKey)
+        cachedInstancePathTerminalLinks = nil
+    }
+
+    private static var cachedInstancePathTerminalLinks: Bool?
+
+    /// `enableInstancePathTerminalLinks`, read once per change: the terminal's
+    /// ⌘-hover asks on every mouse move.
+    static var instancePathTerminalLinksEnabled: Bool {
+        if let cached = cachedInstancePathTerminalLinks { return cached }
+        let value = storedSettings()["enableInstancePathTerminalLinks"] as? Bool ?? true
+        cachedInstancePathTerminalLinks = value
+        return value
     }
 
     // The page sends session text; where it goes is decided here, never by the
@@ -306,6 +322,23 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     /// The open file's SSH lease, when it has one (a read-only cloud VM copy has none).
     private var sshLease: CloudFilePreviewLease? {
         panel?.cloudPreviewLease.flatMap { $0.sshProvider == nil ? nil : $0 }
+    }
+
+    /// Whether the open file is cmux's copy of a remote file: a Files lease, or
+    /// a dump ⌘-clicked in an SSH terminal (cached with no lease). Its folder is
+    /// cmux's cache, not the user's, so nothing is read from or saved there.
+    private var isRemoteCopy: Bool {
+        guard panel?.cloudPreviewLease == nil else { return true }
+        guard let fileURL, fileURL.isFileURL else { return false }
+        let cache = GhosttyNSView.remoteTerminalPreviewCacheDirectory.resolvingSymlinksInPath().path + "/"
+        return fileURL.resolvingSymlinksInPath().path.hasPrefix(cache)
+    }
+
+    /// Where the save and open panels start when there is no session file yet.
+    private var sessionPanelDirectory: URL? {
+        if let lastSessionURL { return lastSessionURL.deletingLastPathComponent() }
+        if !isRemoteCopy, let fileURL, fileURL.isFileURL { return fileURL.deletingLastPathComponent() }
+        return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
     }
 
     /// VaporView's session file for a dump: `<name>.json` beside `<name>.vcd`.
@@ -354,8 +387,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
               Self.storedSettings()["promptLoadSettings"] as? String != "Never" else { return }
         let lease = panel?.cloudPreviewLease
         let provider = lease?.sshProvider
-        // A cloud VM preview is a downloaded copy with no folder to look in.
-        guard lease == nil || provider != nil else { return }
+        // A cloud VM preview or an SSH terminal's copy has no folder of the user's to look in.
+        guard lease == nil ? !isRemoteCopy : provider != nil else { return }
         let loadID = pageLoadID
         Task { [weak self] in
             let file: [String: String]?
@@ -416,6 +449,16 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         Task { [weak self] in
             do {
                 guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
+                // `<dump>.json` may be something else (a testbench config): only a
+                // session, or no file at all, is replaced.
+                if await Self.existingFileIsNotASession(path: path, provider: provider) {
+                    let format = String(
+                        localized: "filePreview.waveform.saveSessionRemote.notSession",
+                        defaultValue: "%@ exists and is not a VaporView session, so cmux left it alone. Save on this Mac instead."
+                    )
+                    self?.evaluate(function: "sessionFailed", argument: ["message": String(format: format, path)])
+                    return
+                }
                 _ = try await provider.writeFile(path: path, contents: Data(text.utf8), expectedStamp: nil)
                 self?.evaluate(function: "sessionSaved", argument: [:])
             } catch {
@@ -424,18 +467,26 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
     }
 
+    /// Whether `path` on the host holds a file that isn't a VaporView session
+    /// (or one too big to be one). False when it can't be read, e.g. it doesn't exist.
+    nonisolated private static func existingFileIsNotASession(path: String, provider: SSHFileExplorerProvider) async -> Bool {
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-waveform-session-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: local) }
+        do {
+            try await provider.downloadFile(path: path, to: local)
+        } catch {
+            return false
+        }
+        guard let text = try? await readSessionText(at: local) else { return true }
+        return !isSession(text)
+    }
+
     private func chooseLocalSessionFile(text: String, suggestedName: String) {
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.json]
         savePanel.nameFieldStringValue = lastSessionURL?.lastPathComponent ?? suggestedName
-        if let lastSessionURL {
-            savePanel.directoryURL = lastSessionURL.deletingLastPathComponent()
-        } else if panel?.cloudPreviewLease == nil, let fileURL, fileURL.isFileURL {
-            savePanel.directoryURL = fileURL.deletingLastPathComponent()
-        } else {
-            // Not cmux's preview cache, where a remote file's copy lives.
-            savePanel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        }
+        savePanel.directoryURL = sessionPanelDirectory
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .OK, let url = savePanel.url else { return }
             do {
@@ -458,11 +509,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         openPanel.allowedContentTypes = [.json]
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
-        if let lastSessionURL {
-            openPanel.directoryURL = lastSessionURL.deletingLastPathComponent()
-        } else if panel?.cloudPreviewLease == nil, let fileURL, fileURL.isFileURL {
-            openPanel.directoryURL = fileURL.deletingLastPathComponent()
-        }
+        openPanel.directoryURL = sessionPanelDirectory
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = openPanel.url else { return }
             Task { [weak self] in
