@@ -226,12 +226,18 @@
     return out;
   }
 
+  // signalId -> the [time, value] changes the viewer was given for it (FSDB),
+  // so the source link reads shown signals' values without fetching them again.
+  const drawnChanges = new Map();
+
   async function inflateRaw(bytes) {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
     return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
   function fsdbBackend(config) {
+    // Whether the helper answers valueAt (v2); unknown until the first ask.
+    let pointQuery;
     // A reply is JSON ({result} or {error}), or for signal data
     // [u32 LE header length][header JSON][deflate-raw records].
     async function request(req) {
@@ -260,6 +266,19 @@
         const { result } = await request({ cmd: 'children', scopeOffsetIdx: item.id, scopePath });
         return result.scopes.map((s) => ({ kind: 'scope', name: s.name, id: s.scopeOffsetIdx, type: s.type }))
           .concat(result.vars.map((v) => ({ kind: 'var', ...v })));
+      },
+      // Values in effect at `time` per variable (helper v2's point query), or null
+      // when the helper has none (v1); then the link falls back to `changes`.
+      async valuesAt(vars, time) {
+        if (pointQuery === false) { return null; }
+        try {
+          const { result } = await request({ cmd: 'valueAt', signalIds: vars.map((v) => v.signalId), t: time });
+          pointQuery = true;
+          return result.values;
+        } catch (error) {
+          if (pointQuery === undefined && /unknown command/.test(String(error.message))) { pointQuery = false; return null; }
+          throw error;
+        }
       },
       // [[time, value], ...] per variable, for the source link's value lookups (not drawn).
       async changes(vars) {
@@ -298,6 +317,8 @@
           const t3 = performance.now();
           deliverValueChanges({ command: 'update-waveform-chunk', signalId: d.signalId, transitionDataChunk: changes,
             totalChunks: 1, chunkNum: 0, min: d.min, max: d.max });
+          // The viewer keeps this same array (deliverValueChanges does not copy it), so holding it costs nothing extra.
+          drawnChanges.set(d.signalId, changes);
           const entry = { signalId: d.signalId, changes: changes.length, fetchMs: Math.round(fetchMs),
             helperMs: Math.round(helperMs), wireBytes, inflateMs: Math.round(t2 - t1), decodeMs: Math.round(t3 - t2),
             deliverMs: Math.round(performance.now() - t3) };
@@ -367,13 +388,19 @@
   }
 
   // ---- netlist (drawn by cmux-netlist.js) ----
-  async function getChildren(item) {
-    if (item.children) { return item.children; }
-    const scopePath = item.scopePath.concat([item.name]);
-    const out = (await backend.children(item)).map((c) => ({ ...c, scopePath }));
-    out.forEach((c) => { if (c.kind === 'var') { doc.items.set(c.netlistId, c); } });
-    item.children = out;
-    return out;
+  // Concurrent callers share one request per scope.
+  function getChildren(item) {
+    if (item.children) { return Promise.resolve(item.children); }
+    if (!item.childrenRequest) {
+      const scopePath = item.scopePath.concat([item.name]);
+      item.childrenRequest = backend.children(item).then((list) => {
+        const out = list.map((c) => ({ ...c, scopePath }));
+        out.forEach((c) => { if (c.kind === 'var') { doc.items.set(c.netlistId, c); } });
+        item.children = out;
+        return out;
+      }).finally(() => { delete item.childrenRequest; });
+    }
+    return item.childrenRequest;
   }
 
   function addVariables(vars, groupPath, index) {
@@ -448,6 +475,7 @@
 
   // ---- open ----
   async function openBackend() {
+    drawnChanges.clear();
     backend = config.format === 'fsdb' ? fsdbBackend(config) : wellenBackend(config);
     const metadata = await backend.open((top) => {
       doc.netlist = top.map((t) => ({ ...t, scopePath: [] }));
@@ -529,11 +557,12 @@
   //   scopeChildren(path) -> [{ name, isScope }] | null   ([] lists the tops; at most 5000)
   //   hasSignal(path) -> bool
   //   addSignal(path) -> bool   adds it unless shown, then selects it
-  //   addScope(path) -> bool    adds the scope's signals (VaporView's Add All in Scope)
+  //   addScope({ path, confirmed }) -> { added, total } | { needsConfirm, count, total } | null
+  //                             adds the scope's own signals not shown yet
   //   selectSignal(path) -> bool
   //   setMarker(time)
   //   selectedSignal() -> path | null   (null once the selected row is gone)
-  //   valuesAt({ time, paths }) -> [value | null]   formatted like the signal's row
+  //   valuesAt({ time, paths, unshown }) -> [value | null]   formatted like the signal's row
   //   markerTime() -> time | null
   // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
   const link = (() => {
@@ -552,6 +581,7 @@
         const removed = firstId(m.eventData);
         pendingAdds.delete(removed);
         if (removed === selectedId) { selectedId = null; }
+        forgetDrawn(removed);
       }
     };
 
@@ -607,6 +637,17 @@
 
     const isShown = (v) => shownIds().has(v.netlistId);
 
+    // A removed row's changes are dropped once no other shown row draws the same signal.
+    function forgetDrawn(netlistId) {
+      const v = doc.items.get(netlistId);
+      if (!v || v.signalId === undefined) { return; }
+      for (const id of shownIds()) {
+        const other = doc.items.get(id);
+        if (id !== netlistId && other && other.signalId === v.signalId) { return; }
+      }
+      drawnChanges.delete(v.signalId);
+    }
+
     async function selectSignal(path) {
       const v = await findLinkItem(path, true);
       if (!v || !initSent) { return false; }
@@ -630,71 +671,121 @@
 
     const pathOf = (v) => (v.scopePath || []).concat([v.name]);
 
-    // Like VaporView's Add All in Scope (shallow): asks first above 48 signals and
-    // stops at 128, but leaves out the ones already shown.
-    async function addScope(path) {
+    // Like VaporView's Add All in Scope (shallow: child scopes are left out), but
+    // without the signals already shown or being added. cmux asks before adding
+    // more than `confirmAbove`: addScope({ path }) answers { needsConfirm, count }
+    // then, and addScope({ path, confirmed: true }) adds them. At most 128 are
+    // added; { added, total } says how many of how many.
+    const maxScopeAdds = 128;
+    const confirmAbove = 48;
+    async function addScope(query) {
+      const { path, confirmed } = query || {};
       const scope = await findLinkItem(path, false);
-      if (!scope || scope.kind !== 'scope' || !initSent) { return false; }
+      if (!scope || scope.kind !== 'scope' || !initSent) { return null; }
       const shown = shownIds();
-      const vars = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId)).slice(0, 128);
-      if (vars.length > 48) {
-        const s = window.cmuxWaveform.strings || {};
-        const answer = await window.cmuxUI.confirm({ message: s.messageManySignals,
-          buttons: [{ label: s.dialogNo, value: false }, { label: s.dialogYes, value: true }] });
-        if (!answer) { return true; }
-      }
       const now = Date.now();
+      const isPending = (id) => { const t = pendingAdds.get(id); return t !== undefined && now - t < 2000; };
+      const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId));
+      const vars = all.slice(0, maxScopeAdds);
+      if (vars.length > confirmAbove && !confirmed) { return { needsConfirm: true, count: vars.length, total: all.length }; }
       vars.forEach((v) => pendingAdds.set(v.netlistId, now));
       if (vars.length) { addVariables(vars); }
-      return true;
+      return { added: vars.length, total: all.length };
     }
 
     // ---- values at a time, for the editor's inline values ----
-    // FSDB (helper v1) has no point query: a signal's changes are walked once
-    // and kept here, up to maxCachedChanges in all (least recently used out).
-    const maxCachedChanges = 4000000;
+    // FSDB: shown signals are read from the changes the viewer already has
+    // (drawnChanges). Others only when asked (`unshown`): through helper v2's
+    // point query, else (helper v1) by fetching their changes, at most
+    // maxChangesPerSignal each (longer ones get no value and are not kept),
+    // kept up to maxCachedChanges in all, least recently used out.
+    const maxChangesPerSignal = 1000000;
+    const maxCachedChanges = 2000000;
     const changeCache = new Map();
     let cachedChanges = 0;
     let cacheBackend = null;
 
-    async function fsdbValues(time, vars) {
-      // A reload opens a new backend; its netlistIds may name other signals.
+    function valueIn(changes, time) {
+      let lo = 0, hi = changes.length - 1, at = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (changes[mid][0] <= time) { at = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      return at >= 0 ? changes[at][1] : undefined;
+    }
+
+    async function fsdbValues(time, vars, unshown) {
+      // A reload opens a new backend; its ids may name other signals.
       if (cacheBackend !== backend) { changeCache.clear(); cachedChanges = 0; cacheBackend = backend; }
-      const missing = vars.filter((v) => !changeCache.has(v.netlistId));
-      for (let i = 0; i < missing.length; i += 32) {
-        const batch = missing.slice(i, i + 32);
-        const lists = await backend.changes(batch);
-        batch.forEach((v, k) => { changeCache.set(v.netlistId, lists[k] || []); cachedChanges += (lists[k] || []).length; });
-      }
       const out = new Map();
+      const shown = shownIds();
+      const rest = [];
       for (const v of vars) {
-        const changes = changeCache.get(v.netlistId);
-        // Most recently used last.
-        changeCache.delete(v.netlistId);
-        changeCache.set(v.netlistId, changes);
-        let lo = 0, hi = changes.length - 1, at = -1;
-        while (lo <= hi) {
-          const mid = (lo + hi) >> 1;
-          if (changes[mid][0] <= time) { at = mid; lo = mid + 1; } else { hi = mid - 1; }
+        const drawn = shown.has(v.netlistId) ? drawnChanges.get(v.signalId) : undefined;
+        if (drawn) {
+          const value = valueIn(drawn, time);
+          if (value !== undefined) { out.set(v.netlistId, value); }
+        } else if (unshown) {
+          rest.push(v);
         }
-        if (at >= 0) { out.set(v.netlistId, changes[at][1]); }
       }
+      if (!rest.length) { return out; }
+      const point = await backend.valuesAt(rest, time);
+      if (point) {
+        rest.forEach((v, k) => { if (typeof point[k] === 'string') { out.set(v.netlistId, point[k]); } });
+        return out;
+      }
+      const missing = rest.filter((v) => !changeCache.has(v.signalId));
+      for (let i = 0; i < missing.length; i += 8) {
+        const batch = missing.slice(i, i + 8);
+        const lists = await backend.changes(batch);
+        batch.forEach((v, k) => {
+          const changes = lists[k] || [];
+          // Too long to keep: no value rather than a cache that pins it.
+          changeCache.set(v.signalId, changes.length > maxChangesPerSignal ? null : changes);
+          if (changes.length <= maxChangesPerSignal) { cachedChanges += changes.length; }
+        });
+      }
+      for (const v of rest) {
+        const changes = changeCache.get(v.signalId);
+        // Most recently used last.
+        changeCache.delete(v.signalId);
+        changeCache.set(v.signalId, changes);
+        const value = changes ? valueIn(changes, time) : undefined;
+        if (value !== undefined) { out.set(v.netlistId, value); }
+      }
+      // The values are read already, so this query's own signals may go too.
       for (const [id, changes] of changeCache) {
-        if (cachedChanges <= maxCachedChanges || changeCache.size <= vars.length) { break; }
+        if (cachedChanges <= maxCachedChanges) { break; }
         changeCache.delete(id);
-        cachedChanges -= changes.length;
+        cachedChanges -= changes ? changes.length : 0;
       }
       return out;
     }
 
+    // wellen answers a point query itself. Its path list is space-separated and
+    // its answers are keyed by dotted path, so names holding a space or a dot
+    // (escaped identifiers) can't be asked for and get no value.
     async function wellenValues(time, vars) {
       const out = new Map();
       if (!backend.valuesAtTime) { return out; }
-      const byPath = new Map(vars.map((v) => [pathOf(v).join('.'), v]));
+      const byPath = new Map();
+      for (const v of vars) {
+        const parts = pathOf(v);
+        if (parts.some((p) => /[\s.]/.test(p))) { continue; }
+        byPath.set(parts.join('.'), v);
+      }
+      if (!byPath.size) { return out; }
       for (const r of await backend.valuesAtTime(time, Array.from(byPath.keys()))) {
         const v = byPath.get(r.instancePath);
         let value = r.value;
-        try { value = JSON.parse(value); } catch (error) { /* already a value */ }
+        try {
+          value = JSON.parse(value);
+        } catch (error) {
+          // At a change with nothing before it (time 0) the list comes as `[],"0101"]`.
+          const last = /"([^"]*)"\s*\]\s*$/.exec(String(value));
+          if (last) { value = last[1]; }
+        }
         // [before, after] at a change: the value in effect at `time` is the last.
         if (Array.isArray(value)) { value = value[value.length - 1]; }
         if (v && value != null) { out.set(v.netlistId, String(value)); }
@@ -713,7 +804,8 @@
       return out;
     }
 
-    // A 4-state bit string in VaporView's number format (its default is hexadecimal).
+    // A 4-state bit string in VaporView's number format (its default is
+    // hexadecimal). Anything else (reals, strings) is returned as it is.
     function formatValue(bits, format) {
       if (!/^[01xzXZuUwWlLhH-]+$/.test(bits)) { return bits; }
       if (bits.length === 1) { return bits.toLowerCase(); }
@@ -731,18 +823,31 @@
       }
     }
 
-    // valuesAt({ time, paths }) -> [value | null], one per path: the value in
-    // effect at `time`, in the radix of the signal's row (hexadecimal if not shown).
+    // netlistId -> numberFormat of the shown rows, inside groups too.
+    function shownFormats() {
+      const out = new Map();
+      const walk = (list) => (list || []).forEach((d) => {
+        if (d.netlistId !== undefined && !out.has(d.netlistId)) { out.set(d.netlistId, d.numberFormat); }
+        walk(d.children);
+      });
+      walk(viewerContext.webview && viewerContext.webview.displayedSignals);
+      return out;
+    }
+
+    // valuesAt({ time, paths, unshown }) -> [value | null], one per path: the
+    // value in effect at `time`, in the radix of the signal's row (hexadecimal
+    // if not shown). FSDB answers signals not shown only with `unshown`.
     async function valuesAt(query) {
-      const { time, paths } = query || {};
+      const { time, paths, unshown } = query || {};
       if (!backend || !initSent || !Array.isArray(paths)) { return []; }
       const list = paths.slice(0, 500);
-      const vars = await Promise.all(list.map((p) => findLinkItem(p, true)));
+      // One after another: siblings then find their scope's children cached.
+      const vars = [];
+      for (const p of list) { vars.push(await findLinkItem(p, true)); }
       const found = Array.from(new Set(vars.filter(Boolean)));
       const t = Number(time);
-      const raw = backend.changes ? await fsdbValues(t, found) : await wellenValues(t, found);
-      const shown = (viewerContext.webview && viewerContext.webview.displayedSignals) || [];
-      const formats = new Map(shown.map((d) => [d.netlistId, d.numberFormat]));
+      const raw = backend.changes ? await fsdbValues(t, found, !!unshown) : await wellenValues(t, found);
+      const formats = shownFormats();
       return vars.map((v) => {
         const bits = v ? raw.get(v.netlistId) : undefined;
         return bits === undefined ? null : formatValue(bits, formats.get(v.netlistId));

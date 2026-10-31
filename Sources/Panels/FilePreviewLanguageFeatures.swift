@@ -57,12 +57,16 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Waveform values drawn after the visible lines, at the waveform's marker.
     private var inlineValueTask: Task<Void, Never>?
     private var inlineValueOverlay: FilePreviewInlineValueOverlay?
-    /// slang's instance paths for this file's module, once found.
-    private var inlineInstancePaths: [String] = []
-    private var inlineInstanceLookupDate = Date.distantPast
+    /// Per module of this file: slang's design instances of it, and when to ask again while it has none.
+    private var inlineModuleInstances: [String: InlineModuleInstances] = [:]
+    /// Instances signals were last added to the waveform from (design path, dump path), newest first.
+    private var linkedInstances: [(design: String, dump: String)] = []
+    /// Per module: the dump instance picked with Show Waveform Values For.
+    private var inlineInstanceChoices: [String: String] = [:]
+    /// Per module: the dump instances its values could come from, as of the last refresh.
+    private var inlineInstanceCandidates: [String: [String]] = [:]
     private var inlineScrollObserver: NSObjectProtocol?
-    /// The design instance whose values are shown: the one last added to the waveform from here.
-    var linkInstancePath: String?
+    private var inlineFrameObserver: NSObjectProtocol?
     private var completionTask: Task<Void, Never>?
     private var formatTask: Task<Void, Never>?
 
@@ -126,10 +130,13 @@ final class FilePreviewLanguageFeatures: NSObject {
         linkTask?.cancel()
         completionTask?.cancel()
         clearInlineValues()
-        if let inlineScrollObserver {
-            NotificationCenter.default.removeObserver(inlineScrollObserver)
-            self.inlineScrollObserver = nil
+        inlineValueOverlay?.removeFromSuperview()
+        inlineValueOverlay = nil
+        for observer in [inlineScrollObserver, inlineFrameObserver].compactMap({ $0 }) {
+            NotificationCenter.default.removeObserver(observer)
         }
+        inlineScrollObserver = nil
+        inlineFrameObserver = nil
         hideHover()
         if let textView {
             if let trackingArea { textView.removeTrackingArea(trackingArea) }
@@ -170,7 +177,8 @@ final class FilePreviewLanguageFeatures: NSObject {
             }
             return
         }
-        // Edits move the lines the values were drawn after.
+        // Edits move the lines the values were drawn after, and may change what a module declares.
+        inlineModuleInstances = [:]
         if inlineValueOverlay != nil {
             clearInlineValues()
             scheduleInlineValues(after: .milliseconds(600))
@@ -530,8 +538,41 @@ final class FilePreviewLanguageFeatures: NSObject {
             addScope.target = self
             menu.insertItem(addScope, at: separatorIndex)
             separatorIndex += 1
+            if let instances = instanceMenu(at: contextMenuCharacterIndex) {
+                menu.insertItem(instances, at: separatorIndex)
+                separatorIndex += 1
+            }
         }
         menu.insertItem(.separator(), at: separatorIndex)
+    }
+
+    /// Show Waveform Values For ▸ the dump instances of the module at `index`, when there are several.
+    private func instanceMenu(at index: Int?) -> NSMenuItem? {
+        guard let textView, let index,
+              let module = SystemVerilogInlineScan.lines(in: textView.string, range: NSRange(location: index, length: 0)).first?.module,
+              let candidates = inlineInstanceCandidates[module], candidates.count > 1 else { return nil }
+        let item = NSMenuItem(
+            title: String(localized: "filePreview.language.showValuesFor", defaultValue: "Show Waveform Values For"),
+            action: nil,
+            keyEquivalent: ""
+        )
+        let submenu = NSMenu()
+        let current = chosenDumpInstance(module: module, candidates: candidates)
+        for candidate in candidates {
+            let entry = NSMenuItem(title: candidate, action: #selector(chooseInlineInstance(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = [module, candidate]
+            entry.state = candidate == current ? .on : .off
+            submenu.addItem(entry)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func chooseInlineInstance(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        inlineInstanceChoices[pair[0]] = pair[1]
+        scheduleInlineValues(after: .zero)
     }
 
     @objc private func addToWaveformFromMenu(_ sender: Any?) {
@@ -640,6 +681,10 @@ final class FilePreviewLanguageFeatures: NSObject {
     }
 
     /// Live editors with a language server in `workspaceId`.
+    static var allLinkables: [FilePreviewLanguageFeatures] {
+        liveInstances.allObjects.filter { $0.linkSession != nil }
+    }
+
     static func linkables(inWorkspace workspaceId: UUID) -> [FilePreviewLanguageFeatures] {
         liveInstances.allObjects.filter { $0.linkWorkspaceId == workspaceId && $0.linkSession != nil }
     }
@@ -686,9 +731,39 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     // MARK: - Inline waveform values
 
-    /// The linked waveform's marker moved, or the waveform went away.
-    func waveformMarkerDidMove() {
+    private struct InlineModuleInstances {
+        var designInstances: [String]
+        var lookedUpAt: Date
+        /// Lookups in a row that found none; the next waits longer.
+        var misses: Int
+    }
+
+    /// Signals were added to the waveform from design instance `design`, dumped as `dump`: values follow it.
+    func recordLinkedInstance(design: String, dump: String) {
+        linkedInstances.removeAll { $0.design == design && $0.dump == dump }
+        linkedInstances.insert((design, dump), at: 0)
+        linkedInstances = Array(linkedInstances.prefix(16))
         scheduleInlineValues(after: .milliseconds(120))
+    }
+
+    /// The linked waveform's marker moved.
+    func waveformMarkerDidMove() {
+        inlineValueOverlay?.isStale = true
+        scheduleInlineValues(after: .milliseconds(120))
+    }
+
+    /// The waveform reloaded, closed or got another mapping: the values shown are no longer its.
+    func waveformValuesDidChange() {
+        clearInlineValues()
+        scheduleInlineValues(after: .milliseconds(120))
+    }
+
+    /// The server's design changed (a top level set or reset): instances are looked up again.
+    static func designHierarchyDidChange(session: LanguageServerSession) {
+        for editor in liveInstances.allObjects where editor.session === session {
+            editor.inlineModuleInstances = [:]
+            editor.scheduleInlineValues(after: .milliseconds(120))
+        }
     }
 
     private func scheduleInlineValues(after delay: Duration) {
@@ -705,6 +780,45 @@ final class FilePreviewLanguageFeatures: NSObject {
         inlineValueOverlay?.clear()
     }
 
+    /// The dump instance whose values a module's lines show: the one picked in the menu,
+    /// else the one signals were last added from, else the only one. Nil when it is ambiguous.
+    private func chosenDumpInstance(module: String, candidates: [String]) -> String? {
+        if let choice = inlineInstanceChoices[module], candidates.contains(choice) { return choice }
+        if let linked = linkedInstances.first(where: { candidates.contains($0.dump) }) { return linked.dump }
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+
+    /// slang's design instances of `module`, probed with the identifiers of its lines. In explore
+    /// mode there are none; asks again after 10 s, doubling up to 5 min while none are found.
+    private func designInstances(
+        ofModule module: String,
+        lines: [SystemVerilogInlineScan.Line],
+        text: String,
+        session: LanguageServerSession,
+        documentURI: URL
+    ) async -> [String] {
+        let cached = inlineModuleInstances[module]
+        if let cached {
+            let wait = min(300, 10 * pow(2, Double(max(0, cached.misses - 1))))
+            if !cached.designInstances.isEmpty || Date().timeIntervalSince(cached.lookedUpAt) < wait {
+                return cached.designInstances
+            }
+        }
+        let lineIndex = FilePreviewLSPLineIndex(text)
+        var seen: Set<String> = []
+        let probes = lines.filter { $0.module == module }.flatMap(\.identifiers)
+            .filter { seen.insert($0.name).inserted }
+            .prefix(12)
+            .map { (name: $0.name, position: lineIndex.position(at: $0.offset)) }
+        let found = await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: Array(probes))
+        inlineModuleInstances[module] = InlineModuleInstances(
+            designInstances: found,
+            lookedUpAt: Date(),
+            misses: found.isEmpty ? (cached?.misses ?? 0) + 1 : 0
+        )
+        return found
+    }
+
     /// Draws, after each visible line, the values its signals have at the marker of the workspace's waveform.
     private func refreshInlineValues() async {
         guard !isDetached, let textView, let session, let documentURI,
@@ -713,56 +827,103 @@ final class FilePreviewLanguageFeatures: NSObject {
             inlineValueOverlay?.clear()
             return
         }
-        observeScrollingForInlineValues(textView)
-        let lines = Self.visibleIdentifierLines(in: textView)
-        var names: [String] = []
-        var firstOffsets: [String: Int] = [:]
-        for line in lines {
-            for (name, offset) in line.identifiers where firstOffsets[name] == nil {
-                firstOffsets[name] = offset
-                names.append(name)
+        observeLayoutForInlineValues(textView)
+        let text = textView.string
+        let lines = SystemVerilogInlineScan.lines(in: text, range: Self.visibleCharacterRange(in: textView))
+        let modules = lines.compactMap(\.module).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        guard !modules.isEmpty, lines.contains(where: { !$0.identifiers.isEmpty }) else {
+            inlineValueOverlay?.clear()
+            return
+        }
+        inlineValueOverlay?.isStale = true
+        let rootKey = linkRootKey
+        var valueByModule: [String: [String: String]] = [:]
+        var hints: [String: String] = [:]
+        for module in modules.prefix(4) {
+            var names: [String] = []
+            for line in lines where line.module == module {
+                for identifier in line.identifiers where !names.contains(identifier.name) {
+                    names.append(identifier.name)
+                }
+            }
+            guard !names.isEmpty else { continue }
+            let designInstances = await designInstances(
+                ofModule: module, lines: lines, text: text, session: session, documentURI: documentURI
+            )
+            guard !Task.isCancelled else { return }
+            guard !designInstances.isEmpty else {
+                hints[module] = String(
+                    localized: "filePreview.inlineValues.noInstance",
+                    defaultValue: "No waveform values: slang-server can’t place this module in the design. Add a signal with Add to Waveform to set the design up."
+                )
+                continue
+            }
+            var candidates: [String] = []
+            for designInstance in designInstances {
+                guard let dumps = await WaveformSourceLink.dumpInstances(
+                    ofDesignInstance: designInstance, rootKey: rootKey, waveform: waveform
+                ) else {
+                    // The viewer is loading; its open will refresh.
+                    inlineValueOverlay?.clear()
+                    return
+                }
+                for dump in dumps where !candidates.contains(dump) { candidates.append(dump) }
+            }
+            guard !Task.isCancelled else { return }
+            inlineInstanceCandidates[module] = candidates
+            guard let dumpInstance = chosenDumpInstance(module: module, candidates: candidates) else {
+                hints[module] = String(
+                    format: String(
+                        localized: "filePreview.inlineValues.severalInstances",
+                        defaultValue: "No waveform values: %@ has several instances. Choose one with Show Waveform Values For in the context menu."
+                    ),
+                    module
+                )
+                continue
+            }
+            let values = await WaveformSourceLink.inlineValues(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time)
+            guard !Task.isCancelled else { return }
+            var byName: [String: String] = [:]
+            for (name, value) in zip(names, values) {
+                if let value { byName[name] = value }
+            }
+            valueByModule[module] = byName
+            if byName.isEmpty {
+                hints[module] = WaveformSourceLink.showsUnshownValues(in: waveform)
+                    ? String(
+                        format: String(
+                            localized: "filePreview.inlineValues.noneDumped",
+                            defaultValue: "No waveform values: the waveform has none of these signals under %@."
+                        ),
+                        dumpInstance
+                    )
+                    : String(
+                        localized: "filePreview.inlineValues.onlyShown",
+                        defaultValue: "No waveform values: FSDB values are shown for signals in the waveform only. Add them, or turn on View > Show FSDB Values for Signals Not in the Waveform."
+                    )
             }
         }
-        guard !names.isEmpty else {
-            inlineValueOverlay?.clear()
-            return
-        }
-        let text = textView.string
-        // In explore mode slang knows no instances; ask again at most every 10 s.
-        if inlineInstancePaths.isEmpty, Date().timeIntervalSince(inlineInstanceLookupDate) > 10 {
-            inlineInstanceLookupDate = Date()
-            let lineIndex = FilePreviewLSPLineIndex(text)
-            let probes = names.prefix(12).compactMap { name in firstOffsets[name].map { (name: name, position: lineIndex.position(at: $0)) } }
-            inlineInstancePaths = await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: probes)
-        }
-        guard !Task.isCancelled, let instance = linkInstancePath.flatMap({ inlineInstancePaths.contains($0) ? $0 : nil })
-            ?? inlineInstancePaths.first else {
-            inlineValueOverlay?.clear()
-            return
-        }
-        let values = await WaveformSourceLink.inlineValues(
-            names: names,
-            instancePath: instance,
-            waveform: waveform,
-            rootKey: linkRootKey,
-            time: time
-        )
         // A newer refresh, an edit or a scroll since: the positions are stale.
         guard !Task.isCancelled, !isDetached, self.textView === textView, textView.string == text,
               let layoutManager = textView.layoutManager, let container = textView.textContainer else { return }
-        var valueByName: [String: String] = [:]
-        for (name, value) in zip(names, values) where value != nil {
-            valueByName[name] = value
-        }
         var annotations: [FilePreviewInlineValueOverlay.Annotation] = []
+        var hinted: Set<String> = []
         let origin = textView.textContainerOrigin
         for line in lines {
-            var seen: Set<String> = []
+            guard let module = line.module else { continue }
             var pairs: [(name: String, value: String)] = []
-            for (name, _) in line.identifiers where seen.insert(name).inserted {
-                if let value = valueByName[name] { pairs.append((name, value)) }
+            var note: String?
+            if let values = valueByModule[module] {
+                var seen: Set<String> = []
+                for identifier in line.identifiers where seen.insert(identifier.name).inserted {
+                    if let value = values[identifier.name] { pairs.append((identifier.name, value)) }
+                }
             }
-            guard !pairs.isEmpty, line.contentRange.length > 0 else { continue }
+            // A module's hint goes after its first visible line with identifiers.
+            if pairs.isEmpty, let hint = hints[module], !line.identifiers.isEmpty, hinted.insert(module).inserted {
+                note = hint
+            }
+            guard !pairs.isEmpty || note != nil, line.contentRange.length > 0 else { continue }
             let glyphs = layoutManager.glyphRange(forCharacterRange: line.contentRange, actualCharacterRange: nil)
             // The line's last fragment: a wrapped line ends there.
             let lastGlyph = max(glyphs.location, NSMaxRange(glyphs) - 1)
@@ -770,7 +931,8 @@ final class FilePreviewLanguageFeatures: NSObject {
             let end = layoutManager.boundingRect(forGlyphRange: NSRange(location: lastGlyph, length: 1), in: container)
             annotations.append(.init(
                 origin: NSPoint(x: origin.x + end.maxX + 24, y: origin.y + fragment.minY + 1),
-                pairs: pairs
+                pairs: pairs,
+                note: note
             ))
         }
         let overlay = inlineValueOverlay ?? FilePreviewInlineValueOverlay()
@@ -780,91 +942,45 @@ final class FilePreviewLanguageFeatures: NSObject {
         overlay.show(annotations, font: font, in: textView)
     }
 
-    /// New lines scroll into view: fetch their values.
-    private func observeScrollingForInlineValues(_ textView: NSTextView) {
-        guard inlineScrollObserver == nil, let clipView = textView.enclosingScrollView?.contentView else { return }
-        clipView.postsBoundsChangedNotifications = true
-        inlineScrollObserver = NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clipView,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.scheduleInlineValues(after: .milliseconds(150))
+    /// New lines scroll into view, or the layout changes (zoom, wrap width): place the values again.
+    private func observeLayoutForInlineValues(_ textView: NSTextView) {
+        if inlineScrollObserver == nil, let clipView = textView.enclosingScrollView?.contentView {
+            clipView.postsBoundsChangedNotifications = true
+            inlineScrollObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: clipView,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.scheduleInlineValues(after: .milliseconds(150))
+                }
+            }
+        }
+        if inlineFrameObserver == nil {
+            textView.postsFrameChangedNotifications = true
+            inlineFrameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: textView,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.inlineValueOverlay?.hasAnnotations == true else { return }
+                    self.inlineValueOverlay?.isStale = true
+                    self.scheduleInlineValues(after: .milliseconds(150))
+                }
             }
         }
     }
 
-    private struct IdentifierLine {
-        /// The line without its line break.
-        var contentRange: NSRange
-        /// Identifiers in order, with their UTF-16 offsets.
-        var identifiers: [(String, Int)]
-    }
-
-    /// Identifier-looking words outside comments and strings, skipping keywords,
-    /// system tasks, macros, numbers' bases and member names after a dot.
-    private static let identifierPattern = try? NSRegularExpression(pattern: "(?<![\\w$'`.])[A-Za-z_][A-Za-z0-9_$]*")
-    private static let keywords: Set<String> = [
-        "always", "always_comb", "always_ff", "always_latch", "and", "assign", "automatic", "begin", "bit", "break",
-        "byte", "case", "casex", "casez", "class", "const", "continue", "default", "do", "else", "end", "endcase",
-        "endclass", "endfunction", "endgenerate", "endinterface", "endmodule", "endpackage", "endtask", "enum", "for",
-        "foreach", "forever", "function", "generate", "genvar", "if", "import", "initial", "inout", "input", "int",
-        "integer", "interface", "localparam", "logic", "longint", "modport", "module", "negedge", "not", "or", "output",
-        "package", "packed", "parameter", "posedge", "priority", "real", "reg", "repeat", "return", "shortint", "signed",
-        "struct", "task", "typedef", "union", "unique", "unique0", "unsigned", "var", "void", "while", "wire", "xor",
-    ]
-
-    private static func visibleIdentifierLines(in textView: NSTextView) -> [IdentifierLine] {
-        guard let layoutManager = textView.layoutManager, let container = textView.textContainer,
-              let pattern = identifierPattern else { return [] }
-        let text = textView.string as NSString
+    private static func visibleCharacterRange(in textView: NSTextView) -> NSRange {
+        guard let layoutManager = textView.layoutManager, let container = textView.textContainer else {
+            return NSRange(location: 0, length: 0)
+        }
         var visible = textView.visibleRect
         visible.origin.x -= textView.textContainerOrigin.x
         visible.origin.y -= textView.textContainerOrigin.y
         let glyphs = layoutManager.glyphRange(forBoundingRect: visible, in: container)
-        let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-        guard characters.length > 0 else { return [] }
-        var lines: [IdentifierLine] = []
-        var inBlockComment = false
-        text.enumerateSubstrings(in: text.lineRange(for: characters), options: [.byLines]) { line, lineRange, _, _ in
-            guard let line else { return }
-            // Blank out comments and strings, keeping the offsets.
-            var code = Array(line.utf16)
-            var index = 0
-            var inString = false
-            while index < code.count {
-                let unit = code[index]
-                let next = index + 1 < code.count ? code[index + 1] : 0
-                if inBlockComment {
-                    if unit == 0x2A, next == 0x2F { inBlockComment = false; code[index] = 0x20; code[index + 1] = 0x20; index += 2; continue } // */
-                    code[index] = 0x20
-                } else if inString {
-                    if unit == 0x5C, index + 1 < code.count { code[index] = 0x20; code[index + 1] = 0x20; index += 2; continue }
-                    if unit == 0x22 { inString = false }
-                    code[index] = 0x20
-                } else if unit == 0x2F, next == 0x2F { // //
-                    for rest in index..<code.count { code[rest] = 0x20 }
-                    break
-                } else if unit == 0x2F, next == 0x2A { // /*
-                    inBlockComment = true
-                    code[index] = 0x20
-                } else if unit == 0x22 {
-                    inString = true
-                    code[index] = 0x20
-                }
-                index += 1
-            }
-            let cleaned = String(decoding: code, as: UTF16.self)
-            var identifiers: [(String, Int)] = []
-            for match in pattern.matches(in: cleaned, range: NSRange(location: 0, length: (cleaned as NSString).length)) {
-                let name = (cleaned as NSString).substring(with: match.range)
-                guard !keywords.contains(name) else { continue }
-                identifiers.append((name, lineRange.location + match.range.location))
-            }
-            lines.append(IdentifierLine(contentRange: lineRange, identifiers: identifiers))
-        }
-        return lines
+        return layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
     }
 
     /// The editor's current text.
@@ -1336,7 +1452,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 /// reveals) started, per workspace: Go Back returns there, Go Forward redoes.
 @MainActor
 enum FilePreviewNavigationHistory {
-    enum Direction { case back, forward }
+    typealias Direction = BackForwardHistory<Entry>.Direction
 
     struct Entry {
         var location: LSPLocation
@@ -1345,43 +1461,34 @@ enum FilePreviewNavigationHistory {
         var host: String
     }
 
-    private static let limit = 50
-    private static var backStacks: [UUID: [Entry]] = [:]
-    private static var forwardStacks: [UUID: [Entry]] = [:]
+    private static var histories: [UUID: BackForwardHistory<Entry>] = [:]
 
-    static func canGoBack(inWorkspace id: UUID) -> Bool { !(backStacks[id] ?? []).isEmpty }
-    static func canGoForward(inWorkspace id: UUID) -> Bool { !(forwardStacks[id] ?? []).isEmpty }
+    static func canGoBack(inWorkspace id: UUID) -> Bool { !(histories[id]?.back.isEmpty ?? true) }
+    static func canGoForward(inWorkspace id: UUID) -> Bool { !(histories[id]?.forward.isEmpty ?? true) }
 
     /// A jump leaves `location` in `editor`: remember it, and drop what Go Forward could redo.
     static func record(_ location: LSPLocation, from editor: FilePreviewLanguageFeatures) {
         guard let workspace = editor.linkWorkspaceId else { return }
-        var stack = backStacks[workspace] ?? []
-        if stack.last?.location != location {
-            stack.append(Entry(location: location, editor: editor, host: editor.linkHostIdentity))
-        }
-        backStacks[workspace] = Array(stack.suffix(limit))
-        forwardStacks[workspace] = []
+        // Closed workspaces' histories go.
+        histories = histories.filter { AppDelegate.shared?.workspaceFor(tabId: $0.key) != nil }
+        var history = histories[workspace] ?? BackForwardHistory(limit: 50)
+        history.record(Entry(location: location, editor: editor, host: editor.linkHostIdentity)) { $0.location == $1.location }
+        histories[workspace] = history
     }
 
     /// Moves one step from `editor`'s current location. False when there is nowhere to go.
     static func step(_ direction: Direction, from editor: FilePreviewLanguageFeatures) -> Bool {
-        guard let workspace = editor.linkWorkspaceId else { return false }
-        var from = direction == .back ? backStacks[workspace] ?? [] : forwardStacks[workspace] ?? []
-        var to = direction == .back ? forwardStacks[workspace] ?? [] : backStacks[workspace] ?? []
-        while let entry = from.popLast() {
-            // This editor opens it in its pane; a file from another host needs an editor on that host.
-            guard let opener = [editor, entry.editor].compactMap({ $0 }).first(where: { $0.linkHostIdentity == entry.host })
+        guard let workspace = editor.linkWorkspaceId, var history = histories[workspace] else { return false }
+        // This editor opens it in its pane; a file from another host needs an editor on that host.
+        func opener(for entry: Entry) -> FilePreviewLanguageFeatures? {
+            [editor, entry.editor].compactMap({ $0 }).first(where: { $0.linkHostIdentity == entry.host })
                 ?? FilePreviewLanguageFeatures.linkables(inWorkspace: workspace).first(where: { $0.linkHostIdentity == entry.host })
-            else { continue }
-            if let here = editor.currentLocation {
-                to.append(Entry(location: here, editor: editor, host: editor.linkHostIdentity))
-            }
-            opener.navigate(to: entry.location, recordingHistory: false)
-            backStacks[workspace] = Array((direction == .back ? from : to).suffix(limit))
-            forwardStacks[workspace] = Array((direction == .back ? to : from).suffix(limit))
-            return true
         }
-        if direction == .back { backStacks[workspace] = from } else { forwardStacks[workspace] = from }
-        return false
+        let here = editor.currentLocation.map { Entry(location: $0, editor: editor, host: editor.linkHostIdentity) }
+        let entry = history.step(direction, current: here) { opener(for: $0) != nil }
+        histories[workspace] = history
+        guard let entry, let target = opener(for: entry) else { return false }
+        target.navigate(to: entry.location, recordingHistory: false)
+        return true
     }
 }

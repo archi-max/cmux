@@ -171,11 +171,6 @@ enum WaveformSourceLink {
             chosen = paths
         }
         guard !chosen.isEmpty, !Task.isCancelled else { return nil }
-        // Inline values follow the instance last added from.
-        let chosenSegments = HierarchyPathMapping.segments(chosen[0])
-        if chosenSegments.count >= 2 {
-            editor.linkInstancePath = HierarchyPathMapping.join(Array(chosenSegments.dropLast()))
-        }
         guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else {
             return Task.isCancelled ? nil : Self.waveformLoadingMessage
         }
@@ -211,11 +206,17 @@ enum WaveformSourceLink {
             }
             guard !Task.isCancelled else { return nil }
             for dumpPath in dumpPaths {
-                let added = await waveform.nativeViewSessions.waveform.callLink(
-                    "addSignal",
-                    argument: HierarchyPathMapping.segments(dumpPath)
-                ) as? Bool == true
-                if !added { missing.append(designPath) }
+                let segments = HierarchyPathMapping.segments(dumpPath)
+                let added = await waveform.nativeViewSessions.waveform.callLink("addSignal", argument: segments) as? Bool == true
+                guard added else {
+                    missing.append(designPath)
+                    continue
+                }
+                // Inline values follow the instance last added from.
+                editor.recordLinkedInstance(
+                    design: HierarchyPathMapping.join(Array(HierarchyPathMapping.segments(designPath).dropLast())),
+                    dump: HierarchyPathMapping.join(Array(segments.dropLast()))
+                )
             }
         }
         lastWaveformPanel = waveform
@@ -325,6 +326,7 @@ enum WaveformSourceLink {
             return Task.isCancelled ? nil : Self.waveformLoadingMessage
         }
         var missing: [String] = []
+        var truncated: [String] = []
         for designPath in chosen {
             guard !Task.isCancelled else { return nil }
             let segments = HierarchyPathMapping.segments(designPath)
@@ -355,24 +357,71 @@ enum WaveformSourceLink {
                 dumpScopes = await chooseInstance(dumpScopes)
             }
             for dumpScope in dumpScopes {
-                let added = await waveform.nativeViewSessions.waveform.callLink(
-                    "addScope",
-                    argument: HierarchyPathMapping.segments(dumpScope)
-                ) as? Bool == true
-                if !added { missing.append(scope) }
+                guard !Task.isCancelled else { return nil }
+                switch await Self.addScopeSignals(dumpScope, in: waveform) {
+                case nil:
+                    missing.append(scope)
+                case let (added, total)?:
+                    if added < total {
+                        truncated.append(String(
+                            format: String(
+                                localized: "waveformLink.addScope.truncated",
+                                defaultValue: "Added %1$@ of the %2$@ signals in %3$@ not shown yet. Choose Add All Signals in Scope again for the next ones."
+                            ),
+                            NumberFormatter.localizedString(from: NSNumber(value: added), number: .decimal),
+                            NumberFormatter.localizedString(from: NSNumber(value: total), number: .decimal),
+                            dumpScope
+                        ))
+                    }
+                    editor.recordLinkedInstance(design: scope, dump: dumpScope)
+                }
             }
-            if !isInstance { editor.linkInstancePath = scope }
         }
         lastWaveformPanel = waveform
         pairedEditors.setObject(editor, forKey: waveform)
-        guard !missing.isEmpty else { return nil }
-        return String(
-            format: String(
-                localized: "waveformLink.notInWaveform",
-                defaultValue: "%@ is not in this waveform. If the dump names the design differently, edit View > Waveform Path Mapping…"
-            ),
-            ListFormatter.localizedString(byJoining: missing)
-        )
+        var messages = truncated
+        if !missing.isEmpty {
+            messages.append(String(
+                format: String(
+                    localized: "waveformLink.notInWaveform",
+                    defaultValue: "%@ is not in this waveform. If the dump names the design differently, edit View > Waveform Path Mapping…"
+                ),
+                ListFormatter.localizedString(byJoining: missing)
+            ))
+        }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n\n")
+    }
+
+    /// Adds the signals of dump scope `dumpScope` not shown yet, asking first when
+    /// there are many. Nil when the scope is not in the viewer; else how many were
+    /// added of how many there were (0 of n when the user declined).
+    private static func addScopeSignals(_ dumpScope: String, in waveform: FilePreviewPanel) async -> (added: Int, total: Int)? {
+        let path = HierarchyPathMapping.segments(dumpScope)
+        let session = waveform.nativeViewSessions.waveform
+        guard var result = await session.callLink("addScope", argument: ["path": path]) as? [String: Any] else { return nil }
+        if result["needsConfirm"] as? Bool == true {
+            let count = (result["count"] as? NSNumber)?.intValue ?? 0
+            let total = (result["total"] as? NSNumber)?.intValue ?? count
+            let alert = NSAlert()
+            alert.messageText = String(localized: "waveformLink.addScope.confirm.title", defaultValue: "Add All Signals in Scope?")
+            alert.informativeText = String(
+                format: String(
+                    localized: "waveformLink.addScope.confirm.detail",
+                    defaultValue: "This adds %1$@ signals of %2$@ to the waveform."
+                ),
+                NumberFormatter.localizedString(from: NSNumber(value: count), number: .decimal),
+                dumpScope
+            )
+            alert.addButton(withTitle: String(localized: "waveformLink.addScope.confirm.add", defaultValue: "Add"))
+            alert.addButton(withTitle: String(localized: "waveformLink.mapping.cancel", defaultValue: "Cancel"))
+            guard await Self.runAlert(alert) == .alertFirstButtonReturn, !Task.isCancelled else { return (0, total) }
+            guard let confirmed = await session.callLink("addScope", argument: ["path": path, "confirmed": true]) as? [String: Any] else {
+                return nil
+            }
+            result = confirmed
+        }
+        let added = (result["added"] as? NSNumber)?.intValue ?? 0
+        return (added, (result["total"] as? NSNumber)?.intValue ?? added)
     }
 
     private enum DumpResolution {
@@ -528,6 +577,7 @@ enum WaveformSourceLink {
             if let roots = try? await session.slangScopeChildren(""), !roots.isEmpty {
                 waveformSourceLinkLogger.info("set slang top level to \(candidate.module, privacy: .public)")
                 state.setByLink = true
+                FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 return true
             }
         } catch {
@@ -567,8 +617,9 @@ enum WaveformSourceLink {
         }
         state.setByLink = false
         state.declined = true
-        Task {
+        Task { @MainActor in
             try? await session.slangSetTopLevel("")
+            FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         }
     }
 
@@ -761,12 +812,37 @@ enum WaveformSourceLink {
     static func waveformClosed(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
         if lastWaveformPanel === waveform { lastWaveformPanel = nil }
-        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId) {
-            editor.waveformMarkerDidMove()
+        Self.waveformValuesChanged(in: waveform.workspaceId)
+    }
+
+    /// The viewer is loading its file again (a reload or a new page): the old values and marker no longer hold.
+    static func waveformReloading(_ waveform: FilePreviewPanel) {
+        markerTimes.removeObject(forKey: waveform)
+        Self.waveformValuesChanged(in: waveform.workspaceId)
+    }
+
+    /// The viewer opened its file: picks up the marker a restored session put back.
+    static func waveformOpened(_ waveform: FilePreviewPanel) {
+        Task { @MainActor in
+            guard let time = await waveform.nativeViewSessions.waveform.callLink("markerTime") as? NSNumber else { return }
+            Self.markerMoved(in: waveform, time: time.int64Value)
         }
     }
 
-    /// The design instances a file's module is elaborated as, from slang's paths of
+    /// The inline values' preference changed: every editor fetches its values again.
+    static func inlineValueSettingsChanged() {
+        for workspaceId in Set(FilePreviewLanguageFeatures.allLinkables.compactMap(\.linkWorkspaceId)) {
+            Self.waveformValuesChanged(in: workspaceId)
+        }
+    }
+
+    private static func waveformValuesChanged(in workspaceId: UUID) {
+        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: workspaceId) {
+            editor.waveformValuesDidChange()
+        }
+    }
+
+    /// The design instances a module is elaborated as, from slang's paths of
     /// signals declared in it (`probes`: names and where they appear). Never changes the top level.
     static func instancePaths(
         session: LanguageServerSession,
@@ -787,29 +863,54 @@ enum WaveformSourceLink {
         return []
     }
 
-    /// Values at `time` in `waveform` of the signals `names` of design instance
-    /// `instancePath`, mapped to the dump; nil where the dump has no such signal.
-    static func inlineValues(
-        names: [String],
-        instancePath: String,
-        waveform: FilePreviewPanel,
-        rootKey: String,
-        time: Int64
-    ) async -> [String?] {
+    /// The dump scopes design instance `designInstance` maps to under the saved
+    /// mapping (several when it maps one design root to several dumped instances).
+    /// Nil while the viewer has no hierarchy.
+    static func dumpInstances(ofDesignInstance designInstance: String, rootKey: String, waveform: FilePreviewPanel) async -> [String]? {
+        guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else { return nil }
+        return Self.mapping(forKey: key).dumpPaths(forDesignPath: designInstance)
+    }
+
+    /// Whether inline values may ask the viewer for signals it does not show.
+    /// FSDB has to walk such a signal's changes on the dump's host, so that is opt-in there.
+    static func showsUnshownValues(in waveform: FilePreviewPanel) -> Bool {
+        guard (waveform.filePath as NSString).pathExtension.lowercased() == "fsdb" else { return true }
+        return UserDefaults.standard.bool(forKey: WaveformInlineValueSettings.unshownFSDBValuesKey)
+    }
+
+    /// Values at `time` in `waveform` of the signals `names` of dump scope
+    /// `dumpInstance`; nil where the dump has no such signal (or, see
+    /// `showsUnshownValues`, the viewer does not show it).
+    static func inlineValues(names: [String], dumpInstance: String, waveform: FilePreviewPanel, time: Int64) async -> [String?] {
         let names = Array(names.prefix(maxInlineValues))
-        // No hierarchy yet (the viewer is reloading): no values.
-        guard let key = await Self.mappingKey(rootKey: rootKey, waveform: waveform) else { return names.map { _ in nil } }
-        let mapping = Self.mapping(forKey: key)
-        let paths = names.map { HierarchyPathMapping.segments(mapping.dumpPath(forDesignPath: instancePath + "." + $0)) }
+        let scope = HierarchyPathMapping.segments(dumpInstance)
         let result = await waveform.nativeViewSessions.waveform.callLink(
             "valuesAt",
-            argument: ["time": NSNumber(value: time), "paths": paths]
+            argument: [
+                "time": NSNumber(value: time),
+                "paths": names.map { scope + [$0] },
+                "unshown": Self.showsUnshownValues(in: waveform),
+            ] as [String: Any]
         ) as? [Any] ?? []
         return names.indices.map { index in
             guard index < result.count, let value = result[index] as? String else { return nil }
-            return String(value.prefix(maxInlineValueLength))
+            return Self.displayableValue(value)
         }
     }
+
+    /// A value from the page as drawn: no control or bidirectional formatting
+    /// characters (which could garble or reorder the line), at most `maxInlineValueLength`.
+    static func displayableValue(_ value: String) -> String? {
+        let scalars = value.unicodeScalars.filter { scalar in
+            !CharacterSet.controlCharacters.contains(scalar) && !bidiControls.contains(scalar.value)
+        }
+        let cleaned = String(String.UnicodeScalarView(scalars).prefix(maxInlineValueLength))
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static let bidiControls: Set<UInt32> = [
+        0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069,
+    ]
 
     // MARK: Mapping editor
 
@@ -864,6 +965,7 @@ enum WaveformSourceLink {
                 return
             }
             Self.saveMapping(mapping, forKey: key)
+            Self.waveformValuesChanged(in: waveform.workspaceId)
         }
     }
 
@@ -904,4 +1006,9 @@ final class FilePreviewLinkMenuChooser: NSObject {
     @objc func choose(_ sender: NSMenuItem) {
         chosenTag = sender.tag
     }
+}
+
+/// The inline values' preference (View > Show FSDB Values for Signals Not in the Waveform).
+enum WaveformInlineValueSettings {
+    static let unshownFSDBValuesKey = "waveformSourceLink.inlineValues.unshownFSDB"
 }

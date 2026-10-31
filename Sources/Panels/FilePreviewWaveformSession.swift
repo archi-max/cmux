@@ -197,6 +197,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
 
     private func loadPage() {
         guard let webView else { return }
+        if let panel { WaveformSourceLink.waveformReloading(panel) }
         isPageReady = false
         stopFSDBHelper()
         schemeHandler.stopServing()
@@ -251,6 +252,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     /// Reopens the file in the page, keeping its signal list (VaporView's Reload File).
     private func reloadFileInPage() {
         guard let fileURL, isPageReady else { return }
+        if let panel { WaveformSourceLink.waveformReloading(panel) }
         if fileURL.pathExtension.lowercased() == "fsdb" {
             // The FSDB helper rereads the dump on the host for each open.
             evaluate(function: "reload", argument: [:])
@@ -546,6 +548,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         case "opened":
             webContentProcessRecoveryAttempts = 0
             topScopes = body["top"] as? [String] ?? []
+            if let panel { WaveformSourceLink.waveformOpened(panel) }
         case "revealInSource":
             if let path = WaveformSourceLink.dumpPath(fromPage: body["path"]), let panel {
                 WaveformSourceLink.revealInSource(dumpPath: path, waveformPanel: panel)
