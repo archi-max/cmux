@@ -90,10 +90,13 @@
     topItems = [];
   }
 
+  // A search typed before (a reload, the file still opening) runs again on
+  // the new netlist.
   function render(items) {
     clear();
     topItems = items;
     renderLevel(sortChildren(items), treeEl, 0, true);
+    if (searchInput && searchInput.value.trim()) { runSearch(); }
   }
 
   function renderLevel(items, container, depth, autoExpand) {

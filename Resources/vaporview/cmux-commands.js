@@ -433,6 +433,9 @@
   // During a reload, once the old viewer has handled the unload (it posts
   // ready): it is empty, and only its Auto Reload checkbox still means anything.
   let frameGone = false;
+  // Whether the view kept through the reload was the viewer's live context
+  // (not a restore that hadn't reached it): then it is what comes back.
+  let keptIsCurrent = false;
   let dirty = false;
 
   function contextSession(context) {
@@ -671,14 +674,26 @@
 
   async function restoreState(m) {
     const config = host().config;
+    // The frame's own saved state took whatever the emptied viewer did during
+    // the gap (a marker set, Auto Reload): after an unload, cmux's kept view
+    // decides.
+    const afterUnload = reloading && frameGone;
+    const kept = afterUnload && keptIsCurrent && reloadBaseline ? reloadBaseline : null;
     // The reloaded viewer is live: what it sends from here is its own.
     reloading = false;
     frameGone = false;
     restoreAsked = true;
     restorePending = false;
+    if (kept) {
+      sessionFileOffered = true;
+      restorePending = true;
+      const state = Object.assign(contextSession(kept), { selectedSignal: kept.cmuxSelected || undefined });
+      if (await applySession(state, StateChangeType.Restore)) { appliedRestoreConfig = config; }
+      return;
+    }
     // cmux's kept state is cleared only once it reached the viewer: a reload
     // that overtakes the apply carries it on (host.js reload).
-    if (m.state) {
+    if (m.state && !afterUnload) {
       sessionFileOffered = true;
       restorePending = true;
       if (await applySession(m.state, StateChangeType.Restore)) { appliedRestoreConfig = config; }
@@ -1188,6 +1203,7 @@
     reloading = false;
     reloadBaseline = null;
     frameGone = false;
+    keptIsCurrent = false;
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
@@ -1218,13 +1234,16 @@
     // A change from the last 250 ms reaches cmux before the viewer unloads.
     if (snapshotScheduled) { sendSessionSnapshot(); }
     // A reload before the last one's restore came back keeps that one's view.
+    // A reload while one is in its gap keeps all of that (the frame may already
+    // be empty).
     if (!reloading) {
       const selected = webviewContext ? selectedSignalRef(webviewContext.selectedSignal)
         : (reloadBaseline && reloadBaseline.cmuxSelected) || null;
       reloadBaseline = Object.assign(undoState(), { cmuxSelected: selected });
+      keptIsCurrent = !!webviewContext;
+      frameGone = false;
     }
     reloading = true;
-    frameGone = false;
     webviewContext = null;
   }
 
