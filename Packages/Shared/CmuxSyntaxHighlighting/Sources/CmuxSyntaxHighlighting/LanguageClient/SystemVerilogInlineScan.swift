@@ -101,7 +101,7 @@ public enum SystemVerilogInlineScan {
                     if contentEnd > index, units[contentEnd - 1] == 0x0D { contentEnd -= 1 }
                     lines.append(Line(
                         contentRange: NSRange(location: index, length: contentEnd - index),
-                        module: reader.state.structure.modules.last ?? moduleBefore,
+                        module: reader.state.structure.modules.last ?? moduleBefore ?? reader.lastModuleOpened,
                         identifiers: identifiers
                     ))
                 }
@@ -226,9 +226,12 @@ public enum SystemVerilogInlineScan {
     private struct Reader {
         let units: [UInt16]
         var state: State
+        /// The last module opened on the line read last, for a line that opens and closes one.
+        private(set) var lastModuleOpened: String?
 
         mutating func readLine(from start: Int, to end: Int, collect: Bool) -> [Identifier] {
             var out: [Identifier] = []
+            lastModuleOpened = nil
             if state.inDefine {
                 // A `define body continues while its lines end with a backslash.
                 state.inDefine = Self.endsWithBackslash(units, from: start, to: end)
@@ -340,7 +343,9 @@ public enum SystemVerilogInlineScan {
             state.lastKeyword = nil
             if state.expectsModuleName {
                 state.expectsModuleName = false
-                state.structure.modules.append(String(decoding: units[start..<end], as: UTF16.self))
+                let name = String(decoding: units[start..<end], as: UTF16.self)
+                state.structure.modules.append(name)
+                lastModuleOpened = name
                 return nil
             }
             let structure = state.structure
