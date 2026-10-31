@@ -107,10 +107,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("step({ by: 10 })")
     await sleep(200)
     expect(await marker() == 125, "step +10 to 125")
+    // Two quick steps before the viewer reports the first: the second starts where the first went.
+    _ = await call("const d = cmuxWaveform.debugger; await d.step({ by: 1 }); await d.step({ by: 1 }); return null")
+    await sleep(200)
+    let quick = await marker()
+    expect(quick == 145, "two quick steps: 125 -> 145: \(String(describing: quick))")
+    _ = await dbg("step({ by: 0 })")
+    await sleep(200)
+    expect(await marker() == 145, "step 0 stays")
+    let at22 = await dbg("cycleAt({ time: 22 })")
+    expect(at22?["cycle"] as? Int == 2 && at22?["previousTime"] as? Int == 5 && at22?["time"] as? Int == 22, "cycleAt(22): cycle 2, previous 5: \(String(describing: at22))")
     let cycles = debuggerEvents.filter { $0["event"] as? String == "cycle" }.compactMap { $0["cycle"] as? Int }
     expect(cycles.contains(1) && cycles.contains(4000) && cycles.contains(13), "cmux hears each cycle: \(cycles.suffix(8))")
     let strip = await call("const el = document.getElementById('status-cycle'); return el && !el.hidden ? el.textContent : null") as? String
-    expect(strip?.contains("13") == true && strip?.contains("4,000") == true, "status strip shows the cycle: \(String(describing: strip))")
+    expect(strip?.contains("15") == true && strip?.contains("4,000") == true, "status strip shows the cycle: \(String(describing: strip))")
 
     // Play: wall-clock paced, skipping cycles rather than lagging.
     _ = await dbg("jump({ to: 'first' })")
@@ -159,6 +169,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     _ = await call("return await cmuxWaveform.link.selectSignal(['top', 'count'])")
     await sleep(200)
+    _ = await call("cmuxCommands.sessionSaved({}); return null")
+    let undoBefore = await call("return cmuxCommands.undoDepth ? cmuxCommands.undoDepth() : -1") as? Int
     let l1 = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })") as? Bool
     await sleep(400)
     let r1 = await rows()
@@ -169,6 +181,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     let r2 = await rows()
     expect(l2 == true && r2 == ["top.count", "[Locals]", "Locals/top.core.alu.acc"], "caret moved to alu: \(r2)")
+    await sleep(300)
+    let quiet = await call("return { dirty: cmuxCommands.sessionSnapshot().dirty, undo: cmuxCommands.undoDepth ? cmuxCommands.undoDepth() : -1 }") as? [String: Any]
+    expect(quiet?["dirty"] as? Bool == false && quiet?["undo"] as? Int == undoBefore && undoBefore != -1,
+           "Locals changes are not unsaved changes or undo steps: \(String(describing: quiet)), undo before \(String(describing: undoBefore))")
     // A signal in Locals is not pinned: Add to Waveform still adds its row.
     _ = await call("return await cmuxWaveform.link.addSignal(['top', 'core', 'alu', 'acc'])")
     await sleep(400)
@@ -189,6 +205,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     let r4 = await rows()
     expect(r4.filter { $0.hasPrefix("Locals/") } == ["Locals/top.core.valid", "Locals/top.core.state"], "a collapsed Locals is refilled: \(r4)")
+    let stillCollapsed = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Locals');
+      return !!g && g.classList.contains('collapsed-group');
+    """) as? Bool
+    expect(stillCollapsed == true, "and stays collapsed")
+    _ = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Locals');
+      const c = JSON.parse(g.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
+      document.getElementById('viewer').contentWindow.postMessage({ command: 'editSignalGroup', groupId: c.groupId, isExpanded: true }, '*');
+      return null;
+    """)
+    await sleep(300)
     let notScope = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'count'] })") as? Bool
     expect(notScope == false, "Locals of a signal path is refused")
 
@@ -202,6 +232,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect((boxes ?? 0) >= 2, "a box at the marker on each lit row: \(String(describing: boxes))")
     snapImage(suffix: "-highlight")
     await sleep(300)
+    // Locals refilled: state's new row is lit too.
+    _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core', 'alu'] })")
+    _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })")
+    await sleep(400)
+    let relit = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
+    expect((relit ?? 0) >= 2, "rows made again stay lit: \(String(describing: relit))")
+    // An earlier, slower highlight call does not undo a later one.
+    _ = await call("""
+      const d = cmuxWaveform.debugger;
+      const a = d.highlightRows({ paths: [['top', 'count'], ['top', 'core', 'state']] });
+      const b = d.highlightRows({ paths: [] });
+      await a; await b; return null;
+    """)
+    await sleep(300)
+    let unlit = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
+    expect(unlit == 0, "the later (empty) highlight wins: \(String(describing: unlit))")
 
     // Clock choice: the selected row's signal.
     _ = await call("return await cmuxWaveform.link.selectSignal(['top', 'core', 'valid'])")
@@ -226,6 +272,35 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let boxes2 = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
     expect(!r5.contains("[Locals]") && r5.contains("top.count") && r5.contains("top.core.alu.acc"), "stop removes Locals only: \(r5)")
     expect(hidden == true && boxes2 == 0, "stop hides the counter and the boxes")
+    let idle = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })") as? Bool
+    let idleRows = await rows()
+    expect(idle == false && !idleRows.contains("[Locals]"), "no Locals while not stepping: \(idleRows)")
+    // A group of the user's named Locals is theirs: never emptied, saved with the session.
+    _ = await call("""
+      const host = cmuxWaveform.host;
+      const w = document.getElementById('viewer').contentWindow;
+      w.postMessage({ command: 'newSignalGroup', groupName: 'Locals', groupPath: undefined, parentGroupId: undefined,
+        eventRowId: undefined, moveSelected: false, showRenameInput: false }, '*');
+      await new Promise((r) => setTimeout(r, 300));
+      const v = await host.findLinkItem(['top', 'core', 'alu', 'acc'], true);
+      w.postMessage({ command: 'add-variable', signalList: [{ signalId: v.signalId, signalWidth: v.width, signalName: v.name,
+        scopePath: v.scopePath, netlistId: v.netlistId, type: v.type, encoding: v.encoding, enumType: v.enumType,
+        msb: v.msb, lsb: v.lsb }], groupPath: ['Locals'] }, '*');
+      return null;
+    """)
+    await sleep(400)
+    _ = await dbg("step({ by: 1 })")
+    await sleep(200)
+    _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })")
+    await sleep(400)
+    let r6 = await rows()
+    let userSaved = await call("return cmuxCommands.sessionSnapshot().state.displayedSignals.filter(d => d.dataType === 'signal-group').map(d => d.groupName + ':' + d.children.map(c => c.name).join(','))") as? [String]
+    expect(r6.contains("Locals/top.core.alu.acc") && r6.filter { $0.hasSuffix("top.core.valid") }.count == 1, "the user's Locals keeps its row, the debugger's is another group: \(r6)")
+    expect(userSaved?.count == 1 && userSaved?.first?.contains("acc") == true, "and only the user's is saved: \(String(describing: userSaved))")
+    _ = await dbg("stop()")
+    await sleep(400)
+    let r7 = await rows()
+    expect(r7.contains("[Locals]") && r7.contains("Locals/top.core.alu.acc") && !r7.contains { $0.hasSuffix("top.core.valid") }, "stop leaves the user's Locals: \(r7)")
     // The page can't swap the API cmux calls.
     let tamper = await call("""
       const before = cmuxWaveform.debugger;
@@ -235,7 +310,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     """) as? Bool
     expect(tamper == true, "debugger API is frozen and non-writable")
     let leaked = viewerEvents.filter { $0 == "signalSelect" }.count
-    print("viewer signalSelect events forwarded:", leaked)
+    expect(leaked == 0, "the debugger's own row changes raise no signalSelect for cmux: \(leaked)")
     print(failures == 0 ? "DEBUGGER CHECKS PASSED" : "DEBUGGER CHECKS FAILED: \(failures)")
     snap()
   }
