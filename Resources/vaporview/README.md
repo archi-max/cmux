@@ -123,6 +123,15 @@ keybindings, netlist view, settings, sessions and terminal links).
   open file (where upstream's calls would dereference null), and hands its
   buffer to Node without a copy. `third_party/` holds the node-addon-api 8.6.0 and
   node-api-headers 1.9.0 headers (MIT) the build needs.
+- `cmux-debugger.js` (new, written for cmux): the waveform debugger's page
+  side. It picks a clock, steps the marker by its posedges, plays them at a
+  set rate, keeps a Locals group of the editor's instance and highlights the
+  rows the editor highlights, using only messages the webview already handles.
+  `wellen-worker.js` gains `getsignalchanges`, which keeps a signal's data in
+  the page (decoding wellen's LZ4 frame, written from the LZ4 format
+  description) instead of sending it to the viewer frame; `host.js` exposes a
+  variable's changes and VaporView's events to it; `cmux-commands.js` leaves
+  the Locals group out of sessions and undo.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and
   foreground with the panel's colors.
