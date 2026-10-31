@@ -20,6 +20,10 @@
 #                                        open a remote FSDB through the helper
 #                                        (built on the host on first use) and
 #                                        print per-signal timings and memory
+#   ./run.sh parity                      terminal-link matcher (50k-char lines),
+#                                        link misses fall through, settings
+#                                        clamps, no page-named save path,
+#                                        missing-signal rows, double reload
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -60,5 +64,12 @@ case "${1:-}" in
     host="$1" file="$2"; shift 2
     "$OUT/fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$host" "$file" "$OUT/fsdb.png" "$@"
     ;;
-  *) sed -n '2,23p' "$0"; exit 2 ;;
+  parity)
+    swiftc -O "$HERE/parity/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" \
+      "$ROOT/Packages/macOS/CmuxTerminalCore/Sources/CmuxTerminalCore/LinkRouting/WaveformTerminalLink.swift" \
+      -o "$OUT/parity"
+    "$OUT/parity" "$ASSETS" "$HERE/parity/parity.vcd"
+    ;;
+  *) sed -n '2,28p' "$0"; exit 2 ;;
 esac

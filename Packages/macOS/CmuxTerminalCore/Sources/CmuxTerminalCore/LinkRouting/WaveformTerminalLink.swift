@@ -1,4 +1,4 @@
-public import Foundation
+import Foundation
 
 /// A VaporView terminal link (a time or an instance path) in a terminal line,
 /// adapted from VaporView (https://github.com/Lramseyer/vaporview, GPL-3.0),
@@ -39,8 +39,13 @@ public enum WaveformTerminalLink: Equatable, Sendable {
         let click = column - start
         func covering(_ pattern: String) -> NSTextCheckingResult? {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            let cut = start + text.length < full.length
             return regex.matches(in: window, range: NSRange(location: 0, length: text.length)).first { match in
                 click >= match.range.location && click < match.range.location + match.range.length
+                    // A match touching an edge the window cut may run on past it
+                    // (its boundary checks can't see beyond), so it isn't a link.
+                    && !(start > 0 && match.range.location == 0)
+                    && !(cut && match.range.location + match.range.length == text.length)
             }
         }
         if instancePaths, !topScopes.isEmpty {

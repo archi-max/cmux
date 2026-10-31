@@ -1,0 +1,19 @@
+$timescale 1ns $end
+$scope module top $end
+$var wire 1 ! clk $end
+$scope module core $end
+$var wire 8 " acc [7:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0 "
+#10
+1!
+b1 "
+#20
+0!
+b10 "
+#100
+1!
