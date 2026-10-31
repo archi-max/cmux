@@ -201,7 +201,7 @@ struct FileSearchPipelineUpdate: Sendable {
     let shouldStopProcess: Bool
 }
 
-private actor FileSearchTerminationSignal {
+actor FileSearchTerminationSignal {
     private var status: Int32?
     private var continuations: [UUID: CheckedContinuation<Int32?, Never>] = [:]
     private var cancelledWaits = Set<UUID>()
@@ -378,7 +378,7 @@ actor FileSearchOutputPipeline {
     }
 }
 
-private final class FileSearchReadHandle: @unchecked Sendable {
+final class FileSearchReadHandle: @unchecked Sendable {
     private let fileHandle: FileHandle
 
     init(_ fileHandle: FileHandle) {
@@ -390,13 +390,13 @@ private final class FileSearchReadHandle: @unchecked Sendable {
     }
 }
 
-private enum FileSearchPipeReadResult: Sendable {
+enum FileSearchPipeReadResult: Sendable {
     case chunk(Data)
     case endOfFile
     case failure(Int32)
 }
 
-private enum FileSearchPipeReader {
+enum FileSearchPipeReader {
     private static let queue = DispatchQueue(
         label: "com.cmux.file-search.pipe-read",
         qos: .userInitiated,
@@ -434,8 +434,8 @@ final class FileSearchController: FileSearchControlling {
 
     var onSnapshotChanged: ((FileSearchSnapshot) -> Void)?
 
-    private let maxResults = 500
-    private let snapshotInterval: TimeInterval = 0.05
+    let maxResults = 500
+    let snapshotInterval: TimeInterval = 0.05
     private let excludedSearchGlobs = [
         "!.git/**",
         "!**/.git/**",
@@ -485,6 +485,10 @@ final class FileSearchController: FileSearchControlling {
         }
         if case .remoteCloud(let provider) = scope {
             startRemoteSearch(provider: provider, query: query, rootPath: rootPath)
+            return
+        }
+        if case .remoteSSH(let provider) = scope {
+            startSSHSearch(provider: provider, query: query, rootPath: rootPath)
             return
         }
         guard scope == .local else {
@@ -604,7 +608,7 @@ final class FileSearchController: FileSearchControlling {
         }
     }
 
-    private func applyPipelineUpdate(_ update: FileSearchPipelineUpdate, generation searchGeneration: Int) {
+    func applyPipelineUpdate(_ update: FileSearchPipelineUpdate, generation searchGeneration: Int) {
         guard searchGeneration == generation else { return }
         results = update.results
         if update.shouldStopProcess {
@@ -613,7 +617,7 @@ final class FileSearchController: FileSearchControlling {
         emit(status: update.status, isSearching: update.isSearching)
     }
 
-    private func finish(generation searchGeneration: Int, update: FileSearchPipelineUpdate) {
+    func finish(generation searchGeneration: Int, update: FileSearchPipelineUpdate) {
         guard searchGeneration == generation else { return }
         process = nil
         pipeline = nil
