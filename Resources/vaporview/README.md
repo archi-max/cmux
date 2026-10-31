@@ -52,6 +52,17 @@ keybindings, netlist view, settings, sessions and terminal links).
   `title="${x}"`, ``dragCursorTag.innerHTML=`${this.dragCursorText}` `` and
   `<p style="color:${c}">${v}</p>` accordingly, then run
   `scripts/waveform-viewer-checks/run.sh xss`.
+- `webview.js`: upstream's `handleRemoveVariable` (`row_handler.ts`) disposes
+  a row twice when the list holds both a group and its child and the
+  removal is recursive (an upstream bug, to be reported). With an expanded
+  group shown, `applyState` passes `visibleSignalsFlat` that way, so Undo,
+  Redo and session loads fail with "this.rowItems[i].dispose is
+  undefined". Deleting a selected group whose children are all selected
+  takes the same path. The minified build is patched to skip a row already
+  in the list: `if(!o)return;` becomes `if(!o||r.includes(i))return;` in
+  `handleRemoveVariable(e,t){let r=[];e.forEach(i=>{let o=this.rowItems[i];`.
+  To redo the patch after a rebuild, run
+  `scripts/waveform-viewer-checks/run.sh parity` (phase O).
 - `index.html`, `viewer.html`: a Content-Security-Policy `<meta>` tag (the
   scheme handler also sends it as a header): only bundled scripts, styles,
   fonts and the wasm, no inline script, no other origin.
