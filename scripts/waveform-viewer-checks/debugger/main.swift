@@ -286,6 +286,21 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(leaked == 0, "refilling Locals raises no signalSelect for cmux: \(leaked)")
     let relit = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
     expect((relit ?? 0) >= 2, "rows made again stay lit: \(String(describing: relit))")
+    // Collapsed then expanded again: its lit row gets its box back.
+    let toggleLocals = { (expanded: Bool) in """
+      const d = document.getElementById('viewer').contentDocument;
+      const g = Array.from(d.querySelectorAll('.waveform-group')).find(e => e.querySelector('p').textContent === 'Locals');
+      const c = JSON.parse(g.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
+      document.getElementById('viewer').contentWindow.postMessage({ command: 'editSignalGroup', groupId: c.groupId, isExpanded: \(expanded) }, '*');
+      return null;
+    """ }
+    _ = await call(toggleLocals(false))
+    await sleep(400)
+    let folded = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
+    _ = await call(toggleLocals(true))
+    await sleep(400)
+    let unfolded = await call("return document.getElementById('viewer').contentDocument.querySelectorAll('.cmux-debugger-transition').length") as? Int
+    expect((folded ?? 0) <= 1 && (unfolded ?? 0) >= 2, "collapsing Locals hides its box, expanding brings it back: \(String(describing: folded)) -> \(String(describing: unfolded))")
     // An earlier, slower highlight call does not undo a later one.
     _ = await call("""
       const d = cmuxWaveform.debugger;

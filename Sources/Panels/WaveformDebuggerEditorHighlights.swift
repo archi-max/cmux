@@ -47,7 +47,7 @@ enum WaveformDebuggerEditorHighlights {
     private static let revisions = NSMapTable<NSTextStorage, Counter>.weakToStrongObjects()
     private static var editObserver: NSObjectProtocol?
 
-    private static func revision(of textView: NSTextView) -> Int {
+    static func revision(of textView: NSTextView) -> Int {
         if editObserver == nil {
             editObserver = NotificationCenter.default.addObserver(
                 forName: NSTextStorage.didProcessEditingNotification, object: nil, queue: .main
