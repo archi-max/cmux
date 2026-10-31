@@ -981,16 +981,11 @@ final class FilePreviewLanguageFeatures: NSObject {
             .filter { seen.insert($0.name).inserted }
             .prefix(12)
             .map { (name: $0.name, position: lineIndex.position(at: $0.offset)) }
-        let found: [String]
-        if module == inlineScan.fragmentModule {
-            // Cancelled (a scroll, an edit): not a miss; the next refresh asks again.
-            guard let instances = await WaveformDebugger.fragmentInstances(
-                session: session, documentURI: documentURI, probes: Array(probes)
-            ) else { return cached?.designInstances ?? [] }
-            found = instances
-        } else {
-            found = await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: Array(probes))
-        }
+        let lookedUp = module == inlineScan.fragmentModule
+            ? await WaveformDebugger.fragmentInstances(session: session, documentURI: documentURI, probes: Array(probes))
+            : await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: Array(probes))
+        // Cancelled (a scroll, an edit): not a miss; the next refresh asks again.
+        guard let found = lookedUp else { return cached?.designInstances ?? [] }
         inlineModuleInstances[module] = InlineModuleInstances(
             designInstances: found,
             lookedUpAt: Date(),

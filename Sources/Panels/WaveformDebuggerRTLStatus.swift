@@ -19,34 +19,42 @@ enum WaveformDebuggerRTLStatus {
     static let waitForEditorKey = "waveformDebugger.waitForEditor"
     static var waitsForEditor: Bool { UserDefaults.standard.object(forKey: waitForEditorKey) as? Bool ?? true }
 
-    /// The clock reports are timed by (the checks set it).
-    static var now: () -> Date = { Date() }
-    /// Seconds without a report after which play no longer waits for an editor (its refreshes
-    /// stalled, or it can't draw this cycle): the page's 250 ms cap would otherwise pace every cycle.
-    static let staleAfter: TimeInterval = 1
-
     private final class Report {
         let time: Int64
         let drew: Bool
         let reasons: [String: Reason]
-        let at: Date
+        /// The viewer's play it was made in (`Sent.play`): reports from before don't count for the wait.
+        let play: Int
 
-        init(time: Int64, drew: Bool, reasons: [String: Reason], at: Date) {
+        init(time: Int64, drew: Bool, reasons: [String: Reason], play: Int) {
             self.time = time
             self.drew = drew
             self.reasons = reasons
-            self.at = at
+            self.play = play
         }
     }
 
+    /// Per viewer: what its page was told, and the editors play waits for.
     private final class Sent {
         var status: [String: AnyHashable]?
-        /// When play last started: an editor yet to report is waited for until `staleAfter` after it.
-        var playStartedAt: Date?
+        /// Counts plays started, so reports made before this one are known.
+        var play = 0
+        /// While playing, the cycle the page is on (it waits for the editors there).
+        var pageTime: Int64?
+        /// Editors the page moved on without (they missed a cycle): not waited for until
+        /// they report the page's cycle again. Else one stalled editor caps every cycle at 250 ms.
+        let behind = NSHashTable<FilePreviewLanguageFeatures>.weakObjects()
     }
 
     private static let reports = NSMapTable<FilePreviewLanguageFeatures, Report>.weakToStrongObjects()
     private static let sent = NSMapTable<FilePreviewPanel, Sent>.weakToStrongObjects()
+
+    private static func state(_ waveform: FilePreviewPanel) -> Sent {
+        if let mine = sent.object(forKey: waveform) { return mine }
+        let mine = Sent()
+        sent.setObject(mine, forKey: waveform)
+        return mine
+    }
 
     /// The editors that follow `waveform`: those of its workspace whose viewer it is.
     private static func editors(of waveform: FilePreviewPanel) -> [FilePreviewLanguageFeatures] {
@@ -55,48 +63,66 @@ enum WaveformDebuggerRTLStatus {
         }
     }
 
+    /// The editors play waits for: those following `waveform` that keep up with its page.
+    private static func waitedFor(_ waveform: FilePreviewPanel) -> [FilePreviewLanguageFeatures] {
+        let mine = state(waveform)
+        return editors(of: waveform).filter { !mine.behind.contains($0) }
+    }
+
     /// `editor` finished with the cycle at `time`: it showed values (`drew`), or not, for `reasons`.
     static func editorDone(_ editor: FilePreviewLanguageFeatures, waveform: FilePreviewPanel, time: Int64, drew: Bool, reasons: [String: Reason]) {
-        reports.setObject(Report(time: time, drew: drew, reasons: reasons, at: now()), forKey: editor)
+        let mine = state(waveform)
+        reports.setObject(Report(time: time, drew: drew, reasons: reasons, play: mine.play), forKey: editor)
+        // At the page's cycle again (or not playing): it keeps up.
+        if mine.pageTime == nil || mine.pageTime == time { mine.behind.remove(editor) }
         report(waveform)
         ackIfAllShown(waveform)
     }
 
-    /// Every editor that follows `waveform` and still reports is at the same cycle: the page
-    /// may move on (it ignores an ack for a cycle it isn't waiting on).
+    /// Every editor play waits for drew the page's cycle (or, stepped by hand, the same cycle):
+    /// the page may move on. It ignores an ack for a cycle it isn't waiting on.
     private static func ackIfAllShown(_ waveform: FilePreviewPanel) {
         guard WaveformDebugger.isStepping(waveform) else { return }
-        let clock = now()
-        // Not played yet (stepped by hand): an editor yet to report is waited for.
-        let startedAt = sent.object(forKey: waveform)?.playStartedAt ?? clock
-        var times: [Int64?] = []
-        for editor in editors(of: waveform) {
-            let report = reports.object(forKey: editor)
-            let since = report?.at ?? startedAt
-            guard clock.timeIntervalSince(since) < staleAfter else { continue }
-            times.append(report?.time)
+        let mine = state(waveform)
+        let times = waitedFor(waveform).map { editor -> Int64? in
+            guard let report = reports.object(forKey: editor), report.play == mine.play else { return nil }
+            return report.time
         }
-        guard let first = times.first, let time = first, times.allSatisfy({ $0 == time }) else { return }
+        guard let first = times.first, let time = mine.pageTime ?? first,
+              times.allSatisfy({ $0 == time }) else { return }
         let page = waveform.nativeViewSessions.waveform
         Task { _ = await page.callDebugger("rtlShown", argument: ["time": NSNumber(value: time)]) }
     }
 
-    /// Play started on `waveform`: what its editors drew before doesn't count for the cycles to come.
+    /// Play started on `waveform`: what its editors drew before doesn't count for the wait
+    /// (the strip still shows it), and every editor is waited for again.
     static func playStarted(_ waveform: FilePreviewPanel) {
-        for editor in editors(of: waveform) { reports.removeObject(forKey: editor) }
-        let mine = sent.object(forKey: waveform) ?? Sent()
-        mine.playStartedAt = now()
-        sent.setObject(mine, forKey: waveform)
+        let mine = state(waveform)
+        mine.play += 1
+        mine.pageTime = nil
+        mine.behind.removeAllObjects()
         report(waveform)
     }
 
-    /// While playing, the page moved to the cycle at `time`. (Not yet implemented.)
-    static func pageMoved(_ waveform: FilePreviewPanel, to time: Int64) {}
+    /// While playing, the page moved to the cycle at `time`: an editor that hadn't drawn
+    /// the cycle it left (the page stopped waiting) is behind.
+    static func pageMoved(_ waveform: FilePreviewPanel, to time: Int64) {
+        let mine = state(waveform)
+        if let left = mine.pageTime, left != time {
+            for editor in editors(of: waveform) {
+                let report = reports.object(forKey: editor)
+                if report?.play != mine.play || report?.time != left { mine.behind.add(editor) }
+            }
+        }
+        mine.pageTime = time
+        report(waveform)
+    }
 
     /// `editor` closed or stopped linking: the viewers it followed no longer wait for it.
     static func editorGone(_ editor: FilePreviewLanguageFeatures) {
         reports.removeObject(forKey: editor)
         for case let waveform as FilePreviewPanel in sent.keyEnumerator().allObjects {
+            state(waveform).behind.remove(editor)
             report(waveform)
             ackIfAllShown(waveform)
         }
@@ -110,18 +136,17 @@ enum WaveformDebuggerRTLStatus {
     /// Sends the strip's status when it changed.
     static func report(_ waveform: FilePreviewPanel) {
         guard WaveformDebugger.isStepping(waveform) else { return }
-        let editors = editors(of: waveform)
-        let mine = sent.object(forKey: waveform) ?? Sent()
-        sent.setObject(mine, forKey: waveform)
+        let mine = state(waveform)
         let page = waveform.nativeViewSessions.waveform
-        let status = self.status(of: editors)
+        let status = self.status(of: editors(of: waveform), waitsForAny: !waitedFor(waveform).isEmpty)
         if mine.status != status {
             mine.status = status
             Task { _ = await page.callDebugger("setRtlStatus", argument: status) }
         }
     }
 
-    private static func status(of editors: [FilePreviewLanguageFeatures]) -> [String: AnyHashable] {
+    /// `waitsForAny`: some editor keeps up, so play waits (when the setting is on).
+    private static func status(of editors: [FilePreviewLanguageFeatures], waitsForAny: Bool) -> [String: AnyHashable] {
         guard !editors.isEmpty else {
             let text = String(
                 localized: "waveformDebugger.rtl.noEditor",
@@ -162,7 +187,7 @@ enum WaveformDebuggerRTLStatus {
             )
         }
         let tooltip = (drawn + notes).joined(separator: "\n")
-        return ["text": text, "tooltip": tooltip, "ok": !drawn.isEmpty, "wait": waitsForEditor]
+        return ["text": text, "tooltip": tooltip, "ok": !drawn.isEmpty, "wait": waitsForEditor && waitsForAny]
     }
 
     /// The strip's item: "RTL: " and what follows.

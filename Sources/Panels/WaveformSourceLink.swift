@@ -1039,19 +1039,24 @@ enum WaveformSourceLink {
         session: LanguageServerSession,
         documentURI: URL,
         probes: [(name: String, position: LSPPosition)]
-    ) async -> [String] {
-        for probe in probes.prefix(6) {
-            guard let paths = try? await session.slangInstancePaths(uri: documentURI, position: probe.position) else { return [] }
-            var instances: [String] = []
-            for path in paths {
-                let segments = HierarchyPathMapping.segments(path)
-                guard segments.count >= 2, segments.last == probe.name else { continue }
-                let instance = HierarchyPathMapping.join(Array(segments.dropLast()))
-                if !instances.contains(instance) { instances.append(instance) }
-            }
-            if !instances.isEmpty { return instances }
+    ) async -> [String]? {
+        // Nil when cancelled; a probe that fails goes on to the next.
+        await DesignInstanceProbe.firstFound(Array(probes.prefix(6))) { probe in
+            let paths = try await session.slangInstancePaths(uri: documentURI, position: probe.position)
+            return instances(holding: probe.name, paths: paths)
         }
-        return []
+    }
+
+    /// The instances among design `paths` that hold a signal `name` (each path's parent).
+    static func instances(holding name: String, paths: [String]) -> [String] {
+        var instances: [String] = []
+        for path in paths {
+            let segments = HierarchyPathMapping.segments(path)
+            guard segments.count >= 2, segments.last == name else { continue }
+            let instance = HierarchyPathMapping.join(Array(segments.dropLast()))
+            if !instances.contains(instance) { instances.append(instance) }
+        }
+        return instances
     }
 
     /// The dump scopes design instance `designInstance` maps to under the saved
