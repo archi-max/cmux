@@ -99,6 +99,8 @@ public actor LanguageServerSession {
     private var idleShutdownTask: Task<Void, Never>?
     /// The server was stopped for having no documents; a command relaunches it.
     private var stoppedWhileIdle = false
+    /// The idle shutdown in progress (seconds over ssh), awaited by start() and commands.
+    private var idleStopTask: Task<Void, Never>?
     /// After this many back-to-back request timeouts the server is assumed wedged and is killed.
     private static let wedgedTimeoutLimit = 2
 
@@ -136,6 +138,8 @@ public actor LanguageServerSession {
     /// Concurrent callers share one launch. After the process dies, calling
     /// this again relaunches it and re-opens remembered documents.
     public func start() async throws {
+        // An idle shutdown in progress finishes first; then the server is launched again.
+        if let idleStopTask { await idleStopTask.value }
         if state == .running { return }
         if let startTask {
             return try await startTask.value
@@ -197,6 +201,11 @@ public actor LanguageServerSession {
         scheduleIdleShutdown()
     }
 
+    /// Explore mode was chosen on purpose: it is sent again after a relaunch.
+    func rememberExploreMode() {
+        compilationCommand = ("slang.setTopLevel", .string(""))
+    }
+
     /// The number of documents open on this server.
     public var openDocumentCount: Int {
         documents.count
@@ -219,7 +228,12 @@ public actor LanguageServerSession {
         guard self.generation == generation, documents.isEmpty, state == .running, pending.isEmpty, startTask == nil else { return }
         // Set first: the process's exit is noticed while shutdown() still waits.
         stoppedWhileIdle = true
-        await shutdown()
+        let task = Task { await self.stopProcess() }
+        idleStopTask = task
+        await task.value
+        idleStopTask = nil
+        // An editor opened a document while the server was stopping: it needs a server.
+        if !documents.isEmpty { try? await start() }
     }
 
     /// Relaunches the server, keeping its open documents, so it rereads its config files.
@@ -227,6 +241,7 @@ public actor LanguageServerSession {
     /// false drops it, so the config files decide.
     public func restart(keepingCompilation: Bool = true) async throws {
         if !keepingCompilation { compilationCommand = nil }
+        if let idleStopTask { await idleStopTask.value }
         if let startTask { _ = try? await startTask.value }
         if let tool, state != .stopped {
             tool.kill()
@@ -244,6 +259,12 @@ public actor LanguageServerSession {
     public func shutdown() async {
         documents.removeAll()
         editorURLByServerURI.removeAll()
+        await stopProcess()
+    }
+
+    /// The shutdown handshake, then terminate or kill; documents are kept (an idle stop has none,
+    /// and one opened meanwhile must survive).
+    private func stopProcess() async {
         guard let tool, state != .stopped else { return }
         let generation = generation
         if state == .running {
@@ -359,6 +380,7 @@ public actor LanguageServerSession {
     /// says the request was too big, not that the server hangs.
     func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil, countsTowardWedged: Bool = true) async throws -> JSONValue {
         let isCompilationCommand = command == "slang.setTopLevel" || command == "slang.setBuildFile"
+        if let idleStopTask { await idleStopTask.value }
         if stoppedWhileIdle, state == .stopped { try await start() }
         if isCompilationCommand { dropStaleDiagnostics() }
         defer { if documents.isEmpty { scheduleIdleShutdown() } }

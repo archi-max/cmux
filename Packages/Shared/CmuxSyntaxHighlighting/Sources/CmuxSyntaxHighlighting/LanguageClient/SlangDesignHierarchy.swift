@@ -429,9 +429,22 @@ extension LanguageServerSession {
         return (result.arrayValue ?? []).reduce(0) { $0 + max(0, $1["instCount"]?.intValue ?? 0) }
     }
 
-    /// What the server compiles now, as set through this session.
+    /// Explore mode (no top level, no build file, not even the config's) that, unlike
+    /// `slangSetTopLevel("")`, is sent again after a restart or relaunch. Cleared by any
+    /// other top level or build file, or `restart(keepingCompilation: false)`.
+    public func slangExplore() async throws {
+        _ = try await executeCommand("slang.setTopLevel", argument: .string(""), timeout: Self.setTopLevelTimeout)
+        rememberExploreMode()
+    }
+
+    /// Whether `slangExplore` chose explore mode (and nothing replaced it since).
+    public var isInChosenExploreMode: Bool {
+        compilationCommand?.argument.stringValue == ""
+    }
+
+    /// What the server compiles now, as set through this session (nil in explore mode).
     public var slangCompilationTarget: SlangCompilationTarget? {
-        guard let compilationCommand, let path = compilationCommand.argument.stringValue else { return nil }
+        guard let compilationCommand, let path = compilationCommand.argument.stringValue, !path.isEmpty else { return nil }
         return compilationCommand.command == "slang.setBuildFile" ? .buildFile(path) : .topLevel(path)
     }
 
