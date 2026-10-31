@@ -177,6 +177,8 @@ public actor LanguageServerSession {
             for await value in tool.exit {
                 status = value
             }
+            // Its last stderr lines may still be on their way (read on another queue).
+            await tool.stderrTail.waitForEnd(timeout: 1)
             await self?.processDidExit(status: status, generation: generation)
         }
 

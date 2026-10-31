@@ -46,6 +46,9 @@ public enum SourceFormatter {
         }
     }
 
+    /// How long a failed formatter's stderr is waited for after its exit.
+    static let stderrGrace: TimeInterval = 1
+
     private static func run(_ text: String, using launch: LanguageToolLaunch, timeout: TimeInterval) async throws -> String {
         let tool = try LanguageToolProcess.spawn(launch)
         tool.write(Data(text.utf8))
@@ -79,6 +82,8 @@ public enum SourceFormatter {
             throw SourceFormatterError.timedOut
         }
         guard result.status == 0 else {
+            // What it wrote to stderr may still be on its way (read on another queue).
+            await tool.stderrTail.waitForEnd(timeout: stderrGrace)
             throw SourceFormatterError.failed(status: result.status, stderr: tool.stderrTail.text)
         }
         guard !result.output.isEmpty else {
