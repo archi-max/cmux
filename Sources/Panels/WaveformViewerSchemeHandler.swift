@@ -6,8 +6,11 @@ import WebKit
 ///
 /// The viewer's wellen worker reads the file through synchronous range
 /// requests, so the file is served with HEAD and `Range` support straight from
-/// a file handle and is never loaded whole. Nothing outside the bundle folder
-/// is reachable, and the file is reachable only under a random per-open token.
+/// a file handle and is never loaded whole. A remote FSDB file is not served
+/// as bytes: the page POSTs its requests to `fsdb/<token>` and the relay
+/// answers them through the FSDB helper on the SSH host. Nothing outside the
+/// bundle folder is reachable, and the file or relay only under a random
+/// per-open token.
 @MainActor
 final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated static let scheme = "cmux-waveform"
@@ -23,6 +26,7 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
     private let ioQueue = DispatchQueue(label: "com.cmuxterm.waveform-viewer.io", qos: .userInitiated)
     private var activeTasks: Set<ObjectIdentifier> = []
     private var source: WaveformFileSource?
+    private var fsdbRelay: WaveformFSDBRelay?
 
     init(assetRoot: URL? = WaveformViewerSchemeHandler.bundledAssetRoot()) {
         self.assetRoot = assetRoot?.standardizedFileURL.resolvingSymlinksInPath()
@@ -48,7 +52,17 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
         return URL(string: "\(Self.scheme)://\(Self.host)/file/\(token)")!
     }
 
+    /// Makes `relay` answer the page's FSDB requests, under a fresh token,
+    /// and returns the URL the page POSTs them to.
+    func serve(fsdbRelay relay: @escaping WaveformFSDBRelay.Handler) -> URL {
+        stopServing()
+        let token = UUID().uuidString.lowercased()
+        fsdbRelay = WaveformFSDBRelay(token: token, handle: relay)
+        return URL(string: "\(Self.scheme)://\(Self.host)/fsdb/\(token)")!
+    }
+
     func stopServing() {
+        fsdbRelay = nil
         guard let source else { return }
         self.source = nil
         ioQueue.async { source.close() }
@@ -58,10 +72,26 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let request = urlSchemeTask.request
-        let route = request.url.flatMap { Self.route(for: $0, assetRoot: assetRoot, source: source) }
+        let route = request.url.flatMap {
+            Self.route(for: $0, assetRoot: assetRoot, source: source, fsdbRelay: fsdbRelay)
+        }
         let taskId = ObjectIdentifier(urlSchemeTask as AnyObject)
         activeTasks.insert(taskId)
         let task = WaveformSchemeTaskBox(urlSchemeTask)
+        if case .fsdb(let relay) = route {
+            let body = request.httpMethod?.uppercased() == "POST" ? Self.body(of: request) : nil
+            Task { @MainActor [weak self] in
+                let response: WaveformSchemeResponse
+                if let body {
+                    response = await relay.handle(body)
+                } else {
+                    response = .status(405)
+                }
+                guard let self, self.activeTasks.remove(taskId) != nil else { return }
+                task.deliver(response)
+            }
+            return
+        }
         let isHead = request.httpMethod?.uppercased() == "HEAD"
         let rangeHeader = request.value(forHTTPHeaderField: "Range")
         ioQueue.async { [weak self] in
@@ -71,6 +101,8 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
                 response = Self.assetResponse(fileURL: fileURL, isHead: isHead)
             case .file(let source):
                 response = Self.fileResponse(source: source, isHead: isHead, rangeHeader: rangeHeader)
+            case .fsdb:
+                response = .status(405)
             case nil:
                 response = .status(404)
             }
@@ -90,12 +122,35 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
     enum Route {
         case asset(URL)
         case file(WaveformFileSource)
+        case fsdb(WaveformFSDBRelay)
+    }
+
+    /// A request body: WebKit hands a `fetch` body over as data or as a stream.
+    nonisolated static func body(of request: URLRequest) -> Data? {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var chunk = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            let count = stream.read(&chunk, maxLength: chunk.count)
+            if count <= 0 { break }
+            data.append(chunk, count: count)
+            if data.count > 1024 * 1024 { return nil }
+        }
+        return data
     }
 
     /// Resolves a request to a bundled asset or to the served file. Rejects
     /// other schemes and hosts, dot segments, and anything that resolves
     /// outside the asset folder.
-    nonisolated static func route(for url: URL, assetRoot: URL?, source: WaveformFileSource?) -> Route? {
+    nonisolated static func route(
+        for url: URL,
+        assetRoot: URL?,
+        source: WaveformFileSource?,
+        fsdbRelay: WaveformFSDBRelay? = nil
+    ) -> Route? {
         guard url.scheme?.lowercased() == scheme, url.host?.lowercased() == host else { return nil }
         let path = url.path
         guard path.hasPrefix("/"), !path.contains("\0"), !path.contains("\\") else { return nil }
@@ -106,6 +161,10 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
         if components.first == "file" {
             guard components.count == 2, let source, components[1] == source.token else { return nil }
             return .file(source)
+        }
+        if components.first == "fsdb" {
+            guard components.count == 2, let fsdbRelay, components[1] == fsdbRelay.token else { return nil }
+            return .fsdb(fsdbRelay)
         }
 
         guard let assetRoot else { return nil }
@@ -185,6 +244,19 @@ final class WaveformViewerSchemeHandler: NSObject, WKURLSchemeHandler {
             headers["Content-Range"] = "bytes \(range.lowerBound)-\(end)/\(size)"
         }
         return WaveformSchemeResponse(status: status, headers: headers, body: body)
+    }
+}
+
+/// Answers the page's FSDB requests for one open remote file.
+final class WaveformFSDBRelay: @unchecked Sendable {
+    typealias Handler = @MainActor (Data) async -> WaveformSchemeResponse
+
+    let token: String
+    let handle: Handler
+
+    init(token: String, handle: @escaping Handler) {
+        self.token = token
+        self.handle = handle
     }
 }
 

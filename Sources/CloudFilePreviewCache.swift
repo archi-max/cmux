@@ -84,7 +84,32 @@ actor CloudFilePreviewCache {
         }
     }
 
+    /// A lease for a remote file the viewer reads in place on the host (FSDB):
+    /// an empty local stand-in carries the name, and nothing is downloaded.
+    func placeholder(path: String, provider: any RemoteFileExplorerProvider) throws -> CloudFilePreviewLease {
+        let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let filename = (path as NSString).lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != ".." else { throw FileExplorerError.providerUnavailable }
+        let url = directory.appendingPathComponent(filename, isDirectory: false)
+        entries.insert(url)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                   attributes: [.posixPermissions: 0o700])
+            guard FileManager.default.createFile(atPath: url.path, contents: Data(),
+                                                 attributes: [.posixPermissions: 0o400]) else {
+                throw FileExplorerError.providerUnavailable
+            }
+            return CloudFilePreviewLease(url: url, remotePath: path, remoteIdentity: provider.remoteIdentity,
+                                         cache: self, isPlaceholder: true)
+        } catch {
+            release(url)
+            throw error
+        }
+    }
+
     func refresh(_ lease: CloudFilePreviewLease, provider: any RemoteFileExplorerProvider) async throws {
+        // The viewer re-reads a placeholder's file on the host when it reloads.
+        guard !lease.isPlaceholder else { return }
         guard !ManagedFileTransferPolicy.isDisabled else {
             throw ManagedFileTransferPolicy.refusalError()
         }

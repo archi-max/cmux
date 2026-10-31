@@ -952,9 +952,15 @@ enum FilePreviewKindResolver {
         "v", "vh", "xml", "yaml", "yml", "zsh"
     ]
 
-    /// Waveform dumps the bundled VaporView viewer reads. FSDB needs Verdi's
-    /// reader on the host that has it and is not routed here yet.
-    static let waveformExtensions: Set<String> = ["vcd", "fst", "ghw"]
+    /// Waveform dumps the bundled VaporView viewer reads. FSDB is read by
+    /// Verdi's reader on an SSH workspace's host (`WaveformFSDBHelper`).
+    static let waveformExtensions: Set<String> = ["vcd", "fst", "ghw", "fsdb"]
+
+    /// Remote files the waveform viewer reads in place on the host: Files
+    /// opens them without downloading a copy.
+    static func isReadInPlaceOnRemoteHost(_ path: String) -> Bool {
+        (path as NSString).pathExtension.lowercased() == "fsdb"
+    }
 
     static func isWaveformFile(_ url: URL) -> Bool {
         waveformExtensions.contains(url.pathExtension.lowercased())

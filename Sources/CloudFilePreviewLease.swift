@@ -10,6 +10,8 @@ final class CloudFilePreviewLease: @unchecked Sendable {
     let remoteIdentity: String
     /// The provider an editable SSH preview uploads saves through.
     let sshProvider: SSHFileExplorerProvider?
+    /// An empty stand-in for a file read in place on the remote host; never downloaded.
+    let isPlaceholder: Bool
     private let cache: CloudFilePreviewCache
     private let stampLock = NSLock()
     private var stamp: SSHRemoteFileStamp?
@@ -20,7 +22,8 @@ final class CloudFilePreviewLease: @unchecked Sendable {
         remoteIdentity: String,
         cache: CloudFilePreviewCache,
         sshProvider: SSHFileExplorerProvider? = nil,
-        remoteStamp: SSHRemoteFileStamp? = nil
+        remoteStamp: SSHRemoteFileStamp? = nil,
+        isPlaceholder: Bool = false
     ) {
         self.url = url
         self.remotePath = remotePath
@@ -28,6 +31,7 @@ final class CloudFilePreviewLease: @unchecked Sendable {
         self.cache = cache
         self.sshProvider = sshProvider
         self.stamp = remoteStamp
+        self.isPlaceholder = isPlaceholder
     }
 
     deinit {

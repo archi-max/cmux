@@ -497,6 +497,25 @@ From esbuild's metafile for the production `webview.js`:
 `codicon.css` and `codicon.ttf` are bundled unmodified in
 `Resources/vaporview/codicons/` with both license files.
 
+### FSDB helper sources (`Resources/vaporview/fsdb-helper/`)
+
+cmux uploads these to an SSH host the first time an FSDB file is opened there
+and builds the FSDB reader on that host (see "Verdi FSDB Reader" below). They
+ship as source; nothing in them is compiled into cmux.
+
+- **VaporView FSDB addon and worker:** `fsdb_reader.cpp` is VaporView's
+  `src/fsdb_reader.cpp` at the commit above, unmodified; `packed.cpp.inc`
+  (a cmux addition spliced into it at build time) and `fsdb-helper.js`
+  (adapted from `src/extension_core/fsdb_worker.ts`) carry VaporView's
+  GPL-3.0 license.
+- **node-addon-api** 8.6.0: MIT License; Copyright (c) 2017 Node.js API
+  collaborators; https://github.com/nodejs/node-addon-api. `napi.h`,
+  `napi-inl.h` and `napi-inl.deprecated.h`, unmodified, with `LICENSE.md`, in
+  `fsdb-helper/third_party/node-addon-api/`.
+- **node-api-headers** 1.9.0: MIT License; Copyright (c) 2021 Node.js;
+  https://github.com/nodejs/node-api-headers. The four Node-API C headers,
+  unmodified, with `LICENSE`, in `fsdb-helper/third_party/node-api-headers/`.
+
 ISC License (for the ISC components above):
 
 Permission to use, copy, modify, and/or distribute this software for any
@@ -526,9 +545,11 @@ License.
 - **Source:** Ships with Synopsys Verdi (`$VERDI_HOME/share/FsdbReader/`); not publicly available
 
 Reading `.fsdb` waveforms needs Verdi's FSDB reader libraries on the machine
-that holds the file. cmux does not bundle, link against, or redistribute them;
-any FSDB support builds against the user's own Verdi installation on that
-machine.
+that holds the file. cmux does not bundle, link against, or redistribute them.
+On an SSH workspace, cmux builds its FSDB helper on the remote host against
+that host's own Verdi installation, for the user who opens the file, and keeps
+it in `~/.cache/cmux/fsdb-helper/` there; the built reader never leaves that
+host.
 
 ---
 
