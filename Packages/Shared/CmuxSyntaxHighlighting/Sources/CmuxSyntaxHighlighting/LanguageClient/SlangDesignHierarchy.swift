@@ -300,8 +300,13 @@ extension LanguageServerSession {
     }
 
     private func directInstancePaths(uri: URL, position: LSPPosition) async throws -> [String] {
-        if let error = directInstancePathsErrorForTesting { throw error }
-        return try await slangInstancePaths(uri: uri, position: position)
+        // A path slang can't resolve there (a macro, a type) is no instance: the includer is still asked.
+        do {
+            if let error = directInstancePathsErrorForTesting { throw error }
+            return try await slangInstancePaths(uri: uri, position: position)
+        } catch where Self.isUnresolvedPath(error) {
+            return []
+        }
     }
 
     func setDeclarationHoverErrorForTesting(_ error: LanguageServerError?) {

@@ -23,9 +23,11 @@ public enum DesignInstanceProbe {
     }
 
     /// Whether the design has a top level, from getScope("") after a fragment found nowhere
-    /// (`scopeKinds`: its items' kinds, nil when it failed; packages are no top).
+    /// (`scopeKinds`: its items' kinds, nil when it failed; packages are no top). Cancelled
+    /// (a scroll, an edit) or failed, it is no answer: what was known stays.
     public static func designHasTops(scopeKinds: [String]?, cancelled: Bool, current: Bool?) -> Bool? {
-        scopeKinds?.contains { $0 != "Package" }
+        guard !cancelled, let scopeKinds else { return current }
+        return scopeKinds.contains { $0 != "Package" }
     }
 
     /// Seconds before a module's instances are asked again: after `failures` lookups in a row

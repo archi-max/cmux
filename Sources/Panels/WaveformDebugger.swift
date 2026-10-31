@@ -329,7 +329,7 @@ enum WaveformDebugger {
 extension WaveformDebugger {
     /// The design instances an `include`d fragment's lines are in: slang-server places a
     /// fragment's symbol only through the file that includes it (slangDesignPaths walks there).
-    /// Nil when cancelled (nothing was learned).
+    /// Nil when nothing was learned: cancelled, or the server failed (see `DesignInstanceProbe.firstFound`).
     static func fragmentInstances(
         session: LanguageServerSession,
         documentURI: URL,
