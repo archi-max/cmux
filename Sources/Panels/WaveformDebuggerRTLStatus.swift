@@ -104,11 +104,12 @@ enum WaveformDebuggerRTLStatus {
         report(waveform)
     }
 
-    /// While playing, the page moved to the cycle at `time`: an editor that hadn't drawn
-    /// the cycle it left (the page stopped waiting) is behind.
-    static func pageMoved(_ waveform: FilePreviewPanel, to time: Int64) {
+    /// While playing, the page moved to the cycle at `time` from `left`; `missed`: it gave up
+    /// waiting on `left`. The editors that hadn't drawn `left` by then are behind. (The page
+    /// says so itself: the viewer's markerSet, which editors refresh on, lags when it is busy.)
+    static func pageMoved(_ waveform: FilePreviewPanel, to time: Int64, left: Int64?, missed: Bool) {
         let mine = state(waveform)
-        if let left = mine.pageTime, left != time {
+        if missed, let left = left ?? mine.pageTime {
             for editor in editors(of: waveform) {
                 let report = reports.object(forKey: editor)
                 if report?.play != mine.play || report?.time != left { mine.behind.add(editor) }

@@ -165,8 +165,14 @@
 
   function publicState() { return cycleInfo(markerTime()); }
 
-  function post(event) {
-    host.toNative(Object.assign({ type: 'debugger', event }, publicState()));
+  function post(event, extra) {
+    host.toNative(Object.assign({ type: 'debugger', event }, publicState(), extra || {}));
+  }
+
+  // While playing, each move straight from the page (the viewer's markerSet, and so the cycle
+  // event, lags when it is busy): `missed` when it gave up waiting for the editors on `left`.
+  function postMoved(movedTo, left, missed) {
+    post('moved', { movedTo, left, missed });
   }
 
   // Times the debugger sent the marker to lately: a markerSet at any other time is the user's.
@@ -291,10 +297,13 @@
       return;
     }
     const next = Math.min(edges.length - 1, playIndex + 1);
+    const left = edges[playIndex];
+    const missed = rtlPending !== null;
     playIndex = next;
     lastMoveAt = now;
     rtlPending = { time: edges[next], at: now };
     moveMarker(edges[next]);
+    postMoved(edges[next], left, missed);
     if (next >= edges.length - 1) { pause(); return; }
     scheduleTick(gap);
   }
@@ -309,9 +318,13 @@
     if (rtlStatus.wait) { waitingTick(edges); return; }
     const target = Math.min(edges.length - 1,
       playOrigin.index + Math.floor((performance.now() - playOrigin.at) * state.rate / 1000));
+    const left = edges[playIndex];
     playIndex = target;
     const time = markerTime();
-    if (time === null || edges[target] !== time) { moveMarker(edges[target]); }
+    if (time === null || edges[target] !== time) {
+      moveMarker(edges[target]);
+      postMoved(edges[target], left, false);
+    }
     if (target >= edges.length - 1) { pause(); return; }
     scheduleTick();
   }
