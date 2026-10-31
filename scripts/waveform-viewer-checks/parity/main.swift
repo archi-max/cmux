@@ -698,6 +698,35 @@ extension Harness {
           check(r["auto"] as? Bool == true, "Auto Reload is on")
           check(r["reloads"] as? Int == 1, "after a failed reload, a file change still reloads (\(r["reloads"] ?? "nil"))")
           check(r["bar"] as? Bool == false, "and shows no reload bar")
+          self.phaseS()
+        }
+      }
+    }
+  }
+
+  // Auto Reload belongs to the file: it survives a reload, but another file
+  // opened in the panel starts from the defaultAutoReload setting (off here).
+  func phaseS() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        let argument: [String: Any] = [
+          "url": self.scheme.serve(fileURL: waveURL).absoluteString, "size": self.size(), "format": "vcd",
+          "path": "/work/sim/other.vcd", "strings": self.strings, "settings": [String: Any](),
+        ]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)!
+        self.js("""
+        const box = () => document.getElementById('viewer').contentDocument.getElementById('autoReload');
+        if (!box().checked) { box().click(); }
+        await sleep(300);
+        window.cmuxWaveform.reload({});
+        await sleep(1500);
+        R.afterReload = box().checked;
+        window.cmuxWaveform.open(\(json));
+        await sleep(1500);
+        R.afterOpen = box().checked;
+        """) { r in
+          check(r["afterReload"] as? Bool == true, "Auto Reload survives a reload")
+          check(r["afterOpen"] as? Bool == false, "another file opened in the panel starts with Auto Reload off (the setting)")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
