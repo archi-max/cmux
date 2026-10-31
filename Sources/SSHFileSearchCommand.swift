@@ -8,12 +8,13 @@ import Foundation
 /// the remote `sh`, which also keeps non-ASCII text in NFC (`Process` would
 /// otherwise decompose it).
 ///
-/// A marker line names the tool that ran (``ripgrepMarker`` or ``grepMarker``;
+/// A marker line names the tool that ran (``ripgrepMarker``, ``gitGrepMarker`` or ``grepMarker``;
 /// ``gitListMarker`` or ``findListMarker``). Anything a login shell prints
 /// before it is ignored, and output without it means the tool never ran.
 struct SSHFileSearchCommand: Equatable, Sendable {
     static let ripgrepMarker = "cmux-search:rg"
     static let grepMarker = "cmux-search:grep"
+    static let gitGrepMarker = "cmux-search:gitgrep"
     static let gitListMarker = "cmux-files:git"
     static let findListMarker = "cmux-files:find"
     /// Exit status when the root is not a readable directory on the host.
@@ -23,6 +24,9 @@ struct SSHFileSearchCommand: Equatable, Sendable {
 
     /// Directories the local search excludes with its `!**/<name>/**` globs.
     static let excludedDirectoryNames = [".git", "node_modules", "dist", "build", "DerivedData"]
+    /// Also skipped by the plain grep fallback, which has no .gitignore to
+    /// leave out virtualenvs and caches (rg and git grep honour it).
+    static let grepOnlyExcludedDirectoryNames = [".venv", "venv", "__pycache__", ".cache"]
 
     /// The command line handed to `ssh`, parsed by the remote login shell.
     let command: String
@@ -46,8 +50,14 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// Searches file contents under `rootPath` for the literal `query`.
     ///
     /// Uses `rg --json` when the host has ripgrep, with the local search's
-    /// options; otherwise GNU/BSD `grep -rnIF --null`, which skips binary files
-    /// and separates the path with a NUL so colons in names stay unambiguous.
+    /// options. Without it, a root inside a Git work tree is searched with
+    /// `git grep` (tracked and untracked files, minus ignored ones, as rg
+    /// would: a gitignored virtualenv must not fill the result cap), run
+    /// from the root with the same hardening as ``fileList`` and with user
+    /// config that would change its output (color, full names, columns)
+    /// turned off. Elsewhere GNU/BSD `grep -rnIF --null`, which skips binary
+    /// files and separates the path with a NUL so colons in names stay
+    /// unambiguous.
     /// - Parameters:
     ///   - remoteTimeoutSeconds: Passed to `timeout` when the host has it,
     ///     so an abandoned search cannot outlive the client by long.
@@ -59,17 +69,26 @@ struct SSHFileSearchCommand: Equatable, Sendable {
         let globs = excludedDirectoryNames
             .flatMap { ["--glob \"${x}\($0)/**\"", "--glob \"${x}**/\($0)/**\""] }
             .joined(separator: " ")
-        let excludeDirs = excludedDirectoryNames.map { "--exclude-dir=\($0)" }.joined(separator: " ")
+        let excludeDirs = (excludedDirectoryNames + grepOnlyExcludedDirectoryNames)
+            .map { "--exclude-dir=\($0)" }.joined(separator: " ")
+        // git grep never searches .git itself.
+        let excludePathspecs = excludedDirectoryNames.dropFirst()
+            .map { "\":(exclude,glob)**/\($0)/**\"" }.joined(separator: " ")
         return Self(lines: [
             SSHRemoteShellScript.assign("q", query),
             SSHRemoteShellScript.assign("r", rootPath),
             SSHRemoteShellScript.assign("x", "!"),
             "[ -d \"$r\" ] || exit \(missingRootStatus)",
             SSHRemoteShellScript.timeoutPrefix(seconds: remoteTimeoutSeconds),
+            "g=\"git -c core.fsmonitor=false -c core.untrackedCache=false\"",
             "if command -v rg >/dev/null 2>&1; then \(marker(ripgrepMarker)); "
                 + "printf %s \"$q\" | $w nice -n 10 rg --json --line-number --column --smart-case --fixed-strings "
                 + "--max-columns 300 --max-columns-preview --color never --hidden --line-buffered "
                 + "\(globs) --file - -- \"$r\"; "
+                + "elif command -v git >/dev/null 2>&1 && cd -- \"$r\" 2>/dev/null "
+                + "&& $g rev-parse --is-inside-work-tree >/dev/null 2>&1; then \(marker(gitGrepMarker)); "
+                + "$w nice -n 10 $g -c color.grep=false -c grep.fullName=false -c grep.column=false "
+                + "grep -nIF -z --untracked --exclude-standard\(caseFlag) -e \"$q\" -- . \(excludePathspecs); "
                 + "else \(marker(grepMarker)); "
                 + "lb=--line-buffered; echo x | grep $lb -q x >/dev/null 2>&1 || lb=; "
                 + "$w nice -n 10 grep -rnIsF --null $lb\(caseFlag) \(excludeDirs) -e \"$q\" -- \"$r\"; fi",
