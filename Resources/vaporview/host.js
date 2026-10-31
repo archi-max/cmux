@@ -612,6 +612,9 @@
 
   async function open(next) {
     const generation = ++loadGeneration;
+    // Auto Reload belongs to the file (VaporviewDocument): another file starts
+    // from the setting. reload() before the frame loaded comes here too.
+    if (!next || next.path !== config.path) { autoReloadState = null; }
     closeBackend();
     frameLoaded = false;
     doc.metadata = null;
