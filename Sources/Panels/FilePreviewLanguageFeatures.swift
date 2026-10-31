@@ -728,7 +728,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         var scan = syncedInlineScan(of: textView)
         let symbol = WaveformSourceLink.LinkSymbol(
             name: (storage.string as NSString).substring(with: identifier),
-            isInModule: scan.lines(in: NSRange(location: identifier.location, length: 0)).first?.module != nil
+            // (A fragment's pseudo-module isn't one: slang places its lines through the includer.)
+            isInModule: scan.lines(in: NSRange(location: identifier.location, length: 0)).first.map { scan.isInModule($0) } ?? false
         )
         inlineScan = scan
         linkTask?.cancel()
@@ -856,8 +857,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         var lookedUpAt: Date
         /// Lookups in a row that found none; the next waits longer.
         var misses: Int
-        /// The last lookup got no answer (slang-server not ready): asked again soon, not a miss.
-        var failed = false
+        /// Lookups in a row no probe answered (slang-server busy): asked again sooner than a miss.
+        var failures = 0
     }
 
     /// Signals were added to the waveform from design instance `design`, dumped as `dump`: values follow it.
@@ -972,7 +973,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     ) async -> [String] {
         let cached = inlineModuleInstances[module]
         if let cached {
-            let wait = cached.failed ? 2 : min(300, 10 * pow(2, Double(max(0, cached.misses - 1))))
+            let wait = DesignInstanceProbe.retryDelay(misses: cached.misses, failures: cached.failures)
             if !cached.designInstances.isEmpty || Date().timeIntervalSince(cached.lookedUpAt) < wait {
                 return cached.designInstances
             }
@@ -990,7 +991,8 @@ final class FilePreviewLanguageFeatures: NSObject {
             // Cancelled (a scroll, an edit): the next refresh asks again. No answer: asked again soon.
             if !Task.isCancelled {
                 inlineModuleInstances[module] = InlineModuleInstances(
-                    designInstances: cached?.designInstances ?? [], lookedUpAt: Date(), misses: cached?.misses ?? 0, failed: true
+                    designInstances: cached?.designInstances ?? [], lookedUpAt: Date(), misses: cached?.misses ?? 0,
+                    failures: (cached?.failures ?? 0) + 1
                 )
             }
             return cached?.designInstances ?? []
@@ -1043,6 +1045,8 @@ final class FilePreviewLanguageFeatures: NSObject {
             )
             guard !Task.isCancelled else { return }
             guard !designInstances.isEmpty else {
+                // A file that may be an included fragment, never placed yet, may be only a header.
+                guard DesignInstanceProbe.reportsNotPlaced(isFragment: module == inlineScan.fragmentModule) else { continue }
                 reasons[module] = .notPlaced
                 hints[module] = String(
                     localized: "filePreview.inlineValues.noInstance",
@@ -1058,7 +1062,9 @@ final class FilePreviewLanguageFeatures: NSObject {
                 ) else {
                     // The viewer is loading; its open will refresh. Play needn't wait for this editor meanwhile.
                     inlineValueOverlay?.clear()
-                    WaveformDebuggerRTLStatus.editorDone(self, waveform: waveform, time: time, drew: false, reasons: [:])
+                    if WaveformDebugger.isStepping(waveform) {
+                        WaveformDebuggerRTLStatus.editorDone(self, waveform: waveform, time: time, drew: false, reasons: [:])
+                    }
                     return
                 }
                 for dump in dumps where !candidates.contains(dump) {

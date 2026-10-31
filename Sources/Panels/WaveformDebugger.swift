@@ -194,7 +194,7 @@ enum WaveformDebugger {
     /// The "Play Waits for the Editor" setting changed: the stepping viewers hear it.
     static func waitForEditorChanged() {
         for case let waveform as FilePreviewPanel in boxes.keyEnumerator().allObjects where isStepping(waveform) {
-            WaveformDebuggerRTLStatus.report(waveform)
+            WaveformDebuggerRTLStatus.waitSettingChanged(waveform)
         }
     }
 
@@ -333,9 +333,10 @@ extension WaveformDebugger {
         documentURI: URL,
         probes: [(name: String, position: LSPPosition)]
     ) async -> [String]? {
-        await DesignInstanceProbe.firstFound(Array(probes.prefix(4))) { probe in
+        await DesignInstanceProbe.firstFound(Array(probes.prefix(DesignInstanceProbe.fragmentProbeLimit))) { probe in
             let paths = try await session.slangDesignPaths(
-                uri: documentURI, position: probe.position, identifier: probe.name, isInModule: false
+                uri: documentURI, position: probe.position, identifier: probe.name, isInModule: false,
+                searchTimeLimit: DesignInstanceProbe.fragmentSearchTimeLimit
             )
             return WaveformSourceLink.instances(holding: probe.name, paths: paths)
         }
