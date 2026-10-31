@@ -78,6 +78,9 @@ func resolveOpenPath(raw string) (string, error) {
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("%s is not a regular file", abs)
 		}
+		if info.Size() > maxOpenFileBytes {
+			return "", fmt.Errorf("%s is larger than %d MB; open it from the Files panel instead", abs, maxOpenFileBytes>>20)
+		}
 		return abs, nil
 	}
 	return "", fmt.Errorf("no such file: %s", raw)

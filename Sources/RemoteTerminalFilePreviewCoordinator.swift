@@ -156,7 +156,10 @@ final class RemoteTerminalFilePreviewCoordinator {
                 case .commandLine:
                     // Never the markdown viewer or the browser: the host chose
                     // this file, so it opens only in the native preview.
+                    // Quick Look renders some types (web archives, mail, Office)
+                    // through WebKit, so those wait for a click in the Files panel.
                     opened = FileRouteSettingsStore(defaults: self.defaults).shouldRouteSupportedFile(path: localURL.path)
+                        && FilePreviewKindResolver.mode(for: localURL) != .quickLook
                         && workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localURL.path) != nil
                 }
                 #if DEBUG
