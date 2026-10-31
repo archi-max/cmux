@@ -120,6 +120,9 @@ public enum SystemVerilogInlineScan {
             return lines
         }
 
+        /// Whether `line` is in a module of its own for slang. (Not yet implemented.)
+        public func isInModule(_ line: Line) -> Bool { line.module != nil }
+
         /// Whether the file opens a module, interface, program, package, config or primitive
         /// anywhere (false: an `include`d fragment).
         public mutating func opensModule() -> Bool {

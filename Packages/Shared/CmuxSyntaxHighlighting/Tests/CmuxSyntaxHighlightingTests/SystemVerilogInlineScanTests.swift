@@ -242,6 +242,7 @@ import Testing
         #expect(cache.opensModule() == false)
         var module = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: "module m;\n  logic a;\nendmodule" as NSString))
         #expect(module.opensModule() == true)
+        #expect(module.lines(in: NSRange(location: 10, length: 0)).allSatisfy { module.isInModule($0) })
         // A big module edited near its top: whether it opens a module is known without reading on.
         var big = "module big;\n"
         for index in 0..<40_000 { big += "  assign sig_\(index) = in_\(index) ^ other_\(index); // note\n" }
@@ -269,6 +270,8 @@ import Testing
             ["NUM_PORTS"], ["NUM_PORTS", "dfp_read"], ["NUM_PORTS", "dfp_ready"], ["cache_adapter", "NUM_PORTS", "dut"],
             ["clk"], ["dfp_ready"], [], [], [], [],
         ])
+        // For slang a fragment's lines are in no module of their own (it places them through the includer).
+        #expect(lines.allSatisfy { !cache.isInModule($0) })
         // Back to a plain file: the pseudo-module goes, and so do its identifiers.
         cache.fragmentModule = nil
         #expect(cache.lines(in: NSRange(location: 0, length: 10)).first?.module == nil)
