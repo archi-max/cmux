@@ -836,7 +836,33 @@
   }
   const ANSWER_TYPES = [StateChangeType.Restore, StateChangeType.File, StateChangeType.Undo, StateChangeType.Redo];
 
+  // Adds made while a view looks up its rows run after its apply-state, in
+  // order, unless another file or reload came in between.
+  let resolving = 0;
+  let deferredAdds = [];
+  function deferWhileApplying(add) {
+    if (!resolving) { return false; }
+    deferredAdds.push({ add, generation: host().loadGeneration });
+    return true;
+  }
+  function flushDeferredAdds() {
+    if (resolving) { return; }
+    const list = deferredAdds;
+    deferredAdds = [];
+    list.forEach((d) => { if (d.generation === host().loadGeneration) { d.add(); } });
+  }
+
   async function postSession(session, stateChangeType) {
+    resolving++;
+    try {
+      return await resolveAndPostSession(session, stateChangeType);
+    } finally {
+      resolving--;
+      flushDeferredAdds();
+    }
+  }
+
+  async function resolveAndPostSession(session, stateChangeType) {
     // A reload or open that starts while this resolves rows makes it stale: its
     // rows would land in the next file's viewer, and its state would win there.
     const generation = host().loadGeneration;
@@ -895,8 +921,9 @@
     frameGone = false;
     applying = 0;
     applyEpoch++;
-    // A failure on the way (a handler's error) didn't stop this reload.
-    failedReload = false;
+    // A failure on the way (a handler's error) didn't stop this reload, if
+    // its backend is open.
+    if (host().doc.metadata) { failedReload = false; }
     restoreAsked = true;
     restorePending = false;
     if (kept) {
@@ -1103,7 +1130,7 @@
   async function scopeVariables(scope, recursive, maxChildren) {
     const vars = [];
     const seen = new Set();
-    const shown = host().alreadyShown || (() => false);
+    const shown = host().shownFilter ? host().shownFilter() : () => false;
     const scopes = [scope];
     while (scopes.length && vars.length < maxChildren) {
       const children = await host().getChildren(scopes.shift());
@@ -1561,6 +1588,8 @@
     reloadFailed: () => { if (reloading) { waitingHistory = []; failedReload = true; } },
     // A reload or restore has not come back yet (Undo/Redo wait for it).
     isRestoring: () => reloading || restorePending,
+    isReloading: () => reloading,
+    deferWhileApplying,
     init,
     setSessionFile: (file) => { host().config.sessionFile = file; return offerSessionFile(); },
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
