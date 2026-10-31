@@ -75,6 +75,33 @@ struct GoToFileTests {
     }
 
     @Test
+    func testNarrowingAnExtendedQueryMatchesAFullRanking() {
+        let paths = Self.tree + (0..<2_000).map { "gen/m\($0 % 37)/unit_\($0).sv" }
+        let index = GoToFileRanker.Index(paths: paths)
+        var previous: GoToFileRanker.Ranking?
+        var typed = ""
+        for character in "un_1sv" {
+            typed.append(character)
+            let narrowed = GoToFileRanker.rank(index: index, query: typed, limit: 50, within: previous?.matches)
+            let full = GoToFileRanker.rank(index: index, query: typed, limit: 50)
+            #expect(narrowed.paths == full.paths, "query \(typed)")
+            #expect(narrowed.matches == full.matches, "query \(typed)")
+            previous = narrowed
+        }
+    }
+
+    @Test
+    func testRankingFiftyThousandPathsIsFastEnoughToType() {
+        let paths = (0..<GoToFileSnapshot.maxPaths).map { "src/module_\($0 % 211)/sub\($0 % 13)/file_\($0).sv" }
+        let index = GoToFileRanker.Index(paths: paths)
+        let started = Date()
+        let first = GoToFileRanker.rank(index: index, query: "m", limit: 200)
+        _ = GoToFileRanker.rank(index: index, query: "mf", limit: 200, within: first.matches)
+        // A generous bound for debug builds; the target is well under 100 ms optimized.
+        #expect(Date().timeIntervalSince(started) < 3)
+    }
+
+    @Test
     func testCancellationStopsRanking() {
         let paths = (0..<2_000).map { "dir/file\($0).sv" }
         #expect(GoToFileRanker.rank(paths: paths, query: "file", limit: 10, shouldCancel: { true }).isEmpty)
@@ -99,19 +126,29 @@ struct GoToFileTests {
         #expect(!GoToFileSnapshot.parse(listOutput: output, maxPaths: 10).isTruncated)
     }
 
+    @Test
+    func testListOutputFindsTheMarkerAfterABannerAndDropsDuplicates() {
+        // A login shell may print to stdout, with or without a newline, before the marker.
+        for banner in ["Welcome", "conda activated\n", ""] {
+            let output = Data((banner + "\n" + SSHFileSearchCommand.gitListMarker + "\n").utf8)
+                + Self.nulList(["a.sv", "conflict.sv", "conflict.sv", "conflict.sv", "b.sv"])
+            #expect(GoToFileSnapshot.parse(listOutput: output).paths == ["a.sv", "conflict.sv", "b.sv"], "banner \(banner)")
+        }
+    }
+
     // MARK: Listing through login shells
 
     @Test
     func testFindListingPrunesExcludedDirectoriesInEveryShell() throws {
         let root = try SSHFileSearchTests.makeSearchTree()
         defer { try? FileManager.default.removeItem(at: root) }
-        let command = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 10).command
+        let command = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 10, watchdog: false).command
         for shell in SSHFileSearchTests.availableShells {
             let output = try SSHFileSearchTests.run(command, shell: shell, path: "/usr/bin:/bin")
             #expect(output.status == 0, "shell \(shell)")
-            #expect(output.stdout.starts(with: Data((SSHFileSearchCommand.findListMarker + "\n").utf8)), "shell \(shell)")
+            #expect(output.stdout.contains(Data((SSHFileSearchCommand.findListMarker + "\n").utf8)), "shell \(shell)")
             #expect(GoToFileSnapshot.parse(listOutput: output.stdout).paths.sorted()
-                == ["Upper.txt", "blob.bin", "dir/a:b.txt", "hostile.txt"], "shell \(shell)")
+                == ["Upper.txt", "blob.bin", "dir/a:b.txt", "hostile.txt", "src/build"], "shell \(shell)")
         }
     }
 
@@ -128,12 +165,12 @@ struct GoToFileTests {
             shell: "/bin/sh", path: "/usr/bin:/bin", directory: root.path
         )
         #expect(git.status == 0)
-        let command = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 10).command
+        let command = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 10, watchdog: false).command
         for shell in SSHFileSearchTests.availableShells {
             let output = try SSHFileSearchTests.run(command, shell: shell, path: "/usr/bin:/bin")
-            #expect(output.stdout.starts(with: Data((SSHFileSearchCommand.gitListMarker + "\n").utf8)), "shell \(shell)")
+            #expect(output.stdout.contains(Data((SSHFileSearchCommand.gitListMarker + "\n").utf8)), "shell \(shell)")
             let paths = GoToFileSnapshot.parse(listOutput: output.stdout).paths.sorted()
-            #expect(paths == [".gitignore", "Upper.txt", "blob.bin", "dir/a:b.txt", "hostile.txt", "sub/build/out.txt"],
+            #expect(paths == [".gitignore", "Upper.txt", "blob.bin", "dir/a:b.txt", "hostile.txt", "src/build", "sub/build/out.txt"],
                     "shell \(shell)")
         }
     }
@@ -161,12 +198,13 @@ struct GoToFileTests {
 
         let flood = GoToFileSnapshotLoader.Invocation(
             executable: "/bin/sh",
-            arguments: ["-c", "echo cmux-files:find; while :; do printf './file-name-padding-xxxxxxxx\\0'; done"]
+            arguments: ["-c", "echo cmux-files:find; i=0; while :; do i=$((i+1)); printf './file-name-padding-%08d\\0' $i; done"]
         )
         let capped = try await GoToFileSnapshotLoader.load(flood, timeoutSeconds: 10, maxOutputBytes: 64 * 1024)
         #expect(capped.isTruncated)
         #expect(!capped.paths.isEmpty)
-        #expect(capped.paths.allSatisfy { $0 == "file-name-padding-xxxxxxxx" })
+        // Every kept name is whole: the cut-off last one is dropped.
+        #expect(capped.paths.allSatisfy { $0.hasPrefix("file-name-padding-") && $0.count == 26 })
     }
 
     @Test
@@ -184,6 +222,24 @@ struct GoToFileTests {
     }
 
     @Test
+    func testLoaderToleratesBannersAndReportsShellsThatSkippedTheList() async throws {
+        let root = try SSHFileSearchTests.makeSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let list = SSHFileSearchCommand.fileList(rootPath: root.path, maxDepth: 8, remoteTimeoutSeconds: 10, watchdog: false).command
+        let bannered = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c", "printf Welcome; " + list])
+        let listed = try await GoToFileSnapshotLoader.load(bannered)
+        #expect(listed.paths.contains("dir/a:b.txt"))
+        let silent = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c", "echo motd; exit 0"])
+        await #expect(throws: GoToFileSnapshotError.failed(SSHFileSearchMessages.didNotRun)) {
+            _ = try await GoToFileSnapshotLoader.load(silent)
+        }
+        let noBase64 = GoToFileSnapshotLoader.Invocation(executable: "/bin/sh", arguments: ["-c", "exit 65"])
+        await #expect(throws: GoToFileSnapshotError.failed(SSHFileSearchMessages.decodeFailed)) {
+            _ = try await GoToFileSnapshotLoader.load(noBase64)
+        }
+    }
+
+    @Test
     func testSSHInvocationRunsTheListScriptThroughSSH() {
         let connection = SSHFileExplorerConnection(destination: "ews-01", port: nil, identityFile: nil, sshOptions: [])
         let invocation = GoToFileSnapshotLoader.invocation(
@@ -193,7 +249,11 @@ struct GoToFileTests {
         #expect(invocation.executable == "/usr/bin/ssh")
         #expect(invocation.arguments.prefix(3) == ["-o", "BatchMode=yes", "ews-01"])
         #expect(invocation.arguments.last
-            == SSHFileSearchCommand.fileList(rootPath: "/home/u/repo", maxDepth: 8, remoteTimeoutSeconds: 18).command)
+            == SSHFileSearchCommand.fileList(rootPath: "/home/u/repo", maxDepth: 8, remoteTimeoutSeconds: 18, watchdog: true).command)
+        #expect(invocation.keepsStdinOpen)
+        let local = GoToFileSnapshotLoader.invocation(for: .local(rootPath: "/tmp"), sshArguments: { _, c in [c] })
+        #expect(!local.keepsStdinOpen)
+        #expect(!local.arguments.joined().contains("kill 0"))
     }
 
     // MARK: Palette session
@@ -225,6 +285,31 @@ struct GoToFileTests {
         #expect(!model.isActive)
         #expect(model.results.isEmpty)
         #expect(model.selectedRelativePath == nil)
+    }
+
+    @MainActor
+    @Test
+    func testEnterBeforeTheRankingLandsOpensTheTopResult() async throws {
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in GoToFileSnapshot(paths: Self.tree, isTruncated: false) })
+        var opened: [String] = []
+        model.onDeferredOpen = { opened.append($0) }
+        model.begin(source: .local(rootPath: "/w"), workspaceId: UUID())
+        model.update(query: "cpu")
+        // Nothing is ranked yet, so Enter is queued instead of dropped.
+        #expect(model.openSelectionOrQueue() == nil)
+        try await Self.waitUntil { !opened.isEmpty }
+        #expect(opened == ["hdl/cpu.sv"])
+        // Once results are current, Enter opens at once and nothing is queued.
+        #expect(model.openSelectionOrQueue() == "hdl/cpu.sv")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(opened == ["hdl/cpu.sv"])
+        #expect(!model.opensWhenRanked)
+        // Ending the session drops a queued Enter.
+        model.update(query: "alu")
+        #expect(model.openSelectionOrQueue() == nil)
+        model.end()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(opened == ["hdl/cpu.sv"])
     }
 
     @MainActor

@@ -236,6 +236,14 @@ enum SSHFileSearchMessages {
         String(localized: "fileExplorer.search.sshTimedOut", defaultValue: "The host took too long to answer")
     }
 
+    static var didNotRun: String {
+        String(localized: "fileExplorer.search.sshDidNotRun", defaultValue: "The host’s shell did not run the search")
+    }
+
+    static var decodeFailed: String {
+        String(localized: "fileExplorer.search.sshDecodeFailed", defaultValue: "The host has no working base64 command")
+    }
+
     static var folderNotFound: String {
         String(localized: "fileExplorer.search.sshFolderNotFound", defaultValue: "Folder not found on the host")
     }
