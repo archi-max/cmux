@@ -84,7 +84,7 @@ extension LanguageServerSession {
             }
             return ports
         }
-        let direct = try await slangInstancePaths(uri: uri, position: position)
+        let direct = try await directInstancePaths(uri: uri, position: position)
         guard direct.isEmpty else { return direct }
         guard !(isInModule ?? documentIsInModule(uri, at: position)) else { return [] }
         let file = uri.standardizedFileURL.path
@@ -293,6 +293,15 @@ extension LanguageServerSession {
             index = end
         }
         return containers.last == "package"
+    }
+
+    func setDirectInstancePathsErrorForTesting(_ error: LanguageServerError?) {
+        directInstancePathsErrorForTesting = error
+    }
+
+    private func directInstancePaths(uri: URL, position: LSPPosition) async throws -> [String] {
+        if let error = directInstancePathsErrorForTesting { throw error }
+        return try await slangInstancePaths(uri: uri, position: position)
     }
 
     func setDeclarationHoverErrorForTesting(_ error: LanguageServerError?) {

@@ -84,4 +84,13 @@ import CmuxSyntaxHighlighting
         let found = await task.value
         #expect(found == nil)
     }
+
+    @Test func aCancelledOrFailedScopeKeepsWhatWasKnownOfTheTops() {
+        #expect(DesignInstanceProbe.designHasTops(scopeKinds: ["Package"], cancelled: false, current: nil) == false)
+        #expect(DesignInstanceProbe.designHasTops(scopeKinds: ["Package", "Instance"], cancelled: false, current: false) == true)
+        // A scroll or an edit cancelled getScope(""): its error is no answer.
+        #expect(DesignInstanceProbe.designHasTops(scopeKinds: nil, cancelled: true, current: false) == false)
+        #expect(DesignInstanceProbe.designHasTops(scopeKinds: ["Package"], cancelled: true, current: true) == true)
+        #expect(DesignInstanceProbe.designHasTops(scopeKinds: nil, cancelled: false, current: false) == false)
+    }
 }

@@ -22,6 +22,12 @@ public enum DesignInstanceProbe {
         !isFragment || designHasTops == false
     }
 
+    /// Whether the design has a top level, from getScope("") after a fragment found nowhere
+    /// (`scopeKinds`: its items' kinds, nil when it failed; packages are no top).
+    public static func designHasTops(scopeKinds: [String]?, cancelled: Bool, current: Bool?) -> Bool? {
+        scopeKinds?.contains { $0 != "Package" }
+    }
+
     /// Seconds before a module's instances are asked again: after `failures` lookups in a row
     /// no probe answered (the server busy), 2 s doubling to 30 s; else after `misses` lookups
     /// in a row that found none, 10 s doubling to 5 min.

@@ -359,6 +359,15 @@ struct SlangIncludeFragmentTests {
         }
     }
 
+    @Test func anUnresolvedFirstLookupStillPlacesTheFragment() async throws {
+        try await Self.withFixture { fixture async throws in
+            // getInstances can't resolve the path there (a macro, a type): the includer is still asked.
+            await fixture.session.setDirectInstancePathsErrorForTesting(.responseError(code: -32603, message: "unresolved"))
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 15), identifier: "clk")
+            #expect(paths == ["tb_wrapper.clk"])
+        }
+    }
+
     @Test func aMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
         try await Self.withFixture { fixture async throws in
             // sub `include`s `SUB_DEFS (defs.svh), not the fragment; tb_wrapper includes body.sv through `BODY_FILE.
