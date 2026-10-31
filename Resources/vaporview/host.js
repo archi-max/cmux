@@ -172,8 +172,8 @@
       },
       search(query, scope) { return call('searchnetlist', { query, scopeId: scope ? scope.id : 0xFFFFFFFF }); },
       valuesAtTime(time, paths) { return call('getvaluesattime', { time, paths: paths.join(' ') }); },
-      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js).
-      signalChanges(v) { return call('getsignalchanges', { signalId: v.signalId }); },
+      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js); null past maxChanges.
+      signalChanges(v, maxChanges) { return call('getsignalchanges', { signalId: v.signalId, maxChanges }); },
       // A 1-bit variable's rising-edge times (Float64Array), found in the worker.
       signalPosedges(v, maxEdges) { return call('getsignalposedges', { signalId: v.signalId, maxEdges }); },
       // Ends the worker and settles every call still waiting on it.
@@ -770,7 +770,8 @@
     alreadyShown: (netlistId) => alreadyShown(netlistId),
     // cmux-debugger.js: a variable's changes, VaporView events as they pass,
     // and its Locals group, which the link does not count as shown.
-    signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
+    // Undefined while the data is not read yet (null: past maxChanges).
+    signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(undefined)),
     // Null when the backend has no faster way than signalChanges.
     signalPosedges: (v, maxEdges) => (dataReady() && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
     get currentBackend() { return backend; },

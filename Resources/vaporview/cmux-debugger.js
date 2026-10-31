@@ -191,9 +191,12 @@
     // The viewer's markerSet event follows; the counter is drawn from it.
   }
 
+  // Why the last start() returned null: 'closed' | 'tooManyEdges' | 'noClock' | 'noEdges'.
+  let startFailure = null;
   async function start() {
     const backend = host.currentBackend;
     let edges;
+    startFailure = 'closed';
     try {
       edges = await ensureEdges();
     } catch (error) {
@@ -201,18 +204,22 @@
       if (error && error.cmuxClosed || host.currentBackend !== backend) { return null; }
       // Past MAX_EDGES (or the reader failed): say so rather than stall or run out of memory.
       host.log(error);
+      startFailure = 'tooManyEdges';
       window.cmuxUI.toast(S().debuggerTooManyEdges || '', 'warning');
       return null;
     }
     if (host.currentBackend !== backend) { return null; }
     if (!edges) {
+      startFailure = 'noClock';
       window.cmuxUI.toast(S().debuggerNoClock || '', 'warning');
       return null;
     }
     if (!edges.length) {
+      startFailure = 'noEdges';
       window.cmuxUI.toast(S().debuggerNoEdges || '', 'warning');
       return null;
     }
+    startFailure = null;
     if (!state.stepping) { state.stepping = true; render(); post('state'); }
     return edges;
   }
@@ -297,7 +304,7 @@
       return;
     }
     const next = Math.min(edges.length - 1, playIndex + 1);
-    const stop = playStop && next >= playStop.index ? playStop : null;
+    const stop = playStop && playStop.index > playIndex && next >= playStop.index ? playStop : null;
     const left = edges[playIndex];
     const missed = rtlPending !== null;
     playIndex = next;
@@ -322,7 +329,7 @@
     let target = Math.min(edges.length - 1,
       playOrigin.index + Math.floor((performance.now() - playOrigin.at) * state.rate / 1000));
     // A breakpoint hit on the way (or skipped over by this tick): play stops there.
-    const stop = playStop && target >= playStop.index ? playStop : null;
+    const stop = playStop && playStop.index > playIndex && target >= playStop.index ? playStop : null;
     if (stop) { target = stop.index; }
     const left = edges[playIndex];
     playIndex = target;
@@ -427,6 +434,8 @@
 
   function stop() {
     pause();
+    lastHitId = null;
+    renderBreakpoints();
     state.stepping = false;
     state.highlightRequest++;
     state.highlightIds = new Set();
@@ -737,6 +746,7 @@
   const breakpoints = [];
   let nextBreakpointId = 1;
   let lastHitId = null;
+  let lastHitBackend = null;  // a reload clears the hit mark
   let continueRequest = 0;
   const changeCache = new Map();  // JSON path -> { backend, changes } (null changes: past the cap)
 
@@ -808,9 +818,18 @@
     ? format(S().debuggerBreakpointEquals, bp.path.join('.'), bp.value)
     : format(S().debuggerBreakpointChanges, bp.path.join('.'))));
 
-  const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: bp.id === lastHitId, label: breakpointName(bp),
+  const isLastHit = (bp) => bp.id === lastHitId && lastHitBackend === host.currentBackend;
+  const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: isLastHit(bp), label: breakpointName(bp),
     path: bp.path ? bp.path.slice() : null, value: bp.kind === 'equals' ? bp.value : null,
     key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null });
+
+  // A breakpoint's warnings (signal gone, too many changes, a bad value) are said once each.
+  function warnOnce(bp, text) {
+    bp.warned = bp.warned || new Set();
+    if (bp.warned.has(text)) { return; }
+    bp.warned.add(text);
+    window.cmuxUI.toast(text, 'warning');
+  }
 
   // cmux owns line breakpoints: the list's checkbox and remove button tell it.
   const toldLine = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'lineBreakpoint', key: bp.key,
@@ -874,7 +893,9 @@
       window.cmuxUI.toast(format(S().debuggerBadValue, value, number(Number(v.width) || 1)), 'warning');
       return null;
     }
-    const same = breakpoints.find((b) => b.kind === kind && b.value === value && JSON.stringify(b.path) === JSON.stringify(path));
+    const width = Number(v.width) || 1;
+    const same = breakpoints.find((b) => b.kind === kind && JSON.stringify(b.path) === JSON.stringify(path)
+      && (kind !== 'equals' || parseValue(b.value, width) === pattern));
     if (same) {
       same.enabled = true;
       breakpointsChanged();
@@ -928,6 +949,8 @@
     const v = await signalOf(path);
     if (!v) { return null; }
     const changes = await host.signalChanges(v, MAX_BREAKPOINT_CHANGES);
+    // Undefined: not read yet, so not kept (null, or more than the cap: too many, kept).
+    if (changes === undefined) { return { backend, changes: undefined, width: Number(v.width) || 1 }; }
     const entry = { backend, changes: changes && changes.length <= MAX_BREAKPOINT_CHANGES ? changes : null, width: Number(v.width) || 1 };
     if (host.currentBackend === backend) { changeCache.set(key, entry); }
     return entry;
@@ -961,22 +984,25 @@
     const paths = bp.kind === 'line' ? bp.paths : [bp.path];
     let times = [];
     let found = 0;
+    let incomplete = false;
     for (const path of paths) {
       const entry = await changesOf(path, backend);
       if (host.currentBackend !== backend) { return null; }
       if (!entry) {
-        if (bp.kind !== 'line') { window.cmuxUI.toast(format(S().debuggerBreakpointSignalGone, path.join('.')), 'warning'); }
+        if (bp.kind !== 'line') { warnOnce(bp, format(S().debuggerBreakpointSignalGone, path.join('.'))); }
         continue;
       }
+      // Not read yet (the backend is still loading): asked again on the next search.
+      if (entry.changes === undefined) { incomplete = true; continue; }
       if (!entry.changes) {
-        window.cmuxUI.toast(format(S().debuggerTooManyChanges, path.join('.')), 'warning');
+        warnOnce(bp, format(S().debuggerTooManyChanges, path.join('.')));
         continue;
       }
-      // A restored value is read once the signal's width is known.
-      if (bp.kind === 'equals' && !bp.pattern) {
+      // A restored value is read once the signal's width is known, and again when a reload changed it.
+      if (bp.kind === 'equals' && (!bp.pattern || bp.pattern.length !== entry.width)) {
         bp.pattern = parseValue(bp.value, entry.width);
         if (!bp.pattern) {
-          window.cmuxUI.toast(format(S().debuggerBadValue, bp.value, number(entry.width)), 'warning');
+          warnOnce(bp, format(S().debuggerBadValue, bp.value, number(entry.width)));
           continue;
         }
       }
@@ -985,7 +1011,9 @@
     }
     if (!found) { return null; }
     times.sort((a, b) => a - b);
-    bp.times = Float64Array.from(times.filter((t, i) => i === 0 || t !== times[i - 1]));
+    const unique = Float64Array.from(times.filter((t, i) => i === 0 || t !== times[i - 1]));
+    if (incomplete) { return unique; }
+    bp.times = unique;
     bp.timesFor = backend;
     return bp.times;
   }
@@ -1013,8 +1041,8 @@
       const at = from === null ? -1 : edgeIndexAt(edges, from);
       const i = firstAfter(at >= 0 ? edges[at] : -Infinity);
       if (i >= times.length) { return null; }
-      const index = landingIndex(edges, times[i]);
-      return index < edges.length ? { time: times[i], index } : null;
+      // index edges.length: after the last posedge, so no cycle to land on (any hit that has one is nearer).
+      return { time: times[i], index: landingIndex(edges, times[i]) };
     }
     if (from === null) { return null; }
     let before = edgeIndexAt(edges, from);
@@ -1046,6 +1074,7 @@
 
   function announceHit(found, edges) {
     lastHitId = found.bp.id;
+    lastHitBackend = host.currentBackend;
     renderBreakpoints();
     window.cmuxUI.toast(format(S().debuggerBreakpointHit, breakpointName(found.bp), timeText(found.time), number(found.index + 1)), 'info');
     return { id: found.bp.id, time: found.time, landed: edges[found.index], cycle: found.index + 1 };
@@ -1062,7 +1091,7 @@
     }
     const request = ++continueRequest;
     const edges = await start();
-    if (!edges) { return Object.assign(publicState(), { hit: null, reason: 'noClock' }); }
+    if (!edges) { return Object.assign(publicState(), { hit: null, reason: startFailure || 'noClock' }); }
     pause();
     const backend = host.currentBackend;
     const found = await findHit(edges, markerTime(), dir);
@@ -1071,6 +1100,10 @@
     if (!found) {
       window.cmuxUI.toast((dir > 0 ? S().debuggerNoHitForward : S().debuggerNoHitBack) || '', 'info');
       return Object.assign(publicState(), { hit: null, reason: dir > 0 ? 'end' : 'start' });
+    }
+    if (found.index >= edges.length) {
+      window.cmuxUI.toast(format(S().debuggerHitAfterLastEdge, breakpointName(found.bp), timeText(found.time)), 'info');
+      return Object.assign(publicState(), { hit: null, reason: 'afterLastEdge', time: found.time });
     }
     moveMarker(edges[found.index]);
     const hit = announceHit(found, edges);
@@ -1085,7 +1118,10 @@
     const edges = state.edges;
     if (!edges) { playStop = null; return; }
     const found = breakpoints.some((b) => b.enabled) ? await findHit(edges, edges[playIndex], 1) : null;
-    if (request === playStopRequest && state.edges === edges) { playStop = found; }
+    if (request !== playStopRequest || state.edges !== edges) { return; }
+    // Play went past it while it was searched: search again from where play is (play never moves back).
+    if (found && found.index <= playIndex && state.playing) { refreshPlayStop(); return; }
+    playStop = found;
   }
 
   // ---- the breakpoint list, at the bottom of the netlist pane ----
@@ -1108,9 +1144,9 @@
     breakpointList.appendChild(title);
     for (const bp of breakpoints) {
       const row = document.createElement('div');
-      row.className = 'cmux-breakpoint' + (bp.id === lastHitId ? ' hit' : '');
+      row.className = 'cmux-breakpoint' + (isLastHit(bp) ? ' hit' : '');
       row.style.cssText = 'display: flex; align-items: center; gap: 4px; padding: 1px 6px; line-height: 20px; white-space: nowrap;'
-        + (bp.id === lastHitId ? ' font-weight: 600;' : '');
+        + (isLastHit(bp) ? ' font-weight: 600;' : '');
       const box = document.createElement('input');
       box.type = 'checkbox';
       box.checked = bp.enabled;
@@ -1141,8 +1177,12 @@
     return [
       { label: s.debuggerBreakWhenChanges || '', run: () => addBreakpoint({ path, kind: 'change' }) },
       { label: s.debuggerBreakWhenEquals || '', run: async () => {
-        const value = await window.cmuxUI.prompt({ title: format(s.debuggerBreakEqualsPrompt, path.join('.')), placeholder: s.debuggerBreakEqualsPlaceholder || '' });
-        if (value !== undefined && String(value).trim()) { await addBreakpoint({ path, kind: 'equals', value }); }
+        try {
+          const value = await window.cmuxUI.prompt({ title: format(s.debuggerBreakEqualsPrompt, path.join('.')), placeholder: s.debuggerBreakEqualsPlaceholder || '' });
+          if (value !== undefined && String(value).trim()) { await addBreakpoint({ path, kind: 'equals', value }); }
+        } catch (error) {
+          host.log(error);
+        }
       } },
     ];
   }
