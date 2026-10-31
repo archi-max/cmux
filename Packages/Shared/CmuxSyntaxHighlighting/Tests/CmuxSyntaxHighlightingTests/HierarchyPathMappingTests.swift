@@ -147,6 +147,45 @@ import Testing
         #expect(HierarchyPrefixInference.signalName(.init(name: "gen[0]", isScope: true)) == "gen[0]")
     }
 
+    @Test func onlyRangeNamedSignalsCanPlaceTheRoot() async {
+        // A root of clk, rst and pc: the dut shares them only through their ranges, the testbench
+        // shares clk and rst exactly but has no pc.
+        let root: [HierarchyNode] = [.init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "pc", isScope: false)]
+        let hierarchy: [String: [HierarchyNode]] = [
+            "": [.init(name: "top_tb", isScope: true)],
+            "top_tb": [.init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "dut", isScope: true)],
+            "top_tb.dut": [.init(name: "clk", isScope: false), .init(name: "rst[0]", isScope: false), .init(name: "pc[0:0]", isScope: false)],
+        ]
+        let result = await HierarchyPrefixInference.dumpRules(forDesignPath: "cpu.pc", designRootChildren: root, dumpChildren: Self.children(of: hierarchy))
+        #expect(result == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
+    }
+
+    @Test func aDesignPathWithASelectStillMatchesExactly() async {
+        // An element the dump lists by its index (`mem[3]`), asked for as such.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"]!.append(.init(name: "mem[3]", isScope: false))
+        let result = await HierarchyPrefixInference.dumpRules(
+            forDesignPath: "cpu.mem[3]",
+            designRootChildren: Self.cpuChildren + [.init(name: "mem", isScope: false)],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(result == .found([.init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true)]))
+    }
+
+    @Test func aRangeNamedDumpSignalFindsItsDesignRoot() async {
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"] = [
+            .init(name: "clk", isScope: false), .init(name: "rst", isScope: false), .init(name: "pc[0:0]", isScope: false),
+            .init(name: "pc_next", isScope: false), .init(name: "rf", isScope: true),
+        ]
+        let rule = await HierarchyPrefixInference.designRule(
+            forDumpPath: "top_tb.dut.pc[0:0]",
+            designRoots: ["cpu": Self.cpuChildren],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(rule == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true))
+    }
+
     @Test func aSignalTheDutDidNotDumpIsNotTakenFromAMonitor() async {
         // dut lost `pc` (optimised away); the monitor has a `pc` but shares only clk and pc with cpu.
         var hierarchy = Self.dump
