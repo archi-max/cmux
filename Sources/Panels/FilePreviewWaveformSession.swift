@@ -199,6 +199,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         let host: String
         let sshArguments: WaveformFSDBHelper.SSHArguments
 
+        @MainActor
         static func resolve(panel: FilePreviewPanel) -> RemoteFSDB? {
             guard panel.fileURL.pathExtension.lowercased() == "fsdb",
                   let remotePath = panel.cloudPreviewRemotePath,
