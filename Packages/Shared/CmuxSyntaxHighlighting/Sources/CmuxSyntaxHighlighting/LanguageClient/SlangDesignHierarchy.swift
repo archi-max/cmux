@@ -203,7 +203,13 @@ extension LanguageServerSession {
             if let units = texts[link.uri], Self.typedefIsFixed(in: String(decoding: units, as: UTF16.self), line: link.line) { return width }
         }
         guard let width = Self.resolvedWidth(fromHover: hover) else { return nil }
-        let instances = try await instancePathsSkippingUnresolved(uri: location.uri, position: location.range.start)
+        let instances: [String]
+        do {
+            if let error = declarationInstancesErrorForTesting { throw error }
+            instances = try await slangInstancePaths(uri: location.uri, position: location.range.start)
+        } catch where Self.isUnresolvedPath(error) {
+            instances = []
+        }
         let inTop = !Self.parentPath(of: path).contains(".")
         return instances.count == 1 || (instances.isEmpty && inTop) ? width : nil
     }
@@ -325,6 +331,10 @@ extension LanguageServerSession {
 
     func setDeclarationHoverErrorForTesting(_ error: LanguageServerError?) {
         declarationHoverErrorForTesting = error
+    }
+
+    func setDeclarationInstancesErrorForTesting(_ error: LanguageServerError?) {
+        declarationInstancesErrorForTesting = error
     }
 
     /// The named port connections of an instance, read from its instantiation's text (`texts`
