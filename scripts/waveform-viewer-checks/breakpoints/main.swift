@@ -24,6 +24,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var movedEvents: [[String: Any]] = []
   var openedCount = 0
   var watchEvents: [[String]] = []
+  /// The reload to the wide dump (runReviewChecks), for the loading check.
+  var wideReloadJS = ""
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -635,6 +637,48 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     """) as? [Any]
     expect(capped?.first as? Int == 64 && (capped?.last as? String)?.contains("64 of 100") == true, "line paths capped at 64, said: \(String(describing: capped))")
     _ = await dbg("setLineBreakpoints({ items: [] })")
+
+    // L1: F5 while playing pauses (it does not also jump to the next hit).
+    _ = await add("mode")
+    await setMarker(0)
+    _ = await dbg("play({ rate: 2 })")
+    let f5 = await dbg("continue({ dir: 1, orTogglePlay: true })")
+    expect(f5?["playing"] as? Bool == false && f5?["reason"] as? String == "paused", "F5 while playing pauses: \(String(describing: f5))")
+    await removeAll()
+    // L2: play from before the first edge stops on a hit that lands on edge 0.
+    _ = await add("data", "equals", value: "'hx")
+    await setMarker(0)
+    await clearToasts()
+    _ = await dbg("play({ rate: 2 })")
+    _ = await waitForPause(40)
+    let firstEdge = await marker(5)
+    let firstToasts = await toasts()
+    expect(firstEdge == 5 && firstToasts.contains { $0.hasPrefix("Breakpoint") }, "a hit on the first edge stops play there: \(String(describing: firstEdge)) \(firstToasts)")
+    await removeAll()
+    // L6: a breakpoint disabled while playing no longer stops play.
+    let stopper = await add("mode")
+    await setMarker(0)
+    _ = await dbg("play({ rate: 50 })")
+    _ = await call("cmuxWaveform.debugger.setBreakpointEnabled({ id: \(stopper ?? -1), enabled: false }); return null")
+    _ = await waitForPause(80)
+    let ended = await marker()
+    expect(ended == 995, "a disabled breakpoint does not stop play: \(String(describing: ended))")
+    _ = await dbg("pause()")
+    await removeAll()
+    // L5: a search while the file reloads says it is loading, and warns of nothing.
+    _ = await add("mode")
+    await clearToasts()
+    let reopened = openedCount
+    let loading = await call("""
+      \(wideReloadJS);
+      return await cmuxWaveform.debugger.continue({ dir: 1 });
+    """) as? [String: Any]
+    for _ in 0..<100 where openedCount == reopened { await sleep(50) }
+    await sleep(300)
+    let loadingToasts = await toasts()
+    expect(loading?["reason"] as? String != "end" && !loadingToasts.contains { $0.contains("not in this waveform") },
+           "while loading: not 'the end', no warnings: \(String(describing: loading?["reason"])) \(loadingToasts)")
+    await removeAll()
   }
 
   /// Conditional breakpoints: a hit counts only when its condition is true at the posedge it lands on.
@@ -828,10 +872,19 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let wideURL = scheme.serve(fileURL: wide)
     let wideSize = (try? FileManager.default.attributesOfItem(atPath: wide.path)[.size] as? NSNumber)?.intValue ?? 0
     let opened = openedCount
-    _ = await call("cmuxWaveform.reload({ url: '\(wideURL.absoluteString)', size: \(wideSize) }); return null")
+    wideReloadJS = "cmuxWaveform.reload({ url: '\(wideURL.absoluteString)', size: \(wideSize) })"
+    _ = await call("\(wideReloadJS); return null")
     for _ in 0..<100 where openedCount == opened { await sleep(50) }
     expect(openedCount > opened, "reloaded with the wide dump")
     expect((await list()).allSatisfy { $0["hit"] as? Bool == false }, "a reload clears the hit mark: \(await list())")
+    // Review L4: and the list's row is drawn again without it.
+    var boldRows = -1
+    for _ in 0..<20 {
+      boldRows = (await call("return document.querySelectorAll('#cmux-breakpoints .cmux-breakpoint.hit').length") as? Int) ?? -1
+      if boldRows == 0 { break }
+      await sleep(50)
+    }
+    expect(boldRows == 0, "the hit row is redrawn after a reload: \(boldRows)")
     _ = await dbg("jump({ to: 'first' })")
     _ = await marker(5)
     let (wideHit, _) = await go(1, expect: 605)

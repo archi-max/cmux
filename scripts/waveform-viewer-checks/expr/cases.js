@@ -19,6 +19,7 @@ function runExprCases() {
     'gen[0].q': { width: 1, value: '1' },
     'a.b': { width: 1, value: '0', escaped: true },
     w100: { width: 100, value: '1'.repeat(100) },
+    w64: { width: 64, value: '0'.repeat(64) },
   };
   const env = (path) => {
     const key = path.length === 1 && path[0] === 'a.b' ? 'a.b' : path.join('.');
@@ -80,6 +81,11 @@ function runExprCases() {
     // names: dotted paths, generate scopes, escaped identifiers, wide values
     ['u_core.count + 0', "32'h00000009"], ['gen[0].q', "1'b1"], ['\\a.b  | 0', "32'h00000000"], ['w100 + 1', "100'h0000000000000000000000000"],
     ['w100[99:96]', "4'b1111"],
+    // An unsized based literal whose leftmost digit is x or z fills the whole context width (1800 5.7.1;
+    // VCS W-2024.09: logic [63:0] b = 0; b | 'hx is 64 x's); another leftmost digit zero-extends.
+    ["w64 | 'hx", "64'hxxxxxxxxxxxxxxxx"], ["w64 | 'h1x", "64'h000000000000001x"], ["w64 ^ 'bz", "64'hxxxxxxxxxxxxxxxx"],
+    ["w64 + 'dx", "64'hxxxxxxxxxxxxxxxx"], ["{1'b1, 63'h0} | 'hz0", "64'hxxxxxxxxxxxxxxx0"], ["'hx", "32'hxxxxxxxx"],
+    ["w64 | 36'hx", "64'h0000000xxxxxxxxx"],
     // refused
     ['', 'error:empty@0'], ['   ', 'error:empty@3'], ['a +', 'error:syntax@3'], ['a / b', 'error:unsupported@2'], ['a % b', 'error:unsupported@2'],
     ['a ** 2', 'error:unsupported@2'], ['a ==? b', 'error:unsupported@2'], ['a !=? b', 'error:unsupported@2'], ['a = b', 'error:unsupported@2'],
@@ -117,9 +123,9 @@ function runExprCases() {
   check(JSON.stringify(truth) === '[true,false,false,false]', 'truthy: ' + JSON.stringify(truth));
   // decimal and octal; unknown digits.
   const fmt = (t, radix) => E.format(E.evaluate(E.parse(t).ast, env).value, radix);
-  const formats = [fmt('a', 'decimal'), fmt('c4', 'decimal'), fmt("8'hff", 'octal'), fmt("8'b0000_x1zz", 'hex'), fmt("8'b0000_zzzz", 'hex'),
+  const formats = [fmt('a', 'decimal'), fmt('c4', 'decimal'), fmt('z4', 'decimal'), fmt("4'b10z1", 'decimal'), fmt("4'bxxxx", 'decimal'), fmt("8'hff", 'octal'), fmt("8'b0000_x1zz", 'hex'), fmt("8'b0000_zzzz", 'hex'),
     fmt("8'b0000_xxxx", 'hex'), fmt("8'b0000_xzzz", 'hex'), fmt('w100', 'decimal')];
-  check(JSON.stringify(formats) === JSON.stringify(["8'd60", "4'dx", "8'o377", "8'h0X", "8'h0z", "8'h0x", "8'h0X", "100'd1267650600228229401496703205375"]),
+  check(JSON.stringify(formats) === JSON.stringify(["8'd60", "4'dX", "4'dz", "4'dZ", "4'dx", "8'o377", "8'h0X", "8'h0z", "8'h0x", "8'h0X", "100'd1267650600228229401496703205375"]),
     'formats: ' + JSON.stringify(formats));
   // Equal values compare equal (watches highlight a change); fromBits pads like the viewer's values.
   check(E.same(E.fromBits('1', 4), E.fromBits('0001', 4)) && !E.same(E.fromBits('x', 4), E.fromBits('z', 4)), 'same and fromBits');
