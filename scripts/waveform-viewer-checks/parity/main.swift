@@ -15,7 +15,8 @@
 //     reloaded viewer;
 //   - a late <dump>.json is offered only while the user hasn't changed the view;
 //   - a kept restore survives a reload during it, and an interrupted user load
-//     keeps the unsaved marker and says it was interrupted.
+//     keeps the unsaved marker and says it was interrupted (by a reload or by
+//     opening another file), also when the reload comes right after the apply.
 // Exits 0 and prints PARITY CHECKS PASSED, or prints CHECK FAILED and exits 2.
 // Usage: parity <assetRoot> <parity.vcd>
 import AppKit
@@ -377,6 +378,67 @@ extension Harness {
           check(r["dirtyBefore"] as? Bool == true, "a user change marks the view unsaved")
           check(r["dirtyAfter"] as? Bool == true, "an interrupted load keeps the unsaved marker")
           check(r["toast"] as? Bool == true, "an interrupted load says so")
+          self.phaseJ()
+        }
+      }
+    }
+  }
+
+  // A reload right after the kept restore's apply-state is posted, before the
+  // viewer's context comes back, still brings the rows back.
+  func phaseJ() {
+    let restore: [String: Any] = ["dirty": false, "state": ["displayedSignals": [
+      ["dataType": "netlist-variable", "name": "top.clk"],
+      ["dataType": "netlist-variable", "name": "top.core.acc"],
+    ]]]
+    web.evaluateJavaScript("""
+    (() => {
+      const host = window.cmuxWaveform.host, original = host.toWebview;
+      host.toWebview = (m) => {
+        original(m);
+        if (m && m.command === 'apply-state' && m.stateChangeType === 1) {
+          host.toWebview = original;
+          // After restoreState's continuation (microtasks), before the frame's
+          // contextUpdate comes back (a message event, a later task).
+          let p = Promise.resolve();
+          for (let i = 0; i < 20; i++) { p = p.then(() => {}); }
+          p.then(() => window.cmuxWaveform.reload({}));
+        }
+      };
+      return 1;
+    })()
+    """)
+    openFresh(restore: restore) {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+        self.js("const st = C.sessionSnapshot().state; R.rows = st ? st.displayedSignals.length : 0;") { r in
+          check(r["rows"] as? Int == 2, "a reload just after the restore was posted keeps it (rows \(r["rows"] ?? "nil"))")
+          self.phaseK()
+        }
+      }
+    }
+  }
+
+  // A load the user started that the panel's opening another file overtakes
+  // says another file opened, not that the file reloaded.
+  func phaseK() {
+    strings["messageSessionLoadInterruptedByOpen"] = "OTHER FILE"
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        let argument: [String: Any] = [
+          "url": self.scheme.serve(fileURL: waveURL).absoluteString, "size": self.size(), "format": "vcd",
+          "path": "/work/sim/other.vcd", "strings": self.strings, "settings": [String: Any](),
+        ]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)!
+        self.js("""
+        C.applySessionFile({ text: \(Self.jsString(Self.sessionText)), path: '/work/sim/parity.json' });
+        window.cmuxWaveform.open(\(json));
+        await sleep(1500);
+        const texts = Array.from(document.querySelectorAll('.cmux-toast')).map((t) => t.textContent);
+        R.open = texts.includes('OTHER FILE');
+        R.reload = texts.includes('INTERRUPTED');
+        """) { r in
+          check(r["open"] as? Bool == true, "an open that interrupts a load says another file opened")
+          check(r["reload"] as? Bool == false, "and doesn't say the file reloaded")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
