@@ -820,6 +820,162 @@ extension Harness {
         """) { r in
           check(r["sent"] as? Int == 0, "the unloaded viewer sends an update with no rows (\(r["sent"] ?? "nil"))")
           check(r["saved"] as? Int == 1, "a save after it still holds the rows from before the reload (rows \(r["saved"] ?? "nil"))")
+          self.phaseW()
+        }
+      }
+    }
+  }
+
+  // Undoing a new viewer's first change goes back to VaporView's empty
+  // WebviewState: no marker, zoom 1, scroll 0, pixel time 1, Auto Reload from
+  // the setting. The time unit is the file's.
+  func phaseW() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        let applied = null;
+        const toWebview = H.toWebview;
+        H.toWebview = (m) => { if (m && m.command === 'apply-state') { applied = m.state; } return toWebview(m); };
+        await C.run('cmux.undo');
+        await sleep(300);
+        H.toWebview = toWebview;
+        R.state = applied;
+        R.unit = H.doc.metadata.timeUnit;
+        """) { r in
+          let st = r["state"] as? [String: Any] ?? [:]
+          check(st["markerTime"] is NSNull && st["altMarkerTime"] is NSNull && st["selectedSignal"] is NSNull,
+                "the empty view has no marker or selection (\(st))")
+          check(st["zoomRatio"] as? Double == 1 && st["scrollLeft"] as? Double == 0 && st["defaultPixelTime"] as? Double == 1,
+                "the empty view has zoom 1, scroll 0 and pixel time 1 (\(st))")
+          check(st["autoReload"] as? Bool == false, "the empty view's Auto Reload is the setting (off)")
+          check(st["displayTimeUnit"] as? String == r["unit"] as? String, "the empty view's time unit is the file's (\(st["displayTimeUnit"] ?? "nil"))")
+          self.phaseX()
+        }
+      }
+    }
+  }
+
+  // The reload bar a file change showed goes away when Auto Reload is switched
+  // on, which reloads.
+  func phaseX() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        if (vd().getElementById('autoReload').checked) { vd().getElementById('autoReload').click(); await sleep(300); }
+        C.fileChanged();
+        R.barShown = bar();
+        vd().getElementById('autoReload').click();
+        await sleep(300);
+        R.reloads = reloads();
+        R.barAfter = bar();
+        """) { r in
+          check(r["barShown"] as? Bool == true, "a file change with Auto Reload off shows the reload bar")
+          check(r["reloads"] as? Int == 1, "switching Auto Reload on then reloads (\(r["reloads"] ?? "nil"))")
+          check(r["barAfter"] as? Bool == false, "and hides the bar")
+          self.phaseY()
+        }
+      }
+    }
+  }
+
+  // A netlist search, a point query or a signal read while a reload opens the
+  // file again fails nothing and doesn't break the reload.
+  func phaseY() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        let errorsBefore = self.errors.count
+        self.js("""
+        const drawn = () => document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({});
+        const input = document.querySelector('#netlist-search input');
+        input.value = 'clk';
+        input.dispatchEvent(new Event('input'));
+        const calls = [
+          Promise.resolve().then(() => H.valuesAtTime(10, ['top.clk'])),
+          Promise.resolve().then(() => H.signalChanges({ signalId: 0 })),
+          Promise.resolve().then(() => H.search('acc')),
+        ].map((p) => p.then(() => 'ok', (e) => (e && e.cmuxClosed) ? 'closed' : String((e && e.message) || e)));
+        R.calls = await Promise.all(calls);
+        await reloaded();
+        R.rows = drawn();
+        input.value = '';
+        input.dispatchEvent(new Event('input'));
+        """) { r in
+          check(self.errors.count == errorsBefore, "calls during a reload's open fail nothing (\(self.errors.suffix(from: errorsBefore)))")
+          check((r["calls"] as? [String])?.allSatisfy { $0 == "ok" || $0 == "closed" } == true,
+                "they answer or are dropped quietly (\(r["calls"] ?? "nil"))")
+          check(r["rows"] as? Int == 1, "and the reload brings the row back (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseZ()
+        }
+      }
+    }
+  }
+
+  // After a failed reload, what the empty viewer sends (a marker set, Auto
+  // Reload switched) leaves the kept view and the undo history alone; only
+  // its Auto Reload counts.
+  func phaseZ() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        if (vd().getElementById('autoReload').checked) { vd().getElementById('autoReload').click(); await sleep(300); }
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({ url: 'cmux-waveform://local/missing.vcd', size: 10 });
+        await sleep(1500);
+        H.toWebview({ command: 'setMarker', time: 20, markerType: 0 });
+        await sleep(300);
+        vd().getElementById('autoReload').click();
+        await sleep(300);
+        await C.run('vaporview.saveViewerSession');
+        const save = sent.filter((m) => m.type === 'saveSession').pop();
+        const file = save ? JSON.parse(save.text) : null;
+        R.saved = file ? file.displayedSignals.length : -1;
+        R.marker = file ? file.markerTime : 'none';
+        const before = reloads();
+        C.fileChanged();
+        R.reloads = reloads() - before;
+        """) { r in
+          check(r["saved"] as? Int == 1, "the empty viewer's updates don't empty the kept view (rows \(r["saved"] ?? "nil"))")
+          check(!(r["marker"] is Int) || r["marker"] as? Int != 20, "nor set its marker (\(r["marker"] ?? "nil"))")
+          check(r["reloads"] as? Int == 1, "but Auto Reload switched on there counts (\(r["reloads"] ?? "nil"))")
+          self.phaseZ2()
+        }
+      }
+    }
+  }
+
+  // A second reload while the first one's restore resolves keeps the selected
+  // signal for a save during it.
+  func phaseZ2() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        let saved = null;
+        const restoreState = C.restoreState;
+        C.restoreState = (m) => {
+          C.restoreState = restoreState;
+          const p = restoreState(m);
+          window.cmuxWaveform.reload({});
+          C.run('vaporview.saveViewerSession').then(() => {
+            const save = sent.filter((x) => x.type === 'saveSession').pop();
+            saved = save ? JSON.parse(save.text) : null;
+          });
+          return p;
+        };
+        window.cmuxWaveform.reload({});
+        await sleep(2500);
+        R.rows = saved ? saved.displayedSignals.length : -1;
+        R.selected = saved && saved.selectedSignal ? saved.selectedSignal.name : null;
+        """) { r in
+          check(r["rows"] as? Int == 1, "a save in the second reload holds the rows (\(r["rows"] ?? "nil"))")
+          check(r["selected"] as? String == "top.clk", "and the selected signal (\(r["selected"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
@@ -836,5 +992,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let harness = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { harness.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 120) { print("CHECK FAILED: timeout"); exit(2) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 180) { print("CHECK FAILED: timeout"); exit(2) }
 app.run()
