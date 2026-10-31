@@ -105,22 +105,43 @@
       colorPalette: [], errorColorPalette: ['#C00000'], themeValid: false, autoReload: false });
   }
 
+  // What VS Code would hold for its menus and keybindings: the context keys the
+  // webview sets (setContext) and its latest webview context (contextUpdate:
+  // selected rows, markers, the right-clicked item). An in-page context menu
+  // and keyboard layer can read these later.
+  const viewerContext = { keys: {}, webview: null };
+
+  // VS Code commands the webview executes (executeCommand). Only setContext is
+  // handled; menu and keybinding commands can register here.
+  const commandHandlers = {
+    setContext: ([key, value]) => { viewerContext.keys[key] = value; },
+  };
+
+  const webviewHandlers = {
+    ready: () => { webviewReady = true; sendInit(); },
+    initialized: () => { toNative({ type: 'opened' }); },
+    fetchDataFromFile: async (m) => {
+      const signals = m.requestList.filter((r) => r.type === 'signal').map((r) => r.signalId);
+      const enums = m.requestList.filter((r) => r.type === 'enum').map((r) => r.netlistId);
+      if (enums.length) { await call('getenumdata', { netlistIds: enums }); }
+      if (signals.length) { await call('getsignaldata', { signalIds: signals }); }
+    },
+    contextUpdate: (m) => { viewerContext.webview = m; },
+    executeCommand: (m) => {
+      const handler = commandHandlers[m.commandName];
+      if (handler) { handler(m.args || []); }
+    },
+    copyToClipboard: (m) => { toNative({ type: 'copy', text: String(m.text || '') }); },
+    logOutput: (m) => { toNative({ type: 'log', message: String(m.message) }); },
+    // restoreState, emitEvent, showMessage, updateConfiguration, handleDrop and
+    // focus have no cmux counterpart yet.
+  };
+
   async function fromWebview(m) {
+    const handler = webviewHandlers[m.command];
+    if (!handler) { return; }
     try {
-      switch (m.command) {
-        case 'ready': webviewReady = true; sendInit(); break;
-        case 'initialized': toNative({ type: 'opened' }); break;
-        case 'fetchDataFromFile': {
-          const signals = m.requestList.filter((r) => r.type === 'signal').map((r) => r.signalId);
-          const enums = m.requestList.filter((r) => r.type === 'enum').map((r) => r.netlistId);
-          if (enums.length) { await call('getenumdata', { netlistIds: enums }); }
-          if (signals.length) { await call('getsignaldata', { signalIds: signals }); }
-          break;
-        }
-        case 'copyToClipboard': toNative({ type: 'copy', text: String(m.text || '') }); break;
-        case 'logOutput': toNative({ type: 'log', message: String(m.message) }); break;
-        default: break; // VS Code commands, context updates and events have no cmux counterpart yet.
-      }
+      await handler(m);
     } catch (error) {
       fail(error);
     }
@@ -202,7 +223,7 @@
     }
   }
 
-  window.cmuxWaveform = { open, setTheme, applyThemeTo, fromWebview };
+  window.cmuxWaveform = { open, setTheme, applyThemeTo, fromWebview, viewerContext, commandHandlers };
   applyThemeTo(document);
   toNative({ type: 'ready' });
 })();

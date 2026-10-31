@@ -48,7 +48,10 @@ The bundled npm and Rust dependencies, with their licenses, are listed under
   `src/extension_core/document.ts` and `src/extension_core/viewer_provider.ts`):
   the extension-host side reduced to opening one file, answering the webview's
   `ready` / `initialized` / `fetchDataFromFile` / `copyToClipboard` messages,
-  and a simple netlist tree in place of VS Code's TreeView.
+  recording `contextUpdate` and `executeCommand setContext` state, and a simple
+  netlist tree in place of VS Code's TreeView. VaporView's VS Code context
+  menus and keybindings (contributed in its `package.json`) are not
+  reimplemented yet.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and
   foreground with the panel's colors.
