@@ -37,11 +37,12 @@
     edges: null,        // Float64Array of posedge times, ascending
     edgesFor: null,     // [clock, backend] the edges were read for
     loading: null,
+    loadingFor: null,   // the backend a load in progress reads from
     stepping: false,
     playing: false,
     rate: 10,
     lastCycleKey: null,
-    locals: { path: null, request: 0, groupId: null, label: null },
+    locals: { path: null, request: 0, groupId: null, label: null, busy: false },
     highlightIds: new Set(),  // netlistIds the editor highlights
     highlightRequest: 0,
     highlighted: [],    // their rowIds as drawn
@@ -87,8 +88,10 @@
     const backend = host.currentBackend;
     if (!backend || !host.doc.metadata) { return null; }
     if (state.edges && state.edgesFor && state.edgesFor[1] === backend && state.edgesFor[0] === state.clock) { return state.edges; }
-    if (state.loading) { return state.loading; }
-    state.loading = (async () => {
+    // A load from a backend a reload closed fails; a new backend starts its own.
+    if (state.loading && state.loadingFor === backend) { return state.loading; }
+    state.loadingFor = backend;
+    const load = state.loading = (async () => {
       try {
         if (!state.clock || state.edgesFor && state.edgesFor[1] !== backend) {
           // A reload brings a new netlist: find the clock again by path.
@@ -114,10 +117,10 @@
           return state.edges;
         }
       } finally {
-        state.loading = null;
+        if (state.loading === load) { state.loading = null; state.loadingFor = null; }
       }
     })();
-    return state.loading;
+    return load;
   }
 
   // Index of the last posedge at or before `time`, -1 before the first.
@@ -162,7 +165,12 @@
     host.toNative(Object.assign({ type: 'debugger', event }, publicState()));
   }
 
+  // Times the debugger sent the marker to lately: a markerSet at any other time is the user's.
+  const sentTimes = [];
+
   function moveMarker(time) {
+    sentTimes.push(time);
+    if (sentTimes.length > 32) { sentTimes.shift(); }
     // Until the viewer reports it, the marker is where it was sent (a second
     // quick step starts from here, not from the old marker).
     marker.fromEvent = time;
@@ -235,8 +243,12 @@
     playTimer = setTimeout(tick, Math.max(16, Math.min(250, 1000 / state.rate)));
   }
 
+  let playBackend = null;
+
   function tick() {
     if (!state.playing || !state.edges) { return; }
+    // The file was reloaded: its edges may differ, so play stops.
+    if (host.currentBackend !== playBackend) { pause(); return; }
     const edges = state.edges;
     const target = Math.min(edges.length - 1,
       playOrigin.index + Math.floor((performance.now() - playOrigin.at) * state.rate / 1000));
@@ -254,6 +266,7 @@
     let index = time === null ? 0 : Math.max(0, edgeIndexAt(edges, time));
     if (index >= edges.length - 1) { index = 0; }
     playOrigin = { index, at: performance.now() };
+    playBackend = host.currentBackend;
     if (!state.playing) { state.playing = true; render(); post('state'); }
     if (time === null || edges[index] !== time) { moveMarker(edges[index]); }
     scheduleTick();
@@ -361,8 +374,10 @@
   function localsElement() {
     if (state.locals.groupId === null) { return null; }
     const el = topGroups().find((g) => { const c = rowContext(g); return c && c.groupId === state.locals.groupId; });
-    if (!el) { state.locals.groupId = null; state.locals.label = null; }
-    return el || null;
+    if (!el) { state.locals.groupId = null; state.locals.label = null; return null; }
+    // The user may have renamed it.
+    state.locals.label = groupLabel(el);
+    return el;
   }
 
   // Sends `msg` to the viewer frame and lets it run now, without passing the
@@ -382,8 +397,16 @@
   const localsName = () => S().debuggerLocals || 'Locals';
 
   // Saved signal lists name groups but carry no ids: Locals is the top-level group with its label while it exists.
-  host.isTransientGroup = (d) => !!d && d.dataType === 'signal-group' && state.locals.label !== null
-    && d.groupName === state.locals.label && localsElement() !== null;
+  host.isTransientGroup = (d) => !!d && d.dataType === 'signal-group' && localsElement() !== null
+    && d.groupName === state.locals.label;
+
+  // Where a row added next to the selection goes when the selection is in Locals: the end of the top level.
+  host.topLevelIndexOutsideTransient = () => {
+    const group = localsElement();
+    if (!group || !group.querySelector('.labels-group .is-selected')) { return undefined; }
+    const list = (host.viewerContext.webview && host.viewerContext.webview.displayedSignals) || [];
+    return list.length;
+  };
 
   function localsGroupSaved() {
     const list = (host.viewerContext.webview && host.viewerContext.webview.displayedSignals) || [];
@@ -431,6 +454,15 @@
     if (!state.stepping) { return false; }
     if (key === state.locals.path && localsElement()) { return true; }
     const request = ++state.locals.request;
+    state.locals.busy = true;
+    try {
+      return await fillLocals(path, key, request);
+    } finally {
+      if (request === state.locals.request) { state.locals.busy = false; }
+    }
+  }
+
+  async function fillLocals(path, key, request) {
     const scope = await host.findLinkItem(path, false);
     if (request !== state.locals.request) { return false; }
     if (!scope || scope.kind !== 'scope') { return false; }
@@ -623,8 +655,27 @@
   }
 
   // Rows came or went (Locals refilled, a signal pinned): light the highlighted signals' new rows.
-  host.contextListeners.push(() => {
-    if (state.highlightIds.size) { queueMicrotask(matchHighlightedRows); }
+  // A restore (undo, reload) dropped Locals: put it back.
+  let rowsSignature = '';
+  const signature = (list) => (list || []).map((d) => (d.dataType === 'signal-group'
+    ? '[' + d.groupName + ':' + signature(d.children) + ']' : String(d.netlistId))).join(',');
+  host.contextListeners.push((m) => {
+    if (m.displayedSignals) {
+      const next = signature(m.displayedSignals);
+      if (next !== rowsSignature) {
+        rowsSignature = next;
+        if (state.highlightIds.size) { queueMicrotask(matchHighlightedRows); }
+      }
+    }
+    if (state.stepping && state.locals.path && !state.locals.busy && !localsElement()) {
+      const path = JSON.parse(state.locals.path);
+      setTimeout(() => {
+        if (state.stepping && !state.locals.busy && !localsElement() && state.locals.path === JSON.stringify(path)) {
+          state.locals.path = null;
+          setLocals({ path });
+        }
+      }, 0);
+    }
   });
 
   // The marker moved (a step, play, a click): draw the counter, tell cmux the cycle.
@@ -632,6 +683,8 @@
     if (m.eventType !== 'markerSet') { return; }
     const time = m.eventData && Number(m.eventData.time);
     if (Number.isFinite(time)) { marker.fromEvent = time; marker.contextThen = contextMarker(); }
+    // The user put the marker somewhere else: play stops there.
+    if (state.playing && Number.isFinite(time) && !sentTimes.includes(time)) { pause(); }
     if (!state.stepping) { return; }
     render();
     queuePlace();
@@ -653,5 +706,5 @@
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved,
-    isPlaying: () => state.playing };
+    isPlaying: () => state.playing, locals: () => Object.assign({}, state.locals) };
 })();

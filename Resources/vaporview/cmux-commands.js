@@ -446,7 +446,8 @@
     let change = m.stateChangeType;
     // The debugger's own edits (Locals, while it dispatches quietly) and its play ticks are not the user's:
     // no undo entries, not unsaved.
-    const debuggerChange = host().quietEvents > 0 || !!(window.cmuxDebugger && window.cmuxDebugger.isPlaying());
+    const playing = !!(window.cmuxDebugger && window.cmuxDebugger.isPlaying());
+    const debuggerChange = host().quietEvents > 0 || (playing && webviewContext && onlyMarkerMoved(webviewContext, m));
     if (debuggerChange && change === StateChangeType.User) { change = null; }
     if ((change === StateChangeType.User || change === StateChangeType.File)) {
       undoStack.push(JSON.stringify(undoState()));
@@ -466,6 +467,15 @@
     window.cmuxNetlist.setDisplayed(displayedNetlistIds(webviewContext.displayedSignals || []));
     scheduleSessionSnapshot();
     if (m.autoReload && pendingReload) { pendingReload = false; host().toNative({ type: 'reload' }); }
+  }
+
+  // Whether context update `m` changes nothing a session keeps but the marker (and the view panning to it).
+  function onlyMarkerMoved(before, m) {
+    const a = contextSession(before);
+    const b = contextSession(Object.assign({}, before, m));
+    a.markerTime = b.markerTime;
+    a.scrollLeft = b.scrollLeft;
+    return JSON.stringify(a) === JSON.stringify(b);
   }
 
   function displayedNetlistIds(list, out = []) {

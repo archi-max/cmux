@@ -32,11 +32,38 @@ enum WaveformDebuggerEditorHighlights {
     private final class Drawn {
         var attributes: [(range: NSRange, key: NSAttributedString.Key, value: Any)] = []
         /// The text's length when drawn: after an edit the ranges no longer hold.
-        let textLength: Int
+        let revision: Int
 
-        init(textLength: Int) {
-            self.textLength = textLength
+        init(revision: Int) {
+            self.revision = revision
         }
+    }
+
+    private final class Counter {
+        var value = 0
+    }
+
+    /// Edits per text storage, so ranges drawn before an edit are never drawn again after it.
+    private static let revisions = NSMapTable<NSTextStorage, Counter>.weakToStrongObjects()
+    private static var editObserver: NSObjectProtocol?
+
+    private static func revision(of textView: NSTextView) -> Int {
+        if editObserver == nil {
+            editObserver = NotificationCenter.default.addObserver(
+                forName: NSTextStorage.didProcessEditingNotification, object: nil, queue: .main
+            ) { notification in
+                // Posted on the main thread, where text storages are edited.
+                nonisolated(unsafe) let storage = notification.object as? NSTextStorage
+                MainActor.assumeIsolated {
+                    guard let storage, storage.editedMask.contains(.editedCharacters) else { return }
+                    let counter = revisions.object(forKey: storage) ?? Counter()
+                    counter.value += 1
+                    revisions.setObject(counter, forKey: storage)
+                }
+            }
+        }
+        guard let storage = textView.textStorage else { return -1 }
+        return revisions.object(forKey: storage)?.value ?? 0
     }
 
     private final class Work {
@@ -66,6 +93,10 @@ enum WaveformDebuggerEditorHighlights {
 
     /// slang's driver cone per server and signal path.
     private static var cones: [ConeKey: [SlangConeEntry]] = [:]
+    /// When a cone lookup last failed, per server and signal path.
+    private static var failedCones: [ConeKey: Date] = [:]
+    /// Seconds before a failed cone lookup is tried again.
+    static var failedConeRetryInterval: TimeInterval = 30
     /// The selected row's declaration and driver lines, per text view (drawn over the cycle highlights).
     private static let selectionLines = NSMapTable<NSTextView, Drawn>.weakToStrongObjects()
 
@@ -150,10 +181,15 @@ enum WaveformDebuggerEditorHighlights {
                 let key = ConeKey(server: server, path: path)
                 var cone = cones[key]
                 if cone == nil {
+                    // A failure (often: the design isn't compiled yet) is asked again after a while.
+                    if let failedAt = failedCones[key], Date().timeIntervalSince(failedAt) < failedConeRetryInterval { continue }
                     guard requests < maxConeRequests else { continue }
                     requests += 1
-                    // Not cached when it fails: slang answers once the design is compiled.
-                    guard let found = try? await session.slangDriverCone(path) else { continue }
+                    guard let found = try? await session.slangDriverCone(path) else {
+                        failedCones[key] = Date()
+                        continue
+                    }
+                    failedCones[key] = nil
                     guard !Task.isCancelled else { return }
                     if cones.count >= maxCachedCones { cones.removeAll() }
                     cones[key] = found
@@ -175,7 +211,7 @@ enum WaveformDebuggerEditorHighlights {
     private static func apply(_ result: WaveformCycleHighlights.Result, lines: [SystemVerilogInlineScan.Line], in textView: NSTextView) {
         clear(in: textView)
         guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length else { return }
-        let drawn = Drawn(textLength: length)
+        let drawn = Drawn(revision: revision(of: textView))
         func add(_ key: NSAttributedString.Key, _ value: Any, _ range: NSRange) {
             guard range.length > 0, NSMaxRange(range) <= length else { return }
             layoutManager.addTemporaryAttribute(key, value: value, forCharacterRange: range)
@@ -245,6 +281,7 @@ enum WaveformDebuggerEditorHighlights {
     /// The design changed (recompiled, another top level): the cached driver cones may not hold.
     static func forgetCones() {
         cones.removeAll()
+        failedCones.removeAll()
     }
 
     // MARK: Selected row → editor
@@ -263,7 +300,7 @@ enum WaveformDebuggerEditorHighlights {
               let textView = target.debuggerTextView else { return }
         let text = textView.string as NSString
         let lineIndex = FilePreviewLSPLineIndex(textView.string)
-        let drawn = Drawn(textLength: text.length)
+        let drawn = Drawn(revision: revision(of: textView))
         let color = NSColor.systemBlue.withAlphaComponent(0.24)
         for location in [declaration] + drivers {
             let start = lineIndex.offset(for: location.range.start)
@@ -285,7 +322,7 @@ enum WaveformDebuggerEditorHighlights {
 
     private static func redraw(_ drawn: Drawn, in textView: NSTextView) {
         guard let layoutManager = textView.layoutManager, let length = textView.textStorage?.length,
-              length == drawn.textLength else { return }
+              revision(of: textView) == drawn.revision else { return }
         for (range, key, value) in drawn.attributes where range.length > 0 && NSMaxRange(range) <= length {
             layoutManager.addTemporaryAttribute(key, value: value, forCharacterRange: range)
         }
