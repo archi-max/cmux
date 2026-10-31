@@ -786,7 +786,11 @@
         const last = i === parts.length - 1;
         let named = items.filter((x) => x.name === parts[i]);
         if (!named.length) { named = items.filter((x) => plainName(x.name) === plainName(parts[i])); }
-        if (!named.length && last) { named = items.filter((x) => x.kind === 'var' && withoutRange(x) === plainName(parts[i])); }
+        if (!named.length && last) {
+          // Only one: a bit-blasted dump (foo[0:0], foo[1:1]) has no single foo. (debugger's rule)
+          const ranged = items.filter((x) => x.kind === 'var' && withoutRange(x) === plainName(parts[i]));
+          if (ranged.length === 1) { named = ranged; }
+        }
         if (last) {
           return named.find((x) => x.kind === 'var') || (varOnly ? null : named.find((x) => x.kind === 'scope') || null);
         }

@@ -189,6 +189,7 @@ extension LanguageServerSession {
         guard let location = item.location else { return nil }
         let hover: String?
         do {
+            if let error = declarationHoverErrorForTesting { throw error }
             hover = try await self.hover(uri: location.uri, position: location.range.start)
         } catch LanguageServerError.responseError {
             return nil
@@ -270,20 +271,30 @@ extension LanguageServerSession {
         // The innermost design element the line is in.
         var containers: [String] = []
         let opens: Set<String> = ["package", "module", "macromodule", "interface", "program", "class", "checker"]
+        var previous = ""
         var index = 0
         while index < lineStart {
             guard isIdentifierUnit(units[index]), index == 0 || !isIdentifierUnit(units[index - 1]) else { index += 1; continue }
             var end = index
             while end < units.count, isIdentifierUnit(units[end]) { end += 1 }
             let word = String(decoding: units[index..<end], as: UTF16.self)
-            if opens.contains(word) {
+            if word == "class", previous == "interface", containers.last == "interface" {
+                // `interface class`: a class, closed by endclass.
+                containers[containers.count - 1] = "class"
+            } else if opens.contains(word), !(word == "class" && previous == "typedef"), !(word == "interface" && previous == "virtual") {
+                // (Not a forward `typedef class C;` or a `virtual interface` variable.)
                 containers.append(word)
-            } else if word.hasPrefix("end"), opens.contains(String(word.dropFirst(3))), !containers.isEmpty {
+            } else if let last = containers.last, word == "end" + last {
                 containers.removeLast()
             }
+            previous = word
             index = end
         }
         return containers.last == "package"
+    }
+
+    func setDeclarationHoverErrorForTesting(_ error: LanguageServerError?) {
+        declarationHoverErrorForTesting = error
     }
 
     /// The named port connections of an instance, read from its instantiation's text (`texts`
@@ -399,8 +410,19 @@ extension LanguageServerSession {
             while typeStart > 0, isIdentifierUnit(units[typeStart - 1]) { typeStart -= 1 }
             let type = String(decoding: units[typeStart..<typeEnd], as: UTF16.self)
             guard !isDigitUnit(units[typeStart]), !statementKeywords.contains(type) else { return nil }
-            // A statement label (`begin : blk foo(...)`) or a delay (`#d foo(...)`).
-            if let before = previousCode(units, before: typeStart), before == colonUnit || before == hashUnit { return nil }
+            // A block name (`begin : blk foo(...)`) or a delay (`#d foo(...)`); a case item's
+            // label (`1: foo u (...)`, `default: foo u (...)`) is fine.
+            var cursor = typeStart - 1
+            while cursor >= 0, isSpace(units[cursor]) { cursor -= 1 }
+            if cursor >= 0, units[cursor] == hashUnit { return nil }
+            if cursor >= 0, units[cursor] == colonUnit {
+                var labelEnd = cursor
+                while labelEnd > 0, isSpace(units[labelEnd - 1]) { labelEnd -= 1 }
+                var labelStart = labelEnd
+                while labelStart > 0, isIdentifierUnit(units[labelStart - 1]) { labelStart -= 1 }
+                let opener = String(decoding: units[labelStart..<labelEnd], as: UTF16.self)
+                if ["begin", "fork", "end", "join", "join_any", "join_none"].contains(opener) { return nil }
+            }
         } else if previous == closeUnit {
             // A parameter list `#(...)`, not a condition (`if (c) foo(.a(x))`).
             var open = typeEnd - 2
