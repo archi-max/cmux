@@ -21,14 +21,16 @@ import Foundation
 /// Two helpers exist. v1 (`fsdb-helper`) sends whole signals. v2
 /// (`fsdb-helper-v2`, WINDOWING.md's protocol 2) also answers windows, point
 /// and navigation queries, which the page's windowed viewer uses. The helper
-/// tries its installs in order (v2, then v1) and falls back to the next when
-/// one can't be set up; every reply names the protocol of the one running
-/// (`protocolHeader`), so the page enables windowing only with v2.
-/// For v2 the relay also:
+/// tries its installs in order (v2, then v1). It falls back to v1 only when v2
+/// is unavailable (see `start()`), and always says so (`Status.fellBack`, which
+/// the page shows with a Retry); every reply names the protocol of the one
+/// running (`protocolHeader`), so the page enables windowing only with v2.
+/// The relay passes only the commands the page uses (`allowedCommands`), and an
+/// `open` only of the panel's own file (`allowedFile`). For v2 it also:
 /// - keeps a request pending through its `partial: true` lines, until the final reply;
 /// - maps the page's request ids to its own, so the page's `cancel {id}` reaches
 ///   the helper's request (`cancel {id, target}`); a cancel that overtakes its
-///   request (two POSTs race) cancels it on arrival.
+///   request (two POSTs race) cancels it when it arrives.
 final class WaveformFSDBHelper: @unchecked Sendable {
     /// Builds the `/usr/bin/ssh` arguments that run `remoteCommand` on the host.
     typealias SSHArguments = @Sendable (_ remoteCommand: String) -> [String]
@@ -36,8 +38,10 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     enum Status: Sendable {
         case connecting
         case building
-        /// The v2 helper could not be set up; the v1 helper (whole signals) runs instead.
-        case fellBack(detail: String)
+        /// v2 is unavailable (`detail` says why); the v1 helper (whole signals) runs
+        /// instead. `remembered`: later viewers of this host skip v2 until
+        /// `forgetV2Failure` (the page's Retry) or a changed helper.
+        case fellBack(detail: String, remembered: Bool)
     }
 
     /// The `waveform.fsdbLoading` setting: `auto` windows big signals (v2 helper,
@@ -86,6 +90,10 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         case stopped
         /// The launcher found no usable install (exit 87). Handled by `start()`.
         case notInstalled
+        /// The launcher refused an install others can write (exit 86); never run.
+        case refused(detail: String)
+        /// The page sent a command the relay does not pass, or an `open` of another file.
+        case notAllowed(String)
     }
 
     struct Reply: Sendable {
@@ -96,8 +104,13 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     static let sshPath = "/usr/bin/ssh"
     /// Exit status of the launch command when this version is not installed.
     static let notInstalledStatus: Int32 = 87
+    /// Exit status of a launcher that refuses an install others can write.
+    static let refusedStatus: Int32 = 86
+    /// What the page sends: host.js (open, children, signals, valueAt) and the
+    /// windowed viewer (window, valueAt, edge, search, count, cancel).
+    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "count", "cancel"]
     /// Verdi's libraries load slowly from NFS on a busy host.
-    static let readyTimeout: TimeInterval = 90
+    static let defaultReadyTimeout: TimeInterval = 90
     static let installTimeout: TimeInterval = 10 * 60
     /// A reply that takes longer (Verdi stuck on an NFS read) fails its request.
     static let requestTimeout: TimeInterval = 5 * 60
@@ -105,6 +118,10 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     private let sshArguments: SSHArguments
     private let installs: [Install]
     private let executable: URL
+    private let hostKey: String
+    private let allowedCommands: Set<String>
+    private let allowedFile: String?
+    private let readyTimeout: TimeInterval
     private let onStatus: @Sendable (Status) -> Void
 
     private let lock = NSLock()
@@ -120,8 +137,13 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// The page's id of a pending request, both ways (v2 viewer requests carry one).
     private var helperIdForPage: [Int: Int] = [:]
     private var pageIdForHelper: [Int: Int] = [:]
-    /// Page ids cancelled before their request arrived, with when.
-    private var earlyCancels: [Int: Date] = [:]
+    /// Page ids whose request has arrived (recent ones: the viewer numbers them up
+    /// from 1), and ids cancelled before their request arrived, kept until it does.
+    private var seenPageIds = Set<Int>()
+    private var maxPageId = 0
+    private var earlyCancels = Set<Int>()
+    /// How far below the newest page id an unseen id is still taken for a request on its way.
+    static let pageIdWindow = 4096
     /// The protocol of the helper that got ready (nil before).
     private var runningProtocol: Int?
     private var readyContinuation: CheckedContinuation<Void, Error>?
@@ -133,16 +155,41 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.waveform-fsdb.write")
 
     /// `executable` runs `sshArguments(command)`: `/usr/bin/ssh`, or a local shell in tests.
+    /// `hostKey` names the host for the remembered v2 failures; `allowedFile`, if
+    /// set, is the one file an `open` may name.
     init(
         sshArguments: @escaping SSHArguments,
         installs: [Install],
         executable: URL = URL(fileURLWithPath: WaveformFSDBHelper.sshPath),
+        hostKey: String = "",
+        allowedCommands: Set<String> = WaveformFSDBHelper.pageCommands,
+        allowedFile: String? = nil,
+        readyTimeout: TimeInterval = WaveformFSDBHelper.defaultReadyTimeout,
         onStatus: @escaping @Sendable (Status) -> Void
     ) {
         self.sshArguments = sshArguments
         self.installs = installs
         self.executable = executable
+        self.hostKey = hostKey
+        self.allowedCommands = allowedCommands
+        self.allowedFile = allowedFile
+        self.readyTimeout = readyTimeout
         self.onStatus = onStatus
+    }
+
+    // MARK: Remembered v2 failures
+
+    private static let failureLock = NSLock()
+    nonisolated(unsafe) private static var v2Failures: [String: String] = [:]
+
+    /// Per host and v2 helper version (a changed helper is tried afresh).
+    private static func failureKey(host: String, install: Install) -> String {
+        host + "\u{0}" + cachedVersion(of: install.resourceRoot)
+    }
+
+    /// Forgets the v2 failures remembered for a host (the page's Retry windowed).
+    static func forgetV2Failure(hostKey: String) {
+        failureLock.withLock { v2Failures = v2Failures.filter { !$0.key.hasPrefix(hostKey + "\u{0}") } }
     }
 
     /// The v1 helper only.
@@ -184,13 +231,18 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             throw Failure.protocolError
         }
+        let command = object["cmd"] as? String ?? ""
+        guard allowedCommands.contains(command) else { throw Failure.notAllowed(command) }
+        if command == "open", let allowedFile, object["file"] as? String != allowedFile {
+            throw Failure.notAllowed("open")
+        }
         let pageId = (object["id"] as? NSNumber)?.intValue
-        if object["cmd"] as? String == "cancel" {
+        if command == "cancel" {
             return try await cancel(pageId: pageId)
         }
         try await ensureRunning()
-        if object["cmd"] as? String == "open" {
-            lock.withLock { lastOpen = object; earlyCancels.removeAll() }
+        if command == "open" {
+            lock.withLock { lastOpen = object }
             let reply = try await send(object)
             lock.withLock { openGeneration = generation }
             return reply
@@ -205,19 +257,15 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         return try await send(object, pageId: pageId)
     }
 
-    /// How long a cancel that overtook its request waits for it.
-    static let earlyCancelLifetime: TimeInterval = 2
-
     /// The page's `cancel {id}`: cancels the helper's request for that page id.
-    /// A page id with nothing pending is remembered briefly (its request may be
-    /// a POST still on its way) and answered `{cancelled: false}`.
+    /// The id of a request that hasn't arrived yet (its POST is still on its
+    /// way) is kept until it does, which then is cancelled at once; a finished
+    /// one is ignored. Both answer `{cancelled: false}`.
     private func cancel(pageId: Int?) async throws -> Reply {
         let target: Int? = lock.withLock {
             guard let pageId else { return nil }
             if let helperId = helperIdForPage[pageId] { return helperId }
-            let now = Date()
-            earlyCancels = earlyCancels.filter { now.timeIntervalSince($0.value) < Self.earlyCancelLifetime }
-            if earlyCancels.count < 1024 { earlyCancels[pageId] = now }
+            if !seenPageIds.contains(pageId), pageId > maxPageId - Self.pageIdWindow { earlyCancels.insert(pageId) }
             return nil
         }
         guard let target else { return Self.jsonReply(["cancelled": false]) }
@@ -227,6 +275,17 @@ final class WaveformFSDBHelper: @unchecked Sendable {
 
     static func jsonReply(_ object: [String: Any]) -> Reply {
         Reply(header: (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8), binary: nil)
+    }
+
+    /// Records a page id whose request arrived. Call with `lock` held.
+    private func notePageIdLocked(_ pageId: Int) {
+        seenPageIds.insert(pageId)
+        maxPageId = max(maxPageId, pageId)
+        if seenPageIds.count > 2 * Self.pageIdWindow {
+            let floor = maxPageId - Self.pageIdWindow
+            seenPageIds = seenPageIds.filter { $0 > floor }
+            earlyCancels = earlyCancels.filter { $0 > floor }
+        }
     }
 
     /// Removes a pending request (and its page id). Call with `lock` held.
@@ -244,11 +303,13 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 continuation.resume(throwing: Failure.stopped)
                 return
             }
-            if let pageId, let at = earlyCancels.removeValue(forKey: pageId),
-               Date().timeIntervalSince(at) < Self.earlyCancelLifetime {
-                lock.unlock()
-                continuation.resume(returning: Self.jsonReply(["id": pageId, "cancelled": true]))
-                return
+            if let pageId {
+                notePageIdLocked(pageId)
+                if earlyCancels.remove(pageId) != nil {
+                    lock.unlock()
+                    continuation.resume(returning: Self.jsonReply(["id": pageId, "cancelled": true]))
+                    return
+                }
             }
             let id = nextRequestId
             nextRequestId += 1
@@ -263,10 +324,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 helperIdForPage[pageId] = id
                 pageIdForHelper[id] = pageId
             }
-            lock.unlock()
             line.append(0x0A)
             let message = line
+            // Queued under the lock: a cancel that finds the mapping queues its line after this one.
             writeQueue.async { try? input.write(contentsOf: message) }
+            lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
                 guard let self else { return }
                 let waiting = self.lock.withLock { self.takePendingLocked(id) }
@@ -340,29 +402,56 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         }
     }
 
-    /// Starts the first install that can run. A v2 helper that can't be set up
-    /// (a failed build, or a launcher that exits before its ready line) falls back
-    /// to the next install; an unreachable host or a timeout does not.
+    /// Starts the first install that can run. v2 gives way to v1 (with
+    /// `Status.fellBack`, never silently) when it is unavailable:
+    /// - its build fails to compile or load (13, 14) or the built install still
+    ///   can't run: remembered for this host and helper version;
+    /// - it doesn't get ready in time: remembered too, so one wait per session;
+    /// - it exits or reports an error before its ready line (perhaps passing:
+    ///   out of memory, /tmp full): not remembered, the next viewer tries v2.
+    /// Anything v1 would hit the same way (no Verdi, Node.js or compiler, a
+    /// failed install, an unreachable host) or a refused install is an error.
     private func start() async throws {
+        var candidates = installs
+        if let v2 = candidates.first, v2.protocolVersion >= 2, candidates.count > 1 {
+            let key = Self.failureKey(host: hostKey, install: v2)
+            if let detail = Self.failureLock.withLock({ Self.v2Failures[key] }) {
+                onStatus(.fellBack(detail: detail, remembered: true))
+                candidates.removeFirst()
+            }
+        }
         var lastError: Error = Failure.setupFailed(code: -1, detail: "no FSDB helper is bundled")
-        for (index, install) in installs.enumerated() {
+        for (index, install) in candidates.enumerated() {
             do {
                 try await start(install)
                 lock.withLock { runningProtocol = install.protocolVersion }
                 return
             } catch let failure as Failure {
                 lastError = failure
-                let isLast = index == installs.count - 1
-                switch failure {
-                case .setupFailed(_, let detail), .helperExited(let detail):
-                    if isLast { throw failure }
-                    onStatus(.fellBack(detail: detail))
-                default:
-                    throw failure
+                let isLast = index == candidates.count - 1
+                guard install.protocolVersion >= 2, !isLast, let fallback = Self.fallback(for: failure) else { throw failure }
+                if fallback.remember {
+                    let key = Self.failureKey(host: hostKey, install: install)
+                    Self.failureLock.withLock { Self.v2Failures[key] = fallback.detail }
                 }
+                onStatus(.fellBack(detail: fallback.detail, remembered: fallback.remember))
             }
         }
         throw lastError
+    }
+
+    /// Whether a v2 failure falls back to v1, with the reason and whether to remember it.
+    static func fallback(for failure: Failure) -> (detail: String, remember: Bool)? {
+        switch failure {
+        case .setupFailed(let code, let detail) where code == 13 || code == 14 || code == notInstalledStatus:
+            return (detail, true)
+        case .timedOut(let detail):
+            return (detail.isEmpty ? "timed out" : detail, true)
+        case .helperExited(let detail):
+            return (detail, false)
+        default:
+            return nil
+        }
     }
 
     private func start(_ install: Install) async throws {
@@ -435,7 +524,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 failReady(Failure.helperExited(detail: error.localizedDescription), generation: generation)
                 return
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + Self.readyTimeout) { [weak self] in
+            DispatchQueue.global().asyncAfter(deadline: .now() + self.readyTimeout) { [weak self] in
                 guard let self else { return }
                 let tail = self.lock.withLock { Self.tail(of: self.stderrTail) }
                 if self.failReady(Failure.timedOut(detail: tail), generation: generation), process.isRunning {
@@ -603,6 +692,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 let error: Failure
                 if status == Self.notInstalledStatus, !isReady {
                     error = .notInstalled
+                } else if status == Self.refusedStatus, !isReady {
+                    error = .refused(detail: detail)
                 } else if status == 255, !isReady {
                     error = .connectionFailed(detail: detail)
                 } else {
