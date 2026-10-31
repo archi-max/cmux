@@ -22,7 +22,7 @@ node esbuild.js --production  # minified dist/webview.js
 
 | File | Source |
 | --- | --- |
-| `webview.js` | `dist/webview.js` (unmodified build output of `src/webview/`) |
+| `webview.js` | `dist/webview.js` (build output of `src/webview/`, patched; see below) |
 | `filehandler.wasm` | `target/wasm32-unknown-unknown/release/filehandler.wasm` (unmodified build output of `src/wellen_parser/`, wellen 0.25.7) |
 | `style.css` | `media/style.css` (unmodified) |
 | `codicons/codicon.css`, `codicons/codicon.ttf` | `node_modules/@vscode/codicons/dist/` 0.0.35 (unmodified; `codicons/LICENSE` CC-BY-4.0, `codicons/LICENSE-CODE` MIT) |
@@ -33,13 +33,35 @@ The bundled npm and Rust dependencies, with their licenses, are listed under
 
 ## Local modifications
 
+Made by cmux on 2026-10-30 (viewer, host, FSDB helper) and 2026-10-31
+(escaping, Content-Security-Policy, FSDB helper hardening).
+
+- `webview.js`: waveform data reaches `innerHTML` unescaped in four places in
+  upstream `src/webview/` (an upstream bug, to be reported): the
+  `data-vscode-context` attribute is written unquoted (`signal_item.ts`, all
+  `createLabelElement`/`createValueDisplayElement` methods), the label
+  tooltip of `createLabelElement` at line 524 escapes `<>` but not `"`, the
+  drag tag sets `innerHTML` to the dragged signal's name (`labels.ts:333`),
+  and value display text, which the String format takes from the file, is
+  not escaped (`signal_item.ts:304-311`, `:548`). The minified build is
+  patched textually at those sites to quote and escape through
+  `cmuxEscapeAttribute`, `cmuxEscapeQuotes` and `cmuxEscapeHtml` (defined in
+  `vscode-api-shim.js`), and to set the drag tag's `textContent`. To redo the
+  patch after a rebuild, replace `data-vscode-context=${this.vscodeContext}`,
+  `title="${x}"`, ``dragCursorTag.innerHTML=`${this.dragCursorText}` `` and
+  `<p style="color:${c}">${v}</p>` accordingly, then run
+  `scripts/waveform-viewer-checks/run.sh xss`.
+- `index.html`, `viewer.html`: a Content-Security-Policy `<meta>` tag (the
+  scheme handler also sends it as a header): only bundled scripts, styles,
+  fonts and the wasm, no inline script, no other origin.
+
 - `viewer.html`: the `${webAssets.*}` template placeholders are replaced with
   relative paths, the unused `icons.svg` link is removed, `vscode-theme.css`
   and `vscode-api-shim.js` are loaded in `<head>`, a header comment is added,
   and line endings are LF.
 - `vscode-api-shim.js` (new, adapted from `src/webview/vscode_wrapper.ts`):
   provides `acquireVsCodeApi()` and forwards the webview's messages to the
-  host page instead of VS Code.
+  host page instead of VS Code, and defines the escaping helpers above.
 - `wellen-worker.js` (new, adapted from `src/extension_core/worker.ts` and
   `src/extension_core/wasm_handler.ts`): runs `filehandler.wasm` in a Web
   Worker with hand-written canonical-ABI glue in place of
@@ -69,7 +91,11 @@ The bundled npm and Rust dependencies, with their licenses, are listed under
   packed buffer, and `build.sh` splices it in before `Init()` and compiles
   the addon on the host with `g++` against that host's Verdi (in place of
   `binding.gyp`/node-gyp, without `-static-libstdc++`). `fsdb-helper.sh`
-  starts it. `third_party/` holds the node-addon-api 8.6.0 and
+  starts it in a private run directory, and exits 87 so cmux rebuilds when
+  the Node.js or Verdi it was built for is gone. `getValueChangesPacked`
+  also returns the signal's bit size, throws for an unknown signal or no
+  open file (where upstream's calls would dereference null), and hands its
+  buffer to Node without a copy. `third_party/` holds the node-addon-api 8.6.0 and
   node-api-headers 1.9.0 headers (MIT) the build needs.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and

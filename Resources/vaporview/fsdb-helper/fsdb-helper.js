@@ -23,14 +23,26 @@ const zlib = require('node:zlib');
 const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'fsdb_reader.node');
 const OUT = 3;
 
+// Writes all of `data` to the channel. A full pipe (EAGAIN) is waited out;
+// any other error means cmux has gone (EPIPE), so the helper exits.
+const pause = new Int32Array(new SharedArrayBuffer(4));
+function writeAll(data) {
+  let off = 0;
+  while (off < data.length) {
+    try {
+      off += fs.writeSync(OUT, data, off, data.length - off);
+    } catch (e) {
+      if (e.code !== 'EAGAIN') { process.exit(0); }
+      Atomics.wait(pause, 0, 0, 5);
+    }
+  }
+}
+
 // Each reply is one JSON line; if it has `binLength`, that many raw bytes follow.
 function send(obj, bin) {
   if (bin) { obj.binLength = bin.length; }
-  fs.writeSync(OUT, JSON.stringify(obj) + '\n');
-  if (bin) {
-    let off = 0;
-    while (off < bin.length) { off += fs.writeSync(OUT, bin, off, bin.length - off); }
-  }
+  writeAll(Buffer.from(JSON.stringify(obj) + '\n'));
+  if (bin) { writeAll(bin); }
 }
 
 // Pack value changes as the viewer's record format, [u64 LE delta time][value chars],
@@ -58,6 +70,11 @@ try {
 
 let openFile = null;
 
+// The reader's other calls dereference its open file without a check.
+function requireOpenFile() {
+  if (!openFile) { throw new Error('No FSDB file is open.'); }
+}
+
 // FSDB names carry the packed range ("i[31:0]"); the viewer wants it separate.
 function stripRange(name, width, msb, lsb) {
   const suffix = `[${msb}:${lsb}]`;
@@ -67,7 +84,7 @@ function stripRange(name, width, msb, lsb) {
 const handlers = {
   open({ file }) {
     if (openFile) { addon.unload(); openFile = null; }
-    addon.openFsdb(file);
+    addon.openFsdb(String(file));
     openFile = file;
     const metadata = { timeTableLoaded: false, scopeCount: 0, netlistIdCount: 0, signalIdCount: 0,
       timeTableCount: 0, timeEnd: 0, minTimeStep: 1, timeScale: 1, timeUnit: 'ns' };
@@ -81,6 +98,7 @@ const handlers = {
 
   // Child scopes (paged by the reader) plus the scope's own variables.
   children({ scopeOffsetIdx, scopePath }) {
+    requireOpenFile();
     const scopes = [];
     let start = 0, remaining = Infinity, guard = 256;
     while (remaining > 0 && guard-- > 0) {
@@ -100,14 +118,18 @@ const handlers = {
 
   // Binary reply: per signal a header entry plus a deflated record slice.
   signals({ signalIds, widths }) {
+    requireOpenFile();
     addon.loadSignals(signalIds);
     const out = [], parts = [];
     signalIds.forEach((signalId, k) => {
       // Fast path: the addon packs records in C++ (no per-change JS objects).
-      const raw = widths && addon.getValueChangesPacked ? addon.getValueChangesPacked(signalId) : undefined;
-      if (raw && raw.length % (8 + widths[k]) === 0) {
+      // It throws for a signal the open file does not have, and gives undefined
+      // only for real/float signals, which take the getValueChanges path.
+      const raw = addon.getValueChangesPacked(signalId);
+      if (raw) {
+        const width = raw.bitSize;
         const packed = zlib.deflateRawSync(raw, { level: 1 });
-        out.push({ signalId, width: widths[k], count: raw.length / (8 + widths[k]), bytes: packed.length, min: 0, max: 0 });
+        out.push({ signalId, width, count: raw.length / (8 + width), bytes: packed.length, min: 0, max: 0 });
         parts.push(packed);
       } else {
         const d = addon.getValueChanges(signalId);
@@ -138,7 +160,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   try { req = JSON.parse(line); } catch (e) { send({ id: -1, error: 'bad json' }); return; }
   const t0 = process.hrtime.bigint();
   try {
-    const fn = handlers[req.cmd];
+    const fn = Object.hasOwn(handlers, req.cmd) ? handlers[req.cmd] : null;
     if (!fn) { throw new Error('unknown command ' + req.cmd); }
     const r = fn(req);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;

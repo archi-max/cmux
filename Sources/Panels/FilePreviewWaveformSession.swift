@@ -224,11 +224,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
         fsdbHelper = helper
         return schemeHandler.serve(fsdbRelay: { body in
-            do {
-                return WaveformSchemeResponse.fsdb(try await helper.request(body))
-            } catch {
-                return WaveformSchemeResponse.fsdbError(Self.fsdbFailureMessage(error, host: host))
+            // Managed file transfer off: no upload of the helper, no waveform data back.
+            guard !ManagedFileTransferPolicy.isDisabled else {
+                return WaveformSchemeResponse.fsdbError(ManagedFileTransferPolicy.refusalError().localizedDescription)
             }
+            return await helper.response(for: body) { error in Self.fsdbFailureMessage(error, host: host) }
         })
     }
 
@@ -259,7 +259,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     }
 
     /// A message for a failed helper start or request, with the host's own output as detail.
-    static func fsdbFailureMessage(_ error: Error, host: String) -> String {
+    nonisolated static func fsdbFailureMessage(_ error: Error, host: String) -> String {
         let summary: String
         var detail = ""
         switch error as? WaveformFSDBHelper.Failure {
@@ -287,13 +287,30 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                     defaultValue: "The FSDB reader could not be built on %@."
                 )
             }
+        case .connectionFailed(let output)?:
+            detail = output
+            summary = String(
+                localized: "filePreview.waveform.fsdbConnectionFailed",
+                defaultValue: "cmux could not connect to %@ to start the FSDB reader."
+            )
+        case .timedOut(let output)?:
+            detail = output
+            summary = String(
+                localized: "filePreview.waveform.fsdbTimedOut",
+                defaultValue: "The FSDB reader on %@ did not respond in time."
+            )
+        case .protocolError?:
+            summary = String(
+                localized: "filePreview.waveform.fsdbProtocolError",
+                defaultValue: "The FSDB reader on %@ sent output cmux could not read."
+            )
         case .helperExited(let output)?:
             detail = output
             summary = String(
                 localized: "filePreview.waveform.fsdbHelperExited",
                 defaultValue: "The connection to the FSDB reader on %@ ended. Reload to try again."
             )
-        case .stopped?:
+        case .stopped?, .notInstalled?:
             summary = String(
                 localized: "filePreview.waveform.fsdbHelperExited",
                 defaultValue: "The connection to the FSDB reader on %@ ended. Reload to try again."
@@ -366,9 +383,16 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        // Only the bundled page's main frame talks to cmux.
+        let origin = message.frameInfo.securityOrigin
+        guard message.frameInfo.isMainFrame,
+              origin.protocol == WaveformViewerSchemeHandler.scheme,
+              origin.host == WaveformViewerSchemeHandler.host,
+              let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "ready":
+            // Once per page load: a repeated ready would restart the FSDB helper.
+            guard !isPageReady else { return }
             isPageReady = true
             openFileInPage()
         case "opened":

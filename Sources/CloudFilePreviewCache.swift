@@ -87,6 +87,14 @@ actor CloudFilePreviewCache {
     /// A lease for a remote file the viewer reads in place on the host (FSDB):
     /// an empty local stand-in carries the name, and nothing is downloaded.
     func placeholder(path: String, provider: any RemoteFileExplorerProvider) throws -> CloudFilePreviewLease {
+        // The viewer still moves the file's data to this Mac (and installs a helper on the host).
+        guard !ManagedFileTransferPolicy.isDisabled else {
+            throw ManagedFileTransferPolicy.refusalError()
+        }
+        if cleanupTask == nil {
+            let parent = root.deletingLastPathComponent()
+            cleanupTask = Task.detached(priority: .utility) { Self.removeStaleDirectories(in: parent) }
+        }
         let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let filename = (path as NSString).lastPathComponent
         guard !filename.isEmpty, filename != ".", filename != ".." else { throw FileExplorerError.providerUnavailable }
