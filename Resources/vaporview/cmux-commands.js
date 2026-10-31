@@ -432,8 +432,14 @@
       markerTime: context.markerTime, altMarkerTime: context.altMarkerTime, displayTimeUnit: context.displayTimeUnit,
       selectedSignal: context.selectedSignal, zoomRatio: context.zoomRatio, scrollLeft: context.scrollLeft,
       defaultPixelTime: context.defaultPixelTime, autoReload: context.autoReload,
-      displayedSignals: context.displayedSignals || [],
+      displayedSignals: withoutLocals(context.displayedSignals || []),
     };
+  }
+
+  // The debugger's Locals group follows the editor's caret; sessions and undo leave it out.
+  function withoutLocals(list) {
+    const isLocals = window.cmuxDebugger && window.cmuxDebugger.isLocals;
+    return isLocals ? list.filter((d) => !isLocals(d)) : list;
   }
 
   function onContextUpdate(m) {
@@ -506,7 +512,7 @@
       zoomRatio: w.zoomRatio,
       scrollLeft: w.scrollLeft,
       defaultPixelTime: w.defaultPixelTime,
-      displayedSignals: w.displayedSignals || [],
+      displayedSignals: withoutLocals(w.displayedSignals || []),
     };
   }
 

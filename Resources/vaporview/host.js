@@ -168,6 +168,8 @@
       },
       search(query, scope) { return call('searchnetlist', { query, scopeId: scope ? scope.id : 0xFFFFFFFF }); },
       valuesAtTime(time, paths) { return call('getvaluesattime', { time, paths: paths.join(' ') }); },
+      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js).
+      signalChanges(v) { return call('getsignalchanges', { signalId: v.signalId }); },
       // Ends the worker and settles every call still waiting on it.
       close() {
         closed = true;
@@ -332,6 +334,13 @@
           out.push(changes);
         }
         return out;
+      },
+      // [[time, value], ...] of one variable for the page (cmux-debugger.js): what
+      // the viewer was given when it draws it, else read from the helper; null past maxChanges.
+      async signalChanges(v, maxChanges) {
+        const drawn = drawnChanges.get(v.signalId);
+        if (drawn) { return drawn; }
+        return (await this.changes([v], maxChanges))[0];
       },
       async fetch(requestList) {
         const signals = requestList.filter((r) => r.type === 'signal');
@@ -619,6 +628,13 @@
   const hostApi = {
     doc, viewerContext, toWebview, toNative, fail, getChildren, findItem, addVariables, search, valuesAtTime,
     netlistItem: (id) => doc.items.get(id) || null,
+    // cmux-debugger.js: a variable's changes, VaporView events as they pass,
+    // and its Locals group, which the link does not count as shown.
+    signalChanges: (v, maxChanges) => (backend && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
+    get currentBackend() { return backend; },
+    viewerEventListeners: [],
+    quietEvents: 0,
+    isTransientGroup: null,
     log: (message) => toNative({ type: 'log', message: String(message) }),
     get config() { return config; },
     // Bumped by every open and reload: work started for an older one is stale.
@@ -651,7 +667,9 @@
     const firstId = (data) => [].concat(data && data.netlistId != null ? data.netlistId : [])[0] ?? null;
     const forwardEvent = webviewHandlers.emitEvent;
     webviewHandlers.emitEvent = (m) => {
-      forwardEvent(m);
+      // Rows the debugger adds or removes for Locals select and deselect as a side effect: not the user's doing.
+      if (!hostApi.quietEvents) { forwardEvent(m); }
+      hostApi.viewerEventListeners.forEach((listener) => { try { listener(m); } catch (error) { hostApi.log(error); } });
       if (m.eventType === 'signalSelect') { selectedId = firstId(m.eventData); }
       if (m.eventType === 'removeVariable') {
         const removed = [].concat(m.eventData && m.eventData.netlistId != null ? m.eventData.netlistId : []);
@@ -699,10 +717,12 @@
       return items.slice(0, maxChildren).map((x) => ({ name: x.name, isScope: x.kind === 'scope' }));
     }
 
-    // netlistIds of the shown rows, inside groups too.
-    function shownIds() {
+    // netlistIds of the shown rows, inside groups too. pinnedOnly: not the
+    // debugger's Locals group (its rows come and go with the editor's caret).
+    function shownIds(pinnedOnly) {
       const out = new Set();
       const walk = (list) => (list || []).forEach((d) => {
+        if (pinnedOnly && hostApi.isTransientGroup && hostApi.isTransientGroup(d)) { return; }
         if (d.netlistId !== undefined) { out.add(d.netlistId); }
         walk(d.children);
       });
@@ -710,7 +730,7 @@
       return out;
     }
 
-    const isShown = (v) => shownIds().has(v.netlistId);
+    const isShown = (v) => shownIds(true).has(v.netlistId);
 
     // A removed row's changes are dropped once no other shown row (outside `removed`) draws the same signal.
     function forgetDrawn(netlistId, removed) {
@@ -757,7 +777,7 @@
       const { path, confirmed } = query || {};
       const scope = await findLinkItem(path, false);
       if (!scope || scope.kind !== 'scope' || !initSent) { return null; }
-      const shown = shownIds();
+      const shown = shownIds(true);
       const now = Date.now();
       const isPending = (id) => { const t = pendingAdds.get(id); return t !== undefined && now - t < 2000; };
       const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId));
@@ -931,7 +951,7 @@
 
     function selectedSignal() {
       const v = selectedId == null ? null : doc.items.get(selectedId);
-      if (!v || !isShown(v)) { selectedId = null; return null; }
+      if (!v || !shownIds(false).has(v.netlistId)) { selectedId = null; return null; }
       return pathOf(v);
     }
 
@@ -955,6 +975,8 @@
       });
     }
     iframe.addEventListener('load', attachToFrame);
+    hostApi.findLinkItem = findLinkItem;
+    hostApi.pathOf = pathOf;
 
     return Object.freeze({
       scopeChildren,
