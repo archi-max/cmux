@@ -424,7 +424,11 @@
   let webviewContext = null;   // latest contextUpdate, as VaporviewDocument.webviewContext
   let undoStack = [];
   let redoStack = [];
-  // The view before a reload, while the reloading viewer has no context yet.
+  // From willReload until the reloaded viewer asks for its state (restoreState):
+  // cmux holds no context, and reloadBaseline is the view from before the
+  // reload, kept current by what the old viewer still sends. Its selected
+  // signal is held by name, as the old netlist is gone.
+  let reloading = false;
   let reloadBaseline = null;
   let dirty = false;
 
@@ -458,6 +462,15 @@
       redoStack = [];
     }
     if (change === StateChangeType.User) { setDirty(true); }
+    // The old viewer keeps its rows until it handles the unload, and anything
+    // it sends until then (Auto Reload switched, a queued add) describes them.
+    if (reloading) {
+      const before = reloadBaseline || {};
+      const next = contextSession(Object.assign({}, before, m));
+      // A selection changed now can't be named: the old netlist is gone.
+      reloadBaseline = Object.assign(next, { cmuxSelected: next.selectedSignal === before.selectedSignal ? before.cmuxSelected : null });
+      return;
+    }
     webviewContext = Object.assign({}, webviewContext || {}, m);
     reloadBaseline = null;
     // The viewer answers apply-state with a Restore context (initComplete is set
@@ -470,7 +483,11 @@
     updateStatus(m);
     window.cmuxNetlist.setDisplayed(displayedNetlistIds(webviewContext.displayedSignals || []));
     scheduleSessionSnapshot();
-    if (m.autoReload && pendingReload) { pendingReload = false; host().toNative({ type: 'reload' }); }
+    if (m.autoReload && pendingReload) {
+      pendingReload = false;
+      document.getElementById('status-reload').hidden = true;
+      host().toNative({ type: 'reload' });
+    }
   }
 
   // Whether context update `m` changes nothing a session keeps but the marker (and the view panning to it).
@@ -493,12 +510,17 @@
   // cmux keeps the latest state so a page reload (file change, WebKit
   // crash) restores the same signals.
   let snapshotTimer = 0;
+  let snapshotScheduled = false;
+  function sendSessionSnapshot() {
+    clearTimeout(snapshotTimer);
+    snapshotScheduled = false;
+    const state = plainJSON(contextSession(webviewContext));
+    if (state && !restorePending) { host().toNative({ type: 'sessionState', state, dirty }); }
+  }
   function scheduleSessionSnapshot() {
     clearTimeout(snapshotTimer);
-    snapshotTimer = setTimeout(() => {
-      const state = plainJSON(contextSession(webviewContext));
-      if (state && !restorePending) { host().toNative({ type: 'sessionState', state, dirty }); }
-    }, 250);
+    snapshotScheduled = true;
+    snapshotTimer = setTimeout(sendSessionSnapshot, 250);
   }
 
   // NaN and Infinity become null, so cmux can always pass the state back as JSON.
@@ -517,16 +539,23 @@
   }
 
   // VaporviewDocument.getWebviewSession: what a session file holds.
+  // The selected row as a session file names it, while its netlist is open.
+  function selectedSignalRef(id) {
+    const selected = id !== undefined && id !== null ? host().netlistItem(id) : null;
+    return selected ? { name: window.cmuxNetlist.instancePath(selected), msb: selected.msb, lsb: selected.lsb } : null;
+  }
+
+  // During a reload: the view from before it (VaporView keeps its context
+  // through reload()).
   function sessionFile() {
-    const w = webviewContext || {};
-    const selected = w.selectedSignal !== undefined && w.selectedSignal !== null ? host().netlistItem(w.selectedSignal) : null;
+    const w = webviewContext || reloadBaseline || {};
     return {
       extensionVersion: EXTENSION_VERSION,
       fileName: host().config.path || host().config.url,
       markerTime: w.markerTime,
       altMarkerTime: w.altMarkerTime,
       displayTimeUnit: w.displayTimeUnit,
-      selectedSignal: selected ? { name: window.cmuxNetlist.instancePath(selected), msb: selected.msb, lsb: selected.lsb } : null,
+      selectedSignal: webviewContext ? selectedSignalRef(w.selectedSignal) : (w.cmuxSelected || null),
       zoomRatio: w.zoomRatio,
       scrollLeft: w.scrollLeft,
       defaultPixelTime: w.defaultPixelTime,
@@ -635,6 +664,8 @@
 
   async function restoreState(m) {
     const config = host().config;
+    // The reloaded viewer is live: what it sends from here is its own.
+    reloading = false;
     restoreAsked = true;
     restorePending = false;
     // cmux's kept state is cleared only once it reached the viewer: a reload
@@ -720,7 +751,7 @@
   // its display unit is the file's rather than a fixed "ns".
   function undoState() {
     const metadata = host().doc.metadata;
-    return contextSession(webviewContext) || reloadBaseline || {
+    return contextSession(webviewContext) || contextSession(reloadBaseline) || {
       markerTime: null, altMarkerTime: null, displayTimeUnit: (metadata && metadata.timeUnit) || 'ns',
       selectedSignal: null, zoomRatio: 1, scrollLeft: 0, defaultPixelTime: 1,
       autoReload: !!settings().defaultAutoReload, displayedSignals: [],
@@ -730,7 +761,7 @@
   function undo(stack, other, type) {
     // A reloading viewer has no rows to apply a view to, and its restore would
     // overwrite one: the history waits for the reload.
-    if (!stack.length || (reloadBaseline && !webviewContext)) { return; }
+    if (!stack.length || reloading) { return; }
     const state = JSON.parse(stack.pop());
     other.push(JSON.stringify(undoState()));
     applySession(state, type);
@@ -778,7 +809,10 @@
   let pendingReload = false;
 
   function fileChanged() {
-    if (webviewContext && webviewContext.autoReload) { host().toNative({ type: 'reload' }); return; }
+    // During or after a failed reload, the view from before it decides; a
+    // newer reload supersedes one in progress (host.js load generations).
+    const w = webviewContext || reloadBaseline;
+    if (w && w.autoReload) { host().toNative({ type: 'reload' }); return; }
     pendingReload = true;
     document.getElementById('status-reload').hidden = false;
   }
@@ -1143,6 +1177,7 @@
     webviewContext = null;
     undoStack = [];
     redoStack = [];
+    reloading = false;
     reloadBaseline = null;
     pendingReload = false;
     setDirty(false);
@@ -1171,9 +1206,13 @@
   function willReload() {
     pendingReload = false;
     document.getElementById('status-reload').hidden = true;
-    reloadBaseline = undoState();
+    // A change from the last 250 ms reaches cmux before the viewer unloads.
+    if (snapshotScheduled) { sendSessionSnapshot(); }
+    if (!reloading) {
+      reloadBaseline = Object.assign(undoState(), { cmuxSelected: webviewContext ? selectedSignalRef(webviewContext.selectedSignal) : null });
+    }
+    reloading = true;
     webviewContext = null;
-    clearTimeout(snapshotTimer);
   }
 
   window.cmuxCommands = {
