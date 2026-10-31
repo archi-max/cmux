@@ -124,5 +124,7 @@ function runExprCases() {
   // Equal values compare equal (watches highlight a change); fromBits pads like the viewer's values.
   check(E.same(E.fromBits('1', 4), E.fromBits('0001', 4)) && !E.same(E.fromBits('x', 4), E.fromBits('z', 4)), 'same and fromBits');
   check(E.format(E.fromBits('x1', 4), 'binary') === "4'bxxx1", 'fromBits extends x: ' + E.format(E.fromBits('x1', 4), 'binary'));
+  // A dump's other states (VCD/FSDB strengths): h is 1, l is 0, u, w and - are x; ? is z.
+  check(E.format(E.fromBits('hluw-?10', 8), 'binary') === "8'b10xxxz10", 'fromBits of h, l, u, w, -, ?: ' + E.format(E.fromBits('hluw-?10', 8), 'binary'));
   return out;
 }
