@@ -253,11 +253,13 @@ public enum HierarchyPrefixInference {
                 if match.overlap >= required {
                     if kids.contains(where: { $0.name == rest[0] }), await exists(scope + rest, dumpChildren: dumpChildren) {
                         found.append((match.score, scope))
-                    } else if bestMissing == nil || match.score > bestMissing!.score {
+                        // The root's own subtree does not hold another copy of the root.
+                        continue
+                    }
+                    // A testbench sharing clk and rst can pass for a small root; the root may be further down.
+                    if bestMissing == nil || match.score > bestMissing!.score {
                         bestMissing = (match.score, scope)
                     }
-                    // The root's own subtree does not hold another copy of the root.
-                    continue
                 }
             }
             if scope.count < maxDepth {

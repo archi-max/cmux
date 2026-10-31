@@ -115,6 +115,12 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         topScopes = []
     }
 
+    /// Whether `responder` is this viewer's web view or one of its subviews.
+    func holdsResponder(_ responder: NSResponder) -> Bool {
+        guard let webView, let view = responder as? NSView else { return false }
+        return view.isDescendant(of: webView)
+    }
+
     /// Runs a VaporView command id in the page (`cmux-commands.js`).
     func runCommand(_ command: String, args: [String: Any] = [:]) {
         guard isPageReady else { return }
