@@ -63,10 +63,19 @@ public enum SlangWorkspaceRoot {
     /// ancestor with `.slang/server.json` and `G <folder>` for each with `.git`.
     public static func probeCommand(forFile filePath: String) -> String {
         let words = ancestors(ofFile: filePath).map(shellQuote).joined(separator: " ")
-        return "printf 'H %s\\n' \"$HOME\"; for d in \(words); do "
+        return posixShellCommand("printf 'H %s\\n' \"$HOME\"; for d in \(words); do "
             + "[ -e \"$d/.slang/server.json\" ] && printf 'S %s\\n' \"$d\"; "
             + "[ -e \"$d/.git\" ] && printf 'G %s\\n' \"$d\"; "
-            + "done; true"
+            + "done; true")
+    }
+
+    /// `script` (POSIX `sh`) as a command any login shell runs the same way: sh, bash, zsh,
+    /// csh/tcsh or fish. The script travels base64-encoded inside single quotes, which none of
+    /// them expand, and `sh` decodes and runs it with the command's stdin.
+    public static func posixShellCommand(_ script: String) -> String {
+        let encoded = Data(script.utf8).base64EncodedString()
+        // GNU and BusyBox take -d, older macOS -D.
+        return "sh -c 'eval \"$(printf %s \(encoded) | base64 -d 2>/dev/null || printf %s \(encoded) | base64 -D)\"'"
     }
 
     public static func parseProbe(_ output: String) -> Markers {
@@ -93,7 +102,7 @@ public enum SlangWorkspaceRoot {
         return "/" + parts.joined(separator: "/")
     }
 
-    static func shellQuote(_ word: String) -> String {
+    public static func shellQuote(_ word: String) -> String {
         "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

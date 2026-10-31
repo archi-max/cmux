@@ -106,6 +106,12 @@ public struct SlangBuildFile: Equatable, Sendable {
                 continue
             }
             if char == "\\", let next {
+                // A backslash at the end of a line continues it.
+                if next == "\n" || next == "\r" || next == "\r\n" {
+                    finish()
+                    index += 2
+                    continue
+                }
                 current.append(next)
                 hasWord = true
                 index += 2
@@ -175,11 +181,11 @@ public enum SlangProfileCatalog {
     public static func listingCommand(root: String) -> String {
         let quotedRoot = SlangWorkspaceRoot.shellQuote(root)
         let project = SlangWorkspaceRoot.shellQuote(projectName(ofRoot: root))
-        return "r=\(quotedRoot); p=\(project); "
+        return SlangWorkspaceRoot.posixShellCommand("r=\(quotedRoot); p=\(project); "
             + "{ for f in \"$r\"/.slang/*.f \"$HOME/.config/cmux-slang/$p\"/*.f \"$HOME/.config/cmux-slang/$p.f\"; do [ -f \"$f\" ] && printf '%s\\n' \"$f\"; done; "
-            + "find \"$r\" -maxdepth \(workspaceSearchDepth) \\( -name '.*' -o -name node_modules \\) -prune -o -type f -name '*.f' -print 2>/dev/null | head -n \(workspaceSearchLimit); } "
+            + "find \"$r\" -mindepth 1 -maxdepth \(workspaceSearchDepth) \\( -name '.*' -o -name node_modules \\) -prune -o -type f -name '*.f' -print 2>/dev/null | head -n \(workspaceSearchLimit); } "
             + "| awk '!seen[$0]++' | while IFS= read -r f; do printf '\\n\(marker)profile %s\\n' \"$f\"; head -c \(readLimit) \"$f\"; done; "
-            + "for f in \"$r/.slang/server.json\" \"$r/.slang/local/server.json\"; do [ -f \"$f\" ] && { printf '\\n\(marker)config %s\\n' \"$f\"; head -c \(readLimit) \"$f\"; }; done; true"
+            + "for f in \"$r/.slang/server.json\" \"$r/.slang/local/server.json\"; do [ -f \"$f\" ] && { printf '\\n\(marker)config %s\\n' \"$f\"; head -c \(readLimit) \"$f\"; }; done; true")
     }
 
     /// What `listingCommand` printed: the profiles, and the config files with their text.
