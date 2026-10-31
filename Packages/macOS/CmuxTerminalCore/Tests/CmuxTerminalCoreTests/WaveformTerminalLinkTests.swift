@@ -51,6 +51,8 @@ import Testing
     @Test func nonFiniteTimesAreNotLinks() {
         let huge = String(repeating: "9", count: 400) + " ns"
         #expect(WaveformTerminalLink.detect(in: huge, column: 0, topScopes: [], instancePaths: false) == nil)
+        // The scan window cuts the digit run; the cut piece is not a time.
+        #expect(WaveformTerminalLink.detect(in: huge, column: 399, topScopes: [], instancePaths: false) == nil)
     }
 
     @Test func longLinesStayFast() {
