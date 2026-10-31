@@ -481628,6 +481628,596 @@
         }
       }
     },
+    "waveformLink.addScope.confirm.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追加"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hinzufügen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加入"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "추가"
+          }
+        }
+      }
+    },
+    "waveformLink.addScope.confirm.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This adds %1$@ signals of %2$@ to the waveform."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ の信号 %1$@ 個を波形に追加します。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dadurch werden %1$@ Signale von %2$@ zur Wellenform hinzugefügt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cela ajoute %1$@ signaux de %2$@ au chronogramme."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "سيؤدي هذا إلى إضافة %1$@ إشارة من %2$@ إلى الشكل الموجي."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esto añade %1$@ señales de %2$@ a la forma de onda."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這會將 %2$@ 的 %1$@ 個訊號加入波形。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这会将 %2$@ 的 %1$@ 个信号添加到波形。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@의 신호 %1$@개를 파형에 추가합니다."
+          }
+        }
+      }
+    },
+    "waveformLink.addScope.confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add All Signals in Scope?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スコープ内のすべての信号を追加しますか?"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Signale im Bereich hinzufügen?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter tous les signaux de la portée ?"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "هل تريد إضافة كل إشارات النطاق؟"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Añadir todas las señales del ámbito?"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要加入範圍內所有訊號嗎？"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要添加作用域内所有信号吗？"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "범위의 모든 신호를 추가할까요?"
+          }
+        }
+      }
+    },
+    "waveformLink.addScope.truncated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Added %1$@ of the %2$@ signals in %3$@ not shown yet. Choose Add All Signals in Scope again for the next ones."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%3$@ 内の未表示の信号 %2$@ 個のうち %1$@ 個を追加しました。続きは「スコープ内のすべての信号を波形に追加」をもう一度選択してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ der %2$@ noch nicht angezeigten Signale in %3$@ hinzugefügt. Wählen Sie „Alle Signale im Bereich zur Wellenform hinzufügen“ erneut für die nächsten."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ des %2$@ signaux non encore affichés de %3$@ ont été ajoutés. Choisissez à nouveau « Ajouter tous les signaux de la portée au chronogramme » pour les suivants."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تمت إضافة %1$@ من أصل %2$@ إشارة غير معروضة بعد في %3$@. اختر «إضافة كل إشارات النطاق إلى الشكل الموجي» مرة أخرى للإشارات التالية."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se añadieron %1$@ de las %2$@ señales de %3$@ que aún no se mostraban. Vuelve a elegir «Añadir todas las señales del ámbito a la forma de onda» para las siguientes."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已加入 %3$@ 中尚未顯示的 %2$@ 個訊號中的 %1$@ 個。再次選擇「將範圍內所有訊號加入波形」以加入其餘訊號。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已添加 %3$@ 中尚未显示的 %2$@ 个信号中的 %1$@ 个。再次选择“将作用域内所有信号添加到波形”以添加其余信号。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%3$@에서 아직 표시되지 않은 신호 %2$@개 중 %1$@개를 추가했습니다. 나머지는 범위의 모든 신호를 파형에 추가를 다시 선택하세요."
+          }
+        }
+      }
+    },
+    "menu.view.unshownFSDBValues": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show FSDB Values for Signals Not in the Waveform"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形にない信号の FSDB 値を表示"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FSDB-Werte für Signale außerhalb der Wellenform anzeigen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les valeurs FSDB des signaux absents du chronogramme"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إظهار قيم FSDB للإشارات غير الموجودة في الشكل الموجي"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar valores FSDB de señales que no están en la forma de onda"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "顯示不在波形中訊號的 FSDB 值"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示不在波形中的信号的 FSDB 值"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형에 없는 신호의 FSDB 값 표시"
+          }
+        }
+      }
+    },
+    "filePreview.inlineValues.onlyShown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No waveform values: FSDB values are shown for signals in the waveform only. Add them, or turn on View > Show FSDB Values for Signals Not in the Waveform."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の値はありません: FSDB の値は波形に表示中の信号についてのみ表示されます。信号を追加するか、「表示」>「波形にない信号の FSDB 値を表示」をオンにしてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Wellenformwerte: FSDB-Werte werden nur für Signale in der Wellenform angezeigt. Fügen Sie sie hinzu oder aktivieren Sie „Darstellung“ > „FSDB-Werte für Signale außerhalb der Wellenform anzeigen“."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune valeur de chronogramme : les valeurs FSDB ne sont affichées que pour les signaux du chronogramme. Ajoutez-les ou activez Présentation > Afficher les valeurs FSDB des signaux absents du chronogramme."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد قيم للشكل الموجي: تظهر قيم FSDB للإشارات الموجودة في الشكل الموجي فقط. أضفها، أو فعّل عرض > إظهار قيم FSDB للإشارات غير الموجودة في الشكل الموجي."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin valores de la forma de onda: los valores FSDB solo se muestran para las señales de la forma de onda. Añádelas o activa Visualización > Mostrar valores FSDB de señales que no están en la forma de onda."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有波形值：只會顯示波形中訊號的 FSDB 值。請加入訊號，或開啟「顯示方式」>「顯示不在波形中訊號的 FSDB 值」。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有波形值：只显示波形中信号的 FSDB 值。请添加信号，或打开“显示”>“显示不在波形中的信号的 FSDB 值”。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 값 없음: FSDB 값은 파형에 있는 신호에만 표시됩니다. 신호를 추가하거나 보기 > 파형에 없는 신호의 FSDB 값 표시를 켜세요."
+          }
+        }
+      }
+    },
+    "filePreview.inlineValues.noneDumped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No waveform values: the waveform has none of these signals under %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の値はありません: 波形の %@ の下にはこれらの信号がありません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Wellenformwerte: Die Wellenform enthält unter %@ keines dieser Signale."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune valeur de chronogramme : le chronogramme ne contient aucun de ces signaux sous %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد قيم للشكل الموجي: لا يحتوي الشكل الموجي على أي من هذه الإشارات تحت %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin valores de la forma de onda: la forma de onda no tiene ninguna de estas señales en %@."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有波形值：波形在 %@ 下沒有這些訊號。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有波形值：波形在 %@ 下没有这些信号。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 값 없음: 파형의 %@ 아래에 이 신호가 하나도 없습니다."
+          }
+        }
+      }
+    },
+    "filePreview.inlineValues.severalInstances": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No waveform values: %@ has several instances. Choose one with Show Waveform Values For in the context menu."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の値はありません: %@ には複数のインスタンスがあります。コンテキストメニューの「波形の値を表示するインスタンス」で選択してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Wellenformwerte: %@ hat mehrere Instanzen. Wählen Sie eine im Kontextmenü unter „Wellenformwerte anzeigen für“."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune valeur de chronogramme : %@ a plusieurs instances. Choisissez-en une avec « Afficher les valeurs du chronogramme pour » dans le menu contextuel."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد قيم للشكل الموجي: لـ %@ عدة نسخ. اختر واحدة من «إظهار قيم الشكل الموجي لـ» في قائمة السياق."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin valores de la forma de onda: %@ tiene varias instancias. Elige una con «Mostrar valores de la forma de onda de» en el menú contextual."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有波形值：%@ 有多個實例。請在快顯選單的「顯示波形值的實例」中選擇一個。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有波形值：%@ 有多个实例。请在上下文菜单的“显示波形值的实例”中选择一个。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 값 없음: %@에 인스턴스가 여러 개 있습니다. 컨텍스트 메뉴의 파형 값을 표시할 인스턴스에서 하나를 선택하세요."
+          }
+        }
+      }
+    },
+    "filePreview.inlineValues.noInstance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No waveform values: slang-server can’t place this module in the design. Add a signal with Add to Waveform to set the design up."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の値はありません: slang-server はこのモジュールをデザイン内に配置できません。「波形に追加」で信号を追加してデザインを設定してください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Wellenformwerte: slang-server kann dieses Modul nicht im Design einordnen. Fügen Sie mit „Zur Wellenform hinzufügen“ ein Signal hinzu, um das Design einzurichten."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune valeur de chronogramme : slang-server ne parvient pas à situer ce module dans le design. Ajoutez un signal avec « Ajouter au chronogramme » pour configurer le design."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد قيم للشكل الموجي: لا يستطيع slang-server تحديد موضع هذه الوحدة في التصميم. أضف إشارة باستخدام «إضافة إلى الشكل الموجي» لإعداد التصميم."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin valores de la forma de onda: slang-server no puede situar este módulo en el diseño. Añade una señal con «Añadir a la forma de onda» para configurar el diseño."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有波形值：slang-server 無法在設計中定位此模組。請用「加入波形」加入訊號以設定設計。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有波形值：slang-server 无法在设计中定位此模块。请用“添加到波形”添加信号以设置设计。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 값 없음: slang-server가 이 모듈을 디자인에서 찾을 수 없습니다. 파형에 추가로 신호를 추가해 디자인을 설정하세요."
+          }
+        }
+      }
+    },
+    "filePreview.language.showValuesFor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Waveform Values For"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形の値を表示するインスタンス"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenformwerte anzeigen für"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les valeurs du chronogramme pour"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إظهار قيم الشكل الموجي لـ"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar valores de la forma de onda de"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "顯示波形值的實例"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示波形值的实例"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 값을 표시할 인스턴스"
+          }
+        }
+      }
+    },
     "waveformLink.waveformLoading": {
       "extractionState": "manual",
       "localizations": {
