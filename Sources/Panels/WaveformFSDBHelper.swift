@@ -17,6 +17,18 @@ import Foundation
 /// JSON objects; each gets an `id` and goes out as one line on the helper's
 /// stdin. A reply is one JSON line, followed by `binLength` raw bytes when it
 /// has that field.
+///
+/// Two helpers exist. v1 (`fsdb-helper`) sends whole signals. v2
+/// (`fsdb-helper-v2`, WINDOWING.md's protocol 2) also answers windows, point
+/// and navigation queries, which the page's windowed viewer uses. The helper
+/// tries its installs in order (v2, then v1) and falls back to the next when
+/// one can't be set up; every reply names the protocol of the one running
+/// (`protocolHeader`), so the page enables windowing only with v2.
+/// For v2 the relay also:
+/// - keeps a request pending through its `partial: true` lines, until the final reply;
+/// - maps the page's request ids to its own, so the page's `cancel {id}` reaches
+///   the helper's request (`cancel {id, target}`); a cancel that overtakes its
+///   request (two POSTs race) cancels it on arrival.
 final class WaveformFSDBHelper: @unchecked Sendable {
     /// Builds the `/usr/bin/ssh` arguments that run `remoteCommand` on the host.
     typealias SSHArguments = @Sendable (_ remoteCommand: String) -> [String]
@@ -24,7 +36,41 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     enum Status: Sendable {
         case connecting
         case building
+        /// The v2 helper could not be set up; the v1 helper (whole signals) runs instead.
+        case fellBack(detail: String)
     }
+
+    /// The `waveform.fsdbLoading` setting: `auto` windows big signals (v2 helper,
+    /// v1 if v2 can't run), `whole` loads every signal whole (v1 helper only).
+    enum Loading: String, Sendable {
+        case auto
+        case whole
+    }
+
+    /// One helper the host can run: its protocol and its bundled sources.
+    struct Install: Sendable {
+        let protocolVersion: Int
+        let resourceRoot: URL
+
+        var cacheName: String { protocolVersion >= 2 ? "fsdb-helper-v2" : "fsdb-helper" }
+        /// Files an install has; without them the launcher exits `notInstalledStatus`.
+        var requiredFiles: [String] {
+            protocolVersion >= 2 ? ["addon/build/Release/fsdb_reader.node", "cmux-helper-v2.sh"] : ["fsdb_reader.node", "fsdb-helper.sh"]
+        }
+        /// The launcher, relative to the install, with its arguments.
+        var launcher: String { protocolVersion >= 2 ? "cmux-helper-v2.sh\" --workers 4" : "fsdb-helper.sh\"" }
+    }
+
+    /// The installs to try, in order, for a setting.
+    static func installs(v2Root: URL?, v1Root: URL?, loading: Loading) -> [Install] {
+        var out: [Install] = []
+        if loading == .auto, let v2Root { out.append(Install(protocolVersion: 2, resourceRoot: v2Root)) }
+        if let v1Root { out.append(Install(protocolVersion: 1, resourceRoot: v1Root)) }
+        return out
+    }
+
+    /// Response header naming the running helper's protocol (1 or 2).
+    static let protocolHeader = "X-Cmux-Fsdb-Protocol"
 
     enum Failure: Error, Sendable {
         /// `build.sh` failed with its exit code (see the script) and stderr tail.
@@ -57,7 +103,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     static let requestTimeout: TimeInterval = 5 * 60
 
     private let sshArguments: SSHArguments
-    private let resourceRoot: URL
+    private let installs: [Install]
+    private let executable: URL
     private let onStatus: @Sendable (Status) -> Void
 
     private let lock = NSLock()
@@ -70,6 +117,13 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     private var generation = 0
     private var nextRequestId = 1
     private var pending: [Int: CheckedContinuation<Reply, Error>] = [:]
+    /// The page's id of a pending request, both ways (v2 viewer requests carry one).
+    private var helperIdForPage: [Int: Int] = [:]
+    private var pageIdForHelper: [Int: Int] = [:]
+    /// Page ids cancelled before their request arrived, with when.
+    private var earlyCancels: [Int: Date] = [:]
+    /// The protocol of the helper that got ready (nil before).
+    private var runningProtocol: Int?
     private var readyContinuation: CheckedContinuation<Void, Error>?
     private var stderrTail = Data()
     /// The last `open` the page sent, replayed into a helper started after it
@@ -78,18 +132,31 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     private var openGeneration = 0
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.waveform-fsdb.write")
 
+    /// `executable` runs `sshArguments(command)`: `/usr/bin/ssh`, or a local shell in tests.
     init(
+        sshArguments: @escaping SSHArguments,
+        installs: [Install],
+        executable: URL = URL(fileURLWithPath: WaveformFSDBHelper.sshPath),
+        onStatus: @escaping @Sendable (Status) -> Void
+    ) {
+        self.sshArguments = sshArguments
+        self.installs = installs
+        self.executable = executable
+        self.onStatus = onStatus
+    }
+
+    /// The v1 helper only.
+    convenience init(
         sshArguments: @escaping SSHArguments,
         resourceRoot: URL,
         onStatus: @escaping @Sendable (Status) -> Void
     ) {
-        self.sshArguments = sshArguments
-        self.resourceRoot = resourceRoot
-        self.onStatus = onStatus
+        self.init(sshArguments: sshArguments, installs: [Install(protocolVersion: 1, resourceRoot: resourceRoot)], onStatus: onStatus)
     }
 
-    static func bundledResourceRoot(bundle: Bundle = .main) -> URL? {
-        guard let url = bundle.resourceURL?.appendingPathComponent("vaporview/fsdb-helper", isDirectory: true),
+    /// The bundled sources of a helper: `fsdb-helper` (v1) or `fsdb-helper-v2`.
+    static func bundledResourceRoot(bundle: Bundle = .main, folder: String = "fsdb-helper") -> URL? {
+        guard let url = bundle.resourceURL?.appendingPathComponent("vaporview/\(folder)", isDirectory: true),
               FileManager.default.fileExists(atPath: url.appendingPathComponent("build.sh").path) else {
             return nil
         }
@@ -105,9 +172,10 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         failureMessage: @Sendable (Error) -> String
     ) async -> WaveformSchemeResponse {
         do {
-            return WaveformSchemeResponse.fsdb(try await request(body))
+            let reply = try await request(body)
+            return WaveformSchemeResponse.fsdb(reply, protocolVersion: lock.withLock { runningProtocol })
         } catch {
-            return WaveformSchemeResponse.fsdbError(failureMessage(error))
+            return WaveformSchemeResponse.fsdbError(failureMessage(error), protocolVersion: lock.withLock { runningProtocol })
         }
     }
 
@@ -116,9 +184,13 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             throw Failure.protocolError
         }
+        let pageId = (object["id"] as? NSNumber)?.intValue
+        if object["cmd"] as? String == "cancel" {
+            return try await cancel(pageId: pageId)
+        }
         try await ensureRunning()
         if object["cmd"] as? String == "open" {
-            lock.withLock { lastOpen = object }
+            lock.withLock { lastOpen = object; earlyCancels.removeAll() }
             let reply = try await send(object)
             lock.withLock { openGeneration = generation }
             return reply
@@ -130,16 +202,52 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             _ = try await send(reopen)
             lock.withLock { openGeneration = generation }
         }
-        return try await send(object)
+        return try await send(object, pageId: pageId)
     }
 
-    private func send(_ request: [String: Any]) async throws -> Reply {
+    /// How long a cancel that overtook its request waits for it.
+    static let earlyCancelLifetime: TimeInterval = 2
+
+    /// The page's `cancel {id}`: cancels the helper's request for that page id.
+    /// A page id with nothing pending is remembered briefly (its request may be
+    /// a POST still on its way) and answered `{cancelled: false}`.
+    private func cancel(pageId: Int?) async throws -> Reply {
+        let target: Int? = lock.withLock {
+            guard let pageId else { return nil }
+            if let helperId = helperIdForPage[pageId] { return helperId }
+            let now = Date()
+            earlyCancels = earlyCancels.filter { now.timeIntervalSince($0.value) < Self.earlyCancelLifetime }
+            if earlyCancels.count < 1024 { earlyCancels[pageId] = now }
+            return nil
+        }
+        guard let target else { return Self.jsonReply(["cancelled": false]) }
+        // Replies under its own id; the target's reply becomes {id, cancelled: true}.
+        return try await send(["cmd": "cancel", "target": target])
+    }
+
+    static func jsonReply(_ object: [String: Any]) -> Reply {
+        Reply(header: (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8), binary: nil)
+    }
+
+    /// Removes a pending request (and its page id). Call with `lock` held.
+    private func takePendingLocked(_ id: Int) -> CheckedContinuation<Reply, Error>? {
+        if let pageId = pageIdForHelper.removeValue(forKey: id) { helperIdForPage.removeValue(forKey: pageId) }
+        return pending.removeValue(forKey: id)
+    }
+
+    private func send(_ request: [String: Any], pageId: Int? = nil) async throws -> Reply {
         var object = request
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             guard !isStopped, let input else {
                 lock.unlock()
                 continuation.resume(throwing: Failure.stopped)
+                return
+            }
+            if let pageId, let at = earlyCancels.removeValue(forKey: pageId),
+               Date().timeIntervalSince(at) < Self.earlyCancelLifetime {
+                lock.unlock()
+                continuation.resume(returning: Self.jsonReply(["id": pageId, "cancelled": true]))
                 return
             }
             let id = nextRequestId
@@ -151,14 +259,23 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 return
             }
             pending[id] = continuation
+            if let pageId, helperIdForPage[pageId] == nil {
+                helperIdForPage[pageId] = id
+                pageIdForHelper[id] = pageId
+            }
             lock.unlock()
             line.append(0x0A)
             let message = line
             writeQueue.async { try? input.write(contentsOf: message) }
             DispatchQueue.global().asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
                 guard let self else { return }
-                let waiting = self.lock.withLock { self.pending.removeValue(forKey: id) }
-                waiting?.resume(throwing: Failure.timedOut(detail: ""))
+                let waiting = self.lock.withLock { self.takePendingLocked(id) }
+                guard let waiting else { return }
+                waiting.resume(throwing: Failure.timedOut(detail: ""))
+                // Stop the helper's work on it; the reply to this cancel finds nothing pending.
+                if let cancel = try? JSONSerialization.data(withJSONObject: ["cmd": "cancel", "id": id]) {
+                    self.writeQueue.async { try? input.write(contentsOf: cancel + Data([0x0A])) }
+                }
             }
         }
     }
@@ -177,6 +294,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         startTask?.cancel()
         let waiting = Array(pending.values)
         pending.removeAll()
+        helperIdForPage.removeAll()
+        pageIdForHelper.removeAll()
         let ready = readyContinuation
         readyContinuation = nil
         lock.unlock()
@@ -221,19 +340,44 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         }
     }
 
+    /// Starts the first install that can run. A v2 helper that can't be set up
+    /// (a failed build, or a launcher that exits before its ready line) falls back
+    /// to the next install; an unreachable host or a timeout does not.
     private func start() async throws {
-        let version = Self.cachedVersion(of: resourceRoot)
+        var lastError: Error = Failure.setupFailed(code: -1, detail: "no FSDB helper is bundled")
+        for (index, install) in installs.enumerated() {
+            do {
+                try await start(install)
+                lock.withLock { runningProtocol = install.protocolVersion }
+                return
+            } catch let failure as Failure {
+                lastError = failure
+                let isLast = index == installs.count - 1
+                switch failure {
+                case .setupFailed(_, let detail), .helperExited(let detail):
+                    if isLast { throw failure }
+                    onStatus(.fellBack(detail: detail))
+                default:
+                    throw failure
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func start(_ install: Install) async throws {
+        let version = Self.cachedVersion(of: install.resourceRoot)
         // Per machine type too: an NFS home is shared by hosts that may differ.
-        let installDirectory = "$HOME/.cache/cmux/fsdb-helper/\(version)-$(uname -m)"
+        let installDirectory = "$HOME/.cache/cmux/\(install.cacheName)/\(version)-$(uname -m)"
         onStatus(.connecting)
         do {
-            try await launch(installDirectory: installDirectory)
+            try await launch(install, installDirectory: installDirectory)
         } catch Failure.notInstalled {
             onStatus(.building)
-            try await install(installDirectory: installDirectory)
+            try await self.install(install, installDirectory: installDirectory)
             onStatus(.connecting)
             do {
-                try await launch(installDirectory: installDirectory)
+                try await launch(install, installDirectory: installDirectory)
             } catch Failure.notInstalled {
                 // Built, yet the launcher still finds it unusable.
                 throw Failure.setupFailed(code: Self.notInstalledStatus, detail: lock.withLock { Self.tail(of: stderrTail) })
@@ -241,12 +385,13 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         }
     }
 
-    /// Starts `fsdb-helper.sh` and waits for its ready line.
-    private func launch(installDirectory: String) async throws {
-        let script = "D=\"\(installDirectory)\"; [ -f \"$D/fsdb_reader.node\" ] && [ -f \"$D/fsdb-helper.sh\" ] "
-            + "|| exit \(Self.notInstalledStatus); exec bash \"$D/fsdb-helper.sh\""
+    /// Starts the install's launcher and waits for its ready line.
+    private func launch(_ install: Install, installDirectory: String) async throws {
+        let checks = install.requiredFiles.map { "[ -f \"$D/\($0)\" ]" }.joined(separator: " && ")
+        let script = "D=\"\(installDirectory)\"; \(checks) "
+            + "|| exit \(Self.notInstalledStatus); exec bash \"$D/\(install.launcher)"
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.sshPath)
+        process.executableURL = executable
         process.arguments = sshArguments("sh -c '\(script)'")
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         process.standardInput = stdin
@@ -335,17 +480,17 @@ final class WaveformFSDBHelper: @unchecked Sendable {
 
     /// Uploads the helper sources and runs `build.sh` on the host. Its stdin is
     /// a tar of the bundled folder, unpacked into a temporary directory there.
-    private func install(installDirectory: String) async throws {
+    private func install(_ install: Install, installDirectory: String) async throws {
         let script = "S=$(mktemp -d \"${TMPDIR:-/tmp}/cmux-fsdb-src.XXXXXX\") && tar -xf - -C \"$S\" && "
             + "sh \"$S/build.sh\" \"$S\" \"\(installDirectory)\"; rc=$?; rm -rf \"$S\"; exit $rc"
         let tar = Process()
         tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        tar.arguments = ["--no-xattrs", "--no-mac-metadata", "--format", "ustar", "-cf", "-", "-C", resourceRoot.path, "."]
+        tar.arguments = ["--no-xattrs", "--no-mac-metadata", "--format", "ustar", "-cf", "-", "-C", install.resourceRoot.path, "."]
         var environment = ProcessInfo.processInfo.environment
         environment["COPYFILE_DISABLE"] = "1"
         tar.environment = environment
         let ssh = Process()
-        ssh.executableURL = URL(fileURLWithPath: Self.sshPath)
+        ssh.executableURL = executable
         ssh.arguments = sshArguments("sh -c '\(script)'")
         let archive = Pipe(), stderr = Pipe()
         tar.standardOutput = archive
@@ -438,7 +583,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             return
         }
         guard frame.id > 0 else { return }
-        let continuation = lock.withLock { pending.removeValue(forKey: frame.id) }
+        // searchAll's progress lines: the request stays pending until its final reply.
+        if frame.isPartial { return }
+        let continuation = lock.withLock { takePendingLocked(frame.id) }
         continuation?.resume(returning: Reply(header: frame.header, binary: frame.binary))
     }
 
@@ -468,6 +615,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 readyContinuation = nil
                 let waiting = Array(pending.values)
                 pending.removeAll()
+                helperIdForPage.removeAll()
+                pageIdForHelper.removeAll()
                 // A helper that ran and then exited is not restarted: a new one
                 // would have no file open, so the page reloads instead.
                 return (ready, waiting, error)
@@ -545,33 +694,40 @@ private final class InstallLog: @unchecked Sendable {
 extension WaveformSchemeResponse {
     /// A helper reply for the page: the JSON line, or for signal data
     /// `[u32 LE header length][header JSON][deflated records]`.
-    static func fsdb(_ reply: WaveformFSDBHelper.Reply) -> WaveformSchemeResponse {
+    static func fsdb(_ reply: WaveformFSDBHelper.Reply, protocolVersion: Int? = nil) -> WaveformSchemeResponse {
         guard let binary = reply.binary else {
-            return WaveformSchemeResponse(status: 200, headers: [
+            return WaveformSchemeResponse(status: 200, headers: withProtocol([
                 "Content-Type": "application/json",
                 "Content-Length": String(reply.header.count),
                 "Cache-Control": "no-store",
-            ], body: reply.header)
+            ], protocolVersion), body: reply.header)
         }
         var body = Data(capacity: 4 + reply.header.count + binary.count)
         var length = UInt32(reply.header.count).littleEndian
         withUnsafeBytes(of: &length) { body.append(contentsOf: $0) }
         body.append(reply.header)
         body.append(binary)
-        return WaveformSchemeResponse(status: 200, headers: [
+        return WaveformSchemeResponse(status: 200, headers: withProtocol([
             "Content-Type": "application/octet-stream",
             "Content-Length": String(body.count),
             "Cache-Control": "no-store",
-        ], body: body)
+        ], protocolVersion), body: body)
     }
 
-    static func fsdbError(_ message: String) -> WaveformSchemeResponse {
+    static func fsdbError(_ message: String, protocolVersion: Int? = nil) -> WaveformSchemeResponse {
         let body = (try? JSONSerialization.data(withJSONObject: ["error": message])) ?? Data("{}".utf8)
-        return WaveformSchemeResponse(status: 200, headers: [
+        return WaveformSchemeResponse(status: 200, headers: withProtocol([
             "Content-Type": "application/json",
             "Content-Length": String(body.count),
             "Cache-Control": "no-store",
-        ], body: body)
+        ], protocolVersion), body: body)
+    }
+
+    private static func withProtocol(_ headers: [String: String], _ protocolVersion: Int?) -> [String: String] {
+        guard let protocolVersion else { return headers }
+        var out = headers
+        out[WaveformFSDBHelper.protocolHeader] = String(protocolVersion)
+        return out
     }
 }
 
@@ -591,6 +747,8 @@ struct FrameParser {
         let binary: Data?
         let isReady: Bool
         let errorText: String?
+        /// A `partial: true` line (searchAll progress): not the request's reply.
+        var isPartial = false
     }
 
     enum Event {
@@ -606,7 +764,7 @@ struct FrameParser {
     private var start = 0
     /// Offset up to which the current line has been searched for a newline.
     private var scanned = 0
-    private var pendingHeader: (header: Data, id: Int, binLength: Int, isReady: Bool, errorText: String?)?
+    private var pendingHeader: (header: Data, id: Int, binLength: Int, isReady: Bool, errorText: String?, isPartial: Bool)?
 
     mutating func append(_ data: Data) {
         if start > 0, start >= buffer.count / 2 {
@@ -628,7 +786,7 @@ struct FrameParser {
             scanned = start
             pendingHeader = nil
             return .frame(Frame(id: header.id, header: header.header, binary: binary,
-                                isReady: header.isReady, errorText: header.errorText))
+                                isReady: header.isReady, errorText: header.errorText, isPartial: header.isPartial))
         }
         guard let newline = buffer[(base + max(scanned, start))...].firstIndex(of: 0x0A) else {
             scanned = buffer.count
@@ -643,7 +801,7 @@ struct FrameParser {
               let id = (object["id"] as? NSNumber)?.intValue else { return .unreadableLine }
         let binLength = (object["binLength"] as? NSNumber)?.intValue ?? 0
         guard binLength >= 0, binLength <= Self.maxBinaryLength else { return .tooLarge }
-        pendingHeader = (line, id, binLength, object["ready"] as? Bool == true, object["error"] as? String)
+        pendingHeader = (line, id, binLength, object["ready"] as? Bool == true, object["error"] as? String, object["partial"] as? Bool == true)
         return next()
     }
 }

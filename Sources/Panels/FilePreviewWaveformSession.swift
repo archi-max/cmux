@@ -289,6 +289,16 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
     }
 
+    /// A new `fsdbLoading` applies to an open remote FSDB at once: its helper is
+    /// restarted for the setting and the page reopens the file, keeping its signals.
+    private func fsdbLoadingChanged() {
+        guard isPageReady, fsdbHelper != nil, let panel, let fileURL, fileURL.pathExtension.lowercased() == "fsdb",
+              let remoteFSDB = RemoteFSDB.resolve(panel: panel), let relayURL = startFSDBHelper(for: remoteFSDB) else { return }
+        WaveformSourceLink.waveformReloading(panel)
+        isFileOpen = false
+        evaluate(function: "reload", argument: ["fsdb": ["url": relayURL.absoluteString, "path": remoteFSDB.remotePath]])
+    }
+
     // MARK: Settings and sessions
 
     static func storedSettings() -> [String: Any] {
@@ -563,11 +573,24 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
     }
 
+    /// The `fsdbLoading` setting (VaporView's settings dialog): `whole` runs the
+    /// v1 helper, which loads every signal whole, as before windowed viewing.
+    static func fsdbLoading() -> WaveformFSDBHelper.Loading {
+        WaveformFSDBHelper.Loading(rawValue: storedSettings()["fsdbLoading"] as? String ?? "") ?? .auto
+    }
+
+    /// Starts the FSDB helper for the setting: v2 (windowed) with v1 as its
+    /// fallback, or v1 only.
     private func startFSDBHelper(for remote: RemoteFSDB) -> URL? {
-        guard let resourceRoot = WaveformFSDBHelper.bundledResourceRoot() else { return nil }
+        let installs = WaveformFSDBHelper.installs(
+            v2Root: WaveformFSDBHelper.bundledResourceRoot(folder: "fsdb-helper-v2"),
+            v1Root: WaveformFSDBHelper.bundledResourceRoot(),
+            loading: Self.fsdbLoading()
+        )
+        guard !installs.isEmpty else { return nil }
         stopFSDBHelper()
         let host = remote.host
-        let helper = WaveformFSDBHelper(sshArguments: remote.sshArguments, resourceRoot: resourceRoot) { [weak self] status in
+        let helper = WaveformFSDBHelper(sshArguments: remote.sshArguments, installs: installs) { [weak self] status in
             Task { @MainActor [weak self] in self?.showFSDBStatus(status, host: host) }
         }
         fsdbHelper = helper
@@ -590,6 +613,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         let title: String
         let detail: String
         switch status {
+        case .fellBack(let reason):
+            // Whole signals from the v1 helper: the page needs no word of it.
+            NSLog("cmux waveform: FSDB helper v2 unavailable on %@, using v1: %@", host, reason)
+            return
         case .connecting:
             title = String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…")
             detail = ""
@@ -781,7 +808,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if let panel { WaveformDebugger.pageReported(body, waveform: panel) }
         case "settings":
             if let values = body["values"] as? [String: Any] {
+                let loading = Self.fsdbLoading()
                 Self.storeSettings(values)
+                if Self.fsdbLoading() != loading { fsdbLoadingChanged() }
             }
         case "sessionState":
             if let state = body["state"] {
