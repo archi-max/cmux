@@ -1648,7 +1648,12 @@ extension Workspace {
            ) {
             return restoredCloudPanelID }
         if usesSSHTui, remoteConfiguration?.preserveAfterTerminalExit == true, snapshot.type == .terminal {
-            return restoreDeviceDisplayPanel(snapshot, in: paneId)
+            // A projected terminal restored through its reservation above. This
+            // one has no host terminal for the SSH provider to reattach.
+            return restoreDeviceDisplayPanel(
+                snapshot, in: paneId,
+                origin: cloudProjectionRecord == nil ? .unattachedSSHTerminal : .device
+            )
         }
         let restoresUntrustedSavedDirectory = cloudVMBinding != nil ||
             (snapshot.directoryIsTrustedRemoteReport != true &&
