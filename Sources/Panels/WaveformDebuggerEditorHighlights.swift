@@ -134,9 +134,18 @@ enum WaveformDebuggerEditorHighlights {
 
     /// An editor drew its values: while its waveform is stepped, compare them with the
     /// cycle before and highlight what changed and what drove it.
-    /// Waits for `textView`'s highlight job (if any) to finish drawing (tests).
-    static func settled(_ textView: NSTextView) async {
-        await work.object(forKey: textView)?.task?.value
+    /// Waits until every editor's highlight job, and any job started meanwhile, has finished (tests).
+    static func settled() async {
+        var awaited = Set<Task<Void, Never>>()
+        while true {
+            let jobs = (work.objectEnumerator()?.allObjects ?? []).compactMap { ($0 as? Work)?.task }
+            let pending = jobs.filter { !awaited.contains($0) }
+            if pending.isEmpty { return }
+            for task in pending {
+                await task.value
+                awaited.insert(task)
+            }
+        }
     }
 
     static func valuesShown(_ shown: Shown) {
@@ -289,14 +298,19 @@ enum WaveformDebuggerEditorHighlights {
             drawn.attributes.append((range, key, value))
         }
         let driverStarts = Set(result.driverLines.map(\.location))
-        // A module with anything lit on screen (a driver line, or a changed signal whose driver
-        // is scrolled away) has its other lines dimmed, so every screen of it reads the same.
-        let litModules = Set(lines.filter { line in
+        // Lines that show a changed signal (its driver, or any other use) stay full colour. A
+        // module with one of them on screen has its other lines dimmed, so every screen of it
+        // reads the same; lines outside modules, and modules with nothing changed, never dim.
+        // (A driver line always names the signal it drives, so it is one of these lines.)
+        // Follow-up: generate and for blocks are dimmed with their whole module.
+        let litLines = lines.filter { line in
             driverStarts.contains(line.contentRange.location)
                 || result.changedIdentifiers.contains { NSLocationInRange($0.location, line.contentRange) }
-        }.compactMap(\.module))
+        }
+        let litStarts = Set(litLines.map(\.contentRange.location))
+        let litModules = Set(litLines.compactMap(\.module))
         let dimmed = (textView.textColor ?? .textColor).withAlphaComponent(0.4)
-        for line in lines where line.module.map(litModules.contains) == true && !driverStarts.contains(line.contentRange.location) {
+        for line in lines where line.module.map(litModules.contains) == true && !litStarts.contains(line.contentRange.location) {
             add(.foregroundColor, dimmed, line.contentRange)
         }
         for range in result.driverLines {
