@@ -430,6 +430,9 @@
   // signal is held by name, as the old netlist is gone.
   let reloading = false;
   let reloadBaseline = null;
+  // During a reload, once the old viewer has handled the unload (it posts
+  // ready): it is empty, and only its Auto Reload checkbox still means anything.
+  let frameGone = false;
   let dirty = false;
 
   function contextSession(context) {
@@ -450,6 +453,10 @@
 
   function onContextUpdate(m) {
     let change = m.stateChangeType;
+    if (reloading && frameGone) {
+      if (reloadBaseline && m.autoReload !== undefined) { reloadBaseline.autoReload = !!m.autoReload; }
+      return;
+    }
     // The debugger's own edits (Locals, while it dispatches quietly) and its play ticks are not the user's:
     // no undo entries, not unsaved.
     const playing = !!(window.cmuxDebugger && window.cmuxDebugger.isPlaying());
@@ -467,11 +474,6 @@
     if (reloading) {
       const before = reloadBaseline || {};
       const next = contextSession(Object.assign({}, before, m));
-      // Once the old viewer has handled the unload it shows no rows: what it
-      // sends then (a key, Auto Reload) must not empty the view kept.
-      if (!next.displayedSignals.length && before.displayedSignals && before.displayedSignals.length) {
-        next.displayedSignals = before.displayedSignals;
-      }
       // A selection changed now can't be named: the old netlist is gone.
       reloadBaseline = Object.assign(next, { cmuxSelected: next.selectedSignal === before.selectedSignal ? before.cmuxSelected : null });
       return;
@@ -671,6 +673,7 @@
     const config = host().config;
     // The reloaded viewer is live: what it sends from here is its own.
     reloading = false;
+    frameGone = false;
     restoreAsked = true;
     restorePending = false;
     // cmux's kept state is cleared only once it reached the viewer: a reload
@@ -1184,6 +1187,7 @@
     redoStack = [];
     reloading = false;
     reloadBaseline = null;
+    frameGone = false;
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
@@ -1213,16 +1217,21 @@
     document.getElementById('status-reload').hidden = true;
     // A change from the last 250 ms reaches cmux before the viewer unloads.
     if (snapshotScheduled) { sendSessionSnapshot(); }
+    // A reload before the last one's restore came back keeps that one's view.
     if (!reloading) {
-      reloadBaseline = Object.assign(undoState(), { cmuxSelected: webviewContext ? selectedSignalRef(webviewContext.selectedSignal) : null });
+      const selected = webviewContext ? selectedSignalRef(webviewContext.selectedSignal)
+        : (reloadBaseline && reloadBaseline.cmuxSelected) || null;
+      reloadBaseline = Object.assign(undoState(), { cmuxSelected: selected });
     }
     reloading = true;
+    frameGone = false;
     webviewContext = null;
   }
 
   window.cmuxCommands = {
     run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
     addSignalByName, fileChanged, willReload, updateSetting,
+    frameUnloaded: () => { if (reloading) { frameGone = true; } },
     init,
     setSessionFile: (file) => { host().config.sessionFile = file; return offerSessionFile(); },
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },

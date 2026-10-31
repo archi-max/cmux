@@ -245,19 +245,18 @@ function decodeRecords(raw, width) {
   return out;
 }
 
-// init is the one async call: the calls posted behind it wait for the wasm.
-let initialized = null;
+// Before a file is loaded, a call into the wasm would trap (a Rust panic),
+// which breaks the instance for the load that follows: it answers "not open".
+let loaded = false;
+const beforeLoad = new Set(['init', 'loadfile']);
 self.onmessage = async (e) => {
   const { id, method, args } = e.data;
   try {
-    let result;
-    if (method === 'init') {
-      initialized = api.init(args || {});
-      result = await initialized;
-    } else {
-      if (initialized) { await initialized; }
-      result = await api[method](args || {});
-    }
+    if (!ex && method !== 'init') { throw new Error('not open'); }
+    if (!loaded && !beforeLoad.has(method)) { throw new Error('not open'); }
+    const result = await api[method](args || {});
+    if (method === 'loadfile') { loaded = true; }
+    if (method === 'unload') { loaded = false; }
     self.postMessage({ type: 'result', id, result });
   } catch (err) {
     self.postMessage({ type: 'result', id, error: String((err && err.message) || err) });

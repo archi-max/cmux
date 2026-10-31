@@ -455,11 +455,13 @@
   let autoReloadState = null;
 
   const webviewHandlers = {
-    ready: () => { webviewReady = true; sendInit(); },
+    // The viewer posts ready from its unload too: from then on, during a
+    // reload, it shows nothing of the old view.
+    ready: () => { webviewReady = true; window.cmuxCommands.frameUnloaded(); sendInit(); },
     initialized: () => { toNative({ type: 'opened', top: doc.netlist.map((t) => t.name) }); },
     // Until the backend has opened (doc.metadata), a request is the old
     // viewer's: the reloaded one asks again for what it shows.
-    fetchDataFromFile: async (m) => { if (backend && doc.metadata) { await backend.fetch(m.requestList); } },
+    fetchDataFromFile: async (m) => { if (dataReady()) { await backend.fetch(m.requestList); } },
     contextUpdate: (m) => {
       viewerContext.webview = m;
       if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
@@ -495,6 +497,7 @@
   // Concurrent callers share one request per scope.
   function getChildren(item) {
     if (item.children) { return Promise.resolve(item.children); }
+    if (!netlistReady()) { return Promise.reject(closedError()); }
     if (!item.childrenRequest) {
       const scopePath = item.scopePath.concat([item.name]);
       item.childrenRequest = backend.children(item).then((list) => {
@@ -555,6 +558,7 @@
   // VaporView's netlist search: wellen searches the hierarchy itself; other
   // backends walk the tree here (breadth first, bounded).
   async function search(query, scope) {
+    if (!netlistReady()) { throw closedError(); }
     if (backend.search) { return backend.search(query, scope); }
     const needle = query.toLowerCase();
     const results = [];
@@ -578,9 +582,17 @@
   }
 
   async function valuesAtTime(time, paths) {
-    if (backend.valuesAtTime) { return backend.valuesAtTime(time, paths); }
+    if (dataReady() && backend.valuesAtTime) { return backend.valuesAtTime(time, paths); }
     return [];
   }
+
+  // While a load opens its file (or after a reload or open closed it), only
+  // what that load itself asks for reaches the backend: a call from before
+  // would reach a wasm with no file loaded, or a helper with none open.
+  // netlistReady: the tops are shown (wellen lists scopes while it reads the
+  // body). dataReady: the whole file is read (doc.metadata).
+  function netlistReady() { return !!backend && netlistShown; }
+  function dataReady() { return !!backend && !!doc.metadata; }
 
   // ---- open ----
   // Each open or reload is a load generation. A newer one closes the backend
@@ -590,9 +602,13 @@
   // Whether the viewer frame has loaded for the current open (reload keeps it).
   let frameLoaded = false;
 
+  // Whether the current load's tops are shown (see netlistReady).
+  let netlistShown = false;
+
   function closeBackend() {
     if (backend && backend.close) { backend.close(); }
     backend = null;
+    netlistShown = false;
   }
 
   // Resolves to false when a newer load superseded this one.
@@ -602,6 +618,7 @@
     backend = opening;
     const metadata = await opening.open((top) => {
       if (generation !== loadGeneration) { return; }
+      netlistShown = true;
       doc.netlist = top.map((t) => ({ ...t, scopePath: [] }));
       doc.netlist.forEach((t) => { if (t.kind === 'var') { doc.items.set(t.netlistId, t); } });
       window.cmuxNetlist.render(doc.netlist);
@@ -689,9 +706,9 @@
     netlistItem: (id) => doc.items.get(id) || null,
     // cmux-debugger.js: a variable's changes, VaporView events as they pass,
     // and its Locals group, which the link does not count as shown.
-    signalChanges: (v, maxChanges) => (backend && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
+    signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
     // Null when the backend has no faster way than signalChanges.
-    signalPosedges: (v, maxEdges) => (backend && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
+    signalPosedges: (v, maxEdges) => (dataReady() && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
     get currentBackend() { return backend; },
     viewerEventListeners: [],
     contextListeners: [],
@@ -926,7 +943,7 @@
     // (escaped identifiers) can't be asked for and get no value.
     async function wellenValues(time, vars) {
       const out = new Map();
-      if (!backend.valuesAtTime) { return out; }
+      if (!dataReady() || !backend.valuesAtTime) { return out; }
       const byPath = new Map();
       for (const v of vars) {
         const parts = pathOf(v);
