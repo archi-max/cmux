@@ -751,6 +751,72 @@ extension Harness {
         """) { r in
           check(self.errors.count == errorsBefore, "a request during a reload's open fails nothing (\(self.errors.suffix(from: errorsBefore)))")
           check(r["rows"] as? Int == 1, "and the reload brings the row back (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseU()
+        }
+      }
+    }
+  }
+
+  // An Undo just after the reloaded viewer asked for its state, before the
+  // restore's apply-state is posted, would land first and be overwritten by
+  // it: it waits, and the history stays as it was.
+  func phaseU() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const drawn = () => document.getElementById('viewer').contentDocument.querySelectorAll('.waveform-label').length;
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const restoreState = C.restoreState;
+        C.restoreState = (m) => {
+          C.restoreState = restoreState;
+          const p = restoreState(m);
+          C.run('cmux.undo');
+          return p;
+        };
+        window.cmuxWaveform.reload({});
+        await sleep(1500);
+        R.reloaded = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undone = drawn();
+        await C.run('cmux.redo');
+        await sleep(800);
+        R.redone = drawn();
+        """) { r in
+          check(r["reloaded"] as? Int == 1, "an undo while the restore resolves changes nothing (rows drawn \(r["reloaded"] ?? "nil"))")
+          check(r["undone"] as? Int == 0 && r["redone"] as? Int == 1,
+                "afterwards undo/redo still work (rows drawn \(r["undone"] ?? "nil") / \(r["redone"] ?? "nil"))")
+          self.phaseV()
+        }
+      }
+    }
+  }
+
+  // After a failed reload, the unloaded viewer still sends updates (here,
+  // Auto Reload switched), with no rows. They don't empty the view kept from
+  // before the reload, so Save still writes its rows.
+  func phaseV() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({ url: 'cmux-waveform://local/missing.vcd', size: 10 });
+        await sleep(1500);
+        let seen = null;
+        const onContextUpdate = C.onContextUpdate;
+        C.onContextUpdate = (m) => { seen = (m.displayedSignals || []).length; return onContextUpdate(m); };
+        vd().getElementById('autoReload').click();
+        await sleep(300);
+        C.onContextUpdate = onContextUpdate;
+        R.sent = seen;
+        await C.run('vaporview.saveViewerSession');
+        const save = sent.filter((m) => m.type === 'saveSession').pop();
+        R.saved = save ? JSON.parse(save.text).displayedSignals.length : -1;
+        """) { r in
+          check(r["sent"] as? Int == 0, "the unloaded viewer sends an update with no rows (\(r["sent"] ?? "nil"))")
+          check(r["saved"] as? Int == 1, "a save after it still holds the rows from before the reload (rows \(r["saved"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
