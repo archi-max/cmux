@@ -290,7 +290,13 @@ final class RemoteTerminalFilePreviewCoordinator {
                 openPreview: { workspace, localPath in
                     workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localPath)
                 },
-                reportFailure: { _ in notice() }
+                reportFailure: { _ in notice() },
+                isPanelCurrent: { [weak workspace] in
+                    // The viewer outlives the terminal: same workspace, selected, same connection.
+                    guard let workspace, !workspace.isRetiredFromOwningTabManager,
+                          workspace.owningTabManager?.selectedTabId == workspaceID else { return false }
+                    return workspace.remoteConfiguration == configuration
+                }
             )
         )
         return .started
