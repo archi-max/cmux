@@ -4,7 +4,8 @@
 // (`synth:`, see makeSynth); it never reads a real file. Besides the protocol it answers
 //   sleep {ms}            a reply after ms (cancellable while it waits): relay cancel checks
 //   searchAll {...}       two {partial: true} lines, then the final one: relay partial checks
-// Usage: node mock-helper-v2.cjs [--latency 40] [--jitter 60] 3>replies
+// With --v1 it stands in for the v1 helper: open, children and signals only.
+// Usage: node mock-helper-v2.cjs [--latency 40] [--jitter 60] [--v1] 3>replies
 'use strict';
 const fs = require('node:fs');
 const readline = require('node:readline');
@@ -15,6 +16,8 @@ const opt = (name, dflt) => { const i = argv.indexOf('--' + name); return i >= 0
 let LATENCY = Number(opt('latency', 40));
 let JITTER = Number(opt('jitter', 60));
 const OUT = 3;
+const V1 = argv.includes('--v1');
+const V1_COMMANDS = new Set(['open', 'children', 'signals']);
 
 function send(obj, bin) {
   if (bin) { obj.binLength = bin.length; }
@@ -282,7 +285,7 @@ function schedule(req) {
     let out, bin;
     try {
       const fn = handlers[req.cmd];
-      if (!fn && req.cmd !== 'searchAll') { throw new Error('unknown command ' + req.cmd); }
+      if ((!fn && req.cmd !== 'searchAll') || (V1 && !V1_COMMANDS.has(req.cmd))) { throw new Error('unknown command ' + req.cmd); }
       if (req.cmd === 'searchAll') {
         for (let k = 0; k < 2; k++) {
           await new Promise((r) => setTimeout(r, 30));
@@ -300,13 +303,13 @@ function schedule(req) {
   }, rtt / 2);
 }
 
-send({ id: 0, ready: true, pid: process.pid, protocol: 2 });
+send(V1 ? { id: 0, ready: true } : { id: 0, ready: true, pid: process.pid, protocol: 2 });
 
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) { return; }
   let req;
   try { req = JSON.parse(line); } catch { send({ id: -1, error: 'bad json' }); return; }
-  if (req.cmd === 'cancel') {
+  if (req.cmd === 'cancel' && !V1) {
     // helper-v2: cancel {id, target} replies under its own id; the target's reply becomes
     // {id: target, cancelled: true}. cancel {id} of nothing running: one {id, cancelled: false}.
     const target = req.target ?? req.id;
