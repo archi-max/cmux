@@ -61,8 +61,8 @@ keybindings, netlist view, settings, sessions and terminal links).
   takes the same path. The minified build is patched to skip a row already
   in the list: `if(!o)return;` becomes `if(!o||r.includes(i))return;` in
   `handleRemoveVariable(e,t){let r=[];e.forEach(i=>{let o=this.rowItems[i];`.
-  To redo the patch after a rebuild, run
-  `scripts/waveform-viewer-checks/run.sh parity` (phase O).
+  To redo the patch after a rebuild, re-apply that substitution, then check
+  it with `scripts/waveform-viewer-checks/run.sh parity` (phase O).
 - `index.html`, `viewer.html`: a Content-Security-Policy `<meta>` tag (the
   scheme handler also sends it as a header): only bundled scripts, styles,
   fonts and the wasm, no inline script, no other origin.
