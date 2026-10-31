@@ -56,7 +56,6 @@ public struct SSHTuiHostOpenCommand: Sendable {
     /// The host `cmux`. POSIX sh. `open` is handled here; any other verb runs
     /// the next `cmux` on PATH, so a host's own cmux is not shadowed.
     public var script: String {
-        let tries = Self.answerWaitSeconds * 10 / 3
         let prefix = SSHTuiHostOpenAnswer.clientIDPrefix
         return #"""
         #!/bin/sh
@@ -70,22 +69,33 @@ public struct SSHTuiHostOpenCommand: Sendable {
           printf '%s\n' 'Usage: cmux open <path>' \
             'Opens a file of this host in cmux, beside this terminal. A trailing' \
             ':line or :line:column is accepted and ignored.' \
+            'It returns once the cmux app has queued the preview; if the preview' \
+            'then cannot open, a notice on the terminal says why.' \
             'Under tmux, add CMUX_TUI_TERMINAL_ID to update-environment so cmux knows' \
-            'which cmux terminal shows the pane; screen is not supported.'
+            'which cmux terminal shows the pane: the one attached last; screen is' \
+            'not supported.'
         }
         usage() { usage_text >&2; exit 2; }
         die() { printf 'cmux open: %s\n' "$1" >&2; exit 1; }
         isnum() { case $1 in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+        # Never another copy of this script (any install directory, or one
+        # that execs back here): two of them would exec each other forever.
         passthrough() {
-          self_dir=$(cd -P -- "$(dirname -- "$0")" 2>/dev/null && pwd -P)
-          old_ifs=$IFS; IFS=:; set -f
-          for d in $PATH; do
-            [ -n "$d" ] && [ -f "$d/cmux" ] && [ -x "$d/cmux" ] || continue
-            [ "$(cd -P -- "$d" 2>/dev/null && pwd -P)" = "$self_dir" ] && continue
+          if [ -z "${CMUX_SSH_CLI_PASSTHROUGH:-}" ]; then
+            self_dir=$(cd -P -- "$(dirname -- "$0")" 2>/dev/null && pwd -P)
+            installs=$(cd -P -- "$HOME/.local/share/cmux/ssh-cli" 2>/dev/null && pwd -P) ||
+              installs=$HOME/.local/share/cmux/ssh-cli
+            old_ifs=$IFS; IFS=:; set -f
+            for d in $PATH; do
+              [ -n "$d" ] && [ -f "$d/cmux" ] && [ -x "$d/cmux" ] || continue
+              real=$(cd -P -- "$d" 2>/dev/null && pwd -P) || continue
+              [ "$real" = "$self_dir" ] && continue
+              case $real/ in "$installs"/*) continue ;; esac
+              IFS=$old_ifs; set +f
+              CMUX_SSH_CLI_PASSTHROUGH=1 exec "$d/cmux" "$@"
+            done
             IFS=$old_ifs; set +f
-            exec "$d/cmux" "$@"
-          done
-          IFS=$old_ifs; set +f
+          fi
           printf 'cmux: %s is not available in a cmux SSH terminal; only cmux open is\n' "$1" >&2
           exit 2
         }
@@ -159,8 +169,11 @@ public struct SSHTuiHostOpenCommand: Sendable {
         encoded=$(printf %s "$abs" | base64 | tr -d '\n')
         # Session-wide on purpose: a --terminal row would replace that
         # terminal's pending marker (an agent waiting for input, say).
+        # The subtitle is display only; without JSON punctuation a name cannot
+        # reshape the row this script reads back.
+        subtitle=$(basename -- "$abs" | tr -d '{}[]"\\')
         out=$("$CMUX_TUI_BIN" --json notification create --title '\#(Self.notificationTitle)' \
-          --subtitle "$(basename -- "$abs")" --body "\#(Self.bodyPrefix)$terminal:$encoded" 2>&1) ||
+          --subtitle "$subtitle" --body "\#(Self.bodyPrefix)$terminal:$encoded" 2>&1) ||
           die "the cmux-tui daemon refused it: $out"
         id=$(printf '%s\n' "$out" | sed -n 's/.*"id":"\(notification_[0-9a-f]\{32\}\)".*/\1/p' | head -n 1)
         [ -n "$id" ] || die "could not read the request id from the cmux-tui daemon: $out"
@@ -168,38 +181,59 @@ public struct SSHTuiHostOpenCommand: Sendable {
           "$CMUX_TUI_BIN" --quiet notification ack "$id" --client '\#(SSHTuiHostOpenAnswer.cancelledClientID)' >/dev/null 2>&1
         }
         trap 'cancel; exit 130' INT TERM HUP
-        # The Mac answers with an ack under a reserved client id.
+        # The Mac answers with an ack under a reserved client id. Only the
+        # row's read_by array counts: keys are sorted, so it precedes the
+        # subtitle, and the row is flat.
         answer() {
           list=$("$CMUX_TUI_BIN" --json notification list --limit 256 2>/dev/null) || { echo none; return; }
           row=$(printf '%s\n' "$list" | tr '}' '\n' | grep -F "\"id\":\"$id\"")
-          case $row in
-            '') echo gone ;;
-            *'"\#(SSHTuiHostOpenAnswer.ok.clientID)"'*) echo ok ;;
-            *'"\#(prefix)refused:'*) r=${row#*'"\#(prefix)refused:'}; echo "refused:${r%%'"'*}" ;;
-            *) echo none ;;
-          esac
+          [ -n "$row" ] || { echo gone; return; }
+          case $row in *'"read_by":['*) ;; *) echo none; return ;; esac
+          readers=${row#*'"read_by":['}; readers=${readers%%]*}
+          ok=; hard=; soft=
+          IFS=,; set -f
+          for r in $readers; do
+            case $r in
+              '"\#(SSHTuiHostOpenAnswer.ok.clientID)"') ok=1 ;;
+              '"\#(SSHTuiHostOpenAnswer.notOpenHere.clientID)"') soft=1 ;;
+              '"\#(prefix)refused:'*'"') [ -n "$hard" ] || { hard=${r#'"\#(prefix)refused:'}; hard=${hard%'"'}; } ;;
+            esac
+          done
+          if [ -n "$ok" ]; then echo ok
+          elif [ -n "$hard" ]; then echo "refused:$hard"
+          elif [ -n "$soft" ]; then echo soft
+          else echo none
+          fi
         }
-        tries=0
-        while [ "$tries" -lt \#(tries) ]; do
+        nap() { sleep 0.3 2>/dev/null || sleep 1; }
+        # not-open-here is one Mac's view; another Mac may still show the
+        # terminal, so it only changes the message at the deadline.
+        soft=
+        start=$(date +%s)
+        while :; do
           result=$(answer)
           case $result in
             ok) exit 0 ;;
+            soft) soft=1 ;;
             gone) die 'the request disappeared from the cmux-tui daemon before the Mac answered' ;;
             refused:stale) die 'the cmux app found the request too old; check this host'"'"'s clock' ;;
             refused:malformed) die 'the cmux app could not read the request' ;;
             refused:path) die 'the cmux app refused this path' ;;
-            refused:not-open-here) die 'this terminal is not open in a cmux window' ;;
             refused:previews-off) die 'cmux cannot preview from this terminal: it is not an SSH terminal there, or file previews are off' ;;
             refused:type) die 'this file type opens from the Files panel, not cmux open' ;;
             refused:*) die "the cmux app refused it (${result#refused:})" ;;
           esac
-          sleep 0.3 2>/dev/null || sleep 1
-          tries=$((tries + 1))
+          [ $(($(date +%s) - start)) -lt \#(Self.answerWaitSeconds) ] || break
+          nap
         done
         # Withdraw it so the Mac cannot open it later; an ok that raced the
         # withdrawal still counts.
         cancel
-        [ "$(answer)" = ok ] && exit 0
+        for attempt in 1 2; do
+          [ "$(answer)" = ok ] && exit 0
+          nap
+        done
+        [ -z "$soft" ] || die 'this terminal is not open in a cmux window'
         die 'no cmux window took the request; is this terminal open in the cmux app?'
 
         """#

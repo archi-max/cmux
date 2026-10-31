@@ -242,6 +242,7 @@ final class CmuxTuiSurfaceProvider: SurfaceProvider {
         notificationSync = nil
         hostOpenRecheck?.cancel()
         hostOpenRecheck = nil
+        resetHostOpenBaseline()
         if let notificationPlacementObserver {
             NotificationCenter.default.removeObserver(notificationPlacementObserver)
             self.notificationPlacementObserver = nil
@@ -721,6 +722,10 @@ final class CmuxTuiSurfaceProvider: SurfaceProvider {
                 cmuxDebugLog("cloud.state.snapshotIgnored machine=\(machineID) reason=pending-rename-fence")
                 #endif
                 return false
+            }
+            // A new daemon generation is a state reinstall for `cmux open`.
+            if incoming.cursor?.generation != cloudState?.cursor?.generation {
+                resetHostOpenBaseline()
             }
             cloudState = incoming
             cloudStateInstallVersion &+= 1
@@ -1637,6 +1642,7 @@ final class CmuxTuiSurfaceProvider: SurfaceProvider {
         changeWatcher = nil
         watchedLink = nil
         changeWatcherID = nil
+        resetHostOpenBaseline()
         catalog.markCloudStateStale(on: machine, reason: "event_feed_ended")
         scheduleRefresh()
     }
@@ -1653,6 +1659,7 @@ final class CmuxTuiSurfaceProvider: SurfaceProvider {
             // machine, ports, and display rows immediately.
             scheduleRefresh(force: true)
             notificationSync?.linkDidConnect()
+            resetHostOpenBaseline()
         case .snapshot(let cursor, _, let payload):
             guard let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
                   let incoming = CmuxTuiSnapshotParser.state(fromSnapshot: object, machine: machine),
