@@ -437,6 +437,37 @@ extension LanguageServerSession {
         rememberExploreMode()
     }
 
+    /// What the server compiles, as set through this session: a top level or build file, explore
+    /// mode chosen with `slangExplore`, or neither (the config's build, if any).
+    public struct SlangCompilationState: Sendable, Equatable {
+        public var target: SlangCompilationTarget?
+        public var isExplore: Bool
+
+        public init(target: SlangCompilationTarget?, isExplore: Bool) {
+            self.target = target
+            self.isExplore = isExplore
+        }
+    }
+
+    public var slangCompilationState: SlangCompilationState {
+        SlangCompilationState(target: slangCompilationTarget, isExplore: isInChosenExploreMode)
+    }
+
+    /// Puts back `state` (read with `slangCompilationState` before a switch). Neither a target nor
+    /// explore mode: the empty top level, which does not outlive a restart.
+    public func slangRestore(_ state: SlangCompilationState) async throws {
+        switch state.target {
+        case .topLevel(let path)?: try await slangSetTopLevel(path)
+        case .buildFile(let path)?: try await slangSetBuildFile(path)
+        case nil:
+            if state.isExplore {
+                try await slangExplore()
+            } else {
+                try await slangSetTopLevel("")
+            }
+        }
+    }
+
     /// Whether `slangExplore` chose explore mode (and nothing replaced it since).
     public var isInChosenExploreMode: Bool {
         compilationCommand?.argument.stringValue == ""
