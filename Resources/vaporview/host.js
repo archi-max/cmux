@@ -86,7 +86,16 @@
     showMessage(status.title, status.detail);
   }
 
+  // What a call on a backend that a reload or open closed rejects with. Nothing
+  // reports it: the newer load owns the page.
+  function closedError() {
+    const error = new Error('closed');
+    error.cmuxClosed = true;
+    return error;
+  }
+
   function fail(error) {
+    if (error && error.cmuxClosed) { return; }
     const detail = String((error && error.message) || error);
     showMessage(strings.openFailed, detail);
     toNative({ type: 'error', message: detail });
@@ -128,7 +137,7 @@
     let closed = false;
     worker.onerror = (e) => { if (!closed) { fail(e.message); } };
     function call(method, args) {
-      if (closed) { return Promise.reject(new Error('closed')); }
+      if (closed) { return Promise.reject(closedError()); }
       const id = nextCallId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
@@ -163,7 +172,7 @@
       close() {
         closed = true;
         worker.terminate();
-        pending.forEach((p) => p.reject(new Error('closed')));
+        pending.forEach((p) => p.reject(closedError()));
         pending.clear();
       },
       async fetch(requestList) {
@@ -255,9 +264,14 @@
     // A reply is JSON ({result} or {error}), or for signal data
     // [u32 LE header length][header JSON][deflate-raw records].
     async function request(req) {
-      if (closed) { throw new Error('closed'); }
-      const response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
-      const all = new Uint8Array(await response.arrayBuffer());
+      if (closed) { throw closedError(); }
+      let response, all;
+      try {
+        response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
+        all = new Uint8Array(await response.arrayBuffer());
+      } catch (error) {
+        throw closed ? closedError() : error;
+      }
       let reply, bin = null;
       if ((response.headers.get('content-type') || '').startsWith('application/octet-stream')) {
         const headLength = new DataView(all.buffer).getUint32(0, true);
@@ -266,7 +280,7 @@
       } else {
         reply = JSON.parse(new TextDecoder().decode(all));
       }
-      if (closed) { throw new Error('closed'); }
+      if (closed) { throw closedError(); }
       if (reply.error) { throw new Error(reply.error); }
       return { result: reply.result, helperMs: reply.ms || 0, bin, wireBytes: all.length };
     }
@@ -409,10 +423,11 @@
   async function fromWebview(m) {
     const handler = webviewHandlers[m.command];
     if (!handler) { return; }
+    const generation = loadGeneration;
     try {
       await handler(m);
     } catch (error) {
-      fail(error);
+      if (generation === loadGeneration) { fail(error); }
     }
   }
 
@@ -603,6 +618,8 @@
     netlistItem: (id) => doc.items.get(id) || null,
     log: (message) => toNative({ type: 'log', message: String(message) }),
     get config() { return config; },
+    // Bumped by every open and reload: work started for an older one is stale.
+    get loadGeneration() { return loadGeneration; },
   };
 
   // ---- source link (SystemVerilog editor <-> waveform) ----

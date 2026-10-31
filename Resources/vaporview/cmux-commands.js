@@ -529,12 +529,8 @@
         } else if (signal.dataType === 'netlist-variable' || signal.dataType === undefined) {
           const v = await host().findItem(signal.name, signal.msb, signal.lsb, true);
           if (!v || v.kind !== 'var') {
-            // parseNetlistVariableSettings: the row stays, as a missing signal,
-            // so a reload or a later save keeps the layout.
             missing.push(signal.name);
-            const parts = String(signal.name || '').split('.');
-            out.push(Object.assign({}, signal, { dataType: 'netlist-variable', netlistId: undefined, signalId: undefined,
-              signalName: parts.pop(), scopePath: parts }));
+            out.push(missingRow(signal));
             continue;
           }
           out.push(Object.assign({}, signal, { dataType: 'netlist-variable', netlistId: v.netlistId, signalId: v.signalId,
@@ -542,14 +538,29 @@
             enumType: v.enumType, msb: v.msb, lsb: v.lsb }));
         }
       } catch (error) {
+        // A lookup that failed (the backend closed for a reload, say) keeps
+        // the row too, so a save can't lose it.
         host().log('session row: ' + error);
+        missing.push(signal.name);
+        out.push(signal.dataType === 'netlist-variable' || signal.dataType === undefined ? missingRow(signal) : signal);
       }
     }
     return out;
   }
 
+  // parseNetlistVariableSettings: a row whose signal isn't in the file stays, as
+  // a missing signal, so a reload or a later save keeps the layout.
+  function missingRow(signal) {
+    const parts = String(signal.name || '').split('.');
+    return Object.assign({}, signal, { dataType: 'netlist-variable', netlistId: undefined, signalId: undefined,
+      signalName: parts.pop(), scopePath: parts });
+  }
+
   async function applySession(session, stateChangeType) {
     if (!session) { return; }
+    // A reload or open that starts while this resolves rows makes it stale: its
+    // rows would land in the next file's viewer, and its state would win there.
+    const generation = host().loadGeneration;
     const missing = [];
     const displayedSignals = await convertSignalList(session.displayedSignals || [], missing);
     // A file holds { name, msb, lsb } (or, from older cmux, the name); the
@@ -557,9 +568,10 @@
     let selectedSignal = session.selectedSignal;
     if (typeof selectedSignal === 'string' || (selectedSignal && typeof selectedSignal === 'object')) {
       const s = typeof selectedSignal === 'string' ? { name: selectedSignal } : selectedSignal;
-      const v = s.name ? await host().findItem(s.name, s.msb, s.lsb, true) : null;
+      const v = s.name ? await host().findItem(s.name, s.msb, s.lsb, true).catch(() => null) : null;
       selectedSignal = v && v.kind === 'var' ? v.netlistId : undefined;
     }
+    if (host().loadGeneration !== generation) { return; }
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
       extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
       altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
@@ -605,6 +617,9 @@
     const file = host().config.sessionFile;
     if (!restoreAsked || sessionFileOffered || !file || !file.text) { return; }
     sessionFileOffered = true;
+    // cmux reads the file after the viewer opened (from an SSH host, seconds
+    // later): once the user has changed the view, a late file must not replace it.
+    if (dirty || undoStack.length) { return; }
     const mode = settings().promptLoadSettings;
     if (mode === 'Never') { return; }
     try {
@@ -956,6 +971,8 @@
     try {
       return await handler(args);
     } catch (error) {
+      // A reload closed the backend under it: the newer load owns the page.
+      if (error && error.cmuxClosed) { return undefined; }
       host().log('command ' + id + ' failed: ' + ((error && error.stack) || error));
       ui().toast(String((error && error.message) || error), 'error');
       return undefined;
