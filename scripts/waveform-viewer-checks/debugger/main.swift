@@ -163,6 +163,50 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("pause()")
     let restarted = await dbg("state()")
     expect((restarted?["cycle"] as? Int ?? 0) < 1000, "play at the end starts over: \(String(describing: restarted?["cycle"]))")
+    // The RTL item in the strip says what the editors do (cmux sends it).
+    let rtlShown = await call("""
+      await cmuxWaveform.debugger.setRtlStatus({ text: 'RTL: cpu.sv', tooltip: 'alu.sv: not placed', ok: true, wait: false });
+      const el = document.querySelector('#status-cycle .rtl');
+      return el ? { text: el.textContent, title: el.title, hidden: el.hidden } : null;
+    """) as? [String: Any]
+    expect(rtlShown?["text"] as? String == "RTL: cpu.sv" && rtlShown?["title"] as? String == "alu.sv: not placed" && rtlShown?["hidden"] as? Bool == false,
+           "the strip shows the RTL status: \(String(describing: rtlShown))")
+    // Waiting for the editor: every cycle is played, each as soon as the editors drew it
+    // (here right away), else after at most 250 ms.
+    func playedCycles(rate: Int, ack: Bool, for ms: UInt64) async -> [Int] {
+      _ = await dbg("jump({ to: 'first' })")
+      await sleep(200)
+      _ = await call("""
+        window.__ack = \(ack);
+        if (!window.__ackInstalled) {
+          window.__ackInstalled = true;
+          cmuxWaveform.host.viewerEventListeners.push((m) => {
+            if (window.__ack && m.eventType === 'markerSet') {
+              const time = Number(m.eventData.time);
+              setTimeout(() => cmuxWaveform.debugger.rtlShown({ time }), 5);
+            }
+          });
+        }
+        return null;
+      """)
+      debuggerEvents.removeAll()
+      _ = await dbg("play({ rate: \(rate) })")
+      await sleep(ms)
+      _ = await dbg("pause()")
+      await sleep(100)
+      return debuggerEvents.filter { $0["event"] as? String == "cycle" }.compactMap { $0["cycle"] as? Int }
+    }
+    _ = await call("await cmuxWaveform.debugger.setRtlStatus({ text: 'RTL: cpu.sv', ok: true, wait: true }); return null")
+    let unacked = await playedCycles(rate: 100, ack: false, for: 1200)
+    let consecutive = { (c: [Int]) in zip(c, c.dropFirst()).allSatisfy { $1 == $0 + 1 } }
+    expect(consecutive(unacked) && unacked.count >= 3 && unacked.count <= 7,
+           "waiting with no answer: every cycle, about one per 250 ms: \(unacked)")
+    let acked = await playedCycles(rate: 20, ack: true, for: 1000)
+    expect(consecutive(acked) && acked.count >= 12,
+           "editors answering at once: every cycle at the play rate: \(acked.count) cycles, \(acked.prefix(8))")
+    _ = await call("await cmuxWaveform.debugger.setRtlStatus({ text: 'RTL: cpu.sv', ok: true, wait: false }); return null")
+    let free = await playedCycles(rate: 500, ack: false, for: 600)
+    expect(!consecutive(free) && (free.last ?? 0) > 100, "not waiting: play skips cycles to keep pace: \(free.count) moves to \(free.last ?? 0)")
     // The user's own edits during play are still undoable and unsaved; a click on the waveform pauses.
     _ = await call("cmuxCommands.sessionSaved({}); return null")
     let undoAtPlay = await call("return cmuxCommands.undoDepth ? cmuxCommands.undoDepth() : -1") as? Int ?? -1
