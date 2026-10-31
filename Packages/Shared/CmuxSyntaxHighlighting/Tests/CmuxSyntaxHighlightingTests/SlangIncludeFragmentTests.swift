@@ -337,6 +337,12 @@ struct SlangIncludeFragmentTests {
         #expect(!S.typedefIsFixed(in: after, line: 5))
         let unmatched = "module m;\n  endpackage\n  typedef logic t;\nendmodule\n"
         #expect(!S.typedefIsFixed(in: unmatched, line: 2))
+        // A stray end of another element doesn't close the package.
+        #expect(S.typedefIsFixed(in: "package p;\n  endclass\n  typedef logic t;\nendpackage\n", line: 2))
+        // A forward interface class, an interface class and a virtual interface variable in a package.
+        #expect(S.typedefIsFixed(in: "package p;\n  typedef interface class C;\n  typedef logic [1:0] p_t;\nendpackage\n", line: 2))
+        #expect(S.typedefIsFixed(in: "package p;\n  interface class I;\n  endclass\n  typedef logic t;\nendpackage\n", line: 3))
+        #expect(S.typedefIsFixed(in: "package p;\n  class K;\n    virtual interface bus vb;\n  endclass\n  typedef logic t;\nendpackage\n", line: 4))
     }
 
     @Test func aHoverFailureOtherThanTheServersAnswerIsThrown() async throws {
