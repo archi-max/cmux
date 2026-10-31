@@ -155,4 +155,21 @@ struct RemotePreviewCacheBudgetTests {
         #expect(!Gate.panelIsCurrent(isSelected: false, isRetired: false, workspaceConfiguration: "a", openedWith: "a"))
         #expect(!Gate.panelIsCurrent(isSelected: true, isRetired: true, workspaceConfiguration: "a", openedWith: "a"))
     }
+
+    @Test
+    func testTheViewerFollowsTheSSHIdentityNotTheRelaySession() {
+        typealias Gate = RemotePreviewInPlaceGate
+        let opened = SSHFileExplorerConnection(destination: "u@host", port: 22, identityFile: nil, sshOptions: ["-oControlPath=/tmp/c"])
+        // A relay port or token rewrite leaves these four fields, so the viewer keeps refreshing.
+        let rewritten = Gate.sshIdentity(
+            transportIsSSH: true, destination: "u@host", port: 22, identityFile: nil, sshOptions: ["-oControlPath=/tmp/c"]
+        )
+        #expect(rewritten == opened)
+        #expect(Gate.panelIsCurrent(isSelected: true, isRetired: false, workspaceConfiguration: rewritten, openedWith: opened))
+        let otherHost = Gate.sshIdentity(
+            transportIsSSH: true, destination: "u@other", port: 22, identityFile: nil, sshOptions: ["-oControlPath=/tmp/c"]
+        )
+        #expect(!Gate.panelIsCurrent(isSelected: true, isRetired: false, workspaceConfiguration: otherHost, openedWith: opened))
+        #expect(Gate.sshIdentity(transportIsSSH: false, destination: "u@host", port: 22, identityFile: nil, sshOptions: []) == nil)
+    }
 }
