@@ -1248,6 +1248,38 @@ extension Harness {
         R.rows = drawn();
         """) { r in
           check(r["rows"] as? Int == 1, "the emptied viewer stays ignored through a second reload (rows drawn \(r["rows"] ?? "nil"))")
+          self.phaseAH()
+        }
+      }
+    }
+  }
+
+  // An Undo waiting on a reload is forgotten when that reload fails, or when
+  // the reload is of another path: it would apply to a view the user didn't
+  // see when pressing it.
+  func phaseAH() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        const good = H.config.url, size = H.config.size, path = H.config.path;
+        window.cmuxWaveform.reload({ url: 'cmux-waveform://local/missing.vcd', size: 10 });
+        await C.run('cmux.undo');
+        await sleep(1500);
+        window.cmuxWaveform.reload({ url: good, size });
+        await reloaded();
+        R.afterFailed = drawn();
+        window.cmuxWaveform.reload({});
+        await C.run('cmux.undo');
+        window.cmuxWaveform.reload({ path: '/work/sim/renamed.vcd' });
+        await sleep(300);
+        await reloaded();
+        R.afterPath = drawn();
+        H.config.path = path;
+        """) { r in
+          check(r["afterFailed"] as? Int == 1, "an Undo waiting on a reload that failed is forgotten (rows drawn \(r["afterFailed"] ?? "nil"))")
+          check(r["afterPath"] as? Int == 1, "and one overtaken by a reload of another path (rows drawn \(r["afterPath"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
