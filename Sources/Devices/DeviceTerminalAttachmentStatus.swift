@@ -5,12 +5,24 @@ import Observation
 @MainActor
 @Observable
 final class DeviceTerminalAttachmentStatus {
+    /// What the pane is waiting for. Device panes wait for another Mac; an SSH
+    /// pane saved without a host terminal has nothing to reattach to.
+    enum Origin: Equatable {
+        case device
+        case unattachedSSHTerminal
+    }
+
+    let origin: Origin
     private(set) var isConnected = false
     private(set) var isConnecting = true
     private(set) var isDismissed = false
     private var hasDisconnected = false
     @ObservationIgnored var onRetry: (() -> Void)?
     @ObservationIgnored var onChange: (() -> Void)?
+
+    init(origin: Origin = .device) {
+        self.origin = origin
+    }
 
     func update(connected: Bool, connecting: Bool) {
         guard isConnected != connected || isConnecting != connecting else { return }
@@ -39,6 +51,14 @@ final class DeviceTerminalAttachmentStatus {
 
     var presentation: CloudTerminalReconnectOverlayPolicy.Presentation? {
         guard !isConnected, !isDismissed, hasDisconnected else { return nil }
+        if origin == .unattachedSSHTerminal {
+            return .init(
+                title: String(localized: "ssh.terminal.unattached.title", defaultValue: "Not running on the SSH host"),
+                detail: String(localized: "ssh.terminal.unattached.detail", defaultValue: "This tab has no session on the SSH host to reattach. Retry opens a new terminal on the host in its place."),
+                showsProgress: isConnecting,
+                showsReconnectButton: true
+            )
+        }
         return .init(
             title: String(localized: "devices.terminal.disconnected.title", defaultValue: "Mac disconnected"),
             detail: String(localized: "devices.terminal.disconnected.detail", defaultValue: "Your layout and scrollback are preserved. Retry when the other Mac is available."),

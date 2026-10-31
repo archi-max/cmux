@@ -1,5 +1,6 @@
 import CmuxCloud
 import CmuxCore
+import CmuxSurfaceCatalogModel
 import Foundation
 
 extension Workspace {
@@ -89,6 +90,34 @@ extension Workspace {
 
     var usesSSHTui: Bool {
         remoteConfiguration?.routesThroughSSHTui ?? false
+    }
+
+    /// The SSH host placement for a restored pane that no host terminal backs.
+    /// New terminals created from it run on the host, never as a local shell.
+    func unattachedSSHDisplaySourcePlacement(forPanel panelID: UUID) -> CloudTerminalSourcePlacement? {
+        guard usesSSHTui, let configuration = remoteConfiguration,
+              terminalPanel(for: panelID)?.deviceAttachment?.origin == .unattachedSSHTerminal,
+              SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: panelID) == nil else { return nil }
+        let machine = SurfaceMachineID(rawValue: SSHTuiConnection(configuration: configuration).id)
+        let remoteWorkspaceID = cloudVMBinding?.vmID == machine.rawValue ? cloudVMBinding?.remoteWorkspaceID : nil
+        return CloudTerminalSourcePlacement(machine: machine, remoteWorkspaceID: remoteWorkspaceID)
+    }
+
+    /// Retry on a restored SSH pane with nothing to reattach opens a new host
+    /// terminal at the same tab position and closes the process-free pane.
+    /// Returns false when no request was accepted.
+    func replaceUnattachedSSHDisplayPanel(_ panelID: UUID) -> Bool {
+        guard let source = unattachedSSHDisplaySourcePlacement(forPanel: panelID),
+              let paneID = paneId(forPanelId: panelID) else { return false }
+        let index = bonsplitController.tabs(inPane: paneID).firstIndex { panelIdFromSurfaceId($0.id) == panelID }
+        let outcome = routeCloudPaneTerminalCreate(
+            source: source, sourcePanelID: panelID,
+            destination: .tab(workspaceID: id, paneID: paneID.id.uuidString, index: index),
+            focus: true
+        )
+        guard case .created(let replacement) = outcome else { return false }
+        if replacement.id != panelID { _ = closePanel(panelID, force: true) }
+        return true
     }
 
     /// Resolves both Cloud and SSH projections through their registered provider.
