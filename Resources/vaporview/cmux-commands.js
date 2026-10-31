@@ -483,6 +483,7 @@
     }
     webviewContext = Object.assign({}, webviewContext || {}, m);
     reloadBaseline = null;
+    if (applying && ANSWER_TYPES.includes(m.stateChangeType)) { applying--; }
     // The viewer answers apply-state with a Restore context (initComplete is set
     // right after it asks for its state, so the answer always comes).
     if (appliedRestoreConfig && change === StateChangeType.Restore) {
@@ -631,6 +632,27 @@
   // or a reload or open overtook it.
   async function applySession(session, stateChangeType) {
     if (!session) { return false; }
+    // Counted from now: a waiting Undo must not run while this resolves or
+    // before the viewer answers it.
+    const epoch = applyEpoch;
+    applying++;
+    let posted = false;
+    try {
+      posted = await postSession(session, stateChangeType);
+      return posted;
+    } finally {
+      if (!posted && epoch === applyEpoch) { applying = Math.max(0, applying - 1); }
+    }
+  }
+
+  // apply-state posts not answered yet (the viewer answers each with a context
+  // of the same stateChangeType), counted per load: a reload or open resets.
+  let applying = 0;
+  let applyEpoch = 0;
+  function resetApplying() { applying = 0; applyEpoch++; }
+  const ANSWER_TYPES = [StateChangeType.Restore, StateChangeType.File, StateChangeType.Undo, StateChangeType.Redo];
+
+  async function postSession(session, stateChangeType) {
     // A reload or open that starts while this resolves rows makes it stale: its
     // rows would land in the next file's viewer, and its state would win there.
     const generation = host().loadGeneration;
@@ -805,7 +827,7 @@
   }
 
   function runWaitingHistory() {
-    while (waitingHistory.length && !reloading && !restorePending) {
+    while (waitingHistory.length && !reloading && !restorePending && !applying) {
       const type = waitingHistory.shift();
       const applied = type === StateChangeType.Undo
         ? undo(undoStack, redoStack, StateChangeType.Undo) : undo(redoStack, undoStack, StateChangeType.Redo);
@@ -1229,6 +1251,7 @@
     keptIsCurrent = false;
     waitingHistory = [];
     historyPath = config.path || null;
+    resetApplying();
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
@@ -1271,6 +1294,8 @@
     }
     reloading = true;
     webviewContext = null;
+    // What was posted to the old viewer is answered (if at all) before its unload.
+    resetApplying();
     // A reload of another path: what was pressed for the old one doesn't carry.
     const path = host().config.path || null;
     if (path !== historyPath) { waitingHistory = []; historyPath = path; }
