@@ -468,7 +468,9 @@
       window.cmuxCommands.onContextUpdate(m);
       hostApi.contextListeners.forEach((listener) => { try { listener(m); } catch (error) { hostApi.log(error); } });
     },
-    restoreState: (m) => window.cmuxCommands.restoreState(m),
+    // Only the viewer this load initialized asks for its state: one a newer
+    // reload superseded (init not sent yet) would end that reload's gap early.
+    restoreState: (m) => (initSent ? window.cmuxCommands.restoreState(m) : undefined),
     executeCommand: (m) => {
       const handler = commandHandlers[m.commandName];
       if (handler) { handler(m.args || []); } else { window.cmuxCommands.run(m.commandName, (m.args || [])[0]); }
@@ -890,9 +892,14 @@
     }
 
     async function fsdbValues(time, vars, unshown) {
+      const out = new Map();
+      // valuesAt's lookups await: a reload may have started since. Only a
+      // backend whose file is open answers, and only the one asked counts.
+      if (!dataReady()) { return out; }
+      const asked = backend;
+      const current = () => backend === asked && dataReady();
       // A reload opens a new backend; its ids may name other signals.
       if (cacheBackend !== backend) { changeCache.clear(); cachedChanges = 0; cacheBackend = backend; }
-      const out = new Map();
       const shown = shownIds();
       const rest = [];
       for (const v of vars) {
@@ -905,7 +912,8 @@
         }
       }
       if (!rest.length) { return out; }
-      const point = await backend.valuesAt(rest, time);
+      const point = await asked.valuesAt(rest, time);
+      if (!current()) { return out; }
       if (point) {
         rest.forEach((v, k) => { if (typeof point[k] === 'string') { out.set(v.netlistId, point[k]); } });
         return out;
@@ -913,7 +921,8 @@
       const missing = rest.filter((v) => !changeCache.has(v.signalId));
       for (let i = 0; i < missing.length; i += 8) {
         const batch = missing.slice(i, i + 8);
-        const lists = await backend.changes(batch, maxChangesPerSignal);
+        const lists = await asked.changes(batch, maxChangesPerSignal);
+        if (!current()) { return out; }
         batch.forEach((v, k) => {
           // Too long to keep (null): no value rather than a cache that pins it.
           const changes = lists[k] === undefined ? [] : lists[k];
