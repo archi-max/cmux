@@ -152,7 +152,10 @@ extension Workspace {
         let outcome = routeCloudPaneTerminalCreate(
             source: source, sourcePanelID: panelID,
             destination: .tab(workspaceID: id, paneID: paneID.id.uuidString, index: index),
-            focus: true
+            focus: true,
+            // The daemon names the new terminal; send the kept title so its
+            // default name never overwrites the tab's.
+            terminalName: customTitle
         )
         guard case .created(let replacement) = outcome else { return false }
         guard replacement.id != panelID else { return true }
