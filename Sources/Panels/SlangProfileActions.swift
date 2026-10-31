@@ -520,7 +520,7 @@ extension SlangCompilationActions {
     private static func homeDirectory(context: FilePreviewLanguageDocumentContext) async -> String? {
         guard let remote = context.remote else { return NSHomeDirectory() }
         let output = await FilePreviewLanguageDocumentContext.runRemoteShell(
-            SlangWorkspaceRoot.posixShellCommand("printf %s \"$HOME\""),
+            "printf %s \"$HOME\"",
             configuration: remote.configuration
         )
         return output.flatMap { $0.isEmpty ? nil : $0 }
@@ -531,7 +531,7 @@ extension SlangCompilationActions {
         let output: String?
         if let remote = context.remote {
             output = await FilePreviewLanguageDocumentContext.runRemoteShell(
-                SlangWorkspaceRoot.posixShellCommand("cd \(shellQuote(root)) && git rev-parse --git-path info/exclude"),
+                "cd \(shellQuote(root)) && git rev-parse --git-path info/exclude",
                 configuration: remote.configuration
             )
         } else {
@@ -549,11 +549,9 @@ extension SlangCompilationActions {
     private static func writeNewFile(_ path: String, contents: Data, context: FilePreviewLanguageDocumentContext) async throws {
         let directory = (path as NSString).deletingLastPathComponent
         if let remote = context.remote {
-            let command = SlangWorkspaceRoot.posixShellCommand(
-                "[ -e \(shellQuote(path)) ] && exit 0; mkdir -p \(shellQuote(directory)) && "
-                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
-            )
-            guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration, input: contents) != nil else {
+            let script = "[ -e \(shellQuote(path)) ] && exit 0; mkdir -p \(shellQuote(directory)) && "
+                + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            guard await FilePreviewLanguageDocumentContext.runRemoteShell(script, configuration: remote.configuration, input: contents) != nil else {
                 throw ProfileFileError.remoteFailed(path)
             }
             return
@@ -566,20 +564,26 @@ extension SlangCompilationActions {
     /// Adds `pattern` as a line of the exclude file unless it is there already.
     private static func appendGitExclude(_ pattern: String, to path: String, context: FilePreviewLanguageDocumentContext) async throws {
         if let remote = context.remote {
-            // Read, add the line, and write it back through a temporary file renamed over it.
-            guard let existing = await FilePreviewLanguageDocumentContext.runRemoteShell(
-                SlangWorkspaceRoot.posixShellCommand("cat \(shellQuote(path)) 2>/dev/null; true"),
-                configuration: remote.configuration
-            ) else { throw ProfileFileError.remoteFailed(path) }
-            guard let contents = addingLine(pattern, to: existing) else { return }
-            let command = SlangWorkspaceRoot.posixShellCommand(
-                "mkdir -p \(shellQuote((path as NSString).deletingLastPathComponent)) && "
-                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
-            )
-            guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration, input: Data(contents.utf8)) != nil else {
-                throw ProfileFileError.remoteFailed(path)
+            // Read (stamp first, then the text), add the line, and write it back through a temporary
+            // file renamed over it, only if the stamp still holds; read again when it changed.
+            let separator = "@@cmux-exclude-text"
+            for _ in 0..<3 {
+                guard let read = await FilePreviewLanguageDocumentContext.runRemoteShell(
+                    SSHFileExplorerMutationCommand.fileStamp(path: path).command
+                        + "; printf '\\n%s\\n' \(separator); cat \(shellQuote(path)) 2>/dev/null; true",
+                    configuration: remote.configuration
+                ), let range = read.range(of: "\n" + separator + "\n") else { throw ProfileFileError.remoteFailed(path) }
+                let stamp = SSHRemoteFileStamp(statOutput: String(read[..<range.lowerBound]))
+                guard let contents = addingLine(pattern, to: String(read[range.upperBound...])) else { return }
+                let script = "mkdir -p \(shellQuote((path as NSString).deletingLastPathComponent)) && "
+                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: stamp).command
+                let result = await FilePreviewLanguageDocumentContext.runRemoteShellWithStatus(
+                    script, configuration: remote.configuration, input: Data(contents.utf8)
+                )
+                if result?.status == 0 { return }
+                guard result?.status == SSHFileExplorerMutationCommand.remoteChangedStatus else { break }
             }
-            return
+            throw ProfileFileError.remoteFailed(path)
         }
         let url = URL(fileURLWithPath: path)
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
@@ -675,14 +679,15 @@ extension SlangCompilationActions {
     private static func replaceEmptyFile(_ path: String, contents: Data, context: FilePreviewLanguageDocumentContext) async throws {
         if let remote = context.remote {
             let quoted = shellQuote(path)
-            let command = SlangWorkspaceRoot.posixShellCommand(
-                "[ -f \(quoted) ] || exit 75; [ -z \"$(tr -d ' \\t\\r\\n' < \(quoted))\" ] || exit 75; "
-                    + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
-            )
-            guard await FilePreviewLanguageDocumentContext.runRemoteShell(command, configuration: remote.configuration, input: contents) != nil else {
-                throw ProfileFileError.remoteFailed(path)
+            let changed = SSHFileExplorerMutationCommand.remoteChangedStatus
+            let script = "[ -f \(quoted) ] || exit \(changed); [ -z \"$(tr -d ' \\t\\r\\n' < \(quoted))\" ] || exit \(changed); "
+                + SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: nil).command
+            let result = await FilePreviewLanguageDocumentContext.runRemoteShellWithStatus(script, configuration: remote.configuration, input: contents)
+            switch result?.status {
+            case 0?: return
+            case changed?: throw ProfileFileError.changed(path)
+            default: throw ProfileFileError.remoteFailed(path)
             }
-            return
         }
         let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         guard SlangServerConfigFile.health(of: FileManager.default.contents(atPath: url.path)) == .empty else {
