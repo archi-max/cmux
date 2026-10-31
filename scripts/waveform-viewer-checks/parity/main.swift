@@ -1411,13 +1411,95 @@ extension Harness {
         """) { r in
           check(r["stuck"] as? Int == 1, "an Undo behind an unanswered view doesn't run (rows drawn \(r["stuck"] ?? "nil"))")
           check(r["next"] as? Int == 1, "nor in the next reload (rows drawn \(r["next"] ?? "nil"))")
+          self.phaseAM()
+        }
+      }
+    }
+  }
+
+
+  // A signal already shown is not added again, from any entrypoint (tree
+  // double-click, Enter, Add All in Scope, a drop, the editor, the API); asked
+  // for alone, its row is selected, as VaporView's reveal does. The debugger's
+  // Locals group leaves out what is shown outside it, so adding the scope
+  // Locals shows pins its signals once, and removing a pinned one gives it
+  // back to Locals.
+  func phaseAM() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js("""
+        const tr = () => { const out = []; const walk = (l, p) => (l || []).forEach((d) => {
+          if (d.dataType === 'signal-group') { out.push(p + '[' + d.groupName + ']'); walk(d.children, p + d.groupName + '/'); }
+          else if (d.name) { out.push(p + d.name); } });
+          walk(H.viewerContext.webview && H.viewerContext.webview.displayedSignals, ''); return out.join(','); };
+        const selected = () => H.viewerContext.webview && H.viewerContext.webview.selectedSignal;
+        const tree = document.getElementById('tree');
+        const rowOf = (item) => Array.from(tree.querySelectorAll('.row')).find((r) => r._item && r._item.netlistId === item.netlistId);
+        const clk = await H.findLinkItem(['top', 'clk'], true);
+        const acc = await H.findLinkItem(['top', 'core', 'acc'], true);
+        const core = await H.findLinkItem(['top', 'core'], false);
+        window.cmuxNetlist.reveal(clk);
+        await sleep(300);
+        rowOf(clk).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        await sleep(600);
+        rowOf(clk).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        await sleep(600);
+        R.dbl = tr(); R.dblSel = selected() === clk.netlistId;
+        rowOf(clk).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        tree.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        await sleep(600);
+        R.key = tr();
+        await C.run('vaporview.addAllInScopeShallow', core);
+        await sleep(600);
+        await C.run('vaporview.addAllInScopeShallow', core);
+        await sleep(600);
+        R.menu = tr();
+        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: acc.netlistId }], groupPath: [], dropIndex: 0 });
+        await sleep(600);
+        R.drop = tr();
+        await C.run('waveformViewer.addVariable', { netlistId: acc.netlistId });
+        await sleep(600);
+        R.api = tr(); R.apiSel = selected() === acc.netlistId;
+        const d = window.cmuxWaveform.debugger;
+        H.toWebview({ command: 'remove-signal', netlistId: acc.netlistId, rowId: undefined, removeAllSelected: false });
+        await sleep(600);
+        await d.step({ by: 1 });
+        await d.setLocals({ path: ['top', 'core'] });
+        await sleep(600);
+        R.locals = tr();
+        await C.run('vaporview.addAllInScopeShallow', core);
+        await sleep(800);
+        R.pinned = tr();
+        H.toWebview({ command: 'remove-signal', netlistId: acc.netlistId, rowId: undefined, removeAllSelected: false });
+        await sleep(800);
+        R.unpinned = tr();
+        await window.cmuxWaveform.link.addScope({ path: ['top', 'core'] });
+        await sleep(800);
+        R.link = tr();
+        await d.setLocals({ path: ['top'] });
+        await sleep(800);
+        R.top = tr();
+        """) { r in
+          let s = { (k: String) in r[k] as? String ?? "nil" }
+          check(s("dbl") == "top.clk" && r["dblSel"] as? Bool == true, "a second double-click selects the row instead of adding it again: \(s("dbl"))")
+          check(s("key") == "top.clk", "Enter on a shown signal adds nothing: \(s("key"))")
+          check(s("menu") == "top.clk,top.core.acc", "Add All in Scope twice adds each signal once: \(s("menu"))")
+          check(s("drop") == "top.clk,top.core.acc", "dropping a shown signal adds nothing: \(s("drop"))")
+          check(s("api") == "top.clk,top.core.acc" && r["apiSel"] as? Bool == true, "the API selects a shown signal: \(s("api"))")
+          check(s("locals") == "top.clk,[Locals],Locals/top.core.acc", "Locals shows the scope: \(s("locals"))")
+          check(s("pinned").components(separatedBy: ",").filter { $0.hasSuffix("top.core.acc") } == ["top.core.acc"],
+                "adding the Locals scope pins its signals once, outside Locals: \(s("pinned"))")
+          check(s("unpinned") == "top.clk,[Locals],Locals/top.core.acc", "a removed pinned signal goes back to Locals: \(s("unpinned"))")
+          check(s("link").components(separatedBy: ",").filter { $0.hasSuffix("top.core.acc") } == ["top.core.acc"],
+                "the editor's Add All in Scope pins once too: \(s("link"))")
+          check(s("top").components(separatedBy: ",").filter { $0.hasSuffix("top.clk") } == ["top.clk"],
+                "Locals leaves out a signal already shown: \(s("top"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
       }
     }
   }
-
   static func jsString(_ s: String) -> String {
     String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
   }
