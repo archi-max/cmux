@@ -79,6 +79,8 @@ public actor LanguageServerSession {
     private var generation = 0
     private var startTask: Task<Void, any Error>?
     private var nextRequestID = 1
+    /// Tests: the error a port alias's declaration hover fails with instead of asking the server.
+    var declarationHoverErrorForTesting: LanguageServerError?
     private var pending: [Int: PendingRequest] = [:]
     private var framer = LSPMessageFramer()
     private var documents: [URL: OpenDocument] = [:]

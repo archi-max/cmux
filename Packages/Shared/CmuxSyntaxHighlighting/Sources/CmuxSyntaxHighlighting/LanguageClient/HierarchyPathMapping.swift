@@ -235,11 +235,22 @@ public enum HierarchyPrefixInference {
         return String(name[..<open])
     }
 
+    /// The signal names that exactly one of `kids` strips to, other than its own name: a
+    /// bit-blasted dump (`pc[0:0]`, `pc[1:1]`) has no single `pc`. The same rule as host.js.
+    static func uniqueSignalNames(_ kids: [HierarchyNode]) -> Set<String> {
+        var counts: [String: Int] = [:]
+        for kid in kids {
+            let name = signalName(kid)
+            if name != kid.name { counts[name, default: 0] += 1 }
+        }
+        return Set(counts.filter { $0.value == 1 }.keys)
+    }
+
     /// Instance names are far more telling than `clk` or `rst`, so a shared scope child counts twice.
     /// A dump child matches by its name or its signal name.
     static func score(_ kids: [HierarchyNode], against rootChildren: [HierarchyNode]) -> (overlap: Int, score: Int) {
         let rootScopes = Set(rootChildren.filter(\.isScope).map(\.name))
-        let names = Set(kids.map(\.name)).union(kids.map(signalName))
+        let names = Set(kids.map(\.name)).union(uniqueSignalNames(kids))
         var overlap = 0
         var score = 0
         for name in Set(rootChildren.map(\.name)) where names.contains(name) {
@@ -276,7 +287,7 @@ public enum HierarchyPrefixInference {
             if !scope.isEmpty {
                 let match = score(kids, against: designRootChildren)
                 if match.overlap >= required {
-                    if kids.contains(where: { $0.name == rest[0] || signalName($0) == rest[0] }), await exists(scope + rest, dumpChildren: dumpChildren) {
+                    if kids.contains(where: { $0.name == rest[0] }) || uniqueSignalNames(kids).contains(rest[0]), await exists(scope + rest, dumpChildren: dumpChildren) {
                         found.append((match.score, scope))
                         // The root's own subtree does not hold another copy of the root.
                         continue
@@ -319,9 +330,11 @@ public enum HierarchyPrefixInference {
             guard let kids = await dumpChildren(prefix) else { break }
             // The design names the signal without the range a dump may give it (`pc[0:0]`).
             let name = path[length]
-            let designName = length == path.count - 1
-                ? kids.first(where: { $0.name == name }).map(signalName) ?? name
-                : name
+            var designName = name
+            if length == path.count - 1, let kid = kids.first(where: { $0.name == name }),
+               uniqueSignalNames(kids).contains(signalName(kid)) {
+                designName = signalName(kid)
+            }
             for (root, rootChildren) in designRoots.sorted(by: { $0.key < $1.key })
             where rootChildren.contains(where: { $0.name == name || $0.name == designName }) {
                 let match = score(kids, against: rootChildren)
@@ -342,7 +355,7 @@ public enum HierarchyPrefixInference {
     ) async -> Bool {
         guard let last = path.last else { return false }
         guard let kids = await dumpChildren(Array(path.dropLast())) else { return false }
-        return kids.contains { $0.name == last || signalName($0) == last }
+        return kids.contains { $0.name == last } || uniqueSignalNames(kids).contains(last)
     }
 }
 
