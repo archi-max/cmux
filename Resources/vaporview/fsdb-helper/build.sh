@@ -94,26 +94,49 @@ LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$NODE" -e '
 ' "$WORK/fsdb_reader.node" >/dev/null 2>&1 || { say "the built FSDB reader does not load"; exit 14; }
 
 # Install next to DEST, then rename into place so a half-written folder is
-# never used. A concurrent build that got there first wins.
+# never used.
 PARENT=$(dirname "$DEST")
 mkdir -p "$PARENT" && chmod 700 "$PARENT" 2>/dev/null
+# Leftovers of builds that died mid-install.
+find "$PARENT" -mindepth 1 -maxdepth 1 \( -name '.install.*' -o -name '.stale.*' -o -name '*.lock' \) -mmin +1440 \
+  -exec rm -rf {} + 2>/dev/null
+# The checks the launcher and fsdb-helper.sh make before they run an install.
+usable() {
+  [ -f "$1/fsdb_reader.node" ] && [ -f "$1/fsdb-helper.sh" ] && [ -f "$1/fsdb-helper.js" ] || return 1
+  ( . "$1/helper.env" 2>/dev/null && [ -x "$NODE" ] && [ -f "$VERDI_HOME/share/FsdbReader/linux64/libnffr.so" ] )
+}
+# NFS can refuse to remove a folder whose files it is still closing.
+discard() { rm -rf "$1" 2>/dev/null || { sleep 1; rm -rf "$1" 2>/dev/null; } || true; }
+# Another build (a second viewer, window or Mac on the same home) got there
+# first: use its install, never replace one that works.
+if usable "$DEST"; then say "installed in $DEST"; exit 0; fi
 STAGE=$(mktemp -d "$PARENT/.install.XXXXXX") || exit 15
-cp "$WORK/fsdb_reader.node" "$SRC/fsdb-helper.js" "$SRC/fsdb-helper.sh" "$STAGE/" || { rm -rf "$STAGE"; exit 15; }
+trap 'rm -rf "$WORK"; discard "$STAGE"' EXIT
+cp "$WORK/fsdb_reader.node" "$SRC/fsdb-helper.js" "$SRC/fsdb-helper.sh" "$STAGE/" || exit 15
 # Single-quoted for the shell that sources it; a ' in a path becomes '\''.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 printf 'NODE=%s\nVERDI_HOME=%s\n' "$(quote "$NODE")" "$(quote "$VERDI")" > "$STAGE/helper.env"
 chmod 755 "$STAGE/fsdb-helper.sh"
 chmod 700 "$STAGE"
-# A DEST left from an earlier install is broken (the launcher found it
-# unusable), so it is moved aside rather than built into. mv -T never moves
-# STAGE inside an existing DEST.
-if [ -e "$DEST" ]; then
-  OLD=$(mktemp -d "$PARENT/.stale.XXXXXX") && mv -T "$DEST" "$OLD/old" 2>/dev/null
-  rm -rf "${OLD:-/nonexistent}"
-fi
-if ! mv -T "$STAGE" "$DEST" 2>/dev/null; then
-  rm -rf "$STAGE"
-  # A concurrent build that got there first wins.
-  [ -f "$DEST/fsdb_reader.node" ] || { say "could not install into $DEST"; exit 15; }
+# Check and replace under a lock (mkdir is atomic on NFS too), so a build
+# never moves aside the install a concurrent one just made. A lock older
+# than ten minutes belongs to a build that died.
+LOCK="$DEST.lock"
+tries=0
+until mkdir "$LOCK" 2>/dev/null; do
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$LOCK" 2>/dev/null; continue; fi
+  tries=$((tries + 1))
+  [ "$tries" -le 120 ] || { say "could not lock $DEST"; exit 15; }
+  sleep 1
+done
+trap 'rm -rf "$WORK"; discard "$STAGE"; rmdir "$LOCK" 2>/dev/null' EXIT
+if ! usable "$DEST"; then
+  # What is left at DEST is broken, so it is moved aside rather than built
+  # into. mv -T never moves STAGE inside an existing DEST.
+  if [ -e "$DEST" ]; then
+    OLD=$(mktemp -d "$PARENT/.stale.XXXXXX") && mv -T "$DEST" "$OLD/old" 2>/dev/null
+    discard "${OLD:-/nonexistent}"
+  fi
+  mv -T "$STAGE" "$DEST" 2>/dev/null || { say "could not install into $DEST"; exit 15; }
 fi
 say "installed in $DEST"
