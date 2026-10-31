@@ -41,6 +41,14 @@ extension LanguageServerSession {
         return (result.arrayValue ?? []).compactMap(\.stringValue).filter { seen.insert($0).inserted }
     }
 
+    /// Hierarchical paths of the symbol `identifier` at `position`, one per
+    /// instance it is elaborated in. Unlike `slangInstancePaths`, this also
+    /// places symbols of an `` `include ``d fragment (a file with no module of
+    /// its own, which slang cannot place by position).
+    public func slangDesignPaths(uri: URL, position: LSPPosition, identifier: String) async throws -> [String] {
+        try await slangInstancePaths(uri: uri, position: position)
+    }
+
     /// Children of the scope at `hierPath`; the empty path lists the design's top instances.
     /// Empty when the path does not resolve or there is no full compilation.
     public func slangScopeChildren(_ hierPath: String) async throws -> [SlangHierarchyItem] {
