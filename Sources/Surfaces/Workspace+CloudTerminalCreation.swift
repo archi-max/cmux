@@ -110,9 +110,10 @@ extension Workspace {
         from panelID: UUID,
         orientation: SplitOrientation,
         insertFirst: Bool,
-        focus: Bool
+        focus: Bool,
+        source explicitSource: CloudTerminalSourcePlacement? = nil
     ) -> Bool {
-        guard let source = cloudTerminalSourcePlacement(forPanel: panelID),
+        guard let source = explicitSource ?? cloudTerminalSourcePlacement(forPanel: panelID),
               let paneID = paneId(forPanelId: panelID) else { return false }
         let direction: SurfaceSplitDirection = orientation == .horizontal
             ? (insertFirst ? .left : .right)

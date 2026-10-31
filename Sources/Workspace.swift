@@ -9386,7 +9386,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         suppressWorkspaceRemoteStartupCommand: Bool = false,
         allowTextBoxFocusDefault: Bool = true, autoLayout: Bool = false,
         honorsGhosttySplitInheritance: Bool = false,
-        inheritStartupWork: Bool = true
+        inheritStartupWork: Bool = true,
+        userInitiated: Bool = false
     ) -> TerminalPanelCreationOutcome {
         guard !isRetiredFromOwningTabManager else { return .failed }
         // In a remote tmux mirror workspace a split means "split the mirrored
@@ -9417,6 +9418,16 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
             }
             return routeCloudPaneTerminalSplit(
                 from: panelId, orientation: orientation, insertFirst: insertFirst, focus: focus
+            ) ? .routedToRemote : .failed
+        }
+        // A user's split in an SSH workspace runs on the host even from a
+        // panel (a file preview, say) that has no remote owner of its own.
+        if userInitiated, !autoLayout, initialCommand == nil, initialInput == nil, tmuxStartCommand == nil,
+           remotePTYSessionID == nil, workingDirectory == nil, startupEnvironment.isEmpty,
+           initialDividerPosition == nil, !suppressWorkspaceRemoteStartupCommand,
+           let source = userInitiatedSSHHostSourcePlacement() {
+            return routeCloudPaneTerminalSplit(
+                from: panelId, orientation: orientation, insertFirst: insertFirst, focus: focus, source: source
             ) ? .routedToRemote : .failed
         }
         // Auto layout re-tiles every pane itself, so only a plain split is
@@ -9690,7 +9701,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         inheritWorkingDirectoryFallback: Bool = false,
         workingDirectoryFallbackSourcePanelId: UUID? = nil,
         allowTextBoxFocusDefault: Bool = true,
-        inheritStartupWork: Bool = true
+        inheritStartupWork: Bool = true,
+        userInitiated: Bool = false
     ) -> TerminalPanel? {
         return newTerminalSurfaceOutcome(
             inPane: paneId,
@@ -9713,7 +9725,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
             inheritWorkingDirectoryFallback: inheritWorkingDirectoryFallback,
             workingDirectoryFallbackSourcePanelId: workingDirectoryFallbackSourcePanelId,
             allowTextBoxFocusDefault: allowTextBoxFocusDefault,
-            inheritStartupWork: inheritStartupWork
+            inheritStartupWork: inheritStartupWork,
+            userInitiated: userInitiated
         ).panel
     }
 
@@ -9741,7 +9754,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         inheritWorkingDirectoryFallback: Bool = false,
         workingDirectoryFallbackSourcePanelId: UUID? = nil,
         allowTextBoxFocusDefault: Bool = true,
-        inheritStartupWork: Bool = true
+        inheritStartupWork: Bool = true,
+        userInitiated: Bool = false
     ) -> TerminalPanelCreationOutcome {
         guard !isRetiredFromOwningTabManager else { return .failed }
         // In a remote tmux mirror, a new tab means "create a tmux window"; never
@@ -9788,6 +9802,20 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
             return routeCloudPaneTerminalTab(
                 inPane: paneId, focus: focus ?? (bonsplitController.focusedPaneId == paneId)
             ) ? .routedToRemote : .failed
+        }
+        // A user's new tab in an SSH workspace runs on the host even when the
+        // selected tab (a file preview, say) has no remote owner of its own.
+        if userInitiated, restoredSurfaceId == nil, startupRestoreAgent == nil,
+           initialCommand == nil, initialInput == nil, tmuxStartCommand == nil,
+           remotePTYSessionID == nil, workingDirectory == nil, startupEnvironment.isEmpty,
+           !suppressWorkspaceRemoteStartupCommand,
+           let source = userInitiatedSSHHostSourcePlacement() {
+            let selectedPanelID = bonsplitController.selectedTab(inPane: paneId).flatMap { panelIdFromSurfaceId($0.id) }
+            return routeCloudPaneTerminalCreate(
+                source: source, sourcePanelID: selectedPanelID,
+                destination: .tab(workspaceID: id, paneID: paneId.id.uuidString, index: nil),
+                focus: focus ?? (bonsplitController.focusedPaneId == paneId)
+            )
         }
         guard let panel = newTerminalSurfaceLocal(
             inPane: paneId,
@@ -12393,7 +12421,9 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
 
     /// Create a new terminal surface in the currently focused pane
     @discardableResult
-    func newTerminalSurfaceInFocusedPane(focus: Bool? = nil, initialInput: String? = nil) -> TerminalPanel? {
+    func newTerminalSurfaceInFocusedPane(
+        focus: Bool? = nil, initialInput: String? = nil, userInitiated: Bool = false
+    ) -> TerminalPanel? {
         guard let focusedPaneId = bonsplitController.focusedPaneId else { return nil }
         // In canvas mode, Cmd+T means "new tab in the focused canvas pane":
         // remember the anchor panel so the new one joins its pane instead of
@@ -12403,7 +12433,8 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
             inPane: focusedPaneId,
             focus: focus,
             initialInput: initialInput,
-            inheritWorkingDirectoryFallback: true
+            inheritWorkingDirectoryFallback: true,
+            userInitiated: userInitiated
         )
         if let panel, let anchor = canvasAnchorPanelId {
             joinNewPanelIntoCanvasPane(panel.id, anchor: anchor)
@@ -15635,11 +15666,11 @@ extension Workspace: BonsplitDelegate {
     func splitTabBar(_ controller: BonsplitController, didRequestNewTab kind: String, inPane pane: PaneID) {
         switch kind {
         case "terminal":
-            _ = newTerminalSurface(inPane: pane, inheritWorkingDirectoryFallback: true)
+            _ = newTerminalSurface(inPane: pane, inheritWorkingDirectoryFallback: true, userInitiated: true)
         case "browser":
             _ = newBrowserSurface(inPane: pane)
         default:
-            _ = newTerminalSurface(inPane: pane, inheritWorkingDirectoryFallback: true)
+            _ = newTerminalSurface(inPane: pane, inheritWorkingDirectoryFallback: true, userInitiated: true)
         }
     }
 

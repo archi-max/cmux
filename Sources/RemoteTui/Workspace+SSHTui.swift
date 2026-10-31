@@ -103,6 +103,17 @@ extension Workspace {
         return CloudTerminalSourcePlacement(machine: machine, remoteWorkspaceID: remoteWorkspaceID)
     }
 
+    /// Where a user's new terminal (Cmd+T, Cmd+D, the tab bar's +) goes when
+    /// its anchor has no remote owner: the workspace's bound SSH host. Socket
+    /// and CLI creates do not pass through here.
+    func userInitiatedSSHHostSourcePlacement() -> CloudTerminalSourcePlacement? {
+        guard usesSSHTui, let configuration = remoteConfiguration, configuration.preserveAfterTerminalExit else { return nil }
+        let machine = SurfaceMachineID(rawValue: SSHTuiConnection(configuration: configuration).id)
+        guard cloudVMBinding?.vmID == machine.rawValue,
+              let remoteWorkspaceID = cloudVMBinding?.remoteWorkspaceID else { return nil }
+        return CloudTerminalSourcePlacement(machine: machine, remoteWorkspaceID: remoteWorkspaceID)
+    }
+
     /// Retry on a restored SSH pane with nothing to reattach opens a new host
     /// terminal at the same tab position and closes the process-free pane.
     /// Returns false when no request was accepted.
