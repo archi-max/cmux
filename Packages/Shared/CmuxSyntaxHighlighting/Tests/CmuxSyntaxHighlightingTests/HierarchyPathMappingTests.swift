@@ -148,6 +148,31 @@ import Testing
         #expect(result == .notFound)
     }
 
+    @Test func aTestbenchSharingClockAndResetDoesNotHideASmallDut() async {
+        // fifo_top has four children, so top_tb's clk and rst_n alone meet the threshold;
+        // top_tb lacks req, and the real match is one level down.
+        let hierarchy: [String: [HierarchyNode]] = [
+            "": [.init(name: "top_tb", isScope: true)],
+            "top_tb": [.init(name: "clk", isScope: false), .init(name: "rst_n", isScope: false), .init(name: "dut", isScope: true)],
+            "top_tb.dut": [.init(name: "clk", isScope: false), .init(name: "rst_n", isScope: false), .init(name: "req", isScope: false),
+                           .init(name: "u_fifo", isScope: true)],
+            "top_tb.dut.u_fifo": [.init(name: "clk", isScope: false), .init(name: "count", isScope: false)],
+        ]
+        let rootChildren: [HierarchyNode] = [
+            .init(name: "clk", isScope: false), .init(name: "rst_n", isScope: false), .init(name: "req", isScope: false),
+            .init(name: "u_fifo", isScope: true),
+        ]
+        let rule = HierarchyPathMapping.Rule(designPrefix: "fifo_top", dumpPrefix: "top_tb.dut", isInferred: true)
+        for path in ["fifo_top.req", "fifo_top.u_fifo.count"] {
+            let result = await HierarchyPrefixInference.dumpRules(
+                forDesignPath: path,
+                designRootChildren: rootChildren,
+                dumpChildren: Self.children(of: hierarchy)
+            )
+            #expect(result == .found([rule]))
+        }
+    }
+
     @Test func noMatchWithoutTheDesignRootsChildren() async {
         let result = await HierarchyPrefixInference.dumpRules(
             forDesignPath: "cpu.clk",
