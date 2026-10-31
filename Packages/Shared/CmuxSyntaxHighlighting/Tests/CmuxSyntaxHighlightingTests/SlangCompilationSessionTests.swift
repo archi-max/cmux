@@ -11,7 +11,7 @@ import Testing
 
     /// A workspace with `leaf` instantiated twice by `top`, a file with no module, and
     /// a build file for `top`. Nil without slang-server.
-    static func session() async throws -> (session: LanguageServerSession, root: String)? {
+    static func session(idleShutdownDelay: TimeInterval? = 60) async throws -> (session: LanguageServerSession, root: String)? {
         guard FileManager.default.isExecutableFile(atPath: slangServer) else { return nil }
         let rootURL = URL(fileURLWithPath: "/tmp").appendingPathComponent("cmux-slangtop-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
@@ -31,7 +31,7 @@ import Testing
         try design.write(toFile: root + "/top.sv", atomically: true, encoding: .utf8)
         try "logic stray;\n".write(toFile: root + "/nomodule.sv", atomically: true, encoding: .utf8)
         try "--top top\n\(root)/top.sv\n".write(toFile: root + "/build.f", atomically: true, encoding: .utf8)
-        let session = LanguageServerSession(launch: .local(executablePath: slangServer, arguments: []), rootURI: rootURL, languageId: "verilog")
+        let session = LanguageServerSession(launch: .local(executablePath: slangServer, arguments: []), rootURI: rootURL, languageId: "verilog", idleShutdownDelay: idleShutdownDelay)
         try await session.start()
         return (session, root)
     }
@@ -52,6 +52,24 @@ import Testing
         try await session.restart(keepingCompilation: false)
         #expect(try await Self.tops(session).isEmpty)
         #expect(await session.slangCompilationTarget == nil)
+        await session.shutdown()
+    }
+
+    @Test func aServerWithNoDocumentsStopsAndACommandRelaunchesIt() async throws {
+        guard let (session, root) = try await Self.session(idleShutdownDelay: 0.5) else { return }
+        let uri = URL(fileURLWithPath: root + "/top.sv")
+        await session.open(uri: uri, text: try String(contentsOf: uri, encoding: .utf8), version: 1)
+        try await session.slangSetBuildFile(root + "/build.f")
+        try await Task.sleep(for: .milliseconds(900))
+        #expect(await session.isRunning) // a document is open
+        await session.close(uri: uri)
+        for _ in 0..<40 where await session.isRunning {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(await !session.isRunning)
+        // The build file chosen before comes back with the relaunch.
+        #expect(try await Self.tops(session) == ["top"])
+        #expect(await session.isRunning)
         await session.shutdown()
     }
 
