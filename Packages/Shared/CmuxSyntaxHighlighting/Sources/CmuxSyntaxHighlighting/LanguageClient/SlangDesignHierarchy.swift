@@ -79,6 +79,9 @@ extension LanguageServerSession {
                 continue
             }
             let paths = try await instancePathsSkippingUnresolved(uri: declaration.uri, position: declaration.range.start)
+            // A fragment that declares nothing (only assigns or always blocks) is placed through
+            // the module that includes it: the declaring file `include`s it.
+            if declarationFileIncludes(declaration.uri, fileName: uri.lastPathComponent) { return paths }
             var kept: [String] = []
             for path in paths.prefix(Self.fragmentSearchResultLimit) {
                 let parent = Self.parentPath(of: path)
@@ -93,6 +96,44 @@ extension LanguageServerSession {
         guard !identifier.isEmpty else { return [] }
         await willSearch?()
         return try await slangFragmentPaths(of: identifier, inFile: uri, timeLimit: searchTimeLimit)
+    }
+
+    /// Whether the file at `declaringURI` has an `` `include `` of `fileName`, or of a macro (the
+    /// way a testbench body is often named: `` `include `TB_FILE ``). Read from the open document,
+    /// else from disk for a local server; false when the text is not at hand.
+    private func declarationFileIncludes(_ declaringURI: URL, fileName: String) -> Bool {
+        var text = documentText(declaringURI)
+        if text == nil, case .local = launch {
+            text = try? String(contentsOf: declaringURI, encoding: .utf8)
+        }
+        guard let text else { return false }
+        return Self.includeDirectives(in: text).contains { target in
+            target.hasPrefix("`") || (target as NSString).lastPathComponent == fileName
+        }
+    }
+
+    /// The targets of a text's `` `include `` directives: `"file.sv"`, `<file.sv>` or `` `MACRO ``,
+    /// without their quotes. Directives in `//` comments are skipped.
+    static func includeDirectives(in text: String) -> [String] {
+        var targets: [String] = []
+        for line in text.split(whereSeparator: \.isNewline) {
+            let code = line.range(of: "//").map { line[..<$0.lowerBound] } ?? line[...]
+            var rest = code[...]
+            while let range = rest.range(of: "`include") {
+                rest = rest[range.upperBound...]
+                let trimmed = rest.drop { $0 == " " || $0 == "\t" }
+                guard let first = trimmed.first else { break }
+                let target: Substring
+                switch first {
+                case "\"": target = trimmed.dropFirst().prefix { $0 != "\"" }
+                case "<": target = trimmed.dropFirst().prefix { $0 != ">" }
+                case "`": target = trimmed.prefix { !$0.isWhitespace }
+                default: continue
+                }
+                if !target.isEmpty { targets.append(String(target)) }
+            }
+        }
+        return targets
     }
 
     /// Whether `position` of the open document is inside a module, interface or program
@@ -133,15 +174,24 @@ extension LanguageServerSession {
         do { return try await slangInstancePaths(uri: uri, position: position) } catch where Self.isUnresolvedPath(error) { return [] }
     }
 
+    /// A walk's getScope: its timeout means the scope is too big to read, not a hung server.
     private func scopeChildrenSkippingUnresolved(_ path: String) async throws -> [SlangHierarchyItem] {
-        do { return try await slangScopeChildren(path) } catch where Self.isUnresolvedPath(error) { return [] }
+        do {
+            return try await slangScopeChildren(path, timeout: Self.walkRequestTimeout, countsTowardWedged: false)
+        } catch where Self.isUnresolvedPath(error) {
+            return []
+        }
     }
+
+    /// Per getScope of the walk; shorter than an ordinary request, so a slow scope can't use the whole walk.
+    private static let walkRequestTimeout: TimeInterval = 5
 
     /// Scopes `slangFragmentPaths` reads at most, how deep it goes, how many it reads at once.
     private static let fragmentSearchScopeLimit = 300
     private static let fragmentSearchDepthLimit = 12
     private static let fragmentSearchResultLimit = 64
-    private static let fragmentSearchConcurrency = 6
+    /// slang-server answers one request at a time; more in flight only queue (and time out together).
+    private static let fragmentSearchConcurrency = 2
 
     /// Paths of `identifier` in the scopes `file` is included into: a child
     /// of that name declared in the file, else (for a name the includer
@@ -208,7 +258,11 @@ extension LanguageServerSession {
     /// Children of the scope at `hierPath`; the empty path lists the design's top instances.
     /// Empty when the path does not resolve or there is no full compilation.
     public func slangScopeChildren(_ hierPath: String) async throws -> [SlangHierarchyItem] {
-        let result = try await executeCommand("slang.getScope", argument: .string(hierPath))
+        try await slangScopeChildren(hierPath, timeout: nil, countsTowardWedged: true)
+    }
+
+    func slangScopeChildren(_ hierPath: String, timeout: TimeInterval?, countsTowardWedged: Bool) async throws -> [SlangHierarchyItem] {
+        let result = try await executeCommand("slang.getScope", argument: .string(hierPath), timeout: timeout, countsTowardWedged: countsTowardWedged)
         return (result.arrayValue ?? []).compactMap { item in
             guard let name = item["instName"]?.stringValue else { return nil }
             let kind = item["kind"]?.stringValue ?? item["kind"]?.intValue.map(Self.slangKindName(_:)) ?? ""

@@ -281,10 +281,12 @@ public actor LanguageServerSession {
     }
 
     /// Runs `workspace/executeCommand` with zero or one argument and returns its raw result.
-    func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil) async throws -> JSONValue {
+    /// `countsTowardWedged`: false for exploratory requests (the design walk) whose timeout
+    /// says the request was too big, not that the server hangs.
+    func executeCommand(_ command: String, argument: JSONValue?, timeout: TimeInterval? = nil, countsTowardWedged: Bool = true) async throws -> JSONValue {
         var params: [String: JSONValue] = ["command": .string(command)]
         params["arguments"] = .array(argument.map { [$0] } ?? [])
-        return try await request("workspace/executeCommand", params: .object(params), timeout: timeout)
+        return try await request("workspace/executeCommand", params: .object(params), timeout: timeout, countsTowardWedged: countsTowardWedged)
     }
 
     // MARK: Diagnostics
@@ -323,7 +325,8 @@ public actor LanguageServerSession {
         _ method: String,
         params: JSONValue,
         timeout: TimeInterval? = nil,
-        allowWhileStarting: Bool = false
+        allowWhileStarting: Bool = false,
+        countsTowardWedged: Bool = true
     ) async throws -> JSONValue {
         guard let tool, state == .running || (allowWhileStarting && state == .starting) else {
             throw lastExit ?? LanguageServerError.notRunning
@@ -337,7 +340,7 @@ public actor LanguageServerSession {
                 let timeoutTask = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(max(timeout, 0) * 1_000_000_000))
                     guard !Task.isCancelled else { return }
-                    await self?.requestDidTimeOut(id: id, method: method)
+                    await self?.requestDidTimeOut(id: id, method: method, countsTowardWedged: countsTowardWedged)
                 }
                 pending[id] = PendingRequest(method: method, continuation: continuation, timeoutTask: timeoutTask)
                 write(tool: tool, .object([
@@ -352,9 +355,10 @@ public actor LanguageServerSession {
         }
     }
 
-    private func requestDidTimeOut(id: Int, method: String) {
+    private func requestDidTimeOut(id: Int, method: String, countsTowardWedged: Bool) {
         guard pending[id] != nil else { return }
         fail(requestID: id, with: LanguageServerError.timeout(method: method), cancelOnServer: true)
+        guard countsTowardWedged else { return }
         consecutiveTimeouts += 1
         if consecutiveTimeouts >= Self.wedgedTimeoutLimit, state == .running {
             // A server that stops answering stays "running" forever otherwise;

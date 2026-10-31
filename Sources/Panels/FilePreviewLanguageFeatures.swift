@@ -47,6 +47,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var linkMessageIsProgress = false
     /// Closes the link message once the editor is hidden or loses focus (a tab or pane switch).
     private var linkMessageWatch: Task<Void, Never>?
+    /// What had focus in the editor's window when the message was shown.
+    private weak var linkMessageResponder: NSResponder?
     /// A link message stays up at least this long against clicks and typing; Esc closes it at once.
     private static let linkMessageMinimumDuration: TimeInterval = 8
     private var contextMenuCharacterIndex: Int?
@@ -1098,6 +1100,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         linkMessageIsProgress = isProgress
         let window = textView.window
         let wasKey = window?.isKeyWindow == true
+        // The link may start from the waveform pane, so focus need not be in the editor.
+        linkMessageResponder = window?.firstResponder
         popover.show(relativeTo: rect, of: textView, preferredEdge: .minY)
         // Like hover, the message never takes typing (or Esc) from the editor.
         if wasKey, window?.isKeyWindow == false {
@@ -1119,9 +1123,10 @@ final class FilePreviewLanguageFeatures: NSObject {
                     self.closeLinkMessage()
                     return
                 }
-                // Focus elsewhere in this window; a sheet, menu or other app leaves the window not key.
-                if window.isKeyWindow, let responder = window.firstResponder as? NSView, responder !== textView,
-                   !responder.isDescendant(of: textView) {
+                // Focus moved to another view of this window since the message was shown (a pane
+                // switch); a sheet, menu or other app leaves the window not key.
+                if window.isKeyWindow, let responder = window.firstResponder, responder !== self.linkMessageResponder,
+                   responder !== textView, !((responder as? NSView)?.isDescendant(of: textView) ?? false) {
                     self.closeLinkMessage()
                     return
                 }
