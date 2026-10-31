@@ -235,15 +235,17 @@ public enum HierarchyPrefixInference {
         return String(name[..<open])
     }
 
-    /// The signal names that exactly one of `kids` strips to, other than its own name: a
-    /// bit-blasted dump (`pc[0:0]`, `pc[1:1]`) has no single `pc`. The same rule as host.js.
+    /// The signal names that exactly one of `kids` strips to, other than its own name and other
+    /// than a kid's exact name: a bit-blasted dump (`pc[0:0]`, `pc[1:1]`) has no single `pc`, and
+    /// beside an exact `pc` the ranged one is not it. The same rule as host.js.
     static func uniqueSignalNames(_ kids: [HierarchyNode]) -> Set<String> {
         var counts: [String: Int] = [:]
         for kid in kids {
             let name = signalName(kid)
             if name != kid.name { counts[name, default: 0] += 1 }
         }
-        return Set(counts.filter { $0.value == 1 }.keys)
+        let exact = Set(kids.map(\.name))
+        return Set(counts.filter { $0.value == 1 && !exact.contains($0.key) }.keys)
     }
 
     /// Instance names are far more telling than `clk` or `rst`, so a shared scope child counts twice.
