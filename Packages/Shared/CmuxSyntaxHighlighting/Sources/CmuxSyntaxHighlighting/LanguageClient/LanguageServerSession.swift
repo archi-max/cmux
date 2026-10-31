@@ -539,7 +539,7 @@ public actor LanguageServerSession {
         }
     }
 
-    private func serverPath(for url: URL) -> String {
+    func serverPath(for url: URL) -> String {
         guard url.isFileURL else { return url.path }
         return launch.isRemote ? url.standardizedFileURL.path : Self.realPath(url.path)
     }
