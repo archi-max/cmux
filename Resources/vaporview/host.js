@@ -470,9 +470,14 @@
     // viewer's: the reloaded one asks again for what it shows.
     fetchDataFromFile: async (m) => { if (dataReady()) { await backend.fetch(m.requestList); } },
     contextUpdate: (m) => {
-      viewerContext.webview = m;
-      // An add the viewer reports back is no longer on its way.
-      if (pendingAdds.size && m.displayedSignals) { shownIds(true).forEach((id) => pendingAdds.delete(id)); }
+      // Before init, or while a reload waits for the new viewer's restore, a
+      // context is the old viewer's (cmux-commands.js keeps it apart too):
+      // its rows aren't the shown ones.
+      if (initSent && !window.cmuxCommands.isReloading()) {
+        viewerContext.webview = m;
+        // An add the viewer reports back (in Locals or not) is no longer on its way.
+        if (pendingAdds.size && m.displayedSignals) { shownIds(false).forEach((id) => pendingAdds.delete(id)); }
+      }
       if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
       window.cmuxCommands.onContextUpdate(m);
       hostApi.contextListeners.forEach((listener) => { try { listener(m); } catch (error) { hostApi.log(error); } });
@@ -550,6 +555,9 @@
   // signal's row instead, as VaporView's add with reveal does. Locals leaves
   // out what is shown outside it (cmux-debugger.js).
   function addVariables(vars, groupPath, index, mode) {
+    // An Undo, Redo or session still looking up its rows would replace this
+    // add's row when it lands: the add waits for it.
+    if (window.cmuxCommands.deferWhileApplying(() => addVariables(vars, groupPath, index, mode))) { return; }
     const now = Date.now();
     const asked = vars.filter(Boolean);
     vars = asked;
@@ -767,7 +775,8 @@
     netlistItem: (id) => doc.items.get(id) || null,
     // The signals shown outside the debugger's Locals (which leaves them out).
     pinnedIds: () => shownIds(true),
-    alreadyShown: (netlistId) => alreadyShown(netlistId),
+    // For one Add All: the shown rows are read once.
+    shownFilter: () => { const shown = shownIds(true); const now = Date.now(); return (netlistId) => alreadyShown(netlistId, shown, now); },
     // cmux-debugger.js: a variable's changes, VaporView events as they pass,
     // and its Locals group, which the link does not count as shown.
     signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
