@@ -255,7 +255,8 @@ extension KeyboardShortcutSettings.Action {
             return .browserOrFilePreviewTextEditor
         case .toggleFileEditorWordWrap, .addSignalToWaveform, .navigateSourceBack, .navigateSourceForward:
             return .filePreviewTextEditor
-        case .revealWaveformSignalInSource, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback:
+        case .revealWaveformSignalInSource, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
+             .reverseContinueWaveform:
             return .nonBrowserPanel
         case .markdownZoomIn, .markdownZoomOut, .markdownZoomReset:
             return .markdownPanel
