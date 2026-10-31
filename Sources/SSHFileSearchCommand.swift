@@ -81,6 +81,10 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// Inside a Git work tree this is `git ls-files -co --exclude-standard`
     /// (tracked plus untracked, minus ignored). Elsewhere it is `find` limited
     /// to `maxDepth`, pruning the same directories as Find in Files.
+    ///
+    /// The tool is `exec`ed so stopping the shell stops it too. Git runs
+    /// with `core.fsmonitor` and the untracked cache off: a folder's own
+    /// `.git/config` must not get to run a hook just because it was listed.
     /// - Parameter watchdog: Only for ssh; never for a listing run on this Mac.
     static func fileList(rootPath: String, maxDepth: Int, remoteTimeoutSeconds: Int, watchdog: Bool) -> Self {
         let prunes = excludedDirectoryNames.map { "-type d -name \($0) -prune -o" }.joined(separator: " ")
@@ -88,10 +92,11 @@ struct SSHFileSearchCommand: Equatable, Sendable {
             SSHRemoteShellScript.assign("r", rootPath),
             "cd -- \"$r\" 2>/dev/null || exit \(missingRootStatus)",
             SSHRemoteShellScript.timeoutPrefix(seconds: remoteTimeoutSeconds),
-            "if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
-                + "\(marker(gitListMarker)); $w nice -n 10 git ls-files -co --exclude-standard -z; "
+            "g=\"git -c core.fsmonitor=false -c core.untrackedCache=false\"",
+            "if command -v git >/dev/null 2>&1 && $g rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
+                + "\(marker(gitListMarker)); exec $w nice -n 10 $g ls-files -co --exclude-standard -z; "
                 + "else \(marker(findListMarker)); "
-                + "$w nice -n 10 find . -maxdepth \(max(1, maxDepth)) \(prunes) -type f -print0; fi",
+                + "exec $w nice -n 10 find . -maxdepth \(max(1, maxDepth)) \(prunes) -type f -print0; fi",
         ], watchdog: watchdog)
     }
 }

@@ -210,6 +210,9 @@ enum GoToFileSnapshotLoader {
                     break
                 }
             }
+            // Anything still writing (a tool the shell didn't exec) gets EPIPE
+            // instead of blocking on a pipe nobody reads, so stderr reaches EOF.
+            try? outPipe.fileHandleForReading.close()
             process.waitUntilExit()
             stderrDone.wait()
             lock.lock()

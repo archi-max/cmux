@@ -2,14 +2,16 @@ import CmuxRemoteWorkspace
 import Foundation
 
 extension TerminalController {
-    /// `file.open_remote`: previews a file on an SSH workspace's host, the
-    /// way ⌘-click on a path in that SSH terminal does. `cmux open` in an
+    /// `file.open_remote`: previews a file on an SSH workspace's host,
+    /// like ⌘-click on a path in that SSH terminal but without its web routes. `cmux open` in an
     /// SSH session sends it through the relay.
     ///
-    /// The path is a host path, resolved by the remote CLI. It is only ever
-    /// fetched through the workspace's own SSH connection
-    /// (`RemoteTerminalFilePreviewCoordinator`), never read on this Mac, and
-    /// the terminal must be an SSH terminal of that workspace. The relay
+    /// The path is a canonical host path, resolved by the remote CLI. It is
+    /// only ever fetched through the workspace's own SSH connection
+    /// (`RemoteTerminalFilePreviewCoordinator.openFromCommandLine`), never
+    /// read on this Mac; the download is size-capped, and the result opens
+    /// only in the native file preview, never in the browser or markdown
+    /// viewer. The terminal must be an SSH terminal of that workspace. The relay
     /// gates have already limited relay callers to their own workspace and
     /// terminal; the reply carries nothing beyond the request.
     func v2FileOpenRemote(params: [String: Any]) -> V2CallResult {
@@ -36,12 +38,12 @@ extension TerminalController {
                     defaultValue: "Terminal not found in this workspace"
                 ), data: nil)
             }
-            // Only SSH terminals: anything else would resolve the path on this Mac.
-            guard workspace.remoteTerminalFilePreviewConfiguration(for: surfaceID) != nil,
-                  workspace.deferRemoteTerminalFileLinkOpen(sourcePanelId: surfaceID, rawValue: path) else {
+            // Only SSH terminals (anything else would resolve the path on this
+            // Mac), and only while file previews are on.
+            guard workspace.openRemoteFileFromCommandLine(sourcePanelId: surfaceID, path: path) else {
                 return .err(code: "unsupported", message: String(
                     localized: "socket.fileOpenRemote.notSSH",
-                    defaultValue: "This terminal is not connected over SSH"
+                    defaultValue: "This terminal is not connected over SSH, or file previews are off"
                 ), data: nil)
             }
             return .ok(["queued": true, "path": path])

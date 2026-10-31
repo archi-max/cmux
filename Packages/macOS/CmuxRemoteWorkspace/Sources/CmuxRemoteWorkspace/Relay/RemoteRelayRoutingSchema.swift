@@ -61,16 +61,19 @@ struct RemoteRelayRoutingSchema {
     /// Longest host path `file.open_remote` accepts, in UTF-8 bytes (Linux PATH_MAX).
     static let maximumRemoteFileOpenPathBytes = 4_096
 
-    /// Whether `value` is a plain absolute host path: a string starting with
-    /// `/`, without NUL or line breaks, within ``maximumRemoteFileOpenPathBytes``.
-    /// `~`, relative paths and URLs are refused; the remote CLI resolves them
-    /// on the host first.
+    /// Whether `value` is a canonical absolute host path to a file: a string
+    /// starting with `/`, without NUL or line breaks, within
+    /// ``maximumRemoteFileOpenPathBytes``, with no empty, `.` or `..`
+    /// component (so no `//`, trailing `/`, or `/` itself). `~`, relative
+    /// paths and URLs are refused; the remote CLI resolves and cleans them on
+    /// the host first. Other characters, including spaces, are legal names.
     static func isAcceptableRemoteFileOpenPath(_ value: Any?) -> Bool {
         guard let path = value as? String,
               path.hasPrefix("/"),
               path.utf8.count <= maximumRemoteFileOpenPathBytes,
               !path.contains("\0"), !path.contains("\n"), !path.contains("\r") else { return false }
-        return true
+        let components = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        return components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
     /// Effect names a relayed notification's `effects` patch may carry.
