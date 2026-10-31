@@ -1030,6 +1030,7 @@ struct ContentView: View {
     @State private var commandPaletteCurrentWorkSnapshot: CurrentWorkSnapshot?
     @State private var commandPaletteCurrentWorkRevision = 0
     @State private var commandPaletteMode: CommandPaletteMode = .commands
+    @StateObject private var goToFileModel = GoToFilePaletteModel()
     @State private var commandPaletteRenameDraft: String = ""
     @State private var commandPaletteWorkspaceDescriptionDraft: String = ""
     @State private var commandPaletteWorkspaceDescriptionHeight: CGFloat = CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
@@ -3283,6 +3284,8 @@ struct ContentView: View {
             guard let delta = notification.userInfo?["delta"] as? Int, delta != 0 else { return }
             if isAgentInboxPresented {
                 agentInboxMoveRequest &+= delta
+            } else if case .goToFile = commandPaletteMode {
+                moveGoToFileSelection(by: delta)
             } else {
                 guard case .commands = commandPaletteMode else { return }
                 moveCommandPaletteSelection(by: delta)
@@ -4008,6 +4011,8 @@ struct ContentView: View {
                         switch commandPaletteMode {
                         case .commands:
                             commandPaletteCommandListView
+                        case .goToFile:
+                            goToFilePaletteView
                         case .renameInput(let target):
                             commandPaletteRenameInputView(target: target)
                         case let .renameConfirm(target, proposedName):
@@ -4126,6 +4131,31 @@ struct ContentView: View {
             updateCommandPaletteScrollTarget(resultCount: commandPaletteVisibleResults.count)
             syncCommandPaletteOverlayCommandListState()
             syncCommandPaletteDebugStateForObservedWindow()
+        }
+    }
+
+    private var goToFilePaletteView: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                CommandPaletteSearchFieldRepresentable(
+                    placeholder: String(localized: "commandPalette.goToFile.placeholder", defaultValue: "Search files in workspace"),
+                    text: $commandPaletteQuery,
+                    isFocused: Binding(get: { isCommandPaletteSearchFocused }, set: { isCommandPaletteSearchFocused = $0 }),
+                    onSubmit: runSelectedGoToFileResult,
+                    onEscape: { dismissCommandPalette() },
+                    onMoveSelection: moveGoToFileSelection(by:),
+                    onUnhandledNavigationKey: forwardCommandPaletteUnhandledNavigationKeyToFocusedTerminal
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            Divider()
+            GoToFileResultsView(model: goToFileModel, onRun: openGoToFile(relativePath:))
+        }
+        .onAppear { resetCommandPaletteSearchFocus() }
+        .onChange(of: commandPaletteQuery) { _, newValue in
+            goToFileModel.update(query: newValue)
         }
     }
 
@@ -7708,7 +7738,10 @@ struct ContentView: View {
             }
         }
 
-        var contributions: [CommandPaletteCommandContribution] = [Self.commandPaletteFindWorkContribution()]
+        var contributions: [CommandPaletteCommandContribution] = [
+            Self.commandPaletteFindWorkContribution(),
+            Self.commandPaletteGoToFileContribution()
+        ]
         contributions.append(contentsOf: Self.commandPaletteCloudCommandContributions())
         contributions.append(Self.commandPaletteCloudAvailabilityInfoContribution())
         contributions.append(contentsOf: Self.commandPaletteComputerUseContributions())
@@ -9017,6 +9050,9 @@ struct ContentView: View {
         registry.register(commandId: "palette.browseSidebarTemplates") {
             CmuxExtensionSidebarSelection.browseTemplates()
         }
+        registry.register(commandId: "palette.goToFile") {
+            openGoToFilePalette()
+        }
         registry.register(commandId: "palette.findWork") {
             guard let service = AppDelegate.shared?.currentWorkQueryService() else {
                 NSSound.beep()
@@ -10167,6 +10203,8 @@ struct ContentView: View {
         switch commandPaletteMode {
         case .commands:
             runSelectedCommandPaletteResult()
+        case .goToFile:
+            runSelectedGoToFileResult()
         case .renameInput(let target):
             continueRenameFlow(target: target)
         case .renameConfirm(let target, let proposedName):
@@ -10251,6 +10289,63 @@ struct ContentView: View {
 
     private func openCommandPaletteCommands() {
         handleCommandPaletteListRequest(scope: .commands)
+    }
+
+    /// The workspace and pane Go to File opens into: the panel focused when the palette opened.
+    private var goToFileFocusTarget: (workspace: Workspace, pane: PaneID)? {
+        guard let focusTarget = commandPaletteRestoreFocusTarget,
+              case .workspace(let workspaceID) = focusTarget.host,
+              let workspace = tabManager.tabs.first(where: { $0.id == workspaceID }),
+              let pane = workspace.paneId(forPanelId: focusTarget.panelId) else { return nil }
+        return (workspace, pane)
+    }
+
+    private func openGoToFilePalette() {
+        guard let target = goToFileFocusTarget,
+              let resolved = GoToFilePaletteRouting.source(for: target.workspace, sidebarStore: fileExplorerStore) else {
+            NSSound.beep()
+            return
+        }
+        commandPaletteMode = .goToFile
+        commandPaletteQuery = ""
+        commandPaletteSelectedResultIndex = 0
+        goToFileModel.begin(source: resolved.source, workspaceId: target.workspace.id, workspaceRoot: resolved.root)
+        goToFileModel.update(query: "")
+        resetCommandPaletteSearchFocus()
+        syncCommandPaletteDebugStateForObservedWindow()
+    }
+
+    private func moveGoToFileSelection(by delta: Int) {
+        if !goToFileModel.moveSelection(by: delta) { NSSound.beep() }
+    }
+
+    private func runSelectedGoToFileResult() {
+        guard let relativePath = goToFileModel.selectedRelativePath else {
+            NSSound.beep()
+            return
+        }
+        openGoToFile(relativePath: relativePath)
+    }
+
+    private func openGoToFile(relativePath: String) {
+        guard let target = goToFileFocusTarget else {
+            NSSound.beep()
+            return
+        }
+        let workspaceID = target.workspace.id
+        let opened = GoToFilePaletteRouting.open(
+            relativePath: relativePath,
+            model: goToFileModel,
+            workspace: target.workspace,
+            pane: target.pane,
+            sidebarStore: fileExplorerStore,
+            isCurrent: { tabManager.selectedTabId == workspaceID }
+        )
+        guard opened else {
+            NSSound.beep()
+            return
+        }
+        dismissCommandPalette(restoreFocus: false)
     }
 
     private func openAgentInbox() {
@@ -10420,6 +10515,8 @@ struct ContentView: View {
         switch commandPaletteMode {
         case .commands:
             mode = commandPaletteListScope.rawValue
+        case .goToFile:
+            mode = "go_to_file"
         case .renameInput:
             mode = "rename_input"
         case .renameConfirm:
@@ -10490,6 +10587,7 @@ struct ContentView: View {
         commandPaletteCurrentWorkSnapshot = currentWork
         commandPaletteCurrentWorkRevision &+= 1
         commandPaletteMode = .commands
+        goToFileModel.end()
         commandPaletteQuery = initialQuery
         commandPaletteRenameDraft = ""
         commandPaletteWorkspaceDescriptionDraft = ""
@@ -10605,6 +10703,7 @@ struct ContentView: View {
         cancelCommandPaletteSearch()
         cancelCommandPaletteSearchIndexBuild()
         commandPaletteTaskStore.cancel(.agentLauncherAvailability)
+        goToFileModel.end()
         commandPaletteAgentLauncherAvailabilityGeneration &+= 1
         cancelCommandPaletteForkableAgentAvailabilityProbe()
         cancelCommandPaletteForkableAgentProbeResultExpiryRefresh()
@@ -10783,6 +10882,8 @@ struct ContentView: View {
         switch mode {
         case .commands:
             return "commands"
+        case .goToFile:
+            return "goToFile"
         case .renameInput:
             return "renameInput"
         case .renameConfirm:
@@ -10882,7 +10983,7 @@ struct ContentView: View {
             guard case .renameInput = commandPaletteMode else { return }
         case .caretAtEnd:
             switch commandPaletteMode {
-            case .commands, .renameInput:
+            case .commands, .goToFile, .renameInput:
                 break
             case .renameConfirm:
                 return
