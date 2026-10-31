@@ -194,6 +194,8 @@ final class MarkdownWebView: CmuxUndoableWebView {
     /// digits, ⌘R, ⌘F, ⌘S, ⌘0), so the viewer navigation keys stay off and
     /// cmux leaves those shortcuts to the page while it has focus.
     var isWaveformViewer = false
+    /// What the waveform page last reported about its focus (`keyState`).
+    var waveformKeyState = WaveformViewerShortcuts.PageState()
 
     /// The coordinator is the only owner of deferred WebKit lifecycle work.
     private var renderingCoordinator: MarkdownWebRenderingCoordinator?
@@ -268,7 +270,7 @@ final class MarkdownWebView: CmuxUndoableWebView {
 
     /// Whether the waveform page, not cmux, should get `event` (see `isWaveformViewer`).
     func waveformViewerClaims(_ event: NSEvent) -> Bool {
-        isWaveformViewer && WaveformViewerShortcuts.claims(event, editableElementFocused: editableElementFocused)
+        isWaveformViewer && WaveformViewerShortcuts.claims(event, page: waveformKeyState)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {

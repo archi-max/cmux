@@ -8924,7 +8924,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
 
         let resolution = resolveWordUnderCursorPath(at: point)
-        if resolution != nil {
+        if resolution != nil || waveformTerminalLink(at: preferredPointerPoint(from: point)) != nil {
             if !wordPathHoverActive {
                 wordPathHoverActive = true
                 NSCursor.pointingHand.push()
@@ -9062,6 +9062,17 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         )
     }
 
+    /// The waveform viewer link under `point` (`WaveformTerminalLinks`), when
+    /// the workspace has a waveform viewer with a file open.
+    private func waveformTerminalLink(at point: NSPoint?) -> (WaveformTerminalLinks.Link, [FilePreviewPanel])? {
+        guard let point, let terminalSurface,
+              let workspace = terminalSurface.owningWorkspace(),
+              !WaveformTerminalLinks.viewers(in: workspace).isEmpty,
+              let panel = workspace.terminalPanel(for: terminalSurface.id),
+              let snapshot = visibleWordPathSnapshot(at: point, panel: panel) else { return nil }
+        return WaveformTerminalLinks.link(line: snapshot.line, column: snapshot.column, workspace: workspace)
+    }
+
     private func visibleWordPathSnapshot(at point: NSPoint, panel: TerminalPanel) -> (line: String, column: Int)? {
         guard let surface else { return nil }
         let size = ghostty_surface_size(surface)
@@ -9149,14 +9160,25 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
 
         // VaporView's terminal links: a time or an instance path, into the
-        // workspace's waveform viewer (only when one is open).
+        // workspace's waveform viewer. An existing file under the click wins;
+        // a link no viewer can use goes on to the remote file link below.
         if runtimeOutcome != .openURL,
            let resolvedPoint, let terminalSurface,
            let workspace = terminalSurface.owningWorkspace(),
-           workspace.panels.values.contains(where: { ($0 as? FilePreviewPanel)?.previewMode == .waveform }),
-           let panel = workspace.terminalPanel(for: terminalSurface.id),
-           let snapshot = visibleWordPathSnapshot(at: resolvedPoint, panel: panel),
-           WaveformTerminalLinks.open(line: snapshot.line, column: snapshot.column, workspace: workspace) {
+           let waveformLink = waveformTerminalLink(at: resolvedPoint),
+           resolveWordUnderCursorPath(at: resolvedPoint) == nil {
+            let remoteTokens: [String]? = {
+                guard workspace.remoteConfiguration?.transport == .ssh,
+                      workspace.terminalLinkIsRemoteTerminal(terminalSurface.id),
+                      let panel = workspace.terminalPanel(for: terminalSurface.id),
+                      let snapshot = visibleWordPathSnapshot(at: resolvedPoint, panel: panel) else { return nil }
+                return RemoteTerminalPathResolver().tokens(in: snapshot.line, column: snapshot.column)
+            }()
+            Task { @MainActor [weak self] in
+                let opened = await WaveformTerminalLinks.open(waveformLink.0, in: waveformLink.1)
+                guard !opened, let remoteTokens else { return }
+                _ = self?.openRemoteFilePreview(tokens: remoteTokens)
+            }
             return nil
         }
 

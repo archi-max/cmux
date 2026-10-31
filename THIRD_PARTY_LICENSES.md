@@ -427,7 +427,20 @@ The minified webview (`src/webview/`, with cmux's HTML-escaping patch), its
 stylesheet, and the wellen parser compiled to WebAssembly
 (`src/wellen_parser/`) are bundled. The host page,
 VS Code API shim and Web Worker in that folder are adapted from VaporView's
-extension code and carry the same license.
+extension code and carry the same license. So do the pieces cmux rebuilds
+from VaporView's VS Code integration:
+
+- `cmux-commands.js`: menus, keybindings, settings, commands and sessions,
+  from `package.json` `contributes` and `src/extension_core/` (`commands.ts`,
+  `viewer_provider.ts`, `document.ts`, the status bar items).
+- `cmux-netlist.js`: the netlist view and search, from `tree_view.ts`.
+- `cmux-ui.js`: menu widgets whose contents and `when` rules follow
+  `package.json` `contributes.menus`.
+- `Sources/Panels/WaveformViewerStrings.swift`: the English text of the
+  menus, prompts and settings, much of it VaporView's command titles,
+  setting descriptions and prompt text.
+- `Sources/Panels/WaveformTerminalLinks.swift` and CmuxTerminalCore's
+  `WaveformTerminalLink.swift`: terminal links, from `terminal_links.ts`.
 
 ### wellen
 

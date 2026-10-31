@@ -14,19 +14,20 @@
 //
 // cmux drives this page through window.cmuxWaveform:
 //   open({ url, size, format, path, strings, settings, fsdb: { url, path } | undefined,
-//          sessionFile: { path, text } | undefined, restore: { state, dirty, sessionPath } | undefined })
+//          restore: { state, dirty } | undefined })
 //   reload({ url, size })          reopen the file in place, keeping the signal list
 //   fileChanged()                  the file changed on disk (reloads if Auto Reload is on)
 //   setTheme({ kind, background, foreground })
 //   setStatus({ title, detail })   progress while cmux prepares the FSDB helper
 //   runCommand({ command, args })  a VaporView command id (cmux-commands.js)
-//   sessionSaved({ path }) | sessionFailed({ message }) | applySessionFile({ text, path, error })
+//   sessionSaved() | sessionFailed({ message }) | applySessionFile({ text, path, error })
+//   setSessionFile({ path, text })   <dump>.json, offered per promptLoadSettings
 // and hears back on window.webkit.messageHandlers.cmuxWaveform:
 //   { type: 'ready' } | { type: 'opened', top } | { type: 'error', message }
-//   { type: 'copy', text } | { type: 'log', message } | { type: 'openURL', url }
-//   { type: 'settings', values } | { type: 'sessionState', state, dirty, sessionPath }
-//   { type: 'saveSession', text, suggestedName, path } | { type: 'loadSession' } | { type: 'reload' }
-//   { type: 'event', eventType, eventData }   VaporView's API events (markerSet, signalSelect, ...)
+//   { type: 'copy', text } | { type: 'log', message } | { type: 'openReadme' }
+//   { type: 'settings', values } | { type: 'sessionState', state, dirty }
+//   { type: 'saveSession', text, suggestedName } | { type: 'loadSession' } | { type: 'reload' }
+//   { type: 'keyState', viewerFocused, blocked }   which of VaporView's keys the page will run
 
 (function () {
   const nativeHandler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.cmuxWaveform;
@@ -123,8 +124,10 @@
         if (m.error) { p.reject(new Error(m.error)); } else { p.resolve(m.result); }
       }
     };
-    worker.onerror = (e) => { fail(e.message); };
+    let closed = false;
+    worker.onerror = (e) => { if (!closed) { fail(e.message); } };
     function call(method, args) {
+      if (closed) { return Promise.reject(new Error('closed')); }
       const id = nextCallId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
@@ -155,7 +158,13 @@
       },
       search(query, scope) { return call('searchnetlist', { query, scopeId: scope ? scope.id : 0xFFFFFFFF }); },
       valuesAtTime(time, paths) { return call('getvaluesattime', { time, paths: paths.join(' ') }); },
-      close() { worker.terminate(); },
+      // Ends the worker and settles every call still waiting on it.
+      close() {
+        closed = true;
+        worker.terminate();
+        pending.forEach((p) => p.reject(new Error('closed')));
+        pending.clear();
+      },
       async fetch(requestList) {
         const signals = requestList.filter((r) => r.type === 'signal').map((r) => r.signalId);
         const enums = requestList.filter((r) => r.type === 'enum').map((r) => r.netlistId);
@@ -238,10 +247,15 @@
   function fsdbBackend(config) {
     // Whether the helper answers valueAt (v2); unknown until the first ask.
     let pointQuery;
+    // Replies to requests made before close() (a reload) are dropped, so an
+    // old signal reply can't fill a row of the reloaded file.
+    let closed = false;
+    const aborter = new AbortController();
     // A reply is JSON ({result} or {error}), or for signal data
     // [u32 LE header length][header JSON][deflate-raw records].
     async function request(req) {
-      const response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req) });
+      if (closed) { throw new Error('closed'); }
+      const response = await fetch(config.fsdb.url, { method: 'POST', body: JSON.stringify(req), signal: aborter.signal });
       const all = new Uint8Array(await response.arrayBuffer());
       let reply, bin = null;
       if ((response.headers.get('content-type') || '').startsWith('application/octet-stream')) {
@@ -251,11 +265,13 @@
       } else {
         reply = JSON.parse(new TextDecoder().decode(all));
       }
+      if (closed) { throw new Error('closed'); }
       if (reply.error) { throw new Error(reply.error); }
       return { result: reply.result, helperMs: reply.ms || 0, bin, wireBytes: all.length };
     }
 
     return {
+      close() { closed = true; aborter.abort(); },
       async open(showTop) {
         const { result } = await request({ cmd: 'open', file: config.fsdb.path });
         showTop(result.top.map((t) => ({ kind: 'scope', name: t.name, id: t.scopeOffsetIdx, type: t.type })));
@@ -306,7 +322,7 @@
         const signals = requestList.filter((r) => r.type === 'signal');
         if (!signals.length) { return; }
         // The source link reads shown signals' values from drawnChanges: tell cmux they are there.
-        try { await fetchSignals(signals); } finally { toNative({ type: 'signalData' }); }
+        try { await fetchSignals(signals); } finally { if (!closed) { toNative({ type: 'signalData' }); } }
       },
     };
 
@@ -326,6 +342,7 @@
           t2 = performance.now();
           changes = decodeRecords(raw, d.width);
         }
+        if (closed) { return; }
         const t3 = performance.now();
         deliverValueChanges({ command: 'update-waveform-chunk', signalId: d.signalId, transitionDataChunk: changes,
           totalChunks: 1, chunkNum: 0, min: d.min, max: d.max });
@@ -382,7 +399,9 @@
     updateConfiguration: (m) => { window.cmuxCommands.updateSetting(m.property, m.value); },
     showMessage: (m) => { window.cmuxUI.toast(String(m.message || ''), m.messageType); },
     handleDrop: (m) => { window.cmuxCommands.handleDrop(m); },
-    emitEvent: (m) => { toNative({ type: 'event', eventType: m.eventType, eventData: m.eventData }); },
+    // VaporView's API events (markerSet, signalSelect, ...): nothing in cmux
+    // listens yet; the source link below chains onto this.
+    emitEvent: () => {},
     copyToClipboard: (m) => { toNative({ type: 'copy', text: String(m.text || '') }); },
     logOutput: (m) => { toNative({ type: 'log', message: String(m.message) }); },
     // focus (reveal the editor tab) has no cmux counterpart: the panel is already visible.
@@ -485,19 +504,44 @@
   }
 
   // ---- open ----
-  async function openBackend() {
+  // Each open or reload is a load generation. A newer one closes the backend
+  // of the one before, whose results and errors are then ignored, so two
+  // quick reloads leave one worker and no false "Unable to open" error.
+  let loadGeneration = 0;
+  // Whether the viewer frame has loaded for the current open (reload keeps it).
+  let frameLoaded = false;
+
+  function closeBackend() {
+    if (backend && backend.close) { backend.close(); }
+    backend = null;
+  }
+
+  // Resolves to false when a newer load superseded this one.
+  async function openBackend(generation) {
     drawnChanges.clear();
-    backend = config.format === 'fsdb' ? fsdbBackend(config) : wellenBackend(config);
-    const metadata = await backend.open((top) => {
+    const opening = config.format === 'fsdb' ? fsdbBackend(config) : wellenBackend(config);
+    backend = opening;
+    const metadata = await opening.open((top) => {
+      if (generation !== loadGeneration) { return; }
       doc.netlist = top.map((t) => ({ ...t, scopePath: [] }));
       doc.netlist.forEach((t) => { if (t.kind === 'var') { doc.items.set(t.netlistId, t); } });
       window.cmuxNetlist.render(doc.netlist);
     });
+    if (generation !== loadGeneration) { return false; }
     doc.metadata = metadata;
     showMessage('', '');
+    return true;
   }
 
   async function open(next) {
+    const generation = ++loadGeneration;
+    closeBackend();
+    frameLoaded = false;
+    doc.metadata = null;
+    doc.netlist = [];
+    doc.items.clear();
+    initSent = false;
+    webviewReady = false;
     config = Object.assign({}, next);
     strings = config.strings || {};
     window.cmuxWaveform.strings = strings;
@@ -513,14 +557,16 @@
     }
     showMessage(strings.loading, '');
     try {
-      await openBackend();
+      if (!(await openBackend(generation))) { return; }
       iframe.src = 'viewer.html';
       iframe.addEventListener('load', () => {
+        if (generation !== loadGeneration) { return; }
+        frameLoaded = true;
         window.cmuxCommands.attachFrame(iframe.contentWindow);
         sendInit();
       }, { once: true });
     } catch (error) {
-      fail(error);
+      if (generation === loadGeneration) { fail(error); }
     }
   }
 
@@ -529,12 +575,12 @@
   // brings the same signals back (restoreState); cmux's copy covers the case
   // where the frame has none.
   async function reload(next) {
-    if (!doc.metadata || !webviewReady) { return open(Object.assign({}, config, next || {})); }
+    if (!frameLoaded) { return open(Object.assign({}, config, next || {})); }
+    const generation = ++loadGeneration;
     const snapshot = window.cmuxCommands.sessionSnapshot();
-    config = Object.assign({}, config, next || {}, { restore: snapshot.state ? snapshot : null });
+    config = Object.assign({}, config, next || {}, { restore: snapshot.state ? snapshot : config.restore || null });
     window.cmuxCommands.willReload();
-    if (backend && backend.close) { backend.close(); }
-    backend = null;
+    closeBackend();
     doc.metadata = null;
     doc.netlist = [];
     doc.items.clear();
@@ -544,10 +590,10 @@
     window.cmuxNetlist.clear();
     showMessage(strings.loading, '');
     try {
-      await openBackend();
+      if (!(await openBackend(generation))) { return; }
       sendInit();
     } catch (error) {
-      fail(error);
+      if (generation === loadGeneration) { fail(error); }
     }
   }
 
@@ -910,7 +956,8 @@
     runCommand: ({ command, args }) => window.cmuxCommands.run(command, args),
     sessionSaved: (m) => window.cmuxCommands.sessionSaved(m),
     sessionFailed: (m) => window.cmuxCommands.sessionFailed(m),
-    applySessionFile: (m) => window.cmuxCommands.applySessionFile(m) };
+    applySessionFile: (m) => window.cmuxCommands.applySessionFile(m),
+    setSessionFile: (m) => window.cmuxCommands.setSessionFile(m) };
   // Fixed before the viewer frame loads, so a script in it can't swap the link cmux trusts.
   Object.defineProperty(window.cmuxWaveform, 'link', { value: link, writable: false, configurable: false, enumerable: true });
   Object.defineProperty(window, 'cmuxWaveform', { value: window.cmuxWaveform, writable: false, configurable: false });

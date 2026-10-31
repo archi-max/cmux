@@ -34,7 +34,8 @@ The bundled npm and Rust dependencies, with their licenses, are listed under
 ## Local modifications
 
 Made by cmux on 2026-10-30 (viewer, host, FSDB helper; then escaping,
-Content-Security-Policy and FSDB helper hardening).
+Content-Security-Policy and FSDB helper hardening; then VaporView's menus,
+keybindings, netlist view, settings, sessions and terminal links).
 
 - `webview.js`: waveform data reaches `innerHTML` unescaped in four places in
   upstream `src/webview/` (an upstream bug, to be reported): the
@@ -89,6 +90,16 @@ Content-Security-Policy and FSDB helper hardening).
   multi-select, add/remove/reveal, drag into the viewer and search.
 - `cmux-ui.js` (new): the menu, dialog, quick pick and toast widgets VS Code
   draws natively.
+- Where cmux's port behaves differently from VaporView in VS Code:
+  "Save Vaporview Session..." and ⌘S always ask where to save (for a file on
+  an SSH host: next to it on the host, or on this Mac), and cmux writes only
+  the file chosen there; `<dump>.json` is offered only when it holds a
+  session. Rename (F2) on a signal opens the rename box instead of setting
+  the label to the full path. F2 and ⌘0 work in the viewer, ⌘F also from
+  the netlist. A netlist search pick reveals a signal that is already shown.
+  Instance-path terminal links never take file names (see
+  `WaveformTerminalLink.swift`), and there is no WCP server or remote
+  (surfer) viewer.
 - `host.js` also reads FSDB files through cmux's FSDB helper (below) and
   delivers every signal's value changes through one function that dispatches
   the message event on the same-origin viewer frame instead of posting it, so

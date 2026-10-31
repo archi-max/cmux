@@ -3,6 +3,11 @@ import Foundation
 /// The waveform viewer's page strings (`Resources/vaporview/cmux-*.js`): VaporView's
 /// command and submenu titles, the netlist, dialogs, settings and the status strip.
 /// Keys on the page side are the JavaScript names; values are localized here.
+///
+/// Much of the English text is VaporView's (https://github.com/Lramseyer/vaporview,
+/// GPL-3.0, @59107c6): the command and submenu titles and setting descriptions in
+/// its `package.json`, and prompt and message text in `src/extension_core/commands.ts`
+/// and `viewer_provider.ts`. See THIRD_PARTY_LICENSES.md.
 enum WaveformViewerStrings {
     static func all() -> [String: String] {
         let strings: [String: String] = [
@@ -114,6 +119,7 @@ enum WaveformViewerStrings {
             "messageSignalNotFound": String(localized: "filePreview.waveform.message.signalNotFound", defaultValue: "Signal not found: %@"),
             "messageScopeNotFound": String(localized: "filePreview.waveform.message.scopeNotFound", defaultValue: "Scope not found: %@"),
             "messageManySignals": String(localized: "filePreview.waveform.message.manySignals", defaultValue: "You are about to add a large number of signals to the waveform viewer. This may cause performance issues. Do you want to continue?"),
+            "messageNotASession": String(localized: "filePreview.waveform.message.notASession", defaultValue: "The file is not a VaporView session."),
             "messageSessionMismatch": String(localized: "filePreview.waveform.message.sessionMismatch", defaultValue: "The session file may not match the active viewer"),
             "messageRestoreSession": String(localized: "filePreview.waveform.message.restoreSession", defaultValue: "Restore state from file: %@?"),
             "messageRestoreSessionDetail": String(localized: "filePreview.waveform.message.restoreSessionDetail", defaultValue: "You can set a default behavior and disable this prompt in the settings."),

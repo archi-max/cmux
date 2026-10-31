@@ -61,11 +61,19 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private var restoreState: [String: Any]?
     /// The netlist's top scope names, reported when a file opens.
     private(set) var topScopes: [String] = []
+    /// Whether the page has opened the file (and not started another load since).
+    private(set) var isFileOpen = false
+    /// The waveform viewer the user clicked last, preferred by terminal links.
+    private(set) static weak var lastActivePanel: FilePreviewPanel?
 
     /// VaporView settings (`vaporview.*` keys) shared by every waveform panel.
     static let settingsDefaultsKey = "filePreview.waveform.settings"
-    /// Session files bigger than this are not auto-loaded next to a dump.
-    private static let maxSessionFileSize = 8 * 1024 * 1024
+    /// Session files bigger than this are not read.
+    nonisolated private static let maxSessionFileSize = 8 * 1024 * 1024
+    /// The session file saved or loaded last: the save and open panels start there.
+    private var lastSessionURL: URL?
+    /// Counts page loads, so a session file read for an older load is dropped.
+    private var pageLoadID = 0
 
     deinit {
         // WebKit teardown is performed explicitly by close() on the main actor.
@@ -116,6 +124,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         webContentProcessRecoveryAttempts = 0
         restoreState = nil
         topScopes = []
+        isFileOpen = false
     }
 
     /// Whether `responder` is this viewer's web view or one of its subviews.
@@ -129,10 +138,20 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         webView?.isViewerNavigationEditableElementFocused ?? false
     }
 
-    /// Runs a VaporView command id in the page (`cmux-commands.js`).
-    func runCommand(_ command: String, args: [String: Any] = [:]) {
-        guard isPageReady else { return }
-        evaluate(function: "runCommand", argument: ["command": command, "args": args])
+    /// Runs a VaporView command id in the page (`cmux-commands.js`) and returns
+    /// its result: false or nil when it did nothing.
+    func runCommandResult(_ command: String, args: [String: Any] = [:]) async -> Any? {
+        guard let webView, isPageReady, JSONSerialization.isValidJSONObject(args) else { return nil }
+        let body = "const run = window.cmuxCommands && window.cmuxCommands.run;\n"
+            + "return run ? await run(command, args) : null;"
+        do {
+            let result = try await webView.callAsyncJavaScript(
+                body, arguments: ["command": command, "args": args], in: nil, contentWorld: .page
+            )
+            return result is NSNull ? nil : result
+        } catch {
+            return nil
+        }
     }
 
     private func makeWebView() -> MarkdownWebView {
@@ -144,6 +163,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         )
         let webView = MarkdownWebView(frame: .zero, configuration: config)
         webView.isWaveformViewer = true
+        webView.onPointerDown = { [weak self] in
+            Self.lastActivePanel = self?.panel
+        }
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsLinkPreview = false
@@ -199,6 +221,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         guard let webView else { return }
         if let panel { WaveformSourceLink.waveformReloading(panel) }
         isPageReady = false
+        isFileOpen = false
+        pageLoadID += 1
         stopFSDBHelper()
         schemeHandler.stopServing()
         guard schemeHandler.hasAssets else {
@@ -218,11 +242,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             "strings": Self.localizedStrings(),
             "settings": Self.storedSettings(),
         ]
-        if let restoreState {
+        if let restoreState, JSONSerialization.isValidJSONObject(restoreState) {
             common["restore"] = restoreState
-        } else if let sessionFile = Self.siblingSessionFile(for: fileURL) {
-            common["sessionFile"] = sessionFile
         }
+        defer { offerSiblingSession() }
         let format = fileURL.pathExtension.lowercased()
         if format == "fsdb" {
             var argument: [String: Any] = common.merging([
@@ -253,6 +276,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private func reloadFileInPage() {
         guard let fileURL, isPageReady else { return }
         if let panel { WaveformSourceLink.waveformReloading(panel) }
+        isFileOpen = false
         if fileURL.pathExtension.lowercased() == "fsdb" {
             // The FSDB helper rereads the dump on the host for each open.
             evaluate(function: "reload", argument: [:])
@@ -275,30 +299,152 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         UserDefaults.standard.set(data, forKey: settingsDefaultsKey)
     }
 
-    /// VaporView's saved session next to a local dump: `<name>.json` beside `<name>.vcd`.
-    private static func siblingSessionFile(for fileURL: URL) -> [String: Any]? {
-        guard fileURL.isFileURL else { return nil }
-        let sessionURL = fileURL.deletingPathExtension().appendingPathExtension("json")
-        guard let size = try? sessionURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size <= maxSessionFileSize,
-              let text = try? String(contentsOf: sessionURL, encoding: .utf8) else { return nil }
-        return ["path": sessionURL.path, "text": text]
+    // The page sends session text; where it goes is decided here, never by the
+    // page. Save always asks: a save panel, or for a file on an SSH host,
+    // whether to save next to it on the host. Only the chosen file is written.
+
+    /// The open file's SSH lease, when it has one (a read-only cloud VM copy has none).
+    private var sshLease: CloudFilePreviewLease? {
+        panel?.cloudPreviewLease.flatMap { $0.sshProvider == nil ? nil : $0 }
     }
 
-    private func saveSession(text: String, suggestedName: String, path: String?) {
-        if let path {
-            writeSession(text: text, to: URL(fileURLWithPath: path))
+    /// VaporView's session file for a dump: `<name>.json` beside `<name>.vcd`.
+    nonisolated private static func sessionPath(forDump path: String) -> String {
+        (path as NSString).deletingPathExtension + ".json"
+    }
+
+    /// Whether `text` is a VaporView session (VaporviewDocument.getWebviewSession).
+    nonisolated private static func isSession(_ text: String) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return false }
+        return object["displayedSignals"] is [Any]
+    }
+
+    nonisolated private static func readSessionText(at url: URL) async throws -> String {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= maxSessionFileSize else { throw CocoaError(.fileReadTooLarge) }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    nonisolated private static func readSiblingSession(at url: URL, displayPath: String) async -> [String: String]? {
+        guard let text = try? await readSessionText(at: url), isSession(text) else { return nil }
+        return ["path": displayPath, "text": text]
+    }
+
+    nonisolated private static func downloadSiblingSession(
+        path: String,
+        provider: SSHFileExplorerProvider
+    ) async -> [String: String]? {
+        guard !ManagedFileTransferPolicy.isDisabled else { return nil }
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-waveform-session-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: local) }
+        do {
+            try await provider.downloadFile(path: path, to: local)
+        } catch {
+            return nil
+        }
+        return await readSiblingSession(at: local, displayPath: path)
+    }
+
+    /// Hands the page `<dump>.json` when it is a VaporView session, read off the
+    /// main actor (or from the SSH host). The page asks about it per
+    /// `promptLoadSettings`; nothing is read when that is Never.
+    private func offerSiblingSession() {
+        guard restoreState == nil, let fileURL,
+              Self.storedSettings()["promptLoadSettings"] as? String != "Never" else { return }
+        let lease = panel?.cloudPreviewLease
+        let provider = lease?.sshProvider
+        // A cloud VM preview is a downloaded copy with no folder to look in.
+        guard lease == nil || provider != nil else { return }
+        let loadID = pageLoadID
+        Task { [weak self] in
+            let file: [String: String]?
+            if let lease, let provider {
+                file = await Self.downloadSiblingSession(path: Self.sessionPath(forDump: lease.remotePath), provider: provider)
+            } else {
+                let path = Self.sessionPath(forDump: fileURL.path)
+                file = await Self.readSiblingSession(at: URL(fileURLWithPath: path), displayPath: path)
+            }
+            guard let self, let file, self.pageLoadID == loadID, self.isPageReady else { return }
+            self.evaluate(function: "setSessionFile", argument: file)
+        }
+    }
+
+    private func saveSession(text: String, suggestedName: String) {
+        guard let lease = sshLease, let provider = lease.sshProvider else {
+            chooseLocalSessionFile(text: text, suggestedName: suggestedName)
             return
         }
+        let remotePath = Self.sessionPath(forDump: lease.remotePath)
+        let alert = NSAlert()
+        alert.messageText = String(
+            format: String(localized: "filePreview.waveform.saveSessionRemote.title", defaultValue: "Save the session on %@?"),
+            provider.displayTarget
+        )
+        alert.informativeText = String(
+            format: String(
+                localized: "filePreview.waveform.saveSessionRemote.detail",
+                defaultValue: "cmux writes %@ next to the waveform file, replacing that file if it exists."
+            ),
+            remotePath
+        )
+        alert.addButton(withTitle: String(localized: "filePreview.waveform.saveSessionRemote.save", defaultValue: "Save on Host"))
+        alert.addButton(withTitle: String(
+            localized: "filePreview.waveform.saveSessionRemote.saveLocally",
+            defaultValue: "Save on This Mac…"
+        ))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            switch response {
+            case .alertFirstButtonReturn:
+                self?.uploadSession(text: text, path: remotePath, provider: provider)
+            case .alertSecondButtonReturn:
+                // After the alert's sheet has closed.
+                Task { @MainActor [weak self] in self?.chooseLocalSessionFile(text: text, suggestedName: suggestedName) }
+            default:
+                break
+            }
+        }
+        if let window = webView?.window {
+            alert.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(alert.runModal())
+        }
+    }
+
+    private func uploadSession(text: String, path: String, provider: SSHFileExplorerProvider) {
+        Task { [weak self] in
+            do {
+                guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
+                _ = try await provider.writeFile(path: path, contents: Data(text.utf8), expectedStamp: nil)
+                self?.evaluate(function: "sessionSaved", argument: [:])
+            } catch {
+                self?.evaluate(function: "sessionFailed", argument: ["message": error.localizedDescription])
+            }
+        }
+    }
+
+    private func chooseLocalSessionFile(text: String, suggestedName: String) {
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.json]
-        savePanel.nameFieldStringValue = suggestedName
-        if let fileURL, fileURL.isFileURL {
+        savePanel.nameFieldStringValue = lastSessionURL?.lastPathComponent ?? suggestedName
+        if let lastSessionURL {
+            savePanel.directoryURL = lastSessionURL.deletingLastPathComponent()
+        } else if panel?.cloudPreviewLease == nil, let fileURL, fileURL.isFileURL {
             savePanel.directoryURL = fileURL.deletingLastPathComponent()
+        } else {
+            // Not cmux's preview cache, where a remote file's copy lives.
+            savePanel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         }
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .OK, let url = savePanel.url else { return }
-            self.writeSession(text: text, to: url)
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                self.lastSessionURL = url
+                self.evaluate(function: "sessionSaved", argument: [:])
+            } catch {
+                self.evaluate(function: "sessionFailed", argument: ["message": error.localizedDescription])
+            }
         }
         if let window = webView?.window {
             savePanel.beginSheetModal(for: window, completionHandler: completion)
@@ -307,30 +453,26 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
     }
 
-    private func writeSession(text: String, to url: URL) {
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            evaluate(function: "sessionSaved", argument: ["path": url.path])
-        } catch {
-            evaluate(function: "sessionFailed", argument: ["message": error.localizedDescription])
-        }
-    }
-
     private func loadSession() {
         let openPanel = NSOpenPanel()
         openPanel.allowedContentTypes = [.json]
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
-        if let fileURL, fileURL.isFileURL {
+        if let lastSessionURL {
+            openPanel.directoryURL = lastSessionURL.deletingLastPathComponent()
+        } else if panel?.cloudPreviewLease == nil, let fileURL, fileURL.isFileURL {
             openPanel.directoryURL = fileURL.deletingLastPathComponent()
         }
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self, response == .OK, let url = openPanel.url else { return }
-            do {
-                let text = try String(contentsOf: url, encoding: .utf8)
-                self.evaluate(function: "applySessionFile", argument: ["text": text, "path": url.path])
-            } catch {
-                self.evaluate(function: "applySessionFile", argument: ["path": url.path, "error": error.localizedDescription])
+            guard response == .OK, let url = openPanel.url else { return }
+            Task { [weak self] in
+                do {
+                    let text = try await Self.readSessionText(at: url)
+                    self?.lastSessionURL = url
+                    self?.evaluate(function: "applySessionFile", argument: ["text": text, "path": url.path])
+                } catch {
+                    self?.evaluate(function: "applySessionFile", argument: ["path": url.path, "error": error.localizedDescription])
+                }
             }
         }
         if let window = webView?.window {
@@ -489,10 +631,15 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     }
 
     private func evaluate(function: String, argument: [String: Any]) {
-        guard let webView,
-              JSONSerialization.isValidJSONObject(argument),
+        guard let webView else { return }
+        guard JSONSerialization.isValidJSONObject(argument),
               let data = try? JSONSerialization.data(withJSONObject: argument),
-              let json = String(data: data, encoding: .utf8) else { return }
+              let json = String(data: data, encoding: .utf8) else {
+#if DEBUG
+            NSLog("FilePreviewWaveform.evaluate dropped \(function): argument is not JSON")
+#endif
+            return
+        }
         webView.evaluateJavaScript("window.cmuxWaveform && window.cmuxWaveform.\(function)(\(json))", completionHandler: nil)
     }
 
@@ -548,6 +695,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         case "opened":
             webContentProcessRecoveryAttempts = 0
             topScopes = body["top"] as? [String] ?? []
+            isFileOpen = true
             if let panel { WaveformSourceLink.waveformOpened(panel) }
         case "signalData":
             if let panel { WaveformSourceLink.waveformDataArrived(panel) }
@@ -567,25 +715,24 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             }
         case "sessionState":
             if let state = body["state"] {
-                var restore: [String: Any] = ["state": state, "dirty": body["dirty"] as? Bool ?? false]
-                restore["sessionPath"] = body["sessionPath"] as? String
-                restoreState = restore
+                restoreState = ["state": state, "dirty": body["dirty"] as? Bool ?? false]
             }
         case "saveSession":
             if let text = body["text"] as? String {
-                saveSession(
-                    text: text,
-                    suggestedName: body["suggestedName"] as? String ?? "untitled.json",
-                    path: body["path"] as? String
-                )
+                let name = (body["suggestedName"] as? String).map { ($0 as NSString).lastPathComponent } ?? ""
+                saveSession(text: text, suggestedName: name.isEmpty ? "untitled.json" : name)
             }
+        case "keyState":
+            webView?.waveformKeyState = WaveformViewerShortcuts.PageState(
+                viewerFocused: body["viewerFocused"] as? Bool ?? false,
+                blocked: body["blocked"] as? Bool ?? false
+            )
         case "loadSession":
             loadSession()
         case "reload":
             reloadFileInPage()
-        case "openURL":
-            if let string = body["url"] as? String, let url = URL(string: string),
-               url.scheme == "https" {
+        case "openReadme":
+            if let url = URL(string: "https://github.com/Lramseyer/vaporview#readme") {
                 NSWorkspace.shared.open(url)
             }
         case "copy":
@@ -628,27 +775,36 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
 
 /// The keys VaporView binds in its viewer (`KEYBINDINGS` in
 /// `Resources/vaporview/cmux-commands.js`, from VaporView's package.json):
-/// while the waveform page has focus, cmux lets these through to it instead of
-/// running its own shortcut for the same key (rename tab on ⌘R, find on ⌘F,
-/// save on ⌘S, zoom reset on ⌘0).
+/// while the waveform page has focus and will run the key, cmux lets it through
+/// instead of running its own shortcut for the same key (rename tab on ⌘R,
+/// find on ⌘F, save on ⌘S, zoom reset on ⌘0). The page reports its focus
+/// (`keyState`), so a key it would ignore still reaches cmux.
 @MainActor
 enum WaveformViewerShortcuts {
-    static func claims(_ event: NSEvent, editableElementFocused: Bool) -> Bool {
-        guard event.type == .keyDown else { return false }
+    struct PageState: Equatable {
+        /// The viewer frame has focus (VaporView's `waveformViewerFocused` bindings).
+        var viewerFocused = false
+        /// A menu, dialog or text field has the keys.
+        var blocked = false
+    }
+
+    static func claims(_ event: NSEvent, page: PageState) -> Bool {
+        guard event.type == .keyDown, !page.blocked else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
         let key = KeyboardLayout.normalizedCharacters(for: event)
         switch flags {
         case [.command]:
-            return ["r", "f", "s", "0", "z"].contains(key)
+            // ⌘F, ⌘S and ⌘Z work from the netlist too; ⌘R and ⌘0 only in the viewer.
+            return ["f", "s", "z"].contains(key) || (page.viewerFocused && ["r", "0"].contains(key))
         case [.command, .shift]:
             return key == "z"
         case [.option]:
             // Equal, Minus, keypad plus and minus: ⌥ changes the characters.
-            return !editableElementFocused && [24, 27, 69, 78].contains(event.keyCode)
+            return page.viewerFocused && [24, 27, 69, 78].contains(event.keyCode)
         case []:
             // F2 renames; g groups; 1–8 pick a color.
-            return !editableElementFocused
+            return page.viewerFocused
                 && (event.keyCode == 120 || key == "g" || ["1", "2", "3", "4", "5", "6", "7", "8"].contains(key))
         default:
             return false

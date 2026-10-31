@@ -1,0 +1,82 @@
+public import Foundation
+
+/// A VaporView terminal link (a time or an instance path) in a terminal line,
+/// adapted from VaporView (https://github.com/Lramseyer/vaporview, GPL-3.0),
+/// `src/extension_core/terminal_links.ts`@59107c6. The app's
+/// `WaveformTerminalLinks` hands it to the workspace's waveform viewer.
+///
+/// Unlike VaporView, these never take a file name: an instance path must start
+/// at a top scope, contain no `/`, and not end in a source or dump extension
+/// (`tb.sv:42`, `rtl/top.v`), and a time must not start inside a word
+/// (`sim_100ns`). Only a window around the click is scanned and every pattern
+/// is anchored, so a long line costs the same as a short one.
+public enum WaveformTerminalLink: Equatable, Sendable {
+    /// A UVM timestamp (`@ 50000`, `units` nil: the dump's own units) or a time with units (`1,250 ns`).
+    case time(Double, units: String?)
+    /// A dotted path under one of the dump's top scopes (`top.core.alu.acc[15:0]`).
+    case instancePath(String)
+
+    /// Only this many UTF-16 units on each side of the click are scanned, so a
+    /// long line costs the same as a short one.
+    public static let scanRadius = 256
+
+    /// Extensions that make a dotted word a file name, not an instance path.
+    private static let fileExtensions: Set<String> = [
+        "sv", "svh", "v", "vh", "vhd", "vhdl", "vcd", "fst", "fsdb", "ghw", "json", "f", "log", "txt",
+        "py", "c", "h", "cc", "cpp", "hpp", "tcl", "do", "sh", "yml", "yaml", "md", "gz", "xml", "html",
+    ]
+
+    /// The link under `column` (a UTF-16 offset) of `line`, if any.
+    /// - Parameters:
+    ///   - topScopes: The dump's top scope names; instance paths must start at one.
+    ///   - instancePaths: Whether instance paths are links (`enableInstancePathTerminalLinks`).
+    public static func detect(in line: String, column: Int, topScopes: [String], instancePaths: Bool) -> WaveformTerminalLink? {
+        let full = line as NSString
+        guard column >= 0, column < full.length else { return nil }
+        let start = max(0, column - scanRadius)
+        let window = full.substring(with: NSRange(location: start, length: min(full.length, column + scanRadius) - start))
+        let text = window as NSString
+        let click = column - start
+        func covering(_ pattern: String) -> NSTextCheckingResult? {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            return regex.matches(in: window, range: NSRange(location: 0, length: text.length)).first { match in
+                click >= match.range.location && click < match.range.location + match.range.length
+            }
+        }
+        if instancePaths, !topScopes.isEmpty {
+            let tops = topScopes.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+            // A top scope, then `.name` or `.name[3:0]` parts; never next to a word, `/` or `~`.
+            if let match = covering(#"(?<![\w$./~-])(?:"# + tops + #")(?:\.[\w$]+(?:\[\d+(?::\d+)?\])?)+(?![\w$/\[])"#) {
+                let path = text.substring(with: match.range)
+                let last = path.split(separator: ".").last.map { String($0).lowercased() } ?? ""
+                if !fileExtensions.contains(last) {
+                    return .instancePath(path)
+                }
+            }
+        }
+        if let match = covering(#"@\s+(\d+)(?!\d)"#), let time = Double(text.substring(with: match.range(at: 1))) {
+            return time.isFinite ? WaveformTerminalLink.time(time, units: nil) : nil
+        }
+        // The number starts at a word boundary, so `sim_100ns` and `v1.5ns` are not times.
+        if let match = covering(#"(?<![\w,./-])(\d[\d,]*(?:\.\d+)?)\s*([kmµμunpf]?s)\b"#) {
+            let number = text.substring(with: match.range(at: 1)).replacingOccurrences(of: ",", with: "")
+            let units = text.substring(with: match.range(at: 2))
+                .replacingOccurrences(of: "µ", with: "u")
+                .replacingOccurrences(of: "μ", with: "u")
+            if let time = Double(number), time.isFinite {
+                return .time(time, units: units)
+            }
+        }
+        return nil
+    }
+
+    /// The terminal reports a cell column; the line's characters map one to one
+    /// to cells except for wide characters, which this ignores.
+    public static func utf16Offset(ofCharacter column: Int, in line: String) -> Int {
+        guard let index = line.index(line.startIndex, offsetBy: column, limitedBy: line.endIndex) else {
+            return line.utf16.count
+        }
+        return line.utf16.distance(from: line.utf16.startIndex, to: index)
+    }
+
+}
