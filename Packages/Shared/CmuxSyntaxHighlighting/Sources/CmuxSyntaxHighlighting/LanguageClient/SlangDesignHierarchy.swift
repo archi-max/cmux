@@ -69,6 +69,7 @@ extension LanguageServerSession {
         guard !(isInModule ?? documentIsInModule(uri, at: position)) else { return [] }
         let file = uri.standardizedFileURL.path
         var includesFile: [String: Bool] = [:]
+        var throughIncludeDirectory: [String]?
         // A symbol the includer declares: its declaration's paths, kept where the
         // declaring scope includes this file (not, say, every instance's port).
         let declarations = try await definitionSkippingUnresolved(uri: uri, position: position)
@@ -79,9 +80,7 @@ extension LanguageServerSession {
                 continue
             }
             let paths = try await instancePathsSkippingUnresolved(uri: declaration.uri, position: declaration.range.start)
-            // A fragment that declares nothing (only assigns or always blocks) is placed through
-            // the module that includes it: the declaring file `include`s it.
-            if declarationFileIncludes(declaration.uri, fileName: uri.lastPathComponent) { return paths }
+            guard !paths.isEmpty else { continue }
             var kept: [String] = []
             for path in paths.prefix(Self.fragmentSearchResultLimit) {
                 let parent = Self.parentPath(of: path)
@@ -92,45 +91,171 @@ extension LanguageServerSession {
                 if includesFile[parent] == true { kept.append(path) }
             }
             if !kept.isEmpty { return kept }
+            // A fragment that declares nothing (only assigns or always blocks) has nothing in the
+            // declaring scope to find it by: placed when the declaring file `include`s it, by
+            // path or through a macro that expands to it.
+            switch await includeMatch(of: uri, inDeclaringFile: declaration.uri) {
+            case .exact?: return Array(paths.prefix(Self.fragmentSearchResultLimit))
+            case .suffix?: if throughIncludeDirectory == nil { throughIncludeDirectory = Array(paths.prefix(Self.fragmentSearchResultLimit)) }
+            case nil: break
+            }
         }
+        if let throughIncludeDirectory { return throughIncludeDirectory }
         guard !identifier.isEmpty else { return [] }
         await willSearch?()
         return try await slangFragmentPaths(of: identifier, inFile: uri, timeLimit: searchTimeLimit)
     }
 
-    /// Whether the file at `declaringURI` has an `` `include `` of `fileName`, or of a macro (the
-    /// way a testbench body is often named: `` `include `TB_FILE ``). Read from the open document,
-    /// else from disk for a local server; false when the text is not at hand.
-    private func declarationFileIncludes(_ declaringURI: URL, fileName: String) -> Bool {
+    /// How an `` `include `` names a fragment: by its path (next to the includer, or absolute), or
+    /// only by a path ending the fragment's (found through an include directory, or not checkable).
+    enum IncludeMatch: Equatable {
+        case exact
+        case suffix
+    }
+
+    /// Macro includes of one declaring file read through a hover at most (one request each).
+    private static let macroIncludeLimit = 16
+
+    /// How the file at `declaringURI` `` `include ``s `fragment`, the best of its directives. A
+    /// macro (`` `include `TB_FILE ``, often defined in the build file) counts through its
+    /// expansion, which slang-server's hover shows. Read from the open document, else from disk
+    /// for a local server; nil when the text is not at hand.
+    private func includeMatch(of fragment: URL, inDeclaringFile declaringURI: URL) async -> IncludeMatch? {
         var text = documentText(declaringURI)
         if text == nil, case .local = launch {
             text = try? String(contentsOf: declaringURI, encoding: .utf8)
         }
-        guard let text else { return false }
-        return Self.includeDirectives(in: text).contains { target in
-            target.hasPrefix("`") || (target as NSString).lastPathComponent == fileName
+        guard let text else { return nil }
+        let file = serverPath(for: fragment)
+        let declaringFile = serverPath(for: declaringURI)
+        let fileExists: ((String) -> Bool)? = launch.isRemote ? nil : { FileManager.default.fileExists(atPath: $0) }
+        var best: IncludeMatch?
+        var macros = 0
+        for directive in Self.includeDirectiveLocations(in: text) {
+            var target = directive.target
+            if target.hasPrefix("`") {
+                guard macros < Self.macroIncludeLimit else { continue }
+                macros += 1
+                // A macro slang can't expand here is no evidence either way.
+                guard let hover = try? await hover(uri: declaringURI, position: directive.position),
+                      let expansion = Self.macroIncludeTarget(fromHover: hover) else { continue }
+                target = expansion
+            }
+            switch Self.includeMatch(target: target, declaringFile: declaringFile, file: file, fileExists: fileExists) {
+            case .exact?: return .exact
+            case .suffix?: best = .suffix
+            case nil: break
+            }
         }
+        return best
+    }
+
+    /// Whether the include target `target` of `declaringFile` is `file` (server paths). slang looks
+    /// next to the includer first, then in the include directories, which cmux doesn't know: a
+    /// relative target ending `file`'s path matches as `.suffix`, unless `fileExists` says the
+    /// file next to the includer exists (that one is included). `fileExists` nil: can't check.
+    static func includeMatch(target: String, declaringFile: String, file: String, fileExists: ((String) -> Bool)?) -> IncludeMatch? {
+        func standardized(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.path }
+        let file = standardized(file)
+        guard !target.isEmpty else { return nil }
+        if target.hasPrefix("/") { return standardized(target) == file ? .exact : nil }
+        let besideIncluder = standardized(((declaringFile as NSString).deletingLastPathComponent as NSString).appendingPathComponent(target))
+        if besideIncluder == file { return .exact }
+        if fileExists?(besideIncluder) == true { return nil }
+        let components = target.split(separator: "/").filter { $0 != "." }
+        guard !components.isEmpty, !components.contains("..") else { return nil }
+        return file.hasSuffix("/" + components.joined(separator: "/")) ? .suffix : nil
+    }
+
+    /// The file a macro expands to, from slang-server's hover on its use: the code block after
+    /// "Expands to", without its quotes (`"file.sv"` or `<file.sv>`). Nil for anything else.
+    static func macroIncludeTarget(fromHover hover: String) -> String? {
+        guard let expands = hover.range(of: "Expands to") else { return nil }
+        var lines = hover[expands.upperBound...].split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+        guard let fence = lines.first, fence.trimmingCharacters(in: .whitespaces).hasPrefix("```") else { return nil }
+        lines = lines.dropFirst()
+        let body = lines.prefix { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("```") }
+            .joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        guard body.count >= 3,
+              (body.hasPrefix("\"") && body.hasSuffix("\"")) || (body.hasPrefix("<") && body.hasSuffix(">")) else { return nil }
+        let target = String(body.dropFirst().dropLast())
+        return target.isEmpty ? nil : target
     }
 
     /// The targets of a text's `` `include `` directives: `"file.sv"`, `<file.sv>` or `` `MACRO ``,
-    /// without their quotes. Directives in `//` comments are skipped.
+    /// without their quotes. Directives in `//` and `/* */` comments and in strings are skipped.
     static func includeDirectives(in text: String) -> [String] {
-        var targets: [String] = []
-        for line in text.split(whereSeparator: \.isNewline) {
-            let code = line.range(of: "//").map { line[..<$0.lowerBound] } ?? line[...]
-            var rest = code[...]
-            while let range = rest.range(of: "`include") {
-                rest = rest[range.upperBound...]
-                let trimmed = rest.drop { $0 == " " || $0 == "\t" }
-                guard let first = trimmed.first else { break }
-                let target: Substring
-                switch first {
-                case "\"": target = trimmed.dropFirst().prefix { $0 != "\"" }
-                case "<": target = trimmed.dropFirst().prefix { $0 != ">" }
-                case "`": target = trimmed.prefix { !$0.isWhitespace }
-                default: continue
+        includeDirectiveLocations(in: text).map(\.target)
+    }
+
+    /// `includeDirectives` with where each target starts (for a macro: inside its name).
+    static func includeDirectiveLocations(in text: String) -> [(target: String, position: LSPPosition)] {
+        let units = Array(text.utf16)
+        let slash = UInt16(UInt8(ascii: "/")), star = UInt16(UInt8(ascii: "*")), quote = UInt16(UInt8(ascii: "\""))
+        let newline = UInt16(UInt8(ascii: "\n")), backslash = UInt16(UInt8(ascii: "\\")), tick = UInt16(UInt8(ascii: "`"))
+        let less = UInt16(UInt8(ascii: "<")), greater = UInt16(UInt8(ascii: ">"))
+        let space = UInt16(UInt8(ascii: " ")), tab = UInt16(UInt8(ascii: "\t"))
+        let keyword = Array("`include".utf16)
+        func isIdentifier(_ unit: UInt16) -> Bool {
+            guard unit < 128 else { return false }
+            let c = Character(Unicode.Scalar(UInt8(unit)))
+            return c.isLetter || c.isNumber || c == "_" || c == "$"
+        }
+        var targets: [(target: String, position: LSPPosition)] = []
+        var index = 0
+        var line = 0
+        var lineStart = 0
+        func advance() {
+            if units[index] == newline { line += 1; lineStart = index + 1 }
+            index += 1
+        }
+        while index < units.count {
+            let unit = units[index]
+            let next = index + 1 < units.count ? units[index + 1] : 0
+            if unit == slash, next == slash {
+                while index < units.count, units[index] != newline { index += 1 }
+            } else if unit == slash, next == star {
+                index += 2
+                while index < units.count, !(units[index] == star && index + 1 < units.count && units[index + 1] == slash) { advance() }
+                index = min(index + 2, units.count)
+            } else if unit == quote {
+                index += 1
+                while index < units.count, units[index] != quote, units[index] != newline {
+                    // An escape (or a line continuation, which `advance` counts) is skipped whole.
+                    if units[index] == backslash { index += 1 }
+                    if index < units.count { advance() }
                 }
-                if !target.isEmpty { targets.append(String(target)) }
+                if index < units.count, units[index] == quote { index += 1 }
+            } else if unit == tick, units[index...].starts(with: keyword),
+                      index + keyword.count >= units.count || !isIdentifier(units[index + keyword.count]) {
+                index += keyword.count
+                while index < units.count, units[index] == space || units[index] == tab { index += 1 }
+                guard index < units.count else { break }
+                let open = units[index]
+                let start: Int
+                var end: Int
+                switch open {
+                case quote, less:
+                    let close = open == quote ? quote : greater
+                    start = index + 1
+                    end = start
+                    while end < units.count, units[end] != close, units[end] != newline { end += 1 }
+                    index = end < units.count && units[end] == close ? end + 1 : end
+                case tick:
+                    start = index
+                    end = index + 1
+                    while end < units.count, isIdentifier(units[end]) { end += 1 }
+                    index = end
+                default:
+                    continue
+                }
+                if end > start + (open == tick ? 1 : 0) {
+                    let target = String(decoding: units[start..<end], as: UTF16.self)
+                    let column = start - lineStart + (open == tick ? 1 : 0)
+                    targets.append((target, LSPPosition(line: line, character: column)))
+                }
+            } else {
+                advance()
             }
         }
         return targets
