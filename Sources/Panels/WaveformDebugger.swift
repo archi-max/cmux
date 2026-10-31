@@ -137,6 +137,7 @@ enum WaveformDebugger {
         let box = box(waveform)
         let wasStepping = box.state.stepping
         let wasPlaying = box.state.playing
+        let wasAt = box.state.time
         box.state = PageState(
             stepping: body["stepping"] as? Bool ?? false,
             playing: body["playing"] as? Bool ?? false,
@@ -156,6 +157,9 @@ enum WaveformDebugger {
         }
         if box.state.stepping, box.state.playing, !wasPlaying {
             WaveformDebuggerRTLStatus.playStarted(waveform)
+        }
+        if box.state.stepping, box.state.playing, let time = box.state.time, time != wasAt || !wasPlaying {
+            WaveformDebuggerRTLStatus.pageMoved(waveform, to: time)
         }
     }
 
@@ -324,22 +328,11 @@ extension WaveformDebugger {
         documentURI: URL,
         probes: [(name: String, position: LSPPosition)]
     ) async -> [String]? {
-        for probe in probes.prefix(4) {
-            let paths = try? await session.slangDesignPaths(
+        await DesignInstanceProbe.firstFound(Array(probes.prefix(4))) { probe in
+            let paths = try await session.slangDesignPaths(
                 uri: documentURI, position: probe.position, identifier: probe.name, isInModule: false
             )
-            if Task.isCancelled { return nil }
-            // This probe failed: the next may not.
-            guard let paths else { continue }
-            var instances: [String] = []
-            for path in paths {
-                let segments = HierarchyPathMapping.segments(path)
-                guard segments.count >= 2, segments.last == probe.name else { continue }
-                let instance = HierarchyPathMapping.join(Array(segments.dropLast()))
-                if !instances.contains(instance) { instances.append(instance) }
-            }
-            if !instances.isEmpty { return instances }
+            return WaveformSourceLink.instances(holding: probe.name, paths: paths)
         }
-        return []
     }
 }
