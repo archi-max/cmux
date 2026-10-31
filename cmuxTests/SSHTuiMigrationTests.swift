@@ -2,6 +2,7 @@ import CmuxCloud
 import CmuxCloudTui
 import Bonsplit
 import CmuxCore
+import CmuxExtensionKit
 import CmuxFoundation
 import CmuxSurfaceCatalogModel
 import Foundation
@@ -782,6 +783,65 @@ struct SSHTuiMigrationTests {
         #expect(provider.requestedCommands == [connection.shellCommand])
     }
 
+    /// Retry keeps the tab where it was, focused, with its user-set name and
+    /// pin, and a second click while the first is in flight creates nothing.
+    @Test("Retry on a restored SSH tab keeps its place, name and pin, once", .timeLimit(.minutes(1)))
+    @MainActor
+    func unattachedRestoredSSHTerminalRetryKeepsTabIdentity() async throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let workspace = fixture.workspace
+        let saved = SessionPanelSnapshot(
+            id: UUID(), type: .terminal, title: "alice@host:~/project", customTitle: "build box", directory: nil,
+            isPinned: true, isManuallyUnread: false, listeningPorts: [], ttyName: "ttys011",
+            terminal: nil, browser: nil, markdown: nil, filePreview: nil, rightSidebarTool: nil
+        )
+        let restoredID = try #require(workspace.createPanel(
+            from: saved, inPane: fixture.paneID, snapshotWorkspaceId: nil, shouldRestoreSingleDefaultCloudTerminal: false
+        ))
+        let tabIndex: (UUID) -> Int? = { panelID in
+            workspace.bonsplitController.tabs(inPane: fixture.paneID).firstIndex { workspace.panelIdFromSurfaceId($0.id) == panelID }
+        }
+        let originalIndex = try #require(tabIndex(restoredID))
+
+        #expect(workspace.reconnectCloudTerminalSurface(surfaceId: restoredID))
+        #expect(workspace.reconnectCloudTerminalSurface(surfaceId: restoredID))
+
+        #expect(fixture.hostReservations == 1, "A double-click on Retry created two terminals")
+        let replacement = try #require(workspace.cloudPendingCreations.values.first { $0.machine == fixture.provider.machine })
+        #expect(workspace.focusedPanelId == replacement.panelID)
+        #expect(workspace.panelCustomTitles[replacement.panelID] == "build box")
+        #expect(workspace.pinnedPanelIds.contains(replacement.panelID))
+        for _ in 0..<100 where workspace.panels[restoredID] != nil { await Task.yield() }
+        #expect(tabIndex(replacement.panelID) == originalIndex)
+    }
+
+    @Test("Retry on a restored SSH tab without a provider stops and stays put")
+    @MainActor
+    func unattachedRestoredSSHTerminalRetryWithoutProviderStops() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let workspace = fixture.workspace
+        let saved = SessionPanelSnapshot(
+            id: UUID(), type: .terminal, title: "alice@host:~/project", customTitle: nil, directory: nil,
+            isPinned: false, isManuallyUnread: false, listeningPorts: [], ttyName: "ttys011",
+            terminal: nil, browser: nil, markdown: nil, filePreview: nil, rightSidebarTool: nil
+        )
+        let restoredID = try #require(workspace.createPanel(
+            from: saved, inPane: fixture.paneID, snapshotWorkspaceId: nil, shouldRestoreSingleDefaultCloudTerminal: false
+        ))
+        SurfaceCatalog.shared.unregister(machine: fixture.provider.machine)
+        let localBefore = fixture.localTerminalCount
+
+        _ = workspace.reconnectCloudTerminalSurface(surfaceId: restoredID)
+
+        #expect(fixture.localTerminalCount == localBefore)
+        #expect(workspace.panels[restoredID] != nil, "The pane stays so the user can retry later")
+        let notice = try #require(workspace.cloudTerminalReconnectOverlayPresentation(forSurfaceId: restoredID))
+        #expect(!notice.showsProgress, "Retry left the spinner running with nothing in flight")
+        #expect(workspace.cloudPaneCreationFailureStore.failure != nil)
+    }
+
     /// Cmd+T from that pane is a new terminal where the pane belongs, not a
     /// local shell that would come back dead on the next relaunch.
     @Test("A new tab beside a restored SSH tab with no host terminal runs on the host")
@@ -849,7 +909,7 @@ struct SSHTuiMigrationTests {
     }
 
     @MainActor
-    private func previewSelectedSSHWorkspace() throws -> PreviewSelectedSSHWorkspace {
+    private func previewSelectedSSHWorkspace(remote: Bool = true, bound: Bool = true) throws -> PreviewSelectedSSHWorkspace {
         let appDelegate = AppDelegate.shared ?? AppDelegate()
         let originalTabManager = appDelegate.tabManager
         let manager = originalTabManager ?? TabManager()
@@ -858,11 +918,13 @@ struct SSHTuiMigrationTests {
         let workspace = manager.addWorkspace(select: true)
         let config = configuration()
         let connection = SSHTuiConnection(configuration: config)
-        workspace.remoteConfiguration = config
+        if remote { workspace.remoteConfiguration = config }
         let catalog = SurfaceCatalog.shared
         let provider = CloudTerminalPlacementTestProvider(machine: .init(rawValue: connection.id))
         catalog.register(provider)
-        workspace.cloudVMBinding = WorkspaceCloudVMBinding(vmID: connection.id, isBase: false, remoteWorkspaceID: provider.remote.id)
+        if remote, bound {
+            workspace.cloudVMBinding = WorkspaceCloudVMBinding(vmID: connection.id, isBase: false, remoteWorkspaceID: provider.remote.id)
+        }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("ssh-preview-\(UUID().uuidString).sv")
         try "module top; endmodule\n".write(to: file, atomically: true, encoding: .utf8)
         let cleanup = {
@@ -927,6 +989,103 @@ struct SSHTuiMigrationTests {
         #expect(outcome.isAccepted)
         #expect(fixture.localTerminalCount == localBefore, "Cmd+D started a local shell in an SSH workspace")
         #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("The pane split button beside a file preview in an SSH workspace runs on the host")
+    @MainActor
+    func paneSplitButtonFromFilePreviewRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        let newPane = fixture.workspace.bonsplitController.splitPane(fixture.paneID, orientation: .horizontal)
+
+        #expect(newPane != nil)
+        #expect(fixture.localTerminalCount == localBefore, "The split button started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("The empty pane's Terminal button in an SSH workspace runs on the host")
+    @MainActor
+    func emptyPaneTerminalButtonRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        _ = fixture.workspace.newEmptyPaneTerminal(inPane: fixture.paneID)
+
+        #expect(fixture.localTerminalCount == localBefore, "The empty pane's button started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("Alt-n beside a file preview in an SSH workspace runs on the host")
+    @MainActor
+    func autoLayoutPaneFromFilePreviewRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        let outcome = fixture.manager.createAutoLayoutPaneOutcome(tabId: fixture.workspace.id, surfaceId: fixture.previewID)
+
+        #expect(outcome.isAccepted)
+        #expect(fixture.localTerminalCount == localBefore, "Alt-n started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("Canvas Cmd+D beside a file preview in an SSH workspace runs on the host")
+    @MainActor
+    func canvasSplitShortcutFromFilePreviewRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        fixture.workspace.setLayoutMode(.canvas)
+        try #require(fixture.workspace.layoutMode == .canvas)
+        let appDelegate = try #require(AppDelegate.shared)
+        let localBefore = fixture.localTerminalCount
+
+        _ = appDelegate.performSplitShortcut(direction: .right)
+
+        #expect(fixture.localTerminalCount == localBefore, "Canvas Cmd+D started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("A sidebar extension's new terminal in an SSH workspace runs on the host")
+    @MainActor
+    func sidebarExtensionTerminalRunsOnHost() throws {
+        let fixture = try previewSelectedSSHWorkspace()
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        let result = fixture.manager.createSidebarExtensionTerminalSurface(workspaceId: fixture.workspace.id)
+
+        #expect(result.accepted)
+        #expect(fixture.localTerminalCount == localBefore, "A sidebar extension started a local shell in an SSH workspace")
+        #expect(fixture.hostReservations == 1)
+    }
+
+    @Test("Cmd+T beside a file preview in a local workspace stays local")
+    @MainActor
+    func newTabFromFilePreviewInLocalWorkspaceStaysLocal() throws {
+        let fixture = try previewSelectedSSHWorkspace(remote: false)
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        fixture.manager.newSurface()
+
+        #expect(fixture.localTerminalCount == localBefore + 1)
+        #expect(fixture.hostReservations == 0)
+    }
+
+    @Test("Cmd+T in an SSH workspace not yet bound to its host fails closed")
+    @MainActor
+    func newTabInUnboundSSHWorkspaceFailsClosed() throws {
+        let fixture = try previewSelectedSSHWorkspace(bound: false)
+        defer { fixture.cleanup() }
+        let localBefore = fixture.localTerminalCount
+
+        fixture.manager.newSurface()
+
+        #expect(fixture.localTerminalCount == localBefore, "An unbound SSH workspace started a local shell")
+        #expect(fixture.workspace.cloudPaneCreationFailureStore.failure != nil, "The refusal is explained in the pane")
     }
 
     /// Socket and CLI creates that carry their own command keep their
