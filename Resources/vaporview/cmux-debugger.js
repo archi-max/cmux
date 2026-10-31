@@ -246,9 +246,57 @@
   let playTimer = 0;
   let playOrigin = null;  // { index, at }
 
-  function scheduleTick() {
+  function scheduleTick(ms) {
     clearTimeout(playTimer);
-    playTimer = setTimeout(tick, Math.max(16, Math.min(250, 1000 / state.rate)));
+    playTimer = setTimeout(tick, ms === undefined ? Math.max(16, Math.min(250, 1000 / state.rate)) : Math.max(0, ms));
+  }
+
+  // Waiting for the editors (cmux's setting): play moves one cycle at a time, the next
+  // once cmux says the editors drew this one (rtlShown), at most RTL_WAIT_MS later.
+  const RTL_WAIT_MS = 250;
+  let rtlStatus = { text: '', tooltip: '', ok: false, wait: false };
+  let rtlPending = null;  // { time, at }: moved there, the editors haven't drawn it yet
+  let playIndex = 0;      // the edge play is on
+  let lastMoveAt = 0;
+
+  function setRtlStatus(query) {
+    const q = query || {};
+    const wait = !!q.wait;
+    // Back to wall-clock pace: from the cycle reached.
+    if (rtlStatus.wait && !wait && state.playing) { playOrigin = { index: playIndex, at: performance.now() }; }
+    rtlStatus = { text: String(q.text || ''), tooltip: String(q.tooltip || ''), ok: !!q.ok, wait };
+    if (!wait) { rtlPending = null; }
+    render();
+    return true;
+  }
+
+  function rtlShown(query) {
+    const time = Number((query || {}).time);
+    if (rtlPending && rtlPending.time === time) {
+      rtlPending = null;
+      if (state.playing && rtlStatus.wait) { scheduleTick(1000 / state.rate - (performance.now() - lastMoveAt)); }
+    }
+    return true;
+  }
+
+  function waitingTick(edges) {
+    const now = performance.now();
+    if (rtlPending && now - rtlPending.at < RTL_WAIT_MS) {
+      scheduleTick(RTL_WAIT_MS - (now - rtlPending.at));
+      return;
+    }
+    const gap = 1000 / state.rate;
+    if (now - lastMoveAt < gap) {
+      scheduleTick(gap - (now - lastMoveAt));
+      return;
+    }
+    const next = Math.min(edges.length - 1, playIndex + 1);
+    playIndex = next;
+    lastMoveAt = now;
+    rtlPending = { time: edges[next], at: now };
+    moveMarker(edges[next]);
+    if (next >= edges.length - 1) { pause(); return; }
+    scheduleTick(gap);
   }
 
   let playBackend = null;
@@ -258,8 +306,10 @@
     // The file was reloaded: its edges may differ, so play stops.
     if (host.currentBackend !== playBackend) { pause(); return; }
     const edges = state.edges;
+    if (rtlStatus.wait) { waitingTick(edges); return; }
     const target = Math.min(edges.length - 1,
       playOrigin.index + Math.floor((performance.now() - playOrigin.at) * state.rate / 1000));
+    playIndex = target;
     const time = markerTime();
     if (time === null || edges[target] !== time) { moveMarker(edges[target]); }
     if (target >= edges.length - 1) { pause(); return; }
@@ -274,6 +324,9 @@
     let index = time === null ? 0 : Math.max(0, edgeIndexAt(edges, time));
     if (index >= edges.length - 1) { index = 0; }
     playOrigin = { index, at: performance.now() };
+    playIndex = index;
+    rtlPending = null;
+    lastMoveAt = performance.now();
     playBackend = host.currentBackend;
     if (!state.playing) { state.playing = true; render(); post('state'); }
     if (time === null || edges[index] !== time) { moveMarker(edges[index]); }
@@ -298,7 +351,7 @@
     const now = performance.now();
     if (state.playing && playOrigin && state.edges) {
       // Keep the cycle reached so far as the new origin.
-      const reached = Math.min(state.edges.length - 1,
+      const reached = rtlStatus.wait ? playIndex : Math.min(state.edges.length - 1,
         playOrigin.index + Math.floor((now - playOrigin.at) * state.rate / 1000));
       playOrigin = { index: reached, at: now };
     }
@@ -637,7 +690,11 @@
     rate.className = 'rate';
     rate.style.cursor = 'pointer';
     rate.addEventListener('click', (e) => { changeRate({ by: e.shiftKey || e.altKey ? -1 : 1 }); });
-    strip.append(playButton, text, rate);
+    // What the editors do with the cycle (cmux says: setRtlStatus).
+    const rtl = document.createElement('span');
+    rtl.className = 'rtl';
+    rtl.hidden = true;
+    strip.append(playButton, text, rate, rtl);
     status.insertBefore(strip, anchor || null);
     return strip;
   }
@@ -669,6 +726,12 @@
     const rate = el.querySelector('.rate');
     rate.textContent = format(s.debuggerRate, number(state.rate));
     rate.title = s.debuggerRateTooltip || '';
+    const rtl = el.querySelector('.rtl');
+    rtl.hidden = !rtlStatus.text;
+    rtl.textContent = rtlStatus.text;
+    rtl.title = rtlStatus.tooltip;
+    rtl.style.opacity = rtlStatus.ok ? '' : '0.75';
+    rtl.style.color = rtlStatus.ok ? '' : 'var(--vscode-editorWarning-foreground, #cca700)';
   }
 
   // Rows came or went (Locals refilled, a signal pinned, a group folded): light the highlighted signals' rows.
@@ -721,6 +784,7 @@
       return cycleInfo(Number.isFinite(time) ? time : null);
     },
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
+    setRtlStatus, rtlShown,
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved,

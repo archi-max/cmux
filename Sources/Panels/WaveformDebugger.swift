@@ -146,6 +146,7 @@ enum WaveformDebugger {
         let editors = FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId)
         if box.state.stepping, !wasStepping {
             startFollowingCaret()
+            WaveformDebuggerRTLStatus.report(waveform)
             if let editor = FilePreviewLanguageFeatures.mostRecentLinkable(inWorkspace: waveform.workspaceId) {
                 updateLocals(from: editor)
             }
@@ -163,6 +164,7 @@ enum WaveformDebugger {
 
     private static func stoppedStepping(_ waveform: FilePreviewPanel, editors: [FilePreviewLanguageFeatures]) {
         box(waveform).selectedPath = nil
+        WaveformDebuggerRTLStatus.forget(waveform)
         WaveformDebuggerEditorHighlights.forget(waveform)
         for editor in editors {
             WaveformDebuggerEditorHighlights.clear(in: editor.debuggerTextView)
@@ -173,6 +175,13 @@ enum WaveformDebugger {
             NotificationCenter.default.removeObserver(caretObserver)
             self.caretObserver = nil
             localsTask?.cancel()
+        }
+    }
+
+    /// The "Play Waits for the Editor" setting changed: the stepping viewers hear it.
+    static func waitForEditorChanged() {
+        for case let waveform as FilePreviewPanel in boxes.keyEnumerator().allObjects where isStepping(waveform) {
+            WaveformDebuggerRTLStatus.report(waveform)
         }
     }
 

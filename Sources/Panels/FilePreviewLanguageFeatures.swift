@@ -1006,12 +1006,17 @@ final class FilePreviewLanguageFeatures: NSObject {
         let modules = lines.compactMap(\.module).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
         guard !modules.isEmpty, lines.contains(where: { !$0.identifiers.isEmpty }) else {
             inlineValueOverlay?.clear()
+            // Nothing to show here: the debugger needn't wait for this editor.
+            WaveformDebuggerEditorHighlights.valuesShown(.init(
+                editor: self, textView: textView, lines: lines, waveform: waveform, time: time, values: [:], instances: [:]
+            ))
             return
         }
         inlineValueOverlay?.isStale = true
         let rootKey = linkRootKey
         var valueByModule: [String: [String: String]] = [:]
         var hints: [String: String] = [:]
+        var reasons: [String: WaveformDebuggerRTLStatus.Reason] = [:]
         for module in modules.prefix(4) {
             var names: [String] = []
             for line in lines where line.module == module {
@@ -1025,6 +1030,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             )
             guard !Task.isCancelled else { return }
             guard !designInstances.isEmpty else {
+                reasons[module] = .notPlaced
                 hints[module] = String(
                     localized: "filePreview.inlineValues.noInstance",
                     defaultValue: "No waveform values: slang-server can’t place this module in the design. Add a signal with Add to Waveform to set the design up."
@@ -1049,6 +1055,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             guard !Task.isCancelled else { return }
             inlineInstanceCandidates[module] = candidates
             guard let dumpInstance = chosenDumpInstance(module: module, candidates: candidates) else {
+                reasons[module] = .severalInstances(module: module)
                 hints[module] = String(
                     format: String(
                         localized: "filePreview.inlineValues.severalInstances",
@@ -1067,6 +1074,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             valueByModule[module] = byName
             inlineShownInstances[module] = .init(design: designOfDump[dumpInstance] ?? "", dump: dumpInstance)
             if byName.isEmpty {
+                reasons[module] = WaveformSourceLink.showsUnshownValues(in: waveform) ? .noneDumped(instance: dumpInstance) : .onlyShownValues
                 hints[module] = WaveformSourceLink.showsUnshownValues(in: waveform)
                     ? String(
                         format: String(
@@ -1120,7 +1128,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         overlay.show(annotations, font: font, in: textView)
         WaveformDebuggerEditorHighlights.valuesShown(.init(
             editor: self, textView: textView, lines: lines, waveform: waveform, time: time,
-            values: valueByModule, instances: inlineShownInstances.filter { valueByModule[$0.key] != nil }
+            values: valueByModule, instances: inlineShownInstances.filter { valueByModule[$0.key] != nil },
+            reasons: reasons
         ))
     }
 

@@ -4467,6 +4467,7 @@
 		5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */; };
 		5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */; };
 		5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B002 /* WaveformDebugger.swift */; };
+		5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */; };
 		C7B206ECEE3E020A96259AFF /* WebKitBrowserReplDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F63189EE1BF0052D9BDC241 /* WebKitBrowserReplDriver.swift */; };
 		A10020000000000000000019 /* WebSurfaceSelectionEvaluationOwner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1002000000000000000001A /* WebSurfaceSelectionEvaluationOwner.swift */; };
 		A10020000000000000000011 /* WebSurfaceSelectionReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10020000000000000000012 /* WebSurfaceSelectionReader.swift */; };
@@ -9151,6 +9152,7 @@
 		5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerMenu.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEditorHighlights.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B002 /* WaveformDebugger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebugger.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerRTLStatus.swift; sourceTree = "<group>"; };
 		9F63189EE1BF0052D9BDC241 /* WebKitBrowserReplDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserRepl/WebKitBrowserReplDriver.swift; sourceTree = "<group>"; };
 		A1002000000000000000001A /* WebSurfaceSelectionEvaluationOwner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebSurfaceSelectionEvaluationOwner.swift; sourceTree = "<group>"; };
 		A10020000000000000000012 /* WebSurfaceSelectionReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebSurfaceSelectionReader.swift; sourceTree = "<group>"; };
@@ -12020,6 +12022,7 @@
 				5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */,
 				5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */,
 				5A7EF0000000000000D0B002 /* WaveformDebugger.swift */,
+				5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */,
 				5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */,
 				C0DE86520000000000000106 /* FilePreviewPDFLoadResult.swift */,
 				C0DE86520000000000000108 /* FilePreviewPDFPageRotationState.swift */,
@@ -17787,6 +17790,7 @@
 				5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */,
 				5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */,
 				5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */,
+				5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */,
 				5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */,
 				5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */,
 				5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */,
