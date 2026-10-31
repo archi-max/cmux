@@ -1168,3 +1168,26 @@ final class FilePreviewLinkMenuChooser: NSObject {
 enum WaveformInlineValueSettings {
     static let unshownFSDBValuesKey = "waveformSourceLink.inlineValues.unshownFSDB"
 }
+
+// MARK: Waveform debugger
+
+extension WaveformSourceLink {
+    /// Where dump signal `dumpPath` is declared, and the editor whose language
+    /// server found it. Never elaborates a design or asks anything: nil while
+    /// the server has no design, or when the design has no such signal.
+    static func debuggerDeclaration(
+        ofDumpPath dumpPath: [String],
+        waveform: FilePreviewPanel
+    ) async -> (location: LSPLocation, editor: FilePreviewLanguageFeatures)? {
+        guard let editor = Self.linkedEditor(for: waveform), let session = editor.linkSession?.session,
+              let roots = try? await session.slangScopeChildren(""), !roots.isEmpty,
+              let location = await Self.declaration(
+                  ofDumpPath: HierarchyPathMapping.join(dumpPath),
+                  session: session,
+                  waveform: waveform,
+                  rootKey: editor.linkRootKey,
+                  progress: { _ in }
+              ) else { return nil }
+        return (location, editor)
+    }
+}

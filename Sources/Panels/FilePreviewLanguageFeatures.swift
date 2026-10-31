@@ -67,6 +67,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Waveform values drawn after the visible lines, at the waveform's marker.
     private var inlineValueTask: Task<Void, Never>?
     private var inlineValueOverlay: FilePreviewInlineValueOverlay?
+    /// Keeps marker-driven refreshes from starving while the waveform debugger plays.
+    private var inlineRefreshThrottle = WaveformRefreshThrottle()
     /// Per module of this file: slang's design instances of it, and when to ask again while it has none.
     private var inlineModuleInstances: [String: InlineModuleInstances] = [:]
     /// Instances signals were last added to the waveform from (design path, dump path), newest first.
@@ -75,6 +77,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     private var inlineInstanceChoices: [String: String] = [:]
     /// Per module: the dump instances its values could come from, as of the last refresh.
     private var inlineInstanceCandidates: [String: [String]] = [:]
+    /// Per module: the instance (design path, dump path) whose values it last showed.
+    private var inlineShownInstances: [String: WaveformDebuggerEditorHighlights.Instance] = [:]
     private var inlineScrollObserver: NSObjectProtocol?
     private var inlineFrameObserver: NSObjectProtocol?
     private var inlineEditObserver: NSObjectProtocol?
@@ -863,11 +867,13 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// The linked waveform's marker moved.
     func waveformMarkerDidMove() {
         inlineValueOverlay?.isStale = true
+        guard inlineRefreshThrottle.markerMoved() else { return }
         scheduleInlineValues(after: .milliseconds(120))
     }
 
     /// The waveform reloaded, closed or got another mapping: the values shown are no longer its.
     func waveformValuesDidChange() {
+        inlineShownInstances = [:]
         clearInlineValues()
         scheduleInlineValues(after: .milliseconds(120))
     }
@@ -883,16 +889,21 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     private func scheduleInlineValues(after delay: Duration) {
         inlineValueTask?.cancel()
+        let serial = inlineRefreshThrottle.scheduled()
         inlineValueTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            guard !Task.isCancelled else { return }
-            await self?.refreshInlineValues()
+            guard !Task.isCancelled, let self else { return }
+            self.inlineRefreshThrottle.started(serial)
+            await self.refreshInlineValues()
+            if self.inlineRefreshThrottle.finished(serial) { self.scheduleInlineValues(after: .zero) }
         }
     }
 
     private func clearInlineValues() {
         inlineValueTask?.cancel()
+        inlineRefreshThrottle.cleared()
         inlineValueOverlay?.clear()
+        WaveformDebuggerEditorHighlights.clear(in: textView)
     }
 
     /// The dump instance whose values a module's lines show: the one picked in the menu,
@@ -977,6 +988,7 @@ final class FilePreviewLanguageFeatures: NSObject {
               let waveform = WaveformSourceLink.waveformPanel(near: linkPanel),
               let time = WaveformSourceLink.markerTime(of: waveform) else {
             inlineValueOverlay?.clear()
+            WaveformDebuggerEditorHighlights.clear(in: textView)
             return
         }
         observeLayoutForInlineValues(textView)
@@ -1012,6 +1024,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                 continue
             }
             var candidates: [String] = []
+            var designOfDump: [String: String] = [:]
             for designInstance in designInstances {
                 guard let dumps = await WaveformSourceLink.dumpInstances(
                     ofDesignInstance: designInstance, rootKey: rootKey, waveform: waveform
@@ -1020,7 +1033,10 @@ final class FilePreviewLanguageFeatures: NSObject {
                     inlineValueOverlay?.clear()
                     return
                 }
-                for dump in dumps where !candidates.contains(dump) { candidates.append(dump) }
+                for dump in dumps where !candidates.contains(dump) {
+                    candidates.append(dump)
+                    designOfDump[dump] = designInstance
+                }
             }
             guard !Task.isCancelled else { return }
             inlineInstanceCandidates[module] = candidates
@@ -1041,6 +1057,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                 if let value { byName[name] = value }
             }
             valueByModule[module] = byName
+            inlineShownInstances[module] = .init(design: designOfDump[dumpInstance] ?? "", dump: dumpInstance)
             if byName.isEmpty {
                 hints[module] = WaveformSourceLink.showsUnshownValues(in: waveform)
                     ? String(
@@ -1093,7 +1110,23 @@ final class FilePreviewLanguageFeatures: NSObject {
         let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         let font = NSFont.monospacedSystemFont(ofSize: max(9, baseFont.pointSize - 1), weight: .regular)
         overlay.show(annotations, font: font, in: textView)
+        WaveformDebuggerEditorHighlights.valuesShown(.init(
+            editor: self, textView: textView, lines: lines, waveform: waveform, time: time,
+            values: valueByModule, instances: inlineShownInstances.filter { valueByModule[$0.key] != nil }
+        ))
     }
+
+    /// The instance the caret's module showed values of, for the waveform debugger's Locals.
+    var instanceAtCaret: WaveformDebuggerEditorHighlights.Instance? {
+        guard !isDetached, let textView else { return nil }
+        var scan = syncedInlineScan(of: textView)
+        let module = scan.lines(in: NSRange(location: textView.selectedRange().location, length: 0)).first?.module
+        inlineScan = scan
+        return module.flatMap { inlineShownInstances[$0] }
+    }
+
+    /// The editor's text view, for the waveform debugger's highlights.
+    var debuggerTextView: NSTextView? { isDetached ? nil : textView }
 
     /// New lines scroll into view, or the layout changes (zoom, wrap width): place the values again.
     private func observeLayoutForInlineValues(_ textView: NSTextView) {

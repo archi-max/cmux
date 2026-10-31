@@ -47,7 +47,9 @@ extension ShortcutAction {
              .simulatorToggleAppearance, .simulatorToggleSoftwareKeyboard:
             return .panes
         case .openDiffViewer, .saveFilePreview, .toggleFileEditorWordWrap, .addSignalToWaveform, .revealWaveformSignalInSource,
-             .navigateSourceBack, .navigateSourceForward, .openBrowser, .focusBrowserAddressBar,
+             .navigateSourceBack, .navigateSourceForward,
+             .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
+             .openBrowser, .focusBrowserAddressBar,
              .browserBack, .browserForward, .browserReload, .browserHardReload,
              .browserZoomIn, .browserZoomOut, .browserZoomReset,
              .markdownZoomIn, .markdownZoomOut, .markdownZoomReset,

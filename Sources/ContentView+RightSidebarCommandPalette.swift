@@ -15,6 +15,9 @@ extension ContentView {
         if let parityCommand = ShortcutParityPaletteCommand(rawValue: commandId) {
             return parityCommand.shortcutAction
         }
+        if let debuggerAction = WaveformDebugger.shortcutAction(forPaletteCommandId: commandId) {
+            return debuggerAction
+        }
 
         switch commandId {
         case Self.commandPaletteAuthTeamPickerCommandId:
