@@ -93,4 +93,18 @@ struct RemotePreviewCacheBudgetTests {
         RemotePreviewCacheBudget.discard(shown, cacheRoot: root, keeping: [])
         #expect(!Self.exists(root, "ns/a"))
     }
+
+    @Test
+    func testOnlyADownloadThatCreatedItsFileIsDiscarded() throws {
+        let root = try Self.makeCache([("ns/a/README.md", 10, 0)])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("ns/a/README.md")
+        // Replaced a file an earlier open made: that open may still show it.
+        RemotePreviewCacheBudget.discard(RemotePreviewDownload(url: url, isNew: false), cacheRoot: root, keeping: [])
+        #expect(Self.exists(root, "ns/a/README.md"))
+        RemotePreviewCacheBudget.discard(RemotePreviewDownload(url: url, isNew: true), cacheRoot: root, keeping: [url.path])
+        #expect(Self.exists(root, "ns/a/README.md"))
+        RemotePreviewCacheBudget.discard(RemotePreviewDownload(url: url, isNew: true), cacheRoot: root, keeping: [])
+        #expect(!Self.exists(root, "ns/a"))
+    }
 }
