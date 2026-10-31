@@ -10,6 +10,8 @@ struct SlangHeaderState: Equatable {
     var label: String
     /// A config file of the folder is empty or unreadable (slang-server then ignores all of them).
     var hasConfigWarning: Bool
+    /// "Switched to <profile> to match the waveform", shown with Undo for a while after an auto-pick.
+    var autoPickNotice: String? = nil
 }
 
 /// The slang menu of a SystemVerilog editor: profiles (`.f` build files), this file
@@ -64,7 +66,15 @@ extension SlangCompilationActions {
             label = String(format: String(localized: "slangProfile.header.noTop", defaultValue: "slang: %@"), profile)
         }
         let warning = cachedListing(for: editor)?.configs.contains { $0.health == .empty || $0.health == .invalid } ?? false
-        return SlangHeaderState(label: label, hasConfigWarning: warning)
+        var notice: String?
+        if let autoPick = entry.autoPick, entry.target == autoPick.picked, !entry.isExplore,
+           Date().timeIntervalSince(autoPick.at) < autoPickNoticeDuration {
+            notice = String(
+                format: String(localized: "slangProfile.autoPick.notice", defaultValue: "Switched to %@ to match the waveform"),
+                autoPick.profile
+            )
+        }
+        return SlangHeaderState(label: label, hasConfigWarning: warning, autoPickNotice: notice)
     }
 
     /// The server's compilation changed (or it restarted): read its tops again and update the headers.
@@ -723,6 +733,32 @@ extension SlangCompilationActions {
 
     // MARK: Waveform
 
+    /// How long the header offers to undo an auto-pick.
+    static let autoPickNoticeDuration: TimeInterval = 20
+    /// The auto-pick running per server, shared by the link and the waveform's opening (one owner).
+    private static var autoPickTasks: [ObjectIdentifier: Task<Bool, Never>] = [:]
+
+    /// Undo of the header's auto-pick note: back to what the server compiled, and no more
+    /// auto-picks for this server.
+    static func undoAutoPick(editor: FilePreviewLanguageFeatures) {
+        guard let session = editor.linkSession?.session else { return }
+        let entry = entry(for: session)
+        // Only while the auto-picked profile is still what the server compiles.
+        guard let autoPick = entry.autoPick, entry.target == autoPick.picked, !entry.isExplore, claim([session]) else {
+            NSSound.beep()
+            return
+        }
+        entry.autoPick = nil
+        entry.autoPickDeclined = true
+        updateHeaders(of: session)
+        Task { @MainActor in
+            defer { release([session]) }
+            await restore(autoPick.previous, on: session)
+            entry.target = autoPick.previous
+            FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
+        }
+    }
+
     /// When a waveform's top scope (or the scope below a simulator wrapper) names exactly one
     /// profile's `--top`, builds from that profile. Only for a server with no top level that cmux
     /// was not told to keep in explore mode. True when it did.
@@ -730,10 +766,27 @@ extension SlangCompilationActions {
         session: LanguageServerSession,
         dumpTops: [String],
         dumpChildren: [String: [String]],
+        progress: @escaping @MainActor @Sendable (String) -> Void
+    ) async -> Bool {
+        let key = ObjectIdentifier(session)
+        if let running = autoPickTasks[key] { return await running.value }
+        let task = Task { @MainActor in
+            await runAutoPick(session: session, dumpTops: dumpTops, dumpChildren: dumpChildren, progress: progress)
+        }
+        autoPickTasks[key] = task
+        let picked = await task.value
+        autoPickTasks[key] = nil
+        return picked
+    }
+
+    private static func runAutoPick(
+        session: LanguageServerSession,
+        dumpTops: [String],
+        dumpChildren: [String: [String]],
         progress: @MainActor @Sendable (String) -> Void
     ) async -> Bool {
         let entry = entry(for: session)
-        guard entry.target == nil, !entry.isExplore, !isBusy(session),
+        guard entry.target == nil, !entry.isExplore, !entry.autoPickDeclined, !isBusy(session),
               let editor = FilePreviewLanguageFeatures.allLinkables.first(where: { $0.linkSession?.session === session }),
               await session.supportsCommand("slang.setBuildFile") == true else { return false }
         let profiles = await profiles(for: editor)
@@ -741,7 +794,7 @@ extension SlangCompilationActions {
               claim([session]) else { return false }
         defer { release([session]) }
         // The user may have chosen a top level, build file or explore mode while the profiles were listed.
-        guard entry.target == nil, !entry.isExplore, await session.slangCompilationTarget == nil,
+        guard entry.target == nil, !entry.isExplore, !entry.autoPickDeclined, await session.slangCompilationTarget == nil,
               await !session.isInChosenExploreMode,
               ((try? await session.slangScopeChildren("")) ?? []).allSatisfy({ $0.kind == "Package" }) else { return false }
         progress(String(
@@ -751,9 +804,18 @@ extension SlangCompilationActions {
             ),
             profile.name
         ))
+        let previous = await currentTarget(of: session)
         let outcome = await applyProfile(profile, to: session, editor: editor)
         slangProfileLogger.info("auto-picked slang profile \(profile.path, privacy: .public): \(outcome.tops.count) tops")
-        return !outcome.tops.isEmpty
+        guard !outcome.tops.isEmpty else { return false }
+        // Never silently: the header says what changed, with Undo, for a while.
+        entry.autoPick = AutoPick(profile: profile.name, picked: entry.target, previous: previous, at: Date())
+        updateHeaders(of: session)
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(autoPickNoticeDuration + 0.5))
+            updateHeaders(of: session)
+        }
+        return true
     }
 }
 
