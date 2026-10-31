@@ -267,6 +267,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     await runReviewChecks()
     await runEvaluateChecks()
+    await runConditionChecks()
     await runLineChecks()
     print(failures == 0 ? "BREAKPOINT CHECKS PASSED" : "BREAKPOINT CHECKS FAILED: \(failures)")
     snap()
@@ -574,6 +575,113 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("stop()")
   }
 
+  /// Conditional breakpoints: a hit counts only when its condition is true at the posedge it lands on.
+  func runConditionChecks() async {
+    await removeAll()
+    await clearToasts()
+    _ = await dbg("stop()")
+    // mode changes at 105, 205, 305, 405; state is 3 at 105 and 305 (5 at 205, 0 at 405).
+    let mode = await call("return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'mode'], kind: 'change', condition: 'state == 3' })).id") as? Int
+    var shown = await list()
+    expect(shown.first?["condition"] as? String == "state == 3" && shown.first?["label"] as? String == "top.mode changes if state == 3",
+           "the condition is listed: \(shown)")
+    await setMarker(0)
+    var r = await go(1, expect: 105)
+    expect(r.hit?["landed"] as? Int == 105 && r.marker == 105, "the first change with state == 3: \(String(describing: r.hit))")
+    r = await go(1, expect: 305)
+    expect(r.hit?["landed"] as? Int == 305 && r.marker == 305, "205 skipped (state is 5 there): \(String(describing: r.hit))")
+    let end = await dbg("continue({ dir: 1 })")
+    expect(end?["reason"] as? String == "end", "405 skipped (state is 0): the end: \(String(describing: end?["reason"]))")
+    r = await go(-1, expect: 105)
+    expect(r.hit?["landed"] as? Int == 105, "reverse finds the earlier true one: \(String(describing: r.hit))")
+    // An absolute name works as well as one in the signal's scope.
+    _ = await dbg("setBreakpointCondition({ id: \(mode ?? -1), condition: 'top.state == 5' })")
+    await setMarker(0)
+    r = await go(1, expect: 205)
+    expect(r.hit?["landed"] as? Int == 205, "an absolute name: \(String(describing: r.hit))")
+    // A bad condition is refused and the old one kept.
+    let bad = await dbg("setBreakpointCondition({ id: \(mode ?? -1), condition: 'state +' })")
+    let kept = (await list()).first?["condition"] as? String
+    expect(bad?["error"] as? String == "syntax" && kept == "top.state == 5",
+           "a syntax error is refused: \(String(describing: bad))")
+    expect((await toasts()).contains { $0.contains("Unexpected text (column 8)") }, "and says why: \(await toasts())")
+    // Cleared: every change hits again.
+    _ = await dbg("setBreakpointCondition({ id: \(mode ?? -1), condition: '' })")
+    shown = await list()
+    expect(shown.first?["condition"] is NSNull && shown.first?["label"] as? String == "top.mode changes", "cleared: \(shown)")
+    await setMarker(0)
+    r = await go(1, expect: 105)
+    expect(r.hit?["landed"] as? Int == 105, "unconditional again: \(String(describing: r.hit))")
+    await removeAll()
+
+    // At the landing posedge, not at the change: irq's pulse at 52..53 lands on 55 where irq is 0 again;
+    // the pulse at 702..707 lands on 705 while irq is still 1.
+    _ = await call("return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'irq'], kind: 'change', condition: 'irq' })).id")
+    await setMarker(0)
+    r = await go(1, expect: 705)
+    expect(r.hit?["landed"] as? Int == 705, "evaluated at the landing posedge: \(String(describing: r.hit))")
+    await removeAll()
+
+    // x is not true: data is 'ha5 at 305, x at 505.
+    _ = await call("return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'data'], kind: 'change', condition: \"data == 8'ha5 || data === 8'bx\" })).id")
+    await setMarker(0)
+    r = await go(1, expect: 305)
+    expect(r.hit?["landed"] as? Int == 305, "data == 'ha5: \(String(describing: r.hit))")
+    r = await go(1, expect: 505)
+    expect(r.hit?["landed"] as? Int == 505, "=== matches x exactly: \(String(describing: r.hit))")
+    _ = await dbg("setBreakpointCondition({ id: (cmuxWaveform.debugger.breakpoints()[0] || {}).id, condition: 'data == 0 && data != 0' })")
+    await setMarker(0)
+    let never = await dbg("continue({ dir: 1 })")
+    expect(never?["reason"] as? String == "end", "never true: no hit: \(String(describing: never?["reason"]))")
+    await removeAll()
+
+    // A name not in the waveform: said once, and the breakpoint does not hit.
+    await clearToasts()
+    _ = await call("return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'mode'], kind: 'change', condition: 'nope == 1' })).id")
+    await setMarker(0)
+    let unknown = await dbg("continue({ dir: 1 })")
+    _ = await dbg("continue({ dir: 1 })")
+    let unknownToasts = (await toasts()).filter { $0.contains("nope is not in this waveform") }
+    expect(unknown?["hit"] is NSNull && unknownToasts.count == 1, "an unknown name: no hit, said once: \(String(describing: unknown?["reason"])) \(unknownToasts)")
+    await removeAll()
+
+    // Kept for the session, and restored.
+    listEvents.removeAll()
+    _ = await call("return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'mode'], kind: 'change', condition: 'state == 3' })).id")
+    expect(listEvents.last?.first?["condition"] as? String == "state == 3", "cmux is told the condition: \(String(describing: listEvents.last))")
+    _ = await dbg("restoreBreakpoints({ items: [{ path: ['top', 'mode'], kind: 'change', enabled: true, condition: 'state == 5' }] })")
+    shown = await list()
+    expect(shown.count == 1 && shown.first?["condition"] as? String == "state == 5", "restored with its condition: \(shown)")
+    await setMarker(0)
+    r = await go(1, expect: 205)
+    expect(r.hit?["landed"] as? Int == 205, "the restored condition applies: \(String(describing: r.hit))")
+    // The same signal with another condition is another breakpoint.
+    _ = await call("return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'mode'], kind: 'change', condition: 'state == 3' })).id")
+    expect((await list()).count == 2, "another condition, another breakpoint")
+
+    // The list row's menu edits the condition.
+    let menu = await call("""
+      const row = document.querySelector('#cmux-breakpoints .cmux-breakpoint');
+      if (!row) { return null; }
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+      const labels = Array.from(document.querySelectorAll('.cmux-menu-item .label')).map((l) => l.textContent);
+      window.cmuxUI.closeMenus();
+      return labels;
+    """) as? [String]
+    expect(menu?.contains("Edit Condition…") == true, "the list row's menu: \(String(describing: menu))")
+    await removeAll()
+
+    // A line breakpoint's condition (cmux sends it with the line), in the line's instance.
+    _ = await dbg("setLineBreakpoints({ items: [{ key: 'core.sv#3', label: 'core.sv:3', paths: [['top', 'mode']], enabled: true, condition: 'state == 5', scope: ['top'] }] })")
+    await setMarker(0)
+    r = await go(1, expect: 205)
+    expect(r.hit?["landed"] as? Int == 205, "a line breakpoint's condition: \(String(describing: r.hit))")
+    shown = await list()
+    expect(shown.first?["label"] as? String == "core.sv:3 if state == 5", "listed with it: \(shown)")
+    _ = await dbg("setLineBreakpoints({ items: [] })")
+    _ = await dbg("stop()")
+  }
+
   /// Line breakpoints (cmux sends them: the editor's gutter and F9): any of the line's signals changing hits.
   func runLineChecks() async {
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
@@ -740,6 +848,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerExprTooWide:'Wider than %@ bits', debuggerExprBadLiteral:'Not a valid literal', debuggerExprNotConstant:'Must be a constant',
    debuggerExprBadReplication:'A replication count must be at least 1', debuggerExprUnknownName:'%@ is not in this waveform',
    debuggerExprNoValue:'%@ has no value at the marker', debuggerExprNoMarker:'Put the marker on a cycle first.',
+   debuggerBreakpointIf:'%1$@ if %2$@', debuggerEditCondition:'Edit Condition…', debuggerConditionPrompt:'Break only when this is true at the clock edge',
+   debuggerConditionError:'Condition of %1$@: %2$@',
    debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
   """
 
