@@ -1570,10 +1570,14 @@ extension Harness {
         await d.setLocals({ path: null });
         await sleep(400);
         const fake = { kind: 'scope', name: 'fake', scopePath: ['top'], children: new Array(128).fill(clk).concat([acc]) };
+        // An earlier phase's dialog may still be open on this page: count new ones.
+        const dialogs = () => Array.from(document.querySelectorAll('.cmux-dialog-backdrop'));
+        const open = dialogs();
         const adding = C.run('vaporview.addAllInScopeShallow', fake);
         await sleep(800);
-        R.warned = !!document.querySelector('.cmux-dialog-backdrop');
-        const no = document.querySelector('.cmux-dialog-backdrop button');
+        const fresh = dialogs().filter((e) => !open.includes(e));
+        R.warned = fresh.length > 0;
+        const no = fresh.length ? fresh[0].querySelector('button') : null;
         if (no) { no.click(); }
         await adding;
         await sleep(600);
