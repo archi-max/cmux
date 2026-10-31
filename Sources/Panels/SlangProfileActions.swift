@@ -113,10 +113,16 @@ extension SlangCompilationActions {
                 let item = SlangMenuAction.item(profile.name) { switchProfile(editor: editor, to: profile) }
                 item.toolTip = profile.path
                 if !profile.buildFile.tops.isEmpty {
-                    item.subtitle = String(
+                    let tops = String(
                         format: String(localized: "slangProfile.menu.profileTops", defaultValue: "top %@"),
                         profile.buildFile.tops.joined(separator: ", ")
                     )
+                    if #available(macOS 14.4, *) {
+                        item.subtitle = tops
+                    } else {
+                        // No menu item subtitles before macOS 14.4: the tops follow the name.
+                        item.title = profile.name + " · " + tops
+                    }
                 }
                 if case .buildFile(let path)? = target, path == session.serverPath(for: URL(fileURLWithPath: profile.path)) {
                     item.state = .on
