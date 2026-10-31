@@ -2,14 +2,16 @@ import Foundation
 
 /// Parses the output of ``SSHFileSearchCommand/contentSearch(query:rootPath:remoteTimeoutSeconds:watchdog:)``.
 ///
-/// The first line is the tool marker; ripgrep lines are `--json` events and grep
-/// lines are `<path>NUL<line>:<text>`. Lines without a NUL in grep mode, such as
+/// The first line is the tool marker; ripgrep lines are `--json` events, grep
+/// lines are `<path>NUL<line>:<text>` and git grep lines are
+/// `<path relative to the root>NUL<line>NUL<text>`. Lines without a NUL in grep mode, such as
 /// an old grep's `Binary file x matches`, are ignored.
 struct SSHFileSearchLineParser: Sendable {
     enum Format: Equatable, Sendable {
         case unknown
         case ripgrep
         case grep
+        case gitGrep
     }
 
     /// Previews are cut to the width the local search asks ripgrep for.
@@ -32,6 +34,8 @@ struct SSHFileSearchLineParser: Sendable {
             let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             if text.hasSuffix(SSHFileSearchCommand.ripgrepMarker) {
                 format = .ripgrep
+            } else if text.hasSuffix(SSHFileSearchCommand.gitGrepMarker) {
+                format = .gitGrep
             } else if text.hasSuffix(SSHFileSearchCommand.grepMarker) {
                 format = .grep
             }
@@ -52,6 +56,8 @@ struct SSHFileSearchLineParser: Sendable {
             )
         case .grep:
             return parseGrepLine(line)
+        case .gitGrep:
+            return parseGitGrepLine(line)
         }
     }
 
@@ -69,6 +75,29 @@ struct SSHFileSearchLineParser: Sendable {
         return FileSearchResult(
             path: path,
             relativePath: Self.remoteRelativePath(path, rootPath: rootPath),
+            lineNumber: lineNumber,
+            columnNumber: Self.columnNumber(of: query, in: lineText),
+            preview: Self.clippedPreview(lineText.trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+    }
+
+    /// `<path relative to the root>NUL<line>NUL<text>`: with `-z`, git grep
+    /// ends the line number with a NUL too, so colons anywhere are text.
+    private func parseGitGrepLine(_ line: Data) -> FileSearchResult? {
+        guard let firstNul = line.firstIndex(of: 0) else { return nil }
+        let pathData = line[line.startIndex..<firstNul]
+        let rest = line[line.index(after: firstNul)...]
+        guard !pathData.isEmpty, let secondNul = rest.firstIndex(of: 0) else { return nil }
+        let numberText = String(decoding: rest[rest.startIndex..<secondNul], as: UTF8.self)
+        guard let lineNumber = Int(numberText), lineNumber > 0 else { return nil }
+        let lineText = String(decoding: rest[rest.index(after: secondNul)...], as: UTF8.self)
+        let relativePath = String(decoding: pathData, as: UTF8.self)
+        var root = rootPath
+        while root.count > 1 && root.hasSuffix("/") { root.removeLast() }
+        let path = root == "/" ? "/" + relativePath : root + "/" + relativePath
+        return FileSearchResult(
+            path: path,
+            relativePath: relativePath,
             lineNumber: lineNumber,
             columnNumber: Self.columnNumber(of: query, in: lineText),
             preview: Self.clippedPreview(lineText.trimmingCharacters(in: .whitespacesAndNewlines))
