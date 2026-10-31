@@ -48,9 +48,18 @@ enum RemotePreviewCacheBudget {
     }
 
     /// Deletes a download nobody will show (refused or discarded) and its
-    /// per-path directory once empty. Does nothing outside `cacheRoot`.
-    static func discard(_ file: URL, cacheRoot: URL, fileManager: FileManager = .default) {
+    /// per-path directory once empty. Does nothing outside `cacheRoot`, or
+    /// when `file` is in `keeping` (a panel shows it: the cache path is fixed
+    /// per host file, so an earlier open of the same file uses it).
+    static func discard(
+        _ file: URL,
+        cacheRoot: URL,
+        keeping: Set<String> = [],
+        fileManager: FileManager = .default
+    ) {
         guard isInside(file, cacheRoot) else { return }
+        let resolved = file.resolvingSymlinksInPath().path
+        guard !keeping.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == resolved }) else { return }
         try? fileManager.removeItem(at: file)
         removeEmptyParents(of: file, below: cacheRoot, fileManager: fileManager)
     }

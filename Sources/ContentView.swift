@@ -10707,6 +10707,8 @@ struct ContentView: View {
         cancelCommandPaletteSearchIndexBuild()
         commandPaletteTaskStore.cancel(.agentLauncherAvailability)
         goToFileModel.end()
+        // The closure captures this view; drop it with the palette.
+        goToFileModel.onDeferredOpen = nil
         commandPaletteAgentLauncherAvailabilityGeneration &+= 1
         cancelCommandPaletteForkableAgentAvailabilityProbe()
         cancelCommandPaletteForkableAgentProbeResultExpiryRefresh()

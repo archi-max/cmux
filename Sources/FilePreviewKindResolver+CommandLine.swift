@@ -16,4 +16,11 @@ extension FilePreviewKindResolver {
               let type = UTType(filenameExtension: ext), !type.isDynamic else { return false }
         return !type.conforms(to: .text)
     }
+
+    /// Whether `cmux open` sends `path` to the Files panel instead of
+    /// downloading it: Quick-Look-only types, and waveforms read in place on
+    /// the host (FSDB), whose downloaded copy the local viewer can't read.
+    static func commandLineOpenNeedsFilesPanel(path: String) -> Bool {
+        opensOnlyThroughQuickLook(path: path) || isReadInPlaceOnRemoteHost(path)
+    }
 }
