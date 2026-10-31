@@ -575,6 +575,129 @@ extension Harness {
           check((r["errors"] as? [String])?.isEmpty == true, "undo/redo with an expanded group raise no viewer error (\(r["errors"] ?? "nil"))")
           check(r["undone"] as? Int == start, "undo with an expanded group goes back to its rows (rows drawn \(r["undone"] ?? "nil"), want \(start))")
           check(r["redone"] as? Int == added, "redo brings the added row back (rows drawn \(r["redone"] ?? "nil"), want \(added))")
+          self.phaseP()
+        }
+      }
+    }
+  }
+
+  static let reloadProbe = """
+  const vd = () => document.getElementById('viewer').contentDocument;
+  const drawn = () => vd().querySelectorAll('.waveform-label').length;
+  const rows = () => { const st = C.sessionSnapshot().state; return st ? st.displayedSignals.length : 0; };
+  const sent = [];
+  const toNative = H.toNative;
+  H.toNative = (m) => { sent.push(m); return toNative(m); };
+  const reloads = () => sent.filter((m) => m.type === 'reload').length;
+  const bar = () => !document.getElementById('status-reload').hidden;
+  """
+
+  // An update the old viewer sends just after a reload starts (here, Auto
+  // Reload switched on) doesn't bring the old context back. A file change
+  // during the reload still reloads. A change made just before the reload
+  // reaches cmux's kept copy.
+  func phaseP() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.core.acc' });
+        await sleep(50);
+        const before = sent.length;
+        window.cmuxWaveform.reload({});
+        const kept = sent.slice(before).filter((m) => m.type === 'sessionState').pop();
+        R.flushed = kept ? kept.state.displayedSignals.length : 0;
+        vd().getElementById('autoReload').click();
+        R.during = rows();
+        await sleep(1500);
+        R.reloaded = drawn();
+        window.cmuxWaveform.reload({});
+        const reloadsBefore = reloads();
+        C.fileChanged();
+        await sleep(1500);
+        R.gapReloads = reloads() - reloadsBefore;
+        R.bar = bar();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undoAdd = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undoFirst = drawn();
+        """) { r in
+          check(r["flushed"] as? Int == 2, "a change just before a reload reaches cmux's kept copy (rows \(r["flushed"] ?? "nil"))")
+          check(r["during"] as? Int == 0, "an update from the old viewer during a reload doesn't bring its context back (rows \(r["during"] ?? "nil"))")
+          check(r["reloaded"] as? Int == 2, "the reload brings the rows back (rows drawn \(r["reloaded"] ?? "nil"))")
+          check(r["gapReloads"] as? Int == 1, "with Auto Reload on, a file change during a reload reloads (\(r["gapReloads"] ?? "nil"))")
+          check(r["bar"] as? Bool == false, "and shows no reload bar")
+          // Switching Auto Reload is not an undoable change (VaporView sends it as None).
+          check(r["undoAdd"] as? Int == 1 && r["undoFirst"] as? Int == 0,
+                "undo after the reload takes back the adds (rows drawn \(r["undoAdd"] ?? "nil") / \(r["undoFirst"] ?? "nil"))")
+          self.phaseQ()
+        }
+      }
+    }
+  }
+
+  // Save Viewer Session during a reload saves the view from before it, not an
+  // empty one. Two reloads in a row keep the undo history.
+  func phaseQ() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        window.cmuxWaveform.reload({});
+        await C.run('vaporview.saveViewerSession');
+        const save = sent.filter((m) => m.type === 'saveSession').pop();
+        const file = save ? JSON.parse(save.text) : null;
+        R.saved = file ? file.displayedSignals.length : -1;
+        R.selected = file && file.selectedSignal ? file.selectedSignal.name : null;
+        await sleep(1500);
+        window.cmuxWaveform.reload({});
+        await sleep(30);
+        window.cmuxWaveform.reload({});
+        await sleep(1500);
+        R.reloaded = drawn();
+        await C.run('cmux.undo');
+        await sleep(800);
+        R.undone = drawn();
+        await C.run('cmux.redo');
+        await sleep(800);
+        R.redone = drawn();
+        """) { r in
+          check(r["saved"] as? Int == 1, "a save during a reload holds the rows from before it (rows \(r["saved"] ?? "nil"))")
+          check(r["selected"] as? String == "top.clk", "and its selected signal (\(r["selected"] ?? "nil"))")
+          check(r["reloaded"] as? Int == 1, "two reloads in a row bring the row back (rows drawn \(r["reloaded"] ?? "nil"))")
+          check(r["undone"] as? Int == 0 && r["redone"] as? Int == 1,
+                "and undo/redo still work (rows drawn \(r["undone"] ?? "nil") / \(r["redone"] ?? "nil"))")
+          self.phaseR()
+        }
+      }
+    }
+  }
+
+  // After a reload that fails (a half-written file), Auto Reload still
+  // reloads on the next file change.
+  func phaseR() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        if (!vd().getElementById('autoReload').checked) { vd().getElementById('autoReload').click(); }
+        await sleep(400);
+        R.auto = C.sessionSnapshot().state.autoReload;
+        window.cmuxWaveform.reload({ url: 'cmux-waveform://local/missing.vcd', size: 10 });
+        await sleep(1500);
+        const before = reloads();
+        C.fileChanged();
+        R.reloads = reloads() - before;
+        R.bar = bar();
+        """) { r in
+          check(r["auto"] as? Bool == true, "Auto Reload is on")
+          check(r["reloads"] as? Int == 1, "after a failed reload, a file change still reloads (\(r["reloads"] ?? "nil"))")
+          check(r["bar"] as? Bool == false, "and shows no reload bar")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
