@@ -856,6 +856,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         var lookedUpAt: Date
         /// Lookups in a row that found none; the next waits longer.
         var misses: Int
+        /// The last lookup got no answer (slang-server not ready): asked again soon, not a miss.
+        var failed = false
     }
 
     /// Signals were added to the waveform from design instance `design`, dumped as `dump`: values follow it.
@@ -970,7 +972,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     ) async -> [String] {
         let cached = inlineModuleInstances[module]
         if let cached {
-            let wait = min(300, 10 * pow(2, Double(max(0, cached.misses - 1))))
+            let wait = cached.failed ? 2 : min(300, 10 * pow(2, Double(max(0, cached.misses - 1))))
             if !cached.designInstances.isEmpty || Date().timeIntervalSince(cached.lookedUpAt) < wait {
                 return cached.designInstances
             }
@@ -984,8 +986,15 @@ final class FilePreviewLanguageFeatures: NSObject {
         let lookedUp = module == inlineScan.fragmentModule
             ? await WaveformDebugger.fragmentInstances(session: session, documentURI: documentURI, probes: Array(probes))
             : await WaveformSourceLink.instancePaths(session: session, documentURI: documentURI, probes: Array(probes))
-        // Cancelled (a scroll, an edit): not a miss; the next refresh asks again.
-        guard let found = lookedUp else { return cached?.designInstances ?? [] }
+        guard let found = lookedUp else {
+            // Cancelled (a scroll, an edit): the next refresh asks again. No answer: asked again soon.
+            if !Task.isCancelled {
+                inlineModuleInstances[module] = InlineModuleInstances(
+                    designInstances: cached?.designInstances ?? [], lookedUpAt: Date(), misses: cached?.misses ?? 0, failed: true
+                )
+            }
+            return cached?.designInstances ?? []
+        }
         inlineModuleInstances[module] = InlineModuleInstances(
             designInstances: found,
             lookedUpAt: Date(),
