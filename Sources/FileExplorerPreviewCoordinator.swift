@@ -12,8 +12,12 @@ struct FileExplorerPreviewCoordinator {
     struct Presentation {
         /// Opens the preview of the local (lease) path, or returns nil.
         let openPreview: @MainActor (Workspace, String) -> FilePreviewPanel?
-        /// Reports a failure, including a preview that didn't open.
+        /// Reports a failure, including a preview that didn't open or a refresh that failed.
         let reportFailure: @MainActor (Error) -> Void
+        /// Whether the opened panel may still refresh from its host, for the
+        /// panel's lifetime; looser than the open's `isCurrent` (the source
+        /// terminal may close while the preview stays).
+        let isPanelCurrent: @MainActor () -> Bool
     }
 
     func open(
@@ -80,9 +84,15 @@ struct FileExplorerPreviewCoordinator {
                         panel.cloudPreviewLease = lease
                         Self.installRemotePreviewRefresh(
                             on: panel, workspace: workspace,
-                            isCurrent: isCurrent, provider: remote, vmID: nil, target: nil
+                            isCurrent: presentation?.isPanelCurrent ?? isCurrent,
+                            provider: remote, vmID: nil, target: nil,
+                            reportFailure: presentation?.reportFailure
                         )
-                        Self.installRemoteLinkOpener(on: panel, workspace: workspace, store: store, isCurrent: isCurrent)
+                        // Linked files open through the Files panel's own store; a
+                        // preview-only store (cmux open) has no Files panel to follow.
+                        if presentation == nil {
+                            Self.installRemoteLinkOpener(on: panel, workspace: workspace, store: store, isCurrent: isCurrent)
+                        }
                         workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: panel)
                     } else {
                         presentation?.reportFailure(FileExplorerError.providerUnavailable)
@@ -139,7 +149,8 @@ struct FileExplorerPreviewCoordinator {
         isCurrent: @escaping @MainActor () -> Bool,
         provider: any RemoteFileExplorerProvider,
         vmID: String?,
-        target: CloudFileExplorerTarget?
+        target: CloudFileExplorerTarget?,
+        reportFailure: (@MainActor (Error) -> Void)? = nil
     ) {
         panel.remotePreviewRefresh = { [weak panel, weak workspace] in
             Task { @MainActor [weak panel, weak workspace] in
@@ -155,7 +166,11 @@ struct FileExplorerPreviewCoordinator {
                 } catch is CancellationError {
                     return
                 } catch {
-                    Self.present(error, window: AppDelegate.shared?.mainWindowContainingWorkspace(workspace.id))
+                    if let reportFailure {
+                        reportFailure(error)
+                    } else {
+                        Self.present(error, window: AppDelegate.shared?.mainWindowContainingWorkspace(workspace.id))
+                    }
                 }
             }
         }

@@ -85,11 +85,13 @@ actor RemoteTerminalFilePreviewLoader {
                 try Task.checkCancellation()
                 let destination = directory.appendingPathComponent((path as NSString).lastPathComponent)
                 let isNew = !fileManager.fileExists(atPath: destination.path)
+                // Read before the rename (which keeps it): afterwards a concurrent
+                // download of the same host file may already have replaced it.
+                let published = RemotePreviewDownload.fileNumber(of: staging)
                 // Publish a complete file atomically; an existing preview never sees a partial download.
                 guard rename(staging.path, destination.path) == 0 else {
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
                 }
-                let published = RemotePreviewDownload.fileNumber(of: destination)
                 let shown = await shownPaths()
                 RemotePreviewCacheBudget.evict(
                     in: cacheDirectory,
