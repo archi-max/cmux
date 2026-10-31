@@ -147,6 +147,11 @@ import Testing
         #expect(HierarchyPrefixInference.signalName(.init(name: "data[3]", isScope: false, width: 1)) == "data[3]")
         #expect(HierarchyPrefixInference.signalName(.init(name: "x[3:0]", isScope: false, width: 4)) == "x")
         #expect(HierarchyPrefixInference.signalName(.init(name: "x[7:4]", isScope: false, width: 4)) == "x")
+        // An ascending range spans the same bits.
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[0:3]", isScope: false, width: 4)) == "x")
+        // The same edge rules as host.js: an escaped name keeps its brackets, at most 9 digits.
+        #expect(HierarchyPrefixInference.signalName(.init(name: "\\x[0:0] ", isScope: false, width: 1)) == "\\x[0:0] ")
+        #expect(HierarchyPrefixInference.signalName(.init(name: "x[1234567890:1234567890]", isScope: false, width: 1)) == "x[1234567890:1234567890]")
         #expect(HierarchyPrefixInference.signalName(.init(name: "x[3:0]", isScope: false, width: 1)) == "x[3:0]")
         #expect(HierarchyPrefixInference.signalName(.init(name: "x[0:0]", isScope: false)) == "x[0:0]")
         #expect(HierarchyPrefixInference.signalName(.init(name: "x[a:0]", isScope: false)) == "x[a:0]")

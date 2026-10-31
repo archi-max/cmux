@@ -325,7 +325,7 @@ struct SlangIncludeFragmentTests {
         #expect(S.typedefIsFixed(in: text, line: 1))
         #expect(!S.typedefIsFixed(in: text, line: 4))
         // Outside a package, only a type the hover gives as built in is trusted, even when the
-        // typedef reads fixed (a module's typedef can still be overridden through a parameter's use).
+        // typedef reads fixed: the rule is deliberately conservative.
         #expect(!S.typedefIsFixed(in: text, line: 5))
         #expect(!S.typedefIsFixed(in: text, line: 8))
         #expect(!S.typedefIsFixed(in: text, line: 10))
