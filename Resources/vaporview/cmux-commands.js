@@ -1151,9 +1151,14 @@
   }
 
   // Before an in-page reload: the frame keeps its own state, the rest restarts.
+  // host.js reload() calls this after taking its snapshot, just before the
+  // viewer unloads its rows: cmux's copy of the old context is dropped with
+  // them, so nothing reports or saves rows the viewer no longer has.
   function willReload() {
     pendingReload = false;
     document.getElementById('status-reload').hidden = true;
+    webviewContext = null;
+    clearTimeout(snapshotTimer);
   }
 
   window.cmuxCommands = {
