@@ -580,6 +580,11 @@ final class FilePreviewLanguageFeatures: NSObject {
                 separatorIndex += 1
             }
         }
+        // The waveform debugger's Evaluate at Cycle, while the viewer is stepped.
+        if let evaluate = WaveformDebuggerEvaluate.menuItem(for: self, at: contextMenuCharacterIndex) {
+            menu.insertItem(evaluate, at: separatorIndex)
+            separatorIndex += 1
+        }
         for item in compilationMenuItems(at: contextMenuCharacterIndex) {
             menu.insertItem(item, at: separatorIndex)
             separatorIndex += 1
@@ -1170,8 +1175,14 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// The instance the caret's module showed values of, for the waveform debugger's Locals.
     var instanceAtCaret: WaveformDebuggerEditorHighlights.Instance? {
         guard !isDetached, let textView else { return nil }
+        return debuggerInstance(at: textView.selectedRange().location)
+    }
+
+    /// The instance the module at UTF-16 offset `offset` showed values of (the debugger's Evaluate scope).
+    func debuggerInstance(at offset: Int) -> WaveformDebuggerEditorHighlights.Instance? {
+        guard !isDetached, let textView else { return nil }
         var scan = syncedInlineScan(of: textView)
-        let module = scan.lines(in: NSRange(location: textView.selectedRange().location, length: 0)).first?.module
+        let module = scan.lines(in: NSRange(location: offset, length: 0)).first?.module
         inlineScan = scan
         return module.flatMap { inlineShownInstances[$0] }
     }

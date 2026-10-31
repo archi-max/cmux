@@ -165,6 +165,11 @@ enum WaveformDebugger {
             WaveformDebuggerLineBreakpoints.signalsReported(body, waveform: waveform)
             return
         }
+        // Its watch expressions changed: kept for the workspace's session.
+        if body["event"] as? String == "watches" {
+            WaveformDebuggerEvaluate.watchesReported(body, waveform: waveform)
+            return
+        }
         // A played move, posted by the page as it moves (before the viewer's markerSet).
         if body["event"] as? String == "moved" {
             if isStepping(waveform), let time = (body["movedTo"] as? NSNumber)?.int64Value {
@@ -204,6 +209,7 @@ enum WaveformDebugger {
     /// A new page (a reload or a web content crash) starts without stepping, and doesn't say so.
     static func pageLoaded(_ waveform: FilePreviewPanel) {
         WaveformDebuggerLineBreakpoints.pageLoaded(waveform)
+        WaveformDebuggerEvaluate.pageLoaded(waveform)
         guard isStepping(waveform) else { return }
         box(waveform).state = PageState()
         stoppedStepping(waveform, editors: FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId))
@@ -262,7 +268,37 @@ enum WaveformDebugger {
                 localized: "waveformDebugger.clockNotBit",
                 defaultValue: "Select a 1-bit signal in the waveform to use as the clock."
             ),
-        ].merging(breakpointPageStrings()) { first, _ in first }
+        ].merging(breakpointPageStrings()) { first, _ in first }.merging(expressionPageStrings()) { first, _ in first }
+    }
+
+    /// Strings of the page's Evaluate and watches (cmux-debugger.js, cmux-expr.js).
+    private static func expressionPageStrings() -> [String: String] {
+        [
+            "debuggerEvaluate": String(localized: "waveformDebugger.evaluate", defaultValue: "Evaluate"),
+            "debuggerEvaluateTooltip": String(
+                localized: "waveformDebugger.evaluateTooltip",
+                defaultValue: "An expression at the marker, in the shown instance (Up and Down: earlier ones)"
+            ),
+            "debuggerEvalResult": String(localized: "waveformDebugger.evalResult", defaultValue: "= %1$@ (width %2$@)"),
+            "debuggerEvalTooltip": String(localized: "waveformDebugger.evalTooltip", defaultValue: "Binary %1$@, decimal %2$@"),
+            "debuggerAddWatch": String(localized: "waveformDebugger.addWatch", defaultValue: "Add Watch"),
+            "debuggerWatch": String(localized: "waveformDebugger.watch", defaultValue: "Watch"),
+            "debuggerRemoveWatch": String(localized: "waveformDebugger.removeWatch", defaultValue: "Remove Watch"),
+            "debuggerEditWatch": String(localized: "waveformDebugger.editWatch", defaultValue: "Edit Watch"),
+            "debuggerExprError": String(localized: "waveformDebugger.exprError", defaultValue: "%1$@ (column %2$@)"),
+            "debuggerExprSyntax": String(localized: "waveformDebugger.exprSyntax", defaultValue: "Unexpected text"),
+            "debuggerExprUnsupported": String(localized: "waveformDebugger.exprUnsupported", defaultValue: "Not supported here"),
+            "debuggerExprEmpty": String(localized: "waveformDebugger.exprEmpty", defaultValue: "Nothing to evaluate"),
+            "debuggerExprTooLong": String(localized: "waveformDebugger.exprTooLong", defaultValue: "Longer than %@ characters"),
+            "debuggerExprTooManySignals": String(localized: "waveformDebugger.exprTooManySignals", defaultValue: "More than %@ signals"),
+            "debuggerExprTooWide": String(localized: "waveformDebugger.exprTooWide", defaultValue: "Wider than %@ bits"),
+            "debuggerExprBadLiteral": String(localized: "waveformDebugger.exprBadLiteral", defaultValue: "Not a valid literal"),
+            "debuggerExprNotConstant": String(localized: "waveformDebugger.exprNotConstant", defaultValue: "Must be a constant"),
+            "debuggerExprBadReplication": String(localized: "waveformDebugger.exprBadReplication", defaultValue: "A replication count must be at least 1"),
+            "debuggerExprUnknownName": String(localized: "waveformDebugger.exprUnknownName", defaultValue: "%@ is not in this waveform"),
+            "debuggerExprNoValue": String(localized: "waveformDebugger.exprNoValue", defaultValue: "%@ has no value at the marker"),
+            "debuggerExprNoMarker": String(localized: "waveformDebugger.exprNoMarker", defaultValue: "Put the marker on a cycle first."),
+        ]
     }
 
     /// Strings of the page's breakpoints: the list, the row menu, the hit messages.

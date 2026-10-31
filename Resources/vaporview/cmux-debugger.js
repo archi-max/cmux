@@ -574,6 +574,9 @@
   async function setLocals(query) {
     const path = (query || {}).path || null;
     const key = path ? JSON.stringify(path) : null;
+    // The shown instance is where Evaluate and watches look names up.
+    const scope = Array.isArray(path) ? path.map(String) : null;
+    if (JSON.stringify(scope) !== JSON.stringify(evalScope)) { evalScope = scope; refreshWatches(); }
     if (!path) { clearLocalsGroup(); return true; }
     // Only while stepping; a reload or an undo that dropped the group gets it back on the next call.
     if (!state.stepping) { return false; }
@@ -1135,6 +1138,7 @@
       breakpointList.style.cssText = 'flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--vscode-widget-border); padding-bottom: 4px;';
     }
     if (breakpointList.parentElement !== pane) { pane.appendChild(breakpointList); }
+    if (watchList && watchList.parentElement === pane && breakpointList.nextElementSibling !== watchList) { breakpointList.after(watchList); }
     breakpointList.hidden = !breakpoints.length;
     breakpointList.textContent = '';
     if (!breakpoints.length) { return; }
@@ -1184,6 +1188,328 @@
           host.log(error);
         }
       } },
+      { label: s.debuggerAddWatch || '', run: () => addWatch({ expr: pathExpression(path) }) },
+    ];
+  }
+
+  // A dump path as an expression: a segment that is not an identifier (or gen[3]) is escaped.
+  function pathExpression(path) {
+    return path.map((seg) => (/^[A-Za-z_][A-Za-z0-9_$]*(\[\d+\])?$/.test(seg) ? seg : '\\' + seg + ' ')).join('.').trim();
+  }
+
+  // ---- expressions: Evaluate and watches (cmux-expr.js) ----
+  // An expression is evaluated at the marker in the shown instance's scope (setLocals' path, or
+  // one given): each name is looked up there first, then as a dump path from the top.
+  const X = window.cmuxExpr;
+  let evalScope = null;
+  const RADIX = { binary: 'binary', octal: 'octal', decimal: 'decimal', signed: 'decimal' };
+
+  function exprMessage(error, at, detail) {
+    const s = S();
+    const limits = { tooLong: X.MAX_TEXT, tooManySignals: X.MAX_SIGNALS, tooWide: X.MAX_WIDTH };
+    const reason = format(s['debuggerExpr' + error[0].toUpperCase() + error.slice(1)],
+      detail !== undefined ? detail : (limits[error] !== undefined ? number(limits[error]) : ''));
+    return at === null || at === undefined ? reason : format(s.debuggerExprError, reason, number(at + 1));
+  }
+
+  function nameAt(node, at) {
+    if (!node || typeof node !== 'object') { return null; }
+    if (node.t === 'name') { return node.at === at ? node.path.join('.') : null; }
+    for (const key of ['c', 'l', 'e', 'i', 'r', 'a', 'b']) { const found = nameAt(node[key], at); if (found) { return found; } }
+    for (const part of node.parts || []) { const found = nameAt(part, at); if (found) { return found; } }
+    return null;
+  }
+
+  // The variables for `paths` (as written): in `scope` first, then from the top. JSON path -> var.
+  async function resolveNames(paths, scope) {
+    const out = new Map();
+    for (const path of paths) {
+      let v = scope && scope.length ? await host.findLinkItem(scope.concat(path), true) : null;
+      if (!v || v.kind === 'scope') { v = await host.findLinkItem(path, true); }
+      if (v && v.kind !== 'scope') { out.set(JSON.stringify(path), v); }
+    }
+    return out;
+  }
+
+  function valueIn(changes, time) {
+    let lo = 0, hi = changes.length - 1, at = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(changes[mid][0]) <= time) { at = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return at >= 0 ? changes[at][1] : undefined;
+  }
+
+  // The bits each variable has at `time` (netlistId -> bits): a point query, else its changes.
+  async function bitsAt(vars, time) {
+    const out = new Map();
+    let raw = new Map();
+    try { raw = (await host.rawValuesAt(time, vars)) || new Map(); } catch (error) { host.log(error); }
+    for (const v of vars) {
+      let bits = raw.get(v.netlistId);
+      if (bits === undefined) {
+        const entry = await changesOf(host.pathOf(v), host.currentBackend);
+        if (entry && entry.changes) { bits = valueIn(entry.changes, time); }
+      }
+      if (bits !== undefined && bits !== null) { out.set(v.netlistId, String(bits)); }
+    }
+    return out;
+  }
+
+  // { value (text), width, bits, decimal, raw } or { error, at, message }.
+  async function evaluateAt(text, scope, time) {
+    const parsed = X.parse(text);
+    if (parsed.error) { return { error: parsed.error, at: parsed.at, message: exprMessage(parsed.error, parsed.at) }; }
+    if (time === null) { return { error: 'noMarker', at: null, message: exprMessage('noMarker', null) }; }
+    const paths = X.names(parsed.ast);
+    const vars = await resolveNames(paths, scope);
+    const bits = await bitsAt(Array.from(new Set(vars.values())), time);
+    // A signal with no value here (too many changes to read) says so, not "not in this waveform".
+    for (const [key, v] of vars) {
+      if (!bits.has(v.netlistId)) { return { error: 'noValue', at: null, message: exprMessage('noValue', null, JSON.parse(key).join('.')) }; }
+    }
+    const result = X.evaluate(parsed.ast, (path) => {
+      const v = vars.get(JSON.stringify(path));
+      if (!v) { return null; }
+      const width = Number(v.width) || 1;
+      return { width, msb: v.msb, lsb: v.lsb, value: X.fromBits(bits.get(v.netlistId), width) };
+    });
+    if (result.error) {
+      const name = result.error === 'unknownName' ? nameAt(parsed.ast, result.at) : undefined;
+      return { error: result.error, at: result.at, message: exprMessage(result.error, result.at, name === null ? undefined : name) };
+    }
+    const value = result.value;
+    // One signal shown in the viewer: in its row's radix.
+    const single = parsed.ast.t === 'name' ? vars.get(JSON.stringify(parsed.ast.path)) : null;
+    const radix = (single && RADIX[host.shownFormats().get(single.netlistId)]) || 'hex';
+    return { value: X.format(value, radix), width: value.w, bits: X.toBits(value), decimal: X.format(value, 'decimal'), raw: value };
+  }
+
+  // evaluate({ expr, scope, time, show }): at the marker (or `time`) in the shown instance (or
+  // `scope`); `show` puts it in the strip's field (Evaluate Expression…, the editor's Evaluate at Cycle).
+  async function evaluate(query) {
+    const q = query || {};
+    const text = String(q.expr === undefined || q.expr === null ? '' : q.expr);
+    const scope = Array.isArray(q.scope) ? q.scope.map(String) : evalScope;
+    const time = q.time !== undefined && q.time !== null && Number.isFinite(Number(q.time)) ? Number(q.time) : markerTime();
+    let r;
+    try {
+      r = await evaluateAt(text, scope, time);
+    } catch (error) {
+      host.log(error);
+      r = { error: 'noValue', at: null, message: exprMessage('noValue', null, text) };
+    }
+    const out = Object.assign({ expr: text, scope: scope ? scope.slice() : null, time }, r);
+    delete out.raw;
+    if (q.show) { remember(text); showEvaluation(text, out); }
+    return out;
+  }
+
+  // ---- the strip's Evaluate field: Enter evaluates, up and down go through the history ----
+  const evalHistory = [];
+  let historyAt = null;
+  let historyDraft = '';
+
+  function remember(text) {
+    const i = evalHistory.indexOf(text);
+    if (i >= 0) { evalHistory.splice(i, 1); }
+    evalHistory.push(text);
+    if (evalHistory.length > 50) { evalHistory.shift(); }
+    historyAt = null;
+  }
+
+  function onEvalKey(e) {
+    const input = e.target;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) { return; }
+      remember(text);
+      evaluate({ expr: text }).then((r) => showEvaluation(text, r));
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (!evalHistory.length) { return; }
+      e.preventDefault();
+      if (historyAt === null) {
+        if (e.key === 'ArrowDown') { return; }
+        historyDraft = input.value;
+        historyAt = evalHistory.length;
+      }
+      historyAt = Math.max(0, historyAt + (e.key === 'ArrowUp' ? -1 : 1));
+      if (historyAt >= evalHistory.length) { historyAt = null; input.value = historyDraft; return; }
+      input.value = evalHistory[historyAt];
+    } else if (e.key === 'Escape') {
+      input.blur();
+    }
+  }
+
+  function showEvaluation(text, r) {
+    const s = S();
+    const shown = r.error ? r.message : format(s.debuggerEvalResult, r.value, number(r.width));
+    const el = state.stepping ? ensureStrip() : null;
+    const box = el && el.querySelector('.cmux-eval');
+    if (!box) { window.cmuxUI.toast(text + ' ' + shown, r.error ? 'warning' : 'info'); return; }
+    const input = box.querySelector('input');
+    if (input.value.trim() !== text) { input.value = text; }
+    const result = box.querySelector('.result');
+    result.textContent = shown;
+    result.title = r.error ? '' : format(s.debuggerEvalTooltip, r.bits, r.decimal);
+    result.style.color = r.error ? 'var(--vscode-editorWarning-foreground, #cca700)' : '';
+    result.dataset.expr = text;
+  }
+
+  // ---- watches: expressions refreshed whenever the marker moves ----
+  const watches = [];  // { id, expr, text, value (cmuxExpr value | null), error, changed, time }
+  let nextWatchId = 1;
+  let watchRunning = false;
+  let watchDirty = false;
+
+  const publicWatch = (w) => ({ id: w.id, expr: w.expr, value: w.text, error: w.error, changed: w.changed });
+
+  function watchesChanged() {
+    // cmux keeps them for the workspace's session (restoreWatches).
+    host.toNative({ type: 'debugger', event: 'watches', items: watches.map((w) => w.expr) });
+    renderWatches();
+    refreshWatches();
+  }
+
+  const newWatch = (expr) => ({ id: nextWatchId++, expr, text: '', value: null, error: null, changed: false, time: null });
+
+  function addWatch(query) {
+    const expr = String((query || {}).expr || '').trim();
+    if (!expr) { return null; }
+    const w = newWatch(expr);
+    watches.push(w);
+    watchesChanged();
+    return publicWatch(w);
+  }
+
+  function removeWatch(query) {
+    const i = watches.findIndex((w) => w.id === Number((query || {}).id));
+    if (i < 0) { return false; }
+    watches.splice(i, 1);
+    watchesChanged();
+    return true;
+  }
+
+  function editWatch(query) {
+    const q = query || {};
+    const w = watches.find((x) => x.id === Number(q.id));
+    const expr = String(q.expr || '').trim();
+    if (!w || !expr) { return null; }
+    Object.assign(w, { expr, text: '', value: null, error: null, changed: false, time: null });
+    watchesChanged();
+    return publicWatch(w);
+  }
+
+  // A restored session's watches, in place of the page's.
+  function restoreWatches(query) {
+    const items = Array.isArray((query || {}).items) ? query.items : [];
+    watches.length = 0;
+    for (const item of items) { const expr = String(item || '').trim(); if (expr) { watches.push(newWatch(expr)); } }
+    watchesChanged();
+    return watches.map(publicWatch);
+  }
+
+  // One refresh at a time; a move meanwhile runs another once it is done (play keeps them current).
+  function refreshWatches() {
+    if (!watches.length) { return; }
+    if (watchRunning) { watchDirty = true; return; }
+    watchRunning = true;
+    setTimeout(async () => {
+      try {
+        do { watchDirty = false; await refreshWatchesOnce(); } while (watchDirty);
+      } catch (error) {
+        host.log(error);
+      } finally {
+        watchRunning = false;
+      }
+    }, 0);
+  }
+
+  async function refreshWatchesOnce() {
+    const time = markerTime();
+    const list = watches.slice();
+    const results = [];
+    for (const w of list) { results.push(await evaluateAt(w.expr, evalScope, time).catch((error) => ({ error: 'noValue', at: null, message: String(error) }))); }
+    list.forEach((w, k) => {
+      const r = results[k];
+      if (!watches.includes(w)) { return; }
+      // Changed since the marker was last somewhere else (a refresh at the same time keeps the mark).
+      if (r.error) {
+        Object.assign(w, { text: r.message, value: null, error: r.error, changed: false });
+      } else {
+        if (w.time !== time) { w.changed = w.value !== null && !X.same(w.value, r.raw); }
+        Object.assign(w, { text: r.value, value: r.raw, error: null });
+      }
+      w.time = time;
+    });
+    renderWatches();
+  }
+
+  let watchList = null;
+  function renderWatches() {
+    const pane = document.getElementById('netlist');
+    if (!pane) { return; }
+    if (!watchList) {
+      watchList = document.createElement('div');
+      watchList.id = 'cmux-watches';
+      watchList.style.cssText = 'flex: none; max-height: 35%; overflow: auto; border-top: 1px solid var(--vscode-widget-border); padding-bottom: 4px;';
+    }
+    if (watchList.parentElement !== pane) { pane.appendChild(watchList); }
+    // Under the breakpoints.
+    if (breakpointList && breakpointList.parentElement === pane && breakpointList.nextElementSibling !== watchList) { breakpointList.after(watchList); }
+    watchList.hidden = !watches.length;
+    watchList.textContent = '';
+    if (!watches.length) { return; }
+    const s = S();
+    const title = document.createElement('h2');
+    title.style.cssText = 'margin: 0; padding: 6px 10px 4px; font-weight: 600; text-transform: uppercase; font-size: 11px; color: var(--vscode-descriptionForeground);';
+    title.textContent = s.debuggerWatch || '';
+    watchList.appendChild(title);
+    for (const w of watches) {
+      const row = document.createElement('div');
+      row.className = 'cmux-watch' + (w.changed ? ' changed' : '');
+      row.style.cssText = 'display: flex; align-items: center; gap: 6px; padding: 1px 6px 1px 10px; line-height: 20px; white-space: nowrap;'
+        + (w.changed ? ' background: rgba(255, 166, 0, 0.22); box-shadow: inset 3px 0 0 rgb(255, 166, 0);' : '');
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.style.cssText = 'flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;';
+      label.textContent = w.expr;
+      label.title = w.expr;
+      const value = document.createElement('span');
+      value.className = 'value';
+      value.style.cssText = 'flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family, monospace);'
+        + (w.error ? ' color: var(--vscode-editorWarning-foreground, #cca700);' : '');
+      value.textContent = w.text;
+      value.title = w.text;
+      const remove = document.createElement('span');
+      remove.className = 'remove codicon codicon-close';
+      remove.style.cursor = 'pointer';
+      remove.title = s.debuggerRemoveWatch || '';
+      remove.addEventListener('click', () => removeWatch({ id: w.id }));
+      const edit = async () => {
+        try {
+          const expr = await window.cmuxUI.prompt({ title: s.debuggerEditWatch || '', value: w.expr });
+          if (expr !== undefined && String(expr).trim()) { editWatch({ id: w.id, expr }); }
+        } catch (error) {
+          host.log(error);
+        }
+      };
+      label.addEventListener('dblclick', edit);
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        window.cmuxUI.showMenu(watchMenuItems(w, edit), e.clientX, e.clientY);
+      });
+      row.append(label, value, remove);
+      watchList.appendChild(row);
+    }
+  }
+
+  function watchMenuItems(w, edit) {
+    const s = S();
+    return [
+      { label: s.debuggerEditWatch || '', run: edit },
+      { label: s.debuggerRemoveWatch || '', run: () => removeWatch({ id: w.id }) },
     ];
   }
 
@@ -1212,7 +1538,29 @@
     const rtl = document.createElement('span');
     rtl.className = 'rtl';
     rtl.hidden = true;
-    strip.append(playButton, text, rate, rtl);
+    // Evaluate: an expression at the marker (cmux-expr.js), a history, + adds it as a watch.
+    const evalBox = document.createElement('span');
+    evalBox.className = 'cmux-eval';
+    evalBox.style.cssText = 'display: inline-flex; align-items: center; gap: 4px;';
+    const evalIcon = document.createElement('span');
+    evalIcon.className = 'codicon codicon-symbol-variable';
+    const evalInput = document.createElement('input');
+    evalInput.type = 'text';
+    evalInput.spellcheck = false;
+    evalInput.style.cssText = 'width: 14em; height: 16px; padding: 0 4px; font: inherit; color: inherit; border-radius: 2px;'
+      + ' background: var(--vscode-input-background, transparent); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));';
+    evalInput.addEventListener('keydown', onEvalKey);
+    const evalResult = document.createElement('span');
+    evalResult.className = 'result';
+    const evalAdd = document.createElement('span');
+    evalAdd.className = 'add codicon codicon-add';
+    evalAdd.style.cursor = 'pointer';
+    evalAdd.addEventListener('click', () => {
+      const expr = evalInput.value.trim() || evalResult.dataset.expr || '';
+      if (expr) { addWatch({ expr }); }
+    });
+    evalBox.append(evalIcon, evalInput, evalResult, evalAdd);
+    strip.append(playButton, text, rate, rtl, evalBox);
     status.insertBefore(strip, anchor || null);
     return strip;
   }
@@ -1250,6 +1598,10 @@
     rtl.title = rtlStatus.tooltip;
     rtl.style.opacity = rtlStatus.ok ? '' : '0.75';
     rtl.style.color = rtlStatus.ok ? '' : 'var(--vscode-editorWarning-foreground, #cca700)';
+    const evalInput = el.querySelector('.cmux-eval input');
+    evalInput.placeholder = s.debuggerEvaluate || '';
+    evalInput.title = s.debuggerEvaluateTooltip || '';
+    el.querySelector('.cmux-eval .add').title = s.debuggerAddWatch || '';
   }
 
   // Rows came or went (Locals refilled, a signal pinned, a group folded): light the highlighted signals' rows.
@@ -1286,6 +1638,7 @@
     if (Number.isFinite(time)) { marker.fromEvent = time; marker.contextThen = contextMarker(); }
     // The user put the marker somewhere else: play stops there.
     if (state.playing && Number.isFinite(time) && !sentTimes.includes(time)) { pause(); }
+    refreshWatches();
     if (!state.stepping) { return; }
     render();
     queuePlace();
@@ -1307,6 +1660,7 @@
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
+    evaluate, addWatch, removeWatch, editWatch, restoreWatches, watches: () => watches.map(publicWatch),
   });
   Object.defineProperty(waveform, 'debugger', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxDebugger = { localsName, isLocals: host.isTransientGroup, savedLocals: localsGroupSaved,
