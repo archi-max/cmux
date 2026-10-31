@@ -73,33 +73,50 @@ extension CmuxTuiSurfaceProvider {
         }
     }
 
+    /// The CLI waits for this ack, so a failed send is retried twice; the
+    /// idempotency key makes a repeat harmless. If all three fail, the CLI
+    /// times out and withdraws the row even though the preview was queued.
     private func sendHostOpenAnswer(_ answer: SSHTuiHostOpenAnswer, rowID: String) {
         let machineID = self.machineID
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let connected = try await self.links.connected(machineID: machineID)
-                guard let link = await self.links.link(machineID: machineID) else { return }
-                _ = try await link.run(arguments: CloudTuiRequests.notificationAckArguments(
-                    socketPath: connected.socketPath,
-                    clientID: answer.clientID,
-                    notificationIDs: [rowID],
-                    idempotencyKey: "mac-cmux-open-\(rowID)-\(answer.rawValue.replacingOccurrences(of: ":", with: "-"))"
-                ))
-            } catch {
-                #if DEBUG
-                cmuxDebugLog("sshOpen.answer.failed machine=\(machineID) row=\(rowID) answer=\(answer.rawValue)")
-                #endif
+            for attempt in 1...3 {
+                guard let self else { return }
+                do {
+                    let connected = try await self.links.connected(machineID: machineID)
+                    guard let link = await self.links.link(machineID: machineID) else { return }
+                    _ = try await link.run(arguments: CloudTuiRequests.notificationAckArguments(
+                        socketPath: connected.socketPath,
+                        clientID: answer.clientID,
+                        notificationIDs: [rowID],
+                        idempotencyKey: "mac-cmux-open-\(rowID)-\(answer.rawValue.replacingOccurrences(of: ":", with: "-"))"
+                    ))
+                    return
+                } catch {
+                    #if DEBUG
+                    cmuxDebugLog("sshOpen.answer.failed machine=\(machineID) row=\(rowID) answer=\(answer.rawValue) attempt=\(attempt)")
+                    #endif
+                    guard attempt < 3 else { return }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
             }
         }
+    }
+
+    /// The feed restarted (link reconnect, event feed ended, transport stop
+    /// or a new state generation): the next state's rows get the replay check.
+    func resetHostOpenBaseline() {
+        hostOpenIngress?.resetBaseline()
     }
 
     private func scheduleHostOpenRecheck(after delay: TimeInterval) {
         hostOpenRecheck?.cancel()
         hostOpenRecheck = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(delay, 0.1) * 1_000_000_000))
+            // Only the ingress: the notification sync has nothing new to do.
             guard !Task.isCancelled, let self, let state = self.cloudState else { return }
-            self.syncNotifications(from: state)
+            self.syncHostOpenRequests(
+                SSHTuiHostOpenIngress.partition(CloudVMNotificationRow.rows(from: state), isSSH: self.machine.isSSH).requests
+            )
         }
     }
 }
