@@ -51,7 +51,7 @@ chmod 755 "$FAKE"/*
 ENV=(HOME="$H" PATH="$FAKE:$PATH" VERDI_HOME="$VERDI" CMUX_FSDB_NODE="$FAKE/node" CXX="$FAKE/c++")
 
 # The build as cmux runs it (sources as a tar on stdin, unpacked into a temporary folder).
-BUILD_SCRIPT='S=$(mktemp -d "${TMPDIR:-/tmp}/cmux-fsdb-src.XXXXXX") && tar -xf - -C "$S" && echo "$S" > "$SRCDIR_NOTE" && sh "$S/build.sh" "$S" "$DEST"; rc=$?; rm -rf "$S"; exit $rc'
+BUILD_SCRIPT='S=$(mktemp -d "${TMPDIR:-/tmp}/cmux-fsdb-src.XXXXXX") && tar -xf - -C "$S" && echo "$S" > "$SRCDIR_NOTE" && ${BUILD_SH:-sh} "$S/build.sh" "$S" "$DEST"; rc=$?; rm -rf "$S"; exit $rc'
 tarball() { (cd "$SRC" && COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -cf - .) 2>/dev/null || (cd "$SRC" && tar -cf - .); }
 build() { tarball | env "${ENV[@]}" "$@" SRCDIR_NOTE="$T/src-dir" DEST="$D" sh -c "$BUILD_SCRIPT"; }
 # One stats request through the launcher: "<answered> rc=<exit>".
@@ -98,21 +98,28 @@ rm -rf "$D"
 build FAKE_LOAD_RC=1 >/dev/null 2>&1
 check "$?" 14 "a built addon that doesn't load exits 14"
 
-# A build whose reader goes away (ssh closed) stops, its compiler's child too.
-rm -rf "$D"
-mkfifo "$T/err"
-(exec cat "$T/err" >/dev/null) &
-READER=$!
-disown "$READER" 2>/dev/null
-build FAKE_CC_SECONDS=97.31 >/dev/null 2>"$T/err" &
-BUILDER=$!
-sleep 2
-kill "$READER" 2>/dev/null
-for _ in $(seq 1 24); do kill -0 "$BUILDER" 2>/dev/null || break; sleep 0.5; done
-check "$(kill -0 "$BUILDER" 2>/dev/null && echo running || echo stopped)" stopped "a build whose reader went away stops"
-sleep 0.5
-check "$(pgrep -f 'sleep 97.31' | wc -l | tr -d ' ')" 0 "... and so does the compiler's child (cc1plus)"
-pkill -f 'sleep 97.31' 2>/dev/null; kill "$BUILDER" 2>/dev/null; wait "$BUILDER" 2>/dev/null
+# A build whose reader goes away (ssh closed) stops, its compiler's child too: under
+# the host's sh as it may be (bash, or dash as on Debian/Ubuntu).
+cancel_check() {
+  local shell=$1
+  rm -rf "$D" "$T/err"
+  mkfifo "$T/err"
+  (exec cat "$T/err" >/dev/null) &
+  READER=$!
+  disown "$READER" 2>/dev/null
+  build BUILD_SH="$shell" FAKE_CC_SECONDS=97.31 >/dev/null 2>"$T/err" &
+  BUILDER=$!
+  sleep 2
+  kill "$READER" 2>/dev/null
+  for _ in $(seq 1 24); do kill -0 "$BUILDER" 2>/dev/null || break; sleep 0.5; done
+  check "$(kill -0 "$BUILDER" 2>/dev/null && echo running || echo stopped)" stopped "($shell) a build whose reader went away stops"
+  sleep 0.5
+  check "$(pgrep -f '^sleep 97[.]31' | wc -l | tr -d ' ')" 0 "($shell) ... and so does the compiler's child (cc1plus)"
+  pkill -f '^sleep 97[.]31' 2>/dev/null; kill "$BUILDER" 2>/dev/null; wait "$BUILDER" 2>/dev/null
+  S=$(cat "$T/src-dir" 2>/dev/null); [ -n "$S" ] && rm -rf "$S"
+}
+cancel_check sh
+if command -v dash >/dev/null; then cancel_check dash; else echo "skip (no dash here) cancel under dash"; fi
 S=$(cat "$T/src-dir" 2>/dev/null); [ -n "$S" ] && rm -rf "$S"
 chmod -R u+rwx "$T" 2>/dev/null; rm -rf "$T"
 if [ "$fails" -eq 0 ]; then echo "SCRIPT CHECKS PASSED"; else echo "SCRIPT CHECKS FAILED: $fails"; exit 1; fi
