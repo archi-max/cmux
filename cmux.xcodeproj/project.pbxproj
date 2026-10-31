@@ -1925,6 +1925,7 @@
 		C0A714000000000000000002 /* ContentView+ComputerUseCommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A714000000000000000001 /* ContentView+ComputerUseCommandPalette.swift */; };
 		F02D5E1E7F70FB44242D747A /* ContentView+CurrentWorkCommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C30683E64A47DAACCBF1952 /* ContentView+CurrentWorkCommandPalette.swift */; };
 		C0DEF0A90000000000000001 /* ContentView+ForkAgentConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEF0A90000000000000002 /* ContentView+ForkAgentConversation.swift */; };
+		45FBD3EEA1D101A19B7DC3A1 /* ContentView+GoToFileCommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB13A8758BFB9112C57D1628 /* ContentView+GoToFileCommandPalette.swift */; };
 		4B3E7A9C0D1F2E5A6B7C8D01 /* ContentView+KeymapPresetCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B3E7A9C0D1F2E5A6B7C8D02 /* ContentView+KeymapPresetCommands.swift */; };
 		D7AB00000000000000000003 /* ContentView+MoveTabToNewWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AB00000000000000000004 /* ContentView+MoveTabToNewWorkspace.swift */; };
 		137DEBC7453F4ABBBCB8D39A /* ContentView+PaneResizeCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CD684C40FC4F36BD3A91EE /* ContentView+PaneResizeCommands.swift */; };
@@ -6635,6 +6636,7 @@
 		C0A714000000000000000001 /* ContentView+ComputerUseCommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+ComputerUseCommandPalette.swift"; sourceTree = "<group>"; };
 		6C30683E64A47DAACCBF1952 /* ContentView+CurrentWorkCommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+CurrentWorkCommandPalette.swift"; sourceTree = "<group>"; };
 		C0DEF0A90000000000000002 /* ContentView+ForkAgentConversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+ForkAgentConversation.swift"; sourceTree = "<group>"; };
+		BB13A8758BFB9112C57D1628 /* ContentView+GoToFileCommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+GoToFileCommandPalette.swift"; sourceTree = "<group>"; };
 		4B3E7A9C0D1F2E5A6B7C8D02 /* ContentView+KeymapPresetCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+KeymapPresetCommands.swift"; sourceTree = "<group>"; };
 		D7AB00000000000000000004 /* ContentView+MoveTabToNewWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+MoveTabToNewWorkspace.swift"; sourceTree = "<group>"; };
 		B4CD684C40FC4F36BD3A91EE /* ContentView+PaneResizeCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView+PaneResizeCommands.swift"; sourceTree = "<group>"; };
@@ -12715,6 +12717,7 @@
 				4BA87A04E7D6A824E632C790 /* GoToFilePaletteModel.swift */,
 				CC01416E69C9236736CBD827 /* GoToFileRanking.swift */,
 				9618285EDBD93AE2F5A125B5 /* GoToFileSnapshotLoader.swift */,
+				BB13A8758BFB9112C57D1628 /* ContentView+GoToFileCommandPalette.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -16068,6 +16071,7 @@
 				C0A714000000000000000002 /* ContentView+ComputerUseCommandPalette.swift in Sources */,
 				F02D5E1E7F70FB44242D747A /* ContentView+CurrentWorkCommandPalette.swift in Sources */,
 				C0DEF0A90000000000000001 /* ContentView+ForkAgentConversation.swift in Sources */,
+				45FBD3EEA1D101A19B7DC3A1 /* ContentView+GoToFileCommandPalette.swift in Sources */,
 				4B3E7A9C0D1F2E5A6B7C8D01 /* ContentView+KeymapPresetCommands.swift in Sources */,
 				D7AB00000000000000000003 /* ContentView+MoveTabToNewWorkspace.swift in Sources */,
 				137DEBC7453F4ABBBCB8D39A /* ContentView+PaneResizeCommands.swift in Sources */,
