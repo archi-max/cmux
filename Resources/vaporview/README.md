@@ -121,7 +121,10 @@ The Swift side (`Sources/Panels/FilePreviewWaveformSession.swift`,
 opened file over the `cmux-waveform:` URL scheme, persists the settings,
 saves and loads session files, and lets VaporView's keys through to the page
 while it has focus (`WaveformViewerShortcuts`);
-`Sources/Panels/WaveformViewerStrings.swift` localizes the page's strings; and
+`Sources/Panels/WaveformViewerStrings.swift` localizes the page's strings;
+`Sources/Panels/WaveformTerminalLinks.swift` (adapted from
+`src/extension_core/terminal_links.ts`) turns ⌘-clicked times and instance
+paths in a terminal into marker moves and added signals; and
 `Sources/Panels/WaveformFSDBHelper.swift` installs and runs the FSDB helper on
 an SSH workspace's host and relays the page's FSDB requests to it.
 
