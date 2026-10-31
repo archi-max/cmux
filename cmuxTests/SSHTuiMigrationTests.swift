@@ -724,6 +724,109 @@ struct SSHTuiMigrationTests {
         #expect(launch.autoConnectRemoteConfiguration)
     }
 
+    /// A terminal saved in an SSH workspace without a host terminal (a local
+    /// shell opened from a file preview, or a pane whose create never finished)
+    /// restores as a process-free pane that no provider adopts. It must not
+    /// claim another Mac disconnected, and its Retry must open a host terminal.
+    @Test("A restored SSH tab with no host terminal retries onto the host", .timeLimit(.minutes(1)))
+    @MainActor
+    func unattachedRestoredSSHTerminalRetriesOntoHost() async throws {
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let originalTabManager = appDelegate.tabManager
+        let manager = originalTabManager ?? TabManager()
+        appDelegate.tabManager = manager
+        let workspace = manager.addWorkspace(select: false)
+        defer {
+            if manager.tabs.contains(where: { $0.id == workspace.id }) { manager.closeWorkspace(workspace, recordHistory: false) }
+            appDelegate.tabManager = originalTabManager
+        }
+        let config = configuration()
+        let connection = SSHTuiConnection(configuration: config)
+        workspace.remoteConfiguration = config
+        let catalog = SurfaceCatalog.shared
+        let provider = CloudTerminalPlacementTestProvider(machine: .init(rawValue: connection.id))
+        catalog.register(provider)
+        defer {
+            provider.release.resolve(true)
+            catalog.unregister(machine: provider.machine)
+        }
+        workspace.cloudVMBinding = WorkspaceCloudVMBinding(vmID: connection.id, isBase: false, remoteWorkspaceID: provider.remote.id)
+        let paneID = try #require(workspace.focusedPanelId.flatMap { workspace.paneId(forPanelId: $0) })
+        let saved = SessionPanelSnapshot(
+            id: UUID(), type: .terminal, title: "alice@host:~/project", customTitle: nil, directory: nil,
+            isPinned: false, isManuallyUnread: false, listeningPorts: [], ttyName: "ttys011",
+            terminal: nil, browser: nil, markdown: nil, filePreview: nil, rightSidebarTool: nil
+        )
+        let restoredID = try #require(workspace.createPanel(
+            from: saved, inPane: paneID, snapshotWorkspaceId: nil, shouldRestoreSingleDefaultCloudTerminal: false
+        ))
+        #expect(catalog.projectionIncludingPendingRestore(forPanel: restoredID) == nil)
+
+        let notice = try #require(workspace.cloudTerminalReconnectOverlayPresentation(forSurfaceId: restoredID))
+        #expect(notice.showsReconnectButton)
+        #expect(!notice.title.contains("Mac"), "An SSH host is not another Mac: \(notice.title)")
+        #expect(!notice.detail.contains("Mac"), "An SSH host is not another Mac: \(notice.detail)")
+
+        #expect(workspace.reconnectCloudTerminalSurface(surfaceId: restoredID))
+        let replacement = try #require(
+            workspace.cloudPendingCreations.values.first { $0.machine == provider.machine },
+            "Retry left the pane with nothing to reconnect to"
+        )
+        #expect(workspace.paneId(forPanelId: replacement.panelID) == paneID)
+        _ = await provider.creationStarted.result
+        // Bonsplit finishes the tab close on a later main-queue turn.
+        for _ in 0..<100 where workspace.panels[restoredID] != nil { await Task.yield() }
+        #expect(workspace.panels[restoredID] == nil, "The process-free pane is replaced, not left beside the new one")
+        #expect(provider.requestedWorkspaces == [provider.remote.id])
+        #expect(provider.requestedCommands == [connection.shellCommand])
+    }
+
+    /// Cmd+T from that pane is a new terminal where the pane belongs, not a
+    /// local shell that would come back dead on the next relaunch.
+    @Test("A new tab beside a restored SSH tab with no host terminal runs on the host")
+    @MainActor
+    func newTabFromUnattachedRestoredSSHTerminalIsRemote() throws {
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let originalTabManager = appDelegate.tabManager
+        let manager = originalTabManager ?? TabManager()
+        appDelegate.tabManager = manager
+        let workspace = manager.addWorkspace(select: false)
+        defer {
+            if manager.tabs.contains(where: { $0.id == workspace.id }) { manager.closeWorkspace(workspace, recordHistory: false) }
+            appDelegate.tabManager = originalTabManager
+        }
+        let config = configuration()
+        let connection = SSHTuiConnection(configuration: config)
+        workspace.remoteConfiguration = config
+        let catalog = SurfaceCatalog.shared
+        let provider = CloudTerminalPlacementTestProvider(machine: .init(rawValue: connection.id))
+        catalog.register(provider)
+        defer {
+            provider.release.resolve(true)
+            catalog.unregister(machine: provider.machine)
+        }
+        workspace.cloudVMBinding = WorkspaceCloudVMBinding(vmID: connection.id, isBase: false, remoteWorkspaceID: provider.remote.id)
+        let paneID = try #require(workspace.focusedPanelId.flatMap { workspace.paneId(forPanelId: $0) })
+        let saved = SessionPanelSnapshot(
+            id: UUID(), type: .terminal, title: "alice@host:~/project", customTitle: nil, directory: nil,
+            isPinned: false, isManuallyUnread: false, listeningPorts: [], ttyName: "ttys011",
+            terminal: nil, browser: nil, markdown: nil, filePreview: nil, rightSidebarTool: nil
+        )
+        let restoredID = try #require(workspace.createPanel(
+            from: saved, inPane: paneID, snapshotWorkspaceId: nil, shouldRestoreSingleDefaultCloudTerminal: false
+        ))
+        let restoredTab = try #require(workspace.surfaceIdFromPanelId(restoredID))
+        workspace.bonsplitController.selectTab(restoredTab)
+        let localBefore = workspace.panels.values.compactMap { $0 as? TerminalPanel }.filter { $0.surface.ioMode != .manualMirror }.count
+
+        let outcome = workspace.newTerminalSurfaceOutcome(inPane: paneID, focus: false)
+
+        #expect(outcome.isAccepted)
+        let localAfter = workspace.panels.values.compactMap { $0 as? TerminalPanel }.filter { $0.surface.ioMode != .manualMirror }.count
+        #expect(localAfter == localBefore, "Cmd+T started a local shell in an SSH workspace")
+        #expect(workspace.cloudPendingCreations.values.contains { $0.machine == provider.machine })
+    }
+
     @Test("Native SSH respawn preserves its surface and executes only through the provider")
     @MainActor
     func nativeSSHRespawnUsesProviderReplacement() async throws {
