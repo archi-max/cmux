@@ -15,8 +15,12 @@ import AppKit
 
 @MainActor final class FilePreviewPanel {
     var workspaceId: UUID
+    let filePath: String
     let nativeViewSessions = NativeViewSessions()
-    init(workspaceId: UUID) { self.workspaceId = workspaceId }
+    init(workspaceId: UUID, filePath: String = "/w/a.vcd") {
+        self.workspaceId = workspaceId
+        self.filePath = filePath
+    }
 }
 
 final class SavingTextView: NSTextView {
@@ -62,19 +66,13 @@ final class SavingTextView: NSTextView {
     enum BreakpointMark { case enabled, conditional, disabled, lost }
 }
 
-/// The watches part of WaveformDebuggerEvaluate (the real one needs the app): kept per workspace.
+/// The prompt of WaveformDebuggerEvaluate (the real one needs the app).
 @MainActor enum WaveformDebuggerEvaluate {
-    static var watches: [UUID: [String]] = [:]
     /// The condition prompt: what it was shown, what it answers (nil: cancelled).
     static var prompted: [String?] = []
     static var promptAnswer: String?
     static func promptCondition(current: String?, for label: String, window: NSWindow?) -> String? {
         prompted.append(current)
         return promptAnswer
-    }
-    static func snapshot(of workspace: UUID) -> [String]? { watches[workspace].flatMap { $0.isEmpty ? nil : $0 } }
-    static func restore(_ items: [String]?, in workspace: UUID) {
-        guard let items, !items.isEmpty else { return }
-        watches[workspace] = items
     }
 }

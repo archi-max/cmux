@@ -129,8 +129,24 @@ endmodule
     // Signal breakpoints the page reports are kept, and a new page gets everything back.
     LB.signalsReported(["items": [["path": ["TOP", "u_core", "count"], "kind": "equals", "value": "'h3", "enabled": true, "condition": "limit > 2"]]],
                        waveform: waveform)
-    expect(LB.signals[workspace]?.first?.condition == "limit > 2" && LB.signals[workspace]?.first?.pageItem["condition"] as? String == "limit > 2",
-           "a signal breakpoint's condition is kept: \(String(describing: LB.signals[workspace]))")
+    expect(LB.signals(for: waveform).first?.condition == "limit > 2" && LB.signals(for: waveform).first?.pageItem["condition"] as? String == "limit > 2",
+           "a signal breakpoint's condition is kept: \(LB.signals(for: waveform))")
+    // Review M3: a second viewer in the workspace (another dump) keeps its own.
+    let other = FilePreviewPanel(workspaceId: workspace, filePath: "/w/b.vcd")
+    LB.signalsReported(["items": [["path": ["TOP", "y"], "kind": "change", "enabled": true]]], waveform: other)
+    LB.watchesReported(["items": ["y + 1"]], waveform: other)
+    LB.watchesReported(["items": ["count"]], waveform: waveform)
+    expect(LB.signals(for: waveform).map(\.path) == [["TOP", "u_core", "count"]] && LB.signals(for: other).map(\.path) == [["TOP", "y"]],
+           "signal breakpoints are kept per viewer's dump: \(LB.signals(for: waveform).map(\.path)) \(LB.signals(for: other).map(\.path))")
+    expect(LB.watches(for: waveform) == ["count"] && LB.watches(for: other) == ["y + 1"], "and watches")
+    other.nativeViewSessions.waveform.calls.removeAll()
+    LB.pageLoaded(other)
+    for _ in 0..<20 where other.nativeViewSessions.waveform.calls.count < 3 { try? await Task.sleep(nanoseconds: 20_000_000) }
+    let otherRestore = other.nativeViewSessions.waveform.calls.first { $0.function == "restoreBreakpoints" }?.argument["items"] as? [[String: Any]]
+    let otherWatches = other.nativeViewSessions.waveform.calls.first { $0.function == "restoreWatches" }?.argument["items"] as? [String]
+    expect(otherRestore?.compactMap { $0["path"] as? [String] } == [["TOP", "y"]] && otherWatches == ["y + 1"],
+           "the other viewer's page gets its own back: \(String(describing: otherRestore)) \(String(describing: otherWatches))")
+    LB.watchesReported(["items": []], waveform: waveform)
     page.calls.removeAll()
     LB.pageLoaded(waveform)
     for _ in 0..<20 where page.calls.count < 2 { try? await Task.sleep(nanoseconds: 20_000_000) }
@@ -143,30 +159,38 @@ endmodule
     view.string = source
     _ = LB.gutterClicked(view, lineStart: lineStart(4, in: source))
     _ = LB.gutterClicked(view, lineStart: lineStart(1, in: source))
-    WaveformDebuggerEvaluate.watches[workspace] = ["count + 1", "limit"]
+    LB.watchesReported(["items": ["count + 1", "limit"]], waveform: waveform)
     if let first = LB.marks[workspace]?.first { LB.setCondition(first.id, "count == 3", in: workspace) }
     let saved = LB.snapshot(of: workspace)
     let data = try? JSONEncoder().encode(saved)
     let decoded = data.flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }
-    expect(decoded == saved && decoded?.lines?.map(\.line) == [4, 1] && decoded?.signals?.count == 1,
+    expect(decoded == saved && decoded?.lines?.map(\.line) == [4, 1] && decoded?.signalsByDump?["/w/a.vcd"]?.count == 1
+           && decoded?.signalsByDump?["/w/b.vcd"]?.count == 1,
            "the snapshot round-trips: \(String(describing: decoded))")
-    expect(decoded?.lines?.first?.condition == "count == 3" && decoded?.signals?.first?.condition == "limit > 2",
+    expect(decoded?.lines?.first?.condition == "count == 3" && decoded?.signalsByDump?["/w/a.vcd"]?.first?.condition == "limit > 2",
            "conditions are in it: \(String(describing: decoded?.lines?.first))")
     let olderMark = try? JSONDecoder().decode(LB.Mark.self, from: Data(
         #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","path":"/a.sv","line":1,"text":"x","enabled":true,"anyInstance":false,"lost":false}"#.utf8))
     let olderSignal = try? JSONDecoder().decode(LB.SignalBreakpoint.self, from: Data(#"{"path":["a"],"kind":"change","enabled":true}"#.utf8))
     expect(olderMark != nil && olderMark?.condition == nil && olderSignal != nil, "older marks and signal breakpoints decode")
-    expect(decoded?.watches == ["count + 1", "limit"], "the watches are in it: \(String(describing: decoded?.watches))")
-    // An older manifest (no watches key) still decodes.
-    let older = try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: Data(#"{"signals":[]}"#.utf8))
-    expect(older != nil && older?.watches == nil, "a manifest without watches decodes: \(String(describing: older))")
+    expect(decoded?.watchesByDump?["/w/a.vcd"] == ["count + 1", "limit"] && decoded?.watchesByDump?["/w/b.vcd"] == ["y + 1"],
+           "the watches are in it, per dump: \(String(describing: decoded?.watchesByDump))")
+    // An older manifest (one list for the workspace) still decodes, and any viewer gets that list.
+    let older = try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: Data(
+        #"{"signals":[{"path":["TOP","z"],"kind":"change","enabled":true}],"watches":["z"]}"#.utf8))
+    let olderWorkspace = UUID()
+    LB.restore(older, in: olderWorkspace)
+    let olderViewer = FilePreviewPanel(workspaceId: olderWorkspace, filePath: "/w/c.vcd")
+    expect(LB.signals(for: olderViewer).map(\.path) == [["TOP", "z"]] && LB.watches(for: olderViewer) == ["z"],
+           "an older manifest's lists go to its viewers: \(String(describing: older))")
     // Only watches: still saved.
     let watchOnly = UUID()
-    WaveformDebuggerEvaluate.watches[watchOnly] = ["state"]
-    expect(LB.snapshot(of: watchOnly)?.watches == ["state"], "a workspace with only watches saves them")
+    LB.watchesReported(["items": ["state"]], waveform: FilePreviewPanel(workspaceId: watchOnly))
+    expect(LB.snapshot(of: watchOnly)?.watchesByDump?["/w/a.vcd"] == ["state"], "a workspace with only watches saves them")
     let restored = UUID()
     LB.restore(decoded, in: restored)
-    expect(WaveformDebuggerEvaluate.watches[restored] == ["count + 1", "limit"], "restored watches go back to the workspace")
+    expect(LB.watches(for: FilePreviewPanel(workspaceId: restored)) == ["count + 1", "limit"]
+           && LB.watches(for: FilePreviewPanel(workspaceId: restored, filePath: "/w/b.vcd")) == ["y + 1"], "restored watches go back per dump")
     let reopened = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
     // A header line above, and the declaration line changed.
     reopened.string = "// header\n" + source.replacingOccurrences(of: "  logic [7:0] count, limit;", with: "  logic [7:0] count, limit; // widths")
