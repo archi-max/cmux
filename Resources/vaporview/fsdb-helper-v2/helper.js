@@ -252,6 +252,9 @@ function workerFor(signalId) {
 function enqueue(w, task, front = false) {
   task.tid = nextTid++;
   task.epoch = epoch;
+  // A part of a cancelled request (the cancel landed while its handler was between awaits, before
+  // it scattered): never queued, and failed so its promise settles. The handler's error is not sent.
+  if (task.req && task.req.cancelled) { setImmediate(() => failTasks([task], 'cancelled')); return task; }
   // Callers may hold a worker that has since died or been recycled: its
   // replacement (same index) takes the task; with no replacement it fails.
   if (workers[w.i] !== w) {
@@ -431,7 +434,11 @@ function splitWalks(req, ids) {
   const waits = [];
   const coldIds = ids.filter((id) => !splitting.has(id) && !workerFor(id).state.cached.includes(id));
   for (const id of ids) {
-    if (splitting.has(id)) { waits.push(splitting.get(id).then((r) => [id, r])); continue; }
+    if (splitting.has(id)) {
+      const q = splitting.get(id);
+      q.sp.reqs.add(req); (req.splits || (req.splits = [])).push(q.sp);
+      waits.push(q.then((r) => [id, r])); continue;
+    }
     const owner = workerFor(id);
     // A lone narrow signal is split only when no worker is in background work:
     // every slice waits for its worker's current reader load (uninterruptible,
@@ -445,10 +452,22 @@ function splitWalks(req, ids) {
     const n = workers.length;
     const cuts = [0, ...Array.from({ length: n - 1 }, (_, k) => Math.floor(timeEnd * (k + 1) / n)), 1.8e19];
     const paths = workers.map(() => tmpPath(`s${id}`));
-    const p = Promise.all(workers.map((w, k) => runTask(w, { op: 'walkSlice', signalId: id, s: cuts[k], e: cuts[k + 1], path: paths[k] })))
-      .then((slices) => runTask(owner, { op: 'adopt', signalId: id, paths }, true).then(() => slices))
+    // Shared by every request that waits for it (sp.reqs); cancelling the last of them cancels
+    // it (handlers.cancel): queued slices are dropped, running ones finish, nothing is adopted.
+    // allSettled: the tmp files are removed only once no slice is still writing one.
+    const sp = { reqs: new Set([req]), cancelled: false, tasks: [] };
+    (req.splits || (req.splits = [])).push(sp);
+    const part = (w, task, front) => { sp.tasks.push({ w, task }); return runTask(w, task, front); };
+    const p = Promise.allSettled(workers.map((w, k) => part(w, { op: 'walkSlice', signalId: id, s: cuts[k], e: cuts[k + 1], path: paths[k], req: sp })))
+      .then((rs) => {
+        const bad = rs.find((r) => r.status === 'rejected');
+        if (bad) { throw bad.reason; }
+        const slices = rs.map((r) => r.value);
+        return part(owner, { op: 'adopt', signalId: id, paths, req: sp }, true).then(() => slices);
+      })
       .then((slices) => ({ ms: performance.now() - t0, slices: slices.map((r) => r.count) }))
       .finally(() => { if (splitting.get(id) === p) { splitting.delete(id); } for (const f of paths) { fs.rmSync(f, { force: true }); } });
+    p.sp = sp;
     splitting.set(id, p);
     waits.push(p.then((r) => [id, r]));
   }
@@ -635,20 +654,21 @@ function dropDerived(d) {
   if (w.state.cached.includes(d.id)) { runTask(w, { op: 'free', signalIds: [d.id] }).catch(() => {}); }
 }
 
-function ensureDerived(ids, force = false) {
+// opts.deadlineAt (performance.now() ms): a searchAll's budget for a derived signal only it uses.
+function ensureDerived(ids, force = false, opts = {}) {
   const waits = [];
   for (const id of ids) {
     const d = derived.get(id);
     if (!d) { continue; }
     if (d.pending) { waits.push(d.pending); continue; }
     if (!force && workerFor(id).state.cached.includes(id)) { continue; }
-    d.pending = materialize(d).finally(() => { d.pending = null; });
+    d.pending = materialize(d, opts).finally(() => { d.pending = null; });
     waits.push(d.pending);
   }
   return waits.length ? Promise.all(waits) : null;
 }
 
-async function materialize(d) {
+async function materialize(d, { deadlineAt } = {}) {
   const t0 = performance.now();
   const ep = epoch;
   const live = () => { if (epoch !== ep || derived.get(d.id) !== d) { throw new Error('file reopened'); } };
@@ -674,8 +694,14 @@ async function materialize(d) {
     const lr = await Promise.all(loads);
     live();
     const t1 = performance.now();
-    const r = await runTask(R, { op: 'derive', signalId: d.id, program: d.program, deadlineMs: DERIVE_DEADLINE_MS,
+    const left = deadlineAt === undefined ? DERIVE_DEADLINE_MS : Math.min(DERIVE_DEADLINE_MS, deadlineAt - t1);
+    if (left <= 0) { throw new Error('search budget used up'); }
+    const r = await runTask(R, { op: 'derive', signalId: d.id, program: d.program, deadlineMs: left,
       operands: d.operands.map((id) => (paths.has(id) ? { id, path: paths.get(id) } : { id })) });
+    if (derived.get(d.id) !== d) {  // dropped meanwhile (its search ended): don't leave the result stored
+      runTask(R, { op: 'free', signalIds: [d.id] }).catch(() => {});
+      throw new Error('derived signal dropped');
+    }
     Object.assign(d, { count: r.count, xz: !!r.xz, steps: r.steps, ms: performance.now() - t0, loadMs: t1 - t0, mergeMs: r.ms,
       walks: lr.flat().filter((e) => e && !e.cached).length });
     return r;
@@ -982,19 +1008,32 @@ async function runSearchAll(req) {
   const started = performance.now();
   const remaining = () => Math.max(1, budgetMs - (performance.now() - started));
   if (req.expr !== undefined && !/(^|[^\w$])\$(?![\w$])/.test(req.expr)) {
-    // No `$`: one temporary derived signal, true = any bit 1.
+    // No `$`: one temporary derived signal, true = any bit 1. Its materialization gets the
+    // search's budget (a derive it creates is stopped at the deadline; a shared existing one is
+    // only no longer waited for), and the reply has the `$` path's shape.
     const { d, created } = defineDerived(`|(${req.expr})`);
+    const deadlineAt = started + budgetMs;
+    const overBudget = (e) => /took longer than|budget used up|derived signal dropped/.test(String(e && e.message));
     try {
       let r = null;
       for (let attempt = 0; attempt < 3 && !req.cancelled; attempt++) {
-        const p = ensureDerived([d.id], attempt > 0);
-        if (p) { await p; }
+        const p = ensureDerived([d.id], attempt > 0, created ? { deadlineAt } : {});
+        if (p) {
+          p.catch(() => {});  // may settle after we stop waiting
+          let timer;
+          const out = await Promise.race([p.then(() => 'ok', (e) => e), new Promise((res) => { timer = setTimeout(() => res('budget'), remaining()); })]);
+          clearTimeout(timer);
+          if (out === 'budget' || (out instanceof Error && overBudget(out))) { break; }
+          if (out instanceof Error) { throw out; }
+        }
         if (req.cancelled || performance.now() - started > budgetMs) { break; }
         try { r = await single(req, 'search', d.id, { t, dir, value: '1' }); break; } catch (e) { if (!/DERIVED_EVICTED/.test(e.message)) { throw e; } }
       }
       const timedOut = !r && !req.cancelled;
-      return { matches: r && r.t !== null ? [{ signalId: d.id, path: req.expr, t: r.t }] : [], found: r && r.t !== null ? 1 : 0,
-        searched: r ? 1 : 0, walked: 0, total: 1, timedOut, complete: !!r, incomplete: r ? null : { timedOut } };
+      const found = r && r.t !== null ? 1 : 0;
+      return { matches: found ? [{ signalId: d.id, path: req.expr, t: r.t }] : [], found, searched: r ? 1 : 0, walked: 0, indexed: 0,
+        errors: 0, unreadable: [], retried: 0, total: 1, timedOut, yields: 0, firstMatchMs: found ? +(performance.now() - started).toFixed(1) : null,
+        complete: !!r, incomplete: r ? null : { timedOut, cancelled: !!req.cancelled, unsearched: 1, errors: 0, failedSignals: [] } };
     } finally {
       if (created) { dropDerived(d); }
     }
@@ -1169,11 +1208,13 @@ function fileHeader(f) {
   if (hdr !== undefined) { f.hdr = hdr; }
   return hdr || null;
 }
-// Header manifest: <key dir>/manifest.json {id: [count, bits, xz, size, mtimeMs]}, so
-// count can answer file-only signals right after open without reading 200
-// headers on the request path (26.9 ms -> 0). An entry is used only while its
-// file's size and mtime match. Written (tmp + rename) 1.5 s after files change,
-// headers it lacks read in small chunks off the request path; flushed at close.
+// Header manifest: <key dir>/manifest.json {v: 2, entries: {id: [count, bits, xz, size, mtimeMs,
+// ino, ctimeMs]}}, so count can answer file-only signals right after open without reading 200
+// headers on the request path (26.9 ms -> 0). An entry is used only while its file's stamp
+// (size, mtime, inode, ctime) matches and the file is one the worker would adopt (regular,
+// ours, nlink 1). Written (tmp + rename) 1.5 s after files change, the headers it lacks read
+// one by one with async I/O off the request path; flushed at open, close and shutdown.
+// v1 manifests (383ddd6) are ignored and rewritten.
 const MANIFEST = 'manifest.json';
 // The file identity an entry is trusted for: size, mtime, inode, ctime (a rename-replace gets a
 // new inode; utimes can't set ctime).
@@ -1278,7 +1319,10 @@ const handlers = {
     widthOf.clear();
     index = null;
     derived.clear(); derivedByKey.clear(); derivedByName.clear();
-    if (activeSearch) { activeSearch.cancelled = true; activeSearch = null; }
+    if (activeSearch) {  // ends with its terminal line {id, cancelled: true, reason: 'reopened'} (verify F1)
+      const a = activeSearch; activeSearch = null;
+      if (inflight.get(a.id) === a) { handlers.cancel({ target: a.id, reason: 'reopened' }); } else { a.cancelled = true; }
+    }
     if (want !== workers.length) { spawnPool(want); } else { route.clear(); rr = 0; }
     for (const w of workers) {
       const lost = [...w.queue, ...w.bgQueue]; w.queue = []; w.bgQueue = []; w.warming = false;
@@ -1515,11 +1559,23 @@ const handlers = {
     const req = inflight.get(target);
     if (!req) { return { cancelled: false }; }
     let dropped = 0, running = 0;
+    // (a recycled worker's task runs on its replacement, workers[w.i]: verify F8)
+    const runner = (w, task) => [w, workers[w.i]].find((x) => x && x.busy === task);
     for (const { w, task } of req.parts || []) {
-      if (dequeue(w, task)) { dropped++; } else if (w.busy === task) {
-        running++; task.done = () => {};
-        if (task.bg && !task.yieldSent && w.pid) { task.yieldSent = true; try { process.kill(w.pid, 'SIGUSR2'); } catch (e) { /* gone */ } }
+      if (dequeue(w, task)) { dropped++; continue; }
+      const x = runner(w, task);
+      if (!x) { continue; }  // already answered
+      running++; task.done = () => {};
+      if (task.bg && !task.yieldSent && x.pid) { task.yieldSent = true; try { process.kill(x.pid, 'SIGUSR2'); } catch (e) { /* gone */ } }
+    }
+    for (const sp of req.splits || []) {  // split walks no other request waits for are cancelled too
+      sp.reqs.delete(req);
+      if (sp.reqs.size || sp.cancelled) { continue; }
+      sp.cancelled = true;
+      for (const { w, task } of sp.tasks) {
+        if (dequeue(w, task)) { dropped++; failTasks([task], 'cancelled'); } else if (runner(w, task)) { running++; }
       }
+      for (const [id, q] of splitting) { if (q.sp === sp) { splitting.delete(id); } }  // a new request starts afresh
     }
     req.cancelled = true;
     if (req.onCancel) { req.onCancel(); }
@@ -1564,7 +1620,11 @@ send({ id: 0, ready: true, pid: process.pid, workers: workers.length });
 
 readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   if (!line.trim()) { return; }
-  if (line.length > MAX_LINE) { send({ id: -1, error: `request longer than ${MAX_LINE} bytes` }); return; }
+  if (line.length > MAX_LINE) {  // answered under the request's own id when it can be read (verify F6)
+    const m = /[{,]\s*"id"\s*:\s*(\d+)\s*[,}]/.exec(line);
+    send({ id: m ? Number(m[1]) : -1, error: `request longer than ${MAX_LINE} bytes` });
+    return;
+  }
   let req;
   try { req = JSON.parse(line); } catch (e) { send({ id: -1, error: 'bad json' }); return; }
   const t0 = process.hrtime.bigint();
@@ -1604,6 +1664,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
     if (!req.cancelled) { send({ id: req.id, error: String((e && e.message) || e) }); }
   } finally {
     if (inflight.get(req.id) === req) { inflight.delete(req.id); }
+    for (const sp of req.splits || []) { sp.reqs.delete(req); }  // a finished request no longer holds its splits (verify F7)
   }
 }).on('close', () => {
   if (openFile) { addon.unload(); }
