@@ -238706,6 +238706,124 @@
         }
       }
     },
+    "filePreview.waveform.fsdbStartTimedOut": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the windowed reader did not start in time"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウィンドウ表示用リーダーが時間内に起動しませんでした"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der Fensterleser wurde nicht rechtzeitig gestartet"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le lecteur fenêtré n’a pas démarré à temps"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يبدأ قارئ العرض بالنوافذ في الوقت المحدد"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el lector por ventanas no se inició a tiempo"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "視窗化讀取器未能及時啟動"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "窗口化读取器未能及时启动"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "창 단위 리더가 제때 시작되지 않았습니다"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.fsdbStoppedStarting": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the windowed reader stopped while starting"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウィンドウ表示用リーダーが起動中に停止しました"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der Fensterleser wurde beim Start beendet"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le lecteur fenêtré s’est arrêté au démarrage"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توقف قارئ العرض بالنوافذ أثناء بدء التشغيل"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el lector por ventanas se detuvo al iniciarse"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "視窗化讀取器在啟動時停止"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "窗口化读取器在启动时停止"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "창 단위 리더가 시작 중에 중지되었습니다"
+          }
+        }
+      }
+    },
     "filePreview.waveform.fsdbRetryWindowed": {
       "extractionState": "manual",
       "localizations": {
