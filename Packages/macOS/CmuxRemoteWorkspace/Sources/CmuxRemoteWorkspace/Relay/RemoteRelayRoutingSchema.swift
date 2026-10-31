@@ -68,12 +68,17 @@ struct RemoteRelayRoutingSchema {
     /// paths and URLs are refused; the remote CLI resolves and cleans them on
     /// the host first. Other characters, including spaces, are legal names.
     static func isAcceptableRemoteFileOpenPath(_ value: Any?) -> Bool {
-        guard let path = value as? String,
-              path.hasPrefix("/"),
-              path.utf8.count <= maximumRemoteFileOpenPathBytes,
-              !path.contains("\0"), !path.contains("\n"), !path.contains("\r") else { return false }
-        let components = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
-        return components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+        // Checked on UTF-8 bytes: as Characters, "/" plus a combining mark or
+        // a CRLF would hide a separator or a line break.
+        guard let path = value as? String else { return false }
+        let bytes = Array(path.utf8)
+        guard bytes.first == UInt8(ascii: "/"),
+              bytes.count <= maximumRemoteFileOpenPathBytes,
+              !bytes.contains(0), !bytes.contains(UInt8(ascii: "\n")), !bytes.contains(UInt8(ascii: "\r")) else { return false }
+        let dot = UInt8(ascii: ".")
+        return bytes.dropFirst().split(separator: UInt8(ascii: "/"), omittingEmptySubsequences: false).allSatisfy {
+            !$0.isEmpty && !$0.elementsEqual([dot]) && !$0.elementsEqual([dot, dot])
+        }
     }
 
     /// Effect names a relayed notification's `effects` patch may carry.
