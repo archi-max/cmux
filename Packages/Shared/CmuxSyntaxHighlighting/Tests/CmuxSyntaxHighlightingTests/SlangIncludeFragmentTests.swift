@@ -12,9 +12,11 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
 /// the design, whatever its ports connect to.
 @Suite(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server at ~/.local/bin/slang-server"))
 struct SlangIncludeFragmentTests {
+    /// Has a macro include of its own (not of a fragment): its ports are not the fragment's.
     static let sub = """
     module sub (input logic clk, output logic q);
       always_ff @(posedge clk) q <= ~q;
+      `include `SUB_DEFS
     endmodule
 
     """
@@ -26,6 +28,7 @@ struct SlangIncludeFragmentTests {
             .clk (clk),
             .q   (frag_sig)
         );
+        `include `DEFS_FILE
 
     """
 
@@ -62,6 +65,7 @@ struct SlangIncludeFragmentTests {
         var wrapper: URL { root.appendingPathComponent("tb_wrapper.sv") }
         var unused: URL { root.appendingPathComponent("unused.sv") }
         var body: URL { root.appendingPathComponent("tb/body.sv") }
+        var defs: URL { root.appendingPathComponent("tb/defs.svh") }
     }
 
     /// Runs `check` on a workspace with the fixture and a build file for it, then stops the server
@@ -75,11 +79,14 @@ struct SlangIncludeFragmentTests {
         try unused.write(to: root.appendingPathComponent("unused.sv"), atomically: true, encoding: .utf8)
         try fragment.write(to: root.appendingPathComponent("tb/top_tb.sv"), atomically: true, encoding: .utf8)
         try body.write(to: root.appendingPathComponent("tb/body.sv"), atomically: true, encoding: .utf8)
+        try "// defines\n".write(to: root.appendingPathComponent("tb/defs.svh"), atomically: true, encoding: .utf8)
         let real = LanguageServerSession.realPath(root.path)
         let build = """
         --top tb_wrapper
         +define+TB_FILE=\\"\(real)/tb/top_tb.sv\\"
         +define+BODY_FILE=\\"\(real)/tb/body.sv\\"
+        +define+DEFS_FILE=\\"\(real)/tb/defs.svh\\"
+        +define+SUB_DEFS=\\"\(real)/tb/defs.svh\\"
         \(real)/sub.sv
         \(real)/tb_wrapper.sv
         \(real)/unused.sv
@@ -135,6 +142,48 @@ struct SlangIncludeFragmentTests {
     @Test func includeDirectivesAreRead() {
         let text = "`include \"a/b.svh\"\n  `include <c.sv> // `include \"commented.sv\"\n`include `TB_FILE\n// `include \"no.sv\"\n"
         #expect(LanguageServerSession.includeDirectives(in: text) == ["a/b.svh", "c.sv", "`TB_FILE"])
+    }
+
+    @Test func includeDirectivesKeepSlashesInQuotesAndSkipBlockComments() {
+        let text = "`include \"a//b.sv\" // `include \"no.sv\"\n/* `include \"no2.sv\"\n `include `NO3 */ `include \"yes.sv\"\n/* one line */`include `YES\n"
+        #expect(LanguageServerSession.includeDirectives(in: text) == ["a//b.sv", "yes.sv", "`YES"])
+    }
+
+    @Test func includeTargetsMatchTheFullPath() {
+        typealias S = LanguageServerSession
+        // Next to the includer.
+        #expect(S.includeMatch(target: "body.sv", declaringFile: "/w/a/top.sv", file: "/w/a/body.sv", fileExists: { _ in true }) == .exact)
+        #expect(S.includeMatch(target: "/w/b/body.sv", declaringFile: "/w/a/top.sv", file: "/w/b/body.sv", fileExists: nil) == .exact)
+        // a/body.sv is not b/body.sv.
+        #expect(S.includeMatch(target: "body.sv", declaringFile: "/w/a/top.sv", file: "/w/b/body.sv", fileExists: { $0 == "/w/a/body.sv" }) == nil)
+        #expect(S.includeMatch(target: "/w/a/body.sv", declaringFile: "/w/a/top.sv", file: "/w/b/body.sv", fileExists: nil) == nil)
+        // Found through an include directory (not next to the includer, or can't tell on an SSH host).
+        #expect(S.includeMatch(target: "body.sv", declaringFile: "/w/a/top.sv", file: "/w/b/body.sv", fileExists: { _ in false }) == .suffix)
+        #expect(S.includeMatch(target: "b/body.sv", declaringFile: "/w/top.sv", file: "/w/x/b/body.sv", fileExists: nil) == .suffix)
+        #expect(S.includeMatch(target: "x/body.sv", declaringFile: "/w/a/top.sv", file: "/w/b/body.sv", fileExists: nil) == nil)
+    }
+
+    @Test func aMacroExpansionIsReadFromTheHover() {
+        let hover = "DefineDirective TB_FILE  \nFrom `ws/build.f`  \n\n\n---\n\nExpands to   \n````systemverilog\n\"/w/tb/top_tb.sv\"\n````"
+        #expect(LanguageServerSession.macroIncludeTarget(fromHover: hover) == "/w/tb/top_tb.sv")
+        #expect(LanguageServerSession.macroIncludeTarget(fromHover: "Expands to\n```systemverilog\n<x.svh>\n```") == "x.svh")
+        #expect(LanguageServerSession.macroIncludeTarget(fromHover: "logic clk") == nil)
+    }
+
+    @Test func aFragmentWithItsOwnMacroIncludeIsStillPlaced() async throws {
+        try await Self.withFixture { fixture in
+            // `.q (frag_sig)`: declared at the top of this fragment, which has a macro include of its own.
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 3, character: 16), identifier: "frag_sig")
+            #expect(paths == ["tb_wrapper.frag_sig"])
+        }
+    }
+
+    @Test func aModuleWithAMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
+        try await Self.withFixture { fixture in
+            // `.clk` of `dut`: sub's port. sub has a macro include, but of defs.svh, not of this fragment.
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 10), identifier: "clk")
+            #expect(!paths.contains("tb_wrapper.dut.clk"))
+        }
     }
 
     @Test func aModuleFileStillUsesGetInstances() async throws {
