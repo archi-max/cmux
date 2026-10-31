@@ -377,6 +377,22 @@ struct SlangIncludeFragmentTests {
         }
     }
 
+    @Test func aFailedInstanceCountIsNotOneInstance() async throws {
+        try await Self.withFixture { fixture in
+            // s1.d's width needs getInstances (one instance of ssub). A timeout is thrown, not taken
+            // for one instance.
+            await fixture.session.setDeclarationInstancesErrorForTesting(.timeout(method: "workspace/executeCommand"))
+            await #expect(throws: LanguageServerError.self) {
+                _ = try await fixture.session.slangPortAliases(of: "tb_wrapper.s1.d")
+            }
+            // A path slang can't resolve: no instances, so no width and no alias.
+            await fixture.session.setDeclarationInstancesErrorForTesting(.responseError(code: LanguageServerSession.unresolvedPathCode, message: "unresolved"))
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.s1.d").isEmpty)
+            await fixture.session.setDeclarationInstancesErrorForTesting(nil)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.s1.d") == ["tb_wrapper.sd"])
+        }
+    }
+
     @Test func aMacroIncludeOfAnotherFileIsNotTheIncluder() async throws {
         try await Self.withFixture { fixture async throws in
             // sub `include`s `SUB_DEFS (defs.svh), not the fragment; tb_wrapper includes body.sv through `BODY_FILE.
