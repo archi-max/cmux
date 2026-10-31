@@ -222,7 +222,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     private func startSession() async {
         guard let textView,
-              let context = FilePreviewLanguageDocumentContext.resolve(
+              let context = await FilePreviewLanguageDocumentContext.resolve(
                   languageId: Self.languageId,
                   panel: textView.panel as? FilePreviewPanel,
                   filePath: filePath

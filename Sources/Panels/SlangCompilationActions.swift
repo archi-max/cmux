@@ -346,7 +346,7 @@ enum SlangCompilationActions {
     /// The server a document in the build file's folder would get, started if needed.
     private static func primarySession(for file: ExplorerFile) async -> (session: LanguageServerSession, context: FilePreviewLanguageDocumentContext)? {
         let workspace = AppDelegate.shared?.workspaceFor(tabId: file.workspaceId)
-        guard let context = FilePreviewLanguageDocumentContext.resolve(
+        guard let context = await FilePreviewLanguageDocumentContext.resolve(
             languageId: languageId,
             workspace: workspace,
             filePath: file.path,
