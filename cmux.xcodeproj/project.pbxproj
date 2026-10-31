@@ -2211,6 +2211,7 @@
 		FE5996040000000000000002 /* FileExplorerRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5996040000000000000001 /* FileExplorerRowView.swift */; };
 		CFSF00000000000000000009 /* FileExplorerSearchController+Cloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFSR00000000000000000009 /* FileExplorerSearchController+Cloud.swift */; };
 		CFSF00000000000000000010 /* FileExplorerSearchController+Lifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFSR00000000000000000010 /* FileExplorerSearchController+Lifecycle.swift */; };
+		6519B8BB6579148460850A63 /* FileExplorerSearchController+SSH.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD2BE7F015F0AB719204C7CE /* FileExplorerSearchController+SSH.swift */; };
 		FE001103 /* FileExplorerSearchController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE001003 /* FileExplorerSearchController.swift */; };
 		FE5996050000000000000002 /* FileExplorerSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5996050000000000000001 /* FileExplorerSearchField.swift */; };
 		FE5996060000000000000002 /* FileExplorerSearchResultCellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5996060000000000000001 /* FileExplorerSearchResultCellView.swift */; };
@@ -6916,6 +6917,7 @@
 		FE5996040000000000000001 /* FileExplorerRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExplorerRowView.swift; sourceTree = "<group>"; };
 		CFSR00000000000000000009 /* FileExplorerSearchController+Cloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileExplorerSearchController+Cloud.swift"; sourceTree = "<group>"; };
 		CFSR00000000000000000010 /* FileExplorerSearchController+Lifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileExplorerSearchController+Lifecycle.swift"; sourceTree = "<group>"; };
+		FD2BE7F015F0AB719204C7CE /* FileExplorerSearchController+SSH.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileExplorerSearchController+SSH.swift"; sourceTree = "<group>"; };
 		FE001003 /* FileExplorerSearchController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExplorerSearchController.swift; sourceTree = "<group>"; };
 		FE5996050000000000000001 /* FileExplorerSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExplorerSearchField.swift; sourceTree = "<group>"; };
 		FE5996060000000000000001 /* FileExplorerSearchResultCellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileExplorerSearchResultCellView.swift; sourceTree = "<group>"; };
@@ -12701,6 +12703,7 @@
 				0D10F73113F55349CE0E475D /* ChiefHomeConversationRows.swift */,
 				43BEE6BFA7E4C4634347345D /* SSHFileSearchCommand.swift */,
 				38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */,
+				FD2BE7F015F0AB719204C7CE /* FileExplorerSearchController+SSH.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -16255,6 +16258,7 @@
 				FE5996040000000000000002 /* FileExplorerRowView.swift in Sources */,
 				CFSF00000000000000000009 /* FileExplorerSearchController+Cloud.swift in Sources */,
 				CFSF00000000000000000010 /* FileExplorerSearchController+Lifecycle.swift in Sources */,
+				6519B8BB6579148460850A63 /* FileExplorerSearchController+SSH.swift in Sources */,
 				FE001103 /* FileExplorerSearchController.swift in Sources */,
 				FE5996050000000000000002 /* FileExplorerSearchField.swift in Sources */,
 				FE5996060000000000000002 /* FileExplorerSearchResultCellView.swift in Sources */,

@@ -5,6 +5,8 @@ enum FileSearchScope: Equatable, Sendable {
     case unsupported
     case local
     case remoteCloud(CloudVMFileExplorerProvider)
+    /// An SSH workspace; searches run on the host over the Files panel's ssh ControlPath.
+    case remoteSSH(SSHFileExplorerProvider)
 
     /// Derives the search scope from the active file provider.
     init(provider: FileExplorerProvider?) {
@@ -12,6 +14,8 @@ enum FileSearchScope: Equatable, Sendable {
             self = .local
         } else if let cloudProvider = provider as? CloudVMFileExplorerProvider {
             self = .remoteCloud(cloudProvider)
+        } else if let sshProvider = provider as? SSHFileExplorerProvider {
+            self = .remoteSSH(sshProvider)
         } else {
             self = .unsupported
         }
@@ -21,6 +25,7 @@ enum FileSearchScope: Equatable, Sendable {
         switch (lhs, rhs) {
         case (.local, .local), (.unsupported, .unsupported): return true
         case let (.remoteCloud(a), .remoteCloud(b)): return a.id == b.id
+        case let (.remoteSSH(a), .remoteSSH(b)): return a === b
         default: return false
         }
     }
@@ -30,6 +35,7 @@ enum FileSearchScope: Equatable, Sendable {
         case .unsupported: return "unsupported"
         case .local: return "local"
         case .remoteCloud: return "remoteCloud"
+        case .remoteSSH: return "remoteSSH"
         }
     }
 
