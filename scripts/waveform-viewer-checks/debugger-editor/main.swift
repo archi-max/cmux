@@ -219,6 +219,56 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     await settle()
     expect(lineRanges.indices.allSatisfy { attribute(.backgroundColor, line: $0) == nil }, "an edit meanwhile: nothing drawn")
 
+    // An `include`d testbench fragment (design_b's adapter_tb.sv, included into tb_wrapper): its
+    // lines belong to the file's pseudo-module, placed at tb_wrapper. slang's answers are recorded
+    // from slang-server 0.3.1 on that design: tb_wrapper.dfp_ready is driven by the dut's port.
+    let fragmentSource = """
+    logic [NUM_PORTS-1:0] dfp_read = 1'b0;
+    logic [NUM_PORTS-1:0] dfp_ready;
+    int errors = 0;
+    cache_adapter #(
+        .NUM_PORTS(NUM_PORTS)
+    ) dut (
+        .clk           (clk),
+        .dfp_read      (dfp_read),
+        .dfp_ready     (dfp_ready)
+    );
+    """
+    WaveformDebugger.stepping = true
+    textView.string = source
+    WaveformDebuggerEditorHighlights.clear(in: textView)
+    let fragmentView = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+    fragmentView.string = fragmentSource
+    var fragmentScan = SystemVerilogInlineScan.Cache(units: SystemVerilogInlineScan.units(of: fragmentSource as NSString))
+    fragmentScan.fragmentModule = "adapter_tb.sv"
+    let fragmentLines = fragmentScan.lines(in: NSRange(location: 0, length: (fragmentSource as NSString).length))
+    let fragmentEditor = FilePreviewLanguageFeatures(textView: fragmentView, path: "/tb/adapter_tb/adapter_tb.sv")
+    FilePreviewLanguageFeatures.all = [fragmentEditor]
+    fragmentEditor.session.cones["tb_wrapper.dfp_ready"] = [SlangConeEntry(path: "tb_wrapper.dut.dfp_ready", location: nil)]
+    WaveformSourceLink.values = [
+        15: ["tb_wrapper.dfp_read": "0", "tb_wrapper.dfp_ready": "1", "tb_wrapper.errors": "00000000", "tb_wrapper.clk": "1"],
+        5: ["tb_wrapper.dfp_read": "0", "tb_wrapper.dfp_ready": "0", "tb_wrapper.errors": "00000000", "tb_wrapper.clk": "1"],
+    ]
+    page.previousTimes = [15: 5]
+    let fragmentNow = ["dfp_read": "0", "dfp_ready": "1", "errors": "00000000", "clk": "1"]
+    WaveformDebuggerEditorHighlights.valuesShown(.init(
+        editor: fragmentEditor, textView: fragmentView, lines: fragmentLines, waveform: waveform, time: 15,
+        values: ["adapter_tb.sv": fragmentNow], instances: ["adapter_tb.sv": .init(design: "tb_wrapper", dump: "tb_wrapper")]
+    ))
+    await settle()
+    let fragmentLayout = fragmentView.layoutManager!
+    let fragmentText = fragmentSource as NSString
+    func fragmentAttribute(_ key: NSAttributedString.Key, line: Int, column: Int = 4) -> NSColor? {
+        fragmentLayout.temporaryAttribute(key, atCharacterIndex: fragmentLines[line].contentRange.location + column, effectiveRange: nil) as? NSColor
+    }
+    let readyAt = fragmentText.range(of: "dfp_ready", options: [], range: fragmentLines[1].contentRange).location
+    expect(isWarm(fragmentLayout.temporaryAttribute(.backgroundColor, atCharacterIndex: readyAt, effectiveRange: nil) as? NSColor),
+           "the fragment's changed signal (dfp_ready) is tinted where it is declared")
+    expect(isWarm(fragmentAttribute(.backgroundColor, line: 8)) && fragmentAttribute(.foregroundColor, line: 8) == nil,
+           "its driver, the dut's .dfp_ready connection, is a driver line")
+    expect(fragmentEditor.session.asked == ["tb_wrapper.dfp_ready"], "the cone asked at the fragment's place: \(fragmentEditor.session.asked)")
+    expect(page.highlightCalls.last == [["tb_wrapper", "dfp_ready"]], "its row lights up: \(String(describing: page.highlightCalls.last))")
+
     print(failures == 0 ? "DEBUGGER EDITOR CHECKS PASSED" : "DEBUGGER EDITOR CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
 }
