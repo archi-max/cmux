@@ -620,6 +620,11 @@ enum WaveformSourceLink {
     ) async -> Bool {
         // getScope("") also lists packages; only instances are tops.
         guard let tops = try? await session.slangScopeChildren(""), tops.allSatisfy({ $0.kind == "Package" }) else { return false }
+        // A profile made for this waveform's testbench comes before guessing a top level.
+        if await autoPickProfile(session: session, waveform: waveform, progress: progress) {
+            state.setByLink = false
+            return true
+        }
         var candidate: (module: String, file: String)?
         search: for top in await Self.dumpChildren([], in: waveform) ?? [] where top.isScope {
             if let file = (try? await session.slangFilesContainingModule(top.name))?.first {
@@ -669,6 +674,32 @@ enum WaveformSourceLink {
         try? await session.slangSetTopLevel("")
         state.failedAt = Date()
         return false
+    }
+
+    /// Builds from the profile whose `--top` names the waveform's top scope (or the scope below it).
+    private static func autoPickProfile(
+        session: LanguageServerSession,
+        waveform: FilePreviewPanel,
+        progress: @MainActor @Sendable (String) -> Void
+    ) async -> Bool {
+        let tops = (await Self.dumpChildren([], in: waveform) ?? []).filter(\.isScope).map(\.name)
+        guard !tops.isEmpty else { return false }
+        var children: [String: [String]] = [:]
+        for top in tops.prefix(8) {
+            children[top] = (await Self.dumpChildren([top], in: waveform) ?? []).filter(\.isScope).map(\.name)
+        }
+        return await SlangCompilationActions.autoPickProfile(session: session, dumpTops: tops, dumpChildren: children, progress: progress)
+    }
+
+    /// When a waveform opens, its workspace's servers with no top level build from the matching profile.
+    private static func autoPickProfiles(for waveform: FilePreviewPanel) async {
+        var seen = Set<ObjectIdentifier>()
+        for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId) {
+            guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted,
+                  Self.topLevelState(for: session).elaboration == nil,
+                  let tops = try? await session.slangScopeChildren(""), tops.allSatisfy({ $0.kind == "Package" }) else { continue }
+            _ = await autoPickProfile(session: session, waveform: waveform) { _ in }
+        }
     }
 
     /// Asks before changing the server's top level, which every open editor of the folder shares.
@@ -938,6 +969,9 @@ enum WaveformSourceLink {
 
     /// The viewer opened its file: picks up the marker a restored session put back.
     static func waveformOpened(_ waveform: FilePreviewPanel) {
+        Task { @MainActor in
+            await Self.autoPickProfiles(for: waveform)
+        }
         Task { @MainActor in
             guard let time = await waveform.nativeViewSessions.waveform.callLink("markerTime") as? NSNumber else { return }
             Self.markerMoved(in: waveform, time: time.int64Value)

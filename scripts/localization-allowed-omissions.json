@@ -5293,5 +5293,30 @@
     "identityLocales": {
       "fr": "Suggestions is the standard French noun for this label and shares the English spelling."
     }
+  },
+  "command.slang.subtitle": {
+    "class": "brand",
+    "source": "SystemVerilog"
+  },
+  "slangProfile.header.config": {
+    "class": "technical",
+    "source": "server.json"
+  },
+  "slangProfile.header.noTop": {
+    "class": "technical",
+    "source": "slang: %@"
+  },
+  "slangProfile.header.withTop": {
+    "source": "slang: %1$@ · top %2$@",
+    "identityLocales": {
+      "es": "slang is the tool's name and top is the Verilog term for the top-level module that Spanish hardware engineers use as is; a translated entry is still required."
+    }
+  },
+  "slangProfile.menu.profileTops": {
+    "source": "top %@",
+    "identityLocales": {
+      "es": "top is the Verilog term for the top-level module that Spanish hardware engineers use as is; a translated entry is still required.",
+      "fr": "top is the Verilog term for the top-level module that French hardware engineers use as is; a translated entry is still required."
+    }
   }
 }

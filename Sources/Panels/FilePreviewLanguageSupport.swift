@@ -235,7 +235,7 @@ struct FilePreviewLanguageDocumentContext {
 
     /// How long a discovered root is reused for files of the same folder.
     private static let discoveredRootLifetime: TimeInterval = 120
-    private static let remoteProbeTimeout: TimeInterval = 10
+    static let remoteProbeTimeout: TimeInterval = 10
     /// Per host and folder: the root found (nil: no marker) and when.
     private static var discoveredRoots: [String: (root: String?, at: Date)] = [:]
 
@@ -256,11 +256,7 @@ struct FilePreviewLanguageDocumentContext {
     private static func discoveredRemoteRoot(for remotePath: String, configuration: WorkspaceRemoteConfiguration) async -> String? {
         let key = configuration.destination + "|" + (remotePath as NSString).deletingLastPathComponent
         if let cached = cachedRoot(key) { return cached }
-        let arguments = configuration.batchSSHCommandArguments(
-            command: SlangWorkspaceRoot.probeCommand(forFile: remotePath),
-            effectiveSSHOptions: configuration.fileOperationSSHOptions
-        )
-        guard let output = await runProbe(arguments: arguments, timeout: remoteProbeTimeout) else {
+        guard let output = await runRemoteShell(SlangWorkspaceRoot.probeCommand(forFile: remotePath), configuration: configuration) else {
             // Unreachable host: don't cache, so the next file tries again.
             return nil
         }
@@ -269,30 +265,54 @@ struct FilePreviewLanguageDocumentContext {
         return root
     }
 
+    /// Runs a POSIX shell command on the workspace's SSH host over its batch route (the
+    /// `cmux ssh` ControlPath). Its stdout, or nil when ssh or the command fails or after `timeout`.
+    static func runRemoteShell(
+        _ command: String,
+        configuration: WorkspaceRemoteConfiguration,
+        input: Data? = nil,
+        timeout: TimeInterval = remoteProbeTimeout
+    ) async -> String? {
+        let arguments = configuration.batchSSHCommandArguments(
+            command: command,
+            effectiveSSHOptions: configuration.fileOperationSSHOptions
+        )
+        return await runProbe(arguments: arguments, input: input, timeout: timeout)
+    }
+
     /// Runs `/usr/bin/ssh arguments`; its stdout, or nil on failure or after `timeout`.
-    nonisolated private static func runProbe(arguments: [String], timeout: TimeInterval) async -> String? {
+    /// Output is read while the command runs, so a large listing can't fill the pipe and stall it.
+    nonisolated private static func runProbe(arguments: [String], input: Data? = nil, timeout: TimeInterval) async -> String? {
         await withCheckedContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = arguments
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            process.standardInput = FileHandle.nullDevice
             let once = FilePreviewProbeOnce(continuation)
-            process.terminationHandler = { process in
+            DispatchQueue.global().async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = arguments
+                let output = Pipe()
+                let stdin = Pipe()
+                process.standardOutput = output
+                process.standardError = FileHandle.nullDevice
+                process.standardInput = input == nil ? FileHandle.nullDevice : stdin
+                do {
+                    try process.run()
+                } catch {
+                    once.resume(nil)
+                    return
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                    if process.isRunning { process.terminate() }
+                    once.resume(nil)
+                }
+                if let input {
+                    DispatchQueue.global().async {
+                        try? stdin.fileHandleForWriting.write(contentsOf: input)
+                        try? stdin.fileHandleForWriting.close()
+                    }
+                }
                 let data = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
                 once.resume(process.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil)
-            }
-            do {
-                try process.run()
-            } catch {
-                once.resume(nil)
-                return
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning { process.terminate() }
-                once.resume(nil)
             }
         }
     }

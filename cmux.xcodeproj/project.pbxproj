@@ -2238,7 +2238,6 @@
 		01EE5DC99896BA30240EF1B5 /* FilePreviewImageSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D1450569A797AA7937677D9 /* FilePreviewImageSession.swift */; };
 		C0DE86520000000000000009 /* FilePreviewImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE8652000000000000000A /* FilePreviewImageView.swift */; };
 		5A7EF000000000000000A1B3 /* FilePreviewInlineValueOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B4 /* FilePreviewInlineValueOverlay.swift */; };
-		5A7EF000000000000000A1B5 /* SlangCompilationActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */; };
 		C0DE49950000000000000001 /* FilePreviewKindResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE49950000000000000002 /* FilePreviewKindResolverTests.swift */; };
 		C01E00B10000000000000001 /* FilePreviewLanguageFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00B10000000000000002 /* FilePreviewLanguageFeatures.swift */; };
 		C01E00B20000000000000001 /* FilePreviewLanguageSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00B20000000000000002 /* FilePreviewLanguageSupport.swift */; };
@@ -3679,6 +3678,9 @@
 		C51A720000000000000000B1 /* SimulatorPanelIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51A720000000000000000B2 /* SimulatorPanelIntegrationTests.swift */; };
 		C51A760000000000000000D1 /* SimulatorPanelThemeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51A760000000000000000D2 /* SimulatorPanelThemeTests.swift */; };
 		C51A710000000000000000B1 /* SimulatorPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C51A710000000000000000B2 /* SimulatorPanelView.swift */; };
+		5A7EF000000000000000A1B9 /* SlangCommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1BA /* SlangCommandPalette.swift */; };
+		5A7EF000000000000000A1B5 /* SlangCompilationActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */; };
+		5A7EF000000000000000A1B7 /* SlangProfileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B8 /* SlangProfileActions.swift */; };
 		C7B0000000000000000000F2 /* SleepyAgentCensus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0000000000000000000F1 /* SleepyAgentCensus.swift */; };
 		C7B0FACE0000000000000004 /* SleepyAgentCensusing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0FACE0000000000000005 /* SleepyAgentCensusing.swift */; };
 		C7B0FACE0000000000000002 /* SleepyAgentCounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0FACE0000000000000003 /* SleepyAgentCounts.swift */; };
@@ -6935,7 +6937,6 @@
 		7D1450569A797AA7937677D9 /* FilePreviewImageSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewImageSession.swift; sourceTree = "<group>"; };
 		C0DE8652000000000000000A /* FilePreviewImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewImageView.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000A1B4 /* FilePreviewInlineValueOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewInlineValueOverlay.swift; sourceTree = "<group>"; };
-		5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangCompilationActions.swift; sourceTree = "<group>"; };
 		C0DE49950000000000000002 /* FilePreviewKindResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewKindResolverTests.swift; sourceTree = "<group>"; };
 		C01E00B10000000000000002 /* FilePreviewLanguageFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewLanguageFeatures.swift; sourceTree = "<group>"; };
 		C01E00B20000000000000002 /* FilePreviewLanguageSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewLanguageSupport.swift; sourceTree = "<group>"; };
@@ -8354,6 +8355,9 @@
 		C51A720000000000000000B2 /* SimulatorPanelIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatorPanelIntegrationTests.swift; sourceTree = "<group>"; };
 		C51A760000000000000000D2 /* SimulatorPanelThemeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatorPanelThemeTests.swift; sourceTree = "<group>"; };
 		C51A710000000000000000B2 /* SimulatorPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SimulatorPanelView.swift; sourceTree = "<group>"; };
+		5A7EF000000000000000A1BA /* SlangCommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangCommandPalette.swift; sourceTree = "<group>"; };
+		5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangCompilationActions.swift; sourceTree = "<group>"; };
+		5A7EF000000000000000A1B8 /* SlangProfileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangProfileActions.swift; sourceTree = "<group>"; };
 		C7B0000000000000000000F1 /* SleepyAgentCensus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepyAgentCensus.swift; sourceTree = "<group>"; };
 		C7B0FACE0000000000000005 /* SleepyAgentCensusing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepyAgentCensusing.swift; sourceTree = "<group>"; };
 		C7B0FACE0000000000000003 /* SleepyAgentCounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepyAgentCounts.swift; sourceTree = "<group>"; };
@@ -11974,6 +11978,8 @@
 				5A7EF000000000000000A1B2 /* WaveformSourceLink.swift */,
 				5A7EF000000000000000A1B4 /* FilePreviewInlineValueOverlay.swift */,
 				5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */,
+				5A7EF000000000000000A1BA /* SlangCommandPalette.swift */,
+				5A7EF000000000000000A1B8 /* SlangProfileActions.swift */,
 				5A7EF000000000000000B002 /* WaveformViewerStrings.swift */,
 				5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */,
 				C0DE86520000000000000106 /* FilePreviewPDFLoadResult.swift */,
@@ -14874,10 +14880,10 @@
 				A11CE0060000000000000001 /* LICENSE in Resources */,
 				DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */,
 				A9D9000000000000000F0017 /* markdown-viewer in Resources */,
-				5A7EF00000000000000000A5 /* vaporview in Resources */,
 				FEED0000000000000000F007 /* opencode-plugin.js in Resources */,
 				FEED0000000000000000F015 /* opencode-tui-plugin.js in Resources */,
 				A5002000 /* THIRD_PARTY_LICENSES.md in Resources */,
+				5A7EF00000000000000000A5 /* vaporview in Resources */,
 				84E00D47E4584162AE53BC8D /* xterm-ghostty in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -16251,20 +16257,15 @@
 				C0DE86520000000000000101 /* FilePreviewImageLoadResult.swift in Sources */,
 				01EE5DC99896BA30240EF1B5 /* FilePreviewImageSession.swift in Sources */,
 				C0DE86520000000000000009 /* FilePreviewImageView.swift in Sources */,
+				5A7EF000000000000000A1B3 /* FilePreviewInlineValueOverlay.swift in Sources */,
+				C01E00B10000000000000001 /* FilePreviewLanguageFeatures.swift in Sources */,
+				C01E00B20000000000000001 /* FilePreviewLanguageSupport.swift in Sources */,
 				C0DE8652000000000000000B /* FilePreviewLatestLoadCoordinator.swift in Sources */,
 				C0DE8652000000000000000D /* FilePreviewLatestRequestState.swift in Sources */,
 					C01E00050000000000000001 /* FilePreviewLineNumberGutterView.swift in Sources */,
 				A5001447A5001447A5001447 /* FilePreviewMagnifyingPDFView.swift in Sources */,
 				287C15EFC945CE9D560600E3 /* FilePreviewMediaSession.swift in Sources */,
 				C0DE86520000000000000103 /* FilePreviewMediaView.swift in Sources */,
-				5A7EF00000000000000000A1 /* FilePreviewWaveformSession.swift in Sources */,
-				5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */,
-				5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */,
-				5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */,
-				5A7EF000000000000000A1B3 /* FilePreviewInlineValueOverlay.swift in Sources */,
-				5A7EF000000000000000A1B5 /* SlangCompilationActions.swift in Sources */,
-				5A7EF000000000000000B001 /* WaveformViewerStrings.swift in Sources */,
-				5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */,
 				A5001443A5001443A5001443 /* FilePreviewModeSupport.swift in Sources */,
 				A5001450A5001450A5001450 /* FilePreviewNativeBackground.swift in Sources */,
 				C986A0110000000000000001 /* FilePreviewNativeDragOwnership.swift in Sources */,
@@ -16293,14 +16294,13 @@
 				C0DE8652000000000000010F /* FilePreviewQuickLookViewCoordinator.swift in Sources */,
 				C0DE86520000000000000111 /* FilePreviewRevision.swift in Sources */,
 					C01E00040000000000000001 /* FilePreviewSyntaxStyler.swift in Sources */,
-				C01E00B10000000000000001 /* FilePreviewLanguageFeatures.swift in Sources */,
-				C01E00B20000000000000001 /* FilePreviewLanguageSupport.swift in Sources */,
 				C0DE97470000000000000001 /* FilePreviewTabMetadata.swift in Sources */,
 				C0DE97470000000000000003 /* FilePreviewTabMetadataHost.swift in Sources */,
 				D0B10016A1B2C3D4E5F60001 /* FilePreviewTextEditor.swift in Sources */,
 				0EA7EC478B6600AD4BDDB053 /* FilePreviewTextSaver.swift in Sources */,
 				DDB55536A403FB051DA28DFC /* FilePreviewTextSaveResult.swift in Sources */,
 				C0DE86520000000000000113 /* FilePreviewViewport.swift in Sources */,
+				5A7EF00000000000000000A1 /* FilePreviewWaveformSession.swift in Sources */,
 				F12748000000000000000007 /* FilePreviewWordWrapMenu.swift in Sources */,
 					F11E52270000000000005227 /* FilePreviewWordWrapSettings.swift in Sources */,
 				A5001445A5001445A5001445 /* FilePreviewWorkspaceOpenSupport.swift in Sources */,
@@ -16516,8 +16516,8 @@
 				FFC108C8FD07CF3A1C2470E7 /* MarkdownPanel+Focus.swift in Sources */,
 				A5001420 /* MarkdownPanel.swift in Sources */,
 				A50014F2 /* MarkdownPanelFileLinkResolver.swift in Sources */,
-				A5D3F001 /* MarkdownRemoteDocument.swift in Sources */,
 				A5001421 /* MarkdownPanelView.swift in Sources */,
+				A5D3F001 /* MarkdownRemoteDocument.swift in Sources */,
 				F5168A020000000000000001 /* MarkdownTypographyControl.swift in Sources */,
 				F5168A060000000000000001 /* MarkdownTypographyDefaults.swift in Sources */,
 				A50014F3 /* MarkdownViewerAssets.swift in Sources */,
@@ -17170,6 +17170,9 @@
 				C51A71F10000000000000004 /* SimulatorFocusOwnershipView.swift in Sources */,
 				C51A710000000000000000A1 /* SimulatorPanel.swift in Sources */,
 				C51A710000000000000000B1 /* SimulatorPanelView.swift in Sources */,
+				5A7EF000000000000000A1B9 /* SlangCommandPalette.swift in Sources */,
+				5A7EF000000000000000A1B5 /* SlangCompilationActions.swift in Sources */,
+				5A7EF000000000000000A1B7 /* SlangProfileActions.swift in Sources */,
 				C7B0000000000000000000F2 /* SleepyAgentCensus.swift in Sources */,
 				C7B0FACE0000000000000004 /* SleepyAgentCensusing.swift in Sources */,
 				C7B0FACE0000000000000002 /* SleepyAgentCounts.swift in Sources */,
@@ -17715,6 +17718,11 @@
 				7A0CE1000000000000000044 /* VMClientSocketCommands+Tunnel.swift in Sources */,
 				ACE4FE2A8F1CC6C0B6A673AB /* VMClientSocketCommands.swift in Sources */,
 				C10DC1000000000000000013 /* VMClientTelemetry+Live.swift in Sources */,
+				5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */,
+				5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */,
+				5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */,
+				5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */,
+				5A7EF000000000000000B001 /* WaveformViewerStrings.swift in Sources */,
 				C7B206ECEE3E020A96259AFF /* WebKitBrowserReplDriver.swift in Sources */,
 				A10020000000000000000019 /* WebSurfaceSelectionEvaluationOwner.swift in Sources */,
 				A10020000000000000000011 /* WebSurfaceSelectionReader.swift in Sources */,
