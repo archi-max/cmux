@@ -976,6 +976,46 @@ extension Harness {
         """) { r in
           check(r["rows"] as? Int == 1, "a save in the second reload holds the rows (\(r["rows"] ?? "nil"))")
           check(r["selected"] as? String == "top.clk", "and the selected signal (\(r["selected"] ?? "nil"))")
+          self.phaseZ3()
+        }
+      }
+    }
+  }
+
+  // A remove-all the old viewer handles just before it unloads is part of the
+  // view kept through the reload: a save during it writes no rows.
+  func phaseZ3() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.reloadProbe + """
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.clk' });
+        await sleep(600);
+        await C.run('waveformViewer.addVariable', { instancePath: 'top.core.acc' });
+        await sleep(600);
+        // Save right after cmux takes the old viewer's answer to the remove-all,
+        // while the reload's gap is still open.
+        let saving = null;
+        const onContextUpdate = C.onContextUpdate;
+        C.onContextUpdate = (m) => {
+          const out = onContextUpdate(m);
+          if (!saving && (m.displayedSignals || []).length === 0) {
+            C.onContextUpdate = onContextUpdate;
+            saving = C.run('vaporview.saveViewerSession');
+          }
+          return out;
+        };
+        H.toWebview({ command: 'apply-state', stateChangeType: 5, state: { displayedSignals: [] } });
+        window.cmuxWaveform.reload({});
+        await sleep(300);
+        C.onContextUpdate = onContextUpdate;
+        await saving;
+        const save = sent.filter((m) => m.type === 'saveSession').pop();
+        R.saved = save ? JSON.parse(save.text).displayedSignals.length : -1;
+        await reloaded();
+        R.rows = drawn();
+        """) { r in
+          check(r["saved"] as? Int == 0, "a remove-all just before a reload is kept through it (rows saved \(r["saved"] ?? "nil"))")
+          check(r["rows"] as? Int == 0, "and the reload shows no rows (rows drawn \(r["rows"] ?? "nil"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
