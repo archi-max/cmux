@@ -305,6 +305,8 @@ struct FilePreviewLanguageDocumentContext {
                     once.resume(nil)
                 }
                 if let input {
+                    // An early exit of ssh must not kill cmux with SIGPIPE.
+                    _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
                     DispatchQueue.global().async {
                         try? stdin.fileHandleForWriting.write(contentsOf: input)
                         try? stdin.fileHandleForWriting.close()
