@@ -289,11 +289,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let quiet = await call("return { dirty: cmuxCommands.sessionSnapshot().dirty, undo: cmuxCommands.undoDepth ? cmuxCommands.undoDepth() : -1 }") as? [String: Any]
     expect(quiet?["dirty"] as? Bool == false && quiet?["undo"] as? Int == undoBefore && undoBefore != -1,
            "Locals changes are not unsaved changes or undo steps: \(String(describing: quiet)), undo before \(String(describing: undoBefore))")
-    // A signal in Locals is not pinned: Add to Waveform still adds its row.
+    // A signal in Locals is not pinned: Add to Waveform pins it, and Locals then leaves it out (shown once).
     _ = await call("return await cmuxWaveform.link.addSignal(['top', 'core', 'alu', 'acc'])")
     await sleep(400)
     let r3 = await rows()
-    expect(r3.filter { $0 == "top.core.alu.acc" }.count == 1 && r3.contains("Locals/top.core.alu.acc"), "add pins a Locals signal: \(r3)")
+    expect(r3.filter { $0 == "top.core.alu.acc" }.count == 1 && r3.contains("[Locals]") && !r3.contains("Locals/top.core.alu.acc"), "add pins a Locals signal, shown once: \(r3)")
     let saved = await call("return cmuxCommands.sessionSnapshot().state.displayedSignals.map(d => d.groupName || d.name)") as? [String]
     expect(saved?.contains("Locals") == false && saved?.contains("top.count") == true, "sessions leave Locals out: \(String(describing: saved))")
     // Collapsed Locals still updates.
@@ -338,7 +338,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     let renamed = await rows()
     let renamedSaved = await call("return cmuxCommands.sessionSnapshot().state.displayedSignals.map(d => d.groupName || d.name)") as? [String]
-    expect(renamed.contains("[Mine]") && renamed.contains("Mine/top.core.alu.acc") && renamed.filter { $0 == "top.core.alu.acc" }.count == 1,
+    expect(renamed.contains("[Mine]") && renamed.filter { $0.hasSuffix("top.core.alu.acc") } == ["top.core.alu.acc"],
            "a renamed Locals is refilled in place: \(renamed)")
     expect(renamedSaved?.contains("Mine") == false, "and still left out of sessions: \(String(describing: renamedSaved))")
     // A restore drops Locals from the viewer (it is never in the undo state); it comes back.
@@ -352,7 +352,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let restored = await rows()
     expect(clkAdded == clkBefore + 1 && restored.filter { $0 == "top.clk" }.count == clkBefore,
            "Undo removes the user's added row: \(clkBefore) -> \(clkAdded) -> \(restored.filter { $0 == "top.clk" }.count)")
-    expect(restored.contains { $0.hasSuffix("/top.core.alu.acc") && $0.hasPrefix("Locals") }, "Locals dropped by an Undo comes back: \(restored)")
+    expect(restored.contains("[Locals]") && restored.filter { $0.hasSuffix("top.core.alu.acc") } == ["top.core.alu.acc"], "Locals dropped by an Undo comes back (acc stays pinned only): \(restored)")
     _ = await call("return await cmuxWaveform.debugger.setLocals({ path: ['top', 'core'] })")
     await sleep(400)
     // Rows the editor highlights this cycle.
