@@ -473,15 +473,21 @@ enum WaveformDebuggerLineBreakpoints {
         _ = await waveform.nativeViewSessions.waveform.callDebugger("setLineBreakpoints", argument: ["items": items])
     }
 
-    /// A new page has no breakpoints: it gets the lines and the workspace's signal breakpoints.
+    /// A new page has no breakpoints: it gets the lines, and its dump's signal breakpoints and watches.
     static func pageLoaded(_ waveform: FilePreviewPanel) {
         sent.removeObject(forKey: waveform)
         Task { @MainActor in
             await sync(waveform)
-            guard let list = signals[waveform.workspaceId], !list.isEmpty else { return }
-            _ = await waveform.nativeViewSessions.waveform.callDebugger(
-                "restoreBreakpoints", argument: ["items": list.map(\.pageItem)]
-            )
+            let list = signals(for: waveform)
+            if !list.isEmpty {
+                _ = await waveform.nativeViewSessions.waveform.callDebugger(
+                    "restoreBreakpoints", argument: ["items": list.map(\.pageItem)]
+                )
+            }
+            let expressions = watches(for: waveform)
+            if !expressions.isEmpty {
+                _ = await waveform.nativeViewSessions.waveform.callDebugger("restoreWatches", argument: ["items": expressions])
+            }
         }
     }
 
@@ -548,13 +554,28 @@ enum WaveformDebuggerLineBreakpoints {
         }
     }
 
-    /// The signal breakpoints a viewer of the workspace last had (a new page gets them back).
-    private(set) static var signals: [UUID: [SignalBreakpoint]] = [:]
+    /// Per workspace, per viewer's dump (its file path; "" for an older session's single list, which
+    /// any viewer without its own gets): the signal breakpoints and the watch expressions its page last had.
+    private(set) static var signals: [UUID: [String: [SignalBreakpoint]]] = [:]
+    private(set) static var watches: [UUID: [String: [String]]] = [:]
 
-    /// `{ event: 'breakpoints', items: [{ path, kind, value, enabled }] }` from the page.
+    /// The page's limit on an expression's length (cmux-expr.js MAX_TEXT).
+    static let maxExpressionLength = 1000
+
+    static func signals(for waveform: FilePreviewPanel) -> [SignalBreakpoint] {
+        let byDump = signals[waveform.workspaceId] ?? [:]
+        return byDump[waveform.filePath] ?? byDump[""] ?? []
+    }
+
+    static func watches(for waveform: FilePreviewPanel) -> [String] {
+        let byDump = watches[waveform.workspaceId] ?? [:]
+        return byDump[waveform.filePath] ?? byDump[""] ?? []
+    }
+
+    /// `{ event: 'breakpoints', items: [{ path, kind, value, enabled, condition }] }` from the page.
     static func signalsReported(_ body: [String: Any], waveform: FilePreviewPanel) {
         let items = body["items"] as? [[String: Any]] ?? []
-        signals[waveform.workspaceId] = items.compactMap { item in
+        signals[waveform.workspaceId, default: [:]][waveform.filePath] = items.compactMap { item in
             guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
                   kind == "change" || kind == "equals" else { return nil }
             let condition = (item["condition"] as? String).flatMap { $0.isEmpty ? nil : $0 }
@@ -564,30 +585,44 @@ enum WaveformDebuggerLineBreakpoints {
         }
     }
 
+    /// `{ event: 'watches', items: [expr, ...] }` from the page.
+    static func watchesReported(_ body: [String: Any], waveform: FilePreviewPanel) {
+        let items = (body["items"] as? [String] ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= maxExpressionLength }
+        watches[waveform.workspaceId, default: [:]][waveform.filePath] = items
+    }
+
     // MARK: Session
 
-    /// The workspace's breakpoints, for its session snapshot; nil when it has none.
+    /// The workspace's breakpoints and watches, for its session snapshot; nil when it has none.
     static func snapshot(of workspace: UUID) -> SessionWaveformBreakpointsSnapshot? {
         refreshPositions(in: workspace)
         let lines = marks[workspace] ?? []
-        let signals = self.signals[workspace] ?? []
-        let watches = WaveformDebuggerEvaluate.snapshot(of: workspace)
-        guard !lines.isEmpty || !signals.isEmpty || watches != nil else { return nil }
+        let signalsByDump = (signals[workspace] ?? [:]).filter { !$0.value.isEmpty }
+        let watchesByDump = (watches[workspace] ?? [:]).filter { !$0.value.isEmpty }
+        guard !lines.isEmpty || !signalsByDump.isEmpty || !watchesByDump.isEmpty else { return nil }
         return SessionWaveformBreakpointsSnapshot(
-            lines: lines.isEmpty ? nil : lines, signals: signals.isEmpty ? nil : signals, watches: watches
+            lines: lines.isEmpty ? nil : lines, signals: nil, watches: nil,
+            signalsByDump: signalsByDump.isEmpty ? nil : signalsByDump,
+            watchesByDump: watchesByDump.isEmpty ? nil : watchesByDump
         )
     }
 
     /// Breakpoints from a restored session: lines are placed by text when their files open,
-    /// signal breakpoints go to the workspace's viewers when their pages load.
+    /// signal breakpoints and watches go to their dumps' viewers when the pages load.
     static func restore(_ snapshot: SessionWaveformBreakpointsSnapshot?, in workspace: UUID) {
         guard let snapshot else { return }
         if let lines = snapshot.lines, !lines.isEmpty {
             marks[workspace] = lines
             changed(workspace)
         }
-        if let restored = snapshot.signals, !restored.isEmpty { signals[workspace] = restored }
-        WaveformDebuggerEvaluate.restore(snapshot.watches, in: workspace)
+        var signalsByDump = snapshot.signalsByDump ?? [:]
+        if let legacy = snapshot.signals, !legacy.isEmpty, signalsByDump[""] == nil { signalsByDump[""] = legacy }
+        if !signalsByDump.isEmpty { signals[workspace] = signalsByDump }
+        var watchesByDump = snapshot.watchesByDump ?? [:]
+        if let legacy = snapshot.watches, !legacy.isEmpty, watchesByDump[""] == nil { watchesByDump[""] = legacy }
+        if !watchesByDump.isEmpty { watches[workspace] = watchesByDump }
     }
 }
 
@@ -595,6 +630,10 @@ enum WaveformDebuggerLineBreakpoints {
 /// older manifests and for workspaces without any.
 struct SessionWaveformBreakpointsSnapshot: Codable, Sendable, Equatable {
     var lines: [WaveformDebuggerLineBreakpoints.Mark]?
+    /// Before per-dump keys: one list for the workspace (read, not written).
     var signals: [WaveformDebuggerLineBreakpoints.SignalBreakpoint]?
     var watches: [String]? = nil
+    /// Per viewer's dump (file path).
+    var signalsByDump: [String: [WaveformDebuggerLineBreakpoints.SignalBreakpoint]]? = nil
+    var watchesByDump: [String: [String]]? = nil
 }

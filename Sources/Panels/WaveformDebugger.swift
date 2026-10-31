@@ -174,7 +174,7 @@ enum WaveformDebugger {
         }
         // Its watch expressions changed: kept for the workspace's session.
         if body["event"] as? String == "watches" {
-            WaveformDebuggerEvaluate.watchesReported(body, waveform: waveform)
+            WaveformDebuggerLineBreakpoints.watchesReported(body, waveform: waveform)
             return
         }
         // A played move, posted by the page as it moves (before the viewer's markerSet).
@@ -216,7 +216,6 @@ enum WaveformDebugger {
     /// A new page (a reload or a web content crash) starts without stepping, and doesn't say so.
     static func pageLoaded(_ waveform: FilePreviewPanel) {
         WaveformDebuggerLineBreakpoints.pageLoaded(waveform)
-        WaveformDebuggerEvaluate.pageLoaded(waveform)
         guard isStepping(waveform) else { return }
         box(waveform).state = PageState()
         stoppedStepping(waveform, editors: FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId))

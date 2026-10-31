@@ -4,12 +4,11 @@ import CmuxSyntaxHighlighting
 /// The waveform debugger's Evaluate from a SystemVerilog editor, and its watches in the session.
 /// "Evaluate at Cycle N" in the editor's context menu evaluates the selection (or the identifier
 /// clicked) in the viewer's page (cmux-expr.js), in the dump instance of the clicked line's module;
-/// the result shows in the viewer's cycle strip. The page reports its watch list
-/// (`{ event: 'watches', items }`), kept per workspace and sent back to a new page.
+/// the result shows in the viewer's cycle strip. (The page's watches are kept per viewer's dump by
+/// WaveformDebuggerLineBreakpoints, with the session's breakpoints.)
 @MainActor
 enum WaveformDebuggerEvaluate {
-    /// The page's limit on an expression's length (cmux-expr.js MAX_TEXT).
-    static let maxExpressionLength = 1000
+    static var maxExpressionLength: Int { WaveformDebuggerLineBreakpoints.maxExpressionLength }
 
     /// What a right-click at `index` evaluates: the selection when it has text and contains the
     /// click (or no click is given), else the identifier at the click (or just before it).
@@ -56,38 +55,6 @@ enum WaveformDebuggerEvaluate {
         Task { @MainActor in
             _ = await waveform.nativeViewSessions.waveform.callDebugger("evaluate", argument: argument)
         }
-    }
-
-    // MARK: Watches in the session
-
-    private(set) static var watches: [UUID: [String]] = [:]
-
-    /// `{ event: 'watches', items: [expr, ...] }` from the page.
-    static func watchesReported(_ body: [String: Any], waveform: FilePreviewPanel) {
-        let items = (body["items"] as? [String] ?? [])
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count <= maxExpressionLength }
-        watches[waveform.workspaceId] = items.isEmpty ? nil : items
-    }
-
-    /// A new page has no watches: it gets the workspace's.
-    static func pageLoaded(_ waveform: FilePreviewPanel) {
-        guard let items = watches[waveform.workspaceId], !items.isEmpty else { return }
-        Task { @MainActor in
-            _ = await waveform.nativeViewSessions.waveform.callDebugger("restoreWatches", argument: ["items": items])
-        }
-    }
-
-    /// The workspace's watches for its session snapshot; nil when it has none.
-    static func snapshot(of workspace: UUID) -> [String]? {
-        guard let items = watches[workspace], !items.isEmpty else { return nil }
-        return items
-    }
-
-    /// Watches from a restored session; they go to the workspace's viewers when their pages load.
-    static func restore(_ items: [String]?, in workspace: UUID) {
-        guard let items, !items.isEmpty else { return }
-        watches[workspace] = items
     }
 
     // MARK: Prompts
