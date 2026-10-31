@@ -1,4 +1,5 @@
 import CmuxSyntaxHighlighting
+import Foundation
 import Testing
 
 /// Inline values follow the waveform's marker without starving while the
@@ -53,5 +54,19 @@ import Testing
         #expect(throttle.phase == .idle)
         #expect(!throttle.finished(serial))
         #expect(throttle.markerMoved())
+    }
+
+    @Test func aRefreshThatNeverEndsStopsHoldingMovesBack() {
+        var throttle = WaveformRefreshThrottle()
+        let start = Date(timeIntervalSince1970: 1000)
+        let serial = throttle.scheduled()
+        throttle.started(serial, at: start)
+        #expect(!throttle.markerMoved(at: start.addingTimeInterval(1)))
+        // A page or language server call that never returns must not freeze the values.
+        #expect(throttle.markerMoved(at: start.addingTimeInterval(11)))
+        let next = throttle.scheduled()
+        #expect(!throttle.finished(serial))
+        throttle.started(next, at: start.addingTimeInterval(11))
+        #expect(throttle.phase == .running)
     }
 }

@@ -6,11 +6,19 @@ import AppKit
 enum PreviewMode { case text, waveform }
 
 @MainActor final class FilePreviewWaveformSession {
-    var state: [String: Any] = [:]
+    /// Marker time -> the posedge before its cycle's (cycleAt's previousTime).
+    var previousTimes: [Int64: Int64] = [:]
+    /// How long cycleAt takes to answer.
+    var delay: UInt64 = 0
     var highlightCalls: [[[String]]] = []
     func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
         switch function {
-        case "state": return state
+        case "cycleAt":
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+            let time = ((argument as? [String: Any])?["time"] as? NSNumber)?.int64Value ?? -1
+            var cycle: [String: Any] = ["time": time]
+            cycle["previousTime"] = previousTimes[time]
+            return cycle
         case "highlightRows":
             highlightCalls.append((argument as? [String: Any])?["paths"] as? [[String]] ?? [])
             return highlightCalls.last?.count
@@ -28,9 +36,12 @@ enum PreviewMode { case text, waveform }
 
 final class LanguageServerSession: @unchecked Sendable {
     var cones: [String: [SlangConeEntry]] = [:]
+    var failing: Set<String> = []
     var asked: [String] = []
+    struct NotCompiled: Error {}
     func slangDriverCone(_ path: String) async throws -> [SlangConeEntry] {
         asked.append(path)
+        if failing.contains(path) { throw NotCompiled() }
         return cones[path] ?? []
     }
 }

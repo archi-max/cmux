@@ -38,7 +38,8 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     let waveform = FilePreviewPanel()
     WaveformSourceLink.waveform = waveform
     let page = waveform.nativeViewSessions.waveform
-    page.state = ["time": 15, "previousTime": 5]
+    page.previousTimes = [15: 5]
+    editor.session.failing = ["tb.dut.pc_next"]
     editor.session.cones["tb.dut.ex_mem"] = [SlangConeEntry(path: "tb.dut.ex_stg.ex_mem", location: nil)]
     let scope = "TOP.tb.dut"
     func values(_ pairs: [String: String]) -> [String: String] {
@@ -81,11 +82,36 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     let rows = page.highlightCalls.last ?? []
     expect(rows == ["dmem_pending", "ex_mem", "pc", "pc_next"].map { ["TOP", "tb", "dut", $0] }, "the changed signals' rows light up in the waveform: \(rows)")
 
-    // The same cycle again: cones come from the cache, the rows are not sent again.
+    // The same cycle again: the cone that failed (design not compiled yet) is asked again,
+    // the one that answered comes from the cache; the rows are not sent again.
     let calls = page.highlightCalls.count
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
-    expect(editor.session.asked.count == 2 && page.highlightCalls.count == calls, "cached cones, unchanged rows not resent")
+    expect(editor.session.asked == ["tb.dut.ex_mem", "tb.dut.pc_next", "tb.dut.pc_next"] && page.highlightCalls.count == calls,
+           "a failed cone is not cached, an answered one is; unchanged rows not resent: \(editor.session.asked)")
+
+    // Typing above the highlights moves them with the text; clearing must still take them all away.
+    textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "// x\n")
+    WaveformDebuggerEditorHighlights.clear(in: textView)
+    let full = NSRange(location: 0, length: textView.textStorage?.length ?? 0)
+    var leftover = 0
+    for index in 0..<full.length {
+        for key in [NSAttributedString.Key.backgroundColor, .foregroundColor]
+        where layout.temporaryAttribute(key, atCharacterIndex: index, effectiveRange: nil) != nil {
+            leftover += 1
+        }
+    }
+    expect(leftover == 0, "no highlight is left behind after an edit: \(leftover)")
+    textView.string = source
+
+    // A newer refresh while an older one still waits for the page: the newer one draws.
+    page.delay = 150_000_000
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    WaveformDebuggerEditorHighlights.valuesShown(shown())
+    try? await Task.sleep(nanoseconds: 400_000_000)
+    page.delay = 0
+    expect(isWarm(attribute(.backgroundColor, line: 4)), "a superseded refresh does not wipe the newer one")
 
     // The selected row's declaration and driver.
     let decl = LSPLocation(uri: URL(fileURLWithPath: "/rtl/cpu.sv"), range: LSPRange(start: LSPPosition(line: 2, character: 15), end: LSPPosition(line: 2, character: 27)))
@@ -100,14 +126,14 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     WaveformDebuggerEditorHighlights.showSelection(nil, drivers: [], near: nil)
     expect(attribute(.backgroundColor, line: 2) == nil && isWarm(attribute(.backgroundColor, line: 4)), "a new selection takes the old one's lines away and the cycle's come back")
 
-    // The page moved on: these values are not its cycle's.
-    page.state = ["time": 25, "previousTime": 15]
+    // Values read before the first cycle: nothing to compare with.
+    page.previousTimes = [:]
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
-    expect(lineRanges.indices.allSatisfy { attribute(.backgroundColor, line: $0) == nil }, "values read at another cycle draw nothing")
+    expect(lineRanges.indices.allSatisfy { attribute(.backgroundColor, line: $0) == nil }, "no cycle before: nothing drawn")
 
     // Not stepping: nothing drawn, the rows go out.
-    page.state = ["time": 15, "previousTime": 5]
+    page.previousTimes = [15: 5]
     WaveformDebugger.stepping = false
     WaveformDebuggerEditorHighlights.valuesShown(shown())
     await settle()
