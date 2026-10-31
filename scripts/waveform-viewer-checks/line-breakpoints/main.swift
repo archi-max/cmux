@@ -91,6 +91,8 @@ endmodule
 
     // Conditions: the dot's menu asks for one (cmux's prompt), the dot shows it, the viewer gets it
     // with the line's instance; the page's list changes or clears it.
+    _ = LB.gutterClicked(view, lineStart: lineStart(2, in: view.string))
+    await LB.sync(waveform)
     let conditionKey = (lastItems().first?["key"] as? String) ?? ""
     let conditionId = UUID(uuidString: conditionKey)
     if let conditionId { LB.setEnabled(conditionId, true, in: workspace) }
