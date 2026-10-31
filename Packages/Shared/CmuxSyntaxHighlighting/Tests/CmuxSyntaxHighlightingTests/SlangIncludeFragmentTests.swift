@@ -28,6 +28,11 @@ struct SlangIncludeFragmentTests {
         typedef logic [3:0] nib_t;
     endpackage
 
+    /// Its `b` is not a port; tb_wrapper still names it in a connection (an elaboration error).
+    module isub (input logic a);
+        logic b;
+    endmodule
+
     /// Widths through types: a parameter's typedef and a type parameter vary per instance.
     module tsub #(parameter W = 1, parameter type T = logic [3:0]) (input logic [3:0] x4, input T xt, input pk::bit_t xb, input pk::nib_t xn);
         typedef logic [W-1:0] wt;
@@ -67,6 +72,7 @@ struct SlangIncludeFragmentTests {
         logic t1;
         logic [3:0] tn;
         tsub #(.W(4)) t (.x4 (t4), .xt (t4), .xb (t1), .xn (tn));
+        isub ib (.a (t1), .b (t1));
         logic gq;
         for (genvar i = 0; i < 1; i++) begin : g
             sub u (.clk (clk), .q (gq));
@@ -312,9 +318,11 @@ struct SlangIncludeFragmentTests {
         let text = "package pk;\n  typedef logic [3:0] a_t;\nendpackage\nmodule m #(parameter W = 1);\n  typedef logic [W-1:0] b_t;\n  typedef logic [3:0] c_t;\n  typedef struct packed {\n    logic [W-1:0] f;\n  } d_t;\nendmodule\ntypedef logic [1:0] e_t;\n"
         #expect(S.typedefIsFixed(in: text, line: 1))
         #expect(!S.typedefIsFixed(in: text, line: 4))
-        #expect(S.typedefIsFixed(in: text, line: 5))
+        // Outside a package, only a type the hover gives as built in is trusted, even when the
+        // typedef reads fixed (a module's typedef can still be overridden through a parameter's use).
+        #expect(!S.typedefIsFixed(in: text, line: 5))
         #expect(!S.typedefIsFixed(in: text, line: 8))
-        #expect(S.typedefIsFixed(in: text, line: 10))
+        #expect(!S.typedefIsFixed(in: text, line: 10))
         #expect(!S.typedefIsFixed(in: "module m #(parameter type T = logic);\nendmodule\n", line: 0))
     }
 
@@ -347,7 +355,10 @@ struct SlangIncludeFragmentTests {
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.g[0].u.q").isEmpty)
             // A package's typedef is the same for every instance; a parameter's typedef or a type
             // parameter is not, whatever this instance's hover says.
-            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.t1") == ["tb_wrapper.t.xb"])
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.t1")) == ["tb_wrapper.t.xb", "tb_wrapper.ib.a"])
+            // Only ports: a connection naming something else of the child is no alias either way.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ib.b").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ib.a") == ["tb_wrapper.t1"])
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.tn") == ["tb_wrapper.t.xn"])
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.t.xt").isEmpty)
             #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.t4")) == ["tb_wrapper.t.x4"])
