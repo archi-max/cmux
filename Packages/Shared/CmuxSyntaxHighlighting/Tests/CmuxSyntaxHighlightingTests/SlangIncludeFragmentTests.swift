@@ -3,12 +3,15 @@
 import Foundation
 import Testing
 
+private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/slang-server")
+
 /// The RTL link on a file that a module pulls in with `` `include `` (a
 /// testbench body with no module of its own): slang-server's getInstances
-/// returns [] there, so the link must place the symbol another way.
-@Suite struct SlangIncludeFragmentTests {
-    static let slangServer = (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/slang-server")
-
+/// returns [] there, so the link must place the symbol another way. In a
+/// module file it must not: a module that is not under the top is not in
+/// the design, whatever its ports connect to.
+@Suite(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server at ~/.local/bin/slang-server"))
+struct SlangIncludeFragmentTests {
     static let sub = """
     module sub (input logic clk, output logic q);
       always_ff @(posedge clk) q <= ~q;
@@ -35,59 +38,108 @@ import Testing
 
     """
 
-    /// A workspace with the fragment fixture and a build file for it; nil without slang-server.
-    static func session() async throws -> (LanguageServerSession, URL)? {
-        guard FileManager.default.isExecutableFile(atPath: slangServer) else { return nil }
+    /// Compiled with the design but instantiated nowhere under the top.
+    static let unused = """
+    module unused;
+        logic x, y;
+        sub u (.clk (x), .q (y));
+    endmodule
+
+    """
+
+    struct Fixture {
+        let session: LanguageServerSession
+        let root: URL
+        var fragment: URL { root.appendingPathComponent("tb/top_tb.sv") }
+        var wrapper: URL { root.appendingPathComponent("tb_wrapper.sv") }
+        var unused: URL { root.appendingPathComponent("unused.sv") }
+    }
+
+    /// Runs `body` on a workspace with the fixture and a build file for it, then stops the server
+    /// and removes the folder, also when `body` throws.
+    static func withFixture(_ body: (Fixture) async throws -> Void) async throws {
         let root = URL(fileURLWithPath: "/tmp").appendingPathComponent("cmux-frag-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("tb"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         try sub.write(to: root.appendingPathComponent("sub.sv"), atomically: true, encoding: .utf8)
         try wrapper.write(to: root.appendingPathComponent("tb_wrapper.sv"), atomically: true, encoding: .utf8)
-        let fragmentURL = root.appendingPathComponent("tb/top_tb.sv")
-        try fragment.write(to: fragmentURL, atomically: true, encoding: .utf8)
+        try unused.write(to: root.appendingPathComponent("unused.sv"), atomically: true, encoding: .utf8)
+        try fragment.write(to: root.appendingPathComponent("tb/top_tb.sv"), atomically: true, encoding: .utf8)
         let real = LanguageServerSession.realPath(root.path)
         let build = """
         --top tb_wrapper
         +define+TB_FILE=\\"\(real)/tb/top_tb.sv\\"
         \(real)/sub.sv
         \(real)/tb_wrapper.sv
+        \(real)/unused.sv
 
         """
         try build.write(to: root.appendingPathComponent("build.f"), atomically: true, encoding: .utf8)
-        let session = LanguageServerSession(launch: .local(executablePath: slangServer, arguments: []), rootURI: root, languageId: "verilog")
-        try await session.start()
-        _ = try await session.executeCommand("slang.setBuildFile", argument: .string(real + "/build.f"), timeout: 60)
-        await session.open(uri: fragmentURL, text: fragment, version: 1)
-        return (session, fragmentURL)
+        let session = LanguageServerSession(launch: .local(executablePath: slangServerPath, arguments: []), rootURI: root, languageId: "verilog")
+        let fixture = Fixture(session: session, root: root)
+        do {
+            try await session.start()
+            _ = try await session.executeCommand("slang.setBuildFile", argument: .string(real + "/build.f"), timeout: 60)
+            await session.open(uri: fixture.fragment, text: fragment, version: 1)
+            await session.open(uri: fixture.unused, text: unused, version: 1)
+            await session.open(uri: fixture.wrapper, text: wrapper, version: 1)
+            try await body(fixture)
+        } catch {
+            await session.shutdown()
+            throw error
+        }
+        await session.shutdown()
     }
 
     @Test func aSignalTheIncluderDeclaresIsPlaced() async throws {
-        guard let (session, fragmentURL) = try await Self.session() else { return }
-        // `.clk (clk)`: the second clk, declared in tb_wrapper.
-        let paths = try await session.slangDesignPaths(uri: fragmentURL, position: LSPPosition(line: 2, character: 15), identifier: "clk")
-        await session.shutdown()
-        #expect(paths == ["tb_wrapper.clk"])
+        try await Self.withFixture { fixture in
+            // `.clk (clk)`: the second clk, declared in tb_wrapper.
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 2, character: 15), identifier: "clk")
+            #expect(paths == ["tb_wrapper.clk"])
+        }
     }
 
     @Test func aSignalTheFragmentDeclaresIsPlaced() async throws {
-        guard let (session, fragmentURL) = try await Self.session() else { return }
-        let paths = try await session.slangDesignPaths(uri: fragmentURL, position: LSPPosition(line: 0, character: 12), identifier: "frag_sig")
-        await session.shutdown()
-        #expect(paths == ["tb_wrapper.frag_sig"])
+        try await Self.withFixture { fixture in
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 0, character: 12), identifier: "frag_sig")
+            #expect(paths == ["tb_wrapper.frag_sig"])
+        }
     }
 
     @Test func anInstanceTheFragmentDeclaresIsPlaced() async throws {
-        guard let (session, fragmentURL) = try await Self.session() else { return }
-        let paths = try await session.slangDesignPaths(uri: fragmentURL, position: LSPPosition(line: 1, character: 9), identifier: "dut")
-        await session.shutdown()
-        #expect(paths == ["tb_wrapper.dut"])
+        try await Self.withFixture { fixture in
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 1, character: 9), identifier: "dut")
+            #expect(paths == ["tb_wrapper.dut"])
+        }
     }
 
     @Test func aModuleFileStillUsesGetInstances() async throws {
-        guard let (session, fragmentURL) = try await Self.session() else { return }
-        let wrapperURL = fragmentURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("tb_wrapper.sv")
-        let paths = try await session.slangDesignPaths(uri: wrapperURL, position: LSPPosition(line: 1, character: 9), identifier: "clk")
-        await session.shutdown()
-        #expect(paths == ["tb_wrapper.clk"])
+        try await Self.withFixture { fixture in
+            let paths = try await fixture.session.slangDesignPaths(uri: fixture.wrapper, position: LSPPosition(line: 1, character: 9), identifier: "clk")
+            #expect(paths == ["tb_wrapper.clk"])
+        }
+    }
+
+    @Test func aModuleNotUnderTheTopIsNotPlacedThroughItsPorts() async throws {
+        try await Self.withFixture { fixture in
+            // `.clk` and `sub` in `sub u (.clk (x), ...)` of the uninstantiated module: their
+            // declarations (sub's port, sub itself) are in the design, but this use is not.
+            let port = try await fixture.session.slangDesignPaths(uri: fixture.unused, position: LSPPosition(line: 2, character: 12), identifier: "clk")
+            #expect(port.isEmpty)
+            let type = try await fixture.session.slangDesignPaths(uri: fixture.unused, position: LSPPosition(line: 2, character: 5), identifier: "sub")
+            #expect(type.isEmpty)
+            let local = try await fixture.session.slangDesignPaths(uri: fixture.unused, position: LSPPosition(line: 1, character: 10), identifier: "x")
+            #expect(local.isEmpty)
+        }
+    }
+
+    @Test func aStoppedServerIsAnErrorNotAnEmptyAnswer() async throws {
+        try await Self.withFixture { fixture in
+            await fixture.session.shutdown()
+            await #expect(throws: LanguageServerError.self) {
+                _ = try await fixture.session.slangDesignPaths(uri: fixture.fragment, position: LSPPosition(line: 0, character: 12), identifier: "frag_sig")
+            }
+        }
     }
 }
 #endif
