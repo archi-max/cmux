@@ -37,6 +37,11 @@ const post = (msg) => self.postMessage({ type: 'toWebview', msg });
 // viewer frame, which has not asked for it.
 let capture = null;
 
+function captureSignal(signalId) {
+  capture = { signalId, json: [], lz4: [], width: 0, size: 0 };
+  try { ex.getsignaldata(...lowerU32List([signalId])); return capture; } finally { capture = null; }
+}
+
 let meta;
 function resetMeta() {
   meta = { top: [], metadata: { timeTableLoaded: false, scopeCount: 0, netlistIdCount: 0, signalIdCount: 0,
@@ -119,11 +124,43 @@ const api = {
   getsignaldata({ signalIds }) { ex.getsignaldata(...lowerU32List(signalIds)); return 'ok'; },
   // cmux: one signal's value changes as [[time, value], ...], kept in the page.
   getsignalchanges({ signalId }) {
-    capture = { signalId, json: [], lz4: [], width: 0, size: 0 };
-    let c;
-    try { ex.getsignaldata(...lowerU32List([signalId])); } finally { c = capture; capture = null; }
+    const c = captureSignal(signalId);
     if (c.lz4.length) { return decodeRecords(lz4Frame(concat(c.lz4), c.size), c.width); }
     return c.json.length ? JSON.parse(c.json.join('')) : [];
+  },
+  // cmux: the times a 1-bit signal rises (to 1 from 0, x or z) as a Float64Array,
+  // found in wellen's data without building a value per change (a clock can have millions).
+  getsignalposedges({ signalId, maxEdges }) {
+    const c = captureSignal(signalId);
+    const limit = Number(maxEdges) || Infinity;
+    let edges = new Float64Array(1024);
+    let n = 0;
+    const add = (time) => {
+      if (n >= limit) { throw new Error('too many clock edges'); }
+      if (n === edges.length) { const grown = new Float64Array(edges.length * 2); grown.set(edges); edges = grown; }
+      edges[n++] = time;
+    };
+    if (c.lz4.length) {
+      const raw = lz4Frame(concat(c.lz4), c.size);
+      const rec = 8 + c.width;
+      const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      let time = 0;
+      let previous = -1;
+      for (let i = 0; i + rec <= raw.length; i += rec) {
+        time += view.getUint32(i, true) + view.getUint32(i + 4, true) * 4294967296;
+        const value = c.width === 1 ? raw[i + 8] : -2;
+        if (value === 0x31 && previous !== -1 && previous !== 0x31) { add(time); }
+        previous = value;
+      }
+    } else if (c.json.length) {
+      let previous = null;
+      for (const [time, value] of JSON.parse(c.json.join(''))) {
+        const v = String(value);
+        if (v === '1' && previous !== null && previous !== '1') { add(Number(time)); }
+        previous = v;
+      }
+    }
+    return edges.slice(0, n);
   },
   getenumdata({ netlistIds }) { ex.getenumdata(...lowerU32List(netlistIds)); return 'ok'; },
   getparametervalues({ signalIds }) { return JSON.parse(liftString('getparametervalues', ex.getparametervalues(...lowerU32List(signalIds)))); },

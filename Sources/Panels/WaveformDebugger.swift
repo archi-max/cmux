@@ -41,8 +41,8 @@ enum WaveformDebugger {
 
     private final class Box {
         var state = PageState()
-        /// The Locals scope last asked for (dump path), so a caret move within it does nothing.
-        var localsPath: [String]?
+        /// A Locals request is on its way to the page (the page itself skips one for the same scope).
+        var settingLocals = false
         /// The row selection last highlighted in the editor.
         var selectedPath: [String]?
     }
@@ -145,17 +145,33 @@ enum WaveformDebugger {
         let editors = FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId)
         if box.state.stepping, !wasStepping {
             startFollowingCaret()
-            box.localsPath = nil
             if let editor = FilePreviewLanguageFeatures.mostRecentLinkable(inWorkspace: waveform.workspaceId) {
                 updateLocals(from: editor)
             }
         } else if !box.state.stepping, wasStepping {
-            box.localsPath = nil
-            box.selectedPath = nil
-            WaveformDebuggerEditorHighlights.forget(waveform)
-            for editor in editors {
-                WaveformDebuggerEditorHighlights.clear(in: editor.debuggerTextView)
-            }
+            stoppedStepping(waveform, editors: editors)
+        }
+    }
+
+    /// A new page (a reload or a web content crash) starts without stepping, and doesn't say so.
+    static func pageLoaded(_ waveform: FilePreviewPanel) {
+        guard isStepping(waveform) else { return }
+        box(waveform).state = PageState()
+        stoppedStepping(waveform, editors: FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId))
+    }
+
+    private static func stoppedStepping(_ waveform: FilePreviewPanel, editors: [FilePreviewLanguageFeatures]) {
+        box(waveform).selectedPath = nil
+        WaveformDebuggerEditorHighlights.forget(waveform)
+        for editor in editors {
+            WaveformDebuggerEditorHighlights.clear(in: editor.debuggerTextView)
+        }
+        // No viewer left to follow the caret for.
+        let anyStepping = boxes.objectEnumerator()?.allObjects.contains { ($0 as? Box)?.state.stepping == true } ?? false
+        if !anyStepping, let caretObserver {
+            NotificationCenter.default.removeObserver(caretObserver)
+            self.caretObserver = nil
+            localsTask?.cancel()
         }
     }
 
@@ -218,11 +234,11 @@ enum WaveformDebugger {
               let instance = editor.instanceAtCaret else { return }
         let path = HierarchyPathMapping.segments(instance.dump)
         let box = box(waveform)
-        guard !path.isEmpty, box.localsPath != path else { return }
-        box.localsPath = path
+        guard !path.isEmpty, !box.settingLocals else { return }
+        box.settingLocals = true
         Task { @MainActor in
-            let done = await waveform.nativeViewSessions.waveform.callDebugger("setLocals", argument: ["path": path]) as? Bool
-            if done != true, box.localsPath == path { box.localsPath = nil }
+            _ = await waveform.nativeViewSessions.waveform.callDebugger("setLocals", argument: ["path": path])
+            box.settingLocals = false
         }
     }
 
@@ -239,14 +255,18 @@ enum WaveformDebugger {
             let box = box(waveform)
             let path = WaveformSourceLink.dumpPath(fromPage: await waveform.nativeViewSessions.waveform.callLink("selectedSignal"))
             guard !Task.isCancelled, path != box.selectedPath else { return }
-            box.selectedPath = path
-            guard let path, let found = await WaveformSourceLink.debuggerDeclaration(ofDumpPath: path, waveform: waveform),
-                  !Task.isCancelled, isStepping(waveform) else {
+            var found: (location: LSPLocation, editor: FilePreviewLanguageFeatures)?
+            if let path { found = await WaveformSourceLink.debuggerDeclaration(ofDumpPath: path, waveform: waveform) }
+            // Cancelled: a newer selection is on its way and draws.
+            guard !Task.isCancelled else { return }
+            guard let found, isStepping(waveform) else {
+                box.selectedPath = nil
                 WaveformDebuggerEditorHighlights.showSelection(nil, drivers: [], near: nil)
                 return
             }
             let drivers = await driverReferences(of: found.location, editor: found.editor)
             guard !Task.isCancelled else { return }
+            box.selectedPath = path
             WaveformDebuggerEditorHighlights.showSelection(found.location, drivers: drivers, near: found.editor)
         }
     }

@@ -443,8 +443,12 @@
   }
 
   function onContextUpdate(m) {
-    const change = m.stateChangeType;
-    if (change === StateChangeType.User || change === StateChangeType.File) {
+    let change = m.stateChangeType;
+    // The debugger's own edits (Locals, while it dispatches quietly) and its play ticks are not the user's:
+    // no undo entries, not unsaved.
+    const debuggerChange = host().quietEvents > 0 || !!(window.cmuxDebugger && window.cmuxDebugger.isPlaying());
+    if (debuggerChange && change === StateChangeType.User) { change = null; }
+    if ((change === StateChangeType.User || change === StateChangeType.File)) {
       undoStack.push(JSON.stringify(undoState()));
       if (undoStack.length > 50) { undoStack.shift(); }
       redoStack = [];
@@ -1151,6 +1155,7 @@
     applySessionFile: ({ text, path, error }) => (error
       ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path, true)),
     sessionSnapshot: () => ({ state: plainJSON(contextSession(webviewContext)), dirty }),
+    undoDepth: () => undoStack.length,
     commandIds: () => Object.keys(COMMANDS),
     menus: MENUS,
   };
