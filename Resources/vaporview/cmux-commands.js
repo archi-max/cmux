@@ -450,7 +450,7 @@
     // While playing, a first context (none kept yet) counts as the debugger's too: nothing to compare.
     const debuggerChange = host().quietEvents > 0 || (playing && (!webviewContext || onlyMarkerMoved(webviewContext, m)));
     if (debuggerChange && change === StateChangeType.User) { change = null; }
-    if ((change === StateChangeType.User || change === StateChangeType.File)) {
+    if (change === StateChangeType.User || change === StateChangeType.File) {
       undoStack.push(JSON.stringify(undoState()));
       if (undoStack.length > 50) { undoStack.shift(); }
       redoStack = [];
