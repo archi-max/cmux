@@ -190,20 +190,44 @@ struct SSHFileSearchAccumulator: Sendable {
         if didTimeOut || status == SSHFileSearchCommand.remoteTimeoutStatus {
             return .failed(SSHFileSearchMessages.timedOut)
         }
-        let stderrText = String(decoding: stderrBuffer, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let diagnosis = SSHRemoteStderr.diagnosis(
+            String(decoding: stderrBuffer, as: UTF8.self),
+            toolRan: parser.format != .unknown
+        )
         switch status {
         case 0, 1:
             return results.isEmpty ? .noMatches : .matches
-        case 2 where !results.isEmpty || stderrText.isEmpty:
+        case 2 where !results.isEmpty || diagnosis == nil:
             // Unreadable files make rg and grep exit 2 even when others matched.
             return results.isEmpty ? .noMatches : .matches
         case SSHFileSearchCommand.missingRootStatus:
             return .failed(SSHFileSearchMessages.folderNotFound)
         default:
-            if !stderrText.isEmpty { return .failed(stderrText) }
-            return .failed(SSHFileSearchMessages.exited(status: status))
+            return .failed(diagnosis ?? SSHFileSearchMessages.exited(status: status))
         }
+    }
+}
+
+/// Picks the stderr lines worth showing from a remote command.
+///
+/// A login shell's rc files may print warnings on every ssh command (EWS's
+/// ~/.bashrc does), so once the tool has started only lines the tools
+/// themselves write are kept. Before that, everything is ssh's diagnosis.
+enum SSHRemoteStderr {
+    static let toolPrefixes = [
+        "rg:", "grep:", "find:", "git:", "fatal:", "error:", "timeout:", "nice:", "sh:", "base64:",
+        "ssh:", "client_loop:", "Connection ", "kex_exchange_identification:", "Host key verification failed",
+    ]
+
+    /// The text to report, or nil when nothing relevant was printed.
+    static func diagnosis(_ stderr: String, toolRan: Bool) -> String? {
+        let lines = stderr.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let toolLines = lines.filter { line in toolPrefixes.contains { line.hasPrefix($0) } }
+        if !toolLines.isEmpty { return toolLines.joined(separator: "\n") }
+        guard !toolRan, !lines.isEmpty else { return nil }
+        return lines.joined(separator: "\n")
     }
 }
 

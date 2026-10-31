@@ -101,9 +101,11 @@ enum GoToFileSnapshotLoader {
             // find exits 1 after unreadable directories but still lists the rest.
             let snapshot = GoToFileSnapshot.parse(listOutput: outcome.stdout)
             if outcome.status == 1, !snapshot.paths.isEmpty { return snapshot }
-            let message = outcome.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            let toolRan = outcome.stdout.starts(with: Data(SSHFileSearchCommand.gitListMarker.utf8))
+                || outcome.stdout.starts(with: Data(SSHFileSearchCommand.findListMarker.utf8))
             throw GoToFileSnapshotError.failed(
-                message.isEmpty ? SSHFileSearchMessages.exited(status: outcome.status) : message
+                SSHRemoteStderr.diagnosis(outcome.stderr, toolRan: toolRan)
+                    ?? SSHFileSearchMessages.exited(status: outcome.status)
             )
         }
     }
