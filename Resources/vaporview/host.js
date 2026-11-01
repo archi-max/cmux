@@ -296,10 +296,13 @@
       return { result: reply.result, helperMs: reply.ms || 0, bin, wireBytes: all.length };
     }
 
-    return {
+    const self = {
+      // The dump as the helper found it ({ path, size, mtimeMs, helper }), or null (an older helper).
+      identity: null,
       close() { closed = true; aborter.abort(); },
       async open(showTop) {
         const { result } = await request({ cmd: 'open', file: config.fsdb.path });
+        self.identity = result.identity && typeof result.identity === 'object' ? result.identity : null;
         showTop(result.top.map((t) => ({ kind: 'scope', name: t.name, id: t.scopeOffsetIdx, type: t.type })));
         return result.metadata;
       },
@@ -404,6 +407,7 @@
         try { await fetchSignals(signals); } finally { if (!closed) { toNative({ type: 'signalData' }); } }
       },
     };
+    return self;
 
     async function fetchSignals(signals) {
       const t0 = performance.now();
@@ -778,6 +782,8 @@
     // Null when the backend has no faster way than signalChanges.
     signalPosedges: (v, maxEdges) => (dataReady() && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
     get currentBackend() { return backend; },
+    // The open dump's identity for caches keyed by it, or null (VCD/FST in the page: not needed, fast).
+    dumpIdentity: () => (dataReady() && backend.identity) || null,
     dataReady: () => dataReady(),
     viewerEventListeners: [],
     contextListeners: [],

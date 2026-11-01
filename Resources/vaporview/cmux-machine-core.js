@@ -214,6 +214,17 @@
     return out;
   }
 
+  // The key a built commit table is cached under (a warm rebuild of the same dump reads nothing), or
+  // null: never cached without the dump's identity { path, size, mtimeMs, helper } (helper: the
+  // reader's version). The source's mapping, the clock edges and the sampling are part of it.
+  function tableKey(identity, source, edges, sampleMode) {
+    if (!identity || !identity.path || typeof identity.size !== 'number' || typeof identity.mtimeMs !== 'number' || !source || !edges) { return null; }
+    const refs = mapping(source).map((r) => [r.role, r.channel, r.path.join('.'), r.msb, r.lsb, r.width]);
+    const n = edges.length;
+    return JSON.stringify([identity.path, identity.size, identity.mtimeMs, identity.helper || '', source.nret, source.xlen, refs,
+      n, n ? edges[0] : null, n ? edges[n >> 1] : null, n ? edges[n - 1] : null, sampleMode || 'edge']);
+  }
+
   // ---- columns: a role sampled at each posedge ----
   // A column: { w, lo: Uint32Array, hi: Uint32Array | null, xz: Uint8Array } — bit j of xz[k]: byte j of
   // row k has an x or z bit (values wider than 64 bits keep their low 64).
@@ -1108,7 +1119,7 @@
   }
 
   root.cmuxMachineCore = Object.freeze({
-    ROLES, ABI, CHECKPOINT, memClass, withLink, mayHoldElements, elementVars, detect, manualSource, mapping, sample, parseBits, sliceBits, buildTable, diagnose, StateIndex,
+    ROLES, ABI, CHECKPOINT, memClass, withLink, mayHoldElements, elementVars, detect, manualSource, mapping, tableKey, sample, parseBits, sliceBits, buildTable, diagnose, StateIndex,
     regNumber, hex, signedOf, gdb, isGdb, gdbExpr, formatScalar, memoryLines, big, num,
   });
 })(typeof window !== 'undefined' ? window : globalThis);
