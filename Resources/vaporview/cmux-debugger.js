@@ -2013,6 +2013,8 @@
     },
     // cmux-machine.js: the clock's posedges, the marker (as the debugger knows it) and a move.
     edges: () => ensureEdges(),
+    // The clock the edges are of, as a dotted path (null: none yet).
+    clockPath: () => (state.clock ? host.pathOf(state.clock).join('.') : null),
     markerTime: () => markerTime(),
     moveTo: async (query) => {
       const time = Number((query || {}).time);

@@ -180,12 +180,15 @@
     if (!edges || !edges.length) { return fail('noClock'); }
     // A dump the page has read already (same file, size, mtime and helper; same mapping and clock):
     // its table again, nothing read. Only with an identity (the FSDB helper's); VCD/FST build fast.
-    const key = C.tableKey(host.dumpIdentity ? host.dumpIdentity() : null, source, edges, source.sample === 'preEdge' ? 'preEdge' : 'edge');
+    const clock = waveform.debugger.clockPath ? waveform.debugger.clockPath() : null;
+    const key = C.tableKey(host.dumpIdentity ? host.dumpIdentity() : null, source, edges, source.sample === 'preEdge' ? 'preEdge' : 'edge', clock);
     let table = key ? tableCache.get(key) : null;
     st.cacheHit = !!table;
     if (table) {
       tableCache.delete(key);
       tableCache.set(key, table);
+      // The columns are the same; the source is this request's (its label, its CSR names).
+      table = Object.assign({}, table, { source });
     } else {
       table = await readTable(backend, source, edges);
       if (!table) { return null; }
