@@ -61,10 +61,16 @@
     #status-reload[hidden], #status [hidden] { display: none; }
     #status-reload button, #status-fallback button { font: inherit; padding: 0 6px; }
     /* State machine pane (cmux-fsm.js). */
-    #fsm { width: 340px; min-width: 200px; max-width: 70%; flex: none; display: flex; flex-direction: column;
-      border-left: 1px solid var(--vscode-widget-border); resize: horizontal; overflow: hidden; direction: rtl; }
-    #fsm > * { direction: ltr; }
+    #fsm { position: relative; width: min(340px, 35%); min-width: 200px; max-width: 70%; flex: none; display: flex; flex-direction: column;
+      border-left: 1px solid var(--vscode-widget-border); overflow: hidden; }
     #fsm[hidden] { display: none; }
+    /* The resize grip: the pane's left edge, highlighted on hover and while dragging. */
+    #fsm .fsm-grip { position: absolute; left: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; z-index: 1; }
+    #fsm .fsm-grip::after { content: ''; position: absolute; left: 1px; top: 50%; width: 3px; height: 28px; margin-top: -14px;
+      border-radius: 2px; background: var(--vscode-foreground); opacity: 0.25; }
+    #fsm .fsm-grip:hover, #fsm.resizing .fsm-grip { background: var(--vscode-focusBorder); }
+    #fsm .fsm-grip:hover::after, #fsm.resizing .fsm-grip::after { opacity: 0; }
+    #fsm.resizing { user-select: none; -webkit-user-select: none; }
     #fsm .fsm-head { flex: none; display: flex; align-items: center; padding: 6px 6px 2px 10px; }
     #fsm .fsm-title { flex: 1; font-weight: 600; text-transform: uppercase; font-size: 11px; color: var(--vscode-descriptionForeground); }
     #fsm .fsm-close { cursor: pointer; padding: 1px; border-radius: 3px; }

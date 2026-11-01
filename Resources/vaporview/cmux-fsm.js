@@ -23,7 +23,10 @@
   const host = window.cmuxWaveform.host;
   const link = window.cmuxWaveform.link;
   const S = () => window.cmuxWaveform.strings || {};
+  // More changes than this aren't read (the pane would hold them all on the page's thread).
   const MAX_CHANGES = 2000000;
+  let maxChanges = MAX_CHANGES;
+  const MIN_WIDTH = 200;
   const SVG = 'http://www.w3.org/2000/svg';
   const NODE_W = 104;
   const NODE_H = 38;
@@ -35,6 +38,8 @@
   let data = null;      // { key, times: Float64Array, codes: [bits | null], visits, counts, tooMany }
   let loading = null;
   let drawn = null;     // { nodes, edges } as last drawn
+  let width = null;     // the width the user dragged the pane to (px), kept while the page lives
+  try { width = Number(sessionStorage.getItem('cmux.fsm.width')) || null; } catch (e) { width = null; }
 
   // ---- pure ----
 
@@ -159,18 +164,19 @@
 
   async function load() {
     const want = current;
-    const key = pathKey(want.path) + '|' + host.loadGeneration + '|' + want.model.width;
+    const generation = host.loadGeneration;
+    const key = pathKey(want.path) + '|' + generation + '|' + want.model.width + '|' + maxChanges;
     if (data && data.key === key) { return data; }
     if (loading && loading.key === key) { return loading.promise; }
     const promise = (async () => {
       const v = await host.findLinkItem(want.path, true);
-      const changes = v ? await host.signalChanges(v, MAX_CHANGES) : null;
+      const changes = v ? await host.signalChanges(v, maxChanges) : null;
       const width = Number(want.model.width) || (v && v.width) || 1;
       const times = new Float64Array(changes ? changes.length : 0);
       const codes = [];
       (changes || []).forEach(([t, value], i) => { times[i] = Number(t); codes.push(code(value, width)); });
       const { visits, counts } = tally(codes);
-      return { key, times, codes, visits, counts, missing: !v, tooMany: !!v && !changes };
+      return { key, generation, times, codes, visits, counts, missing: !v, tooMany: !!v && !changes };
     })();
     loading = { key, promise };
     try {
@@ -220,11 +226,41 @@
     foot.className = 'fsm-note';
     const countsNote = document.createElement('div');
     countsNote.className = 'fsm-note fsm-counts-note';
-    el.append(head, signal, now, body, countsNote, foot);
+    const grip = document.createElement('div');
+    grip.className = 'fsm-grip';
+    grip.setAttribute('role', 'separator');
+    grip.setAttribute('aria-orientation', 'vertical');
+    grip.addEventListener('mousedown', startResize);
+    el.append(grip, head, signal, now, body, countsNote, foot);
+    if (width) { el.style.width = width + 'px'; }
     body.addEventListener('click', onClick);
     document.getElementById('panes').appendChild(el);
-    pane = { el, title, close, signal, now, body, countsNote, foot };
+    pane = { el, title, close, grip, signal, now, body, countsNote, foot };
     return pane;
+  }
+
+  // The grip on the pane's left edge: dragging it left widens the pane (up to 70% of the panes).
+  function startResize(event) {
+    if (event.button !== 0 || !pane) { return; }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = pane.el.getBoundingClientRect().width;
+    const room = pane.el.parentElement ? pane.el.parentElement.getBoundingClientRect().width : Infinity;
+    pane.el.classList.add('resizing');
+    const move = (e) => {
+      const next = Math.round(Math.max(MIN_WIDTH, Math.min(room * 0.7, startW + (startX - e.clientX))));
+      pane.el.style.width = next + 'px';
+      width = next;
+    };
+    const up = (e) => {
+      move(e);
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', up, true);
+      pane.el.classList.remove('resizing');
+      try { sessionStorage.setItem('cmux.fsm.width', String(width)); } catch (error) { /* not kept */ }
+    };
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
   }
 
   function svgEl(name, attrs, parent) {
@@ -334,7 +370,8 @@
   // time: the marker's (a markerSet event's own time: the viewer's markerTime may not have it yet).
   function markCurrent(time) {
     if (!pane || !drawn || !current || !current.model) { return; }
-    const d = data;
+    // The dump's changes as drawn; after a reload they're the old file's until render() reads the new one.
+    const d = data && data.generation === host.loadGeneration ? data : null;
     const at = currentAt(d, time === undefined ? markerTime() : time);
     pane.body.querySelectorAll('.fsm-node.current, .fsm-edge.last').forEach((el) => el.classList.remove('current', 'last'));
     let text = S().fsmNoState || 'No state at the marker';
@@ -357,6 +394,7 @@
     p.el.hidden = false;
     p.title.textContent = S().fsmTitle || 'State Machine';
     p.close.title = S().fsmClose || 'Close';
+    p.grip.title = S().fsmResize || 'Drag to resize';
     p.signal.textContent = (shown.path || []).join('.');
     p.foot.textContent = shown.note || '';
     if (!shown.model) {
@@ -385,6 +423,10 @@
     const target = event.target && event.target.closest ? event.target.closest('.fsm-edge, .fsm-node') : null;
     if (!target || !current || !current.model) { return; }
     const d = await load();
+    if (d.tooMany) {
+      window.cmuxUI.toast(S().fsmTooManyToSearch || 'Too many changes to search from here.', 'info');
+      return;
+    }
     const time = markerTime() ?? -Infinity;
     const backward = !!event.shiftKey;
     let found;
@@ -415,10 +457,19 @@
     if (pane) { pane.el.hidden = true; pane.body.textContent = ''; }
   }
 
-  function request(path) {
+  // refresh: asked again after a reload; cmux leaves the graph up until its answer.
+  function request(path, refresh) {
     const segments = Array.isArray(path) ? path.map(String) : String(path || '').split('.');
-    host.toNative({ type: 'fsmRequest', path: segments });
+    host.toNative(refresh ? { type: 'fsmRequest', path: segments, refresh: true } : { type: 'fsmRequest', path: segments });
   }
+
+  // A reload (a new simulation, Auto Reload): an open pane draws the new dump's counts and state at
+  // once, with the model it has, and asks cmux for the model again (the design may have changed too).
+  host.openedListeners.push(() => {
+    if (!current) { return; }
+    if (current.model) { render(); }
+    request(current.path, true);
+  });
 
   host.viewerEventListeners.push((m) => {
     if (m.eventType !== 'markerSet') { return; }
@@ -442,6 +493,9 @@
     };
   }
 
-  const api = Object.freeze({ show, hide, state, request, isOpen: () => !!current });
+  // Test hook (run.sh fsm): a lower change cap; null for the default.
+  function setMaxChangesForTesting(n) { maxChanges = n === null || n === undefined ? MAX_CHANGES : Number(n); }
+
+  const api = Object.freeze({ show, hide, state, request: (path) => request(path, false), isOpen: () => !!current, setMaxChangesForTesting });
   Object.defineProperty(window.cmuxWaveform, 'fsm', { value: api, writable: false, configurable: false, enumerable: true });
 })();
