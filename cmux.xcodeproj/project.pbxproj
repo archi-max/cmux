@@ -2287,6 +2287,7 @@
 		C0DE86520000000000000001 /* FilePreviewReloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE86520000000000000002 /* FilePreviewReloadTests.swift */; };
 		C0DE31390000000000000103 /* FilePreviewReviewFeedbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE31390000000000000104 /* FilePreviewReviewFeedbackTests.swift */; };
 		C0DE86520000000000000111 /* FilePreviewRevision.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE86520000000000000112 /* FilePreviewRevision.swift */; };
+		EDJ0A11C0000000000000003 /* FilePreviewScrollJumpLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDJ0A11C0000000000000004 /* FilePreviewScrollJumpLog.swift */; };
 		C01E00040000000000000001 /* FilePreviewSyntaxStyler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00040000000000000002 /* FilePreviewSyntaxStyler.swift */; };
 		C01E00090000000000000001 /* FilePreviewSyntaxTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00090000000000000002 /* FilePreviewSyntaxTestSupport.swift */; };
 		C0DE97470000000000000001 /* FilePreviewTabMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE97470000000000000002 /* FilePreviewTabMetadata.swift */; };
@@ -7009,6 +7010,7 @@
 		C0DE86520000000000000002 /* FilePreviewReloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewReloadTests.swift; sourceTree = "<group>"; };
 		C0DE31390000000000000104 /* FilePreviewReviewFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewReviewFeedbackTests.swift; sourceTree = "<group>"; };
 		C0DE86520000000000000112 /* FilePreviewRevision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewRevision.swift; sourceTree = "<group>"; };
+		EDJ0A11C0000000000000004 /* FilePreviewScrollJumpLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewScrollJumpLog.swift; sourceTree = "<group>"; };
 		C01E00040000000000000002 /* FilePreviewSyntaxStyler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewSyntaxStyler.swift; sourceTree = "<group>"; };
 		C01E00090000000000000002 /* FilePreviewSyntaxTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewSyntaxTestSupport.swift; sourceTree = "<group>"; };
 		C0DE97470000000000000002 /* FilePreviewTabMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewTabMetadata.swift; sourceTree = "<group>"; };
@@ -12047,6 +12049,7 @@
 				C0DE8652000000000000010E /* FilePreviewQLItem.swift */,
 				C0DE86520000000000000110 /* FilePreviewQuickLookViewCoordinator.swift */,
 				C0DE86520000000000000112 /* FilePreviewRevision.swift */,
+				EDJ0A11C0000000000000004 /* FilePreviewScrollJumpLog.swift */,
 				EDJ0A11C0000000000000002 /* FilePreviewViewportAnchor.swift */,
 				C0DE86520000000000000114 /* FilePreviewViewport.swift */,
 				C0DE86520000000000000116 /* QuickLookPreviewView.swift */,
@@ -16367,6 +16370,7 @@
 				DD62AFF1D95A1D5D1850AC10 /* FilePreviewQuickLookSession.swift in Sources */,
 				C0DE8652000000000000010F /* FilePreviewQuickLookViewCoordinator.swift in Sources */,
 				C0DE86520000000000000111 /* FilePreviewRevision.swift in Sources */,
+				EDJ0A11C0000000000000003 /* FilePreviewScrollJumpLog.swift in Sources */,
 					C01E00040000000000000001 /* FilePreviewSyntaxStyler.swift in Sources */,
 				C0DE97470000000000000001 /* FilePreviewTabMetadata.swift in Sources */,
 				C0DE97470000000000000003 /* FilePreviewTabMetadataHost.swift in Sources */,
