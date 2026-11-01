@@ -338,7 +338,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     expect(runs == [25, 35, 25], "run to 0x80000004: next, next, previous: \(runs)")
     let none = await dbg("runToPc({ pcs: ['0x90000000'], dir: 1 })")
-    expect(none?["reason"] as? String == "end" && (await list()).count == before, "never committed: the end, and the list is as it was")
+    let after = (await list()).count
+    expect(none?["reason"] as? String == "end" && after == before, "never committed: the end, and the list is as it was")
 
     // The commits at the marker go to the listings while debugging; none after Stop.
     commitPcEvents.removeAll()
