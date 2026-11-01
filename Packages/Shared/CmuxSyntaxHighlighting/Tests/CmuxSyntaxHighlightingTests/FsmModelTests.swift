@@ -124,11 +124,16 @@ private let fsmSlangServerPath = (NSHomeDirectory() as NSString).appendingPathCo
 
     @Test func theYosysScriptElaboratesTheModuleWithTheInstancesParameters() {
         let script = YosysFsm.script(
-            files: ["/d/fsm_pkg.sv", "/d/my dut.sv"], module: "ctl",
+            files: ["/d/fsm_pkg.sv", "/d/dut.sv"], module: "ctl",
             parameters: [("W", "4"), ("S_A", "2'b0"), ("NAME", "\"x\""), ("T", "logic[1:0]")],
             signal: "state", force: true, slangFrontend: true, output: "/tmp/o.json"
         )
-        #expect(script.contains(#"read_slang "/d/fsm_pkg.sv" "/d/my dut.sv" --top ctl -G W=4 -G S_A=2'b0"#))
+        // read_slang hands its arguments to slang as they are: quotes would be part of the name.
+        #expect(script.contains(#"read_slang /d/fsm_pkg.sv /d/dut.sv --top ctl -G W=4 -G S_A=2'b0"#))
+        // A path read_slang can't take (a space) goes through read_verilog instead.
+        let spaced = YosysFsm.script(files: ["/d/my dut.sv"], module: "ctl", parameters: [], signal: "state", force: false,
+                                     slangFrontend: true, output: "/tmp/o.json")
+        #expect(spaced.contains(#"read_verilog -sv "/d/my dut.sv""#) && !spaced.contains("read_slang"))
         #expect(!script.contains("NAME"), "only literal values are passed")
         #expect(!script.contains("T=logic"))
         #expect(script.contains("opt -nodffe -nosdff"))
