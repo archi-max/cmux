@@ -695317,6 +695317,65 @@
           }
         }
       }
+    },
+    "waveformLink.showingSliceAlias": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ isn’t dumped; showing %2$@. Its bits %3$@ are what the instance array connects to that port."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ はダンプされていないため、%2$@ を表示します。そのビット %3$@ がインスタンス配列でこのポートに接続されています。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ist nicht im Dump; stattdessen wird %2$@ angezeigt. Seine Bits %3$@ verbindet das Instanz-Array mit diesem Port."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ n’est pas dans le dump ; affichage de %2$@. Ses bits %3$@ sont ce que le tableau d’instances connecte à ce port."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ غير مُفرَغ؛ يُعرض %2$@. البتات %3$@ منه هي ما توصله مصفوفة النسخ بهذا المنفذ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ no está volcado; se muestra %2$@. Sus bits %3$@ son lo que el arreglo de instancias conecta a ese puerto."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 未傾印；改為顯示 %2$@。實例陣列將其位元 %3$@ 連接到該連接埠。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 未转储；改为显示 %2$@。实例数组将其位 %3$@ 连接到该端口。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@은(는) 덤프되지 않았으므로 %2$@을(를) 표시합니다. 인스턴스 배열이 그 비트 %3$@을(를) 이 포트에 연결합니다."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
