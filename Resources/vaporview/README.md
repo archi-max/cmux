@@ -177,9 +177,11 @@ keybindings, netlist view, settings, sessions and terminal links).
   cmux reads a signal's enum type from slang-server and hands it to the page,
   which loads it as a value alias table (VaporView's `alias:<table>` format
   from `extra_formats.ts`) and makes it the default format of rows the user
-  adds; restored, undone and user-chosen formats are kept. `host.js`
-  `link.valuesAt` takes `raw` (bit strings for cmux to name) and gives an
-  enum row's value as the row reads.
+  adds; restored, undone and user-chosen formats are kept, and a dump with
+  its own enum type (VaporView's `enumType`) keeps VaporView's. Value Format >
+  Enum Names (`cmux-commands.js`) gives a row its table back. `host.js`
+  `link.valuesAt` takes `raw` and answers `{bits}` (for cmux to name) for a row
+  in its enum's own format or not shown, and a row's text otherwise.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and
   foreground with the panel's colors.

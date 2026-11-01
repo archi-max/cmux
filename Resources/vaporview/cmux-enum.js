@@ -8,10 +8,14 @@
 //   - a row added after its type is known gets it in the add's own undo step (extra_formats
 //     binds new rows right after VaporView creates them);
 //   - a row added before gets it once the type arrives, as one undo step;
-//   - only while the row is still in VaporView's default format (hexadecimal); a row that came
+//   - only while the row is still in VaporView's default format (hexadecimal; binary for a
+//     1-bit row); a row that came
 //     back through Undo, Redo, a session or a restored state keeps the format it had, and a
 //     format the user picks afterwards is never changed. The format is saved with the row.
 // Values no member has show as hex, with a `?` when the type is at most 8 bits wide.
+// A signal whose dump has its own enum type (VaporView's netlist item `enumType`: FST, GHW,
+// later FSDB) keeps VaporView's own enum format, and gets no table here.
+// Value Format > Enum Names (cmux-commands.js) gives a row its table back.
 //
 // cmux (native) is asked with { type: 'enumTypes', paths } for shown rows whose type it hasn't
 // answered yet, and answers through window.cmuxWaveform.enums.define({ tables, signals }):
@@ -159,9 +163,23 @@
     return JSON.stringify({ tables: t, signals: s });
   }
 
+  // Whether the dump has an enum type of its own for the dotted path (VaporView shows it then).
+  async function dumpHasEnum(path) {
+    try {
+      const v = host.findLinkItem ? await host.findLinkItem(path.split('.'), true) : null;
+      return !!(v && typeof v.enumType === 'string' && v.enumType !== '');
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // VaporView's default format for a row of `width` bits (before anything set one).
+  const isDefaultFormat = (format, width) => format === undefined || format === 'hexadecimal' || (width === 1 && format === 'binary');
+
   // cmux's answer: { tables, signals } (see the top). Returns { tables, signals, bound }.
-  function define(answer) {
+  async function define(answer) {
     resetIfReopened();
+    const loaded = generation;
     const list = Array.isArray(answer && answer.tables) ? answer.tables : [];
     const changed = new Set();
     for (const t of list) {
@@ -178,8 +196,13 @@
     const paths = [];
     const given = answer && typeof answer.signals === 'object' && answer.signals ? answer.signals : {};
     for (const [path, id] of Object.entries(given)) {
-      if (typeof id === 'string' && tables.has(id)) { signals.set(path, id); paths.push(path); }
+      if (typeof id !== 'string' || !tables.has(id)) { continue; }
+      if (await dumpHasEnum(path)) { signals.delete(path); continue; }
+      signals.set(path, id);
+      paths.push(path);
     }
+    // The file opened again while the dump was looked at: this answer was for the old one.
+    if (loaded !== host.loadGeneration) { return { tables: 0, signals: 0, bound: 0 }; }
     const formats = frameFormats();
     let bound = 0;
     if (formats && paths.length) {
@@ -190,7 +213,7 @@
       // Rows the user added before their type was known: once, while still in the default format.
       const rows = shownRows(window.cmuxWaveform.viewerContext.webview);
       const now = rows.filter((r) => eligible.has(r.path) && !decided.has(r.path) && signals.has(r.path)
-        && (r.format === undefined || r.format === 'hexadecimal'));
+        && isDefaultFormat(r.format, tables.get(signals.get(r.path)).width));
       rows.forEach((r) => { if (signals.has(r.path) && eligible.has(r.path)) { decided.add(r.path); } });
       if (now.length) {
         const nowPaths = Array.from(new Set(now.map((r) => r.path)));
@@ -207,6 +230,12 @@
     return id === undefined ? null : tables.get(id) || null;
   }
 
+  // The `alias:` format of the signal's own enum table, or null.
+  function formatFor(path) {
+    const t = tableFor(path);
+    return t ? 'alias:' + t.label : null;
+  }
+
   host.contextListeners.push(onContext);
 
   const api = Object.freeze({
@@ -215,6 +244,8 @@
     tableFor: (path) => { const t = tableFor(path); return t ? { label: t.label, width: t.width, members: t.members.slice() } : null; },
     // The bits of member `name` of the signal's type, or null (for breakpoints and conditions).
     memberBits: (path, name) => { const t = tableFor(path); return t ? (t.byName.get(String(name)) ?? null) : null; },
+    // The `alias:<label>` format of the signal's enum table, or null (Value Format > Enum Names).
+    formatFor,
     // The signal's value as its enum type reads, or null when it has none.
     format: (path, bits) => { const t = tableFor(path); return t ? display(t, String(bits)).text : null; },
     // Pure helpers, for tests.

@@ -333,8 +333,8 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
     @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
     func aScopeReadHoversAtMostItsBudgetOfMembers() async throws {
         try await Self.withServer { session, cache in
-            // state_t has 5 members: with a budget of 3 it is left out, a 2-member type fits.
-            let signals = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache, maxMemberHovers: 3)
+            // With a budget of 2, the 5-member state_t is left out and the first 2-member type (pp) fits; anonymous enums need no hovers.
+            let signals = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache, maxMemberHovers: 2)
             #expect(signals["state"] == nil)
             #expect(signals["pp"]?.type.members.map(\.bits) == ["110", "111"])
             #expect(signals["color"] != nil)

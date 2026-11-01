@@ -867,7 +867,8 @@
   //   selectSignal(path) -> bool
   //   setMarker(time)
   //   selectedSignal() -> path | null   (null once the selected row is gone)
-  //   valuesAt({ time, paths, unshown, raw }) -> [value | null]   formatted like the signal's row (raw[i]: bits)
+  //   valuesAt({ time, paths, unshown, raw }) -> [value | {bits} | null]   formatted like the signal's row
+  //                                     (raw[i]: {bits} when the row shows its enum's names or isn't shown)
   //   markerTime() -> time | null
   // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
   const link = (() => {
@@ -1139,8 +1140,9 @@
     // valuesAt({ time, paths, unshown, raw }) -> [value | null], one per path: the
     // value in effect at `time`, in the radix of the signal's row (hexadecimal
     // if not shown). FSDB answers signals not shown only with `unshown`. raw[i]
-    // true: path i's value as the dump has it (a bit string), for cmux to format
-    // (an enum's member names).
+    // true (an enum signal): { bits } as the dump has them, for cmux to name, when
+    // the row is in its enum's own format (cmux-enum.js) or isn't shown; a row the
+    // user set to another format reads as that row does, like any other.
     async function valuesAt(query) {
       const { time, paths, unshown, raw } = query || {};
       if (!backend || !initSent || !Array.isArray(paths)) { return []; }
@@ -1156,12 +1158,14 @@
       return vars.map((v, i) => {
         const bits = v ? values.get(v.netlistId) : undefined;
         if (bits === undefined) { return null; }
-        if (asIs[i] === true) { return String(bits); }
         const format = formats.get(v.netlistId);
-        // A row in an enum's alias format (cmux-enum.js) reads as the row does.
-        const named = typeof format === 'string' && format.startsWith('alias:') && window.cmuxWaveform.enums
-          ? window.cmuxWaveform.enums.format(pathOf(v), String(bits)) : null;
-        return named !== null ? named : formatValue(bits, format);
+        const enums = window.cmuxWaveform.enums;
+        const own = enums ? enums.formatFor(pathOf(v)) : null;
+        // Not for a dump with its own enum type (VaporView names those itself).
+        const dumpEnum = typeof v.enumType === 'string' && v.enumType !== '';
+        if (asIs[i] === true && !dumpEnum && (format === undefined || (own !== null && format === own))) { return { bits: String(bits) }; }
+        // A row in its enum's own format reads as the row does (names; a non-member as hex and ?).
+        return own !== null && format === own ? enums.format(pathOf(v), String(bits)) : formatValue(bits, format);
       });
     }
 
