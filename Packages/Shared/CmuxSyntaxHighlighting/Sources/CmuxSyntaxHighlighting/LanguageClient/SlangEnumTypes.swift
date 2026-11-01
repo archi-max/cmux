@@ -83,18 +83,22 @@ public struct SlangEnumSignal: Sendable, Equatable {
 public actor SlangEnumTypeCache {
     var types: [String: SlangEnumType?] = [:]
     var declarationLinks: [String: SlangEnumValues.TypeLink?] = [:]
+    var documentSymbols: [String: JSONValue] = [:]
 
     public init() {}
 
     public func removeAll() {
         types.removeAll()
         declarationLinks.removeAll()
+        documentSymbols.removeAll()
     }
 
     func type(_ key: String) -> SlangEnumType?? { types[key] }
     func setType(_ type: SlangEnumType?, _ key: String) { types[key] = type }
     func link(_ key: String) -> SlangEnumValues.TypeLink?? { declarationLinks[key] }
     func setLink(_ link: SlangEnumValues.TypeLink?, _ key: String) { declarationLinks[key] = link }
+    func symbols(_ key: String) -> JSONValue? { documentSymbols[key] }
+    func setSymbols(_ symbols: JSONValue, _ key: String) { documentSymbols[key] = symbols }
 }
 
 /// Reading enum types from slang-server's text: getScope's `type`, hovers and declarations.
@@ -265,14 +269,6 @@ public enum SlangEnumValues {
         return nil
     }
 
-    /// The text of a hover's first code block (the declaration slang quotes).
-    public static func firstCodeBlock(inHover hover: String) -> String? {
-        let lines = hover.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let fence = lines.firstIndex(where: { $0.hasPrefix("```") }),
-              let close = lines[(fence + 1)...].firstIndex(where: { $0.hasPrefix("```") }) else { return nil }
-        return lines[(fence + 1)..<close].joined(separator: "\n")
-    }
-
     public struct HoverMemberValue: Sendable, Equatable {
         public var name: String
         /// The enum it belongs to, as slang names it (`fsm.state_t`).
@@ -298,190 +294,67 @@ public enum SlangEnumValues {
         return out
     }
 
-    // MARK: Declarations
+    // MARK: Document symbols
 
-    public struct MemberRange: Sendable, Equatable {
-        public var first: Int
-        public var last: Int
-    }
-
-    public struct DeclaredMember: Sendable, Equatable {
+    /// An enum member as slang-server's documentSymbol lists it: its name and where it is declared.
+    public struct SymbolMember: Sendable, Equatable {
         public var name: String
-        /// UTF-16 offset of the name in the declaration's text.
-        public var offset: Int
-        /// The text after `=`, if any.
-        public var explicitValue: String?
-        /// `NAME[N]` (0...N-1) or `NAME[N:M]`.
-        public var range: MemberRange?
+        public var position: LSPPosition
     }
 
-    /// The members of the first `enum ... { ... }` in `text` (comments are skipped); nil when
-    /// there is none or it can't be read.
-    public static func declaredMembers(in text: String) -> [DeclaredMember]? {
-        let units = blanked(Array(text.utf16))
-        guard let enumAt = word("enum", in: units) else { return nil }
-        guard let open = units[enumAt...].firstIndex(of: UInt16(UInt8(ascii: "{"))) else { return nil }
-        var members: [DeclaredMember] = []
-        var depth = 0
-        var itemStart = open + 1
-        var index = open + 1
-        func finish(_ end: Int) -> Bool {
-            let item = Array(units[itemStart..<end])
-            guard let member = member(item, at: itemStart) else { return false }
-            members.append(member)
-            return true
-        }
-        while index < units.count {
-            let unit = units[index]
-            if unit == UInt16(UInt8(ascii: "{")) || unit == UInt16(UInt8(ascii: "(")) || unit == UInt16(UInt8(ascii: "[")) {
-                depth += 1
-            } else if unit == UInt16(UInt8(ascii: ")")) || unit == UInt16(UInt8(ascii: "]")) {
-                depth -= 1
-            } else if unit == UInt16(UInt8(ascii: "}")) {
-                if depth == 0 {
-                    guard finish(index), !members.isEmpty, members.count <= maxMembers else { return nil }
-                    return members
-                }
-                depth -= 1
-            } else if unit == UInt16(UInt8(ascii: ",")), depth == 0 {
-                guard finish(index) else { return nil }
-            }
-            if unit == UInt16(UInt8(ascii: ",")) && depth == 0 { itemStart = index + 1 }
-            index += 1
-        }
-        return nil
-    }
-
-    private static func member(_ item: [UInt16], at start: Int) -> DeclaredMember? {
-        var index = 0
-        while index < item.count, isSpace(item[index]) { index += 1 }
-        let nameStart = index
-        while index < item.count, isIdentifier(item[index]) { index += 1 }
-        guard index > nameStart else { return nil }
-        let name = String(decoding: item[nameStart..<index], as: UTF16.self)
-        while index < item.count, isSpace(item[index]) { index += 1 }
-        var range: MemberRange?
-        if index < item.count, item[index] == UInt16(UInt8(ascii: "[")) {
-            guard let close = item[index...].firstIndex(of: UInt16(UInt8(ascii: "]"))) else { return nil }
-            let inside = String(decoding: item[(index + 1)..<close], as: UTF16.self).replacingOccurrences(of: " ", with: "")
-            let bounds = inside.split(separator: ":").compactMap { Int($0) }
-            if bounds.count == 1, bounds[0] > 0 {
-                range = MemberRange(first: 0, last: bounds[0] - 1)
-            } else if bounds.count == 2 {
-                range = MemberRange(first: bounds[0], last: bounds[1])
-            } else {
-                return nil
-            }
-            index = close + 1
-            while index < item.count, isSpace(item[index]) { index += 1 }
-        }
-        var explicit: String?
-        if index < item.count {
-            guard item[index] == UInt16(UInt8(ascii: "=")) else { return nil }
-            // The value as written, comments blanked.
-            explicit = String(decoding: item[(index + 1)...], as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !(explicit ?? "").isEmpty else { return nil }
-        }
-        return DeclaredMember(name: name, offset: start + nameStart, explicitValue: explicit, range: range)
-    }
-
-    /// Comments and strings turned into spaces (newlines kept), so offsets stay the same.
-    private static func blanked(_ units: [UInt16]) -> [UInt16] {
-        var out = units
-        var index = 0
-        let slash = UInt16(UInt8(ascii: "/")), star = UInt16(UInt8(ascii: "*")), quote = UInt16(UInt8(ascii: "\""))
-        let newline = UInt16(UInt8(ascii: "\n")), space = UInt16(UInt8(ascii: " "))
-        while index < out.count {
-            if out[index] == slash, index + 1 < out.count, out[index + 1] == slash {
-                while index < out.count, out[index] != newline { out[index] = space; index += 1 }
-            } else if out[index] == slash, index + 1 < out.count, out[index + 1] == star {
-                out[index] = space; out[index + 1] = space; index += 2
-                while index < out.count, !(out[index] == star && index + 1 < out.count && out[index + 1] == slash) {
-                    if out[index] != newline { out[index] = space }
-                    index += 1
-                }
-                if index < out.count { out[index] = space; index += 1 }
-                if index < out.count { out[index] = space; index += 1 }
-            } else if out[index] == quote {
-                out[index] = space; index += 1
-                while index < out.count, out[index] != quote, out[index] != newline { out[index] = space; index += 1 }
-                if index < out.count, out[index] == quote { out[index] = space; index += 1 }
-            } else {
-                index += 1
-            }
-        }
-        return out
-    }
-
-    private static func word(_ word: String, in units: [UInt16]) -> Int? {
-        let target = Array(word.utf16)
-        var index = 0
-        while index + target.count <= units.count {
-            if Array(units[index..<(index + target.count)]) == target,
-               index == 0 || !isIdentifier(units[index - 1]),
-               index + target.count == units.count || !isIdentifier(units[index + target.count]) {
-                return index
-            }
-            index += 1
-        }
-        return nil
-    }
-
-    static func isIdentifier(_ unit: UInt16) -> Bool {
-        (unit >= 0x30 && unit <= 0x39) || (unit >= 0x41 && unit <= 0x5A) || (unit >= 0x61 && unit <= 0x7A) || unit == 0x5F || unit == 0x24
-    }
-
-    private static func isSpace(_ unit: UInt16) -> Bool {
-        unit == 0x20 || unit == 0x09 || unit == 0x0A || unit == 0x0D
-    }
-
-    /// Where `offset` of a hover's code block is in the file, given that the block's
-    /// `anchorOffset` is at `anchor` there. slang quotes the declaration with its common
-    /// indentation removed, so a line above the anchor's is shifted by the anchor line's.
-    static func filePosition(ofBlockOffset offset: Int, in block: String, anchorOffset: Int, anchor: LSPPosition) -> LSPPosition? {
-        let units = Array(block.utf16)
-        guard offset <= units.count, anchorOffset <= units.count else { return nil }
-        func lineAndColumn(_ at: Int) -> (line: Int, column: Int) {
-            var line = 0, column = 0
-            for unit in units[0..<at] {
-                if unit == 0x0A { line += 1; column = 0 } else { column += 1 }
-            }
-            return (line, column)
-        }
-        let target = lineAndColumn(offset)
-        let anchorAt = lineAndColumn(anchorOffset)
-        let line = anchor.line - (anchorAt.line - target.line)
-        guard line >= 0 else { return nil }
-        if target.line == anchorAt.line {
-            return LSPPosition(line: line, character: anchor.character - (anchorAt.column - target.column))
-        }
-        let shift = anchor.character - anchorAt.column
-        return LSPPosition(line: line, character: target.column + max(0, shift))
-    }
-
-    /// The UTF-16 offset of identifier `name` in `text`, the last one at or before `before` when given.
-    static func offset(ofIdentifier name: String, in text: String, before: Int? = nil) -> Int? {
-        let units = blanked(Array(text.utf16))
-        let target = Array(name.utf16)
-        var found: Int?
-        var index = 0
-        while index + target.count <= units.count {
-            if let before, index > before { break }
-            if Array(units[index..<(index + target.count)]) == target,
-               index == 0 || !isIdentifier(units[index - 1]),
-               index + target.count == units.count || !isIdentifier(units[index + target.count]) {
-                found = index
-            }
-            index += 1
+    /// The members of the enum (symbol kind 10) whose range holds `position`, from a
+    /// documentSymbol answer; nil when no enum there has members.
+    static func enumMembers(inSymbols symbols: JSONValue, containing position: LSPPosition) -> [SymbolMember]? {
+        var found: [SymbolMember]?
+        visitEnums(symbols) { symbol, members in
+            guard found == nil, let range = LSPResponseDecoding.range(symbol["range"]), contains(range, position) else { return }
+            found = members
         }
         return found
+    }
+
+    /// The members of the enum named `name` (its own name, or the typedef's), from a documentSymbol answer.
+    static func enumMembers(inSymbols symbols: JSONValue, named name: String) -> [SymbolMember]? {
+        var found: [SymbolMember]?
+        visitEnums(symbols) { symbol, members in
+            if found == nil, symbol["name"]?.stringValue == name { found = members }
+        }
+        return found
+    }
+
+    private static func visitEnums(_ symbols: JSONValue, _ visit: (JSONValue, [SymbolMember]) -> Void) {
+        for symbol in symbols.arrayValue ?? [] {
+            if symbol["kind"]?.intValue == 10 {
+                let members = (symbol["children"]?.arrayValue ?? []).compactMap { child -> SymbolMember? in
+                    guard child["kind"]?.intValue == 22, let name = child["name"]?.stringValue,
+                          let range = LSPResponseDecoding.range(child["selectionRange"] ?? child["range"]) else { return nil }
+                    return SymbolMember(name: name, position: range.start)
+                }
+                if !members.isEmpty { visit(symbol, members) }
+            }
+            if let children = symbol["children"] { visitEnums(children, visit) }
+        }
+    }
+
+    private static func contains(_ range: LSPRange, _ position: LSPPosition) -> Bool {
+        let afterStart = position.line > range.start.line || (position.line == range.start.line && position.character >= range.start.character)
+        let beforeEnd = position.line < range.end.line || (position.line == range.end.line && position.character <= range.end.character)
+        return afterStart && beforeEnd
+    }
+
+    /// The size of a sized literal (`3'b0` -> 3).
+    static func literalWidth(_ literal: String) -> Int? {
+        guard let tick = literal.firstIndex(of: "'") else { return nil }
+        return Int(literal[..<tick])
     }
 }
 
 extension LanguageServerSession {
     /// The signals of the design scope `hierPath` whose declared type is an enum (or an unpacked
-    /// array of one), by name, with the members as this instance elaborates them. A type whose
-    /// members can't all be read is left out rather than shown with wrong names.
+    /// array of one), by name, with the members as this instance elaborates them. Everything is
+    /// slang's: the type and width from getScope, the members from documentSymbol, each member's
+    /// value from its hover (the section of this instance's width). A type a member of which has
+    /// no value there (a range member, `A[2]`) is left out rather than guessed.
     public func slangEnumSignals(inScope hierPath: String, cache: SlangEnumTypeCache) async throws -> [String: SlangEnumSignal] {
         let result = try await executeCommand("slang.getScope", argument: .string(hierPath))
         var named: [(name: String, typeName: String, width: Int, location: LSPLocation)] = []
@@ -513,18 +386,23 @@ extension LanguageServerSession {
             byTypeName[signal.typeName] = type
         }
         for array in arrays {
-            // An element type a scalar here also has, else the type named in the declaration.
-            let element = array.element.split(separator: ":").last.map(String.init) ?? array.element
-            if let type = byTypeName[array.element] ?? byTypeName[element] {
+            let parts = array.element.components(separatedBy: "::")
+            if let type = byTypeName[array.element] ?? byTypeName[parts.last ?? ""] {
                 out[array.name] = SlangEnumSignal(type: type, isArray: true)
-                continue
+            } else if let type = try await enumType(named: array.element, declaredIn: array.location.uri, cache: cache) {
+                out[array.name] = SlangEnumSignal(type: type, isArray: true)
             }
-            guard let link = try await enumTypeLink(ofTypeNamed: element, inDeclarationAt: array.location, cache: cache),
-                  let width = link.width,
-                  let type = try await enumType(at: link.link, width: width, cache: cache) else { continue }
-            out[array.name] = SlangEnumSignal(type: type, isArray: true)
         }
         return out
+    }
+
+    /// documentSymbol of `uri` (raw).
+    func slangDocumentSymbols(_ uri: URL, cache: SlangEnumTypeCache) async throws -> JSONValue {
+        let key = uri.absoluteString
+        if let cached = await cache.symbols(key) { return cached }
+        let symbols = try await documentSymbols(uri: uri)
+        await cache.setSymbols(symbols, key)
+        return symbols
     }
 
     private static func key(_ uri: URL, _ position: LSPPosition) -> String {
@@ -547,118 +425,66 @@ extension LanguageServerSession {
         return link
     }
 
-    /// An array's element type: hovering its name where the declaration (quoted by the hover) writes it.
-    private func enumTypeLink(
-        ofTypeNamed typeName: String,
-        inDeclarationAt location: LSPLocation,
-        cache: SlangEnumTypeCache
-    ) async throws -> (link: SlangEnumValues.TypeLink, width: Int?)? {
-        guard let hover = try await enumHover(location.uri, location.range.start),
-              let block = SlangEnumValues.firstCodeBlock(inHover: hover),
-              let variable = hover.split(separator: "`", omittingEmptySubsequences: false).dropFirst().first.map(String.init),
-              let variableAt = SlangEnumValues.offset(ofIdentifier: variable, in: block),
-              let typeAt = SlangEnumValues.offset(ofIdentifier: typeName, in: block, before: variableAt),
-              let position = SlangEnumValues.filePosition(ofBlockOffset: typeAt, in: block, anchorOffset: variableAt, anchor: location.range.start),
-              let typeHover = try await enumHover(location.uri, position),
-              let link = SlangEnumValues.enumTypeLink(inHover: typeHover) else { return nil }
-        var width: Int?
-        for line in typeHover.split(separator: "\n") where line.hasPrefix("Resolved Type: [`Enum ") {
-            if let typeText = line.split(separator: "`").dropFirst().first,
-               case .named(_, let found)? = SlangEnumValues.scopeType(String(typeText)) {
-                width = found
-                break
-            }
-        }
-        return (link, width)
-    }
-
     /// The enum whose name is at `link`, as an instance of width `width` has it.
     private func enumType(at link: SlangEnumValues.TypeLink, width: Int, cache: SlangEnumTypeCache) async throws -> SlangEnumType? {
         let key = Self.key(link.uri, link.position) + "/\(width)"
         if let cached = await cache.type(key) { return cached }
-        let type = try await readEnumType(at: link, width: width)
+        let symbols = try await slangDocumentSymbols(link.uri, cache: cache)
+        var type: SlangEnumType?
+        if let members = SlangEnumValues.enumMembers(inSymbols: symbols, containing: link.position) {
+            type = try await enumType(members: members, uri: link.uri, width: width)
+        }
         await cache.setType(type, key)
         return type
     }
 
-    private func readEnumType(at link: SlangEnumValues.TypeLink, width: Int) async throws -> SlangEnumType? {
-        guard let hover = try await enumHover(link.uri, link.position),
-              let block = SlangEnumValues.firstCodeBlock(inHover: hover),
-              let declared = SlangEnumValues.declaredMembers(in: block) else { return nil }
-        // The type's name in the block: after the closing brace (typedef), else the `enum` keyword the link points at.
-        let typeName = hover.split(separator: "`", omittingEmptySubsequences: false).dropFirst().first.map(String.init) ?? ""
-        let lastBrace = (block as NSString).range(of: "}", options: .backwards).location
-        let anchorOffset: Int
-        if !typeName.isEmpty, lastBrace != NSNotFound,
-           let after = SlangEnumValues.offset(ofIdentifier: typeName, in: block), after > lastBrace {
-            anchorOffset = after
-        } else {
-            guard let enumAt = SlangEnumValues.offset(ofIdentifier: "enum", in: block) else { return nil }
-            anchorOffset = enumAt
+    /// An array's element type, by name: in the declaring file, else in a package
+    /// (`pkg::t`, or any package of the design for an imported `t`). Its width is the one its
+    /// members' values have, when there is only one (not a parameterized type).
+    private func enumType(named element: String, declaredIn uri: URL, cache: SlangEnumTypeCache) async throws -> SlangEnumType? {
+        let parts = element.components(separatedBy: "::")
+        let name = parts.last ?? element
+        var files: [URL] = parts.count == 1 ? [uri] : []
+        var packages = parts.count > 1 ? [parts[0]] : []
+        if packages.isEmpty {
+            packages = try await slangScopeChildren("").filter { $0.kind == "Package" }.map(\.name)
         }
-        var members: [SlangEnumMember] = []
-        var scopeName: String?
-        var previous: [Character]?
-        for member in declared {
-            var value: String?
-            if member.range == nil,
-               let position = SlangEnumValues.filePosition(ofBlockOffset: member.offset, in: block, anchorOffset: anchorOffset, anchor: link.position),
-               let memberHover = try await enumHover(link.uri, position) {
-                let values = SlangEnumValues.hoverMemberValues(memberHover).filter { $0.name == member.name }
-                if let found = values.first(where: { SlangEnumValues.literalWidth($0.literal) == width }) {
-                    value = SlangEnumValues.literalBits(found.literal, width: width)
-                    scopeName = scopeName ?? found.scope
-                }
+        for package in packages.prefix(16) {
+            for path in try await slangFilesContainingModule(package) {
+                if let url = editorURL(forServerURI: URL(fileURLWithPath: path).absoluteString), !files.contains(url) { files.append(url) }
             }
-            if value == nil, let explicit = member.explicitValue {
-                value = SlangEnumValues.literalBits(explicit, width: width)
-                guard value != nil else { return nil }
-            }
-            var bits: [Character]
-            if let value {
-                bits = Array(value)
-            } else if let previous {
-                guard let next = SlangEnumValues.increment(previous) else { return nil }
-                bits = next
-            } else {
-                bits = Array(repeating: "0", count: width)
-            }
-            if let range = member.range {
-                let step = range.first <= range.last ? 1 : -1
-                for index in stride(from: range.first, through: range.last, by: step) {
-                    if index != range.first {
-                        guard let next = SlangEnumValues.increment(bits) else { return nil }
-                        bits = next
-                    }
-                    members.append(.init(name: member.name + String(index), bits: String(bits)))
-                }
-            } else {
-                members.append(.init(name: member.name, bits: String(bits)))
-            }
-            previous = bits
-            guard members.count <= SlangEnumValues.maxMembers else { return nil }
         }
-        let name = scopeName ?? (typeName.isEmpty ? "enum" : typeName)
-        return SlangEnumType(name: name, width: width, members: members)
-    }
-}
-
-extension SlangEnumValues {
-    /// The size of a sized literal (`3'b0` -> 3).
-    static func literalWidth(_ literal: String) -> Int? {
-        guard let tick = literal.firstIndex(of: "'") else { return nil }
-        return Int(literal[..<tick])
-    }
-
-    /// `bits` plus one, nil on overflow.
-    static func increment(_ bits: [Character]) -> [Character]? {
-        var out = bits
-        var index = out.count - 1
-        while index >= 0 {
-            if out[index] == "0" { out[index] = "1"; return out }
-            out[index] = "0"
-            index -= 1
+        for file in files {
+            let symbols = try await slangDocumentSymbols(file, cache: cache)
+            guard let members = SlangEnumValues.enumMembers(inSymbols: symbols, named: name), let first = members.first,
+                  let hover = try await enumHover(file, first.position) else { continue }
+            let widths = Set(SlangEnumValues.hoverMemberValues(hover).filter { $0.name == first.name }.compactMap { SlangEnumValues.literalWidth($0.literal) })
+            guard widths.count == 1, let width = widths.first else { return nil }
+            return try await enumType(members: members, uri: file, width: width)
         }
         return nil
+    }
+
+    /// Each member's value from its hover (the section of `width` bits); nil if one has none.
+    private func enumType(members: [SlangEnumValues.SymbolMember], uri: URL, width: Int) async throws -> SlangEnumType? {
+        guard members.count <= SlangEnumValues.maxMembers else { return nil }
+        var out: [SlangEnumMember] = []
+        var scopeName: String?
+        for member in members {
+            guard let hover = try await enumHover(uri, member.position) else { return nil }
+            let sections = SlangEnumValues.hoverMemberValues(hover).filter { $0.name == member.name }
+            // The section of this instance's width; slang prints a 1-bit value unsized (`0`):
+            // then every instance must agree.
+            var value = sections.first { SlangEnumValues.literalWidth($0.literal) == width }
+            if value == nil, !sections.isEmpty, sections.allSatisfy({ SlangEnumValues.literalWidth($0.literal) == nil }),
+               Set(sections.map(\.literal)).count == 1 {
+                value = sections.first
+            }
+            guard let value, let bits = SlangEnumValues.literalBits(value.literal, width: width) else { return nil }
+            scopeName = scopeName ?? value.scope
+            out.append(.init(name: member.name, bits: bits))
+        }
+        guard let scopeName else { return nil }
+        return SlangEnumType(name: scopeName, width: width, members: out)
     }
 }
