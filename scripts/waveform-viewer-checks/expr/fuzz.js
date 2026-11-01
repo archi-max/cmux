@@ -7,14 +7,18 @@
 //   node fuzz.js check <dir> <sim-output>   compares cmux-expr with the simulator's lines
 //                                           ("<index> <bits>"), prints the mismatches, and writes
 //                                           <dir>/mismatches.json (fixtures for run.sh expr)
+//     FUZZ_SIM='<command>': check then re-runs each mismatch alone (in <dir>/alone/case-<i>/, the
+//     command run there with {sv} replaced by case.sv, its stdout read like <sim-output>) and
+//     reports only those that persist; the batch-only ones go to <dir>/batch-only.json. E.g.
+//     FUZZ_SIM='ssh ews-01 "cd /tmp/x && cat > c.sv && vcs -sverilog -full64 -q c.sv -o simv >/dev/null && ./simv" < {sv}'
 //
 // The generator covers the evaluator's operator subset (unsigned) over random 4-state signals of
 // widths 1-130 with descending, offset and ascending ranges, sized and unsized literals (x/z
 // leading too), selects, concatenation and replication. Each case is `$display("%0d %b", i, e)`,
 // so both sides print the expression at its self-determined width.
 //
-// Count a mismatch only after it also mismatches alone (`alone` writes one .sv per mismatch, to
-// compile each by itself): VCS W-2024.09 printed a different value for about 1 case in 3000 in a
+// Count a mismatch only after it also mismatches alone (FUZZ_SIM does that in check; `alone`
+// writes one .sv per mismatch to compile by hand): VCS W-2024.09 printed a different value for about 1 case in 3000 in a
 // 4000-case file than for the same case compiled by itself (Icarus and the case alone agreed).
 // It is not the generator: every case is a side-effect-free $display over the same 10 signals,
 // which nothing assigns, and the effect stays with cases split into initial blocks of 100, with
@@ -202,9 +206,31 @@ if (command === 'gen') {
     if (want === undefined || got !== want) { mismatches.push({ i, text, want: want === undefined ? null : want, got }); }
   });
   const used = (text) => batch.signals.filter((s) => new RegExp('\\b' + s.name + '\\b').test(text));
-  const out = mismatches.map((m) => Object.assign(m, { signals: used(m.text) }));
+  let kept = mismatches;
+  if (process.env.FUZZ_SIM && mismatches.length) {
+    // Each mismatch compiled by itself: the simulator's batch-only results are not ours.
+    const { execSync } = require('child_process');
+    const batchOnly = [];
+    kept = [];
+    for (const m of mismatches) {
+      const caseDir = path.join(dir, 'alone', `case-${m.i}`);
+      fs.mkdirSync(caseDir, { recursive: true });
+      const sv = path.join(caseDir, 'case.sv');
+      fs.writeFileSync(sv, svOf(batch, [m.i]));
+      let output = '';
+      try {
+        output = execSync(process.env.FUZZ_SIM.split('{sv}').join(JSON.stringify(sv)), { cwd: caseDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: 600000 });
+      } catch (error) { output = String(error.stdout || ''); }
+      const line = output.split('\n').map((l) => /^(\d+) ([01xzXZ]+)$/.exec(l.trim())).find((r) => r && Number(r[1]) === m.i);
+      const alone = line ? line[2].toLowerCase() : null;
+      if (alone !== null && alone === m.got) { batchOnly.push(Object.assign({ alone }, m)); } else { kept.push(Object.assign(m, { alone })); }
+    }
+    fs.writeFileSync(path.join(dir, 'batch-only.json'), JSON.stringify(batchOnly, null, 1));
+    console.log(`${batchOnly.length} of ${mismatches.length} mismatches agree with cmux-expr when compiled alone (the simulator's batch-only results: batch-only.json)`);
+  }
+  const out = kept.map((m) => Object.assign(m, { signals: used(m.text) }));
   fs.writeFileSync(path.join(dir, 'mismatches.json'), JSON.stringify(out, null, 1));
-  console.log(`seed ${batch.seed}: ${batch.cases.length} cases, ${sim.size} simulator lines, ${mismatches.length} mismatches`);
+  console.log(`seed ${batch.seed}: ${batch.cases.length} cases, ${sim.size} simulator lines, ${out.length} mismatches${process.env.FUZZ_SIM ? ' (persisting alone)' : ''}`);
   for (const m of out.slice(0, Number(b) || 20)) { console.log(`#${m.i} ${m.text}\n   sim ${m.want}\n   got ${m.got}`); }
 } else {
   console.log('usage: fuzz.js gen <dir> <seed> <count> | repro <dir> <i,...> | check <dir> <sim-output> [show] | alone <dir> <out-dir>');
