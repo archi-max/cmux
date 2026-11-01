@@ -13,7 +13,9 @@
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
 //   back() | forward() | close() | state()
-// and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'open' | 'closed', id?, ... }.
+//   settled()                     resolves (to state()) once the Verdi checks under way are done
+// and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'update' | 'open' | 'closed', id?, ... }
+// ('update': a shown step filled in with Verdi's answer; cmux does not move the editor for it).
 (function () {
   const waveform = window.cmuxWaveform;
   const host = waveform.host;
@@ -109,11 +111,16 @@
   }
 
   // One read per signal: a read already under way is shared (a step asks for its leaves together).
-  function changesOf(v) {
+  // A signal only a Verdi check read (`background`) is evicted before the ones our steps read, so
+  // following Verdi's port hops does not push a step's signals out (cp3: ex_mem read again).
+  function changesOf(v, background) {
     const s = session;
+    if (!s.background) { s.background = new Set(); }
+    if (!background) { s.background.delete(v.netlistId); }
     if (s.changes.has(v.netlistId)) { return Promise.resolve(s.changes.get(v.netlistId)); }
     if (!s.reading) { s.reading = new Map(); }
     if (s.reading.has(v.netlistId)) { return s.reading.get(v.netlistId); }
+    if (background) { s.background.add(v.netlistId); }
     const read = readChanges(s, v).finally(() => { s.reading.delete(v.netlistId); });
     s.reading.set(v.netlistId, read);
     return read;
@@ -122,12 +129,21 @@
     const changes = await host.signalChanges(v, MAX_CHANGES);
     const out = Array.isArray(changes) ? changes : null;
     s.changes.set(v.netlistId, out);
-    // Keep at most CACHED_CHANGES changes across signals: the oldest read go first.
+    // Keep at most CACHED_CHANGES changes across signals: Verdi checks' first, then the oldest read.
     s.cached = (s.cached || 0) + (out ? out.length : 0);
-    for (const [id, list] of s.changes) {
-      if (s.cached <= CACHED_CHANGES || id === v.netlistId) { break; }
+    const drop = (id) => {
+      const list = s.changes.get(id);
       s.changes.delete(id);
+      s.background.delete(id);
       s.cached -= list ? list.length : 0;
+    };
+    for (const id of [...s.background]) {
+      if (s.cached <= CACHED_CHANGES) { break; }
+      if (id !== v.netlistId && s.changes.has(id)) { drop(id); }
+    }
+    for (const id of [...s.changes.keys()]) {
+      if (s.cached <= CACHED_CHANGES || id === v.netlistId) { break; }
+      drop(id);
     }
     return out;
   }
@@ -145,7 +161,9 @@
     const neg = (prev === '1' && now !== '1') || ((prev === 'x' || prev === 'z') && now === '0');
     return edge === 'PosEdge' ? pos : edge === 'NegEdge' ? neg : pos || neg;
   };
-  const dump = {
+  // The dump provider; `background` marks what Verdi checks read (evicted before the rest).
+  function makeDump(background) {
+  return {
     async values(paths, time) {
       // Every leaf at once: a whole-signal helper reads them in parallel (its workers), not one by one.
       const unique = [...new Set(paths)];
@@ -160,7 +178,7 @@
         const width = Number(v.width) || 1;
         let bits = raw.get(v.netlistId);
         if (bits === undefined || bits === null) {
-          const changes = await changesOf(v);
+          const changes = await changesOf(v, background);
           const i = changes ? indexAt(changes, time) : -1;
           bits = i >= 0 ? changes[i][1] : (changes ? 'x'.repeat(width) : undefined);
         }
@@ -176,7 +194,7 @@
         const at = await v2Edge(v, Math.floor(time) + 1, 'any');
         if (at !== undefined) { return at === null ? 0 : at; }
       }
-      const changes = await changesOf(v);
+      const changes = await changesOf(v, background);
       if (!changes) { return null; }
       const i = indexAt(changes, time);
       return i < 0 ? 0 : Number(changes[i][0]);
@@ -191,7 +209,7 @@
         const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any');
         if (at !== undefined) { return at; }
       }
-      const changes = await changesOf(v);
+      const changes = await changesOf(v, background);
       if (!changes) { return null; }
       for (let i = indexAt(changes, time); i > 0; i--) {
         const prev = bitsOf(changes[i - 1][1], width).slice(-1).toLowerCase();
@@ -201,11 +219,31 @@
       return null;
     },
   };
+  }
+  const dump = makeDump(false);
   const models = {
     instance: (path) => request('model', { cmd: 'instance', path }),
     lookup: (path) => request('model', { cmd: 'lookup', path }),
     writers: (path) => request('model', { cmd: 'writers', path }),
   };
+  // The session's answers kept, so the engines of its Verdi checks do not ask cmux again.
+  function sessionModels(s) {
+    const kept = new Map();
+    const keep = (cmd) => (path) => {
+      const key = cmd + ':' + path;
+      if (!kept.has(key)) { kept.set(key, models[cmd](path).catch((error) => { kept.delete(key); throw error; })); }
+      return kept.get(key);
+    };
+    s.models = { instance: keep('instance'), lookup: keep('lookup'), writers: keep('writers') };
+    return s.models;
+  }
+  // The dump for a Verdi check's own engine: no new reads once the check is late or stale (a read
+  // under way still finishes; the helper serves one at a time, so a step after it would wait).
+  function guardedDump(stop) {
+    const d = makeDump(true);
+    const guard = (f) => (...args) => (stop() ? Promise.reject(Object.assign(new Error('stale'), { code: 'stale' })) : f(...args));
+    return { values: guard(d.values), lastChange: guard(d.lastChange), prevEdge: guard(d.prevEdge) };
+  }
 
   // ---- tracing ----
   // The steps shown, and where in them the panel is (Back/Forward).
@@ -242,7 +280,8 @@
     if (time === null || !Number.isFinite(time)) { showError(S().traceNoMarker); return null; }
     if (!session || session.backend !== host.currentBackend || session.kind !== dumpKind() || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')) {
       session = newSession(q.designPrefix, q.dumpPrefix);
-      session.engine = window.cmuxTrace.createEngine({ models, dump, options: { xprop: q.xprop || 'auto' } });
+      session.options = { xprop: q.xprop || 'auto' };
+      session.engine = window.cmuxTrace.createEngine({ models: sessionModels(session), dump, options: session.options });
     }
     history.steps = history.steps.slice(0, history.at + 1);
     return traceStep(q.designPath, time, true);
@@ -265,8 +304,9 @@
     }
     if (run !== running) { return null; }
     step.dumpPath = dumpPath;
-    try { step = await withVerdi(step, time, verdi); } catch (error) { host.log(error); }
-    if (run !== running) { return null; }
+    step.engine = { name: 'cmux' };
+    // Ours is shown now; Verdi's answer fills the step in later (verdiCheck), never before.
+    if (verdi && !step.error) { step.engine.verdi = 'checking'; verdiCheck(step, time, verdi, run); }
     if (push) { history.steps.push(step); history.at = history.steps.length - 1; }
     render();
     host.toNative({ type: 'trace', event: 'step', step: plain(step) });
@@ -279,21 +319,58 @@
   // chain is followed to the statement Verdi names (the hops are listed); when the two differ and
   // the value has not changed since an earlier time, ours (the statement active at t) stays first
   // and Verdi's is shown second; any other difference makes the step approximate.
-  const VERDI_WAIT_MS = 20000;
+  // A step's Verdi check (the answer and our port-hop following to it) gets this long after ours
+  // is shown; past it the step says "Verdi: not checked (timed out)". cp3: Verdi answers in well
+  // under a second once warm (it was asked when the step started), a port hop on a whole-signal
+  // helper takes up to ~30 s.
+  const VERDI_BUDGET_MS = 10000;
+  const verdiBudget = () => (Number(waveform.traceVerdiBudgetMs) > 0 ? Number(waveform.traceVerdiBudgetMs) : VERDI_BUDGET_MS);
+  const checks = new Set();
+  // Fills `step` (shown, in the history) in with Verdi's answer when it comes within the budget;
+  // drops it when a newer trace has started (or the panel closed) meanwhile.
+  function verdiCheck(step, time, asked, run) {
+    const deadline = Date.now() + verdiBudget();
+    const late = { timedOut: true };
+    let timer;
+    const limit = new Promise((resolve) => { timer = setTimeout(() => resolve(late), Math.max(0, deadline - Date.now())); });
+    const stop = () => run !== running || Date.now() > deadline;
+    const engine = window.cmuxTrace.createEngine({ models: session.models, dump: guardedDump(stop), options: session.options });
+    const check = Promise.race([withVerdi(step, time, asked, stop, engine), limit]).then((out) => {
+      if (run !== running) { step.engine.verdi = 'dropped'; return; }
+      let shown = step;
+      if (out === late || !out) {
+        step.engine.verdi = 'timedOut';
+      } else {
+        const i = history.steps.indexOf(step);
+        if (i >= 0) { history.steps[i] = out; }
+        shown = out;
+      }
+      if (history.steps[history.at] === shown) { render(); }
+      host.toNative({ type: 'trace', event: 'update', step: plain(shown) });
+    }).catch((error) => { host.log(error); step.engine.verdi = 'timedOut'; })
+      .finally(() => { clearTimeout(timer); checks.delete(check); });
+    checks.add(check);
+  }
+  // Resolves when every Verdi check under way has finished (cmux and the checks wait on this).
+  async function settled() {
+    while (checks.size) { await Promise.allSettled([...checks]); }
+    return state();
+  }
   const sameFile = (a, b) => !!a && !!b && (a === b || String(a).split('/').pop() === String(b).split('/').pop());
   const isPort = (st) => !!st.driver && (st.driver.kind === 'portIn' || st.driver.kind === 'portOut');
-  // Verdi's answer, or null after VERDI_WAIT_MS (counted from the ask).
+  // Verdi's answer (null when the request failed); the step's budget bounds the wait.
   function askVerdi(signal, time) {
-    return Promise.race([request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; }),
-      new Promise((resolve) => { setTimeout(() => resolve(null), VERDI_WAIT_MS); })]);
+    return request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; });
   }
-  async function withVerdi(step, time, asked) {
-    step.engine = { name: 'cmux' };
-    if (session.kind === 'local' || step.error) { return step; }
+  // `shown` with Verdi's answer merged in, as a new step (the shown one is left as it is); null
+  // when `stop()` says the check is late or stale before the port hops are followed.
+  async function withVerdi(shown, time, asked, stop, engine) {
+    const step = Object.assign({}, shown, { engine: { name: 'cmux' } });
     let v = null;
     try {
-      v = await (asked || askVerdi(step.dumpPath, time));
+      v = await asked;
     } catch (error) { host.log(error); }
+    if (stop()) { return null; }
     const state = (v && v.state) || 'none';
     step.engine.verdi = state;
     if (state === 'unavailable') { step.engine.reason = v.reason || ''; step.engine.message = v.message || ''; }
@@ -310,7 +387,8 @@
         const next = (cur.fanin || []).filter((f) => f.path);
         if (next.length !== 1) { break; }
         via.push({ signal: cur.signal, src: cur.stmt ? cur.stmt.src : '', loc: cur.stmt ? cur.stmt.loc : null });
-        cur = await session.engine.active(next[0].path, time);
+        try { cur = await engine.active(next[0].path, time); } catch (error) { if (stop()) { return null; } throw error; }
+        if (stop()) { return null; }
         if (cur.error) { break; }
       }
       if (cur !== step && same(cur)) {
@@ -461,6 +539,8 @@
     div.dataset.engine = e.name;
     let text = e.name === 'verdi' ? s.traceEngineVerdi : s.traceEngineCmux;
     if (e.verdi === 'starting') { text += ' · ' + s.traceVerdiStarting; }
+    if (e.verdi === 'checking') { text += ' · ' + s.traceVerdiChecking; }
+    if (e.verdi === 'timedOut') { text += ' · ' + s.traceVerdiTimedOut; }
     if (e.verdi === 'unavailable') { text += ' · ' + format(s['traceVerdiUnavailable_' + e.reason] || s.traceVerdiUnavailable, e.message || ''); }
     if (e.verdiNotFound) { text += ' · ' + s.traceVerdiNotFound; }
     div.append(el('span', '', text));
@@ -573,7 +653,7 @@
   // Shown only while a trace is waiting (not over a step already shown).
   function status(text) { if (panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
 
-  const api = Object.freeze({ driver, driverOfDesign, reply, status, back, forward, close, state, backendChanged });
+  const api = Object.freeze({ driver, driverOfDesign, reply, status, back, forward, close, state, settled, backendChanged });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxTraceUI = { rowMenuItems };
 })();
