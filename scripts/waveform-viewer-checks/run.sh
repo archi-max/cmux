@@ -9,6 +9,9 @@
 #                                        range/router/FrameParser unit checks
 #   ./run.sh link                        the SystemVerilog editor's source link
 #                                        API (link.* in host.js) on link.vcd
+#   ./run.sh enum                        enum member names (cmux-enum.js): rows
+#                                        get their enum's alias table as a default,
+#                                        undo, user formats, raw valuesAt
 #   ./run.sh debugger                    the waveform debugger (cmux-debugger.js):
 #                                        clock, stepping, play, Locals, highlights
 #   ./run.sh debugger-fsdb <ssh-host> <remote.fsdb> <scope.path>
@@ -67,6 +70,12 @@ case "${1:-}" in
     swiftc -O "$HERE/xss/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/xss"
     "$OUT/xss" "$ASSETS" "$HERE/xss-signal-names.vcd" "$OUT/xss.png"
+    ;;
+  enum)
+    swiftc -O "$HERE/enum/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/enum"
+    "$OUT/enum" "$ASSETS" "$HERE/enum/fsm.vcd" "$OUT/enum.png" | tee "$OUT/enum.log"
+    grep -q '^ENUM CHECKS PASSED' "$OUT/enum.log"
     ;;
   link)
     swiftc -O "$HERE/link/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
