@@ -141,7 +141,7 @@
       if (fitted === null) { fail('badLiteral', at); }
       // Unsized with a leftmost x or z digit: that x/z fills whatever width the context gives (5.7.1).
       const fill = size === null && (fitted[0] === 'x' || fitted[0] === 'z') ? fitted[0] : null;
-      tokens.push({ t: 'lit', at, v: fromBits(fitted, width), fill, signed: m[1] !== '' });
+      tokens.push({ t: 'lit', at, v: fromBits(fitted, width), fill, signed: m[1] !== '', unsized: size === null });
     };
     for (;;) {
       space();
@@ -172,10 +172,12 @@
         } else {
           i = j;
           const big = BigInt(digits);
-          const width = Math.max(32, big.toString(2).length);
+          // Wider than 32 bits: one more, so the signed value stays positive (slang, 1800-2023).
+          const bits = big.toString(2).length;
+          const width = bits > 32 ? bits + 1 : 32;
           if (width > MAX_WIDTH) { fail('badLiteral', at); }
           // An unsized decimal number is a signed integer (5.7.1).
-          tokens.push({ t: 'lit', at, v: val(width, big, 0n), text: digits, signed: true });
+          tokens.push({ t: 'lit', at, v: val(width, big, 0n), text: digits, signed: true, unsized: true });
         }
       } else if (c === "'") {
         if (/^'[sS]?[bBoOdDhH]/.test(text.slice(i))) {
@@ -241,7 +243,7 @@
 
     function primary() {
       const tok = peek();
-      if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v, fill: tok.fill || null, signed: !!tok.signed }; }
+      if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v, fill: tok.fill || null, signed: !!tok.signed, unsized: !!tok.unsized }; }
       if (tok.t === 'fill') { k++; return { t: 'fill', at: tok.at, bit: tok.bit }; }
       if (tok.t === 'id') {
         k++;
@@ -324,7 +326,12 @@
   }
 
   // An unbased unsized literal ('1) has no width of its own: not in a concatenation.
-  function noFill(node) { if (node.t === 'fill') { fail('badLiteral', node.at); } }
+  // A concatenation's parts have widths of their own: no '0/'1/'x/'z, and no unsized number
+  // (11.4.12; slang and Icarus refuse it, VCS takes it as 32 bits).
+  function noFill(node) {
+    if (node.t === 'fill') { fail('badLiteral', node.at); }
+    if (node.t === 'lit' && node.unsized) { fail('unsizedInConcat', node.at); }
+  }
 
   function firstName(node) {
     if (!node || typeof node !== 'object') { return null; }
