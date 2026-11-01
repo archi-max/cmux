@@ -42,6 +42,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     instances = all["instances"] as? [String: Any] ?? [:]
     let cfg = WKWebViewConfiguration()
     cfg.setURLSchemeHandler(scheme, forURLScheme: WaveformViewerSchemeHandler.scheme)
+    let hook = """
+    (function(){ for (const k of ['warn','error']) { const o = console[k];
+      console[k] = (...a) => { try { webkit.messageHandlers.console.postMessage(k + ': ' + a.map((x) => (x && x.stack ? String(x) + ' ' + x.stack : String(x))).join(' ')); } catch(e){}; o.apply(console, a); }; }
+      window.addEventListener('error', e => webkit.messageHandlers.console.postMessage('onerror: ' + e.message + ' @' + e.filename + ':' + e.lineno));
+    })();
+    """
+    cfg.userContentController.addUserScript(WKUserScript(source: hook, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+    cfg.userContentController.add(self, name: "console")
     cfg.userContentController.add(self, name: "cmuxWaveform")
     web = WKWebView(frame: window.contentView!.bounds, configuration: cfg)
     web.navigationDelegate = self
@@ -63,7 +71,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-    guard let body = m.body as? [String: Any], let type = body["type"] as? String else { return }
+    guard m.name == "cmuxWaveform", let body = m.body as? [String: Any], let type = body["type"] as? String else { print("[\(m.name)]", m.body); return }
+    if type != "trace" && type != "log" && type != "event" { print("[page]", type, (body["message"] as? String ?? "").prefix(200)) }
     if type == "trace" {
       guard let id = (body["id"] as? NSNumber)?.intValue, body["event"] as? String == "model" else { return }
       let path = body["path"] as? String ?? ""
@@ -105,7 +114,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var times: [Double] = []
     var noDriver: [String] = []
     var errors = 0
-    while !queue.isEmpty, times.count < 400 {
+    while !queue.isEmpty, times.count < (Int(ProcessInfo.processInfo.environment["TRACE_FSDB_MAX_STEPS"] ?? "") ?? 400) {
       let (path, t, depth) = queue.removeFirst()
       guard seen.insert("\(path)@\(t)").inserted else { continue }
       let t0 = Date()
@@ -158,5 +167,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { h.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 840) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + (Double(ProcessInfo.processInfo.environment["TRACE_FSDB_TIMEOUT"] ?? "") ?? 840)) { print("timeout"); exit(1) }
 app.run()
