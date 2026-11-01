@@ -27,6 +27,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
   var engineAnswer: [String: Any]?
   var engineRequests = 0
+  /// How long cmux takes to answer an engine request (the Verdi session's answer time).
+  var engineDelay: TimeInterval = 0
   var checksStarted = false
 
   func call(_ js: String) async -> Any? {
@@ -214,6 +216,39 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(await panelText().contains("no KDB next to the FSDB"), "the panel says why Verdi is not used")
     engineAnswer = nil
 
+    // Timing on a whole-signal (v1) FSDB helper where each signal read takes 150 ms and Verdi
+    // answers in 600 ms: a step reads its leaves concurrently, each signal once, and asks Verdi
+    // while it runs, not after it (cpu: 20 serial whole-history reads made one step minutes long).
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    engineDelay = 0.6
+    let timing = await call("""
+      const b = cmuxWaveform.host.currentBackend;
+      const q = () => cmuxWaveform.trace.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      await q();  // a session on the VCD itself, so the next one starts with nothing read
+      const own = b.signalChanges.bind(b);
+      let reads = 0, inFlight = 0, most = 0;
+      const ids = [];
+      b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+      b.signalChanges = async (v, max) => {
+        reads++; ids.push(v.netlistId); inFlight++; most = Math.max(most, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        inFlight--;
+        return own(v, max);
+      };
+      const t0 = performance.now();
+      let step;
+      try { step = await q(); } finally { delete b.valuesAt; delete b.changes; b.signalChanges = own; }
+      return { ms: performance.now() - t0, reads, most, unique: new Set(ids).size, engine: step && step.engine && step.engine.name };
+    """) as? [String: Any]
+    engineDelay = 0
+    engineAnswer = nil
+    let reads = timing?["reads"] as? Int ?? 0, ms = timing?["ms"] as? Double ?? .infinity
+    let serial = Double(reads) * 150 + 600
+    print(String(format: "[timing] v1 step %.0f ms, %d reads (serial would be %.0f ms), at most %d at once", ms, reads, serial, timing?["most"] as? Int ?? 0))
+    expect(reads > 2 && timing?["unique"] as? Int == reads, "v1 helper: each signal read once, also when asked twice at the same time: \(String(describing: timing))")
+    expect((timing?["most"] as? Int ?? 0) > 1, "v1 helper: a step's signals are read concurrently: \(String(describing: timing))")
+    expect(timing?["engine"] as? String == "verdi" && ms < serial * 0.6, "v1 helper + Verdi: the step takes well under the serial time (\(Int(ms)) ms vs \(Int(serial)) ms)")
+
     // Status while cmux builds; close.
     _ = await call("cmuxWaveform.trace.status('Building…'); return null")
     expect(!(await panelText().contains("Building")), "status does not cover a shown step")
@@ -266,7 +301,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       }
     case "engine":
       engineRequests += 1
-      answer(id, ok: true, result: engineAnswer ?? ["state": "none"])
+      let result: [String: Any] = engineAnswer ?? ["state": "none"]
+      if engineDelay > 0 {
+        DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { self.answer(id, ok: true, result: result) }
+      } else {
+        answer(id, ok: true, result: result)
+      }
     default:
       break
     }
