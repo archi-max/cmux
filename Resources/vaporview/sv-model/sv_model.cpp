@@ -1,0 +1,1791 @@
+// cmux-sv-model: the trace model sidecar for cmux's driver tracing (cmux-trace.js).
+//
+// It elaborates a SystemVerilog design with slang (https://github.com/MikePopoloski/slang, MIT,
+// pinned in build.sh) from the same command line as the editor's slang profile (build file, top,
+// defines), and answers per-instance questions about it: each signal's width and kind, each
+// continuous assignment, each procedure with its clocking and its statement tree, and each port
+// connection, with expressions lowered to cmux-expr text (Resources/vaporview/cmux-expr.js) whose
+// operands are leaf tokens (_L<n>_ signals, _E<n>_ unpacked-array elements, _O<n>_ parts the
+// evaluator does not model). Every leaf is read as a [w-1:0] vector: selects, struct members and
+// packed-array elements are lowered here to 0-based bit windows.
+//
+// Protocol: one JSON object per line on stdin, one JSON reply per line on stdout, matched by id.
+// The first line out is {"id":0,"ready":true,...}.
+//   {"id":1,"cmd":"load","args":["-f","files.f","--top","tb"],"cwd":"/dir"}
+//       -> {"id":1,"ok":true,"tops":["tb"],"errors":n,"messages":[...],"ms":n}
+//   {"id":2,"cmd":"instance","path":"tb.dut"}   -> {"id":2,"ok":true,"model":{...}}
+//   {"id":3,"cmd":"lookup","path":"tb.dut.g[0].x"} -> {"id":3,"ok":true,"instance":"tb.dut","name":"g[0].x"}
+//   {"id":4,"cmd":"instances"} -> {"id":4,"ok":true,"tops":["tb"],"instances":["tb","tb.dut",...]} (sorted)
+//   {"id":4,"cmd":"version"}
+// Errors: {"id":n,"ok":false,"error":"<code>","message":"..."}.
+//
+// slang's license:
+//
+//   Copyright (c) 2015-2026 Michael Popoloski
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy
+//   of this software and associated documentation files (the "Software"), to deal
+//   in the Software without restriction, including without limitation the rights
+//   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//   copies of the Software, and to permit persons to whom the Software is
+//   furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+//   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+//   THE SOFTWARE.
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "slang/ast/ASTVisitor.h"
+#include "slang/ast/Compilation.h"
+#include "slang/ast/EvalContext.h"
+#include "slang/ast/Expression.h"
+#include "slang/ast/Statement.h"
+#include "slang/ast/TimingControl.h"
+#include "slang/ast/expressions/AssignmentExpressions.h"
+#include "slang/ast/expressions/CallExpression.h"
+#include "slang/ast/expressions/ConversionExpression.h"
+#include "slang/ast/expressions/LiteralExpressions.h"
+#include "slang/ast/expressions/MiscExpressions.h"
+#include "slang/ast/expressions/OperatorExpressions.h"
+#include "slang/ast/expressions/SelectExpressions.h"
+#include "slang/ast/statements/ConditionalStatements.h"
+#include "slang/ast/statements/LoopStatements.h"
+#include "slang/ast/statements/MiscStatements.h"
+#include "slang/ast/symbols/BlockSymbols.h"
+#include "slang/ast/symbols/CompilationUnitSymbols.h"
+#include "slang/ast/symbols/InstanceSymbols.h"
+#include "slang/ast/symbols/MemberSymbols.h"
+#include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/VariableSymbols.h"
+#include "slang/ast/types/AllTypes.h"
+#include "slang/diagnostics/DiagnosticEngine.h"
+#include "slang/driver/Driver.h"
+#include "slang/syntax/AllSyntax.h"
+#include "slang/text/Json.h"
+#include "slang/text/SourceManager.h"
+#include "slang/util/VersionInfo.h"
+
+using namespace slang;
+using namespace slang::ast;
+
+namespace {
+
+// The protocol version: bump when the model's shape changes (cmux-trace.js checks it).
+constexpr int kModelVersion = 1;
+
+// ---------------------------------------------------------------------------------------------
+// A small JSON reader for requests (objects of strings, numbers, booleans and string arrays).
+struct JValue {
+    enum Kind { Null, Bool, Number, String, Array, Object } kind = Null;
+    bool b = false;
+    double n = 0;
+    std::string s;
+    std::vector<JValue> a;
+    std::vector<std::pair<std::string, JValue>> o;
+    const JValue* get(std::string_view key) const {
+        for (auto& [k, v] : o) {
+            if (k == key)
+                return &v;
+        }
+        return nullptr;
+    }
+    std::string str(std::string_view key) const {
+        auto v = get(key);
+        return v && v->kind == String ? v->s : std::string();
+    }
+};
+
+class JParser {
+public:
+    explicit JParser(std::string_view text) : t(text) {}
+    std::optional<JValue> parse() {
+        JValue v;
+        if (!value(v))
+            return std::nullopt;
+        ws();
+        if (i != t.size())
+            return std::nullopt;
+        return v;
+    }
+
+private:
+    std::string_view t;
+    size_t i = 0;
+    void ws() {
+        while (i < t.size() && (t[i] == ' ' || t[i] == '\t' || t[i] == '\r' || t[i] == '\n'))
+            i++;
+    }
+    bool lit(std::string_view w) {
+        if (t.substr(i, w.size()) != w)
+            return false;
+        i += w.size();
+        return true;
+    }
+    bool string(std::string& out) {
+        if (i >= t.size() || t[i] != '"')
+            return false;
+        i++;
+        while (i < t.size() && t[i] != '"') {
+            char c = t[i++];
+            if (c != '\\') {
+                out += c;
+                continue;
+            }
+            if (i >= t.size())
+                return false;
+            char e = t[i++];
+            switch (e) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case 'u': {
+                    if (i + 4 > t.size())
+                        return false;
+                    unsigned cp = std::stoul(std::string(t.substr(i, 4)), nullptr, 16);
+                    i += 4;
+                    if (cp >= 0xD800 && cp < 0xDC00 && t.substr(i, 2) == "\\u" && i + 6 <= t.size()) {
+                        unsigned lo = std::stoul(std::string(t.substr(i + 2, 4)), nullptr, 16);
+                        i += 6;
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    }
+                    if (cp < 0x80) {
+                        out += char(cp);
+                    }
+                    else if (cp < 0x800) {
+                        out += char(0xC0 | (cp >> 6));
+                        out += char(0x80 | (cp & 0x3F));
+                    }
+                    else if (cp < 0x10000) {
+                        out += char(0xE0 | (cp >> 12));
+                        out += char(0x80 | ((cp >> 6) & 0x3F));
+                        out += char(0x80 | (cp & 0x3F));
+                    }
+                    else {
+                        out += char(0xF0 | (cp >> 18));
+                        out += char(0x80 | ((cp >> 12) & 0x3F));
+                        out += char(0x80 | ((cp >> 6) & 0x3F));
+                        out += char(0x80 | (cp & 0x3F));
+                    }
+                    break;
+                }
+                default: out += e;
+            }
+        }
+        if (i >= t.size())
+            return false;
+        i++;
+        return true;
+    }
+    bool value(JValue& v) {
+        ws();
+        if (i >= t.size())
+            return false;
+        char c = t[i];
+        if (c == '{') {
+            v.kind = JValue::Object;
+            i++;
+            ws();
+            if (i < t.size() && t[i] == '}') {
+                i++;
+                return true;
+            }
+            while (true) {
+                ws();
+                std::string k;
+                if (!string(k))
+                    return false;
+                ws();
+                if (i >= t.size() || t[i] != ':')
+                    return false;
+                i++;
+                JValue x;
+                if (!value(x))
+                    return false;
+                v.o.emplace_back(std::move(k), std::move(x));
+                ws();
+                if (i < t.size() && t[i] == ',') {
+                    i++;
+                    continue;
+                }
+                if (i < t.size() && t[i] == '}') {
+                    i++;
+                    return true;
+                }
+                return false;
+            }
+        }
+        if (c == '[') {
+            v.kind = JValue::Array;
+            i++;
+            ws();
+            if (i < t.size() && t[i] == ']') {
+                i++;
+                return true;
+            }
+            while (true) {
+                JValue x;
+                if (!value(x))
+                    return false;
+                v.a.push_back(std::move(x));
+                ws();
+                if (i < t.size() && t[i] == ',') {
+                    i++;
+                    continue;
+                }
+                if (i < t.size() && t[i] == ']') {
+                    i++;
+                    return true;
+                }
+                return false;
+            }
+        }
+        if (c == '"') {
+            v.kind = JValue::String;
+            return string(v.s);
+        }
+        if (lit("true")) {
+            v.kind = JValue::Bool;
+            v.b = true;
+            return true;
+        }
+        if (lit("false")) {
+            v.kind = JValue::Bool;
+            return true;
+        }
+        if (lit("null"))
+            return true;
+        size_t start = i;
+        while (i < t.size() && (isdigit((unsigned char)t[i]) || t[i] == '-' || t[i] == '+' ||
+                                t[i] == '.' || t[i] == 'e' || t[i] == 'E'))
+            i++;
+        if (start == i)
+            return false;
+        v.kind = JValue::Number;
+        v.n = std::strtod(std::string(t.substr(start, i - start)).c_str(), nullptr);
+        return true;
+    }
+};
+
+// ---------------------------------------------------------------------------------------------
+// Lowered expressions.
+struct Loc {
+    std::string file;
+    size_t line = 0, col = 0, endLine = 0, endCol = 0;
+    bool valid = false;
+};
+
+struct Expr;
+struct Elem {
+    std::string array;            // relative name of the unpacked array
+    std::unique_ptr<Expr> index;  // its index expression
+    int64_t width = 0, lo = 0, hi = 0;
+};
+struct Opaque {
+    std::string src, kind, why;
+    Loc loc;
+};
+struct Expr {
+    std::string text;
+    std::vector<std::string> leaves;
+    std::vector<std::vector<Loc>> leafLocs;
+    std::vector<Elem> elems;
+    std::vector<Opaque> opaque;
+    int64_t width = 0;
+    bool isSigned = false;
+    std::string src;
+    Loc loc;
+};
+
+// A 0-based bit window of a leaf: tok[off +: width], off constant or an expression's text.
+struct Window {
+    std::string tok;
+    int64_t tokWidth = 0;
+    std::optional<int64_t> constOff;
+    std::string offText;
+    int64_t width = 0;
+    bool ok = false;
+};
+
+std::string sizedBits(const SVInt& v) {
+    std::string bits;
+    auto w = v.getBitWidth();
+    bits.reserve(w);
+    for (int32_t k = int32_t(w) - 1; k >= 0; k--) {
+        logic_t b = v[k];
+        bits += b.isUnknown() ? (b.value == logic_t::Z_VALUE ? 'z' : 'x') : (b.value ? '1' : '0');
+    }
+    return std::to_string(w) + (v.isSigned() ? "'sb" : "'b") + bits;
+}
+
+class Model {
+public:
+    Model(Compilation& comp, SourceManager& sm) : comp(comp), sm(sm) { index(); }
+
+    std::vector<std::string> tops() const {
+        std::vector<std::string> out;
+        for (auto inst : comp.getRoot().topInstances)
+            out.push_back(inst->getHierarchicalPath());
+        return out;
+    }
+
+    std::vector<std::string> instancePaths() const {
+        std::vector<std::string> out;
+        for (auto& [k, v] : instances)
+            out.push_back(k);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    const InstanceSymbol* instance(const std::string& path) const {
+        auto it = instances.find(path);
+        return it == instances.end() ? nullptr : it->second;
+    }
+
+    // The deepest instance a dotted path is under, and the rest of the path.
+    std::optional<std::pair<std::string, std::string>> lookup(const std::string& path) const {
+        std::string best;
+        for (size_t k = 0; k <= path.size(); k++) {
+            if (k == path.size() || path[k] == '.') {
+                auto prefix = path.substr(0, k);
+                if (instances.count(prefix))
+                    best = prefix;
+            }
+        }
+        if (best.empty())
+            return std::nullopt;
+        return std::make_pair(best, best.size() < path.size() ? path.substr(best.size() + 1) : "");
+    }
+
+    void writeInstance(JsonWriter& w, const InstanceSymbol& inst) {
+        cur = &inst;
+        curPath = inst.getHierarchicalPath();
+        files.clear();
+        fileIndex.clear();
+        auto parent = parentOf(inst);
+        w.startObject();
+        w.writeProperty("version");
+        w.writeValue(int64_t(kModelVersion));
+        w.writeProperty("path");
+        w.writeValue(curPath);
+        w.writeProperty("module");
+        w.writeValue(inst.getDefinition().name);
+        if (parent) {
+            w.writeProperty("parent");
+            w.writeValue(parent->getHierarchicalPath());
+        }
+        writeLocProp(w, "loc", inst.location, inst.name.size());
+        w.writeProperty("ports");
+        writePorts(w, inst, parent);
+        // Members (signals, assigns, procedures, children) in this body, with generate blocks.
+        std::vector<const Symbol*> signals, assigns, procs, children;
+        collect(inst.body, signals, assigns, procs, children);
+        w.writeProperty("signals");
+        w.startObject();
+        for (auto s : signals)
+            writeSignal(w, s->as<ValueSymbol>());
+        w.endObject();
+        w.writeProperty("assigns");
+        w.startArray();
+        for (auto a : assigns)
+            writeAssign(w, a->as<ContinuousAssignSymbol>());
+        w.endArray();
+        w.writeProperty("procs");
+        w.startArray();
+        int id = 0;
+        for (auto p : procs)
+            writeProc(w, p->as<ProceduralBlockSymbol>(), id++);
+        w.endArray();
+        w.writeProperty("children");
+        w.startArray();
+        for (auto c : children) {
+            auto& child = c->as<InstanceSymbol>();
+            w.startObject();
+            auto childPath = child.getHierarchicalPath();
+            w.writeProperty("path");
+            w.writeValue(childPath);
+            w.writeProperty("name");
+            w.writeValue(rel(childPath));
+            w.writeProperty("module");
+            w.writeValue(child.getDefinition().name);
+            writeLocProp(w, "loc", child.location, child.name.size());
+            w.writeProperty("ports");
+            writePorts(w, child, &inst);
+            w.endObject();
+        }
+        w.endArray();
+        w.writeProperty("files");
+        w.startArray();
+        for (auto& f : files)
+            w.writeValue(f);
+        w.endArray();
+        w.endObject();
+    }
+
+private:
+    Compilation& comp;
+    SourceManager& sm;
+    std::unordered_map<std::string, const InstanceSymbol*> instances;
+    std::unordered_map<const InstanceSymbol*, const InstanceSymbol*> parents;
+    const InstanceSymbol* cur = nullptr;  // the instance names are relative to
+    std::string curPath;
+    mutable std::vector<std::string> files;
+    mutable std::unordered_map<std::string, size_t> fileIndex;
+
+    // ---- the instance index ----
+    void index() {
+        for (auto top : comp.getRoot().topInstances)
+            indexInstance(*top, nullptr);
+    }
+    void indexInstance(const InstanceSymbol& inst, const InstanceSymbol* parent) {
+        instances[inst.getHierarchicalPath()] = &inst;
+        parents[&inst] = parent;
+        indexScope(inst.body, inst);
+    }
+    void indexScope(const Scope& scope, const InstanceSymbol& owner) {
+        for (auto& m : scope.members()) {
+            if (m.kind == SymbolKind::Instance) {
+                indexInstance(m.as<InstanceSymbol>(), &owner);
+            }
+            else if (m.kind == SymbolKind::GenerateBlock) {
+                auto& g = m.as<GenerateBlockSymbol>();
+                if (!g.isUninstantiated)
+                    indexScope(g, owner);
+            }
+            else if (m.kind == SymbolKind::GenerateBlockArray) {
+                for (auto e : m.as<GenerateBlockArraySymbol>().entries) {
+                    if (!e->isUninstantiated)
+                        indexScope(*e, owner);
+                }
+            }
+            else if (m.kind == SymbolKind::InstanceArray) {
+                indexArray(m.as<InstanceArraySymbol>(), owner);
+            }
+        }
+    }
+    void indexArray(const InstanceArraySymbol& arr, const InstanceSymbol& owner) {
+        for (auto e : arr.elements) {
+            if (e->kind == SymbolKind::Instance)
+                indexInstance(e->as<InstanceSymbol>(), &owner);
+            else if (e->kind == SymbolKind::InstanceArray)
+                indexArray(e->as<InstanceArraySymbol>(), owner);
+        }
+    }
+    const InstanceSymbol* parentOf(const InstanceSymbol& inst) const {
+        auto it = parents.find(&inst);
+        return it == parents.end() ? nullptr : it->second;
+    }
+
+    void collect(const Scope& scope, std::vector<const Symbol*>& signals, std::vector<const Symbol*>& assigns,
+                 std::vector<const Symbol*>& procs, std::vector<const Symbol*>& children) {
+        for (auto& m : scope.members()) {
+            switch (m.kind) {
+                case SymbolKind::Variable:
+                case SymbolKind::Net: signals.push_back(&m); break;
+                case SymbolKind::ContinuousAssign: assigns.push_back(&m); break;
+                case SymbolKind::ProceduralBlock: procs.push_back(&m); break;
+                case SymbolKind::Instance: children.push_back(&m); break;
+                case SymbolKind::InstanceArray: collectArray(m.as<InstanceArraySymbol>(), children); break;
+                case SymbolKind::GenerateBlock:
+                    if (!m.as<GenerateBlockSymbol>().isUninstantiated)
+                        collect(m.as<GenerateBlockSymbol>(), signals, assigns, procs, children);
+                    break;
+                case SymbolKind::GenerateBlockArray:
+                    for (auto e : m.as<GenerateBlockArraySymbol>().entries) {
+                        if (!e->isUninstantiated)
+                            collect(*e, signals, assigns, procs, children);
+                    }
+                    break;
+                default: break;
+            }
+        }
+    }
+    void collectArray(const InstanceArraySymbol& arr, std::vector<const Symbol*>& children) {
+        for (auto e : arr.elements) {
+            if (e->kind == SymbolKind::Instance)
+                children.push_back(e);
+            else if (e->kind == SymbolKind::InstanceArray)
+                collectArray(e->as<InstanceArraySymbol>(), children);
+        }
+    }
+
+    // ---- names ----
+    std::string rel(const std::string& path) const {
+        if (path.size() > curPath.size() && path.compare(0, curPath.size(), curPath) == 0 &&
+            path[curPath.size()] == '.')
+            return path.substr(curPath.size() + 1);
+        return "$abs:" + path;
+    }
+    std::string relName(const Symbol& sym) const {
+        auto scope = sym.getParentScope();
+        if (scope && scope->isProceduralContext())
+            return "$local:" + std::string(sym.name);
+        return rel(sym.getHierarchicalPath());
+    }
+    static const Symbol& throughModport(const Symbol& sym) {
+        const Symbol* s = &sym;
+        while (s->kind == SymbolKind::ModportPort) {
+            auto inner = s->as<ModportPortSymbol>().internalSymbol;
+            if (!inner)
+                break;
+            s = inner;
+        }
+        return *s;
+    }
+
+    // ---- locations ----
+    Loc loc(SourceRange r) const {
+        Loc l;
+        if (!r.start().valid())
+            return l;
+        auto s = sm.getFullyOriginalLoc(r.start());
+        auto e = sm.getFullyOriginalLoc(r.end());
+        if (!s.valid() || !s.buffer().valid())
+            return l;
+        l.file = sm.getFullPath(s.buffer()).string();
+        if (l.file.empty())
+            l.file = std::string(sm.getFileName(s));
+        l.line = sm.getLineNumber(s);
+        l.col = sm.getColumnNumber(s);
+        if (e.valid() && e.buffer() == s.buffer()) {
+            l.endLine = sm.getLineNumber(e);
+            l.endCol = sm.getColumnNumber(e);
+        }
+        else {
+            l.endLine = l.line;
+            l.endCol = l.col;
+        }
+        l.valid = true;
+        return l;
+    }
+    // A location: [file index (into the model's files), line, col, endLine, endCol], 1-based.
+    void writeLoc(JsonWriter& w, const Loc& l) const {
+        auto it = fileIndex.find(l.file);
+        size_t f = files.size();
+        if (it == fileIndex.end()) {
+            fileIndex.emplace(l.file, f);
+            files.push_back(l.file);
+        }
+        else {
+            f = it->second;
+        }
+        w.startArray();
+        w.writeValue(uint64_t(f));
+        w.writeValue(uint64_t(l.line));
+        w.writeValue(uint64_t(l.col));
+        w.writeValue(uint64_t(l.endLine));
+        w.writeValue(uint64_t(l.endCol));
+        w.endArray();
+    }
+    void writeLocProp(JsonWriter& w, std::string_view name, SourceRange r) const {
+        auto l = loc(r);
+        if (!l.valid)
+            return;
+        w.writeProperty(name);
+        writeLoc(w, l);
+    }
+    void writeLocProp(JsonWriter& w, std::string_view name, SourceLocation at, size_t len) const {
+        writeLocProp(w, name, SourceRange(at, at + len));
+    }
+    std::string text(const Expression& e) const { return e.syntax ? trim(e.syntax->toString()) : ""; }
+    std::string text(const Statement& s) const { return s.syntax ? trim(s.syntax->toString()) : ""; }
+    static std::string trim(std::string s) {
+        // Comments and line breaks inside a statement: one line, spaces collapsed.
+        std::string out;
+        bool space = false;
+        for (char c : s) {
+            if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+                space = !out.empty();
+                continue;
+            }
+            if (space)
+                out += ' ';
+            space = false;
+            out += c;
+        }
+        return out;
+    }
+
+    // ---- expressions ----
+    std::optional<SVInt> constantInt(const Expression& e) const {
+        if (auto cv = e.getConstant(); cv && cv->isInteger())
+            return cv->integer();
+        if (e.kind == ExpressionKind::IntegerLiteral)
+            return e.as<IntegerLiteral>().getValue();
+        // Parameters, genvars and folded subexpressions.
+        if (!isConstTree(e))
+            return std::nullopt;
+        EvalContext ctx(cur ? static_cast<const Symbol&>(cur->body) : comp.getRoot());
+        auto cv = e.eval(ctx);
+        if (cv && cv.isInteger())
+            return cv.integer();
+        return std::nullopt;
+    }
+    static bool isConstTree(const Expression& e) {
+        bool ok = true;
+        e.visitSymbolReferences([&](const Expression&, const Symbol& sym) {
+            if (sym.kind != SymbolKind::Parameter && sym.kind != SymbolKind::EnumValue &&
+                sym.kind != SymbolKind::Genvar && sym.kind != SymbolKind::Specparam)
+                ok = false;
+        });
+        return ok;
+    }
+    static std::optional<int64_t> toInt(const std::optional<SVInt>& v) {
+        if (!v || v->hasUnknown())
+            return std::nullopt;
+        return v->as<int64_t>();
+    }
+
+    std::string leaf(Expr& out, const std::string& name, SourceRange r) {
+        for (size_t k = 0; k < out.leaves.size(); k++) {
+            if (out.leaves[k] == name) {
+                out.leafLocs[k].push_back(loc(r));
+                return "_L" + std::to_string(k) + "_";
+            }
+        }
+        out.leaves.push_back(name);
+        out.leafLocs.push_back({loc(r)});
+        return "_L" + std::to_string(out.leaves.size() - 1) + "_";
+    }
+    std::string opaque(Expr& out, const Expression& e, std::string why) {
+        Opaque o;
+        o.src = text(e);
+        o.kind = std::string(toString(e.kind));
+        o.why = std::move(why);
+        o.loc = loc(e.sourceRange);
+        out.opaque.push_back(std::move(o));
+        auto w = e.type ? e.type->getBitWidth() : 0;
+        // An opaque operand of known width keeps the expression's widths right.
+        return "_O" + std::to_string(out.opaque.size() - 1) + "_";
+    }
+
+    std::unique_ptr<Expr> lower(const Expression& e) {
+        auto out = std::make_unique<Expr>();
+        out->text = lowerInto(e, *out);
+        out->src = text(e);
+        out->loc = loc(e.sourceRange);
+        if (e.type) {
+            out->width = e.type->getBitWidth();
+            out->isSigned = e.type->isSigned();
+        }
+        return out;
+    }
+
+    // The bit window an lvalue-like select chain names (a leaf, an element, a member, a select).
+    Window window(const Expression& e, Expr& out) {
+        Window win;
+        switch (e.kind) {
+            case ExpressionKind::NamedValue: {
+                auto& sym = e.as<NamedValueExpression>().symbol;
+                if (sym.kind == SymbolKind::Parameter || sym.kind == SymbolKind::EnumValue)
+                    return win;
+                win.tok = leaf(out, relName(sym), e.sourceRange);
+                break;
+            }
+            case ExpressionKind::HierarchicalValue: {
+                auto& sym = throughModport(e.as<HierarchicalValueExpression>().symbol);
+                win.tok = leaf(out, "$abs:" + sym.getHierarchicalPath(), e.sourceRange);
+                break;
+            }
+            case ExpressionKind::ElementSelect: {
+                auto& es = e.as<ElementSelectExpression>();
+                auto& vt = es.value().type->getCanonicalType();
+                if (vt.isUnpackedArray()) {
+                    // An unpacked element: its own leaf (the dump names it arr[k]).
+                    if (es.value().kind != ExpressionKind::NamedValue &&
+                        es.value().kind != ExpressionKind::HierarchicalValue)
+                        return win;
+                    auto& vsym = es.value().kind == ExpressionKind::NamedValue
+                                     ? es.value().as<NamedValueExpression>().symbol
+                                     : throughModport(es.value().as<HierarchicalValueExpression>().symbol);
+                    Elem el;
+                    el.array = es.value().kind == ExpressionKind::NamedValue
+                                   ? relName(vsym)
+                                   : "$abs:" + vsym.getHierarchicalPath();
+                    el.index = lower(es.selector());
+                    auto r = vt.getFixedRange();
+                    el.lo = r.lower();
+                    el.hi = r.upper();
+                    el.width = e.type->getBitWidth();
+                    out.elems.push_back(std::move(el));
+                    win.tok = "_E" + std::to_string(out.elems.size() - 1) + "_";
+                    win.tokWidth = e.type->getBitWidth();
+                    win.constOff = 0;
+                    win.width = win.tokWidth;
+                    win.ok = true;
+                    return win;
+                }
+                auto base = window(es.value(), out);
+                if (!base.ok)
+                    return win;
+                auto [range, ew] = packedRange(vt);
+                if (ew <= 0)
+                    return win;
+                if (auto k = toInt(constantInt(es.selector()))) {
+                    return shifted(base, offsetOf(range, *k) * ew, ew);
+                }
+                auto idx = lowerInto(es.selector(), out);
+                return shiftedVar(base, scaledIndex(range, idx, ew), ew);
+            }
+            case ExpressionKind::RangeSelect: {
+                auto& rs = e.as<RangeSelectExpression>();
+                auto& vt = rs.value().type->getCanonicalType();
+                if (vt.isUnpackedArray())
+                    return win;
+                auto base = window(rs.value(), out);
+                if (!base.ok)
+                    return win;
+                auto [range, ew] = packedRange(vt);
+                if (ew <= 0)
+                    return win;
+                auto width = int64_t(e.type->getBitWidth());
+                if (rs.getSelectionKind() == RangeSelectionKind::Simple) {
+                    auto l = toInt(constantInt(rs.left()));
+                    auto r = toInt(constantInt(rs.right()));
+                    if (!l || !r)
+                        return win;
+                    // The element nearer bit 0: the lower index of a descending range, else the higher.
+                    auto lsbIndex = range.isDescending() ? std::min(*l, *r) : std::max(*l, *r);
+                    return shifted(base, offsetOf(range, lsbIndex) * ew, width);
+                }
+                auto count = toInt(constantInt(rs.right()));
+                if (!count)
+                    return win;
+                bool up = rs.getSelectionKind() == RangeSelectionKind::IndexedUp;
+                // The lsb-side index: b (up, descending), b+n-1 (up, ascending), b-n+1 (down,
+                // descending), b (down, ascending).
+                int64_t adjust = 0;
+                if (up && !range.isDescending())
+                    adjust = *count - 1;
+                if (!up && range.isDescending())
+                    adjust = -(*count - 1);
+                if (auto b = toInt(constantInt(rs.left())))
+                    return shifted(base, offsetOf(range, *b + adjust) * ew, width);
+                auto bt = lowerInto(rs.left(), out);
+                if (adjust)
+                    bt = "(" + bt + (adjust > 0 ? " + " : " - ") + std::to_string(std::llabs(adjust)) + ")";
+                return shiftedVar(base, scaledIndex(range, bt, ew), width);
+            }
+            case ExpressionKind::MemberAccess: {
+                auto& ma = e.as<MemberAccessExpression>();
+                auto& vt = ma.value().type->getCanonicalType();
+                if (!vt.isIntegral())
+                    return win;
+                auto base = window(ma.value(), out);
+                if (!base.ok)
+                    return win;
+                if (ma.member.kind != SymbolKind::Field)
+                    return win;
+                auto& f = ma.member.as<FieldSymbol>();
+                int64_t off = vt.isPackedUnion() ? 0 : int64_t(f.bitOffset);
+                return shifted(base, off, int64_t(f.getType().getBitWidth()));
+            }
+            default: return win;
+        }
+        win.tokWidth = e.type ? int64_t(e.type->getBitWidth()) : 0;
+        win.constOff = 0;
+        win.width = win.tokWidth;
+        win.ok = win.tokWidth > 0;
+        return win;
+    }
+
+    // The outermost packed dimension of a type and its element width (bits per index).
+    static std::pair<ConstantRange, int64_t> packedRange(const Type& t) {
+        auto& ct = t.getCanonicalType();
+        if (ct.kind == SymbolKind::PackedArrayType) {
+            auto& pa = ct.as<PackedArrayType>();
+            return {pa.range, int64_t(pa.elementType.getBitWidth())};
+        }
+        if (ct.isIntegral()) {
+            auto w = int64_t(ct.getBitWidth());
+            return {ConstantRange(int32_t(w - 1), 0), 1};
+        }
+        return {ConstantRange(0, 0), 0};
+    }
+    // The 0-based element offset of index k in a range: k - right (descending), right - k (ascending).
+    static int64_t offsetOf(ConstantRange r, int64_t k) {
+        return r.isDescending() ? k - r.right : r.right - k;
+    }
+    static std::string scaledIndex(ConstantRange r, const std::string& idx, int64_t ew) {
+        std::string off;
+        if (r.isDescending())
+            off = r.right == 0 ? idx : "(" + idx + " - " + std::to_string(r.right) + ")";
+        else
+            off = "(" + std::to_string(r.right) + " - " + idx + ")";
+        return ew == 1 ? off : "(" + off + " * " + std::to_string(ew) + ")";
+    }
+    static Window shifted(Window base, int64_t off, int64_t width) {
+        if (base.constOff)
+            base.constOff = *base.constOff + off;
+        else
+            base.offText = "(" + base.offText + " + " + std::to_string(off) + ")";
+        base.width = width;
+        return base;
+    }
+    static Window shiftedVar(Window base, const std::string& off, int64_t width) {
+        if (base.constOff)
+            base.offText = *base.constOff == 0 ? off : "(" + off + " + " + std::to_string(*base.constOff) + ")";
+        else
+            base.offText = "(" + base.offText + " + " + off + ")";
+        base.constOff.reset();
+        base.width = width;
+        return base;
+    }
+    static std::string windowText(const Window& w) {
+        if (w.constOff) {
+            if (*w.constOff == 0 && w.width == w.tokWidth)
+                return w.tok;
+            return w.tok + "[" + std::to_string(*w.constOff + w.width - 1) + ":" + std::to_string(*w.constOff) + "]";
+        }
+        return w.tok + "[" + w.offText + " +: " + std::to_string(w.width) + "]";
+    }
+
+    std::string lowerInto(const Expression& e, Expr& out) {
+        auto k = e.kind;
+        // Parameters, genvars and folded constants as sized literals.
+        if (k != ExpressionKind::Assignment && e.type && e.type->isIntegral()) {
+            if (auto cv = e.getConstant(); cv && cv->isInteger())
+                return sizedBits(cv->integer());
+            if (k == ExpressionKind::NamedValue) {
+                auto& sym = e.as<NamedValueExpression>().symbol;
+                if (sym.kind == SymbolKind::Parameter || sym.kind == SymbolKind::EnumValue ||
+                    sym.kind == SymbolKind::Genvar) {
+                    if (auto v = constantInt(e))
+                        return sizedBits(*v);
+                }
+            }
+        }
+        switch (k) {
+            case ExpressionKind::IntegerLiteral: return sizedBits(e.as<IntegerLiteral>().getValue());
+            case ExpressionKind::UnbasedUnsizedIntegerLiteral: {
+                auto v = e.as<UnbasedUnsizedIntegerLiteral>().getLiteralValue();
+                char c = v.isUnknown() ? (v.value == logic_t::Z_VALUE ? 'z' : 'x') : (v.value ? '1' : '0');
+                return std::string("'") + c;
+            }
+            case ExpressionKind::NamedValue:
+            case ExpressionKind::HierarchicalValue:
+            case ExpressionKind::ElementSelect:
+            case ExpressionKind::RangeSelect:
+            case ExpressionKind::MemberAccess: {
+                auto w = window(e, out);
+                if (!w.ok)
+                    return opaque(out, e, "select");
+                return windowText(w);
+            }
+            case ExpressionKind::Conversion: {
+                auto& c = e.as<ConversionExpression>();
+                auto inner = lowerInto(c.operand(), out);
+                if (c.isImplicit() || !e.type || !e.type->isIntegral() || !c.operand().type ||
+                    !c.operand().type->isIntegral())
+                    return inner;
+                // A cast to a width: keep that many bits (zero- or sign-extended by the context).
+                auto w = e.type->getBitWidth();
+                auto from = c.operand().type->getBitWidth();
+                if (w == from && e.type->isSigned() == c.operand().type->isSigned())
+                    return inner;
+                if (e.type->isSigned() != c.operand().type->isSigned())
+                    return opaque(out, e, "signedCast");
+                if (w < from)
+                    return "{" + inner + "}[" + std::to_string(w - 1) + ":0]";
+                return "{" + std::to_string(w - from) + "'b0, " + inner + "}";
+            }
+            case ExpressionKind::UnaryOp: {
+                auto& u = e.as<UnaryExpression>();
+                const char* op = nullptr;
+                switch (u.op) {
+                    case UnaryOperator::Plus: op = "+"; break;
+                    case UnaryOperator::Minus: op = "-"; break;
+                    case UnaryOperator::BitwiseNot: op = "~"; break;
+                    case UnaryOperator::BitwiseAnd: op = "&"; break;
+                    case UnaryOperator::BitwiseOr: op = "|"; break;
+                    case UnaryOperator::BitwiseXor: op = "^"; break;
+                    case UnaryOperator::BitwiseNand: op = "~&"; break;
+                    case UnaryOperator::BitwiseNor: op = "~|"; break;
+                    case UnaryOperator::BitwiseXnor: op = "~^"; break;
+                    case UnaryOperator::LogicalNot: op = "!"; break;
+                    default: break;
+                }
+                if (!op)
+                    return opaque(out, e, "operator");
+                return std::string("(") + op + lowerInto(u.operand(), out) + ")";
+            }
+            case ExpressionKind::BinaryOp: {
+                auto& b = e.as<BinaryExpression>();
+                const char* op = nullptr;
+                switch (b.op) {
+                    case BinaryOperator::Add: op = "+"; break;
+                    case BinaryOperator::Subtract: op = "-"; break;
+                    case BinaryOperator::Multiply: op = "*"; break;
+                    case BinaryOperator::BinaryAnd: op = "&"; break;
+                    case BinaryOperator::BinaryOr: op = "|"; break;
+                    case BinaryOperator::BinaryXor: op = "^"; break;
+                    case BinaryOperator::BinaryXnor: op = "~^"; break;
+                    case BinaryOperator::Equality: op = "=="; break;
+                    case BinaryOperator::Inequality: op = "!="; break;
+                    case BinaryOperator::CaseEquality: op = "==="; break;
+                    case BinaryOperator::CaseInequality: op = "!=="; break;
+                    case BinaryOperator::GreaterThanEqual: op = ">="; break;
+                    case BinaryOperator::GreaterThan: op = ">"; break;
+                    case BinaryOperator::LessThanEqual: op = "<="; break;
+                    case BinaryOperator::LessThan: op = "<"; break;
+                    case BinaryOperator::LogicalAnd: op = "&&"; break;
+                    case BinaryOperator::LogicalOr: op = "||"; break;
+                    case BinaryOperator::LogicalShiftLeft: op = "<<"; break;
+                    case BinaryOperator::LogicalShiftRight: op = ">>"; break;
+                    case BinaryOperator::ArithmeticShiftLeft: op = "<<<"; break;
+                    case BinaryOperator::ArithmeticShiftRight: op = ">>>"; break;
+                    default: break;
+                }
+                if (!op)
+                    return opaque(out, e, "operator");
+                auto l = lowerInto(b.left(), out);
+                auto r = lowerInto(b.right(), out);
+                return "(" + l + " " + op + " " + r + ")";
+            }
+            case ExpressionKind::ConditionalOp: {
+                auto& c = e.as<ConditionalExpression>();
+                if (c.conditions.size() != 1 || c.conditions[0].pattern)
+                    return opaque(out, e, "pattern");
+                auto cc = lowerInto(*c.conditions[0].expr, out);
+                auto l = lowerInto(c.left(), out);
+                auto r = lowerInto(c.right(), out);
+                return "(" + cc + " ? " + l + " : " + r + ")";
+            }
+            case ExpressionKind::Concatenation: {
+                auto& c = e.as<ConcatenationExpression>();
+                std::string s = "{";
+                bool first = true;
+                for (auto op : c.operands()) {
+                    // A zero-width replication {0{x}} contributes nothing.
+                    if (op->type && op->type->getBitWidth() == 0)
+                        continue;
+                    if (!first)
+                        s += ", ";
+                    first = false;
+                    s += lowerInto(*op, out);
+                }
+                return first ? opaque(out, e, "empty") : s + "}";
+            }
+            case ExpressionKind::Replication: {
+                auto& r = e.as<ReplicationExpression>();
+                auto n = toInt(constantInt(r.count()));
+                if (!n || *n <= 0)
+                    return opaque(out, e, "replication");
+                return "{" + std::to_string(*n) + "{" + lowerInto(r.concat(), out) + "}}";
+            }
+            case ExpressionKind::SimpleAssignmentPattern:
+            case ExpressionKind::StructuredAssignmentPattern: {
+                if (!e.type || !e.type->isIntegral())
+                    return opaque(out, e, "pattern");
+                auto& p = static_cast<const AssignmentPatternExpressionBase&>(e);
+                std::string s = "{";
+                bool first = true;
+                for (auto el : p.elements()) {
+                    if (!first)
+                        s += ", ";
+                    first = false;
+                    s += lowerInto(*el, out);
+                }
+                return first ? opaque(out, e, "pattern") : s + "}";
+            }
+            case ExpressionKind::Call: return opaque(out, e, "call");
+            default: return opaque(out, e, "expression");
+        }
+    }
+
+    void writeExpr(JsonWriter& w, const Expr& x) const {
+        w.startObject();
+        w.writeProperty("text");
+        w.writeValue(x.text);
+        w.writeProperty("leaves");
+        w.startArray();
+        for (auto& l : x.leaves)
+            w.writeValue(l);
+        w.endArray();
+        w.writeProperty("leafLocs");
+        w.startArray();
+        for (auto& ls : x.leafLocs) {
+            w.startArray();
+            for (auto& l : ls) {
+                if (l.valid)
+                    writeLoc(w, l);
+            }
+            w.endArray();
+        }
+        w.endArray();
+        if (!x.elems.empty()) {
+            w.writeProperty("elems");
+            w.startArray();
+            for (auto& el : x.elems) {
+                w.startObject();
+                w.writeProperty("array");
+                w.writeValue(el.array);
+                w.writeProperty("index");
+                writeExpr(w, *el.index);
+                w.writeProperty("width");
+                w.writeValue(el.width);
+                w.writeProperty("lo");
+                w.writeValue(el.lo);
+                w.writeProperty("hi");
+                w.writeValue(el.hi);
+                w.endObject();
+            }
+            w.endArray();
+        }
+        if (!x.opaque.empty()) {
+            w.writeProperty("opaque");
+            w.startArray();
+            for (auto& o : x.opaque) {
+                w.startObject();
+                w.writeProperty("src");
+                w.writeValue(o.src);
+                w.writeProperty("kind");
+                w.writeValue(o.kind);
+                w.writeProperty("why");
+                w.writeValue(o.why);
+                if (o.loc.valid) {
+                    w.writeProperty("loc");
+                    writeLoc(w, o.loc);
+                }
+                w.endObject();
+            }
+            w.endArray();
+        }
+        w.writeProperty("width");
+        w.writeValue(x.width);
+        if (x.isSigned) {
+            w.writeProperty("signed");
+            w.writeValue(true);
+        }
+        w.writeProperty("src");
+        w.writeValue(x.src);
+        if (x.loc.valid) {
+            w.writeProperty("loc");
+            writeLoc(w, x.loc);
+        }
+        w.endObject();
+    }
+    void writeExpr(JsonWriter& w, const Expression& e) { writeExpr(w, *lower(e)); }
+
+    // ---- lvalues ----
+    // {name, lsb?, msb?} (a constant window), {name, off: Expr, width} (a variable one),
+    // {name, elem: Expr, ...} (an unpacked element), {concat: [lval...]}, or {opaque}.
+    void writeLval(JsonWriter& w, const Expression& e) {
+        if (e.kind == ExpressionKind::Concatenation) {
+            w.startObject();
+            w.writeProperty("concat");
+            w.startArray();
+            for (auto op : e.as<ConcatenationExpression>().operands())
+                writeLval(w, *op);
+            w.endArray();
+            w.writeProperty("width");
+            w.writeValue(int64_t(e.type->getBitWidth()));
+            w.endObject();
+            return;
+        }
+        Expr scratch;
+        auto win = window(e, scratch);
+        w.startObject();
+        if (!win.ok || scratch.opaque.size()) {
+            w.writeProperty("opaque");
+            w.writeValue(text(e));
+            w.writeProperty("width");
+            w.writeValue(int64_t(e.type ? e.type->getBitWidth() : 0));
+            w.endObject();
+            return;
+        }
+        // The window's root: a leaf (its name) or an element (the array and the index).
+        if (win.tok.rfind("_E", 0) == 0) {
+            auto& el = scratch.elems.back();
+            w.writeProperty("name");
+            w.writeValue(el.array);
+            w.writeProperty("elem");
+            writeExpr(w, *el.index);
+            w.writeProperty("elemWidth");
+            w.writeValue(el.width);
+        }
+        else {
+            w.writeProperty("name");
+            w.writeValue(scratch.leaves.front());
+        }
+        w.writeProperty("width");
+        w.writeValue(win.width);
+        w.writeProperty("full");
+        w.writeValue(win.tokWidth);
+        if (win.constOff) {
+            if (!(*win.constOff == 0 && win.width == win.tokWidth)) {
+                w.writeProperty("lsb");
+                w.writeValue(*win.constOff);
+                w.writeProperty("msb");
+                w.writeValue(*win.constOff + win.width - 1);
+            }
+        }
+        else {
+            // The offset's text reads leaves of the same scratch Expr: emit it as one.
+            Expr off;
+            off.text = win.offText;
+            off.leaves = scratch.leaves;
+            off.leafLocs = scratch.leafLocs;
+            for (auto& el : scratch.elems) {
+                Elem copy;
+                copy.array = el.array;
+                copy.index = std::make_unique<Expr>();
+                copy.index->text = el.index->text;
+                copy.index->leaves = el.index->leaves;
+                copy.index->leafLocs = el.index->leafLocs;
+                copy.index->width = el.index->width;
+                copy.width = el.width;
+                copy.lo = el.lo;
+                copy.hi = el.hi;
+                off.elems.push_back(std::move(copy));
+            }
+            off.width = 32;
+            off.src = text(e);
+            w.writeProperty("off");
+            writeExpr(w, off);
+        }
+        auto l = loc(e.sourceRange);
+        if (l.valid) {
+            w.writeProperty("loc");
+            writeLoc(w, l);
+        }
+        w.endObject();
+    }
+
+    // ---- members ----
+    void writeSignal(JsonWriter& w, const ValueSymbol& v) {
+        auto& t = v.getType();
+        w.writeProperty(relName(v));
+        w.startObject();
+        w.writeProperty("width");
+        w.writeValue(int64_t(t.getBitWidth()));
+        w.writeProperty("kind");
+        w.writeValue(v.kind == SymbolKind::Net ? std::string_view("net") : std::string_view("var"));
+        if (t.isSigned()) {
+            w.writeProperty("signed");
+            w.writeValue(true);
+        }
+        auto& ct = t.getCanonicalType();
+        if (ct.isUnpackedArray() && ct.hasFixedRange()) {
+            auto r = ct.getFixedRange();
+            auto el = ct.getArrayElementType();
+            w.writeProperty("array");
+            w.startObject();
+            w.writeProperty("lo");
+            w.writeValue(int64_t(r.lower()));
+            w.writeProperty("hi");
+            w.writeValue(int64_t(r.upper()));
+            w.writeProperty("elemWidth");
+            w.writeValue(int64_t(el ? el->getBitWidth() : 0));
+            w.endObject();
+        }
+        else if (ct.isIntegral()) {
+            // The declared range (for the dump's names and for display).
+            auto [range, ew] = packedRange(ct);
+            if (ew == 1 || ct.kind == SymbolKind::PackedArrayType) {
+                w.writeProperty("msb");
+                w.writeValue(int64_t(range.left));
+                w.writeProperty("lsb");
+                w.writeValue(int64_t(range.right));
+            }
+            if (ct.isEnum()) {
+                w.writeProperty("enum");
+                w.writeValue(true);
+            }
+        }
+        if (auto init = v.getInitializer()) {
+            w.writeProperty("init");
+            writeExpr(w, *init);
+        }
+        writeLocProp(w, "loc", v.location, v.name.size());
+        w.endObject();
+    }
+
+    void writeAssign(JsonWriter& w, const ContinuousAssignSymbol& ca) {
+        auto& a = ca.getAssignment();
+        w.startObject();
+        if (a.kind != ExpressionKind::Assignment) {
+            w.writeProperty("opaque");
+            w.writeValue(text(a));
+        }
+        else {
+            auto& as = a.as<AssignmentExpression>();
+            w.writeProperty("lhs");
+            writeLval(w, as.left());
+            w.writeProperty("rhs");
+            writeExpr(w, as.right());
+            if (as.timingControl) {
+                w.writeProperty("delay");
+                w.writeValue(true);
+            }
+        }
+        w.writeProperty("src");
+        w.writeValue(ca.getSyntax() ? trim(ca.getSyntax()->toString()) : text(a));
+        writeLocProp(w, "loc", ca.getSyntax() ? ca.getSyntax()->sourceRange() : a.sourceRange);
+        w.endObject();
+    }
+
+    void writeEvents(JsonWriter& w, const TimingControl& tc) {
+        switch (tc.kind) {
+            case TimingControlKind::EventList:
+                for (auto ev : tc.as<EventListControl>().events)
+                    writeEvents(w, *ev);
+                break;
+            case TimingControlKind::SignalEvent: {
+                auto& se = tc.as<SignalEventControl>();
+                w.startObject();
+                w.writeProperty("edge");
+                w.writeValue(toString(se.edge));
+                w.writeProperty("expr");
+                writeExpr(w, se.expr);
+                if (se.iffCondition) {
+                    w.writeProperty("iff");
+                    writeExpr(w, *se.iffCondition);
+                }
+                w.endObject();
+                break;
+            }
+            default:
+                w.startObject();
+                w.writeProperty("edge");
+                w.writeValue(std::string_view("Other"));
+                w.writeProperty("kind");
+                w.writeValue(toString(tc.kind));
+                w.endObject();
+                break;
+        }
+    }
+
+    void writeProc(JsonWriter& w, const ProceduralBlockSymbol& p, int id) {
+        auto& body = p.getBody();
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(int64_t(id));
+        w.writeProperty("kind");
+        w.writeValue(toString(p.procedureKind));
+        w.writeProperty("events");
+        w.startArray();
+        const Statement* inner = &body;
+        if (body.kind == StatementKind::Timed) {
+            writeEvents(w, body.as<TimedStatement>().timing);
+            inner = &body.as<TimedStatement>().stmt;
+        }
+        w.endArray();
+        w.writeProperty("body");
+        writeStmt(w, *inner);
+        writeLocProp(w, "loc", p.getSyntax() ? p.getSyntax()->sourceRange() : body.sourceRange);
+        w.endObject();
+    }
+
+    void writeStmt(JsonWriter& w, const Statement& s) {
+        w.startObject();
+        switch (s.kind) {
+            case StatementKind::Block: {
+                auto& b = s.as<BlockStatement>();
+                if (b.blockKind != StatementBlockKind::Sequential) {
+                    w.writeProperty("k");
+                    w.writeValue(std::string_view("opaque"));
+                    w.writeProperty("why");
+                    w.writeValue(std::string_view("fork"));
+                    break;
+                }
+                w.writeProperty("k");
+                w.writeValue(std::string_view("seq"));
+                w.writeProperty("s");
+                w.startArray();
+                writeStmt(w, b.body);
+                w.endArray();
+                break;
+            }
+            case StatementKind::List: {
+                w.writeProperty("k");
+                w.writeValue(std::string_view("seq"));
+                w.writeProperty("s");
+                w.startArray();
+                for (auto x : s.as<StatementList>().list)
+                    writeStmt(w, *x);
+                w.endArray();
+                break;
+            }
+            case StatementKind::Empty:
+                w.writeProperty("k");
+                w.writeValue(std::string_view("seq"));
+                w.writeProperty("s");
+                w.startArray();
+                w.endArray();
+                break;
+            case StatementKind::VariableDeclaration: {
+                auto& v = s.as<VariableDeclStatement>().symbol;
+                w.writeProperty("k");
+                w.writeValue(std::string_view("decl"));
+                w.writeProperty("name");
+                w.writeValue(relName(v));
+                w.writeProperty("width");
+                w.writeValue(int64_t(v.getType().getBitWidth()));
+                if (auto init = v.getInitializer()) {
+                    w.writeProperty("init");
+                    writeExpr(w, *init);
+                }
+                break;
+            }
+            case StatementKind::Timed: {
+                // A delay or event inside a procedure: the statement runs, its timing is not modelled.
+                w.writeProperty("k");
+                w.writeValue(std::string_view("timed"));
+                w.writeProperty("stmt");
+                writeStmt(w, s.as<TimedStatement>().stmt);
+                break;
+            }
+            case StatementKind::ExpressionStatement: {
+                auto& e = s.as<ExpressionStatement>().expr;
+                if (e.kind == ExpressionKind::Assignment) {
+                    auto& a = e.as<AssignmentExpression>();
+                    if (a.isCompound() || a.timingControl) {
+                        w.writeProperty("k");
+                        w.writeValue(std::string_view("opaque"));
+                        w.writeProperty("why");
+                        w.writeValue(a.timingControl ? std::string_view("intraDelay") : std::string_view("compound"));
+                        break;
+                    }
+                    w.writeProperty("k");
+                    w.writeValue(std::string_view("asgn"));
+                    w.writeProperty("lhs");
+                    writeLval(w, a.left());
+                    w.writeProperty("rhs");
+                    writeExpr(w, a.right());
+                    w.writeProperty("nb");
+                    w.writeValue(a.isNonBlocking());
+                }
+                else {
+                    w.writeProperty("k");
+                    w.writeValue(std::string_view("opaque"));
+                    w.writeProperty("why");
+                    w.writeValue(e.kind == ExpressionKind::Call ? std::string_view("call") : std::string_view("expression"));
+                }
+                break;
+            }
+            case StatementKind::Conditional: {
+                auto& c = s.as<ConditionalStatement>();
+                if (c.conditions.size() != 1 || c.conditions[0].pattern) {
+                    w.writeProperty("k");
+                    w.writeValue(std::string_view("opaque"));
+                    w.writeProperty("why");
+                    w.writeValue(std::string_view("pattern"));
+                    break;
+                }
+                w.writeProperty("k");
+                w.writeValue(std::string_view("if"));
+                w.writeProperty("c");
+                writeExpr(w, *c.conditions[0].expr);
+                w.writeProperty("check");
+                w.writeValue(toString(c.check));
+                w.writeProperty("t");
+                writeStmt(w, c.ifTrue);
+                if (c.ifFalse) {
+                    w.writeProperty("f");
+                    writeStmt(w, *c.ifFalse);
+                }
+                break;
+            }
+            case StatementKind::Case: {
+                auto& c = s.as<CaseStatement>();
+                w.writeProperty("k");
+                w.writeValue(std::string_view("case"));
+                w.writeProperty("e");
+                writeExpr(w, c.expr);
+                w.writeProperty("cond");
+                w.writeValue(toString(c.condition));
+                w.writeProperty("check");
+                w.writeValue(toString(c.check));
+                w.writeProperty("items");
+                w.startArray();
+                for (auto& it : c.items) {
+                    w.startObject();
+                    w.writeProperty("m");
+                    w.startArray();
+                    for (auto m : it.expressions)
+                        writeExpr(w, *m);
+                    w.endArray();
+                    w.writeProperty("s");
+                    writeStmt(w, *it.stmt);
+                    w.endObject();
+                }
+                w.endArray();
+                if (c.defaultCase) {
+                    w.writeProperty("dflt");
+                    writeStmt(w, *c.defaultCase);
+                }
+                break;
+            }
+            default:
+                w.writeProperty("k");
+                w.writeValue(std::string_view("opaque"));
+                w.writeProperty("why");
+                w.writeValue(toString(s.kind));
+                break;
+        }
+        w.writeProperty("src");
+        auto src = text(s);
+        // A block's text is its whole body: the first line is enough to name it.
+        if (src.size() > 160)
+            src = src.substr(0, 157) + "...";
+        w.writeValue(src);
+        writeLocProp(w, "loc", s.sourceRange);
+        w.endObject();
+    }
+
+    void writePorts(JsonWriter& w, const InstanceSymbol& inst, const InstanceSymbol* parent) {
+        w.startArray();
+        auto saved = cur;
+        auto savedPath = curPath;
+        for (auto p : inst.body.getPortList()) {
+            if (p->kind != SymbolKind::Port)
+                continue;
+            auto& port = p->as<PortSymbol>();
+            w.startObject();
+            w.writeProperty("name");
+            w.writeValue(port.name);
+            w.writeProperty("dir");
+            w.writeValue(toString(port.direction));
+            if (port.internalSymbol) {
+                // The internal side, relative to the port's own instance.
+                cur = &inst;
+                curPath = inst.getHierarchicalPath();
+                w.writeProperty("internal");
+                w.writeValue(relName(*port.internalSymbol));
+            }
+            w.writeProperty("width");
+            w.writeValue(int64_t(port.getType().getBitWidth()));
+            auto conn = inst.getPortConnection(port);
+            auto ce = conn ? conn->getExpression() : nullptr;
+            if (ce && parent) {
+                // The connection, relative to the instance it is written in.
+                cur = parent;
+                curPath = parent->getHierarchicalPath();
+                if (ce->kind == ExpressionKind::Assignment) {
+                    auto& a = ce->as<AssignmentExpression>();
+                    w.writeProperty("connLval");
+                    writeLval(w, a.left());
+                    w.writeProperty("conn");
+                    writeExpr(w, a.left());
+                }
+                else {
+                    w.writeProperty("conn");
+                    writeExpr(w, *ce);
+                    if (port.direction == ArgumentDirection::InOut || port.direction == ArgumentDirection::Ref) {
+                        w.writeProperty("connLval");
+                        writeLval(w, *ce);
+                    }
+                }
+                writeLocProp(w, "loc", ce->sourceRange);
+            }
+            else {
+                writeLocProp(w, "loc", port.location, port.name.size());
+            }
+            w.endObject();
+        }
+        cur = saved;
+        curPath = savedPath;
+        w.endArray();
+    }
+};
+
+// ---------------------------------------------------------------------------------------------
+// The session: one design loaded at a time.
+struct Session {
+    std::unique_ptr<driver::Driver> drv;
+    std::unique_ptr<Compilation> comp;
+    std::unique_ptr<Model> model;
+};
+
+void reply(JsonWriter& w) {
+    std::string line(w.view());
+    line += '\n';
+    fwrite(line.data(), 1, line.size(), stdout);
+    fflush(stdout);
+}
+
+void fail(int64_t id, std::string_view code, std::string_view message) {
+    JsonWriter w;
+    w.startObject();
+    w.writeProperty("id");
+    w.writeValue(id);
+    w.writeProperty("ok");
+    w.writeValue(false);
+    w.writeProperty("error");
+    w.writeValue(code);
+    w.writeProperty("message");
+    w.writeValue(message);
+    w.endObject();
+    reply(w);
+}
+
+void load(Session& s, int64_t id, const JValue& req) {
+    auto t0 = std::chrono::steady_clock::now();
+    s.model.reset();
+    s.comp.reset();
+    s.drv = std::make_unique<driver::Driver>();
+    auto& d = *s.drv;
+    d.addStandardArgs();
+    std::vector<std::string> args{"cmux-sv-model"};
+    if (auto a = req.get("args"); a && a->kind == JValue::Array) {
+        for (auto& x : a->a) {
+            if (x.kind == JValue::String)
+                args.push_back(x.s);
+        }
+    }
+    auto cwd = req.str("cwd");
+    std::error_code ec;
+    auto oldCwd = std::filesystem::current_path(ec);
+    if (!cwd.empty()) {
+        std::filesystem::current_path(cwd, ec);
+        if (ec) {
+            fail(id, "badCwd", ec.message());
+            return;
+        }
+    }
+    std::vector<const char*> argv;
+    for (auto& a : args)
+        argv.push_back(a.c_str());
+    // The driver prints its diagnostics to stderr; stdout is the protocol.
+    d.diagEngine.setErrorLimit(50);
+    bool ok = d.parseCommandLine(int(argv.size()), argv.data());
+    // Each instance gets its own body: paths in the model are per instance.
+    d.options.compilationFlags[CompilationFlags::DisableInstanceCaching] = true;
+    ok = ok && d.processOptions() && d.parseAllSources();
+    if (!ok) {
+        std::filesystem::current_path(oldCwd, ec);
+        fail(id, "badArgs", "the slang command line or its files could not be read");
+        return;
+    }
+    s.comp = d.createCompilation();
+    auto& diags = s.comp->getAllDiagnostics();
+    std::vector<std::string> messages;
+    int64_t errors = 0;
+    for (auto& diag : diags) {
+        if (!diag.isError())
+            continue;
+        errors++;
+        if (messages.size() < 20) {
+            auto loc = diag.location;
+            std::string where;
+            if (loc.valid() && loc.buffer().valid()) {
+                auto o = s.drv->sourceManager.getFullyOriginalLoc(loc);
+                where = std::string(s.drv->sourceManager.getFileName(o)) + ":" +
+                        std::to_string(s.drv->sourceManager.getLineNumber(o)) + ": ";
+            }
+            messages.push_back(where + std::string(toString(diag.code)));
+        }
+    }
+    s.model = std::make_unique<Model>(*s.comp, s.drv->sourceManager);
+    std::filesystem::current_path(oldCwd, ec);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    JsonWriter w;
+    w.startObject();
+    w.writeProperty("id");
+    w.writeValue(id);
+    w.writeProperty("ok");
+    w.writeValue(true);
+    w.writeProperty("tops");
+    w.startArray();
+    for (auto& t : s.model->tops())
+        w.writeValue(t);
+    w.endArray();
+    w.writeProperty("errors");
+    w.writeValue(errors);
+    w.writeProperty("messages");
+    w.startArray();
+    for (auto& m : messages)
+        w.writeValue(m);
+    w.endArray();
+    w.writeProperty("ms");
+    w.writeValue(int64_t(ms));
+    w.endObject();
+    reply(w);
+}
+
+void handle(Session& s, const JValue& req) {
+    int64_t id = 0;
+    if (auto v = req.get("id"); v && v->kind == JValue::Number)
+        id = int64_t(v->n);
+    auto cmd = req.str("cmd");
+    if (cmd == "version") {
+        JsonWriter w;
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(id);
+        w.writeProperty("ok");
+        w.writeValue(true);
+        w.writeProperty("model");
+        w.writeValue(int64_t(kModelVersion));
+        w.writeProperty("slang");
+        w.writeValue(std::to_string(VersionInfo::getMajor()) + "." + std::to_string(VersionInfo::getMinor()));
+        w.endObject();
+        reply(w);
+        return;
+    }
+    if (cmd == "load") {
+        load(s, id, req);
+        return;
+    }
+    if (!s.model) {
+        fail(id, "notLoaded", "no design is loaded");
+        return;
+    }
+    if (cmd == "instances") {
+        JsonWriter w;
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(id);
+        w.writeProperty("ok");
+        w.writeValue(true);
+        w.writeProperty("tops");
+        w.startArray();
+        for (auto& t : s.model->tops())
+            w.writeValue(t);
+        w.endArray();
+        w.writeProperty("instances");
+        w.startArray();
+        for (auto& p : s.model->instancePaths())
+            w.writeValue(p);
+        w.endArray();
+        w.endObject();
+        reply(w);
+        return;
+    }
+    auto path = req.str("path");
+    if (cmd == "instance") {
+        auto inst = s.model->instance(path);
+        if (!inst) {
+            fail(id, "noInstance", path);
+            return;
+        }
+        JsonWriter w;
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(id);
+        w.writeProperty("ok");
+        w.writeValue(true);
+        w.writeProperty("model");
+        s.model->writeInstance(w, *inst);
+        w.endObject();
+        reply(w);
+        return;
+    }
+    if (cmd == "lookup") {
+        auto r = s.model->lookup(path);
+        if (!r) {
+            fail(id, "noInstance", path);
+            return;
+        }
+        JsonWriter w;
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(id);
+        w.writeProperty("ok");
+        w.writeValue(true);
+        w.writeProperty("instance");
+        w.writeValue(r->first);
+        w.writeProperty("name");
+        w.writeValue(r->second);
+        w.endObject();
+        reply(w);
+        return;
+    }
+    fail(id, "unknownCommand", cmd);
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    // `cmux-sv-model --once <instance> <slang args...>`: load, print one instance model, exit
+    // (for tests and debugging).
+    Session s;
+    if (argc >= 3 && std::string_view(argv[1]) == "--once") {
+        JValue req;
+        req.kind = JValue::Object;
+        JValue args;
+        args.kind = JValue::Array;
+        for (int k = 3; k < argc; k++) {
+            JValue a;
+            a.kind = JValue::String;
+            a.s = argv[k];
+            args.a.push_back(a);
+        }
+        req.o.emplace_back("args", args);
+        load(s, 1, req);
+        if (!s.model)
+            return 1;
+        std::string what = argv[2];
+        // "*": every instance, as one object {tops, instances: {path: model}}.
+        if (what == "*") {
+            JsonWriter w;
+            w.startObject();
+            w.writeProperty("tops");
+            w.startArray();
+            for (auto& t : s.model->tops())
+                w.writeValue(t);
+            w.endArray();
+            w.writeProperty("instances");
+            w.startObject();
+            for (auto& p : s.model->instancePaths()) {
+                w.writeProperty(p);
+                s.model->writeInstance(w, *s.model->instance(p));
+            }
+            w.endObject();
+            w.endObject();
+            reply(w);
+            return 0;
+        }
+        auto inst = s.model->instance(what);
+        if (!inst)
+            return 2;
+        JsonWriter w;
+        s.model->writeInstance(w, *inst);
+        reply(w);
+        return 0;
+    }
+    {
+        JsonWriter w;
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(int64_t(0));
+        w.writeProperty("ready");
+        w.writeValue(true);
+        w.writeProperty("model");
+        w.writeValue(int64_t(kModelVersion));
+        w.endObject();
+        reply(w);
+    }
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty())
+            continue;
+        auto req = JParser(line).parse();
+        if (!req || req->kind != JValue::Object) {
+            fail(-1, "badRequest", "not a JSON object");
+            continue;
+        }
+        handle(s, *req);
+    }
+    return 0;
+}
