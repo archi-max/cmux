@@ -987,7 +987,9 @@
     if (!v) { return []; }
     const path = host.pathOf(v);
     const s = S();
-    return [{ label: s.machineUseAsCommit || '', items: PICK_ROLES.map((role) => ({ label: role, run: () => pick({ role, path, width: Number(v.width) || 1 }) })) }];
+    // Without its string (a page cmux opened without the machine's strings) there is no entry to show.
+    if (!s.machineUseAsCommit) { return []; }
+    return [{ label: s.machineUseAsCommit, items: PICK_ROLES.map((role) => ({ label: role, run: () => pick({ role, path, width: Number(v.width) || 1 }) })) }];
   }
 
   // ---- the commit index for other page code (asm breakpoints, sequence search) ----
