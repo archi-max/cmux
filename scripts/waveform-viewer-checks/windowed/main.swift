@@ -377,6 +377,45 @@ func fallbackChecks() async throws {
   _ = await open(slow3); slow3.stop()
   expect(lines(tCount) == 2, "a remembered timeout expires: v2 is tried again later (\(lines(tCount)) launches, want 2)")
 
+  // An `open` that never answers (the reader stuck on the file, after its ready line) has its
+  // own, shorter bound than other requests: the helper is relaunched once and the open sent
+  // again; a second stall is an error that says the file did not open.
+  WaveformFSDBHelper.openTimeout = 2
+  defer { WaveformFSDBHelper.openTimeout = WaveformFSDBHelper.defaultOpenTimeout }
+  func stalling(_ name: String, opens: Int) throws -> (WaveformFSDBHelper, URL) {
+    let launches = scratch.appendingPathComponent("stall-\(name).txt")
+    let home = try makeHome("stall-\(name)", installs: [v2Launching("exec node \(shellQuoted(mock)) --latency 20 --jitter 10 --stall-open-file \(shellQuoted(launches.path)) --stall-opens \(opens) \"$@\" 3>&1 1>&2"), v1Install])
+    return (makeHelper(home: home, loading: .auto, hostKey: "host-stall-\(name)"), launches)
+  }
+  do {
+    let (once, launches) = try stalling("once", opens: 1)
+    let s0 = Date()
+    let r = await open(once)
+    let took = Date().timeIntervalSince(s0)
+    let kids = await once.response(for: json(["cmd": "children", "scopeOffsetIdx": 0, "id": 2]), failureMessage: fail)
+    once.stop()
+    expect(proto(r) == "2" && header(r)["result"] != nil && lines(launches) == 2 && took >= 1.5 && took < 10 && header(kids)["result"] != nil,
+           "an open stuck once: the helper is relaunched and the file opens (v2, \(lines(launches)) launches, \(String(format: "%.1f", took)) s, then children \(header(kids).keys.sorted()))")
+  }
+  do {
+    let (stuck, launches) = try stalling("always", opens: 99)
+    let s0 = Date()
+    let r = await open(stuck)
+    let took = Date().timeIntervalSince(s0)
+    stuck.stop()
+    expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && lines(launches) == 2 && took < 10,
+           "an open stuck twice is an error after one relaunch, not a 5-minute wait: \(header(r)), \(lines(launches)) launches, \(String(format: "%.1f", took)) s")
+  }
+  do {
+    // Only open has the short bound: a slow reply to another request still arrives.
+    let (fine, _) = try stalling("other", opens: 0)
+    _ = await open(fine)
+    let slept = await fine.response(for: json(["cmd": "sleep", "ms": 3000, "id": 3]), failureMessage: fail)
+    fine.stop()
+    expect((header(slept)["result"] as? [String: Any])?["slept"] as? Int == 3000,
+           "the open timeout doesn't bound other requests: \(header(slept))")
+  }
+
   // loading = whole: the v1 helper only, even with v2 installed.
   let wHome = try makeHome("whole", installs: [v2Install, v1Install])
   let whole = makeHelper(home: wHome, loading: .whole)

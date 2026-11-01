@@ -26,6 +26,14 @@ let LATENCY = Number(opt('latency', 40));
 let JITTER = Number(opt('jitter', 60));
 const OUT = 3;
 const V1 = argv.includes('--v1');
+// --stall-open-file F --stall-opens N: each launch appends a line to F; the first N launches
+// never answer `open` (a reader stuck opening the file), later ones answer normally.
+const STALL_FILE = opt('stall-open-file', '');
+let stallOpen = false;
+if (STALL_FILE) {
+  fs.appendFileSync(STALL_FILE, 'launch\n');
+  stallOpen = fs.readFileSync(STALL_FILE, 'utf8').split('\n').filter(Boolean).length <= Number(opt('stall-opens', 1));
+}
 const V1_COMMANDS = new Set(['open', 'children', 'signals']);
 
 function send(obj, bin) {
@@ -320,6 +328,7 @@ const handlers = {
   textControl(c) { Object.assign(textCtl, c); return { ...textCtl }; },
   textStats() { return { ...textStats, signalsLast }; },
   async open({ file }) {
+    if (stallOpen) { await new Promise(() => {}); }
     dump = await openDump(file); stored.clear(); distinct.clear();
     const r = { metadata: dump.metadata, top: dump.top };
     if (dump.topVars) { r.topVars = dump.topVars; }
