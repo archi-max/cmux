@@ -114,6 +114,17 @@ struct SlangIncludeFragmentTests {
             logic gb;
             asub ug [1:0] (.a (), .b (gb));
         end
+        // Sliced connections (port width x instance count): the left element gets the MSB slice.
+        logic [7:0] xbus;
+        asub xa [6:5] (.a (xbus), .b ());
+        logic [11:4] dbus;
+        asub da [0:1] (.a (dbus), .b ());
+        logic [8:15] sbus;
+        asub sa [2:3] (.a (sbus), .b ());
+        logic [3:0] cbus;
+        asub ca [0:0] (.a (cbus), .b ());
+        logic [1:0] sy;
+        osub so [1:0] (.a (), .y (sy), .t ());
     endmodule
 
     """
@@ -514,6 +525,34 @@ struct SlangIncludeFragmentTests {
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.om[1].a") == ["tb_wrapper.oa"])
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.oy1") == ["tb_wrapper.o1[0].y"])
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.o1[0].y") == ["tb_wrapper.oy1"])
+        }
+    }
+
+    @Test func anInstanceArrayElementsInputIsASliceOfASlicedConnection() async throws {
+        try await Self.withFixture { fixture async throws in
+            func slice(_ path: String) async throws -> String? {
+                try await fixture.session.slangPortSliceAlias(of: path).map { "\($0.path)[\($0.msb):\($0.lsb)]" }
+            }
+            // Descending arrays, a descending bus from 0.
+            #expect(try await slice("tb_wrapper.ua[1].a") == "tb_wrapper.abus[7:4]")
+            #expect(try await slice("tb_wrapper.ua[0].a") == "tb_wrapper.abus[3:0]")
+            #expect(try await slice("tb_wrapper.xa[6].a") == "tb_wrapper.xbus[7:4]")
+            #expect(try await slice("tb_wrapper.xa[5].a") == "tb_wrapper.xbus[3:0]")
+            // An ascending array, a bus with a non-zero LSB.
+            #expect(try await slice("tb_wrapper.da[0].a") == "tb_wrapper.dbus[11:8]")
+            #expect(try await slice("tb_wrapper.da[1].a") == "tb_wrapper.dbus[7:4]")
+            // An ascending bus: its MSB is the left index.
+            #expect(try await slice("tb_wrapper.sa[2].a") == "tb_wrapper.sbus[8:11]")
+            #expect(try await slice("tb_wrapper.sa[3].a") == "tb_wrapper.sbus[12:15]")
+            // One element gets the whole net (an alias, not a slice); a whole connection, a width
+            // that fits neither rule, an output and a plain instance's port are no slices.
+            #expect(try await slice("tb_wrapper.ca[0].a") == nil)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ca[0].a") == ["tb_wrapper.cbus"])
+            #expect(try await slice("tb_wrapper.wa[6].a") == nil)
+            #expect(try await slice("tb_wrapper.ba[0].a") == nil)
+            #expect(try await slice("tb_wrapper.so[1].y") == nil)
+            #expect(try await slice("tb_wrapper.dut.q") == nil)
+            #expect(try await slice("tb_wrapper.abus") == nil)
         }
     }
 
