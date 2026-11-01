@@ -226,6 +226,48 @@ var failures = 0
     AB.currentReported(["pcs": ["0x80000004"], "current": "0x80000004"], waveform: otherWorkspace)
     expect(AB.currentLineStart(in: view) == nil, "another workspace's viewer doesn't move it")
 
+    // A step to a commit whose line is off-screen scrolls it into view (and leaves the selection); one on
+    // screen doesn't scroll.
+    let tallSpace = UUID()
+    let tallViewer = FilePreviewPanel(workspaceId: tallSpace, filePath: "/w/tall.vcd")
+    AB.viewers = { $0 == workspace ? [viewer] : ($0 == tallSpace ? [tallViewer] : []) }
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 60))
+    let tall = makeView(text, path: "/w/tall.dis", workspace: tallSpace)
+    tall.isVerticallyResizable = true
+    tall.textContainer?.widthTracksTextView = true
+    scroll.documentView = tall
+    tall.layoutManager?.ensureLayout(for: tall.textContainer!)
+    tall.sizeToFit()
+    expect(await parsed(tall), "a listing in a short scroll view")
+    let farLine = text.components(separatedBy: "\n").firstIndex { $0.hasPrefix("8000005a:") }!
+    func lineRect(_ line: Int) -> NSRect {
+        let lm = tall.layoutManager!
+        let start = lineStart(line, in: text)
+        let glyphs = lm.glyphRange(forCharacterRange: NSRange(location: start, length: 1), actualCharacterRange: nil)
+        return lm.boundingRect(forGlyphRange: glyphs, in: tall.textContainer!).offsetBy(dx: 0, dy: tall.textContainerOrigin.y)
+    }
+    tall.setSelectedRange(NSRange(location: 0, length: 0))
+    let top = tall.visibleRect
+    expect(top.height < 100 && lineRect(farLine).minY > top.maxY, "the far line starts off-screen: \(top), \(lineRect(farLine))")
+    AB.currentReported(["pcs": ["0x8000005a"], "current": "0x8000005a"], waveform: tallViewer)
+    let scrolled = tall.visibleRect
+    expect(scrolled.minY > top.minY && scrolled.contains(NSPoint(x: lineRect(farLine).minX + 1, y: lineRect(farLine).midY)),
+           "the current commit's off-screen line is scrolled into view: \(scrolled), \(lineRect(farLine))")
+    expect(tall.selectedRange().location == 0, "and the selection is left where it was")
+    let nearLine = farLine - 1
+    AB.currentReported(["pcs": [String](), "current": NSNull()], waveform: tallViewer)
+    if let near = text.components(separatedBy: "\n")[nearLine].split(separator: ":").first,
+       lineRect(nearLine).minY >= scrolled.minY {
+        AB.currentReported(["pcs": ["0x" + near.trimmingCharacters(in: .whitespaces)], "current": "0x" + near.trimmingCharacters(in: .whitespaces)],
+                           waveform: tallViewer)
+        expect(tall.visibleRect == scrolled, "a line on screen doesn't scroll: \(tall.visibleRect)")
+    } else {
+        expect(false, "the line before the far one is on screen too: \(lineRect(nearLine)), \(scrolled)")
+    }
+    AB.currentReported(["pcs": [String](), "current": NSNull()], waveform: tallViewer)
+    AB.detach(tall)
+    AB.viewers = { $0 == workspace ? [viewer] : [] }
+
     // Show Instruction in Listing.
     viewer.nativeViewSessions.waveform.answers["currentCommitPc"] = "0x8000005a"
     let shown = await AB.revealCurrent(of: viewer)
