@@ -29,6 +29,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var engineRequests = 0
   /// How long cmux takes to answer an engine request (the Verdi session's answer time).
   var engineDelay: TimeInterval = 0
+  /// cmux never answers engine requests (a hung Verdi session).
+  var engineHang = false
+  /// The page's 'update' posts (a step filled in after it was shown).
+  var updates = 0
   var checksStarted = false
 
   func call(_ js: String) async -> Any? {
@@ -180,8 +184,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       await call("""
         const b = cmuxWaveform.host.currentBackend;
         b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
-        try { return await cmuxWaveform.trace.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(t) }); }
-        finally { delete b.valuesAt; delete b.changes; }
+        try {
+          await cmuxWaveform.trace.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(t) });
+          if (cmuxWaveform.trace.settled) { await cmuxWaveform.trace.settled(); }
+          return cmuxWaveform.trace.state().step;
+        } finally { delete b.valuesAt; delete b.changes; }
       """) as? [String: Any]
     }
     let asked = engineRequests
@@ -237,8 +244,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       const t0 = performance.now();
       let step;
-      try { step = await q(); } finally { delete b.valuesAt; delete b.changes; b.signalChanges = own; }
-      return { ms: performance.now() - t0, reads, most, unique: new Set(ids).size, engine: step && step.engine && step.engine.name };
+      let ms;
+      try {
+        await q(); ms = performance.now() - t0;
+        if (cmuxWaveform.trace.settled) { await cmuxWaveform.trace.settled(); }
+        step = cmuxWaveform.trace.state().step;
+      } finally { delete b.valuesAt; delete b.changes; b.signalChanges = own; }
+      return { ms, reads, most, unique: new Set(ids).size, engine: step && step.engine && step.engine.name };
     """) as? [String: Any]
     engineDelay = 0
     engineAnswer = nil
@@ -248,6 +260,69 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(reads > 2 && timing?["unique"] as? Int == reads, "v1 helper: each signal read once, also when asked twice at the same time: \(String(describing: timing))")
     expect((timing?["most"] as? Int ?? 0) > 1, "v1 helper: a step's signals are read concurrently: \(String(describing: timing))")
     expect(timing?["engine"] as? String == "verdi" && ms < serial * 0.6, "v1 helper + Verdi: the step takes well under the serial time (\(Int(ms)) ms vs \(Int(serial)) ms)")
+
+    // A step never waits on Verdi: ours is shown at once and Verdi's line filled in when it comes,
+    // within a per-step budget (its port-hop following included); past it, "not checked (timed out)".
+    // A Verdi answer for a step the user has moved on from (a newer trace) is dropped.
+    func shown(_ path: String, settle: Bool) async -> [String: Any]? {
+      await call("""
+        const b = cmuxWaveform.host.currentBackend, t = cmuxWaveform.trace;
+        b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+        try {
+          const t0 = performance.now();
+          const step = await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: 60 });
+          const ms = performance.now() - t0;
+          const panel = document.getElementById('cmux-trace')?.innerText || '';
+          const t1 = performance.now();
+          if (\(settle) && t.settled) { await t.settled(); }
+          return { ms, step, settleMs: performance.now() - t1, after: t.state().step, panel, panelAfter: document.getElementById('cmux-trace')?.innerText || '' };
+        } finally { delete b.valuesAt; delete b.changes; }
+      """) as? [String: Any]
+    }
+    _ = await call("cmuxWaveform.traceVerdiBudgetMs = 1500; return null")
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    // A hung Verdi.
+    engineHang = true
+    let hung = await shown("tb_c.dut.u_mid.u_sink.q", settle: true)
+    engineHang = false
+    let hungMs = hung?["ms"] as? Double ?? .infinity
+    let hungEngine = (hung?["step"] as? [String: Any])?["engine"] as? [String: Any]
+    let hungAfter = (hung?["after"] as? [String: Any])?["engine"] as? [String: Any]
+    print(String(format: "[verdi async] hung Verdi: step shown in %.0f ms, settled %.0f ms later", hungMs, hung?["settleMs"] as? Double ?? -1))
+    expect(hungMs < 1000 && hungEngine?["name"] as? String == "cmux" && hungEngine?["verdi"] as? String == "checking",
+           "a hung Verdi does not delay the shown step (\(Int(hungMs)) ms): \(String(describing: hungEngine))")
+    expect((hung?["panel"] as? String ?? "").contains("Verdi is checking…"), "the panel says Verdi is checking")
+    expect(hungAfter?["verdi"] as? String == "timedOut" && hungAfter?["name"] as? String == "cmux"
+             && (hung?["after"] as? [String: Any])?["trust"] as? String == "exact",
+           "past the budget: Verdi not checked (timed out), ours unchanged: \(String(describing: hungAfter))")
+    expect((hung?["panelAfter"] as? String ?? "").contains("Verdi: not checked (timed out)"), "the panel says Verdi timed out")
+    // A slow Verdi on a port hop: ours (the hop) at once, then Verdi's statement behind the ports.
+    engineDelay = 0.8
+    let updatesBefore = updates
+    let slow = await shown("tb_c.dut.q", settle: true)
+    let slowMs = slow?["ms"] as? Double ?? .infinity
+    let slowStep = slow?["step"] as? [String: Any], slowAfter = slow?["after"] as? [String: Any]
+    print(String(format: "[verdi async] slow Verdi (800 ms): step shown in %.0f ms", slowMs))
+    expect(slowMs < 700 && (slowStep?["engine"] as? [String: Any])?["verdi"] as? String == "checking"
+             && ((slowStep?["driver"] as? [String: Any])?["kind"] as? String ?? "").hasPrefix("port"),
+           "a slow Verdi does not delay the shown step (\(Int(slowMs)) ms)")
+    expect(((slowAfter?["stmt"] as? [String: Any])?["loc"] as? [String: Any])?["line"] as? Int == 56
+             && (slowAfter?["engine"] as? [String: Any])?["name"] as? String == "verdi" && !((slowAfter?["via"] as? [Any]) ?? []).isEmpty,
+           "Verdi's answer fills the step in when it arrives (followed through the ports): \(String(describing: slowAfter?["engine"]))")
+    expect(updates > updatesBefore, "the filled-in step is posted to cmux as an update")
+    // Moved on: a newer trace before Verdi answered drops that answer.
+    _ = await shown("tb_c.dut.q", settle: false)
+    let newer = await shown("tb_c.dut.u_mid.u_sink.q", settle: true)
+    let older = await call("cmuxWaveform.trace.back(); const st = cmuxWaveform.trace.state().step; cmuxWaveform.trace.forward(); return st") as? [String: Any]
+    engineDelay = 0
+    engineAnswer = nil
+    expect(((newer?["after"] as? [String: Any])?["engine"] as? [String: Any])?["name"] as? String == "verdi"
+             && (newer?["after"] as? [String: Any])?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q",
+           "the newer step gets its own Verdi answer")
+    expect(older?["signal"] as? String == "tb_c.dut.q" && (older?["engine"] as? [String: Any])?["verdi"] as? String == "dropped"
+             && ((older?["via"] as? [Any]) ?? []).isEmpty,
+           "the step moved on from keeps ours, Verdi's answer dropped: \(String(describing: older?["engine"]))")
+    _ = await call("delete cmuxWaveform.traceVerdiBudgetMs; return null")
 
     // Status while cmux builds; close.
     _ = await call("cmuxWaveform.trace.status('Building…'); return null")
@@ -299,8 +374,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let best = instances.keys.filter { path == $0 || path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
         answer(id, ok: true, result: best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull())
       }
+    case "update":
+      updates += 1
     case "engine":
       engineRequests += 1
+      if engineHang { return }
       let result: [String: Any] = engineAnswer ?? ["state": "none"]
       if engineDelay > 0 {
         DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { self.answer(id, ok: true, result: result) }
@@ -358,7 +436,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
         "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
         "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
-        "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiLastChange": "Verdi (driver of the last change):",
+        "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiChecking": "Verdi is checking…",
+        "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLastChange": "Verdi (driver of the last change):",
         "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
         "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
       ]
