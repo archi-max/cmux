@@ -8,7 +8,12 @@ extension NSTextView {
     func applyFilePreviewWordWrap(_ wrap: Bool, scrollView: NSScrollView) {
         guard let textContainer else { return }
         let changed = textContainer.widthTracksTextView != wrap
-        let previousOrigin = scrollView.contentView.bounds.origin
+        let visibleWidth = scrollView.contentSize.width
+        let wrapWidth = max(0, visibleWidth - 2 * textContainerInset.width)
+        // A reflow re-lays out every line, and the numeric clip origin then
+        // points at other text; keep the character at the viewport top instead.
+        let reflows = changed || (wrap && visibleWidth > 0 && textContainer.size.width != wrapWidth)
+        let viewportAnchor = reflows ? FilePreviewViewportAnchor.capture(in: self) : nil
         scrollView.hasHorizontalScroller = !wrap
         isHorizontallyResizable = !wrap
         if wrap {
@@ -19,12 +24,10 @@ extension NSTextView {
             // avoid collapsing to a zero-width container during `makeNSView`,
             // before the clip view has a size; `updateNSView` re-runs once laid
             // out and reflows.
-            let visibleWidth = scrollView.contentSize.width
             if visibleWidth > 0 {
                 setFrameSize(NSSize(width: visibleWidth, height: frame.height))
-                let containerWidth = max(0, visibleWidth - 2 * textContainerInset.width)
-                if textContainer.size.width != containerWidth {
-                    textContainer.size = NSSize(width: containerWidth, height: .greatestFiniteMagnitude)
+                if textContainer.size.width != wrapWidth {
+                    textContainer.size = NSSize(width: wrapWidth, height: .greatestFiniteMagnitude)
                 }
             }
         } else {
@@ -34,15 +37,11 @@ extension NSTextView {
                 height: CGFloat.greatestFiniteMagnitude
             )
         }
-        guard changed else { return }
         // Reflow the existing storage. Selection, affinity, and undo history
-        // remain untouched; constrain only the viewport to the new extent.
+        // remain untouched; only the viewport is placed again.
+        guard let viewportAnchor else { return }
         scrollView.layoutSubtreeIfNeeded()
-        let clipView = scrollView.contentView
-        clipView.scroll(to: clipView.constrainBoundsRect(
-            NSRect(origin: previousOrigin, size: clipView.bounds.size)
-        ).origin)
-        scrollView.reflectScrolledClipView(clipView)
+        viewportAnchor.restoreCharacter(in: self)
     }
 
     /// Applies the editor’s shared text padding without changing its content.
