@@ -1,4 +1,5 @@
 import AppKit
+import CmuxSyntaxHighlighting
 import SwiftUI
 import Testing
 
@@ -121,6 +122,147 @@ struct FilePreviewEditorTypingStabilityTests {
         #expect(abs(after - (before + lineHeight)) <= 1, "line moved from \(before) to \(after)")
     }
 
+    // MARK: - Restyling after a keystroke keeps the viewport still
+
+    /// Every keystroke restyles the buffer. An attribute edit over the whole
+    /// buffer re-lays out every line, and while non-contiguous layout re-estimates
+    /// the heights AppKit re-anchors the clip view: in this 3000-line file it went
+    /// about 1800 points (110 lines) up and back inside the one restyle call. In a
+    /// file of a few hundred lines that is the top of the file.
+    @Test("restyling after a keystroke does not move the viewport")
+    func restyleAfterKeystrokeKeepsViewport() throws {
+        let editor = Self.offscreenEditor(text: Self.systemVerilogText(lines: 3000))
+        defer { editor.window.close() }
+        let textView = editor.textView
+        let clipView = editor.scrollView.contentView
+        let styler = FilePreviewSyntaxStyler()
+        styler.applyHighlightedText(Self.highlighted(textView.string), to: textView, defaultColor: .textColor)
+
+        // The caret on a new line in the middle of the file, scrolled into view.
+        let marker = (textView.string as NSString).range(of: "data_1503 <=").location
+        try #require(marker != NSNotFound)
+        textView.setSelectedRange(NSRange(location: marker, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
+        editor.settle()
+        textView.insertText("$", replacementRange: textView.selectedRange())
+        editor.settle()
+
+        let before = clipView.bounds.minY
+        let origins = ClipOriginLog(clipView: clipView)
+        styler.applyHighlightedText(Self.highlighted(textView.string), to: textView, defaultColor: .textColor)
+        editor.settle()
+        origins.stop()
+
+        let lineHeight = try #require(textView.layoutManager).defaultLineHeight(for: try #require(textView.font))
+        let worst = origins.values.map { abs($0 - before) }.max() ?? 0
+        #expect(worst <= lineHeight, "clip origin went \(origins.values) from \(before)")
+        #expect(abs(clipView.bounds.minY - before) <= 1)
+    }
+
+    // MARK: - Turning word wrap on or off keeps the top line
+
+    /// Toggling wrap re-lays out every line, and the old numeric clip origin
+    /// then points at other text: the wrapped document is much taller.
+    @Test("toggling word wrap keeps the line at the viewport top")
+    func wordWrapToggleKeepsTopLine() throws {
+        // Lines long enough to wrap in an 800-point editor.
+        let lines = (0..<2000).map { "  assign sig_\($0) = " + String(repeating: "foo_\($0) & ", count: 12) + "bar_\($0);" }
+        let editor = Self.offscreenEditor(text: lines.joined(separator: "\n"))
+        defer { editor.window.close() }
+        let textView = editor.textView
+        let scrollView = editor.scrollView
+
+        let marker = "sig_1000 "
+        let lineTop = Self.viewportY(of: marker, in: textView) + scrollView.contentView.bounds.minY
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: lineTop))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        editor.settle()
+        #expect(abs(Self.viewportY(of: marker, in: textView)) <= 1)
+
+        let lineHeight = try #require(textView.layoutManager).defaultLineHeight(for: try #require(textView.font))
+        for wrap in [true, false] {
+            textView.applyFilePreviewWordWrap(wrap, scrollView: scrollView)
+            editor.settle()
+            #expect(textView.textContainer?.widthTracksTextView == wrap)
+            let y = Self.viewportY(of: marker, in: textView)
+            #expect(abs(y) <= lineHeight, "wrap \(wrap): the top line moved to \(y)")
+        }
+    }
+
+    private struct OffscreenEditor {
+        let window: NSWindow
+        let scrollView: NSScrollView
+        let textView: SavingTextView
+
+        func settle() {
+            scrollView.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            window.displayIfNeeded()
+        }
+    }
+
+    /// The editor's text view in a scroll view, configured like `makeNSView`,
+    /// in a window that is never ordered in.
+    private static func offscreenEditor(text: String) -> OffscreenEditor {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        let textView = SavingTextView.makeFilePreviewTextView()
+        textView.string = text
+        scrollView.documentView = textView
+        textView.applyFilePreviewWordWrap(false, scrollView: scrollView)
+        let window = NSWindow(
+            contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 600),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = scrollView
+        let editor = OffscreenEditor(window: window, scrollView: scrollView, textView: textView)
+        editor.settle()
+        return editor
+    }
+
+    /// An adapter_tb.sv-like testbench.
+    private static func systemVerilogText(lines count: Int) -> String {
+        var lines = ["`timescale 1ns/1ps", "module adapter_tb;"]
+        for index in 0..<count {
+            switch index % 6 {
+            case 0: lines.append("  logic [31:0] data_\(index);")
+            case 1: lines.append("  always @(posedge clk) begin")
+            case 2: lines.append("    if (valid_\(index)) $display(\"t=%0t data=%h\", $time, data_\(index));")
+            case 3: lines.append("    data_\(index) <= data_\(index - 1) + 1;")
+            case 4: lines.append("  end")
+            default: lines.append("")
+            }
+        }
+        lines.append("endmodule")
+        return lines.joined(separator: "\n")
+    }
+
+    /// A highlighter result for `text`: bold blue keywords, red strings.
+    private static func highlighted(_ text: String) -> HighlightedText {
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let bold = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+        let result = NSMutableAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1),
+        ])
+        let full = NSRange(location: 0, length: (text as NSString).length)
+        let keywords = try! NSRegularExpression(pattern: #"\b(?:module|endmodule|logic|always|posedge|begin|end|if)\b"#)
+        for match in keywords.matches(in: text, range: full) {
+            result.setAttributes([.font: bold, .foregroundColor: NSColor(srgbRed: 0.2, green: 0.4, blue: 1, alpha: 1)], range: match.range)
+        }
+        let strings = try! NSRegularExpression(pattern: #""[^"\n]*""#)
+        for match in strings.matches(in: text, range: full) {
+            result.setAttributes([.font: font, .foregroundColor: NSColor(srgbRed: 1, green: 0.3, blue: 0.3, alpha: 1)], range: match.range)
+        }
+        return HighlightedText(result)
+    }
+
     /// The marker's line top, measured from the viewport top.
     private static func viewportY(of marker: String, in textView: NSTextView) -> CGFloat {
         let layoutManager = textView.layoutManager!
@@ -140,6 +282,32 @@ struct FilePreviewEditorTypingStabilityTests {
             if let match = firstSubview(of: type, in: subview) { return match }
         }
         return nil
+    }
+}
+
+/// Every clip-view origin from `init` until `stop()`.
+@MainActor
+private final class ClipOriginLog {
+    private(set) var values: [CGFloat] = []
+    private var observer: NSObjectProtocol?
+
+    init(clipView: NSClipView) {
+        clipView.postsBoundsChangedNotifications = true
+        observer = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: nil
+        ) { [weak self, weak clipView] _ in
+            MainActor.assumeIsolated {
+                guard let clipView else { return }
+                self?.values.append(clipView.bounds.minY)
+            }
+        }
+    }
+
+    func stop() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
     }
 }
 
