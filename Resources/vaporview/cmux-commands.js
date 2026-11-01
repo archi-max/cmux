@@ -101,6 +101,15 @@
       {command: "vaporview.displayAsFixedPointSigned", group: "0_default@11", when: "webviewSection == 'signal' && width > '1'"},
       {command: "vaporview.displayAsAscii", group: "0_default@12", when: "webviewSection == 'signal' && width > '1'"},
       {command: "vaporview.displayAsEpochTimeNs", group: "0_default@13", when: "webviewSection == 'signal' && width >= '64'"},
+      // cmux additions: the viewer's RISC-V instruction formats (extra_formats.ts,
+      // 16 bits and wider; ordering in when clauses compares numbers).
+      {submenu: "vaporview.riscvFormat", group: "1_instruction@1", when: "webviewSection == 'signal' && width >= '16'"},
+    ],
+    "vaporview.riscvFormat": [
+      {command: "vaporview.displayAsRiscv", group: "0_default@1"},
+      {command: "vaporview.displayAsRiscvNumeric", group: "0_default@2"},
+      {command: "vaporview.displayAsRiscvNoAlias", group: "0_default@3"},
+      {command: "vaporview.displayAsRiscvNumericNoAlias", group: "0_default@4"},
     ],
     "vaporview.valueColor": [
       {command: "vaporview.defaultColor1", group: "0_default@1", when: "webviewSection == 'signal'"},
@@ -178,7 +187,7 @@
     'vaporview.setTimeUnitsPicoseconds': 'ps', 'vaporview.setTimeUnitsFemtoseconds': 'fs',
     'vaporview.rowHeight1x': '1x', 'vaporview.rowHeight2x': '2x', 'vaporview.rowHeight4x': '4x', 'vaporview.rowHeight8x': '8x',
     'vaporview.displayAsAscii': 'ASCII', 'vaporview.displayAsBFloat': 'BFloat 16', 'vaporview.displayAsTFloat': 'TensorFloat 32',
-    'vaporview.waveDrom': 'WaveDrom',
+    'vaporview.waveDrom': 'WaveDrom', 'vaporview.riscvFormat': 'RISC-V',
   };
 
   function title(id) {
@@ -1135,7 +1144,10 @@
 
   const FORMATS = { displayAsBinary: 'binary', displayAsHexadecimal: 'hexadecimal', displayAsDecimal: 'decimal',
     displayAsDecimalSigned: 'signed', displayAsOctal: 'octal', displayAsBFloat: 'bfloat16', displayAsTFloat: 'tensorfloat32',
-    displayAsAscii: 'ascii', displayAsEpochTimeNs: 'nsepoch', displayAsEnum: 'enum' };
+    displayAsAscii: 'ascii', displayAsEpochTimeNs: 'nsepoch', displayAsEnum: 'enum',
+    // The viewer's RISC-V formats (cmux-vaporview.patch, extra_formats.ts).
+    displayAsRiscv: 'riscv', displayAsRiscvNumeric: 'riscv_numeric', displayAsRiscvNoAlias: 'riscv_noalias',
+    displayAsRiscvNumericNoAlias: 'riscv_numeric_noalias' };
   Object.entries(FORMATS).forEach(([k, v]) => { COMMANDS['vaporview.' + k] = (e) => displayFormat(e, { numberFormat: v }); });
   const RENDER = { renderMultiBit: 'multiBit', renderLinear: 'linear', renderStepped: 'stepped', renderLinearSigned: 'linearSigned', renderSteppedSigned: 'steppedSigned' };
   Object.entries(RENDER).forEach(([k, v]) => { COMMANDS['vaporview.' + k] = (e) => displayFormat(e, { renderType: v }); });
