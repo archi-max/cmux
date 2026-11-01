@@ -701985,6 +701985,65 @@
         }
       }
     },
+    "waveformDebugger.commit.jalHint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: no instruction matched, but jal instructions that link ra committed. They are shown as “jal <target>” (ra implied), so leave ra out of the pattern."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Keine Anweisung passte, aber es wurden jal-Anweisungen ausgeführt, die ra verknüpfen. Sie werden als „jal <Ziel>“ angezeigt (ra implizit), lassen Sie ra also im Muster weg."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ : aucune instruction ne correspond, mais des instructions jal liant ra ont été validées. Elles s’affichent sous la forme « jal <cible> » (ra implicite) : retirez ra du motif."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: لم تطابق أي تعليمة، لكن تم تنفيذ تعليمات jal تربط ra. تُعرض بالشكل «jal <الهدف>» (ra ضمني)، لذا احذف ra من النمط."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: ninguna instrucción coincidió, pero se confirmaron instrucciones jal que enlazan ra. Se muestran como «jal <destino>» (ra implícito), así que quite ra del patrón."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：沒有符合的指令，但有提交連結 ra 的 jal 指令。它們顯示為「jal <目標>」（隱含 ra），因此請從模式中移除 ra。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：没有匹配的指令，但有提交链接 ra 的 jal 指令。它们显示为“jal <目标>”（隐含 ra），因此请从模式中去掉 ra。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: 일치하는 명령어가 없지만 ra에 링크하는 jal 명령어가 커밋되었습니다. 이 명령어는 “jal <대상>”으로 표시되므로(ra 생략) 패턴에서 ra를 빼세요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: 一致する命令はありませんが、ra にリンクする jal 命令がコミットされています。これらは「jal <ターゲット>」と表示される（ra は暗黙）ため、パターンから ra を外してください。"
+          }
+        }
+      }
+    },
     "waveformDebugger.text.breakWhenMatches": {
       "extractionState": "manual",
       "localizations": {
