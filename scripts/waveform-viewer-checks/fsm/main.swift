@@ -269,8 +269,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const r = g.getBoundingClientRect(); const p = document.getElementById('fsm').getBoundingClientRect();
       return [getComputedStyle(g).cursor, Math.round(r.left - p.left), r.width >= 4 && r.height >= p.height - 2, !!g.title, g.getAttribute('role')];
     """) as? [Any]
-    expect(grip.map { ($0[0] as? String) == "col-resize" && ($0[1] as? Int) == 0 && ($0[2] as? Bool) == true && ($0[3] as? Bool) == true && ($0[4] as? String) == "separator" } == true,
-           "F4: a resize grip runs down the pane's left edge, with a tooltip: \(String(describing: grip))")
+    expect(grip.map { ($0[0] as? String) == "col-resize" && (0...1).contains(($0[1] as? Int) ?? -1) && ($0[2] as? Bool) == true && ($0[3] as? Bool) == true && ($0[4] as? String) == "separator" } == true,
+           "F4: a resize grip runs down the pane's left edge (inside its 1px border), with a tooltip: \(String(describing: grip))")
     let dragged = await call("""
       const g = document.querySelector('#fsm .fsm-grip');
       if (!g) { return -1; }
