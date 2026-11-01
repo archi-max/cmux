@@ -31,6 +31,10 @@
 #   ./run.sh fsdb-locals                 FSDB inline values of pinned signals
 #   ./run.sh breakpoints                 debugger breakpoints: continue, reverse, landing, play stops, list
 #   ./run.sh line-breakpoints            line breakpoints: F9, gutter, edits, instances, session
+#   ./run.sh machine-core                machine state (cmux-machine-core.js): commit stream detection,
+#                                        the replay rules, gdb commands, $ names; the synthetic RVFI
+#                                        generator and NERV/PicoRV32/Ibex against Spike (machine/fixtures)
+#   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
@@ -81,6 +85,17 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger-fsdb"
     "$OUT/debugger-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$1" "$2" "$3" "$OUT/debugger-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/debugger-fsdb.log"
     grep -q '^DEBUGGER FSDB CHECKS PASSED' "$OUT/debugger-fsdb.log"
+    ;;
+  machine-core)
+    swiftc -swift-version 6 -O "$HERE/machine/main.swift" -o "$OUT/machine-core"
+    "$OUT/machine-core" "$HERE/machine/fixtures" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-machine-core.js" \
+      "$HERE/machine/make-rvfi-vcd.js" "$HERE/machine/core-cases.js" | tee "$OUT/machine-core.log"
+    grep -q '^MACHINE CORE CHECKS PASSED' "$OUT/machine-core.log"
+    ;;
+  machine-mutants)
+    swiftc -swift-version 6 -O "$HERE/machine/main.swift" -o "$OUT/machine-core"
+    "$HERE/machine/mutants.sh" "$OUT/machine-core" "$ASSETS" "$HERE/machine" "$OUT" | tee "$OUT/mutants.log"
+    grep -q '0 survived' "$OUT/mutants.log"
     ;;
   expr)
     swiftc -swift-version 6 -O "$HERE/expr/main.swift" -o "$OUT/expr"
