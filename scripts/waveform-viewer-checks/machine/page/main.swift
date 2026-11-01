@@ -4,7 +4,7 @@
 // names, gdb commands, row actions) against Spike's log or the generator's replay. The ELF image is
 // read by the app's own WaveformMachineState.loadImage (readelf), and its parsers are checked here.
 // Usage (machine/page/main.swift): machine-page <assetRoot> <machineDir> <outDir> <case>
-//   case: nerv | picorv32 | ibex (fixtures/<case>) | prefixed | packed2 | array2 | array2late | struct | monitor | forward | none
+//   case: nerv | picorv32 | ibex (fixtures/<case>) | prefixed | packed2 | array2 | array2late | array2single | struct | monitor | forward | none
 //        machine-page <assetRoot> <machineDir> <outDir> fsdb <helperRoot> <sshHost> <remote.fsdb> <local commit.log> [local.elf]
 //   fsdb: a remote FSDB through the helper (under nice), read in place, against its Spike-format commit.log.
 import AppKit

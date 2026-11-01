@@ -159,9 +159,9 @@
       expect(orders.every((o, i) => i === 0 || o === orders[i - 1] + 1 || x.commits[0].order === null), opts.name + ': history in program order: ' + orders.slice(0, 6).join(','));
       if (x.swapped) { expect(h.length === 20, opts.name + ': ' + x.swapped + ' same-cycle pairs retire out of channel order'); }
       // F10 by commit inside a cycle: two commits in one cycle are two steps on the same posedge.
-      if (x.nret === 2) {
+      const pair = x.commits.findIndex((c, i) => i > 0 && x.commits[i - 1].time === c.time);
+      if (x.nret === 2 && pair > 0) {
         M.setMode({ mode: 'instruction' });
-        const pair = x.commits.findIndex((c, i) => i > 0 && x.commits[i - 1].time === c.time);
         await M.goToCommit({ k: pair - 1 });
         const before = D.markerTime();
         await D.step({ by: 1 });

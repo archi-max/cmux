@@ -48,3 +48,18 @@ fn a_bit_that_starts_later_than_the_others_is_x_then_its_values() {
     let got = merged_changes(&vcd);
     assert_eq!(got, vec![(35, "x0".to_string()), (42, "00".to_string()), (50, "10".to_string()), (60, "11".to_string())], "{got:?}");
 }
+
+#[test]
+fn a_bit_that_is_never_written_leaves_the_others() {
+    // Bit 1 declared but never dumped (a channel that never retires); bit 0 from #35 while the clock
+    // has #0: the merged vector still has bit 0's values, with bit 1 x throughout.
+    let vcd = format!("{HEAD}#0\n0!\n#35\n0\"\n#50\n1\"\n");
+    assert_eq!(merged_changes(&vcd), vec![(35, "x0".to_string()), (50, "x1".to_string())]);
+}
+
+#[test]
+fn a_bit_that_is_never_written_with_nothing_at_the_first_time() {
+    // The same with no other signal at an earlier time (bit 0's first change is the first time).
+    let vcd = format!("{HEAD}#35\n0\"\n#50\n1\"\n");
+    assert_eq!(merged_changes(&vcd), vec![(35, "x0".to_string()), (50, "x1".to_string())]);
+}
