@@ -123,6 +123,7 @@ enum WaveformDebuggerLineBreakpoints {
 
     static func remove(_ id: UUID, in workspace: UUID) {
         marks[workspace]?.removeAll { $0.id == id }
+        badConditions.remove(id)
         for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] {
             tracker.offsets[id] = nil
             tracker.lineTexts[id] = nil
@@ -142,6 +143,8 @@ enum WaveformDebuggerLineBreakpoints {
     /// The breakpoint's condition; nil or blank clears it. The page checks it parses (and says why not).
     static func setCondition(_ id: UUID, _ condition: String?, in workspace: UUID) {
         let trimmed = condition?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The page's error was about the old text: it says again if the new one is bad too.
+        badConditions.remove(id)
         update(id, in: workspace) { $0.condition = trimmed?.isEmpty == false ? trimmed : nil }
     }
 
