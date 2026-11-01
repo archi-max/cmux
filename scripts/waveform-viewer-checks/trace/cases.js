@@ -5,7 +5,8 @@
 // the dump). Fields of a case, each checked when present:
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
-//   fanin { path or local name: bits }, trust, root, reasons [codes that must be there],
+//   fanin { path or local name: bits }, xIndex [fan-in names read through an x index],
+//   trust, root, reasons [codes that must be there],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
 /* global cmuxTrace, traceVcd, traceFiles */
 /* exported runTraceChecks */
@@ -17,6 +18,7 @@ const TRACE_DUMPS = {
   e: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   // Icarus 12 has no interface ports.
   f: ['plain', 'flowctrl', 'tmerge', 'course'],
+  g: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -37,7 +39,7 @@ const TRACE_CASES = [
 
   // ---- B: x index, unwritten memory, x-assignment, x selector (chains 2-5) ----
   { d: 'b', sig: 'tb_b.dut.rdata', t: 60, kind: 'proc', proc: 'AlwaysComb', file: 'b_select.sv', line: 32, stmt: 'rdata = mem[raddr_q];',
-    since: 55, value: XX, dec: [['mode_q', 0]], fanin: { 'tb_b.dut.raddr_q': 'xx' }, dumps: ['plain', 'flowctrl', 'tmerge', 'icarus'] },
+    since: 55, value: XX, dec: [['mode_q', 0]], fanin: { 'tb_b.dut.raddr_q': 'xx' }, xIndex: ['mem'], dumps: ['plain', 'flowctrl', 'tmerge', 'icarus'] },
   { d: 'b', sig: 'tb_b.dut.raddr_q', t: 60, kind: 'proc', proc: 'AlwaysFF', line: 26, stmt: 'raddr_q <= raddr;', act: 55, sample: 54,
     dec: [['!rst_n', 'else']], fanin: { 'tb_b.dut.raddr': 'xx' }, trust: 'exact' },
   { d: 'b', sig: 'tb_b.dut.raddr', t: 54, kind: 'portIn', file: 'tb_b.sv', line: 6, since: 50, fanin: { 'tb_b.raddr': 'xx' }, trust: 'exact' },
@@ -107,6 +109,12 @@ const TRACE_CASES = [
   { d: 'f', sig: 'tb_f.bus.req', t: 30, kind: 'proc', writer: 'tb_f.dut', line: 38, stmt: "bus.req <= 1'b1;", act: 25, value: '1', dec: [['!rst_n', 'else']], trust: 'exact' },
   // The reader's side: the dut's flop takes the interface's x.
   { d: 'f', sig: 'tb_f.dut.q', t: 60, kind: 'proc', proc: 'AlwaysFF', line: 39, stmt: 'q <= bus.rdata;', act: 55, value: XX, fanin: { 'tb_f.bus.rdata': XX } },
+  // ---- G: a default then an override in one run: the last write that runs is the driver ----
+  { d: 'g', sig: 'tb_g.dut.q', t: 30, kind: 'proc', proc: 'AlwaysFF', file: 'g_override.sv', line: 16, stmt: 'q <= d;', act: 25, sample: 24,
+    value: '01011010', dec: [['!rst_n', 'else'], ['en', 'then']], fanin: { 'tb_g.dut.d': '01011010' }, trust: 'exact' },
+  { d: 'g', sig: 'tb_g.dut.q', t: 48, kind: 'proc', line: 15, stmt: "q <= 8'h0f;", act: 45, value: '00001111', dec: [['!rst_n', 'else']], trust: 'exact' },
+  { d: 'g', sig: 'tb_g.dut.y', t: 30, kind: 'proc', proc: 'AlwaysComb', line: 21, stmt: "y = d ^ 8'hff;", value: '10100101', dec: [['en', 'then']], trust: 'exact' },
+  { d: 'g', sig: 'tb_g.dut.y', t: 45, kind: 'proc', line: 20, stmt: "y = 8'h00;", value: '00000000', dec: [], trust: 'exact' },
 ];
 
 function runTraceChecks() {
@@ -163,6 +171,9 @@ function runTraceChecks() {
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
       if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
+    }
+    for (const k of c.xIndex || []) {
+      if (!(step.fanin || []).some((x) => x.xIndex && (x.name === k || x.path === k))) { bad.push(`fan-in lacks an x-index read of ${k}`); }
     }
     (c.dec || []).forEach(([src, taken], i) => {
       const d = (step.decisions || [])[i];

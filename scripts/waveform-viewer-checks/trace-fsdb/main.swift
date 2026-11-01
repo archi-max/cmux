@@ -6,7 +6,8 @@
 // Fails when a trace throws, or a signal of the design gets no driver at all.
 // TRACE_FSDB_VERDI=1 also runs the Verdi engine on the host as cmux does (verdi-trace/, a warm
 // `verdi -nogui` session found through the KDB next to the FSDB), answers the page's engine
-// requests from it, and counts how the two engines' answers compare.
+// requests from it, and counts how the two engines' answers compare. TRACE_FSDB_UNDRIVEN=a,b names
+// signals the design leaves undriven (no driver is the right answer for them).
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
@@ -172,6 +173,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var trust: [String: Int] = [:], kinds: [String: Int] = [:], reasons: [String: Int] = [:]
     var times: [Double] = []
     var noDriver: [String] = []
+    // Signals the design itself leaves undriven (TRACE_FSDB_UNDRIVEN, comma-separated): "none" is right for them.
+    let undriven = Set((ProcessInfo.processInfo.environment["TRACE_FSDB_UNDRIVEN"] ?? "").split(separator: ",").map(String.init))
+    var knownUndriven: [String] = []
     var engines: [String: Int] = [:]
     var errors = 0
     while !queue.isEmpty, times.count < (Int(ProcessInfo.processInfo.environment["TRACE_FSDB_MAX_STEPS"] ?? "") ?? 400) {
@@ -187,7 +191,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       trust[step["trust"] as? String ?? "?", default: 0] += 1
       let kind = (step["driver"] as? [String: Any])?["kind"] as? String ?? "?"
       kinds[kind, default: 0] += 1
-      if kind == "none" { noDriver.append(path) }
+      if kind == "none" { if undriven.contains(path) { knownUndriven.append(path) } else { noDriver.append(path) } }
       for r in step["reasons"] as? [[String: Any]] ?? [] { reasons[r["code"] as? String ?? "?", default: 0] += 1 }
       if let e = step["engine"] as? [String: Any] {
         let name = e["name"] as? String ?? "?"
@@ -218,6 +222,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     print(String(format: "time per step: median %.1f ms, p90 %.1f ms, max %.1f ms, total %.1f s", median,
                  sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, sorted.count * 9 / 10)], sorted.last ?? 0, times.reduce(0, +) / 1000))
     expect(errors == 0, "no trace threw (\(errors))")
+    if !knownUndriven.isEmpty { print("undriven in the design (TRACE_FSDB_UNDRIVEN):", knownUndriven) }
     expect(noDriver.isEmpty, "every traced design signal has a driver: \(noDriver.prefix(8))")
     expect(times.count > 0, "steps were traced")
     finish()

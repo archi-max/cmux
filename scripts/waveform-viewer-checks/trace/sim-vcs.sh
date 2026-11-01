@@ -10,7 +10,7 @@ W=${1:?scratch dir}
 cd "$W"
 module load Synopsys_x86-64 >/dev/null 2>&1 || true
 mkdir -p out
-for d in ${DESIGNS:-a b c e f}; do
+for d in ${DESIGNS:-a b c e f g}; do
   src=$(ls designs/${d}_*.sv)
   for variant in plain flowctrl tmerge course; do
     case $variant in
