@@ -1,0 +1,2377 @@
+{
+ "version": 1,
+ "pipelines": [
+  {
+   "name": "rsd",
+   "scope": "TOP.Main_Zynq_Wrapper.main.core",
+   "clock": "TOP.clk_p",
+   "edge": "posedge",
+   "reset": "TOP.posResetOut",
+   "resetActive": 1,
+   "sample": "beforeEdge",
+   "isa": "riscv",
+   "stages": [
+    {
+     "name": "Np",
+     "slots": 2,
+     "valid": "debugIF.npReg[$i].valid",
+     "tag": "debugIF.npReg[$i].sid",
+     "stall": "debugIF.npStagePipeCtrl.stall",
+     "flush": "debugIF.npStagePipeCtrl.clear",
+     "entry": true
+    },
+    {
+     "name": "F",
+     "slots": 2,
+     "valid": "debugIF.ifReg[$i].valid",
+     "tag": "debugIF.ifReg[$i].sid",
+     "stall": "debugIF.ifStagePipeCtrl.stall && !debugIF.ifReg[$i].flush",
+     "flush": "debugIF.ifStagePipeCtrl.clear || debugIF.ifReg[$i].flush"
+    },
+    {
+     "name": "Pd",
+     "slots": 2,
+     "valid": "debugIF.pdReg[$i].valid",
+     "tag": "debugIF.pdReg[$i].sid",
+     "stall": "debugIF.pdStagePipeCtrl.stall",
+     "flush": "debugIF.pdStagePipeCtrl.clear"
+    },
+    {
+     "name": "Dc",
+     "slots": 2,
+     "valid": "debugIF.idReg[$i].valid",
+     "tag": "debugIF.idReg[$i].opId.sid",
+     "stall": "debugIF.idStagePipeCtrl.stall && !debugIF.stallByDecodeStage",
+     "flush": "debugIF.idStagePipeCtrl.clear || debugIF.idReg[$i].flushed",
+     "pc": "debugIF.idReg[$i].pc",
+     "inst": "debugIF.idReg[$i].insn"
+    },
+    {
+     "name": "Rn",
+     "slots": 2,
+     "valid": "debugIF.rnReg[$i].valid",
+     "tag": "debugIF.rnReg[$i].opId.sid",
+     "stall": "debugIF.rnStagePipeCtrl.stall",
+     "flush": "debugIF.rnStagePipeCtrl.clear"
+    },
+    {
+     "name": "Ds",
+     "slots": 2,
+     "valid": "debugIF.dsReg[$i].valid",
+     "tag": "debugIF.dsReg[$i].opId.sid",
+     "stall": "debugIF.dsStagePipeCtrl.stall",
+     "flush": "debugIF.dsStagePipeCtrl.clear"
+    },
+    {
+     "name": "Sc",
+     "kind": "pool",
+     "entries": 16,
+     "valid": "debugIF.scheduler[$i].valid",
+     "tag": "debugIF.issueQueue[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.issueQueue[$i].flush"
+    },
+    {
+     "name": "Is:int",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.intIsReg[$i].valid",
+     "tag": "debugIF.intIsReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.intIsReg[$i].flush"
+    },
+    {
+     "name": "Is:cx",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.complexIsReg[$i].valid",
+     "tag": "debugIF.complexIsReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.complexIsReg[$i].flush"
+    },
+    {
+     "name": "Is:mem",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.memIsReg[$i].valid",
+     "tag": "debugIF.memIsReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.memIsReg[$i].flush"
+    },
+    {
+     "name": "Is:fp",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.fpIsReg[$i].valid",
+     "tag": "debugIF.fpIsReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.fpIsReg[$i].flush"
+    },
+    {
+     "name": "Rr:int",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.intRrReg[$i].valid",
+     "tag": "debugIF.intRrReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.intRrReg[$i].flush"
+    },
+    {
+     "name": "Rr:cx",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.complexRrReg[$i].valid",
+     "tag": "debugIF.complexRrReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.complexRrReg[$i].flush"
+    },
+    {
+     "name": "Rr:mem",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.memRrReg[$i].valid",
+     "tag": "debugIF.memRrReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.memRrReg[$i].flush"
+    },
+    {
+     "name": "Rr:fp",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.fpRrReg[$i].valid",
+     "tag": "debugIF.fpRrReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.fpRrReg[$i].flush"
+    },
+    {
+     "name": "X:int",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.intExReg[$i].valid",
+     "tag": "debugIF.intExReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.intExReg[$i].flush"
+    },
+    {
+     "name": "X:cx",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.complexExReg[$i].valid[0]",
+     "tag": "debugIF.complexExReg[$i].opId[11:2]",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.complexExReg[$i].flush[0]"
+    },
+    {
+     "name": "X:mem",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.memExReg[$i].valid",
+     "tag": "debugIF.memExReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.memExReg[$i].flush"
+    },
+    {
+     "name": "X:fp",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.fpExReg[$i].valid[0]",
+     "tag": "debugIF.fpExReg[$i].opId[11:2]",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.fpExReg[$i].flush[0]"
+    },
+    {
+     "name": "Mt:mem",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.mtReg[$i].valid",
+     "tag": "debugIF.mtReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.mtReg[$i].flush"
+    },
+    {
+     "name": "Ma:mem",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.maReg[$i].valid",
+     "tag": "debugIF.maReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.maReg[$i].flush"
+    },
+    {
+     "name": "Rw:int",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.intRwReg[$i].valid",
+     "tag": "debugIF.intRwReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.intRwReg[$i].flush"
+    },
+    {
+     "name": "Rw:cx",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.complexRwReg[$i].valid",
+     "tag": "debugIF.complexRwReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.complexRwReg[$i].flush"
+    },
+    {
+     "name": "Rw:mem",
+     "kind": "event",
+     "slots": 2,
+     "fire": "debugIF.memRwReg[$i].valid",
+     "tag": "debugIF.memRwReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.memRwReg[$i].flush"
+    },
+    {
+     "name": "Rw:fp",
+     "kind": "event",
+     "slots": 1,
+     "fire": "debugIF.fpRwReg[$i].valid",
+     "tag": "debugIF.fpRwReg[$i].opId.sid",
+     "stall": "debugIF.backEndPipeCtrl.stall",
+     "flush": "debugIF.fpRwReg[$i].flush"
+    }
+   ],
+   "commit": {
+    "nret": 2,
+    "valid": "cmStage.commit[$i]",
+    "tag": "cmStage.alReadData[$i].opId.sid",
+    "pc": "cmStage.alReadData[$i].pc"
+   },
+   "layouts": {
+    "debugIF.npReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 10,
+      "width": 1
+     },
+     {
+      "name": "sid",
+      "lsb": 0,
+      "width": 10
+     }
+    ],
+    "debugIF.npReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 10,
+      "width": 1
+     },
+     {
+      "name": "sid",
+      "lsb": 0,
+      "width": 10
+     }
+    ],
+    "debugIF.ifReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "flush",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "icMiss",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.ifReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "flush",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "icMiss",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.pdReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 17,
+      "width": 1
+     },
+     {
+      "name": "sid",
+      "lsb": 7,
+      "width": 10
+     },
+     {
+      "name": "aluCode",
+      "lsb": 3,
+      "width": 4
+     },
+     {
+      "name": "opType",
+      "lsb": 0,
+      "width": 3
+     }
+    ],
+    "debugIF.pdReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 17,
+      "width": 1
+     },
+     {
+      "name": "sid",
+      "lsb": 7,
+      "width": 10
+     },
+     {
+      "name": "aluCode",
+      "lsb": 3,
+      "width": 4
+     },
+     {
+      "name": "opType",
+      "lsb": 0,
+      "width": 3
+     }
+    ],
+    "debugIF.idReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 80,
+      "width": 1
+     },
+     {
+      "name": "flushed",
+      "lsb": 79,
+      "width": 1
+     },
+     {
+      "name": "flushTriggering",
+      "lsb": 78,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 68,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 66,
+      "width": 2
+     },
+     {
+      "name": "pc",
+      "lsb": 34,
+      "width": 32
+     },
+     {
+      "name": "insn",
+      "lsb": 2,
+      "width": 32
+     },
+     {
+      "name": "undefined",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "unsupported",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.idReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 80,
+      "width": 1
+     },
+     {
+      "name": "flushed",
+      "lsb": 79,
+      "width": 1
+     },
+     {
+      "name": "flushTriggering",
+      "lsb": 78,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 68,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 66,
+      "width": 2
+     },
+     {
+      "name": "pc",
+      "lsb": 34,
+      "width": 32
+     },
+     {
+      "name": "insn",
+      "lsb": 2,
+      "width": 32
+     },
+     {
+      "name": "undefined",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "unsupported",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.rnReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.rnReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.dsReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 85,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 75,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 73,
+      "width": 2
+     },
+     {
+      "name": "readRegA",
+      "lsb": 72,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegA.isFP",
+      "lsb": 71,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegA.regNum",
+      "lsb": 66,
+      "width": 5
+     },
+     {
+      "name": "phySrcRegA.isFP",
+      "lsb": 65,
+      "width": 1
+     },
+     {
+      "name": "phySrcRegA.regNum",
+      "lsb": 59,
+      "width": 6
+     },
+     {
+      "name": "readRegB",
+      "lsb": 58,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegB.isFP",
+      "lsb": 57,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegB.regNum",
+      "lsb": 52,
+      "width": 5
+     },
+     {
+      "name": "phySrcRegB.isFP",
+      "lsb": 51,
+      "width": 1
+     },
+     {
+      "name": "phySrcRegB.regNum",
+      "lsb": 45,
+      "width": 6
+     },
+     {
+      "name": "readRegC",
+      "lsb": 44,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegC.isFP",
+      "lsb": 43,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegC.regNum",
+      "lsb": 38,
+      "width": 5
+     },
+     {
+      "name": "phySrcRegC.isFP",
+      "lsb": 37,
+      "width": 1
+     },
+     {
+      "name": "phySrcRegC.regNum",
+      "lsb": 31,
+      "width": 6
+     },
+     {
+      "name": "writeReg",
+      "lsb": 30,
+      "width": 1
+     },
+     {
+      "name": "logDstReg.isFP",
+      "lsb": 29,
+      "width": 1
+     },
+     {
+      "name": "logDstReg.regNum",
+      "lsb": 24,
+      "width": 5
+     },
+     {
+      "name": "phyDstReg.isFP",
+      "lsb": 23,
+      "width": 1
+     },
+     {
+      "name": "phyDstReg.regNum",
+      "lsb": 17,
+      "width": 6
+     },
+     {
+      "name": "phyPrevDstReg.isFP",
+      "lsb": 16,
+      "width": 1
+     },
+     {
+      "name": "phyPrevDstReg.regNum",
+      "lsb": 10,
+      "width": 6
+     },
+     {
+      "name": "activeListPtr",
+      "lsb": 4,
+      "width": 6
+     },
+     {
+      "name": "issueQueuePtr",
+      "lsb": 0,
+      "width": 4
+     }
+    ],
+    "debugIF.dsReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 85,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 75,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 73,
+      "width": 2
+     },
+     {
+      "name": "readRegA",
+      "lsb": 72,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegA.isFP",
+      "lsb": 71,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegA.regNum",
+      "lsb": 66,
+      "width": 5
+     },
+     {
+      "name": "phySrcRegA.isFP",
+      "lsb": 65,
+      "width": 1
+     },
+     {
+      "name": "phySrcRegA.regNum",
+      "lsb": 59,
+      "width": 6
+     },
+     {
+      "name": "readRegB",
+      "lsb": 58,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegB.isFP",
+      "lsb": 57,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegB.regNum",
+      "lsb": 52,
+      "width": 5
+     },
+     {
+      "name": "phySrcRegB.isFP",
+      "lsb": 51,
+      "width": 1
+     },
+     {
+      "name": "phySrcRegB.regNum",
+      "lsb": 45,
+      "width": 6
+     },
+     {
+      "name": "readRegC",
+      "lsb": 44,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegC.isFP",
+      "lsb": 43,
+      "width": 1
+     },
+     {
+      "name": "logSrcRegC.regNum",
+      "lsb": 38,
+      "width": 5
+     },
+     {
+      "name": "phySrcRegC.isFP",
+      "lsb": 37,
+      "width": 1
+     },
+     {
+      "name": "phySrcRegC.regNum",
+      "lsb": 31,
+      "width": 6
+     },
+     {
+      "name": "writeReg",
+      "lsb": 30,
+      "width": 1
+     },
+     {
+      "name": "logDstReg.isFP",
+      "lsb": 29,
+      "width": 1
+     },
+     {
+      "name": "logDstReg.regNum",
+      "lsb": 24,
+      "width": 5
+     },
+     {
+      "name": "phyDstReg.isFP",
+      "lsb": 23,
+      "width": 1
+     },
+     {
+      "name": "phyDstReg.regNum",
+      "lsb": 17,
+      "width": 6
+     },
+     {
+      "name": "phyPrevDstReg.isFP",
+      "lsb": 16,
+      "width": 1
+     },
+     {
+      "name": "phyPrevDstReg.regNum",
+      "lsb": 10,
+      "width": 6
+     },
+     {
+      "name": "activeListPtr",
+      "lsb": 4,
+      "width": 6
+     },
+     {
+      "name": "issueQueuePtr",
+      "lsb": 0,
+      "width": 4
+     }
+    ],
+    "debugIF.scheduler[0]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[1]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[2]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[3]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[4]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[5]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[6]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[7]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[8]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[9]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[10]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[11]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[12]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[13]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[14]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.scheduler[15]": [
+     {
+      "name": "valid",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.issueQueue[0]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[1]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[2]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[3]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[4]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[5]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[6]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[7]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[8]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[9]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[10]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[11]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[12]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[13]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[14]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.issueQueue[15]": [
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.intIsReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.intIsReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.intRrReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.intRrReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.intExReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 117,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 116,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 106,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 104,
+      "width": 2
+     },
+     {
+      "name": "dataOut",
+      "lsb": 72,
+      "width": 32
+     },
+     {
+      "name": "fuOpA",
+      "lsb": 40,
+      "width": 32
+     },
+     {
+      "name": "fuOpB",
+      "lsb": 8,
+      "width": 32
+     },
+     {
+      "name": "aluCode",
+      "lsb": 4,
+      "width": 4
+     },
+     {
+      "name": "opType",
+      "lsb": 1,
+      "width": 3
+     },
+     {
+      "name": "brPredMiss",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.intExReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 117,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 116,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 106,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 104,
+      "width": 2
+     },
+     {
+      "name": "dataOut",
+      "lsb": 72,
+      "width": 32
+     },
+     {
+      "name": "fuOpA",
+      "lsb": 40,
+      "width": 32
+     },
+     {
+      "name": "fuOpB",
+      "lsb": 8,
+      "width": 32
+     },
+     {
+      "name": "aluCode",
+      "lsb": 4,
+      "width": 4
+     },
+     {
+      "name": "opType",
+      "lsb": 1,
+      "width": 3
+     },
+     {
+      "name": "brPredMiss",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.intRwReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.intRwReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.complexIsReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.complexRrReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.complexExReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 135,
+      "width": 3
+     },
+     {
+      "name": "flush",
+      "lsb": 132,
+      "width": 3
+     },
+     {
+      "name": "opId",
+      "lsb": 96,
+      "width": 36
+     },
+     {
+      "name": "dataOut",
+      "lsb": 64,
+      "width": 32
+     },
+     {
+      "name": "fuOpA",
+      "lsb": 32,
+      "width": 32
+     },
+     {
+      "name": "fuOpB",
+      "lsb": 0,
+      "width": 32
+     }
+    ],
+    "debugIF.complexRwReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.memIsReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.memIsReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.memRrReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.memRrReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.memExReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 115,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 114,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 104,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 102,
+      "width": 2
+     },
+     {
+      "name": "addrOut",
+      "lsb": 70,
+      "width": 32
+     },
+     {
+      "name": "fuOpA",
+      "lsb": 38,
+      "width": 32
+     },
+     {
+      "name": "fuOpB",
+      "lsb": 6,
+      "width": 32
+     },
+     {
+      "name": "opType",
+      "lsb": 3,
+      "width": 3
+     },
+     {
+      "name": "size",
+      "lsb": 1,
+      "width": 2
+     },
+     {
+      "name": "isSigned",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.memExReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 115,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 114,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 104,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 102,
+      "width": 2
+     },
+     {
+      "name": "addrOut",
+      "lsb": 70,
+      "width": 32
+     },
+     {
+      "name": "fuOpA",
+      "lsb": 38,
+      "width": 32
+     },
+     {
+      "name": "fuOpB",
+      "lsb": 6,
+      "width": 32
+     },
+     {
+      "name": "opType",
+      "lsb": 3,
+      "width": 3
+     },
+     {
+      "name": "size",
+      "lsb": 1,
+      "width": 2
+     },
+     {
+      "name": "isSigned",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.mtReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 273,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 272,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 262,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 260,
+      "width": 2
+     },
+     {
+      "name": "executeLoad",
+      "lsb": 259,
+      "width": 1
+     },
+     {
+      "name": "executedLoadAddr",
+      "lsb": 227,
+      "width": 32
+     },
+     {
+      "name": "mshrAllocated",
+      "lsb": 226,
+      "width": 1
+     },
+     {
+      "name": "mshrHit",
+      "lsb": 225,
+      "width": 1
+     },
+     {
+      "name": "mshrEntryID",
+      "lsb": 193,
+      "width": 32
+     },
+     {
+      "name": "executeStore",
+      "lsb": 192,
+      "width": 1
+     },
+     {
+      "name": "executedStoreAddr",
+      "lsb": 160,
+      "width": 32
+     },
+     {
+      "name": "executedStoreData",
+      "lsb": 128,
+      "width": 32
+     },
+     {
+      "name": "executedStoreVectorData",
+      "lsb": 0,
+      "width": 128
+     }
+    ],
+    "debugIF.mtReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 273,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 272,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 262,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 260,
+      "width": 2
+     },
+     {
+      "name": "executeLoad",
+      "lsb": 259,
+      "width": 1
+     },
+     {
+      "name": "executedLoadAddr",
+      "lsb": 227,
+      "width": 32
+     },
+     {
+      "name": "mshrAllocated",
+      "lsb": 226,
+      "width": 1
+     },
+     {
+      "name": "mshrHit",
+      "lsb": 225,
+      "width": 1
+     },
+     {
+      "name": "mshrEntryID",
+      "lsb": 193,
+      "width": 32
+     },
+     {
+      "name": "executeStore",
+      "lsb": 192,
+      "width": 1
+     },
+     {
+      "name": "executedStoreAddr",
+      "lsb": 160,
+      "width": 32
+     },
+     {
+      "name": "executedStoreData",
+      "lsb": 128,
+      "width": 32
+     },
+     {
+      "name": "executedStoreVectorData",
+      "lsb": 0,
+      "width": 128
+     }
+    ],
+    "debugIF.maReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 174,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 173,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 163,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 161,
+      "width": 2
+     },
+     {
+      "name": "executeLoad",
+      "lsb": 160,
+      "width": 1
+     },
+     {
+      "name": "executedLoadData",
+      "lsb": 128,
+      "width": 32
+     },
+     {
+      "name": "executedLoadVectorData",
+      "lsb": 0,
+      "width": 128
+     }
+    ],
+    "debugIF.maReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 174,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 173,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 163,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 161,
+      "width": 2
+     },
+     {
+      "name": "executeLoad",
+      "lsb": 160,
+      "width": 1
+     },
+     {
+      "name": "executedLoadData",
+      "lsb": 128,
+      "width": 32
+     },
+     {
+      "name": "executedLoadVectorData",
+      "lsb": 0,
+      "width": 128
+     }
+    ],
+    "debugIF.memRwReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.memRwReg[1]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.fpIsReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.fpRrReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.fpExReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 193,
+      "width": 5
+     },
+     {
+      "name": "flush",
+      "lsb": 188,
+      "width": 5
+     },
+     {
+      "name": "opId",
+      "lsb": 128,
+      "width": 60
+     },
+     {
+      "name": "dataOut",
+      "lsb": 96,
+      "width": 32
+     },
+     {
+      "name": "fuOpA",
+      "lsb": 64,
+      "width": 32
+     },
+     {
+      "name": "fuOpB",
+      "lsb": 32,
+      "width": 32
+     },
+     {
+      "name": "fuOpC",
+      "lsb": 0,
+      "width": 32
+     }
+    ],
+    "debugIF.fpRwReg[0]": [
+     {
+      "name": "valid",
+      "lsb": 13,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 12,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 2,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 0,
+      "width": 2
+     }
+    ],
+    "debugIF.cmReg[0]": [
+     {
+      "name": "commit",
+      "lsb": 21,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 20,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 10,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 8,
+      "width": 2
+     },
+     {
+      "name": "releaseReg",
+      "lsb": 7,
+      "width": 1
+     },
+     {
+      "name": "phyReleasedReg.isFP",
+      "lsb": 6,
+      "width": 1
+     },
+     {
+      "name": "phyReleasedReg.regNum",
+      "lsb": 0,
+      "width": 6
+     }
+    ],
+    "debugIF.cmReg[1]": [
+     {
+      "name": "commit",
+      "lsb": 21,
+      "width": 1
+     },
+     {
+      "name": "flush",
+      "lsb": 20,
+      "width": 1
+     },
+     {
+      "name": "opId.sid",
+      "lsb": 10,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 8,
+      "width": 2
+     },
+     {
+      "name": "releaseReg",
+      "lsb": 7,
+      "width": 1
+     },
+     {
+      "name": "phyReleasedReg.isFP",
+      "lsb": 6,
+      "width": 1
+     },
+     {
+      "name": "phyReleasedReg.regNum",
+      "lsb": 0,
+      "width": 6
+     }
+    ],
+    "cmStage.alReadData[0]": [
+     {
+      "name": "opId.sid",
+      "lsb": 52,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 50,
+      "width": 2
+     },
+     {
+      "name": "pc",
+      "lsb": 31,
+      "width": 19
+     },
+     {
+      "name": "logDstRegNum.isFP",
+      "lsb": 30,
+      "width": 1
+     },
+     {
+      "name": "logDstRegNum.regNum",
+      "lsb": 25,
+      "width": 5
+     },
+     {
+      "name": "writeReg",
+      "lsb": 24,
+      "width": 1
+     },
+     {
+      "name": "isLoad",
+      "lsb": 23,
+      "width": 1
+     },
+     {
+      "name": "isStore",
+      "lsb": 22,
+      "width": 1
+     },
+     {
+      "name": "isBranch",
+      "lsb": 21,
+      "width": 1
+     },
+     {
+      "name": "isEnv",
+      "lsb": 20,
+      "width": 1
+     },
+     {
+      "name": "last",
+      "lsb": 19,
+      "width": 1
+     },
+     {
+      "name": "undefined",
+      "lsb": 18,
+      "width": 1
+     },
+     {
+      "name": "phyDstRegNum.isFP",
+      "lsb": 17,
+      "width": 1
+     },
+     {
+      "name": "phyDstRegNum.regNum",
+      "lsb": 11,
+      "width": 6
+     },
+     {
+      "name": "phyPrevDstRegNum.isFP",
+      "lsb": 10,
+      "width": 1
+     },
+     {
+      "name": "phyPrevDstRegNum.regNum",
+      "lsb": 4,
+      "width": 6
+     },
+     {
+      "name": "prevDependIssueQueuePtr",
+      "lsb": 0,
+      "width": 4
+     }
+    ],
+    "cmStage.alReadData[1]": [
+     {
+      "name": "opId.sid",
+      "lsb": 52,
+      "width": 10
+     },
+     {
+      "name": "opId.mid",
+      "lsb": 50,
+      "width": 2
+     },
+     {
+      "name": "pc",
+      "lsb": 31,
+      "width": 19
+     },
+     {
+      "name": "logDstRegNum.isFP",
+      "lsb": 30,
+      "width": 1
+     },
+     {
+      "name": "logDstRegNum.regNum",
+      "lsb": 25,
+      "width": 5
+     },
+     {
+      "name": "writeReg",
+      "lsb": 24,
+      "width": 1
+     },
+     {
+      "name": "isLoad",
+      "lsb": 23,
+      "width": 1
+     },
+     {
+      "name": "isStore",
+      "lsb": 22,
+      "width": 1
+     },
+     {
+      "name": "isBranch",
+      "lsb": 21,
+      "width": 1
+     },
+     {
+      "name": "isEnv",
+      "lsb": 20,
+      "width": 1
+     },
+     {
+      "name": "last",
+      "lsb": 19,
+      "width": 1
+     },
+     {
+      "name": "undefined",
+      "lsb": 18,
+      "width": 1
+     },
+     {
+      "name": "phyDstRegNum.isFP",
+      "lsb": 17,
+      "width": 1
+     },
+     {
+      "name": "phyDstRegNum.regNum",
+      "lsb": 11,
+      "width": 6
+     },
+     {
+      "name": "phyPrevDstRegNum.isFP",
+      "lsb": 10,
+      "width": 1
+     },
+     {
+      "name": "phyPrevDstRegNum.regNum",
+      "lsb": 4,
+      "width": 6
+     },
+     {
+      "name": "prevDependIssueQueuePtr",
+      "lsb": 0,
+      "width": 4
+     }
+    ],
+    "debugIF.npStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.ifStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.pdStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.idStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.rnStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.dsStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.backEndPipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ],
+    "debugIF.cmStagePipeCtrl": [
+     {
+      "name": "stall",
+      "lsb": 1,
+      "width": 1
+     },
+     {
+      "name": "clear",
+      "lsb": 0,
+      "width": 1
+     }
+    ]
+   },
+   "logs": [
+    {
+     "path": "kanata.log",
+     "format": "kanata",
+     "offset": 2
+    }
+   ]
+  }
+ ]
+}

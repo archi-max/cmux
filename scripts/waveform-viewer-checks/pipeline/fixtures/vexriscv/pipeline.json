@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "pipelines": [
+    {
+      "name": "vexriscv",
+      "scope": "tb.cpu",
+      "clock": "clk",
+      "edge": "posedge",
+      "reset": "reset",
+      "resetActive": 1,
+      "sample": "beforeEdge",
+      "isa": "riscv",
+      "stages": [
+        {
+          "name": "F",
+          "entry": true,
+          "valid": "IBusSimplePlugin_iBusRsp_output_valid",
+          "pc": "IBusSimplePlugin_iBusRsp_output_payload_pc",
+          "inst": "IBusSimplePlugin_iBusRsp_output_payload_rsp_inst",
+          "stall": "!IBusSimplePlugin_iBusRsp_output_ready",
+          "flush": "IBusSimplePlugin_iBusRsp_flush"
+        },
+        {
+          "name": "D",
+          "valid": "decode_arbitration_isValid",
+          "pc": "decode_PC",
+          "inst": "decode_INSTRUCTION",
+          "stall": "decode_arbitration_isStuck",
+          "flush": "decode_arbitration_removeIt"
+        },
+        {
+          "name": "E",
+          "valid": "execute_arbitration_isValid",
+          "pc": "execute_PC",
+          "inst": "execute_INSTRUCTION",
+          "stall": "execute_arbitration_isStuck",
+          "flush": "execute_arbitration_removeIt"
+        },
+        {
+          "name": "M",
+          "valid": "memory_arbitration_isValid",
+          "pc": "memory_PC",
+          "inst": "memory_INSTRUCTION",
+          "stall": "memory_arbitration_isStuck",
+          "flush": "memory_arbitration_removeIt"
+        },
+        {
+          "name": "W",
+          "valid": "writeBack_arbitration_isValid",
+          "pc": "writeBack_PC",
+          "inst": "writeBack_INSTRUCTION",
+          "stall": "writeBack_arbitration_isStuck",
+          "flush": "writeBack_arbitration_removeIt"
+        }
+      ],
+      "commit": {
+        "valid": "rvfi_valid",
+        "tag": "rvfi_order",
+        "pc": "rvfi_pc_rdata",
+        "inst": "rvfi_insn",
+        "trap": "rvfi_trap"
+      }
+    }
+  ]
+}

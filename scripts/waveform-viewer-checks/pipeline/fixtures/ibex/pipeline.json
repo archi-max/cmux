@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "pipelines": [{
+    "name": "ibex",
+    "scope": "tb.u_top.u_ibex_core",
+    "clock": "tb.clk", "edge": "posedge",
+    "reset": "rst_ni", "resetActive": 0,
+    "sample": "beforeEdge",
+    "isa": "riscv",
+    "stages": [
+      {"name": "IF", "entry": true,
+       "valid": "if_stage_i.if_instr_valid", "pc": "pc_if", "inst": "if_stage_i.if_instr_rdata",
+       "stall": "!id_in_ready", "flush": "pc_set"},
+      {"name": "ID", "valid": "instr_valid_id", "pc": "pc_id", "inst": "instr_rdata_id",
+       "stall": "!instr_id_done", "flush": "id_stage_i.flush_id"},
+      {"name": "WB", "valid": "wb_stage_i.g_writeback_stage.wb_valid_q", "pc": "pc_wb",
+       "stall": "!wb_stage_i.g_writeback_stage.wb_done"}
+    ],
+    "commit": {"valid": "rvfi_valid", "tag": "rvfi_order", "pc": "rvfi_pc_rdata", "inst": "rvfi_insn",
+               "trap": "rvfi_trap"}
+  }]
+}
