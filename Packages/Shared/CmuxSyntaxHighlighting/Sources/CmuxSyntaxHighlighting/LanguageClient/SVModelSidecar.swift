@@ -77,6 +77,8 @@ public final class SVModelSidecar: @unchecked Sendable {
         public let object: [String: Any]
 
         public subscript(key: String) -> Any? { object[key] }
+
+        public init(object: [String: Any]) { self.object = object }
     }
 
     public enum Status: Sendable, Equatable {
@@ -121,6 +123,7 @@ public final class SVModelSidecar: @unchecked Sendable {
     private var pending: [Int: CheckedContinuation<Reply, any Error>] = [:]
     private var readyContinuation: CheckedContinuation<Void, any Error>?
     private var stderrTail = Data()
+    private var readyLine: Reply?
     private var lastLoad: [String: any Sendable]?
     private var loadGeneration = 0
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.sv-model.write")
@@ -132,6 +135,9 @@ public final class SVModelSidecar: @unchecked Sendable {
         self.installCommand = installCommand
         self.installSource = installSource
     }
+
+    /// The running process's ready line (what it said about itself), once it has started.
+    public var lastReady: Reply? { lock.withLock { readyLine } }
 
     public var onStatus: (@Sendable (Status) -> Void)? {
         get { lock.withLock { statusHandler } }
@@ -289,8 +295,17 @@ public final class SVModelSidecar: @unchecked Sendable {
                 if self.stderrTail.count > 16 * 1024 { self.stderrTail = self.stderrTail.suffix(8 * 1024) }
             }
         }
+        // The exit is handled once stdout is read to its end: a last line (a refused ready line)
+        // is never lost to the exit.
+        let outputRead = DispatchGroup()
+        outputRead.enter()
         process.terminationHandler = { [weak self] process in
-            self?.didExit(status: process.terminationStatus, generation: generation)
+            let status = process.terminationStatus
+            // (At most 2 s: a child left running may hold stdout open.)
+            DispatchQueue.global().async {
+                _ = outputRead.wait(timeout: .now() + 2)
+                self?.didExit(status: status, generation: generation)
+            }
         }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             lock.lock()
@@ -320,6 +335,7 @@ public final class SVModelSidecar: @unchecked Sendable {
             let reader = Thread { [weak self] in
                 let handle = stdout.fileHandleForReading
                 var buffer = Data()
+                defer { outputRead.leave() }
                 while true {
                     let chunk = handle.availableData
                     guard !chunk.isEmpty, let self else { return }
@@ -345,12 +361,16 @@ public final class SVModelSidecar: @unchecked Sendable {
             let ready: CheckedContinuation<Void, any Error>? = lock.withLock {
                 guard generation == self.generation else { return nil }
                 if object["ready"] as? Bool == true { isReady = true }
+                readyLine = Reply(object: object)
                 let ready = readyContinuation
                 readyContinuation = nil
                 return ready
             }
             if object["ready"] as? Bool == true {
                 ready?.resume()
+            } else if let code = object["error"] as? String {
+                // A session that can't start says why (a missing KDB, no licence seat).
+                ready?.resume(throwing: Failure.request(code: code, message: object["message"] as? String ?? ""))
             } else {
                 ready?.resume(throwing: Failure.exited(detail: object["message"] as? String ?? ""))
             }

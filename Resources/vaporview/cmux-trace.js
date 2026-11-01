@@ -13,6 +13,8 @@
 //   createEngine({ models, dump, options }) -> { active(path, time) -> step, model(path) }
 //     models.instance(path) -> Promise<model>          cmux-sv-model's instance reply (its "model")
 //     models.lookup(path) -> Promise<{ instance, name }> the instance a path is in, and the rest
+//     models.writers(path) -> Promise<[instance path]>  (optional) the other instances that write
+//         into an instance (an interface instance's signals, written through modport ports)
 //     dump.values(paths, time) -> Promise<Map(path -> bits | undefined)>   undefined: not dumped
 //     dump.lastChange(path, time) -> Promise<number | null>   the change in effect at time (0: the
 //         start), null: not dumped
@@ -22,7 +24,8 @@
 //         an x condition merges its branches. 'auto' re-runs a step that way when the dump
 //         disagrees with the x-optimistic run and agrees with the merged one.
 //
-// A step: { signal, time, value (bits), since, driver, stmt, decisions, fanin, predicted,
+// A step: { signal, time, value (bits), since, driver (driver.writer: the instance of a statement
+// that writes into the signal's instance from outside it), stmt, decisions, fanin, predicted,
 // trust, reasons, drivers, root?, activation? }. Reasons are codes with arguments; the page
 // words them (strings in cmux).
 (function (root) {
@@ -82,6 +85,25 @@
     const modelCache = new Map();
     const parsed = new Map();
     const indexCache = new WeakMap();
+
+    const writersCache = new Map();
+    // Drivers outside the signal's instance: the statements of the instances that write into it
+    // ($abs: lvalues), each run in its own instance's model. [{ m, d, name }]
+    async function outsideDrivers(m, name) {
+      if (typeof models.writers !== 'function' || isLocal(name)) { return []; }
+      if (!writersCache.has(m.path)) {
+        writersCache.set(m.path, Promise.resolve(models.writers(m.path)).then((w) => (Array.isArray(w) ? w : []), () => []));
+      }
+      const s = signalOf(m, name);
+      const base = '$abs:' + m.path + '.' + (s && s.element ? s.element.array : name);
+      const out = [];
+      for (const w of await writersCache.get(m.path)) {
+        const wm = await model(w);
+        if (!wm) { continue; }
+        for (const d of driversOf(wm, base)) { out.push({ m: wm, d, name: '$abs:' + m.path + '.' + name }); }
+      }
+      return out;
+    }
 
     async function model(path) {
       if (!modelCache.has(path)) {
@@ -579,9 +601,12 @@
       step.dumped = now !== undefined;
       if (now === undefined) { step.reasons.push({ code: 'targetNotDumped', path }); }
       step.since = now === undefined ? null : await dump.lastChange(path, t);
-      const all = driversOf(m, name);
-      step.drivers = all.map((d) => driverSummary(m, d));
-      const live = all.filter((d) => d.type !== 'proc' || !isStimulus(d.p));
+      // The instance's own drivers, else statements of other instances that write into it.
+      let cands = driversOf(m, name).map((d) => ({ m, d, name }));
+      if (!cands.length) { cands = await outsideDrivers(m, name); }
+      const all = cands.map((c) => c.d);
+      step.drivers = cands.map((c) => Object.assign(driverSummary(c.m, c.d), c.m === m ? {} : { writer: c.m.path }));
+      const live = cands.filter((c) => c.d.type !== 'proc' || !isStimulus(c.d.p));
       if (!all.length) {
         step.driver = { kind: sig.kind === 'net' ? 'undriven' : 'none' };
         if (!m.parent && m.ports.some((p) => p.internal === name && p.dir === 'In')) { step.driver.kind = 'topInput'; }
@@ -591,12 +616,14 @@
       }
       if (!live.length) {
         // Only stimulus: the testbench (tracing stops here by default).
-        const d = all.find((x) => x.type === 'proc') || all[0];
-        step.driver = { kind: 'initial', procKind: d.p.kind, loc: locOf(m, d.p.loc) };
+        const c = cands.find((x) => x.d.type === 'proc') || cands[0];
+        const d = c.d, cm = c.m;
+        step.driver = { kind: 'initial', procKind: d.p.kind, loc: locOf(cm, d.p.loc) };
+        if (cm !== m) { step.driver.writer = cm.path; }
         const writes = [];
-        collectWrites(d.p.body, name, writes);
-        step.stmt = writes.length ? { src: writes[writes.length - 1].src, loc: locOf(m, writes[writes.length - 1].loc) } : { src: d.p.body.src, loc: locOf(m, d.p.loc) };
-        step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(m, s.loc) }));
+        collectWrites(d.p.body, c.name, writes);
+        step.stmt = writes.length ? { src: writes[writes.length - 1].src, loc: locOf(cm, writes[writes.length - 1].loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
+        step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(cm, s.loc) }));
         step.root = 'testbench';
         step.trust = 'approximate';
         step.reasons.push({ code: 'testbench' });
@@ -605,8 +632,9 @@
       if (live.length > 1) { step.reasons.push({ code: 'multiDriven', count: live.length }); }
       // Each live driver is tried; the one whose prediction agrees with the dump is the active one.
       let best = null;
-      for (const d of live) {
-        const r = await runDriver(m, d, name, sig, t, now, step.since, o);
+      for (const c of live) {
+        const r = await runDriver(c.m, c.d, c.name, sig, t, now, step.since, o);
+        if (c.m !== m) { r.driver.writer = c.m.path; }
         if (!best || rank(r) > rank(best)) { best = r; }
         if (rank(r) >= 3) { break; }
       }
@@ -756,7 +784,8 @@
 
     async function runProcDriver(m, p, name, sig, t, now, since, o, r) {
       const s = sig;
-      const target = s.element ? `${s.element.array}[${s.element.k}]` : name;
+      // An outside writer's target is already an $abs: path.
+      const target = s.element && !name.startsWith('$abs:') ? `${s.element.array}[${s.element.k}]` : name;
       const targetPath = absOf(m.path, target);
       r.procKind = p.kind;
       let sample = t;

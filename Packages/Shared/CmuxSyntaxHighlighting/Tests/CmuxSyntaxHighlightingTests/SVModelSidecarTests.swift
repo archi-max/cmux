@@ -134,6 +134,42 @@ import Testing
         }
     }
 
+    /// The Verdi engine's launch command carries both scripts and an awkward FSDB path through
+    /// `sh -c '…'` (as cmux runs it over SSH), and the launcher's scratch folder goes away after.
+    @Test func verdiLaunchCommandCarriesScriptsAndPath() async throws {
+        let launcher = Data(#"""
+        W=$1
+        trap 'rm -rf "$W"' EXIT
+        printf '{"id":0,"ready":true,"path":"%s","serve":"%s","dir":"%s"}\n' "$2" "$(cat "$W/serve.tcl")" "$W"
+        read -r line
+        printf '{"id":1,"ok":true}\n'
+        """#.utf8)
+        let path = "/tmp/a b/it's $HOME (1).fsdb"
+        let command = VerdiTraceLaunch.command(launcher: launcher, serve: Data("serve-ok".utf8), fsdbPath: path)
+        #expect(!command.contains("'"))
+        let sidecar = SVModelSidecar(
+            runner: { command in .init(executable: "/bin/sh", arguments: ["-c", "sh -c '\(command)'"]) },
+            launchCommand: command,
+            installCommand: nil
+        )
+        defer { sidecar.stop() }
+        _ = try await sidecar.request(["cmd": "info"])
+        let ready = try #require(sidecar.lastReady)
+        #expect(ready["path"] as? String == path)
+        #expect(ready["serve"] as? String == "serve-ok")
+        let dir = try #require(ready["dir"] as? String)
+        #expect(dir.hasPrefix("/tmp/cmux-verdi-trace."))
+        sidecar.stop()
+        for _ in 0..<40 where FileManager.default.fileExists(atPath: dir) { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(!FileManager.default.fileExists(atPath: dir))
+    }
+
+    @Test func unitsMatchNeedsEqualNonEmptyUnits() {
+        #expect(VerdiTraceLaunch.unitsMatch(.init(object: ["fileUnit": "1ps", "windowUnit": "1ps"])))
+        #expect(!VerdiTraceLaunch.unitsMatch(.init(object: ["fileUnit": "1ps", "windowUnit": "1ns"])))
+        #expect(!VerdiTraceLaunch.unitsMatch(.init(object: ["fileUnit": "", "windowUnit": ""])))
+    }
+
     @Test func notInstalledRunsTheInstallThenLaunchesAgain() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("svm-install-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

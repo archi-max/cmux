@@ -348,7 +348,7 @@ enum WaveformTrace {
         case "model":
             guard let id = (body["id"] as? NSNumber)?.intValue else { return }
             let cmd = body["cmd"] as? String
-            guard cmd == "instance" || cmd == "lookup", let path = body["path"] as? String, path.utf16.count <= 4096 else {
+            guard cmd == "instance" || cmd == "lookup" || cmd == "writers", let path = body["path"] as? String, path.utf16.count <= 4096 else {
                 reply(page, id: id, error: "badRequest", message: "")
                 return
             }
@@ -361,6 +361,8 @@ enum WaveformTrace {
                     let answer = try await design.sidecar.request(["cmd": cmd ?? "", "path": path])
                     if cmd == "instance" {
                         reply(page, id: id, result: answer["model"] ?? NSNull())
+                    } else if cmd == "writers" {
+                        reply(page, id: id, result: answer["writers"] ?? [String]())
                     } else {
                         reply(page, id: id, result: ["instance": answer["instance"] ?? NSNull(), "name": answer["name"] ?? NSNull()])
                     }
@@ -370,6 +372,9 @@ enum WaveformTrace {
                     reply(page, id: id, error: "model", message: sidecarMessage(error, host: nil))
                 }
             }
+        case "engine":
+            guard let id = (body["id"] as? NSNumber)?.intValue else { return }
+            WaveformTraceVerdi.answer(body, id: id, waveform: waveform) { result in reply(page, id: id, result: result) }
         case "step", "open":
             let loc = body["event"] as? String == "open" ? body["loc"] : ((body["step"] as? [String: Any])?["stmt"] as? [String: Any])?["loc"]
             if let location = location(fromPage: loc) { open(location, near: waveform) }
@@ -525,6 +530,18 @@ enum WaveformTrace {
             "traceTrustHelp_inconsistent": String(localized: "waveformTrace.page.trustHelp.inconsistent", defaultValue: "Re-executing the statement does not give the dumped value."),
             "traceError_notInDesign": String(localized: "waveformTrace.page.error.notInDesign", defaultValue: "This signal is not in the design model."),
             "traceError_notASignal": String(localized: "waveformTrace.page.error.notASignal", defaultValue: "This is not a signal of its instance."),
+            "traceWriter": String(localized: "waveformTrace.page.writer", defaultValue: "in %@, through its interface port"),
+            "traceEngineCmux": String(localized: "waveformTrace.page.engine.cmux", defaultValue: "Traced by cmux (slang design model)"),
+            "traceEngineVerdi": String(localized: "waveformTrace.page.engine.verdi", defaultValue: "Traced by Verdi, re-executed by cmux"),
+            "traceVerdiStarting": String(localized: "waveformTrace.page.verdi.starting", defaultValue: "Verdi is starting on the host"),
+            "traceVerdiNotFound": String(localized: "waveformTrace.page.verdi.notFound", defaultValue: "Verdi does not know this signal"),
+            "traceVerdiLastChange": String(localized: "waveformTrace.page.verdi.lastChange", defaultValue: "Verdi (driver of the last change):"),
+            "traceThroughPorts": String(localized: "waveformTrace.page.throughPorts", defaultValue: "through the ports of %@"),
+            "traceVerdiUnavailable": String(localized: "waveformTrace.page.verdi.unavailable", defaultValue: "Verdi not used: %@"),
+            "traceVerdiUnavailable_noKDB": String(localized: "waveformTrace.page.verdi.noKDB", defaultValue: "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)"),
+            "traceVerdiUnavailable_noVerdi": String(localized: "waveformTrace.page.verdi.noVerdi", defaultValue: "Verdi not used: it is not installed on the host"),
+            "traceVerdiUnavailable_licence": String(localized: "waveformTrace.page.verdi.licence", defaultValue: "Verdi not used: no licence seat is free (%@)"),
+            "traceVerdiUnavailable_units": String(localized: "waveformTrace.page.verdi.units", defaultValue: "Verdi not used: its time unit is not the FSDB’s (%@)"),
         ]
         strings.merge(reasonStrings()) { first, _ in first }
         return strings
@@ -553,6 +570,7 @@ enum WaveformTrace {
             "traceReason_multiDriven": String(localized: "waveformTrace.reason.multiDriven", defaultValue: "Several drivers; the one that agrees with the dump is shown."),
             "traceReason_mismatch": String(localized: "waveformTrace.reason.mismatch", defaultValue: "Re-execution gives %2$@, not the dumped value."),
             "traceReason_held": String(localized: "waveformTrace.reason.held", defaultValue: "The latch holds the value it had at %@."),
+            "traceReason_enginesDiffer": String(localized: "waveformTrace.reason.enginesDiffer", defaultValue: "Verdi names another statement: %@."),
         ]
     }
 }

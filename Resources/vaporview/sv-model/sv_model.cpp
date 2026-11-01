@@ -16,6 +16,9 @@
 //   {"id":2,"cmd":"instance","path":"tb.dut"}   -> {"id":2,"ok":true,"model":{...}}
 //   {"id":3,"cmd":"lookup","path":"tb.dut.g[0].x"} -> {"id":3,"ok":true,"instance":"tb.dut","name":"g[0].x"}
 //   {"id":4,"cmd":"instances"} -> {"id":4,"ok":true,"tops":["tb"],"instances":["tb","tb.dut",...]} (sorted)
+//   {"id":5,"cmd":"writers","path":"tb.bus"} -> {"id":5,"ok":true,"writers":["tb.dut","tb.mem"]} (sorted):
+//       the other instances whose statements write into it ($abs: lvalues; an interface instance
+//       written through modport ports), from an index built over every instance on first use
 //   {"id":4,"cmd":"version"}
 // Errors: {"id":n,"ok":false,"error":"<code>","message":"..."}.
 //
@@ -1515,7 +1518,35 @@ struct Session {
     std::unique_ptr<driver::Driver> drv;
     std::unique_ptr<Compilation> comp;
     std::unique_ptr<Model> model;
+    // writers: instance path -> the other instances that write into it (built on first use).
+    std::optional<std::map<std::string, std::vector<std::string>>> writers;
 };
+
+// The written ($abs: lvalue) paths in each instance's model, mapped to the instance they are in.
+std::map<std::string, std::vector<std::string>> buildWriters(Model& model) {
+    std::map<std::string, std::vector<std::string>> out;
+    const std::string key = "\"name\":\"$abs:";
+    for (auto& p : model.instancePaths()) {
+        JsonWriter w;
+        model.writeInstance(w, *model.instance(p));
+        std::string_view text = w.view();
+        for (size_t at = text.find(key); at != std::string_view::npos; at = text.find(key, at + 1)) {
+            size_t start = at + key.size();
+            size_t end = text.find('"', start);
+            if (end == std::string_view::npos)
+                break;
+            auto target = model.lookup(std::string(text.substr(start, end - start)));
+            if (!target || target->first == p)
+                continue;
+            auto& list = out[target->first];
+            if (std::find(list.begin(), list.end(), p) == list.end())
+                list.push_back(p);
+        }
+    }
+    for (auto& [k, v] : out)
+        std::sort(v.begin(), v.end());
+    return out;
+}
 
 void reply(JsonWriter& w) {
     std::string line(w.view());
@@ -1542,6 +1573,7 @@ void fail(int64_t id, std::string_view code, std::string_view message) {
 void load(Session& s, int64_t id, const JValue& req) {
     auto t0 = std::chrono::steady_clock::now();
     s.model.reset();
+    s.writers.reset();
     s.comp.reset();
     s.drv = std::make_unique<driver::Driver>();
     auto& d = *s.drv;
@@ -1597,6 +1629,7 @@ void load(Session& s, int64_t id, const JValue& req) {
         }
     }
     s.model = std::make_unique<Model>(*s.comp, s.drv->sourceManager);
+    s.writers.reset();
     std::filesystem::current_path(oldCwd, ec);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     JsonWriter w;
@@ -1687,6 +1720,29 @@ void handle(Session& s, const JValue& req) {
         w.writeValue(true);
         w.writeProperty("model");
         s.model->writeInstance(w, *inst);
+        w.endObject();
+        reply(w);
+        return;
+    }
+    if (cmd == "writers") {
+        if (!s.model->instance(path)) {
+            fail(id, "noInstance", path);
+            return;
+        }
+        if (!s.writers)
+            s.writers = buildWriters(*s.model);
+        JsonWriter w;
+        w.startObject();
+        w.writeProperty("id");
+        w.writeValue(id);
+        w.writeProperty("ok");
+        w.writeValue(true);
+        w.writeProperty("writers");
+        w.startArray();
+        if (auto it = s.writers->find(path); it != s.writers->end())
+            for (auto& p : it->second)
+                w.writeValue(p);
+        w.endArray();
         w.endObject();
         reply(w);
         return;

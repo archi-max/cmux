@@ -196,6 +196,7 @@
   const models = {
     instance: (path) => request('model', { cmd: 'instance', path }),
     lookup: (path) => request('model', { cmd: 'lookup', path }),
+    writers: (path) => request('model', { cmd: 'writers', path }),
   };
 
   // ---- tracing ----
@@ -253,10 +254,63 @@
     }
     if (run !== running) { return null; }
     step.dumpPath = toDump(designPath);
+    try { step = await withVerdi(step, time); } catch (error) { host.log(error); }
+    if (run !== running) { return null; }
     if (push) { history.steps.push(step); history.at = history.steps.length - 1; }
     render();
     host.toNative({ type: 'trace', event: 'step', step: plain(step) });
     return plain(step);
+  }
+
+  // ---- the Verdi engine (an FSDB on an SSH host with a KDB next to it) ----
+  // cmux asks the host's Verdi for the active driver (srcActiveTrace: the statement of the value's
+  // last transition, through port connections). It confirms our step; when ours is a port hop, our
+  // chain is followed to the statement Verdi names (the hops are listed); when the two differ and
+  // the value has not changed since an earlier time, ours (the statement active at t) stays first
+  // and Verdi's is shown second; any other difference makes the step approximate.
+  const VERDI_WAIT_MS = 20000;
+  const sameFile = (a, b) => !!a && !!b && (a === b || String(a).split('/').pop() === String(b).split('/').pop());
+  const isPort = (st) => !!st.driver && (st.driver.kind === 'portIn' || st.driver.kind === 'portOut');
+  async function withVerdi(step, time) {
+    step.engine = { name: 'cmux' };
+    if (session.kind === 'local' || step.error) { return step; }
+    let v = null;
+    try {
+      v = await Promise.race([request('engine', { cmd: 'active', signal: step.dumpPath, time }),
+        new Promise((resolve) => { setTimeout(() => resolve(null), VERDI_WAIT_MS); })]);
+    } catch (error) { host.log(error); }
+    const state = (v && v.state) || 'none';
+    step.engine.verdi = state;
+    if (state === 'unavailable') { step.engine.reason = v.reason || ''; step.engine.message = v.message || ''; }
+    if (state !== 'ready') { return step; }
+    if (v.notFound || !v.file || !(Number(v.line) > 0)) { step.engine.verdiNotFound = true; return step; }
+    const at = { file: String(v.file), line: Number(v.line), scope: v.scope || '' };
+    step.engine.verdiLoc = at;
+    const same = (st) => !!(st && st.stmt && st.stmt.loc && st.stmt.loc.line === at.line && sameFile(st.stmt.loc.file, at.file));
+    if (same(step)) { step.engine.name = 'verdi'; return step; }
+    if (isPort(step)) {
+      const via = [];
+      let cur = step;
+      for (let hop = 0; hop < 8 && isPort(cur); hop++) {
+        const next = (cur.fanin || []).filter((f) => f.path);
+        if (next.length !== 1) { break; }
+        via.push({ signal: cur.signal, src: cur.stmt ? cur.stmt.src : '', loc: cur.stmt ? cur.stmt.loc : null });
+        cur = await session.engine.active(next[0].path, time);
+        if (cur.error) { break; }
+      }
+      if (cur !== step && same(cur)) {
+        const out = Object.assign({}, cur, { signal: step.signal, dumpPath: step.dumpPath, value: step.value, time: step.time, via, viaSignal: cur.signal });
+        out.engine = { name: 'verdi', verdi: 'ready', verdiLoc: at };
+        return out;
+      }
+    }
+    step.engine.verdiDiffers = true;
+    const unchanged = step.since !== null && step.since !== undefined && Number(step.since) < Number(time);
+    if (!unchanged) {
+      step.reasons = (step.reasons || []).concat([{ code: 'enginesDiffer', path: where(at) }]);
+      if (step.trust === 'exact' || step.trust === 'computed') { step.trust = 'approximate'; }
+    }
+    return step;
   }
 
   function back() { if (history.at > 0) { history.at--; render(); post(); } return state(); }
@@ -384,6 +438,27 @@
     }
   }
 
+  // Which engine answered, and Verdi's own answer when it differs or isn't there.
+  function engineLine(st) {
+    const s = S();
+    const e = st.engine || { name: 'cmux' };
+    const div = el('div', 'muted engine');
+    div.dataset.engine = e.name;
+    let text = e.name === 'verdi' ? s.traceEngineVerdi : s.traceEngineCmux;
+    if (e.verdi === 'starting') { text += ' · ' + s.traceVerdiStarting; }
+    if (e.verdi === 'unavailable') { text += ' · ' + format(s['traceVerdiUnavailable_' + e.reason] || s.traceVerdiUnavailable, e.message || ''); }
+    if (e.verdiNotFound) { text += ' · ' + s.traceVerdiNotFound; }
+    div.append(el('span', '', text));
+    if (st.via && st.via.length) { div.append(el('span', '', ' · ' + format(s.traceThroughPorts, st.via.map((h) => h.signal).join(' → ')))); }
+    if (e.verdiDiffers && e.verdiLoc) {
+      div.append(el('span', '', ' · ' + s.traceVerdiLastChange + ' '));
+      const a = el('a', '', where(e.verdiLoc));
+      a.addEventListener('click', () => open({ file: e.verdiLoc.file, line: e.verdiLoc.line }));
+      div.append(a);
+    }
+    return div;
+  }
+
   function reasonText(r) {
     const s = S();
     const key = 'traceReason_' + r.code;
@@ -407,6 +482,7 @@
     // Driver kind, where, when.
     const line = el('div');
     line.append(el('span', '', driverText(st) + ' '));
+    if (st.driver && st.driver.writer) { line.append(el('span', 'muted', format(S().traceWriter, st.driver.writer) + ' ')); }
     const loc = st.stmt && st.stmt.loc;
     if (loc) { const a = el('a', '', where(loc)); a.title = s.traceOpen || ''; a.addEventListener('click', () => open(loc)); line.append(a); }
     if (st.activation) {
@@ -415,6 +491,7 @@
       line.append(el('span', 'muted', ' · ' + format(s.traceSince, number(st.since))));
     }
     body.append(line);
+    body.append(engineLine(st));
     if (st.stmt && st.stmt.src) { body.append(el('div', 'code', st.stmt.src)); }
     for (const m of st.merged || []) { const a = el('div', 'code muted', '↔ ' + m.src); body.append(a); }
     // The branch taken.
