@@ -704698,6 +704698,242 @@
           }
         }
       }
+    },
+    "waveformDebugger.command.showInstructionInListing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Instruction in Listing"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Befehl im Listing zeigen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l’instruction dans le listing"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إظهار التعليمة في القائمة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar instrucción en el listado"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在列表中顯示指令"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在列表中显示指令"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "목록에서 명령어 보기"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リストで命令を表示"
+          }
+        }
+      }
+    },
+    "waveformDebugger.asm.noListing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No open listing has the current instruction. Open the program's objdump listing (.dis)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kein geöffnetes Listing enthält den aktuellen Befehl. Öffne das objdump-Listing des Programms (.dis)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun listing ouvert ne contient l’instruction en cours. Ouvrez le listing objdump du programme (.dis)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا تحتوي أي قائمة مفتوحة على التعليمة الحالية. افتح قائمة objdump للبرنامج (.dis)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ningún listado abierto tiene la instrucción actual. Abra el listado objdump del programa (.dis)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有已開啟的列表包含目前的指令。請開啟程式的 objdump 列表（.dis）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有已打开的列表包含当前指令。请打开程序的 objdump 列表（.dis）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "열려 있는 목록에 현재 명령어가 없습니다. 프로그램의 objdump 목록(.dis)을 여세요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開いているリストに現在の命令がありません。プログラムの objdump リスト（.dis）を開いてください。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.asm.mismatch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ doesn't match this dump: %2$@ of %3$@ committed instructions differ (first at %4$@: committed %5$@, listing %6$@)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ passt nicht zu dieser Aufzeichnung: %2$@ von %3$@ abgeschlossenen Befehlen weichen ab (zuerst bei %4$@: abgeschlossen %5$@, Listing %6$@)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ne correspond pas à ce fichier : %2$@ instructions validées sur %3$@ diffèrent (la première à %4$@ : validée %5$@, listing %6$@)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ لا يطابق هذا الملف: تختلف %2$@ من %3$@ تعليمة معتمدة (الأولى عند %4$@: المعتمدة %5$@، القائمة %6$@)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ no coincide con este volcado: %2$@ de %3$@ instrucciones confirmadas difieren (la primera en %4$@: confirmada %5$@, listado %6$@)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 與此傾印檔不符：%3$@ 個已提交指令中有 %2$@ 個不同（第一個在 %4$@：已提交 %5$@，列表 %6$@）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 与此转储不符：%3$@ 条已提交指令中有 %2$@ 条不同（第一条在 %4$@：已提交 %5$@，列表 %6$@）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@이(가) 이 덤프와 맞지 않습니다: 커밋된 명령어 %3$@개 중 %2$@개가 다릅니다(첫 번째 %4$@: 커밋 %5$@, 목록 %6$@)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ はこのダンプと一致しません: コミットされた %3$@ 命令のうち %2$@ 命令が異なります（最初は %4$@: コミット %5$@、リスト %6$@）。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.asm.noPCsInListing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ doesn't match this dump: none of the %2$@ committed PCs checked are in it."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ passt nicht zu dieser Aufzeichnung: keiner der %2$@ geprüften abgeschlossenen PCs ist darin."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ne correspond pas à ce fichier : aucun des %2$@ PC validés vérifiés n’y figure."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ لا يطابق هذا الملف: لا يوجد فيه أي من عدادات البرنامج المعتمدة الـ %2$@ التي تم فحصها."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ no coincide con este volcado: ninguno de los %2$@ PC confirmados comprobados está en él."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 與此傾印檔不符：檢查的 %2$@ 個已提交 PC 都不在其中。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 与此转储不符：检查的 %2$@ 个已提交 PC 都不在其中。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@이(가) 이 덤프와 맞지 않습니다: 확인한 커밋된 PC %2$@개 중 어느 것도 없습니다."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ はこのダンプと一致しません: 確認したコミット済み PC %2$@ 個のいずれも含まれていません。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

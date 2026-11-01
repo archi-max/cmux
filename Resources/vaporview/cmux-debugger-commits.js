@@ -23,6 +23,11 @@
 //   kAt(bp, time) -> the first of bp's commits at `time` (program order), or null
 //   landed(bp, time): after a hit, the Machine section's current commit is that one
 //   scopeOf(bp) -> the commit source's instance path (a condition's names), or null
+// and for cmux's listings (WaveformDebuggerAsmBreakpoints.swift):
+//   postCurrent(edgeTime): posts { event: 'commitPcs', pcs, current } for the commits at that posedge
+//                          (null: none, after Stop), when it changed
+//   currentPc(edgeTime) -> '0x…' | null     sample(limit) -> Promise<[{ pc, insn }] | null> (distinct PCs)
+//   and posts { event: 'commitsReady' } each time the commit index is (re)built.
 (function () {
   const waveform = window.cmuxWaveform;
   const S = () => waveform.strings || {};
@@ -141,6 +146,7 @@
   const commitsApi = () => waveform.commits || null;
 
   async function indexOf(bp, warn) {
+    subscribe();
     const api = commitsApi();
     if (!api) { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
     let ix = null;
@@ -212,6 +218,78 @@
     return ix && Array.isArray(ix.scope) && ix.scope.length ? ix.scope.map(String) : null;
   }
 
+  // ---- the commits at the marker, for cmux's listings ----
+  const hexOf = (pc) => '0x' + pc.toString(16);
+  function byTime(ix) {
+    const t = tablesOf(ix);
+    if (!t.byTime) {
+      const ks = Array.from({ length: ix.count }, (_, k) => k);
+      if (ix.sortedBy === 'order') { ks.sort((a, b) => ix.time[a] - ix.time[b] || a - b); }
+      t.byTime = Int32Array.from(ks);
+    }
+    return t.byTime;
+  }
+  // The commits at `time`, in program order.
+  function commitsAt(ix, time) {
+    const order = byTime(ix);
+    let lo = 0, hi = order.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (ix.time[order[mid]] < time) { lo = mid + 1; } else { hi = mid; } }
+    const out = [];
+    for (let i = lo; i < order.length && ix.time[order[i]] === time; i++) { out.push(order[i]); }
+    return out.sort((a, b) => a - b);
+  }
+  function currentAt(time) {
+    subscribe();
+    const api = commitsApi();
+    const ix = api && typeof api.current === 'function' ? api.current() : null;
+    if (!ix || time === null || time === undefined) { return { pcs: [], current: null }; }
+    const ks = commitsAt(ix, time).filter((k) => !Number.isNaN(ix.pc[k]));
+    // The Machine section's own commit, when it is one of these (stepping by commit within a cycle).
+    const own = api.currentK ? api.currentK() : null;
+    const k = ks.includes(own) ? own : (ks.length ? ks[0] : null);
+    return { pcs: ks.map((j) => hexOf(ix.pc[j])), current: k === null ? null : hexOf(ix.pc[k]) };
+  }
+  let lastPosted = null;
+  function postCurrent(time) {
+    const now = currentAt(time);
+    const key = JSON.stringify(now);
+    if (key === lastPosted || (lastPosted === null && !now.pcs.length)) { return; }
+    lastPosted = key;
+    waveform.host.toNative(Object.assign({ type: 'debugger', event: 'commitPcs' }, now));
+  }
+  const currentPc = (time) => currentAt(time).current;
+
+  async function sample(limit) {
+    subscribe();
+    const api = commitsApi();
+    let ix = null;
+    try { ix = api ? await api.index() : null; } catch (error) { ix = null; }
+    if (!ix || !ix.insn) { return null; }
+    const max = Math.max(1, Math.min(Number(limit) || 1000, 100000));
+    const seen = new Set();
+    const out = [];
+    for (let k = 0; k < ix.count && out.length < max; k++) {
+      const pc = ix.pc[k];
+      if (Number.isNaN(pc) || seen.has(pc)) { continue; }
+      seen.add(pc);
+      out.push({ pc: hexOf(pc), insn: ix.insn[k] >>> 0 });
+    }
+    return out;
+  }
+
+  // cmux checks its listings against the stream each time it is built.
+  let subscribedTo = null;
+  function subscribe() {
+    const api = commitsApi();
+    if (!api || api === subscribedTo || typeof api.onChange !== 'function') { return; }
+    subscribedTo = api;
+    api.onChange((change) => {
+      if (change && change.reason === 'ready') { waveform.host.toNative({ type: 'debugger', event: 'commitsReady' }); }
+    });
+  }
+  // cmux-machine.js loads after this file.
+  setTimeout(subscribe, 0);
+
   function landed(bp, time) {
     const k = kAt(bp, time);
     const machine = waveform.machine;
@@ -221,5 +299,5 @@
   }
 
   waveform.debuggerCommits = Object.freeze({ isKind, fields, check, parseAddress, parseLocation, label, errorText, times, kAt, landed,
-    scopeOf, locationText, MAX_PCS });
+    scopeOf, locationText, MAX_PCS, postCurrent, currentPc, sample, subscribe });
 })();
