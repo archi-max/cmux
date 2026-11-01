@@ -271,6 +271,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await runEvaluateChecks()
     await runConditionChecks()
     await runReview42Checks()
+    await runVerifyChecks()
     await runLineChecks()
     print(failures == 0 ? "BREAKPOINT CHECKS PASSED" : "BREAKPOINT CHECKS FAILED: \(failures)")
     snap()
@@ -795,6 +796,168 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("stop()")
   }
 
+  /// The verify-bp review's page checks (N4, N5, N10, N11, L6, M5).
+  func runVerifyChecks() async {
+    await removeAll()
+    _ = await dbg("stop()")
+    await clearToasts()
+    // N4: a condition on a line in any instance is tested in each instance's own scope. top.mode
+    // changes at 105/205/305/405 (top.state 3, 5, 3, 0); top.u1.go at 205 (u1.state 0) and 505 (3).
+    _ = await dbg("""
+      setLineBreakpoints({ items: [{ key: 'core.sv#7', label: 'core.sv:7', enabled: true, condition: 'state == 3', scope: ['top'],
+        paths: [['top', 'mode'], ['top', 'u1', 'go']],
+        groups: [{ scope: ['top'], paths: [['top', 'mode']] }, { scope: ['top', 'u1'], paths: [['top', 'u1', 'go']] }] }] })
+    """)
+    await setMarker(0)
+    var hits: [Int] = []
+    for expected in [105, 305, 505] {
+      let (hit, _) = await go(1, expect: expected)
+      hits.append(hit?["landed"] as? Int ?? -1)
+    }
+    expect(hits == [105, 305, 505], "any instance with a condition: each instance's own state: \(hits)")
+    _ = await dbg("setLineBreakpoints({ items: [] })")
+
+    // N5: a line's condition that does not parse is kept and never true, said once, and cmux is told.
+    lineEvents.removeAll()
+    let badLine = "setLineBreakpoints({ items: [{ key: 'core.sv#3', label: 'core.sv:3', paths: [['top', 'mode']], enabled: true, condition: 'state = 3', scope: ['top'] }] })"
+    _ = await dbg(badLine)
+    var shown = await list()
+    expect(shown.first?["condition"] as? String == "state = 3" && shown.first?["conditionError"] is String,
+           "a bad condition is kept, as an error: \(shown)")
+    await setMarker(0)
+    var r = await dbg("continue({ dir: 1 })")
+    expect(r?["hit"] is NSNull, "and never hits: \(String(describing: r?["hit"]))")
+    _ = await dbg(badLine.replacingOccurrences(of: "core.sv:3'", with: "core.sv:4'"))
+    _ = await dbg(badLine)
+    let said = (await toasts()).filter { $0.hasPrefix("Condition of core.sv:") }
+    expect(said.count == 1, "said once, not on every sync: \(said)")
+    let toldError = lineEvents.filter { $0["conditionError"] != nil }.map { "\($0["key"] as? String ?? ""):\($0["conditionError"] as? Bool ?? false)" }
+    expect(toldError == ["core.sv#3:true"], "cmux is told (it draws the dot as an error): \(toldError)")
+    let errorRow = await call("const l = document.querySelector('#cmux-breakpoints .cmux-breakpoint .label'); return l ? [l.classList.contains('condition-error'), l.title] : null") as? [Any]
+    expect(errorRow?.first as? Bool == true && (errorRow?.last as? String ?? "").hasPrefix("Condition of core.sv:3: "), "the list row shows the error: \(String(describing: errorRow))")
+    _ = await dbg("setLineBreakpoints({ items: [] })")
+    // A restored signal breakpoint with a bad condition: the same.
+    await clearToasts()
+    _ = await dbg("restoreBreakpoints({ items: [{ path: ['top', 'mode'], kind: 'change', enabled: true, condition: 'state +' }] })")
+    shown = await list()
+    await setMarker(0)
+    r = await dbg("continue({ dir: 1 })")
+    expect(shown.first?["condition"] as? String == "state +" && shown.first?["conditionError"] is String && r?["hit"] is NSNull,
+           "a restored bad condition: kept, never hits: \(shown) \(String(describing: r?["hit"]))")
+    expect((await toasts()).contains { $0.hasPrefix("Condition of top.mode") }, "and says why: \(await toasts())")
+    // Fixed: it hits again.
+    _ = await dbg("setBreakpointCondition({ id: \((shown.first?["id"] as? Int) ?? -1), condition: 'state == 3' })")
+    await setMarker(0)
+    r = await dbg("continue({ dir: 1 })")
+    let fixedRow = await list()
+    expect((r?["hit"] as? [String: Any])?["landed"] as? Int == 105 && fixedRow.first?["conditionError"] is NSNull,
+           "fixed: it hits: \(String(describing: r?["hit"]))")
+    await removeAll()
+
+    // N10: a condition's signal not read yet: still loading, not "no hit".
+    await clearToasts()
+    _ = await call("""
+      window.cmuxRealSignalChanges = cmuxWaveform.host.signalChanges;
+      cmuxWaveform.host.signalChanges = (v, m) => (v.name === 'busy' ? Promise.resolve(undefined) : window.cmuxRealSignalChanges(v, m));
+      return (await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'mode'], kind: 'change', condition: 'busy == 0' })).id
+    """)
+    await setMarker(0)
+    r = await dbg("continue({ dir: 1 })")
+    _ = await call("cmuxWaveform.host.signalChanges = window.cmuxRealSignalChanges; return null")
+    expect(r?["reason"] as? String == "loading", "a condition's signal still loading: loading: \(String(describing: r?["reason"]))")
+    await setMarker(0)
+    r = await dbg("continue({ dir: 1 })")
+    expect((r?["hit"] as? [String: Any])?["landed"] as? Int == 105, "read: it hits: \(String(describing: r?["hit"]))")
+    await removeAll()
+
+    // M5(d): a disabled breakpoint does not keep a signal's raw changes. (a): a line's paths are let
+    // go one by one as its times are built, not all held until the end.
+    let disabled = await add("state")
+    _ = await dbg("setBreakpointEnabled({ id: \(disabled ?? -1), enabled: false })")
+    _ = await add("state", "equals", value: "3")
+    await setMarker(0)
+    _ = await dbg("continue({ dir: 1 })")
+    let kept = await call("return cmuxWaveform.debugger.cacheSizes().changes") as? Int
+    expect(kept == 0, "a disabled breakpoint's signal is let go: \(String(describing: kept))")
+    await removeAll()
+    let held = await call("""
+      const real = cmuxWaveform.host.signalChanges;
+      let seen = null;
+      cmuxWaveform.host.signalChanges = (v, m) => { if (v.name === 'irq') { seen = cmuxWaveform.debugger.cacheSizes().changes; } return real(v, m); };
+      cmuxWaveform.debugger.setLineBreakpoints({ items: [{ key: 'core.sv#9', label: 'core.sv:9', paths: [['top', 'state'], ['top', 'irq']], enabled: true }] });
+      cmuxWaveform.link.setMarker(0);
+      await new Promise((r) => setTimeout(r, 100));
+      await cmuxWaveform.debugger.continue({ dir: 1 });
+      cmuxWaveform.host.signalChanges = real;
+      return seen;
+    """) as? Int
+    expect(held == 0, "a line's first signal is let go before the next is read: \(String(describing: held))")
+    _ = await dbg("setLineBreakpoints({ items: [] })")
+    // (b): the conditions' cache is capped by changes in all, not only by signals.
+    let capped = await call("""
+      cmuxWaveform.debugger.setConditionChangeCap(6);
+      await cmuxWaveform.debugger.addBreakpoint({ path: ['top', 'pulse'], kind: 'change', condition: 'top.u1.state == 0 && top.u1.go == 0' });
+      cmuxWaveform.link.setMarker(0);
+      await new Promise((r) => setTimeout(r, 100));
+      await cmuxWaveform.debugger.continue({ dir: 1 });
+      const sizes = cmuxWaveform.debugger.cacheSizes();
+      cmuxWaveform.debugger.setConditionChangeCap(null);
+      return [sizes.conditions, sizes.conditionChanges];
+    """) as? [Int]
+    expect(capped?.last ?? 99 <= 6, "the conditions' cache keeps at most the cap's changes: \(String(describing: capped))")
+    await removeAll()
+
+    // L6: a pause while play's stop is searched leaves no stop; disabling the stop's breakpoint drops it.
+    let bp = await add("state")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    let raced = await call("""
+      const d = cmuxWaveform.debugger;
+      await d.play({ rate: 1 });
+      d.setBreakpointEnabled({ id: \(bp ?? -1), enabled: false });
+      d.setBreakpointEnabled({ id: \(bp ?? -1), enabled: true });
+      d.pause();
+      await new Promise((r) => setTimeout(r, 200));
+      return d.playStopId();
+    """)
+    expect(raced is NSNull, "a pause during the stop's search leaves no stop: \(String(describing: raced))")
+    // Another enabled breakpoint keeps the search after the disable from finishing at once.
+    _ = await add("mode")
+    let dropped = await call("""
+      const d = cmuxWaveform.debugger;
+      await d.play({ rate: 1 });
+      const before = d.playStopId();
+      d.setBreakpointEnabled({ id: \(bp ?? -1), enabled: false });
+      const after = d.playStopId();
+      d.pause();
+      return [before, after];
+    """) as? [Any]
+    expect(dropped?.first as? Int == bp && dropped?.last is NSNull, "disabling the stop's breakpoint drops the stop at once: \(String(describing: dropped))")
+    await removeAll()
+    _ = await dbg("stop()")
+
+    // N11: an older Evaluate that finishes later does not replace a newer one.
+    await clearToasts()
+    await setMarker(305)
+    let latest = await call("""
+      const d = cmuxWaveform.debugger, h = cmuxWaveform.host, real = h.rawValuesAt;
+      const before = document.querySelector('.cmux-eval .result');
+      if (before) { before.dataset.expr = ''; }
+      let delayed = 0;
+      h.rawValuesAt = (t, vars) => (vars.some((v) => v.name === 'data') ? (delayed++, new Promise((r) => setTimeout(r, 300)).then(() => real(t, vars))) : real(t, vars));
+      const slow = d.evaluate({ expr: 'data', show: true });
+      await d.evaluate({ expr: 'state', show: true });
+      await slow;
+      h.rawValuesAt = real;
+      const result = document.querySelector('.cmux-eval .result');
+      const toasts = Array.from(document.querySelectorAll('.cmux-toast')).map((t) => t.textContent);
+      return JSON.stringify({ delayed, expr: result ? result.dataset.expr : null, text: result ? result.textContent : null, toasts });
+    """) as? String
+    // Shown in the strip while stepping, else as a toast: either way 'data' (the older) is not shown last.
+    expect(latest?.contains("\"delayed\":1") == true && latest?.contains("\"expr\":\"data\"") == false && latest?.contains("data = ") == false,
+           "the newer evaluation stays shown: \(String(describing: latest))")
+  }
+
   /// Line breakpoints (cmux sends them: the editor's gutter and F9): any of the line's signals changing hits.
   func runLineChecks() async {
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
@@ -875,6 +1038,27 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // A reload clears the hit mark, and reads an equals value again for the signal's new width
     // (top.data is 16 bits in breakpoints-wide.vcd).
     _ = await go(1, expect: 605)
+    // verify-bp N9: a watch shows the reloaded dump's value without the marker moving. (The
+    // harness's reload also sets the marker again, which refreshes watches: the backend hook is
+    // checked on its own first, with the dump's values changed under it.)
+    _ = await dbg("addWatch({ expr: 'data' })")
+    _ = await watchRows(becoming: [["data", "8'h5a", ""]])
+    _ = await call("""
+      const h = cmuxWaveform.host, real = h.rawValuesAt;
+      window.cmuxRealRawValuesAt = real;
+      h.rawValuesAt = async (t, vars) => {
+        const m = (await real(t, vars)) || new Map();
+        for (const v of vars) { if (v.name === 'data') { m.set(v.netlistId, '11111111'); } }
+        return m;
+      };
+      cmuxWaveform.debugger.backendChanged();
+      return null
+    """)
+    let hooked = await watchRows(becoming: [["data", "8'hff", "changed"]])
+    _ = await call("cmuxWaveform.host.rawValuesAt = window.cmuxRealRawValuesAt; return null")
+    expect(hooked.first?[1] == "8'hff", "a new backend refreshes the watches: \(hooked)")
+    _ = await call("cmuxWaveform.debugger.backendChanged(); return null")
+    _ = await watchRows(becoming: [["data", "8'h5a", "changed"]])
     let wide = waveURL.deletingLastPathComponent().appendingPathComponent("breakpoints-wide.vcd")
     let wideURL = scheme.serve(fileURL: wide)
     let wideSize = (try? FileManager.default.attributesOfItem(atPath: wide.path)[.size] as? NSNumber)?.intValue ?? 0
@@ -883,6 +1067,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("\(wideReloadJS); return null")
     for _ in 0..<100 where openedCount == opened { await sleep(50) }
     expect(openedCount > opened, "reloaded with the wide dump")
+    let reloadedWatch = await watchRows(becoming: [["data", "16'h005a", "changed"]])
+    expect(reloadedWatch.first?[1] == "16'h005a", "a watch is refreshed by a reload: \(reloadedWatch)")
+    _ = await dbg("restoreWatches({ items: [] })")
     expect((await list()).allSatisfy { $0["hit"] as? Bool == false }, "a reload clears the hit mark: \(await list())")
     // Review L4: and the list's row is drawn again without it.
     var boldRows = -1

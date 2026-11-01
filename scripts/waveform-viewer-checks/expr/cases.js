@@ -20,12 +20,15 @@ function runExprCases() {
     'a.b': { width: 1, value: '0', escaped: true },
     w100: { width: 100, value: '1'.repeat(100) },
     w64: { width: 64, value: '0'.repeat(64) },
+    // Signed signals (a dump that says so), for bp-verify's signed/unsigned mixing cases.
+    u8: { width: 8, value: '11111000' }, s8: { width: 8, value: '11111000', signed: true },
+    s4: { width: 4, value: '1000', signed: true }, u4: { width: 4, value: '1000' }, sx4: { width: 4, value: 'x001', signed: true },
   };
   const env = (path) => {
     const key = path.length === 1 && path[0] === 'a.b' ? 'a.b' : path.join('.');
     const s = signals[key];
     if (!s || (key === 'a.b' && path.length !== 1)) { return null; }
-    return { width: s.width, msb: s.msb, lsb: s.lsb, value: E.fromBits(s.value, s.width) };
+    return { width: s.width, msb: s.msb, lsb: s.lsb, value: E.fromBits(s.value, s.width), signed: s.signed };
   };
   const cases = [
     // widths: context-determined, unsized literals 32 bits
@@ -67,7 +70,7 @@ function runExprCases() {
     ['a ^ b & a', "8'h0c"], ['1 < 2 == 1', "1'b1"], ['one || zero && zero', "1'b1"], ['5 - 3 - 1', "32'h00000001"],
     // concatenation and replication
     ['{a, b}', "16'h3cf0"], ['{2{a}}', "16'h3c3c"], ["{4{1'b1}}", "4'b1111"], ["{a[3:0], 4'h0}", "8'hc0"],
-    ['{3{c4}}', "12'b10x110x110x1"], ['{a, 1}', "40'h3c00000001"],
+    ['{3{c4}}', "12'b10x110x110x1"],
     // selects: the declared range; out of range or an unknown index is x
     ['a[2]', "1'b1"], ['a[7:4]', "4'b0011"], ['a[0 +: 4]', "4'b1100"], ['a[7 -: 2]', "2'b00"], ['a[8]', "1'bx"],
     ['a[xbit]', "1'bx"], ['a[one]', "1'b0"], ['a[9:6]', "4'bxx00"], ['a[one +: 2]', "2'b10"],
@@ -77,7 +80,7 @@ function runExprCases() {
     ["4'b10x?", "4'b10xz"], ["'hx", "32'hxxxxxxxx"], ["8'hx", "8'hxx"], ["8'hz", "8'hzz"], ["a | '1", "8'hff"], ["a & '0", "8'h00"],
     ["{a, 'x}", "error:badLiteral@4"], ["12'd7", "12'h007"], ["8'shff", "8'hff"], ['1_000', "32'h000003e8"], ["8'b1010_0101", "8'ha5"],
     ["3'b1x", "3'b01x"], ["4'bx1", "4'bxxx1"], ["8'o17", "8'h0f"], ["'d12", "32'h0000000c"], ["8 'h 3c", "8'h3c"],
-    ['12345678901', "34'h2dfdc1c35"], ["16'HABCD", "16'habcd"], ["1'B1", "1'b1"],
+    ['12345678901', "35'h2dfdc1c35"], ["16'HABCD", "16'habcd"], ["1'B1", "1'b1"],
     // names: dotted paths, generate scopes, escaped identifiers, wide values
     ['u_core.count + 0', "32'h00000009"], ['gen[0].q', "1'b1"], ['\\a.b  | 0', "32'h00000000"], ['w100 + 1', "100'h0000000000000000000000000"],
     ['w100[99:96]', "4'b1111"],
@@ -96,6 +99,23 @@ function runExprCases() {
     ["4'sb1x00 >>> 1", "4'b11x0"], ["4'sbz000 >>> 2", "4'bzzz0"], ["4'sb1000 >>> 9", "4'b1111"], ["4'b1000 >>> 1", "4'b0100"],
     ["(4'sb1000 >>> 1) + 8'd0", "8'h04"], ["4'sb1111 == 8'hff", "1'b0"], ["4'sb1111 == 8'shff", "1'b1"], ['-1 == 32\'hffffffff', "1'b1"],
     ["{4'sb1000}  + 8'sd0", "8'h08"], ["c4[asc[0 +: 1] - 2]", "1'bx"],
+    // verify-bp E1: an unsized decimal wider than 32 bits stays positive (slang, 1800-2023); E3: ?: is
+    // signed only when both arms are. L8: no unsized number in a concatenation (slang, Icarus).
+    ['5000000000 > 0', "1'b1"], ["40'sd0 + 5000000000 > 0", "1'b1"], ["(1 ? 4'sb1000 : 4'b0000) + 8'sd0", "8'h08"],
+    ['{a, 1}', 'error:unsizedInConcat@4'], ['{2{1}}', 'error:unsizedInConcat@3'], ["{a, 'h1}", 'error:unsizedInConcat@4'],
+    ['{a, (1)}', 'error:unsizedInConcat@5'], ["{a, 8'd1}", "16'h3c01"],
+    // bp-verify's signed/unsigned mixing cases (scratchpad vbp/sx/sx.js; its six re-derived values).
+    ["-8'sd1 < 8'd0", "1'h0"], ["-8'sd1 < 8'sd0", "1'h1"], ["-1 < 8'd0", "1'h0"], ["-1 < 0", "1'h1"],
+    ["4'sb1000 + 8'd0", "8'h08"], ["4'sb1000 + 8'sd0", "8'hf8"], ["4'sb1000 >>> 1", "4'hc"], ["4'sb1000 >>> 1'b1", "4'hc"],
+    ["(4'sb1000 >>> 1) + 8'd0", "8'h04"], ["(4'sb1000 >>> 1) + 8'sd0", "8'hfc"], ["{4'sb1000} + 8'sd0", "8'h08"],
+    ["(8'sd1 ? 4'sb1000 : 4'sb0000) + 8'sd0", "8'hf8"],
+    ["-4'sd8 == 8'hf8", "1'h1"], ["-4'sd8 == 8'shf8", "1'h0"], ["4294967295 == -1", "1'h1"],
+    ["(-4'sd1 * 4'sd2) + 8'sd0", "8'hfe"], ["(-4'sd1 * 4'sd2) + 8'd0", "8'hfe"], ["4'sbx001 | 8'sd0", "8'hxX"], ["4'sbz001 | 8'sd0", "8'hxX"],
+    ["8'sd5 >>> 1", "8'h02"], ["-8'sd5 >>> 1", "8'hfd"], ["~4'sb0000 + 8'sd0", "8'hff"], ["~4'b0000 + 8'd0", "8'hff"], ["(-4'sd1 >> 1) + 8'sd0", "8'h7f"],
+    ["3'sb111 == -1", "1'h1"], ["3'b111 == -1", "1'h0"], ['s8 < 0', "1'h1"], ['u8 < 0', "1'h0"], ['s8 < u8', "1'h0"], ['s4 + s8', "8'hf0"], ['s4 + u8', "8'h00"],
+    ["s4 + 8'd0", "8'h08"], ['s4 >>> 2', "4'he"], ['(s4 >>> 2) + u8', "8'hfa"], ['s8[-1 +: 2]', "2'b0x"], ["u8[4'b1111]", "1'hx"], ["s8[4'sb1111]", "1'hx"],
+    ["-s4 + 8'sd0", "8'h08"], ["sx4 + 8'sd0", "8'hxx"], ["sx4 | 8'sd0", "8'hxX"], ["s4 == 8'shf8", "1'h1"], ["s4 == 8'hf8", "1'h0"], ["(s4 < 0) + 8'sd0", "8'h01"],
+    ['-2147483648 < 0', "1'h1"], ['2147483648 > 0', "1'h0"], ['-(2147483648) < 0', "1'h1"], ["'sd5 + 8'sd0", "32'h00000005"], ["+s4 + 8'sd0", "8'hf8"],
     // An unknown condition: z in both arms is x (table 11-20; VCS W-2024.09 agrees, slang keeps z).
     ['xbit ? z4 : z4', "4'bxxxx"], ["xbit ? 4'b1z01 : 4'b1z01", "4'b1x01"], ["xbit ? 4'b1z01 : 4'b1z00", "4'b1x0x"],
     // refused
