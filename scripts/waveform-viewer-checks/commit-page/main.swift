@@ -22,6 +22,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   let scheme = WaveformViewerSchemeHandler(assetRoot: assetRoot)
   var web: WKWebView!
   var lineEvents: [[String: Any]] = []
+  var pcEvents: [[String: Any]] = []
+  var commitPcEvents: [[String: Any]] = []
+  var readyEvents = 0
   var listEvents: [[[String: Any]]] = []
   var movedEvents: [[String: Any]] = []
   var openedCount = 0
@@ -136,8 +139,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const writes = { a0: [0], 'csr:mtvec': [2], 'mem:4096': [5] };
       window.__commitIndex = index;
       window.__wentTo = [];
+      window.__commitListeners = [];
       Object.defineProperty(cmuxWaveform, 'commits', { configurable: true, value: {
         index: async () => window.__commitIndex,
+        current: () => window.__commitIndex,
+        currentK: () => null,
+        onChange: (fn) => { window.__commitListeners.push(fn); return () => {}; },
         writesOf: async (q) => (writes[typeof q.loc === 'string' ? q.loc : (q.loc.csr ? 'csr:' + q.loc.csr : 'mem:' + q.loc.addr)] || []).slice(),
       } });
       Object.defineProperty(cmuxWaveform, 'machine', { configurable: true, value: { goToCommit: (q) => { window.__wentTo.push(q.k); } } });
@@ -274,11 +281,87 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (/nope/.test(b.pattern || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
 
     // No commit stream: no hit, and why.
-    _ = await call("window.__commitIndex = null; return null")
+    _ = await call("window.__savedIndex = window.__commitIndex; window.__commitIndex = null; return null")
     await clearToasts()
     l = await landings(restoredPc)
     expect(l.forward.isEmpty, "no commit stream: no hit: \(l.forward)")
     expect(await toasts().contains("PC 0x80000004: this dump has no commit stream (RVFI or similar) to search"), "and says so: \(await toasts())")
+
+    // ---- listings (cmux owns their pc breakpoints, keyed by mark) ----
+    _ = await call("window.__commitIndex = window.__savedIndex || window.__commitIndex; return null")
+    _ = await call("""
+      return cmuxWaveform.debugger.setPcBreakpoints({ items: [
+        { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
+        { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: false, condition: 'top.flag' },
+        { key: '', listingLabel: 'no key', pcs: ['0x80000010'], enabled: true },
+        { key: 'K3', listingLabel: 'bad', pcs: ['main'], enabled: true }] }).map((b) => b.label);
+    """)
+    var listed = (await list()).filter { $0["key"] as? String != nil }
+    expect(listed.map { $0["label"] as? String ?? "" } == ["prog.dis: _start+0x4 (0x80000004)", "prog.dis: sum (0x80000010) if top.flag"],
+           "a listing's breakpoints in the list (no key or a bad address: none): \(listed.map { $0["label"] ?? "" })")
+    let k1 = listed.first?["id"] as? Int
+    l = await landings(k1)
+    expect(l.forward == [25, 35, 45, 85], "a listing's breakpoint hits: \(l.forward)")
+    let toldKeys = (listEvents.last ?? []).filter { $0["kind"] as? String == "pc" && $0["key"] != nil && !($0["key"] is NSNull) }
+    expect(toldKeys.isEmpty, "cmux keeps them itself (not in the page's saved list): \(toldKeys)")
+    // The list's checkbox, condition and remove tell cmux.
+    pcEvents.removeAll()
+    _ = await call("cmuxWaveform.debugger.setBreakpointEnabled({ id: \(k1 ?? -1), enabled: false }); return null")
+    _ = await call("cmuxWaveform.debugger.setBreakpointCondition({ id: \(k1 ?? -1), condition: 'top.flag' }); return null")
+    _ = await call("cmuxWaveform.debugger.removeBreakpoint({ id: \(k1 ?? -1) }); return null")
+    expect(pcEvents.map { [$0["key"] as? String ?? "", "\($0["enabled"] ?? "-")", "\($0["condition"] ?? "-")", "\($0["removed"] ?? "-")"] }
+           == [["K1", "0", "-", "0"], ["K1", "0", "top.flag", "0"], ["K1", "0", "-", "1"]],
+           "cmux is told: \(pcEvents)")
+    _ = await call("cmuxWaveform.debugger.setPcBreakpoints({ items: [{ key: 'K4', listingLabel: 'x', pcs: ['0x80000004'], enabled: true, condition: '((' }] }); return null")
+    expect(pcEvents.last?["key"] as? String == "K4" && pcEvents.last?["conditionError"] as? Bool == true, "a condition that does not parse is told: \(String(describing: pcEvents.last))")
+    // Restoring the page's own list keeps cmux's; setting cmux's keeps the page's.
+    let pageMade = await addCommit("kind: 'pc', pcs: ['0x80000010']")
+    _ = await call("cmuxWaveform.debugger.restoreBreakpoints({ items: [{ path: [], kind: 'write', loc: 'a0', enabled: true }] }); return null")
+    listed = await list()
+    expect(listed.contains { $0["key"] as? String == "K4" } && listed.contains { $0["label"] as? String == "a0 written" }
+           && !listed.contains { $0["id"] as? Int == pageMade }, "restore keeps the listing's: \(listed.map { $0["label"] ?? "" })")
+    _ = await addCommit("kind: 'pc', pcs: ['0x80000010']")
+    _ = await call("cmuxWaveform.debugger.setPcBreakpoints({ items: [] }); return null")
+    listed = await list()
+    expect(!listed.contains { $0["key"] as? String == "K4" } && listed.contains { $0["label"] as? String == "PC 0x80000010" },
+           "setting the listing's keeps the page's: \(listed.map { $0["label"] ?? "" })")
+
+    // The commits at the marker go to the listings while debugging; none after Stop.
+    commitPcEvents.removeAll()
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    _ = await dbg("step({ by: 2 })")
+    _ = await marker(25)
+    var lastPcs: [String: Any]?
+    for _ in 0..<40 { lastPcs = commitPcEvents.last; if (lastPcs?["pcs"] as? [String])?.count == 2 { break }; await sleep(50) }
+    expect(lastPcs?["pcs"] as? [String] == ["0x80000004", "0x80000008"] && lastPcs?["current"] as? String == "0x80000004",
+           "the cycle at 25's commits: \(String(describing: lastPcs))")
+    let currentPc = await call("return cmuxWaveform.debugger.currentCommitPc()") as? String
+    expect(currentPc == "0x80000004", "Show Instruction in Listing's PC: \(String(describing: currentPc))")
+    _ = await dbg("step({ by: 1 })")
+    for _ in 0..<40 { lastPcs = commitPcEvents.last; if lastPcs?["current"] as? String == "0x80000004" && (lastPcs?["pcs"] as? [String])?.count == 1 { break }; await sleep(50) }
+    expect(lastPcs?["pcs"] as? [String] == ["0x80000004"], "the next cycle's: \(String(describing: lastPcs))")
+    _ = await dbg("step({ by: 2 })")
+    for _ in 0..<40 { lastPcs = commitPcEvents.last; if (lastPcs?["pcs"] as? [String])?.isEmpty == true { break }; await sleep(50) }
+    expect(lastPcs?["pcs"] as? [String] == [] && lastPcs?["current"] is NSNull, "a cycle without a commit (55): none: \(String(describing: lastPcs))")
+    _ = await dbg("step({ by: 1 })")
+    for _ in 0..<40 { lastPcs = commitPcEvents.last; if lastPcs?["current"] as? String == "0x80000010" { break }; await sleep(50) }
+    expect(lastPcs?["current"] as? String == "0x80000010", "65's: \(String(describing: lastPcs))")
+    _ = await dbg("stop()")
+    for _ in 0..<40 { lastPcs = commitPcEvents.last; if (lastPcs?["pcs"] as? [String])?.isEmpty == true { break }; await sleep(50) }
+    expect(lastPcs?["pcs"] as? [String] == [], "cleared on Stop: \(String(describing: lastPcs))")
+
+    // A sample of the commits (cmux checks a listing against it), what cmux says, and the stream's readiness.
+    let sample = await call("return cmuxWaveform.debugger.commitSample({ limit: 3 })") as? [[String: Any]]
+    expect(sample?.map { $0["pc"] as? String ?? "" } == ["0x80000000", "0x80000004", "0x80000008"]
+           && sample?[1]["insn"] as? Int == 0x008002ef, "commitSample: distinct PCs, in order, up to the limit: \(String(describing: sample))")
+    await clearToasts()
+    _ = await call("cmuxWaveform.debugger.say({ text: 'prog.dis does not match', level: 'warning' }); return null")
+    expect(await toasts().contains("prog.dis does not match"), "say shows cmux's text")
+    _ = await call("for (const fn of window.__commitListeners) { fn({ reason: 'ready', backend: 1, count: 7 }); } return null")
+    await sleep(100)
+    expect(readyEvents == 1, "cmux is told when the commit stream is ready: \(readyEvents)")
 
     print(failures == 0 ? "COMMIT PAGE CHECKS PASSED" : "COMMIT PAGE CHECKS FAILED: \(failures)")
     snap()
@@ -314,6 +397,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return
     }
     if type == "debugger", body["event"] as? String == "lineBreakpoint" { lineEvents.append(body); return }
+    if type == "debugger", body["event"] as? String == "pcBreakpoint" { pcEvents.append(body); return }
+    if type == "debugger", body["event"] as? String == "commitPcs" { commitPcEvents.append(body); return }
+    if type == "debugger", body["event"] as? String == "commitsReady" { readyEvents += 1; return }
     if type == "debugger", body["event"] as? String == "breakpoints" { listEvents.append(body["items"] as? [[String: Any]] ?? []); return }
     if type == "debugger", body["event"] as? String == "moved" { movedEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "watches" { watchEvents.append(body["items"] as? [String] ?? []); return }
