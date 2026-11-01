@@ -23,7 +23,7 @@ node esbuild.js --production  # minified dist/webview.js
 | File | Source |
 | --- | --- |
 | `webview.js` | `dist/webview.js` (build output of `src/webview/`, patched; see below) |
-| `filehandler.wasm` | `target/wasm32-unknown-unknown/release/filehandler.wasm` (unmodified build output of `src/wellen_parser/`, wellen 0.25.7) |
+| `filehandler.wasm` | `target/wasm32-unknown-unknown/release/filehandler.wasm`: the build output of `src/wellen_parser/` (unmodified), with wellen 0.25.7 patched by `wellen-0.25.7-split-bit-start.patch` (see below) |
 | `style.css` | `media/style.css` (unmodified) |
 | `codicons/codicon.css`, `codicons/codicon.ttf` | `node_modules/@vscode/codicons/dist/` 0.0.35 (unmodified; `codicons/LICENSE` CC-BY-4.0, `codicons/LICENSE-CODE` MIT) |
 | `viewer.html` | `media/webview.html`, modified (see below) |
@@ -63,6 +63,20 @@ keybindings, netlist view, settings, sessions and terminal links).
   `handleRemoveVariable(e,t){let r=[];e.forEach(i=>{let o=this.rowItems[i];`.
   To redo the patch after a rebuild, re-apply that substitution, then check
   it with `scripts/waveform-viewer-checks/run.sh parity` (phase O).
+- `filehandler.wasm`: wellen 0.25.7 (BSD 3-Clause, Kevin Laeufer; https://github.com/ekiwi/wellen)
+  merges a VCD's split bits (`valid [0]`, `valid [1]`, as Questa and other writers bit-blast vectors)
+  into one vector in `transform_bv_signal` (`src/signal/transform.rs`), which had three mistakes
+  (upstream bugs, to be reported):
+  - it started each bit at the time-table index instead of the position, so with no bit at the first
+    time each bit started at a wrong (usually its second) value;
+  - a bit whose first change came after the others' never advanced, so its values were lost;
+  - and the X of a bit without a value yet was dropped (written as 0) when the bits were 2-state.
+  `wellen-0.25.7-split-bit-start.patch` fixes all three. To rebuild: unpack wellen 0.25.7 from
+  crates.io, apply the patch with `patch -p1`, add `[patch.crates-io] wellen = { path = "<that dir>" }`
+  to this commit's `Cargo.toml` and run `cargo build --target wasm32-unknown-unknown --release`
+  (Rust 1.93.1; the unpatched build reproduces the previous `filehandler.wasm` byte for byte, SHA-1
+  a324478279a2). Checked by `scripts/waveform-viewer-checks/run.sh machine array2late` (the reader's
+  merged values against the written ones).
 - `index.html`, `viewer.html`: a Content-Security-Policy `<meta>` tag (the
   scheme handler also sends it as a header): only bundled scripts, styles,
   fonts and the wasm, no inline script, no other origin.

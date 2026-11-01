@@ -1,0 +1,85 @@
+diff -ru a/src/signal/transform.rs b/src/signal/transform.rs
+--- a/src/signal/transform.rs
++++ b/src/signal/transform.rs
+@@ -30,20 +30,32 @@
+         })
+         .reduce(States::join)
+         .unwrap();
+-    let mut out = BitVectorBuilder::new(max_states, out_width);
+     // iteration - todo: split into its own function
+     let mut time = inputs
+         .iter()
+         .map(|i| i.time_indices.first().cloned().unwrap_or(0))
+         .min()
+         .unwrap_or(0);
++    // An input without a value at the start reads as X until its first change, which a
++    // 2-state output could not hold.
++    let starts_late = inputs
++        .iter()
++        .any(|i| i.time_indices.first() != Some(&time));
++    let max_states = if starts_late {
++        States::join(max_states, States::Four)
++    } else {
++        max_states
++    };
++    let mut out = BitVectorBuilder::new(max_states, out_width);
+     let mut offsets: Vec<Option<u32>> = inputs
+         .iter()
+         .map(|i| {
+             for (ii, i_time) in i.time_indices.iter().enumerate() {
+                 if *i_time > time {
++                    // The offset of the last change at or before `time` (a position in
++                    // time_indices, not the time-table index stored there).
+                     return if ii > 0 {
+-                        Some(i.time_indices[ii - 1])
++                        Some((ii - 1) as u32)
+                     } else {
+                         None
+                     };
+@@ -73,21 +85,23 @@
+         let maybe_next_time = inputs
+             .iter()
+             .zip(offsets.iter())
+-            // find the next time index
+-            .flat_map(|(i, offset)| offset.and_then(|o| i.time_indices.get(o as usize + 1)))
++            // find the next time index (an input without a value yet: its first change)
++            .flat_map(|(i, offset)| match offset {
++                Some(o) => i.time_indices.get(*o as usize + 1),
++                None => i.time_indices.first(),
++            })
+             // pick the smallest
+             .min();
+         if let Some(next_time) = maybe_next_time {
+             for ((i, offset), value) in inputs.iter().zip(offsets.iter_mut()).zip(values.iter_mut())
+             {
+-                // we only advance the signals which have a matching next time
+-                if let Some(o) = *offset {
+-                    let next_o = o + 1;
+-                    if i.time_indices.get(next_o as usize) == Some(next_time) {
+-                        *offset = Some(next_o);
+-                        let any_value = i.data.get_value_at(next_o as usize);
+-                        *value = Some(any_value.as_bit_vec().unwrap());
+-                    }
++                // we only advance the signals which have a matching next time; one without
++                // a value yet starts at its first change
++                let next_o = offset.map_or(0, |o| o + 1);
++                if i.time_indices.get(next_o as usize) == Some(next_time) {
++                    *offset = Some(next_o);
++                    let any_value = i.data.get_value_at(next_o as usize);
++                    *value = Some(any_value.as_bit_vec().unwrap());
+                 }
+             }
+             time = *next_time;
+@@ -218,6 +232,12 @@
+             .flat_map(|v| v.map(|v| v.states()))
+             .reduce(States::join)
+             .unwrap();
++        // the X bits of an input without a value need at least four states
++        let max_states = if values.iter().any(|v| v.is_none()) {
++            States::join(max_states, States::Four)
++        } else {
++            max_states
++        };
+         let mut out = BitVecValue::zero(max_states, self.width);
+ 
+         let mut bit = self.width;
