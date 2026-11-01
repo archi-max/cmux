@@ -311,6 +311,10 @@ enum WaveformDebugger {
                 defaultValue: "Break only when this is true at the clock edge"
             ),
             "debuggerConditionError": String(localized: "waveformDebugger.conditionError", defaultValue: "Condition of %1$@: %2$@"),
+            "debuggerLoading": String(
+                localized: "waveformDebugger.loading",
+                defaultValue: "The waveform is still loading; try again in a moment."
+            ),
             "debuggerLinePathsCapped": String(
                 localized: "waveformDebugger.linePathsCapped",
                 defaultValue: "%1$@: watching the first %2$@ of %3$@ signals"
