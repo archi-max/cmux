@@ -8,11 +8,29 @@ public struct SlangHierarchyItem: Sendable, Equatable {
     public var kind: String
     /// Where the item is declared: the identifier for variables and ports, the instantiation for instances.
     public var location: LSPLocation?
+    /// slang's type as getScope shows it: a port's starts with its direction (`input logic[3:0]`).
+    public var type: String?
+    /// An instance's module, with an instance array's range (`sub[3:0]`).
+    public var declName: String?
 
-    public init(name: String, kind: String, location: LSPLocation?) {
+    public init(name: String, kind: String, location: LSPLocation?, type: String? = nil, declName: String? = nil) {
         self.name = name
         self.kind = kind
         self.location = location
+        self.type = type
+        self.declName = declName
+    }
+
+    /// Whether this is an `input` port (not an output, inout or ref one).
+    var isInputPort: Bool { kind == "Port" && type?.hasPrefix("input ") == true }
+
+    /// An instance array's range from its declName (`sub[3:0]` gives 3 and 0).
+    var arrayRange: (left: Int, right: Int)? {
+        guard kind == "InstanceArray", let declName, declName.hasSuffix("]"),
+              let open = declName.lastIndex(of: "[") else { return nil }
+        let bounds = declName[declName.index(after: open)..<declName.index(before: declName.endIndex)].split(separator: ":", omittingEmptySubsequences: false)
+        guard bounds.count == 2, let left = Int(bounds[0]), let right = Int(bounds[1]) else { return nil }
+        return (left, right)
     }
 
     /// Whether the item has children of its own (an instance, generate block or interface port).
@@ -152,7 +170,8 @@ extension LanguageServerSession {
         // An instance array (`sub u [3:0] (...)`) shares one instantiation, module and parameters:
         // a connection as wide as the port goes to each element whole (`u[3].port` ... `u[0].port`).
         // One as wide as all elements' ports is sliced (no element has the whole net) and any other
-        // width is an error, so the width check below leaves both out. (slang-server doesn't list
+        // width is an error, so the width check below leaves both out. Only inputs: two elements'
+        // outputs on one net each hold one driver's value. (slang-server doesn't list
         // multi-dimensional arrays, and VCS and Icarus reject them.)
         for child in scope where child.kind == "Instance" || child.kind == "InstanceArray" {
             guard let connections = instanceConnections(child, texts: &texts) else { continue }
@@ -172,6 +191,7 @@ extension LanguageServerSession {
             let childScope = try await scopeChildrenSkippingUnresolved(first)
             for connection in ports {
                 guard let port = childScope.first(where: { $0.name == connection.port && $0.kind == "Port" }),
+                      elements.count == 1 || port.isInputPort,
                       try await declaredWidth(of: port, at: first + "." + connection.port, texts: &texts) == width else { continue }
                 aliases += elements.map { $0 + "." + connection.port }
             }
@@ -181,8 +201,8 @@ extension LanguageServerSession {
         var instanceName = String(parent.dropFirst(grandparent.count).drop { $0 == "." })
         var instanceKind = "Instance"
         // An element of a one-dimensional instance array (`u[2]`): the array's instantiation.
-        if !grandparent.isEmpty, instanceName.hasPrefix("["), instanceName.hasSuffix("]"), instanceName.count > 2,
-           instanceName.dropFirst().dropLast().allSatisfy({ $0.isASCII && ($0.isNumber || $0 == "-") }) {
+        if !grandparent.isEmpty, instanceName.hasPrefix("["), instanceName.hasSuffix("]"),
+           Int(instanceName.dropFirst().dropLast()) != nil {
             let array = grandparent
             grandparent = Self.parentPath(of: array)
             instanceName = String(array.dropFirst(grandparent.count).drop { $0 == "." })
@@ -191,6 +211,7 @@ extension LanguageServerSession {
         if item.kind == "Port", !grandparent.isEmpty, Self.isPlainIdentifier(instanceName) {
             let siblings = try await scopeChildrenSkippingUnresolved(grandparent)
             if let instance = siblings.first(where: { $0.name == instanceName && $0.kind == instanceKind }),
+               instance.kind == "Instance" || item.isInputPort || instance.arrayRange.map({ $0.left == $0.right }) == true,
                let connections = instanceConnections(instance, texts: &texts) {
                 for connection in connections where connection.port == name {
                     // Declared in this scope (not further up, as from inside a generate block).
@@ -918,7 +939,10 @@ extension LanguageServerSession {
                let url = editorURL(forServerURI: uri) {
                 location = LSPLocation(uri: url, range: range)
             }
-            return SlangHierarchyItem(name: name, kind: kind, location: location)
+            return SlangHierarchyItem(
+                name: name, kind: kind, location: location,
+                type: item["type"]?.stringValue, declName: item["declName"]?.stringValue
+            )
         }
     }
 
