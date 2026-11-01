@@ -97,6 +97,28 @@ let old = state3("100", "101")
     await sleep(600)
     expect(await read() == renumbered, "the next clean save reads the new types")
 
+    // Verify X1: the file of a clean, open editor changes on disk (an agent, git, another editor)
+    // and the editor reloads it. slang compiles it as saved: the new types are read on its report,
+    // before any re-simulation, and the editors' names refresh.
+    let external = state3("010", "011")
+    session.answer = .success(external)
+    let reads = session.reads.count
+    refreshes = FilePreviewLanguageFeatures.refreshes
+    await WaveformEnumLink.documentReloadedFromDisk(session, uri: URL(fileURLWithPath: "/rtl/fsm.sv"), text: "external", version: 9)
+    expect(session.reloads == ["external"], "X1: the reload goes to the session as a reload from disk")
+    WaveformEnumLink.serverReported(session)
+    await sleep(600)
+    let afterExternal = await read()
+    expect(session.reads.count == reads + 1, "X1: slang's report on the reloaded file reads the types again (\(session.reads.count - reads) reads)")
+    expect(afterExternal == external, "X1: the reloaded file's types, not the ones read before: \(afterExternal["state"]?.type.members.map(\.bits) ?? [])")
+    expect(FilePreviewLanguageFeatures.refreshes > refreshes, "X1: and the editors' names refresh")
+    // Then a re-simulation: slang refuses (another buffer's unsaved edit); never the types from before the reload.
+    session.answer = .failure(SlangEnumScopeError.unsavedEdits)
+    WaveformEnumLink.waveformReloading()
+    await sleep(100)
+    let refusedAfter = await read()
+    expect(refusedAfter.isEmpty || refusedAfter == external, "X1: a refused read after it never shows the old types")
+
     // The app's call sites (source check): each hook is called where the event happens.
     func body(of file: String, after marker: String) -> String {
         guard let text = try? String(contentsOf: root.appendingPathComponent(file), encoding: .utf8),
@@ -116,6 +138,10 @@ let old = state3("100", "101")
     expect(saveHook.contains("WaveformEnumLink.documentSaved(session)"), "the editor's save calls documentSaved")
     let reports = body(of: "Sources/Panels/FilePreviewLanguageFeatures.swift", after: "for await update in updates")
     expect(reports.contains("WaveformEnumLink.serverReported(session)"), "each slang report on the document calls serverReported")
+    let change = body(of: "Sources/Panels/FilePreviewLanguageFeatures.swift", after: "func textDidChange(isUserEdit")
+    expect(change.contains("isDirty"), "X1: a reload from disk checks the panel is clean")
+    let send = body(of: "Sources/Panels/FilePreviewLanguageFeatures.swift", after: "func sendCurrentText(")
+    expect(send.contains("WaveformEnumLink.documentReloadedFromDisk("), "X1: a clean reload is sent as a reload from disk")
     let reload = body(of: "Sources/Panels/WaveformSourceLink.swift", after: "static func waveformReloading(")
     expect(reload.contains("WaveformEnumLink.waveformReloading()"), "a waveform reload calls waveformReloading")
 }

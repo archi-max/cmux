@@ -42,6 +42,23 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         #expect(state.current("top.qa", now: Self.t0 + 11) == nil)
     }
 
+    /// A read that fails (not a refusal) drops the types read before it: they may be from before
+    /// a save, and a failure says nothing about the saved sources (verify X2).
+    @Test func aFailedReadDropsTheTypesReadBeforeIt() {
+        var state = SlangEnumScopeState()
+        _ = Self.read(&state, "top.u_fsm", .signals(Self.old), start: 0, end: 0.1)
+        _ = state.saved(at: Self.t0 + 5)
+        state.markStale()
+        #expect(Self.read(&state, "top.u_fsm", .failed, start: 5.4, end: 5.5) == [:])
+        #expect(state.known("top.u_fsm") == [:], "a failed read keeps nothing")
+        #expect(state.current("top.u_fsm", now: Self.t0 + 6) == [:])
+        // With no save since: still nothing kept.
+        _ = Self.read(&state, "top.u_fsm", .signals(Self.old), start: 6, end: 6.1)
+        state.markStale()
+        #expect(Self.read(&state, "top.u_fsm", .failed, start: 7, end: 7.1) == [:])
+        #expect(state.known("top.u_fsm") == [:], "nor with no save since")
+    }
+
     /// Verify N4: renumber, save, keep typing, re-simulate and reload. Every read after the save
     /// is refused (unsaved edits): the types read before the save are not shown.
     @Test func aRefusedReadAfterASaveDropsTheTypesReadBeforeIt() {
@@ -179,6 +196,55 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             state.markStale()
             neverOld(await read(), "the read on reload")
             neverOld(state.known("top.u_fsm"), "the entry on reload")
+        }
+    }
+
+    /// Verify X1 with slang: the file of a clean, open editor is changed on disk by something else
+    /// (an agent, git, another editor) and the editor reloads it. The next reads, as WaveformEnumLink
+    /// makes them (after slang's report, after a re-simulation's reload, after the retry lifetime),
+    /// must give the file's new types, never the ones read before.
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
+    func aCleanBufferReloadedFromDiskReadsTheNewTypes() async throws {
+        try await SlangEnumTypesTests.withServer { session, _, root in
+            let fsmFile = URL(fileURLWithPath: root + "/fsm.sv")
+            let reports = SlangEnumTypesTests.ReportLog()
+            let updates = await session.diagnosticsUpdates()
+            let listener = Task { for await _ in updates { await reports.add() } }
+            defer { listener.cancel() }
+            var state = SlangEnumScopeState()
+            func read() async -> [String: SlangEnumSignal] {
+                let ticket = state.readStarted("top.u_fsm", at: Date())
+                let outcome: SlangEnumScopeState.Outcome
+                do {
+                    outcome = .signals(try await session.slangEnumSignals(inScope: "top.u_fsm", cache: SlangEnumTypeCache()))
+                } catch SlangEnumScopeError.unsavedEdits {
+                    outcome = .refused
+                } catch {
+                    outcome = .failed
+                }
+                return state.readFinished(ticket, outcome, at: Date()) ?? [:]
+            }
+            await session.open(uri: fsmFile, text: SlangEnumTypesTests.fsm, version: 1)
+            #expect(await reports.waitForMore(than: 0))
+            #expect(await read()["state"]?.type.memberName(forBits: "101") == "EXEC")
+            // Renumbered on disk by something else; the clean editor reloads it.
+            let renumbered = SlangEnumTypesTests.fsm.replacingOccurrences(of: "DECODE = 3'd4", with: "DECODE = 3'd5")
+            try renumbered.write(to: fsmFile, atomically: true, encoding: .utf8)
+            let seen = await reports.count
+            await session.reloadedFromDisk(uri: fsmFile, text: renumbered, version: 2)
+            _ = state.saved(at: Date())  // WaveformEnumLink.documentSaved
+            #expect(await reports.waitForMore(than: seen))
+            _ = state.serverReported()
+            try await Task.sleep(for: SlangEnumScopeState.compiledDelay)
+            func named(_ signals: [String: SlangEnumSignal], _ when: String) {
+                let name = signals["state"]?.type.memberName(forBits: "101")
+                #expect(name == "DECODE", "\(when): 101 shows as \(name ?? "nothing")")
+            }
+            state.markStale()
+            named(await read(), "the read after slang's report")
+            state.markStale()  // a re-simulation, then the waveform reloads
+            named(await read(), "the read on reload")
+            named(state.known("top.u_fsm"), "the entry on reload")
         }
     }
 
