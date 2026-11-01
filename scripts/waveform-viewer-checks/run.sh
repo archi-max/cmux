@@ -115,10 +115,13 @@ case "${1:-}" in
     if [ $# -lt 3 ]; then echo "machine-fsdb: needs <ssh-host> <remote.fsdb> <local commit.log> [local.elf]"; exit 2; fi
     swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
-    # Exit 75: the dump never opened (a stuck connection); one retry with a fresh helper.
+    # Exit 75: the dump never opened (a stuck connection); one retry with a fresh helper. Each attempt
+    # keeps its own log (machine-fsdb.attemptN.log); machine-fsdb.log is the last one.
+    rm -f "$OUT"/machine-fsdb.attempt*.log
     for attempt in 1 2; do
-      set +e; "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" fsdb "$ASSETS/fsdb-helper" "$@" | tee "$OUT/machine-fsdb.log"; status=${PIPESTATUS[0]}; set -e
-      [ "$status" -eq 75 ] && [ "$attempt" -eq 1 ] && { echo "machine-fsdb: retrying once"; continue; }
+      set +e; "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" fsdb "$ASSETS/fsdb-helper" "$@" | tee "$OUT/machine-fsdb.attempt$attempt.log"; status=${PIPESTATUS[0]}; set -e
+      cp "$OUT/machine-fsdb.attempt$attempt.log" "$OUT/machine-fsdb.log"
+      [ "$status" -eq 75 ] && [ "$attempt" -eq 1 ] && { echo "machine-fsdb: retrying once (attempt 1's log: $OUT/machine-fsdb.attempt1.log)"; continue; }
       break
     done
     grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-fsdb.log"
