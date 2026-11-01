@@ -79,6 +79,8 @@ extension SlangCompilationActions {
 
     /// The server's compilation changed (or it restarted): read its tops again and update the headers.
     static func compilationDidChange(session: LanguageServerSession) {
+        // The state machine pane's answers were worked out for the design before.
+        WaveformFSMEngines.designChanged()
         Task { @MainActor in
             let tops = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }.map(\.name)
             let entry = Self.entry(for: session)
