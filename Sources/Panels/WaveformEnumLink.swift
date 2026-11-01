@@ -58,6 +58,12 @@ enum WaveformEnumLink {
         scheduleStale(session, after: delay)
     }
 
+    /// The clean buffer of an editor was reloaded from its file, changed by something else (an
+    /// agent, git, another editor). The buffer is the saved text (verify X1).
+    static func documentReloadedFromDisk(_ session: LanguageServerSession, uri: URL, text: String, version: Int) async {
+        await session.reloadedFromDisk(uri: uri, text: text, version: version)
+    }
+
     /// A waveform is loading its file again, usually a new simulation of changed sources: every
     /// session's types are read again.
     static func waveformReloading() {

@@ -14,6 +14,9 @@ import Foundation
         try await Task.sleep(for: .milliseconds(20))
         return try answer.get()
     }
+    /// Clean buffers reloaded from disk, in order (their texts).
+    var reloads: [String] = []
+    func reloadedFromDisk(uri: URL, text: String, version: Int) async { reloads.append(text) }
 }
 
 @MainActor enum FilePreviewLanguageFeatures {

@@ -345,6 +345,11 @@ public actor LanguageServerSession {
         notify("textDocument/didSave", params: .object(params))
     }
 
+    /// A clean buffer reloaded from its file (changed by git, an agent, another editor).
+    public func reloadedFromDisk(uri: URL, text: String, version: Int) async {
+        await change(uri: uri, text: text, version: version)
+    }
+
     /// The text of an open document, as last sent.
     func documentText(_ uri: URL) -> String? {
         documents[uri]?.text
