@@ -214,6 +214,10 @@ enum WaveformDebugger {
             WaveformDebuggerAsmBreakpoints.commitsReady(waveform)
             return
         }
+        if body["event"] as? String == "showAddress" {
+            WaveformDebuggerAsmBreakpoints.showAddress(body, waveform: waveform)
+            return
+        }
         // Its signal breakpoints changed: kept for the workspace's session.
         if body["event"] as? String == "breakpoints" {
             WaveformDebuggerLineBreakpoints.signalsReported(body, waveform: waveform)
