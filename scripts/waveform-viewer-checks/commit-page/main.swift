@@ -307,6 +307,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(enabled == 32, "at most 32 enabled instruction-text breakpoints: \(enabled)")
     expect(await toasts().contains("At most 32 breakpoints of this kind can be enabled"), "said: \(await toasts())")
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (/nope/.test(b.pattern || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
+    // A restored session past the cap: all kept, the ones past it off.
+    _ = await call("cmuxWaveform.debugger.restoreBreakpoints({ items: Array.from({ length: 33 }, (_, i) => ({ path: [], kind: 'commitText', pattern: 'cap' + i, enabled: true })) }); return null")
+    let capped = (await list()).filter { ($0["pattern"] as? String)?.hasPrefix("cap") == true }
+    expect(capped.count == 33 && capped.filter { $0["enabled"] as? Bool == true }.count == 32
+           && capped.first { $0["pattern"] as? String == "cap32" }?["enabled"] as? Bool == false,
+           "a restore of 33 instruction-text breakpoints: 33 kept, 32 enabled, the last off: \(capped.filter { $0["enabled"] as? Bool == false }.map { $0["pattern"] ?? "" })")
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (/^cap/.test(b.pattern || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
 
     // ---- listings (cmux owns their pc breakpoints, keyed by mark) ----
     _ = await call("""
@@ -325,6 +332,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let k1 = listed.first?["id"] as? Int
     l = await landings(k1)
     expect(l.forward == [25, 35, 45, 85], "a listing's breakpoint hits: \(l.forward)")
+    // cmux sends the marks again (a mark added elsewhere, a reparse): the same breakpoint, still the one hit.
+    let hitBefore = (await list()).first { $0["id"] as? Int == k1 }?["hit"] as? Bool
+    _ = await call("""
+      cmuxWaveform.debugger.setPcBreakpoints({ items: [
+        { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
+        { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: false, condition: 'top.flag' },
+        { key: 'K5', listingLabel: 'prog.dis: _start+0x8', pcs: ['0x80000008'], enabled: false }] }); return null
+    """)
+    let resent = (await list()).filter { $0["key"] as? String != nil }
+    let k1Again = resent.first { $0["key"] as? String == "K1" }
+    expect(hitBefore == true && resent.count == 3 && k1Again?["id"] as? Int == k1 && k1Again?["hit"] as? Bool == true,
+           "re-sent with one more: the same id, the hit mark kept: \(resent.map { [$0["key"] ?? "", $0["id"] ?? "", $0["hit"] ?? ""] })")
     let toldKeys = (listEvents.last ?? []).filter { $0["kind"] as? String == "pc" && $0["key"] != nil && !($0["key"] is NSNull) }
     expect(toldKeys.isEmpty, "cmux keeps them itself (not in the page's saved list): \(toldKeys)")
     // The list's checkbox, condition and remove tell cmux.
