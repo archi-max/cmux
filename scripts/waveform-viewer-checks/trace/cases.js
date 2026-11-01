@@ -6,7 +6,7 @@
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
 //   fanin { path or local name: bits }, xIndex [fan-in names read through an x index],
-//   trust, root, reasons [codes that must be there],
+//   trust, root, reasons [codes that must be there], viol [each decision's case violation or null],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
 /* global cmuxTrace, traceVcd, traceFiles */
 /* exported runTraceChecks */
@@ -19,6 +19,7 @@ const TRACE_DUMPS = {
   // Icarus 12 has no interface ports.
   f: ['plain', 'flowctrl', 'tmerge', 'course'],
   g: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
+  h: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -43,7 +44,7 @@ const TRACE_CASES = [
   { d: 'b', sig: 'tb_b.dut.raddr_q', t: 60, kind: 'proc', proc: 'AlwaysFF', line: 26, stmt: 'raddr_q <= raddr;', act: 55, sample: 54,
     dec: [['!rst_n', 'else']], fanin: { 'tb_b.dut.raddr': 'xx' }, trust: 'exact' },
   { d: 'b', sig: 'tb_b.dut.raddr', t: 54, kind: 'portIn', file: 'tb_b.sv', line: 6, since: 50, fanin: { 'tb_b.raddr': 'xx' }, trust: 'exact' },
-  { d: 'b', sig: 'tb_b.raddr', t: 54, kind: 'initial', root: 'testbench', since: 50, reasons: ['testbench'] },
+  { d: 'b', sig: 'tb_b.raddr', t: 54, kind: 'initial', root: 'testbench', since: 50, reasons: ['testbench'], file: 'tb_b.sv', line: 16, stmt: "raddr = 2'bxx;" },
   { d: 'b', sig: 'tb_b.dut.rdata', t: 80, kind: 'proc', line: 32, stmt: 'rdata = mem[raddr_q];', dec: [['mode_q', 0]],
     fanin: { 'tb_b.dut.raddr_q': '11', 'tb_b.dut.mem[3]': XX }, dumps: ['plain', 'flowctrl', 'tmerge', 'course'] },
   { d: 'b', sig: 'tb_b.dut.rdata', t: 100, kind: 'proc', line: 35, stmt: "rdata = 'x;", dec: [['mode_q', 'default']], value: XX, trust: 'exact' },
@@ -51,7 +52,9 @@ const TRACE_CASES = [
     fanin: { 'tb_b.dut.mode_q': 'xx' }, dumps: ['plain', 'flowctrl', 'tmerge', 'icarus'] },
   { d: 'b', sig: 'tb_b.dut.mode_q', t: 120, kind: 'proc', line: 27, stmt: 'mode_q  <= mode;', act: 115, sample: 114, fanin: { 'tb_b.dut.mode': 'xx' } },
   { d: 'b', sig: 'tb_b.dut.mode', t: 114, kind: 'portIn', file: 'tb_b.sv', line: 6, since: 110, fanin: { 'tb_b.mode': 'xx' } },
-  { d: 'b', sig: 'tb_b.mode', t: 114, kind: 'initial', root: 'testbench' },
+  { d: 'b', sig: 'tb_b.mode', t: 114, kind: 'initial', root: 'testbench', file: 'tb_b.sv', line: 19, stmt: "mode = 2'bxx;" },
+  // The testbench's write in effect at t, not the body's last (#delays summed along the body).
+  { d: 'b', sig: 'tb_b.mode', t: 100, kind: 'initial', file: 'tb_b.sv', line: 18, stmt: 'mode = 2\'d3;' },
   // Known: case item 1 and the memory write (FSDB-only memories: the VCDs have no mem).
   { d: 'b', sig: 'tb_b.dut.rdata', t: 140, kind: 'proc', line: 33, stmt: 'rdata = ~mem[raddr_q];', dec: [['mode_q', 1]], value: '11011101', reasons: ['notDumped'], trust: 'approximate', dumps: ['icarus'] },
   { d: 'b', sig: 'tb_b.dut.rdata', t: 140, kind: 'proc', line: 33, stmt: 'rdata = ~mem[raddr_q];', dec: [['mode_q', 1]], value: '11011101', reasons: ['notDumped'], trust: 'approximate', dumps: ['plain'] },
@@ -115,6 +118,36 @@ const TRACE_CASES = [
   { d: 'g', sig: 'tb_g.dut.q', t: 48, kind: 'proc', line: 15, stmt: "q <= 8'h0f;", act: 45, value: '00001111', dec: [['!rst_n', 'else']], trust: 'exact' },
   { d: 'g', sig: 'tb_g.dut.y', t: 30, kind: 'proc', proc: 'AlwaysComb', line: 21, stmt: "y = d ^ 8'hff;", value: '10100101', dec: [['en', 'then']], trust: 'exact' },
   { d: 'g', sig: 'tb_g.dut.y', t: 45, kind: 'proc', line: 20, stmt: "y = 8'h00;", value: '00000000', dec: [], trust: 'exact' },
+  // ---- H: z and tri-state, NBA, casex, x-index write, multi-driver, priority/unique, merge, delay ----
+  // (the dump is in ps, the design's delays in ns)
+  // A z passes through ports (implicit .* connections, the leaf names shown) and a tri-state bus.
+  { d: 'h', sig: 'tb_h.dut.u_leaf.sel', t: 72000, kind: 'portIn', stmt: '.sel(sel)', value: '0z10', trust: 'exact' },
+  { d: 'h', sig: 'tb_h.dut.sel', t: 72000, kind: 'portIn', stmt: '.sel(sel)', value: '0z10', trust: 'exact' },
+  { d: 'h', sig: 'tb_h.dut.u_leaf.sel_o', t: 72000, kind: 'assign', value: '0z10', trust: 'exact' },
+  { d: 'h', sig: 'tb_h.sel_o', t: 72000, kind: 'portOut', stmt: '.sel_o(sel_o)', value: '0z10', trust: 'exact' },
+  { d: 'h', sig: 'tb_h.dut.bus', t: 72000, kind: 'assign', value: 'zzzzzzzz', reasons: ['multiDriven'], trust: 'exact' },
+  // Two drivers: the second is the one whose value is on the bus.
+  { d: 'h', sig: 'tb_h.dut.bus', t: 56000, kind: 'assign', line: 61, stmt: 'bus = oe_b ? ~din', value: '10101011', reasons: ['multiDriven'], trust: 'exact' },
+  // Nonblocking read-after-write: r takes q's old value.
+  { d: 'h', sig: 'tb_h.dut.r', t: 36000, kind: 'proc', line: 40, stmt: "r <= q + 8'h01;", value: '00100010', fanin: { 'tb_h.dut.q': '00100001' }, trust: 'exact' },
+  // casex: an x in the selector, a z in the selector, wildcards in the items.
+  { d: 'h', sig: 'tb_h.dut.cx', t: 66000, kind: 'proc', stmt: "cx = 8'ha1;", value: '10100001', dec: [['sel', 0]], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
+  { d: 'h', sig: 'tb_h.dut.cx', t: 76000, kind: 'proc', stmt: "cx = 8'hb2;", value: '10110010', dec: [['sel', 1]], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
+  { d: 'h', sig: 'tb_h.dut.cx', t: 46000, kind: 'proc', stmt: "cx = 8'hc3;", value: '11000011', dec: [['sel', 2]], trust: 'exact' },
+  // An x-index write writes no element: mem[0] keeps its reset value (Icarus dumps the elements).
+  { d: 'h', sig: 'tb_h.dut.mem[0]', t: 50000, kind: 'proc', value: '00000000', trust: 'exact', dumps: ['icarus'] },
+  { d: 'h', sig: 'tb_h.dut.mem[1]', t: 50000, kind: 'proc', value: '00111101', trust: 'computed', dumps: ['icarus'] },
+  // priority: two items match, no violation; unique: the same is a violation.
+  { d: 'h', sig: 'tb_h.dut.pv', t: 36000, kind: 'proc', stmt: "pv = 8'h01;", value: '00000001', dec: [['pr', 0]], viol: [null], trust: 'exact' },
+  { d: 'h', sig: 'tb_h.dut.uv', t: 36000, kind: 'proc', stmt: "uv = 8'h11;", value: '00010001', dec: [['pr', 0]], viol: ['multipleMatches'] },
+  // An if on x under X-propagation: both branches merged, the step names the last write.
+  { d: 'h', sig: 'tb_h.dut.mv', t: 56000, kind: 'proc', line: 80, stmt: "mv <= 8'h5a;", reasons: ['xprop'], dumps: ['tmerge', 'course'] },
+  { d: 'h', sig: 'tb_h.dut.mv', t: 56000, kind: 'proc', line: 80, stmt: "mv <= 8'h5a;", value: '01011010', dec: [['c', 'else']], dumps: ['plain', 'icarus'] },
+  // An RTL delay makes the step approximate.
+  { d: 'h', sig: 'tb_h.dut.dly', t: 30000, kind: 'assign', stmt: 'dly = din', reasons: ['delay'], trust: 'approximate' },
+  // The testbench write in effect at t: the delays (ns) scaled to the dump's ps.
+  { d: 'h', sig: 'tb_h.din', t: 45000, kind: 'initial', file: 'tb_h.sv', line: 21, stmt: "din = 8'h43;", root: 'testbench' },
+  { d: 'h', sig: 'tb_h.din', t: 80000, kind: 'initial', file: 'tb_h.sv', line: 24, stmt: "din = 8'h76;", root: 'testbench' },
 ];
 
 function runTraceChecks() {
@@ -181,6 +214,7 @@ function runTraceChecks() {
       if (!String(d.src).includes(src)) { bad.push(`decision ${i} src ${d.src} lacks ${src}`); }
       if (d.taken !== taken) { bad.push(`decision ${i} taken ${JSON.stringify(d.taken)} != ${JSON.stringify(taken)}`); }
     });
+    (c.viol || []).forEach((v, i) => { const d = (step.decisions || [])[i]; want(`decision ${i} violation`, d ? (d.violation || null) : 'no decision', v); });
     if (c.dec && (step.decisions || []).length !== c.dec.length) { bad.push(`decisions: ${(step.decisions || []).length} != ${c.dec.length}`); }
     const codes = (step.reasons || []).map((r) => r.code);
     for (const r of c.reasons || []) { if (!codes.includes(r)) { bad.push(`reasons lack ${r} (have ${codes.join(',')})`); } }
