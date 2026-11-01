@@ -1,0 +1,364 @@
+$date
+	Sun Nov  1 16:32:21 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module tb_h $end
+$var wire 8 ! bus [7:0] $end
+$var wire 8 " uv [7:0] $end
+$var wire 4 # sel_o [3:0] $end
+$var wire 8 $ rd1 [7:0] $end
+$var wire 8 % rd0 [7:0] $end
+$var wire 8 & r [7:0] $end
+$var wire 8 ' q [7:0] $end
+$var wire 8 ( pv [7:0] $end
+$var wire 8 ) mv [7:0] $end
+$var wire 8 * dly [7:0] $end
+$var wire 8 + cx [7:0] $end
+$var reg 1 , c $end
+$var reg 1 - clk $end
+$var reg 8 . din [7:0] $end
+$var reg 1 / oe_a $end
+$var reg 1 0 oe_b $end
+$var reg 2 1 pr [1:0] $end
+$var reg 1 2 rst_n $end
+$var reg 4 3 sel [3:0] $end
+$var reg 2 4 widx [1:0] $end
+$scope module dut $end
+$var wire 8 5 bus [7:0] $end
+$var wire 1 , c $end
+$var wire 1 - clk $end
+$var wire 8 6 din [7:0] $end
+$var wire 8 7 dly [7:0] $end
+$var wire 1 / oe_a $end
+$var wire 1 0 oe_b $end
+$var wire 2 8 pr [1:0] $end
+$var wire 8 9 rd0 [7:0] $end
+$var wire 8 : rd1 [7:0] $end
+$var wire 1 2 rst_n $end
+$var wire 4 ; sel [3:0] $end
+$var wire 2 < widx [1:0] $end
+$var wire 4 = sel_o [3:0] $end
+$var reg 8 > cx [7:0] $end
+$var reg 8 ? mv [7:0] $end
+$var reg 8 @ pv [7:0] $end
+$var reg 8 A q [7:0] $end
+$var reg 8 B r [7:0] $end
+$var reg 8 C tmp [7:0] $end
+$var reg 8 D uv [7:0] $end
+$scope module u_leaf $end
+$var wire 4 E sel [3:0] $end
+$var wire 4 F sel_o [3:0] $end
+$upscope $end
+$upscope $end
+$upscope $end
+$scope module tb_h $end
+$scope module dut $end
+$var reg 8 G \mem[0] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_h $end
+$scope module dut $end
+$var reg 8 H \mem[1] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_h $end
+$scope module dut $end
+$var reg 8 I \mem[2] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_h $end
+$scope module dut $end
+$var reg 8 J \mem[3] [7:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+bx J
+bx I
+bx H
+bx G
+b0 F
+b0 E
+b10011 D
+bx C
+bx B
+bx A
+b11 @
+bx ?
+bx >
+b0 =
+b1 <
+b0 ;
+bx :
+bx 9
+b0 8
+bx 7
+b10000 6
+bz 5
+b1 4
+b0 3
+02
+b0 1
+00
+0/
+b10000 .
+0-
+0,
+bx +
+bx *
+bx )
+b11 (
+bx '
+bx &
+bx %
+bx $
+b0 #
+b10011 "
+bz !
+$end
+#1000
+b10000 *
+b10000 7
+#5000
+b0 J
+b0 I
+b0 H
+b0 $
+b0 :
+b0 G
+b0 %
+b0 9
+b1011010 )
+b1011010 ?
+b0 &
+b0 B
+b0 '
+b0 A
+b11111 C
+1-
+#10000
+0-
+#12000
+12
+#15000
+b11111 H
+b11111 $
+b11111 :
+b1 &
+b1 B
+b10000 '
+b10000 A
+1-
+#20000
+0-
+#22000
+b1 (
+b1 @
+b10001 "
+b10001 D
+b100001 !
+b100001 5
+b10100001 +
+b10100001 >
+b10 1
+b10 8
+1/
+b1000 #
+b1000 =
+b1000 F
+b1000 3
+b1000 ;
+b1000 E
+b100001 .
+b100001 6
+#23000
+b100001 *
+b100001 7
+#25000
+b101110 H
+b101110 $
+b101110 :
+b10001 &
+b10001 B
+b100001 '
+b100001 A
+b101110 C
+1-
+#30000
+0-
+#32000
+b10110010 +
+b10110010 >
+b110010 !
+b110010 5
+1,
+b11 1
+b11 8
+b110 #
+b110 =
+b110 F
+b110 3
+b110 ;
+b110 E
+b110010 .
+b110010 6
+#33000
+b110010 *
+b110010 7
+#35000
+b110010 )
+b110010 ?
+b111101 H
+b111101 $
+b111101 :
+b100010 &
+b100010 B
+b110010 '
+b110010 A
+b111101 C
+1-
+#40000
+0-
+#42000
+b11000011 +
+b11000011 >
+b1000011 !
+b1000011 5
+bx1 4
+bx1 <
+b11 #
+b11 =
+b11 F
+b11 3
+b11 ;
+b11 E
+b1000011 .
+b1000011 6
+#43000
+b1000011 *
+b1000011 7
+#45000
+b1000011 )
+b1000011 ?
+b110011 &
+b110011 B
+b1000011 '
+b1000011 A
+b1001100 C
+1-
+#50000
+0-
+#52000
+b10110010 +
+b10110010 >
+b10101011 !
+b10101011 5
+x,
+10
+0/
+b0 4
+b0 <
+b100 #
+b100 =
+b100 F
+b100 3
+b100 ;
+b100 E
+b1010100 .
+b1010100 6
+#53000
+b1010100 *
+b1010100 7
+#55000
+b1011010 )
+b1011010 ?
+b1011011 G
+b1011011 %
+b1011011 9
+b1000100 &
+b1000100 B
+b1010100 '
+b1010100 A
+b1011011 C
+1-
+#60000
+0-
+#62000
+b10011010 !
+b10011010 5
+b10 (
+b10 @
+b10010 "
+b10010 D
+b10100001 +
+b10100001 >
+b1 1
+b1 8
+b1100101 .
+b1100101 6
+bx000 #
+bx000 =
+bx000 F
+bx000 3
+bx000 ;
+bx000 E
+#63000
+b1100101 *
+b1100101 7
+#65000
+b1101010 G
+b1101010 %
+b1101010 9
+b1010101 &
+b1010101 B
+b1100101 '
+b1100101 A
+b1101010 C
+1-
+#70000
+0-
+#72000
+bz !
+bz 5
+b10110010 +
+b10110010 >
+0,
+00
+bx 4
+bx <
+b1110110 .
+b1110110 6
+b0z10 #
+b0z10 =
+b0z10 F
+b0z10 3
+b0z10 ;
+b0z10 E
+#73000
+b1110110 *
+b1110110 7
+#75000
+b1100110 &
+b1100110 B
+b1110110 '
+b1110110 A
+b1111001 C
+1-
+#80000
+0-
+#85000
+b1110111 &
+b1110111 B
+1-
+#90000
+0-
+#92000

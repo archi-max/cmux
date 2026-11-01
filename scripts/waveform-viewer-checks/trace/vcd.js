@@ -12,7 +12,8 @@ function traceVcd(text) {
     if (w === '$scope') { scope.push(toks[i + 2]); i += 3; continue; }
     if (w === '$upscope') { scope.pop(); i += 1; continue; }
     if (w === '$var') {
-      const width = Number(toks[i + 2]), code = toks[i + 3], name = toks[i + 4];
+      // An escaped identifier (Icarus names array words \\mem[0]) loses its backslash.
+      const width = Number(toks[i + 2]), code = toks[i + 3], name = toks[i + 4].replace(/^\\/, '');
       const path = [...scope, name].join('.');
       const s = { width, changes: [] };
       if (!sig.has(path)) { sig.set(path, s); }
