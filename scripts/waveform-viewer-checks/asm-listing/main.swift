@@ -144,6 +144,27 @@ var failures = 0
     await settle(300)
     expect(AB.marks[workspace]?.first { $0.id == bnez }.map { !$0.lost && $0.pc == 0x8000_000c } == true, "back on bnez when the code is: \(String(describing: AB.marks[workspace]?.first { $0.id == bnez }))")
 
+    // Many moved at once: three are said, then one line for the rest.
+    let manySpace = UUID()
+    let manyViewer = FilePreviewPanel(workspaceId: manySpace, filePath: "/w/many.vcd")
+    AB.viewers = { $0 == workspace ? [viewer] : ($0 == manySpace ? [manyViewer] : []) }
+    let four = "Disassembly of section .text:\n\n00000000 <f>:\n   0:\t0001                \tnop\n"
+        + "   2:\t4501                \tli\ta0,0\n   4:\t4505                \tli\ta0,1\n   6:\t4509                \tli\ta0,2\n   8:\t450d                \tli\ta0,3\n"
+    let manyView = makeView(four, path: "/w/four.dis", workspace: manySpace)
+    expect(await parsed(manyView), "a small listing")
+    for line in 4...7 { _ = AB.gutterClicked(manyView, lineStart: lineStart(line, in: four)) }
+    expect(AB.marks[manySpace]?.count == 4, "four breakpoints")
+    let shifted = four.replacingOccurrences(of: "   2:\t4501", with: "   2:\t0001                \tnop\n   4:\t4501")
+        .replacingOccurrences(of: "   4:\t4505", with: "   6:\t4505").replacingOccurrences(of: "   6:\t4509", with: "   8:\t4509")
+        .replacingOccurrences(of: "   8:\t450d", with: "   a:\t450d")
+    manyView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: (manyView.string as NSString).length), with: shifted)
+    await settle(300)
+    expect(AB.marks[manySpace]?.map(\.pc) == [4, 6, 8, 0xa], "all four followed: \(AB.marks[manySpace]?.map(\.pc) ?? [])")
+    let manySaid = manyViewer.nativeViewSessions.waveform.calls.filter { $0.function == "say" }.map { $0.argument["text"] as? String ?? "" }
+    expect(manySaid.count == 4 && manySaid[0].hasPrefix("four.dis: the breakpoint on li a0,0 moved with its code, from f+0x2 (0x2) to f+0x4 (0x4)")
+           && manySaid[3] == "Other breakpoints in four.dis moved with their code too (the breakpoint list has them).", "three, then the rest: \(manySaid)")
+    AB.viewers = { $0 == workspace ? [viewer] : [] }
+
     // The current commit: an arrow and a highlight on its line, the cycle's others lighter; Stop clears it.
     AB.currentReported(["pcs": ["0x80000004", "0x80000006"], "current": "0x80000006"], waveform: viewer)
     expect(AB.currentLineStart(in: view) == lineStart(9, in: text), "the arrow is on the current commit's line")
