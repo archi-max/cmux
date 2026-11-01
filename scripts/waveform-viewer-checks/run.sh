@@ -115,7 +115,12 @@ case "${1:-}" in
     if [ $# -lt 3 ]; then echo "machine-fsdb: needs <ssh-host> <remote.fsdb> <local commit.log> [local.elf]"; exit 2; fi
     swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
-    "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" fsdb "$ASSETS/fsdb-helper" "$@" | tee "$OUT/machine-fsdb.log"
+    # Exit 75: the dump never opened (a stuck connection); one retry with a fresh helper.
+    for attempt in 1 2; do
+      set +e; "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" fsdb "$ASSETS/fsdb-helper" "$@" | tee "$OUT/machine-fsdb.log"; status=${PIPESTATUS[0]}; set -e
+      [ "$status" -eq 75 ] && [ "$attempt" -eq 1 ] && { echo "machine-fsdb: retrying once"; continue; }
+      break
+    done
     grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-fsdb.log"
     ;;
   machine-mutants)

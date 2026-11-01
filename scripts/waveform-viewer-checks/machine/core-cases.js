@@ -245,6 +245,22 @@
       const h2 = held([0x100, 0x104, 0x108, 0x10c], [0, 1, 2, 2]);
       ok(h2.count === 4 && h2.diagnostics.orderGaps === 1 && h2.diagnostics.heldRepeats === 0,
         'a repeated order with another pc stays, as a gap: ' + JSON.stringify([h2.count, h2.diagnostics]));
+      // The key a built table is cached under: the dump's identity (path, size, mtime, helper version)
+      // with the source's mapping and the clock edges; no identity, no caching.
+      {
+        const src = M().detect([{ path: ['t'], depth: 0, vars: ['valid', 'pc_rdata', 'order', 'insn'].map((n) => ({ name: 'rvfi_' + n, width: n === 'valid' ? 1 : 32 })) }])[0];
+        const id = { path: '/a/dump.fsdb', size: 100, mtimeMs: 5, helper: 'v1-x86_64' };
+        const e = Float64Array.from([5, 15, 25]);
+        const k = (i, s2, e2) => M().tableKey(i, s2 || src, e2 || e, 'edge');
+        const base = k(id);
+        ok(typeof base === 'string' && base === k(Object.assign({}, id)), 'the same identity, source and edges give the same key');
+        ok([{ path: '/b/dump.fsdb' }, { size: 101 }, { mtimeMs: 6 }, { helper: 'v2-x86_64' }].every((d) => k(Object.assign({}, id, d)) !== base)
+          && k(id, null, Float64Array.from([5, 15, 35])) !== base && M().tableKey(id, src, e, 'preEdge') !== base,
+          'another path, size, mtime, helper version, clock or sampling is another key');
+        const other = M().detect([{ path: ['t'], depth: 0, vars: ['valid', 'pc_rdata', 'order', 'insn', 'rd_addr'].map((n) => ({ name: 'rvfi_' + n, width: n === 'valid' ? 1 : (n === 'rd_addr' ? 5 : 32) })) }])[0];
+        ok(k(id, other) !== base, 'another mapping is another key');
+        ok(k(null) === null && k({ path: '/a' }) === null && k(Object.assign({}, id, { mtimeMs: null })) === null, 'no identity (or no size/mtime): no key');
+      }
       // The offer rule never auto-uses a lone commit_valid/pc pair.
       const offer = M().detect([{ path: ['tb', 'core'], depth: 1, vars: [{ name: 'commit_valid', width: 1 }, { name: 'commit_pc', width: 32 }] }]);
       ok(offer.length === 1 && offer[0].family === 'offer', 'commit_valid + commit_pc is offered, not used: ' + JSON.stringify(offer.map((s) => s.family)));

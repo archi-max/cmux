@@ -86,6 +86,7 @@
         }
       }
       expect(s.memMask === x.mask, opts.name + ': ' + x.mask + '-relative masks detected: ' + s.memMask);
+      expect(s.cacheHit === false, opts.name + ': a VCD read in the page has no identity, so nothing is cached: ' + s.cacheHit);
       // The reader's own values, every signal the generator wrote, at the dump's first time and every
       // edge (x included): split 1-bit arrays the reader merged (valid [0], valid [1] as valid[1:0]),
       // array elements it made scopes of (order > [0]) and plain vectors.
@@ -257,8 +258,11 @@
       note(opts.name + ': go to commit + registers: ' + times.map((t) => t.toFixed(1)).join(', ') + ' ms');
       // Warm: the same stream built again (the changes are cached in the page's reader).
       const t2 = performance.now();
-      await M.useSource({ index: 0 });
-      note(opts.name + ': rebuilt warm in ' + (performance.now() - t2).toFixed(0) + ' ms');
+      const w = await M.useSource({ index: 0 });
+      const warmMs = performance.now() - t2;
+      note(opts.name + ': rebuilt warm in ' + warmMs.toFixed(0) + ' ms');
+      expect(w && w.cacheHit === true && w.count === s.count && warmMs < buildMs / 4,
+        opts.name + ': the warm rebuild reuses the table cached by the dump\'s identity: ' + JSON.stringify([w && w.cacheHit, w && w.count, Math.round(warmMs), Math.round(buildMs)]));
       const t3 = performance.now();
       M.setMode({ mode: 'instruction' });
       for (let i = 0; i < 20; i++) { await D.step({ by: 1 }); }

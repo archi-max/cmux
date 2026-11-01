@@ -19,6 +19,9 @@ let which = args[4]
 let cores = ["nerv", "picorv32", "ibex"]
 var failures = 0
 let isFSDB = which == "fsdb"
+let launched = Date()
+/// Ready (90 s) plus one open on a busy host; a longer wait is a stuck connection, not a slow one.
+let openTimeout: TimeInterval = 240
 func shellQuoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
 func expect(_ ok: Bool, _ what: String) { print(ok ? "ok   " : "FAIL ", what); if !ok { failures += 1 } }
@@ -133,7 +136,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             let host = args[6]
             helper = WaveformFSDBHelper(sshArguments: { cmd in
                 ["-o", "BatchMode=yes", "-T", "--", host, "exec nice -n 10 bash -c " + shellQuoted(cmd)]
-            }, resourceRoot: URL(fileURLWithPath: args[5], isDirectory: true)) { status in print("      [helper]", status) }
+            }, resourceRoot: URL(fileURLWithPath: args[5], isDirectory: true)) { status in print("      [helper]", status, "at", Int(Date().timeIntervalSince(launched)), "s") }
+            // The dump must open within openTimeout. If it doesn't (one run sat at "connecting" for 840 s while
+            // another Verdi loaded on the host), say where it stopped and exit 75 so run.sh retries once.
+            DispatchQueue.main.asyncAfter(deadline: .now() + openTimeout) { [weak self] in
+                guard let self, !self.started else { return }
+                print("FAIL  the FSDB did not open within \(Int(openTimeout)) s (helper connect, install or the open request); exit 75 to retry")
+                self.helper?.stop()
+                exit(75)
+            }
         }
         web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
     }
