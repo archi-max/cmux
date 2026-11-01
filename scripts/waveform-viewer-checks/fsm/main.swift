@@ -114,7 +114,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(requested.count == asked + 1 && requested.last == ["tb", "dut", "u_ctl", "state"],
            "the click posts one fsmRequest with the row's dump path: \(requested.suffix(2))")
     // cmux's answers (WaveformFSMEngines.requested): the status, then the model, through callPage's body.
-    let native = "const link = window.cmuxWaveform && window.cmuxWaveform.fsm;\nreturn link ? await link.show(argument) : null;"
+    let native = "const link = window.cmuxWaveform && window.cmuxWaveform.fsm;\nreturn link ? await link.answer(argument) : null;"
     func answer(_ argument: [String: Any]) async {
       do { _ = try await web.callAsyncJavaScript(native, arguments: ["argument": argument], in: nil, contentWorld: .page) }
       catch { print("JS ERROR native show", error) }
@@ -286,6 +286,54 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(400)
     let kept = await call("return document.getElementById('fsm').getBoundingClientRect().width") as? Double ?? -1
     expect(abs(kept - dragged) < 1.5, "F4: closed and shown again, the pane keeps the user's width: \(kept)")
+
+    // Verify G1: a drag over the viewer frame keeps resizing (the frame takes no pointer events while
+    // dragging), and a move with no button held, or the window losing focus, ends the drag.
+    let g1 = await call("""
+      const g = document.querySelector('#fsm .fsm-grip');
+      const pane = document.getElementById('fsm');
+      const viewer = document.getElementById('viewer');
+      if (!g || !viewer) { return null; }
+      const r = g.getBoundingClientRect(); const x = r.left + 2; const y = r.top + 40;
+      const w0 = pane.getBoundingClientRect().width;
+      g.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, clientX: x, clientY: y }));
+      const during = getComputedStyle(viewer).pointerEvents;
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: x - 20, clientY: y }));
+      const w1 = pane.getBoundingClientRect().width;
+      // Released over the frame: the host saw no mouseup; the next move has no button.
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 0, clientX: x - 40, clientY: y }));
+      const w2 = pane.getBoundingClientRect().width;
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 0, clientX: x - 80, clientY: y }));
+      const w3 = pane.getBoundingClientRect().width;
+      const after = getComputedStyle(viewer).pointerEvents;
+      const stillResizing = pane.classList.contains('resizing');
+      // A drag ended by the window losing focus.
+      g.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, clientX: x, clientY: y }));
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: x - 120, clientY: y }));
+      const w4 = pane.getBoundingClientRect().width;
+      return [during, Math.round(w1 - w0), Math.round(w2 - w1), Math.round(w3 - w1), after, stillResizing, Math.round(w4 - w3)];
+    """) as? [Any]
+    expect((g1?[0] as? String) == "none", "G1: while dragging, the viewer frame takes no pointer events: \(String(describing: g1))")
+    expect((g1?[1] as? Int) == 20, "G1: a move with the button held resizes: \(String(describing: g1))")
+    expect((g1?[3] as? Int) == 0 && (g1?[5] as? Bool) == false && (g1?[4] as? String) != "none",
+           "G1: a move with no button held ends the drag, and the frame takes events again: \(String(describing: g1))")
+    expect((g1?[6] as? Int) == 0, "G1: the window losing focus ends a drag: \(String(describing: g1))")
+    _ = await call("window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); return null")
+
+    // Verify G3: cmux's late answers are matched to the pane: an answer for a row asked about before
+    // the latest one is dropped, and an answer after the pane closed doesn't open it again.
+    let lpPath: [String] = ["tb", "dut", "u_lp", "st"]
+    _ = await call("cmuxWaveform.fsm.request(\(ctlPath)); cmuxWaveform.fsm.request(['tb', 'dut', 'u_lp', 'st']); return null")
+    await answer(["path": lpPath, "status": "Looking for the state machine…"])
+    await answer(["path": ["tb", "dut", "u_ctl", "state"], "model": modelObject, "note": "late"])
+    let afterLate = await call("const p = document.getElementById('fsm'); return [p.querySelector('.fsm-signal').textContent, p.querySelectorAll('svg .fsm-node').length]") as? [Any] ?? []
+    expect((afterLate.first as? String) == "tb.dut.u_lp.st" && (afterLate.last as? Int) == 0,
+           "G3: a late answer for the row asked about before doesn't replace the pane: \(afterLate)")
+    _ = await call("cmuxWaveform.fsm.hide(); return null")
+    await answer(["path": lpPath, "status": "No state machine found for this signal."])
+    let reopened = await call("const p = document.getElementById('fsm'); return !p.hidden") as? Bool
+    expect(reopened == false, "G3: an answer after the pane closed doesn't open it again")
 
     // Verify F3: the local (wellen) backend honours the change cap too, and over it a click says so
     // instead of "Not later in the waveform".
