@@ -214,10 +214,13 @@ final class FilePreviewLanguageFeatures: NSObject {
             scheduleInlineValues(after: .milliseconds(600))
         }
         changeTask?.cancel()
+        // A reload of the clean buffer from its file (changed by an agent, git, another editor)
+        // is sent at once, as a save: a keystroke right after it is then an edit of the saved text.
+        let reloadedClean = !isUserEdit && linkPanel?.isDirty == false
         changeTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.changeDebounce)
+            if !reloadedClean { try? await Task.sleep(for: Self.changeDebounce) }
             guard !Task.isCancelled else { return }
-            await self?.sendCurrentText()
+            await self?.sendCurrentText(reloadedFromDisk: reloadedClean)
         }
         if isUserEdit, grewByOneCharacter {
             scheduleAutomaticCompletion()
@@ -275,8 +278,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         documentVersion = 1
         lastSentText = text
         await session.open(uri: context.documentURI, text: text, version: documentVersion)
-        // Edits made while the server was starting.
-        await sendCurrentText()
+        // Edits made while the server was starting (or a reload of the clean buffer).
+        await sendCurrentText(reloadedFromDisk: linkPanel?.isDirty == false)
         updateSlangHeader()
         SlangCompilationActions.refreshListing(for: self)
         SlangCompilationActions.compilationDidChange(session: session)
@@ -310,13 +313,18 @@ final class FilePreviewLanguageFeatures: NSObject {
         completionMirror = mirror
     }
 
-    func sendCurrentText() async {
+    /// - reloadedFromDisk: the buffer is clean, just loaded from its file (verify X1).
+    func sendCurrentText(reloadedFromDisk: Bool = false) async {
         guard let text = textView?.string else { return }
         await completionMirror?.change(text: text)
         guard let session, let documentURI, text != lastSentText else { return }
         documentVersion += 1
         lastSentText = text
-        await session.change(uri: documentURI, text: text, version: documentVersion)
+        if reloadedFromDisk {
+            await WaveformEnumLink.documentReloadedFromDisk(session, uri: documentURI, text: text, version: documentVersion)
+        } else {
+            await session.change(uri: documentURI, text: text, version: documentVersion)
+        }
     }
 
     /// The pool restarts a dead server in place and re-opens its documents.
