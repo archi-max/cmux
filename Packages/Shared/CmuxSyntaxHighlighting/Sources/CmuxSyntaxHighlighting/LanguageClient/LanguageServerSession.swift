@@ -363,6 +363,13 @@ public actor LanguageServerSession {
         return LSPResponseDecoding.hoverText(result)
     }
 
+    /// The document's symbols (`textDocument/documentSymbol`), as the server answers.
+    func documentSymbols(uri: URL) async throws -> JSONValue {
+        try await request("textDocument/documentSymbol", params: .object([
+            "textDocument": .object(["uri": .string(serverURI(for: uri))]),
+        ]))
+    }
+
     /// Definition locations for the symbol at `position`.
     public func definition(uri: URL, position: LSPPosition) async throws -> [LSPLocation] {
         let result = try await request("textDocument/definition", params: positionParams(uri: uri, position: position))
