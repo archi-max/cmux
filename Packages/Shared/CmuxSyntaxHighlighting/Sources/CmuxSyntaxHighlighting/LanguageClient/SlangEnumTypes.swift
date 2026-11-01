@@ -105,6 +105,91 @@ public actor SlangEnumTypeCache {
 public enum SlangEnumValues {
     /// The most members one type may have, and the widest enum read.
     static let maxMembers = 4096
+    /// Most member hovers one scope read sends (slang-server answers one request at a time;
+    /// over SSH each is a round trip). Types past it are left out of that read.
+    public static let defaultMaxMemberHovers = 512
+
+    // MARK: Tables for the viewer
+
+    /// A table's id for the viewer page: the type's name, width and members, the same in every
+    /// process (FNV-1a, not Swift's seeded `Hasher`).
+    public static func tableId(_ type: SlangEnumType) -> String {
+        "\(type.name)|\(type.width)|\(stableHash(type.members))"
+    }
+
+    /// The name of a type's table in the viewer's Alias menu, and in `alias:<label>` formats
+    /// saved with rows: a function of the type alone, so a restored row names the same type
+    /// after a relaunch whatever else is shown. A typedef's scoped name and width say which
+    /// type it is (one typedef has one value set per width, see `memberValue`); an anonymous
+    /// enum's spelling doesn't, so its label carries the hash too.
+    public static func tableLabel(_ type: SlangEnumType) -> String {
+        let label = "\(type.name) [\(type.width)]"
+        return type.name.hasPrefix("enum{") ? "\(label) \(stableHash(type.members).prefix(6))" : label
+    }
+
+    /// 64-bit FNV-1a of the members' names and bits, as 16 hex digits.
+    public static func stableHash(_ members: [SlangEnumMember]) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        func add(_ text: String) {
+            for byte in text.utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x100000001b3
+            }
+        }
+        for member in members {
+            add(member.name); add("="); add(member.bits); add(";")
+        }
+        return String(hash, radix: 16).leftPadded(to: 16)
+    }
+
+    // MARK: When to read types again
+
+    /// Whether an edit whose lines (before and after it) are `lines` may change an enum type
+    /// or which signals have one, so the types are read again: a typedef, an enum, a parameter
+    /// or its override, an import, a macro, an instance, or a declaration of one of `typeNames`.
+    /// Other edits (statements, comments) keep the types already read.
+    public static func editMayChangeEnumTypes(lines: String, typeNames: Set<String>) -> Bool {
+        for raw in lines.split(separator: "\n", omittingEmptySubsequences: false) {
+            var line = Substring(raw)
+            if let comment = line.range(of: "//") { line = line[..<comment.lowerBound] }
+            let text = line.trimmingCharacters(in: .whitespaces)
+            if text.isEmpty { continue }
+            if text.contains("`") || text.contains("#(") || text.contains("# (") { return true }
+            let words = identifiers(text)
+            if !keywordsThatChangeTypes.isDisjoint(with: words) { return true }
+            if !typeNames.isDisjoint(with: words) { return true }
+            // `.B(5),` (a named override or port on its own line) and `mod inst (` (an instance).
+            if text.range(of: #"^\.\s*[A-Za-z_]\w*\s*\("#, options: .regularExpression) != nil { return true }
+            if text.range(of: #"^[A-Za-z_]\w*\s+[A-Za-z_]\w*\s*(\[[^\]]*\]\s*)*\("#, options: .regularExpression) != nil,
+               let first = words.first, !statementKeywords.contains(first) { return true }
+        }
+        return false
+    }
+
+    private static let keywordsThatChangeTypes: Set<String> = [
+        "enum", "typedef", "parameter", "localparam", "defparam", "import", "package", "endpackage",
+        "module", "endmodule", "interface", "endinterface", "generate", "endgenerate", "type",
+    ]
+    private static let statementKeywords: Set<String> = [
+        "if", "else", "for", "foreach", "while", "case", "casez", "casex", "unique", "unique0", "priority",
+        "assign", "always", "always_ff", "always_comb", "always_latch", "initial", "final", "return", "begin", "end",
+        "assert", "assume", "cover", "wait", "repeat", "forever", "do", "function", "task",
+    ]
+
+    private static func identifiers(_ text: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        for ch in text {
+            if ch == "_" || ch == "$" || ch.isLetter || ch.isNumber {
+                current.append(ch)
+            } else {
+                if !current.isEmpty, current.first?.isNumber == false { out.append(current) }
+                current = ""
+            }
+        }
+        if !current.isEmpty, current.first?.isNumber == false { out.append(current) }
+        return out
+    }
     static let maxWidth = 4096
 
     public enum ScopeType: Sendable, Equatable {
@@ -371,7 +456,11 @@ extension LanguageServerSession {
     /// slang's: the type and width from getScope, the members from documentSymbol, each member's
     /// value from its hover (the section of this instance's width). A type a member of which has
     /// no value there (a range member, `A[2]`) is left out rather than guessed.
-    public func slangEnumSignals(inScope hierPath: String, cache: SlangEnumTypeCache) async throws -> [String: SlangEnumSignal] {
+    public func slangEnumSignals(
+        inScope hierPath: String, cache: SlangEnumTypeCache,
+        maxMemberHovers: Int = SlangEnumValues.defaultMaxMemberHovers
+    ) async throws -> [String: SlangEnumSignal] {
+        let budget = HoverBudget(maxMemberHovers)
         let result = try await executeCommand("slang.getScope", argument: .string(hierPath))
         var named: [(name: String, typeName: String, width: Int, location: LSPLocation)] = []
         var arrays: [(name: String, element: String, location: LSPLocation)] = []
@@ -397,7 +486,7 @@ extension LanguageServerSession {
         var byTypeName: [String: SlangEnumType] = [:]
         for signal in named {
             guard let link = try await enumTypeLink(ofDeclarationAt: signal.location, cache: cache),
-                  let type = try await enumType(at: link, width: signal.width, cache: cache) else { continue }
+                  let type = try await enumType(at: link, width: signal.width, cache: cache, budget: budget) else { continue }
             out[signal.name] = SlangEnumSignal(type: type, isArray: false)
             byTypeName[signal.typeName] = type
         }
@@ -405,7 +494,7 @@ extension LanguageServerSession {
             let parts = array.element.components(separatedBy: "::")
             if let type = byTypeName[array.element] ?? byTypeName[parts.last ?? ""] {
                 out[array.name] = SlangEnumSignal(type: type, isArray: true)
-            } else if let type = try await enumType(named: array.element, declaredIn: array.location.uri, cache: cache) {
+            } else if let type = try await enumType(named: array.element, declaredIn: array.location.uri, cache: cache, budget: budget) {
                 out[array.name] = SlangEnumSignal(type: type, isArray: true)
             }
         }
@@ -444,14 +533,17 @@ extension LanguageServerSession {
     /// The enum whose name is at `link`, as an instance of width `width` has it.
     /// Keyed by typedef and width, not by instance. This is safe because `memberValue` takes a value only when
     /// every instance of that width agrees, so the answer is the same whichever instance asks.
-    private func enumType(at link: SlangEnumValues.TypeLink, width: Int, cache: SlangEnumTypeCache) async throws -> SlangEnumType? {
+    private func enumType(at link: SlangEnumValues.TypeLink, width: Int, cache: SlangEnumTypeCache, budget: HoverBudget) async throws -> SlangEnumType? {
         let key = Self.key(link.uri, link.position) + "/\(width)"
         if let cached = await cache.type(key) { return cached }
         let symbols = try await slangDocumentSymbols(link.uri, cache: cache)
-        var type: SlangEnumType?
-        if let members = SlangEnumValues.enumMembers(inSymbols: symbols, containing: link.position) {
-            type = try await enumType(members: members, uri: link.uri, width: width)
+        guard let members = SlangEnumValues.enumMembers(inSymbols: symbols, containing: link.position) else {
+            await cache.setType(nil, key)
+            return nil
         }
+        // Over the budget: left out of this read, not cached as having no type.
+        guard budget.take(members.count) else { return nil }
+        let type = try await enumType(members: members, uri: link.uri, width: width)
         await cache.setType(type, key)
         return type
     }
@@ -459,7 +551,7 @@ extension LanguageServerSession {
     /// An array's element type, by name: in the declaring file, else in a package
     /// (`pkg::t`, or any package of the design for an imported `t`). Its width is the one its
     /// members' values have, when there is only one (not a parameterized type).
-    private func enumType(named element: String, declaredIn uri: URL, cache: SlangEnumTypeCache) async throws -> SlangEnumType? {
+    private func enumType(named element: String, declaredIn uri: URL, cache: SlangEnumTypeCache, budget: HoverBudget) async throws -> SlangEnumType? {
         let parts = element.components(separatedBy: "::")
         let name = parts.last ?? element
         var files: [URL] = parts.count == 1 ? [uri] : []
@@ -477,7 +569,7 @@ extension LanguageServerSession {
             guard let members = SlangEnumValues.enumMembers(inSymbols: symbols, named: name), let first = members.first,
                   let hover = try await enumHover(file, first.position) else { continue }
             let widths = Set(SlangEnumValues.hoverMemberValues(hover).filter { $0.name == first.name }.compactMap { SlangEnumValues.literalWidth($0.literal) })
-            guard widths.count == 1, let width = widths.first else { return nil }
+            guard widths.count == 1, let width = widths.first, budget.take(members.count) else { return nil }
             return try await enumType(members: members, uri: file, width: width)
         }
         return nil
@@ -497,5 +589,23 @@ extension LanguageServerSession {
         }
         guard let scopeName else { return nil }
         return SlangEnumType(name: scopeName, width: width, members: out)
+    }
+}
+
+/// Member hovers left for one scope read.
+final class HoverBudget: @unchecked Sendable {
+    private var left: Int
+    init(_ count: Int) { left = count }
+    /// Takes `count` hovers if that many are left.
+    func take(_ count: Int) -> Bool {
+        guard count <= left else { return false }
+        left -= count
+        return true
+    }
+}
+
+private extension String {
+    func leftPadded(to length: Int) -> String {
+        count >= length ? self : String(repeating: "0", count: length - count) + self
     }
 }

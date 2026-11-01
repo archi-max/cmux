@@ -1099,9 +1099,12 @@ enum WaveformSourceLink {
                 "raw": names.map { enums[$0].map { !$0.isArray } ?? false },
             ] as [String: Any]
         ) as? [Any] ?? []
-        let values: [String?] = names.indices.map { index in
-            guard index < result.count, let value = result[index] as? String else { return nil }
-            return Self.displayableValue(value)
+        // A row's text as it shows it, or (enum signals in their own format, or not shown) the bits to name.
+        let values: [WaveformEnumLink.PageValue?] = names.indices.map { index in
+            guard index < result.count else { return nil }
+            if let text = result[index] as? String { return Self.displayableValue(text).map { .text($0) } }
+            if let bits = (result[index] as? [String: Any])?["bits"] as? String { return .bits(bits) }
+            return nil
         }
         return WaveformEnumLink.named(values, names: names, enums: enums).map { value in
             value.flatMap { value in

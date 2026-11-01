@@ -900,6 +900,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             editor.inlineModuleInstances = [:]
             editor.scheduleInlineValues(after: .milliseconds(120))
         }
+        WaveformEnumLink.designChanged(session)
         SlangCompilationActions.compilationDidChange(session: session)
     }
 
@@ -938,8 +939,27 @@ final class FilePreviewLanguageFeatures: NSObject {
     private func textChangedForInlineValues(from location: Int) {
         inlineScanEditedFrom = min(inlineScanEditedFrom ?? location, location)
         inlineTextGeneration += 1
-        // A typedef may have changed: enum types are read again.
-        if let session { WaveformEnumLink.invalidate(session) }
+    }
+
+    /// Most text of an edit's lines looked at for enum-type changes.
+    private static let enumEditLineLimit = 4096
+
+    /// An edit of `range` (as it is now) that removed `deleted` characters: enum types are read
+    /// again if it may have changed one (WaveformEnumLink.textEdited); typing elsewhere doesn't.
+    private func textEditedForEnumTypes(_ storage: NSTextStorage, range: NSRange, deleted: Int) {
+        guard let session else { return }
+        let string = storage.string as NSString
+        guard range.location <= string.length else { return }
+        let lines = string.lineRange(for: NSRange(location: range.location, length: min(range.length, string.length - range.location)))
+        let limited = NSRange(location: lines.location, length: min(lines.length, Self.enumEditLineLimit))
+        WaveformEnumLink.textEdited(session, lines: string.substring(with: limited), deleted: deleted)
+    }
+
+    /// slang may have new enum types for `session`: editors show the values again.
+    static func enumTypesMayHaveChanged(session: LanguageServerSession) {
+        for editor in liveInstances.allObjects where editor.session === session && editor.inlineValueOverlay?.hasAnnotations == true {
+            editor.scheduleInlineValues(after: .milliseconds(50))
+        }
     }
 
     /// The scanner, caught up with the text view's current text.
@@ -1112,8 +1132,9 @@ final class FilePreviewLanguageFeatures: NSObject {
                 continue
             }
             // Enum signals show their member's name (the type from slang, the bits from the dump).
-            let enums = await WaveformEnumLink.enumSignals(designInstance: designOfDump[dumpInstance] ?? "", session: session)
-            guard !Task.isCancelled else { return }
+            // Never waits: a type not read yet (or stale after an edit) is read in the background,
+            // and the values are drawn again when it arrives.
+            let enums = WaveformEnumLink.enumSignalsNow(designInstance: designOfDump[dumpInstance] ?? "", session: session)
             WaveformEnumLink.setInlineEnums(enums, dumpInstance: dumpInstance, waveform: waveform)
             let values = await WaveformSourceLink.inlineValuesWithRaw(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time)
             guard !Task.isCancelled else { return }
@@ -1247,6 +1268,7 @@ final class FilePreviewLanguageFeatures: NSObject {
                     guard let self, let storage = notification.object as? NSTextStorage,
                           storage === self.textView?.textStorage, storage.editedMask.contains(.editedCharacters) else { return }
                     self.textChangedForInlineValues(from: storage.editedRange.location)
+                    self.textEditedForEnumTypes(storage, range: storage.editedRange, deleted: max(0, storage.editedRange.length - storage.changeInLength))
                 }
             }
         }
