@@ -217,9 +217,8 @@ extension Workspace {
             fileExplorerPinnedRootPath: fileExplorerPinnedRootPath
         )
         snapshot.captureTodoState(from: self)
-        // The debugger's state is the main actor's (a snapshot taken elsewhere leaves it out).
-        snapshot.waveformBreakpoints = Thread.isMainThread
-            ? MainActor.assumeIsolated { WaveformDebuggerLineBreakpoints.snapshot(of: id) } : nil
+        // The debugger's state is the main actor's (a snapshot taken elsewhere saves the last one).
+        snapshot.waveformBreakpoints = WaveformDebuggerLineBreakpoints.sessionSnapshot(of: id)
         snapshot.dock = _dockSplit?.sessionSnapshot(
             includeScrollback: includeScrollback,
             restorableAgentIndex: restorableAgentIndex,
@@ -385,10 +384,7 @@ extension Workspace {
         isMuted = snapshot.isMuted ?? false
         groupId = snapshot.groupId
         restoreTodoState(from: snapshot)
-        let waveformBreakpoints = snapshot.waveformBreakpoints
-        if Thread.isMainThread {
-            MainActor.assumeIsolated { WaveformDebuggerLineBreakpoints.restore(waveformBreakpoints, in: id) }
-        }
+        WaveformDebuggerLineBreakpoints.sessionRestore(snapshot.waveformBreakpoints, in: id)
 
         // Status entries and agent PIDs are ephemeral runtime state tied to running
         // processes (e.g. claude_code "Running"). Don't restore them across app

@@ -849,12 +849,44 @@ enum WaveformDebuggerLineBreakpoints {
         )
     }
 
+    /// The last snapshot taken on the main thread, per workspace: what a session snapshot taken
+    /// elsewhere saves (rather than nothing, which would erase the saved breakpoints).
+    nonisolated(unsafe) private static var lastSnapshots: [UUID: SessionWaveformBreakpointsSnapshot] = [:]
+    private nonisolated static let lastSnapshotsLock = NSLock()
+
+    /// The workspace's breakpoints for its session snapshot, from any thread.
+    nonisolated static func sessionSnapshot(of workspace: UUID) -> SessionWaveformBreakpointsSnapshot? {
+        guard Thread.isMainThread else { return lastSnapshotsLock.withLock { lastSnapshots[workspace] } }
+        let current = MainActor.assumeIsolated { snapshot(of: workspace) }
+        lastSnapshotsLock.withLock { lastSnapshots[workspace] = current }
+        return current
+    }
+
+    /// A session's breakpoints restored, from any thread (on the main thread, where they live).
+    nonisolated static func sessionRestore(_ snapshot: SessionWaveformBreakpointsSnapshot?, in workspace: UUID) {
+        guard let snapshot else { return }
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { restore(snapshot, in: workspace) }
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { restore(snapshot, in: workspace) } }
+        }
+    }
+
     /// Breakpoints from a restored session: lines are placed by text when their files open,
     /// signal breakpoints and watches go to their dumps' viewers when the pages load.
     static func restore(_ snapshot: SessionWaveformBreakpointsSnapshot?, in workspace: UUID) {
         guard let snapshot else { return }
         if let lines = snapshot.lines, !lines.isEmpty {
             marks[workspace] = lines
+            // A file whose gutter drew before the restore has a tracker already: placed again now.
+            for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] where tracker.workspace == workspace {
+                guard let storage = tracker.storage, storage.length > 0 else { continue }
+                tracker.offsets = [:]
+                tracker.lineTexts = [:]
+                tracker.merged = []
+                place(tracker, in: storage)
+                tracker.takeSnapshot()
+            }
             changed(workspace)
         }
         var signalsByDump = snapshot.signalsByDump ?? [:]
