@@ -73,6 +73,39 @@ struct FilePreviewViewportAnchor: Equatable {
         return anchor
     }
 
+    /// The character anchor of the line fragment shown at the viewport top,
+    /// read from the layout as it is, or nil when that line is not laid out.
+    /// `capture` lays the viewport out first, which can fill estimated lines
+    /// above it and make AppKit move the clip view before the edit even runs.
+    @MainActor
+    private static func captureShown(in textView: NSTextView) -> FilePreviewViewportAnchor? {
+        guard let clipView = textView.enclosingScrollView?.contentView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer,
+              let length = textView.textStorage?.length, length > 0 else { return nil }
+        let origin = textView.textContainerOrigin
+        let visibleTop = clipView.bounds.minY
+        let topRow = NSRect(x: 0, y: max(0, visibleTop - origin.y), width: container.size.width, height: 1)
+        let glyphs = layoutManager.glyphRange(forBoundingRectWithoutAdditionalLayout: topRow, in: container)
+        guard glyphs.length > 0 else { return nil }
+        var fragmentGlyphs = NSRange(location: 0, length: 0)
+        let fragment = layoutManager.lineFragmentRect(
+            forGlyphAt: glyphs.location,
+            effectiveRange: &fragmentGlyphs,
+            withoutAdditionalLayout: true
+        )
+        let top = visibleTop - origin.y
+        guard fragment.height > 0, fragment.minY <= top + 0.5, fragment.maxY > top else { return nil }
+        let characterOffset = top - fragment.minY
+        return FilePreviewViewportAnchor(
+            line: nil,
+            offset: characterOffset,
+            x: clipView.bounds.minX,
+            character: min(layoutManager.characterIndexForGlyph(at: fragmentGlyphs.location), length - 1),
+            characterOffset: characterOffset
+        )
+    }
+
     /// Scrolls `textView` so its anchored line is back at the viewport top.
     @MainActor
     func restore(in textView: NSTextView) {
@@ -91,7 +124,7 @@ struct FilePreviewViewportAnchor: Equatable {
     /// moved the clip view thousands of points away and back.
     @MainActor
     static func keepingViewport(of textView: NSTextView, _ edit: () -> Void) {
-        let anchor = capture(in: textView, countingLines: false)
+        let anchor = captureShown(in: textView) ?? capture(in: textView, countingLines: false)
         let suppressing = textView as? FilePreviewAutomaticScrollSuppressing
         let wasSuppressing = suppressing?.suppressesAutomaticScrolling ?? false
         suppressing?.suppressesAutomaticScrolling = true
