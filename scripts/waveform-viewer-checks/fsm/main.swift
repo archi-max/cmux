@@ -125,9 +125,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(await marker() == 85, "a state click: its next entry, 85 (\(String(describing: await marker())))")
     await click("#fsm .fsm-edge[data-from='*'][data-to='000']", shift: true)
     expect(await marker() == 5, "the reset edge: the reset at 5 (\(String(describing: await marker())))")
-    await setMarker(5000)
+    // (The dump ends at 610; the viewer ignores a marker past the end. The last DECODE->EXEC is at 555.)
+    await setMarker(580)
     await click("#fsm .fsm-edge[data-from='100'][data-to='101']")
-    expect(await marker() == 5000, "none later: the marker stays (\(String(describing: await marker())))")
+    expect(await marker() == 580, "none later: the marker stays (\(String(describing: await marker())))")
 
     // Counts over the dump: entries into each state, and each transition's.
     s = await state()
