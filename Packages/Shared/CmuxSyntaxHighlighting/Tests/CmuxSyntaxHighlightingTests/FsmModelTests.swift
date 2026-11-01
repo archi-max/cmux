@@ -336,4 +336,119 @@ endmodule
             _ = try await YosysFsm.runLocally(yosys: yosys, files: [file.path], module: "nope", parameters: [], signal: "st", force: false, slangFrontend: frontend)
         }
     }
+    // MARK: Running Yosys where the sources are (Resources/vaporview/fsm/cmux-fsm-yosys.sh)
+
+    @Test func theRemoteYosysRunnersLinesSayWhatHappened() {
+        let json = FsmFixtures.yosysLp
+        guard case .json(let text) = YosysFsm.remoteOutcome(ofOutput: "noise\ncmux-fsm: yosys /x/yosys slang\ncmux-fsm: json-begin\n\(json)\ncmux-fsm: json-end\n") else {
+            Issue.record("no json")
+            return
+        }
+        #expect(YosysFsm.models(json: Data(text.utf8))["st"] != nil)
+        #expect(YosysFsm.remoteOutcome(ofOutput: "cmux-fsm: unavailable no-yosys\n") == .unavailable(reason: "no-yosys", detail: ""))
+        #expect(YosysFsm.remoteOutcome(ofOutput: "cmux-fsm: unavailable failed ERROR: Module `nope' not found!\n")
+            == .unavailable(reason: "failed", detail: "ERROR: Module `nope' not found!"))
+        #expect(YosysFsm.remoteOutcome(ofOutput: "cmux-fsm: json-begin\n{") == .unavailable(reason: "failed", detail: "the output was cut off"))
+        #expect(YosysFsm.remoteOutcome(ofOutput: "") == .unavailable(reason: "failed", detail: ""))
+    }
+
+    @Test func theRemoteYosysCommandCarriesBothScriptsEncoded() throws {
+        let slang = "read_slang \"/a b.sv\" --top lp\n"
+        let native = "read_verilog -sv \"/a b.sv\"\n"
+        let command = YosysFsm.remoteCommand(slangScript: slang, nativeScript: native, yosys: "")
+        #expect(command.hasPrefix("bash -l -s -- '"))
+        let parts = command.components(separatedBy: "'").enumerated().filter { $0.offset % 2 == 1 }.map(\.element)
+        #expect(parts.count == 3)
+        #expect(Data(base64Encoded: parts[0]).map { String(decoding: $0, as: UTF8.self) } == slang)
+        #expect(Data(base64Encoded: parts[1]).map { String(decoding: $0, as: UTF8.self) } == native)
+        #expect(parts[2] == "")
+    }
+
+    static let yosysRunner = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Resources/vaporview/fsm/cmux-fsm-yosys.sh")
+
+    @Test(.enabled(if: localYosys != nil, "needs yosys"))
+    func theRemoteYosysRunnerWorksAsAShellScriptHere() async throws {
+        let yosys = try #require(Self.localYosys)
+        #expect(FileManager.default.fileExists(atPath: Self.yosysRunner.path), "\(Self.yosysRunner.path)")
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cmux-fsm-runner-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dut = Self.sources[1].1
+        let file = dir.appendingPathComponent("lp.sv")
+        try String(dut[dut.range(of: "module lp ")!.lowerBound..<dut.range(of: "module top ")!.lowerBound]).write(to: file, atomically: true, encoding: .utf8)
+        let script = { (slang: Bool, module: String) in
+            YosysFsm.script(files: [file.path], module: module, parameters: [], signal: "st", force: true, slangFrontend: slang, output: "fsm.json")
+        }
+        // As over ssh: the runner on stdin, `bash -l -s -- <args>` (here without -l: the user's login files aren't the test's).
+        let run = { (module: String, yosysArgument: String) async throws -> YosysFsm.RemoteOutcome in
+            let command = YosysFsm.remoteCommand(slangScript: script(true, module), nativeScript: script(false, module), yosys: yosysArgument)
+            let result = try await FsmProcess.run("/bin/bash", ["-c", command.replacingOccurrences(of: "bash -l -s", with: "bash -s")],
+                                                  input: try Data(contentsOf: Self.yosysRunner), timeout: 120)
+            return YosysFsm.remoteOutcome(ofOutput: result.output)
+        }
+        guard case .json(let text) = try await run("lp", yosys) else {
+            Issue.record("no json from the runner")
+            return
+        }
+        #expect(YosysFsm.models(json: Data(text.utf8))["st"]?.transitions.contains(.init(from: "00", to: "01", condition: "a")) == true)
+        guard case .unavailable(let reason, let detail) = try await run("nope", yosys) else {
+            Issue.record("a missing module gave json")
+            return
+        }
+        #expect(reason == "failed" && detail.contains("nope"), "\(reason) \(detail)")
+        #expect(try await run("lp", "/nonexistent/yosys") == .unavailable(reason: "no-yosys", detail: "/nonexistent/yosys"))
+    }
+
+    // MARK: The engines in order
+
+    static let lpContext = SlangFsmContext(module: "lp", width: 2, enumType: nil, parameters: [
+        .init(name: "S_A", type: "logic[1:0]", value: "2'b0"), .init(name: "S_B", type: "logic[1:0]", value: "2'b1"),
+        .init(name: "S_C", type: "logic[1:0]", value: "2'b10"),
+    ], files: ["/d/dut.sv"])
+
+    @Test func verdiFirstThenYosysThenTheDump() async throws {
+        // Verdi's report wins.
+        var result = await FsmPipeline.run(signal: "st", context: Self.lpContext,
+                                           verdi: { .report(text: FsmFixtures.verdiLp, instance: "x") },
+                                           yosys: { _ in Issue.record("yosys asked after Verdi answered"); return .failure(.notFound) })
+        #expect(result.model.engine == .verdi && result.notes.isEmpty)
+        // Verdi can't: Yosys, with the localparams' names.
+        result = await FsmPipeline.run(signal: "st", context: Self.lpContext,
+                                       verdi: { .unavailable(reason: "licence", detail: "") },
+                                       yosys: { _ in .success(YosysFsm.models(json: Data(FsmFixtures.yosysLp.utf8))) })
+        #expect(result.model.engine == .yosys)
+        // (In Yosys's state table order.)
+        #expect(Set(result.model.states.map { "\($0.bits)=\($0.name ?? "")" }) == ["00=S_A", "01=S_B", "10=S_C"])
+        #expect(result.notes == [.verdi(reason: "licence", detail: "")])
+        // A flattened run's FSM is found by its hierarchical name's last part.
+        result = await FsmPipeline.run(signal: "st", context: Self.lpContext, verdi: nil,
+                                       yosys: { _ in .success(YosysFsm.models(json: Data(FsmFixtures.yosysTop.utf8))) })
+        #expect(result.model.engine == .yosys && result.model.signal == "st")
+        // Neither: the dump, with the names slang has.
+        result = await FsmPipeline.run(signal: "st", context: Self.lpContext,
+                                       verdi: { .unavailable(reason: "no-fsm", detail: "") },
+                                       yosys: { _ in .failure(.failed("ERROR: x")) })
+        #expect(result.model.engine == .observed)
+        #expect(result.model.width == 2 && result.model.states.map(\.name) == ["S_A", "S_B", "S_C"])
+        #expect(result.notes == [.verdi(reason: "no-fsm", detail: ""), .yosys(.failed("ERROR: x"))])
+        // An enum register: its members.
+        let type = SlangEnumType(name: "state_t", width: 3, members: [.init(name: "IDLE", bits: "000"), .init(name: "GO", bits: "001")])
+        let enumContext = SlangFsmContext(module: "ctl", width: 3, enumType: type, parameters: [], files: [])
+        result = await FsmPipeline.run(signal: "state", context: enumContext, verdi: nil, yosys: { _ in .failure(.notFound) })
+        #expect(result.model.engine == .observed && result.model.states.map(\.name) == ["IDLE", "GO"])
+        // A Yosys model of an enum register is named by the enum, unseen members added.
+        result = await FsmPipeline.run(signal: "state", context: enumContext, verdi: nil,
+                                       yosys: { _ in .success(["state": FsmModel(signal: "state", width: 3, states: [.init(bits: "001", name: nil)], reset: nil,
+                                                                               resetSignal: nil, controls: [], transitions: [], engine: .yosys, counts: nil)]) })
+        #expect(result.model.states == [.init(bits: "001", name: "GO"), .init(bits: "000", name: "IDLE")])
+        // Yosys's FSM of another register is not this one's.
+        result = await FsmPipeline.run(signal: "state", context: enumContext, verdi: nil,
+                                       yosys: { _ in .success(YosysFsm.models(json: Data(FsmFixtures.yosysLp.utf8))) })
+        #expect(result.model.engine == .observed)
+        // No slang: the dump alone, unnamed (the page takes the width from the dump).
+        result = await FsmPipeline.run(signal: "q", context: nil, verdi: nil, yosys: nil)
+        #expect(result.model.engine == .observed && result.model.states.isEmpty && result.model.width == 0)
+    }
 }
