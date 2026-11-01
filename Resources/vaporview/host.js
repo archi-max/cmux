@@ -867,7 +867,7 @@
   //   selectSignal(path) -> bool
   //   setMarker(time)
   //   selectedSignal() -> path | null   (null once the selected row is gone)
-  //   valuesAt({ time, paths, unshown }) -> [value | null]   formatted like the signal's row
+  //   valuesAt({ time, paths, unshown, raw }) -> [value | null]   formatted like the signal's row (raw[i]: bits)
   //   markerTime() -> time | null
   // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
   const link = (() => {
@@ -1136,11 +1136,13 @@
       return out;
     }
 
-    // valuesAt({ time, paths, unshown }) -> [value | null], one per path: the
+    // valuesAt({ time, paths, unshown, raw }) -> [value | null], one per path: the
     // value in effect at `time`, in the radix of the signal's row (hexadecimal
-    // if not shown). FSDB answers signals not shown only with `unshown`.
+    // if not shown). FSDB answers signals not shown only with `unshown`. raw[i]
+    // true: path i's value as the dump has it (a bit string), for cmux to format
+    // (an enum's member names).
     async function valuesAt(query) {
-      const { time, paths, unshown } = query || {};
+      const { time, paths, unshown, raw } = query || {};
       if (!backend || !initSent || !Array.isArray(paths)) { return []; }
       const list = paths.slice(0, 500);
       // One after another: siblings then find their scope's children cached.
@@ -1148,11 +1150,18 @@
       for (const p of list) { vars.push(await findLinkItem(p, true)); }
       const found = Array.from(new Set(vars.filter(Boolean)));
       const t = Number(time);
-      const raw = backend.changes ? await fsdbValues(t, found, !!unshown) : await wellenValues(t, found);
+      const values = backend.changes ? await fsdbValues(t, found, !!unshown) : await wellenValues(t, found);
       const formats = shownFormats();
-      return vars.map((v) => {
-        const bits = v ? raw.get(v.netlistId) : undefined;
-        return bits === undefined ? null : formatValue(bits, formats.get(v.netlistId));
+      const asIs = Array.isArray(raw) ? raw : [];
+      return vars.map((v, i) => {
+        const bits = v ? values.get(v.netlistId) : undefined;
+        if (bits === undefined) { return null; }
+        if (asIs[i] === true) { return String(bits); }
+        const format = formats.get(v.netlistId);
+        // A row in an enum's alias format (cmux-enum.js) reads as the row does.
+        const named = typeof format === 'string' && format.startsWith('alias:') && window.cmuxWaveform.enums
+          ? window.cmuxWaveform.enums.format(pathOf(v), String(bits)) : null;
+        return named !== null ? named : formatValue(bits, format);
       });
     }
 

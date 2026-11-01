@@ -173,6 +173,13 @@ keybindings, netlist view, settings, sessions and terminal links).
   description) instead of sending it to the viewer frame; `host.js` exposes a
   variable's changes and VaporView's events to it; `cmux-commands.js` leaves
   the Locals group out of sessions and undo.
+- `cmux-enum.js` (new, written for cmux): SystemVerilog enum member names.
+  cmux reads a signal's enum type from slang-server and hands it to the page,
+  which loads it as a value alias table (VaporView's `alias:<table>` format
+  from `extra_formats.ts`) and makes it the default format of rows the user
+  adds; restored, undone and user-chosen formats are kept. `host.js`
+  `link.valuesAt` takes `raw` (bit strings for cmux to name) and gives an
+  enum row's value as the row reads.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and
   foreground with the panel's colors.
