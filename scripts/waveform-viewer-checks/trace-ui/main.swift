@@ -57,14 +57,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
     let stmt = first?["stmt"] as? [String: Any]
-    expect((first?["driver"] as? [String: Any])?["kind"] as? String == "proc" && (stmt?["src"] as? String)?.contains("q  <= mix") == true,
+    expect((first?["driver"] as? [String: Any])?["kind"] as? String == "proc" && (stmt?["src"] as? String)?.contains("q <= mix") == true,
            "driver of u_sink.q at 60 is its flop: \(String(describing: stmt?["src"]))")
     expect(first?["trust"] as? String == "exact" && first?["dumpPath"] as? String == "tb_c.dut.u_mid.u_sink.q", "exact, with its dump path")
     let resolves = events.filter { $0["event"] as? String == "resolve" }
     expect(resolves.count == 1 && (resolves.first?["dumpPath"] as? [String]) == ["tb_c", "dut", "u_mid", "u_sink", "q"], "one resolve, by dump segments")
     expect(modelRequests > 0, "models were asked of cmux: \(modelRequests)")
     let text = await panelText()
-    expect(text.contains("tb_c.dut.u_mid.u_sink.q") && text.contains("q  <= mix") && text.contains("c_struct.sv:56"),
+    expect(text.contains("tb_c.dut.u_mid.u_sink.q") && text.contains("q <= mix") && text.contains("c_struct.sv:56"),
            "panel shows the signal, statement and file:line: \(text.prefix(300))")
     expect(text.contains("exact") && text.contains("Fan-in"), "panel shows the trust badge and fan-in")
     expect(steps().count == 1, "cmux hears the step (to open the statement)")
@@ -80,7 +80,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(st?["steps"] as? Int == 2 && st?["at"] as? Int == 1, "two steps, at the second: \(String(describing: st))")
     let back = await trace("back()")
     expect(back?["at"] as? Int == 0 && ((back?["step"] as? [String: Any])?["signal"] as? String) == "tb_c.dut.u_mid.u_sink.q", "Back to q")
-    expect(await panelText().contains("q  <= mix"), "panel shows q again")
+    expect(await panelText().contains("q <= mix"), "panel shows q again")
     let fwd = await trace("forward()")
     expect(fwd?["at"] as? Int == 1, "Forward to mix")
     // A new trace from an earlier step drops the steps after it.
