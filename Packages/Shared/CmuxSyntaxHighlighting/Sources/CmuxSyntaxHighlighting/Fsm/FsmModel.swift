@@ -460,14 +460,17 @@ public enum YosysFsm {
     /// parameter values (an override of a localparam with its own value changes nothing),
     /// flattened, then FSM extraction. `force`: mark `signal` as an FSM (fsm_detect leaves
     /// out registers whose users it thinks would not gain from recoding).
-    /// `slangFrontend`: sv-elab's `read_slang` (full SystemVerilog), else `read_verilog -sv`.
+    /// `slangFrontend`: sv-elab's `read_slang` (full SystemVerilog), else `read_verilog -sv`
+    /// (also when a path has a space or a character Yosys's script reader takes as syntax).
     public static func script(files: [String], module: String, parameters: [(name: String, value: String)], signal: String,
                               force: Bool, slangFrontend: Bool, output: String) -> String {
         let literal = parameters.filter { isLiteral($0.value) && isIdentifier($0.name) }
         var lines: [String] = []
         let quoted = files.map(quote).joined(separator: " ")
-        if slangFrontend {
-            lines.append("read_slang \(quoted) --top \(module)" + literal.map { " -G \($0.name)=\($0.value)" }.joined())
+        // read_slang hands its arguments to slang as they are (quotes would be part of the
+        // path), so it only gets paths that need none.
+        if slangFrontend, files.allSatisfy(isBarePath) {
+            lines.append("read_slang \(files.joined(separator: " ")) --top \(module)" + literal.map { " -G \($0.name)=\($0.value)" }.joined())
         } else {
             lines.append("read_verilog -sv \(quoted)")
             lines.append("hierarchy -top \(module)" + literal.map { " -chparam \($0.name) \($0.value)" }.joined())
@@ -480,6 +483,10 @@ public enum YosysFsm {
         lines.append("fsm_extract")
         lines.append("write_json \(quote(output))")
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func isBarePath(_ path: String) -> Bool {
+        !path.isEmpty && !path.contains { $0.isWhitespace || $0 == "\"" || $0 == "#" || $0 == ";" }
     }
 
     static func quote(_ text: String) -> String {
