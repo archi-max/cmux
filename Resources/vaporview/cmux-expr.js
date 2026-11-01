@@ -1,19 +1,49 @@
 // cmux's waveform debugger: SystemVerilog expressions over a dump's values, for Evaluate,
-// watches and condition breakpoints (cmux-debugger.js). Written for cmux from IEEE 1800-2017:
-// operators and their 4-state results (11.3, 11.4), expression widths (11.6), literals (5.7).
+// watches and condition breakpoints (cmux-debugger.js), per IEEE 1800-2017: operators and their
+// 4-state results (11.3, 11.4), expression widths and signedness (11.6, 11.8), literals (5.7).
 // Pure: no DOM, no host. Names are resolved by the caller (env), so one parse serves any scope.
+//
+// The semantics follow slang (https://github.com/MikePopoloski/slang, master commit cd5a3d2,
+// which includes 0f89ca187): SVInt's 4-state operators and the width and sign propagation of
+// its expression types, reimplemented here. A VCS differential fuzz checks them
+// (scripts/waveform-viewer-checks/expr/fuzz.js); where slang and VCS differ (?: with an unknown
+// condition and z in both arms), this follows VCS and the LRM. slang's license:
+//
+//   Copyright (c) 2015-2026 Michael Popoloski
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy
+//   of this software and associated documentation files (the "Software"), to deal
+//   in the Software without restriction, including without limitation the rights
+//   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//   copies of the Software, and to permit persons to whom the Software is
+//   furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+//   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+//   THE SOFTWARE.
 //
 //   parse(text) -> { ast } | { error, at }      at: 0-based column
 //   names(ast) -> [[segment, ...], ...]         each signal once, as written
 //   evaluate(ast, env) -> { value } | { error, at }
-//       env(path) -> { width, msb, lsb, value } | null   (msb/lsb: the declared range, optional)
+//       env(path) -> { width, msb, lsb, value, signed } | null   (msb/lsb: the declared range,
+//       optional; signed: optional, a dump's signals are unsigned unless it says)
 //   format(value, 'hex' | 'binary' | 'octal' | 'decimal') -> "8'h3c"
 //   truthy(value), same(v1, v2), fromBits('10x1', width)
 //
-// Simplifications (the debugger's docs say these too): every value is unsigned (no $signed, no
-// sign extension: 's is read and ignored, >>> shifts like >>); z is x in every operator but ===
-// and the display; the whole expression is one context with no assignment target; no
-// / % ** ==? !=?, no function calls, no memories or struct members.
+// Signed: unsized decimals, 's literals and signed signals; an operator over context-determined
+// operands is signed when all of them are (so -1 < 0, 8'sd200 * 2 sign-extends, a[-1 +: 2] reads
+// below the range, >>> shifts in the top bit). format() prints values unsigned. Simplifications
+// (the debugger's docs say these too): z is x in every operator but ===, selects,
+// concatenation, unary plus and the display; the whole expression is one context with no
+// assignment target; no $signed / $unsigned, / % ** ==? !=?, no function calls, no memories or
+// struct members.
 (function (root) {
   'use strict';
   const MAX_TEXT = 1000;
@@ -30,6 +60,16 @@
   const fromKnown = (w, o, z) => { const m = maskOf(w); const u = m & ~(o | z); return val(w, o | u, u); };
   // Zero-extended to w (unsigned).
   const ext = (v, w) => (w === v.w ? v : val(w, v.a, v.b));
+  // Extended to w with its top bit (0, 1, x or z) when signed, as slang's SVInt::extend does.
+  const sext = (v, w) => {
+    if (w <= v.w || v.w === 0) { return ext(v, w); }
+    const top = BigInt(v.w - 1);
+    const high = maskOf(w) & ~maskOf(v.w);
+    return val(w, v.a | (((v.a >> top) & 1n) ? high : 0n), v.b | (((v.b >> top) & 1n) ? high : 0n));
+  };
+  const extend = (v, w, signed) => (signed ? sext(v, w) : ext(v, w));
+  // A known value as a two's-complement BigInt.
+  const signedOf = (v) => (v.w > 0 && ((v.a >> BigInt(v.w - 1)) & 1n) ? v.a - (1n << BigInt(v.w)) : v.a);
   const bit1 = (t) => (t === 1 ? val(1, 1n, 0n) : (t === 0 ? val(1, 0n, 0n) : allX(1)));
   // 1, 0 or 'x' as an SV if, && and || take a value.
   const truth = (v) => (ones(v) !== 0n ? 1 : (v.b === 0n ? 0 : 'x'));
@@ -101,7 +141,7 @@
       if (fitted === null) { fail('badLiteral', at); }
       // Unsized with a leftmost x or z digit: that x/z fills whatever width the context gives (5.7.1).
       const fill = size === null && (fitted[0] === 'x' || fitted[0] === 'z') ? fitted[0] : null;
-      tokens.push({ t: 'lit', at, v: fromBits(fitted, width), fill });
+      tokens.push({ t: 'lit', at, v: fromBits(fitted, width), fill, signed: m[1] !== '' });
     };
     for (;;) {
       space();
@@ -134,7 +174,8 @@
           const big = BigInt(digits);
           const width = Math.max(32, big.toString(2).length);
           if (width > MAX_WIDTH) { fail('badLiteral', at); }
-          tokens.push({ t: 'lit', at, v: val(width, big, 0n), text: digits });
+          // An unsized decimal number is a signed integer (5.7.1).
+          tokens.push({ t: 'lit', at, v: val(width, big, 0n), text: digits, signed: true });
         }
       } else if (c === "'") {
         if (/^'[sS]?[bBoOdDhH]/.test(text.slice(i))) {
@@ -200,7 +241,7 @@
 
     function primary() {
       const tok = peek();
-      if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v, fill: tok.fill || null }; }
+      if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v, fill: tok.fill || null, signed: !!tok.signed }; }
       if (tok.t === 'fill') { k++; return { t: 'fill', at: tok.at, bit: tok.bit }; }
       if (tok.t === 'id') {
         k++;
@@ -417,15 +458,42 @@
       return val(indices.length, a, b);
     }
 
+    // Whether a node's self-determined type is signed (11.8.1, as slang's propagateType has it):
+    // unsized decimals, 's literals and signed signals are; an operator whose operands are context
+    // determined is signed when all of them are; shifts and unary +, -, ~ take their operand's;
+    // comparisons, reductions, logical operators, selects and concatenations are unsigned.
+    const signs = new Map();
+    function signed(node) {
+      if (signs.has(node)) { return signs.get(node); }
+      let s = false;
+      switch (node.t) {
+        case 'lit': s = !!node.signed; break;
+        case 'name': s = signal(node).signed === true; break;
+        case 'un': s = ['+', '-', '~'].includes(node.op) && signed(node.e); break;
+        case 'bin':
+          if (ARITH.has(node.op) || BITWISE.has(node.op)) { s = signed(node.l) && signed(node.r); } else if (SHIFT.has(node.op)) { s = signed(node.l); }
+          break;
+        case 'cond': s = signed(node.a) && signed(node.b); break;
+        default: s = false;
+      }
+      signs.set(node, s);
+      return s;
+    }
+
+    // A select index: a number (negative when signed), or null when it has an x or z bit.
     const index = (node) => {
-      const v = ev(node, width(node));
-      return v.b !== 0n ? null : (v.a > 1000000000n ? 1000000000 : Number(v.a));
+      const v = ev(node, width(node), signed(node));
+      if (v.b !== 0n) { return null; }
+      const n = signed(node) ? signedOf(v) : v.a;
+      return n > 1000000000n ? 1000000000 : (n < -1000000000n ? -1000000000 : Number(n));
     };
 
-    function ev(node, w) {
+    // `node` at width w in a context that is signed (s) or not; operands of a signed context are
+    // signed themselves, so leaves extend with their top bit exactly when s is set.
+    function ev(node, w, s) {
       switch (node.t) {
         case 'lit': {
-          if (!node.fill || w <= node.v.w) { return ext(node.v, w); }
+          if (!node.fill || w <= node.v.w) { return extend(node.v, w, s); }
           const high = maskOf(w) & ~maskOf(node.v.w);
           return val(w, node.v.a | (node.fill === 'x' ? high : 0n), node.v.b | high);
         }
@@ -433,15 +501,16 @@
           const m = maskOf(w);
           return node.bit === '0' ? val(w, 0n, 0n) : (node.bit === '1' ? val(w, m, 0n) : (node.bit === 'x' ? allX(w) : val(w, 0n, m)));
         }
-        case 'name': return ext(signal(node).value, w);
+        case 'name': return extend(signal(node).value, w, s);
         case 'un': {
-          if (node.op === '+' || node.op === '-') {
-            const v = ev(node.e, w);
-            if (v.b !== 0n) { return allX(w); }
-            return node.op === '+' ? v : val(w, -v.a, 0n);
+          // Unary plus is the operand itself (slang: OP(Plus, v)); minus of any unknown is all x.
+          if (node.op === '+') { return ev(node.e, w, s); }
+          if (node.op === '-') {
+            const v = ev(node.e, w, s);
+            return v.b !== 0n ? allX(w) : val(w, -v.a, 0n);
           }
-          if (node.op === '~') { const v = ev(node.e, w); return fromKnown(w, zeros(v), ones(v)); }
-          const v = ev(node.e, width(node.e));
+          if (node.op === '~') { const v = ev(node.e, w, s); return fromKnown(w, zeros(v), ones(v)); }
+          const v = ev(node.e, width(node.e), signed(node.e));
           let t;
           if (node.op === '!') {
             const x = truth(v);
@@ -461,7 +530,7 @@
         case 'bin': {
           const op = node.op;
           if (ARITH.has(op) || BITWISE.has(op)) {
-            const l = ev(node.l, w), r = ev(node.r, w);
+            const l = ev(node.l, w, s), r = ev(node.r, w, s);
             const m = maskOf(w);
             if (op === '&') { return fromKnown(w, ones(l) & ones(r), zeros(l) | zeros(r)); }
             if (op === '|') { return fromKnown(w, ones(l) | ones(r), zeros(l) & zeros(r)); }
@@ -475,15 +544,22 @@
             return val(w, op === '+' ? l.a + r.a : (op === '-' ? l.a - r.a : l.a * r.a), 0n);
           }
           if (SHIFT.has(op)) {
-            const l = ev(node.l, w);
-            const amount = ev(node.r, width(node.r));
+            const l = ev(node.l, w, s);
+            // The amount is self-determined and always unsigned (11.4.10).
+            const amount = ev(node.r, width(node.r), signed(node.r));
             if (amount.b !== 0n) { return allX(w); }
+            // >>> of a signed value shifts in its top bit, x and z included (slang: SVInt::ashr).
+            if (op === '>>>' && s) {
+              const n = amount.a >= BigInt(w) ? BigInt(w - 1) : amount.a;
+              return sext(val(w - Number(n), l.a >> n, l.b >> n), w);
+            }
             if (amount.a >= BigInt(w)) { return val(w, 0n, 0n); }
             return op.startsWith('<') ? val(w, l.a << amount.a, l.b << amount.a) : val(w, l.a >> amount.a, l.b >> amount.a);
           }
           if (COMPARE.has(op)) {
             const cw = Math.max(width(node.l), width(node.r));
-            const l = ev(node.l, cw), r = ev(node.r, cw);
+            const cs = signed(node.l) && signed(node.r);
+            const l = ev(node.l, cw, cs), r = ev(node.r, cw, cs);
             let t;
             if (op === '===' || op === '!==') {
               t = l.a === r.a && l.b === r.b ? 1 : 0;
@@ -495,28 +571,32 @@
             } else if (l.b !== 0n || r.b !== 0n) {
               t = 'x';
             } else {
-              t = (op === '<' ? l.a < r.a : op === '<=' ? l.a <= r.a : op === '>' ? l.a > r.a : l.a >= r.a) ? 1 : 0;
+              const x = cs ? signedOf(l) : l.a, y = cs ? signedOf(r) : r.a;
+              t = (op === '<' ? x < y : op === '<=' ? x <= y : op === '>' ? x > y : x >= y) ? 1 : 0;
             }
             return ext(bit1(t), w);
           }
           // && and ||
-          const l = truth(ev(node.l, width(node.l))), r = truth(ev(node.r, width(node.r)));
+          const l = truth(ev(node.l, width(node.l), signed(node.l))), r = truth(ev(node.r, width(node.r), signed(node.r)));
           let t;
           if (op === '&&') { t = l === 0 || r === 0 ? 0 : (l === 1 && r === 1 ? 1 : 'x'); } else { t = l === 1 || r === 1 ? 1 : (l === 0 && r === 0 ? 0 : 'x'); }
           return ext(bit1(t), w);
         }
         case 'cond': {
-          const t = truth(ev(node.c, width(node.c)));
-          if (t === 1) { return ev(node.a, w); }
-          if (t === 0) { return ev(node.b, w); }
-          const a = ev(node.a, w), b = ev(node.b, w);
+          const t = truth(ev(node.c, width(node.c), signed(node.c)));
+          if (t === 1) { return ev(node.a, w, s); }
+          if (t === 0) { return ev(node.b, w, s); }
+          const a = ev(node.a, w, s), b = ev(node.b, w, s);
+          // An unknown condition: bits both arms agree are 0 or 1 keep it, every other bit is x,
+          // z and z included (11.4.11 table 11-20, as VCS does). slang's SVInt::conditional keeps
+          // equal arms whole (z stays z); this follows the LRM and VCS instead.
           return fromKnown(w, ones(a) & ones(b), zeros(a) & zeros(b));
         }
         case 'cat': {
           let a = 0n, b = 0n, total = 0;
           for (const part of node.parts) {
             const pw = width(part);
-            const v = ev(part, pw);
+            const v = ev(part, pw, signed(part));
             a = (a << BigInt(pw)) | v.a;
             b = (b << BigInt(pw)) | v.b;
             total += pw;
@@ -524,14 +604,14 @@
           return ext(val(total, a, b), w);
         }
         case 'rep': {
-          const inner = ev(node.e, width(node.e));
+          const inner = ev(node.e, width(node.e), signed(node.e));
           let a = 0n, b = 0n;
           const step = BigInt(inner.w);
           for (let n = 0; n < node.n; n++) { a = (a << step) | inner.a; b = (b << step) | inner.b; }
           return ext(val(inner.w * node.n, a, b), w);
         }
         case 'sel': {
-          const v = ev(node.e, width(node.e));
+          const v = ev(node.e, width(node.e), signed(node.e));
           const r = range(node.e);
           const descending = r.msb >= r.lsb;
           let indices;
@@ -557,7 +637,7 @@
       }
       return null;
     }
-    return ev(rootNode, width(rootNode));
+    return ev(rootNode, width(rootNode), signed(rootNode));
   }
 
   function evaluate(ast, env) {

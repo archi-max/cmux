@@ -96,8 +96,8 @@ function runExprCases() {
     ["4'sb1x00 >>> 1", "4'b11x0"], ["4'sbz000 >>> 2", "4'bzzz0"], ["4'sb1000 >>> 9", "4'b1111"], ["4'b1000 >>> 1", "4'b0100"],
     ["(4'sb1000 >>> 1) + 8'd0", "8'h04"], ["4'sb1111 == 8'hff", "1'b0"], ["4'sb1111 == 8'shff", "1'b1"], ['-1 == 32\'hffffffff', "1'b1"],
     ["{4'sb1000}  + 8'sd0", "8'h08"], ["c4[asc[0 +: 1] - 2]", "1'bx"],
-    // An unknown condition with equal arms is that value, z kept (slang: SVInt::conditional).
-    ['xbit ? z4 : z4', "4'bzzzz"], ["xbit ? 4'b1z01 : 4'b1z01", "4'b1z01"], ["xbit ? 4'b1z01 : 4'b1z00", "4'b1x0x"],
+    // An unknown condition: z in both arms is x (table 11-20; VCS W-2024.09 agrees, slang keeps z).
+    ['xbit ? z4 : z4', "4'bxxxx"], ["xbit ? 4'b1z01 : 4'b1z01", "4'b1x01"], ["xbit ? 4'b1z01 : 4'b1z00", "4'b1x0x"],
     // refused
     ['', 'error:empty@0'], ['   ', 'error:empty@3'], ['a +', 'error:syntax@3'], ['a / b', 'error:unsupported@2'], ['a % b', 'error:unsupported@2'],
     ['a ** 2', 'error:unsupported@2'], ['a ==? b', 'error:unsupported@2'], ['a !=? b', 'error:unsupported@2'], ['a = b', 'error:unsupported@2'],
