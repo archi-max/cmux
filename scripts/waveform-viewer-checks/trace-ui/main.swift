@@ -214,6 +214,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
              && !((differs?["reasons"] as? [[String: Any]] ?? []).contains { $0["code"] as? String == "enginesDiffer" }),
            "an unchanged value: the statement active at t first, no penalty: \(String(describing: differsEngine))")
     expect(await panelText().contains("Verdi (driver of the last change): c_struct.sv:50"), "the panel shows Verdi's answer second")
+    let clickedSecond = await call("""
+      const a = [...document.querySelectorAll('#cmux-trace .engine a')].find((x) => x.textContent.includes('c_struct.sv:50'));
+      if (!a) { return false; } a.click(); return true
+      """) as? Bool
+    await sleep(100)
+    let openedSecond = events.last { $0["event"] as? String == "open" }?["loc"] as? [String: Any]
+    expect(clickedSecond == true && openedSecond?["line"] as? Int == 50, "Verdi's second answer is clickable and opens it: \(String(describing: openedSecond))")
     // Verdi not there yet, or not usable here.
     engineAnswer = ["state": "starting"]
     _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
@@ -299,7 +306,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // A slow Verdi on a port hop: ours (the hop) at once, then Verdi's statement behind the ports.
     engineDelay = 0.8
     let updatesBefore = updates
+    let stepPosts = { self.events.filter { $0["event"] as? String == "step" }.count }
+    let stepsBefore = stepPosts()
     let slow = await shown("tb_c.dut.q", settle: true)
+    await sleep(100)
+    let stepsAfter = stepPosts()
     let slowMs = slow?["ms"] as? Double ?? .infinity
     let slowStep = slow?["step"] as? [String: Any], slowAfter = slow?["after"] as? [String: Any]
     print(String(format: "[verdi async] slow Verdi (800 ms): step shown in %.0f ms", slowMs))
@@ -310,6 +321,16 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
              && (slowAfter?["engine"] as? [String: Any])?["name"] as? String == "verdi" && !((slowAfter?["via"] as? [Any]) ?? []).isEmpty,
            "Verdi's answer fills the step in when it arrives (followed through the ports): \(String(describing: slowAfter?["engine"]))")
     expect(updates > updatesBefore, "the filled-in step is posted to cmux as an update")
+    expect(stepsAfter - stepsBefore == 1, "the late fill-in does not move the editor (one step post, the shown one): \(stepsAfter - stepsBefore)")
+    // Verdi's line, once it is there, is a link in the pane that opens it.
+    let clickedVerdi = await call("""
+      const a = [...document.querySelectorAll('#cmux-trace .body a')].find((x) => x.textContent.includes('c_struct.sv:56'));
+      if (!a) { return false; } a.click(); return true
+      """) as? Bool
+    await sleep(100)
+    let openedVerdi = events.last { $0["event"] as? String == "open" }?["loc"] as? [String: Any]
+    expect(clickedVerdi == true && openedVerdi?["line"] as? Int == 56 && (openedVerdi?["file"] as? String ?? "").hasSuffix("c_struct.sv"),
+           "the filled-in statement (Verdi's line) is clickable and opens it: \(String(describing: openedVerdi))")
     // Moved on: a newer trace before Verdi answered drops that answer.
     _ = await shown("tb_c.dut.q", settle: false)
     let newer = await shown("tb_c.dut.u_mid.u_sink.q", settle: true)
