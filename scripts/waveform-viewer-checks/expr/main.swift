@@ -1,12 +1,12 @@
 // Expression checks (run.sh expr): Resources/vaporview/cmux-expr.js, the waveform debugger's
 // SystemVerilog expression evaluator (Evaluate, watches, condition breakpoints), in a bare
 // JavaScriptCore context: the grammar, precedence, 4-state values, widths, selects, errors, caps.
-// Usage: expr <cmux-expr.js> <cases.js>
+// Usage: expr <cmux-expr.js> <cases.js> [fuzz-regressions.js]
 import Foundation
 import JavaScriptCore
 
 let args = CommandLine.arguments
-guard args.count == 3, let context = JSContext() else { print("usage: expr <cmux-expr.js> <cases.js>"); exit(2) }
+guard args.count == 3 || args.count == 4, let context = JSContext() else { print("usage: expr <cmux-expr.js> <cases.js> [fuzz-regressions.js]"); exit(2) }
 var thrown: String?
 context.exceptionHandler = { _, error in thrown = error?.toString() }
 for path in args[1...] {
