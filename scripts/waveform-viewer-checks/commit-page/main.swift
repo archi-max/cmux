@@ -344,6 +344,27 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let k1Again = resent.first { $0["key"] as? String == "K1" }
     expect(hitBefore == true && resent.count == 3 && k1Again?["id"] as? Int == k1 && k1Again?["hit"] as? Bool == true,
            "re-sent with one more: the same id, the hit mark kept: \(resent.map { [$0["key"] ?? "", $0["id"] ?? "", $0["hit"] ?? ""] })")
+    // The same marks again (a sync with nothing changed): nothing is replaced, so nothing is re-searched or re-sent.
+    let eventsBefore = listEvents.count
+    let sameAgain = await call("""
+      const before = cmuxWaveform.debugger.breakpoints().filter((b) => b.key).map((b) => b.id);
+      cmuxWaveform.debugger.setPcBreakpoints({ items: [
+        { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
+        { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: false, condition: 'top.flag' },
+        { key: 'K5', listingLabel: 'prog.dis: _start+0x8', pcs: ['0x80000008'], enabled: false }] });
+      return before.join() === cmuxWaveform.debugger.breakpoints().filter((b) => b.key).map((b) => b.id).join();
+    """) as? Bool
+    await sleep(100)
+    expect(sameAgain == true && listEvents.count == eventsBefore, "unchanged marks re-sent: no change (\(listEvents.count - eventsBefore) list events)")
+    _ = await call("""
+      cmuxWaveform.debugger.setPcBreakpoints({ items: [
+        { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
+        { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: true, condition: 'top.flag' },
+        { key: 'K5', listingLabel: 'prog.dis: _start+0x8', pcs: ['0x80000008'], enabled: false }] }); return null
+    """)
+    await sleep(100)
+    let k2On = (await list()).first { $0["key"] as? String == "K2" }?["enabled"] as? Bool
+    expect(k2On == true && listEvents.count == eventsBefore + 1, "one changed: it is taken (\(listEvents.count - eventsBefore) list events)")
     let toldKeys = (listEvents.last ?? []).filter { $0["kind"] as? String == "pc" && $0["key"] != nil && !($0["key"] is NSNull) }
     expect(toldKeys.isEmpty, "cmux keeps them itself (not in the page's saved list): \(toldKeys)")
     // The list's checkbox, condition and remove tell cmux.
