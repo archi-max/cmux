@@ -18,6 +18,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   let scheme = WaveformViewerSchemeHandler(assetRoot: assetRoot)
   var web: WKWebView!
   var requested: [[String]] = []
+  /// fsmRequests with refresh (the pane asking again after a reload).
+  var refreshRequests: [[String]] = []
+  var openedCount = 0
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -248,6 +251,100 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let closed = await call("const p = document.getElementById('fsm'); return p.hidden || getComputedStyle(p).display === 'none'") as? Bool
     let openAfter = (await state())["open"] as? Bool
     expect(closed == true && openAfter == false, "the close button hides the pane")
+
+    // Verify F4: the pane's default width leaves the waveform room (at most 35% of the panes), its
+    // resize grip is a visible strip on its left edge, and the width the user drags it to stays.
+    _ = await call("cmuxWaveform.fsm.show({ path: \(ctlPath), model: \(ctlModel) }); return null")
+    await sleep(500)
+    let widths = await call("""
+      const p = document.getElementById('fsm');
+      return [p.getBoundingClientRect().width, p.parentElement.getBoundingClientRect().width];
+    """) as? [Double] ?? []
+    let defaultWidth = widths.first ?? 0
+    let expectedWidth = min(340, 0.35 * (widths.last ?? 0))
+    expect(widths.count == 2 && abs(defaultWidth - expectedWidth) < 1.5, "F4: the default width is min(340px, 35%): \(widths)")
+    let grip = await call("""
+      const g = document.querySelector('#fsm .fsm-grip');
+      if (!g) { return null; }
+      const r = g.getBoundingClientRect(); const p = document.getElementById('fsm').getBoundingClientRect();
+      return [getComputedStyle(g).cursor, Math.round(r.left - p.left), r.width >= 4 && r.height >= p.height - 2, !!g.title, g.getAttribute('role')];
+    """) as? [Any]
+    expect(grip.map { ($0[0] as? String) == "col-resize" && ($0[1] as? Int) == 0 && ($0[2] as? Bool) == true && ($0[3] as? Bool) == true && ($0[4] as? String) == "separator" } == true,
+           "F4: a resize grip runs down the pane's left edge, with a tooltip: \(String(describing: grip))")
+    let dragged = await call("""
+      const g = document.querySelector('#fsm .fsm-grip');
+      if (!g) { return -1; }
+      const r = g.getBoundingClientRect(); const x = r.left + 2; const y = r.top + 40;
+      g.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: x, clientY: y }));
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x - 60, clientY: y }));
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x - 100, clientY: y }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x - 100, clientY: y }));
+      return document.getElementById('fsm').getBoundingClientRect().width;
+    """) as? Double ?? -1
+    expect(abs(dragged - (defaultWidth + 100)) < 1.5, "F4: dragging the grip 100px left widens the pane by 100px: \(defaultWidth) -> \(dragged)")
+    _ = await call("cmuxWaveform.fsm.hide(); cmuxWaveform.fsm.show({ path: \(ctlPath), model: \(ctlModel) }); return null")
+    await sleep(400)
+    let kept = await call("return document.getElementById('fsm').getBoundingClientRect().width") as? Double ?? -1
+    expect(abs(kept - dragged) < 1.5, "F4: closed and shown again, the pane keeps the user's width: \(kept)")
+
+    // Verify F3: the local (wellen) backend honours the change cap too, and over it a click says so
+    // instead of "Not later in the waveform".
+    let capped = await call("""
+      const host = cmuxWaveform.host;
+      const v = await host.findLinkItem(\(ctlPath), true);
+      const few = await host.signalChanges(v, 5);
+      const all = await host.signalChanges(v, 1000);
+      return [few === null, Array.isArray(all) && all.length > 5];
+    """) as? [Bool] ?? []
+    expect(capped == [true, true], "F3: past maxChanges the wellen backend gives null, under it the changes: \(capped)")
+    _ = await call("cmuxWaveform.fsm.setMaxChangesForTesting(5); cmuxWaveform.fsm.show({ path: \(ctlPath), model: \(ctlModel) }); return null")
+    await sleep(500)
+    let overCap = await call("return document.querySelector('#fsm').textContent.includes('Too many changes to count.')") as? Bool
+    expect(overCap == true, "F3: over the cap the pane says it can't count")
+    await setMarker(50)
+    _ = await call("document.querySelectorAll('.cmux-toast').forEach((t) => t.remove()); return null")
+    await click("#fsm .fsm-edge[data-from='100'][data-to='101']")
+    let toast = await call("return Array.from(document.querySelectorAll('.cmux-toast')).map((t) => t.textContent).join('|')") as? String ?? ""
+    expect(toast == "Too many changes to search from here.", "F3: and a click says the changes weren't read, not \"Not later\": \(toast)")
+    expect(await marker() == 50, "F3: the marker stays")
+    _ = await call("cmuxWaveform.fsm.setMaxChangesForTesting(null); return null")
+
+    // Verify F1: an open pane follows a waveform reload (a re-simulation, Auto Reload). The new
+    // dump has DECODE (100) and EXEC (101) swapped for the state register.
+    _ = await call("cmuxWaveform.fsm.show({ path: \(ctlPath), model: \(ctlModel) }); return null")
+    await sleep(500)
+    await setMarker(50)
+    let before = await call("return document.querySelector('#fsm .fsm-current').textContent") as? String ?? ""
+    expect(before.contains("DECODE"), "F1: before the reload, 50 is DECODE: \(before)")
+    let original = (try? String(contentsOf: waveURL, encoding: .utf8)) ?? ""
+    let swapped = original.replacingOccurrences(of: "b100 +\n", with: "b1XX +\n").replacingOccurrences(of: "b101 +\n", with: "b100 +\n")
+      .replacingOccurrences(of: "b1XX +\n", with: "b101 +\n")
+    let swappedURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("fsm-swapped-\(getpid()).vcd")
+    try? swapped.write(to: swappedURL, atomically: true, encoding: .utf8)
+    let served = scheme.serve(fileURL: swappedURL)
+    let opens = openedCount
+    let refreshes = refreshRequests.count
+    _ = await call("cmuxWaveform.reload({ url: '\(served.absoluteString)', size: \(swapped.utf8.count) }); return null")
+    for _ in 0..<50 where openedCount == opens { await sleep(200) }
+    expect(openedCount > opens, "F1: the waveform reloaded")
+    await sleep(1200)
+    let reloaded = await call("""
+      const p = document.getElementById('fsm');
+      const sub = (bits) => ((p.querySelector(`.fsm-node[data-bits="${bits}"] .fsm-node-sub`) || {}).textContent || '');
+      return [p.querySelector('.fsm-current').textContent, sub('100'), sub('101'),
+              !!p.querySelector(".fsm-edge.observed[data-from='001'][data-to='101']")];
+    """) as? [Any] ?? []
+    expect((reloaded.first as? String)?.contains("EXEC") == true, "F1: after the reload, the pane says 50 is EXEC: \(reloaded)")
+    expect(reloaded.count == 4 && (reloaded[1] as? String)?.contains("×10") == true && (reloaded[2] as? String)?.contains("×11") == true,
+           "F1: and the counts are the new dump's: \(reloaded)")
+    expect(reloaded.count == 4 && (reloaded[3] as? Bool) == true, "F1: and its transitions (001>101 dashed): \(reloaded)")
+    await setMarker(30)
+    await setMarker(50)
+    let moved = await call("return document.querySelector('#fsm .fsm-current').textContent") as? String ?? ""
+    expect(moved.contains("EXEC"), "F1: the marker moved and back: EXEC: \(moved)")
+    expect(refreshRequests.count == refreshes + 1 && refreshRequests.last == ["tb", "dut", "u_ctl", "state"], "F1: and the pane asks cmux for the model again, quietly: \(refreshRequests.suffix(1))")
+    try? FileManager.default.removeItem(at: swappedURL)
+
     print(failures == 0 ? "FSM CHECKS PASSED" : "FSM CHECKS FAILED: \(failures)")
     // For the snapshot.
     _ = await call("cmuxWaveform.fsm.show({ path: \(ctlPath), model: \(ctlModel), note: 'From Verdi' }); return null")
@@ -287,9 +384,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let fmt = waveURL.pathExtension.lowercased()
       web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'\(fmt)', strings:{netlist:'Netlist', loading:'Loading…', openFailed:'Could not open', addSignal:'Add'}})")
     } else if type == "opened" {
-      Task { @MainActor in await self.runFsmChecks() }
+      openedCount += 1
+      if openedCount == 1 { Task { @MainActor in await self.runFsmChecks() } }
     } else if type == "fsmRequest" {
-      requested.append((body["path"] as? [String]) ?? [])
+      if body["refresh"] as? Bool == true {
+        refreshRequests.append((body["path"] as? [String]) ?? [])
+      } else {
+        requested.append((body["path"] as? [String]) ?? [])
+      }
     } else if type == "error" {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.snap() }
     }
@@ -311,5 +413,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { h.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 30) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 60) { print("timeout"); exit(1) }
 app.run()
