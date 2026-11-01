@@ -682,6 +682,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         await callPage(api: "debugger", function, argument: argument)
     }
 
+    /// Like `callLink`, on `window.cmuxWaveform.trace` (cmux-trace-ui.js).
+    func callTrace(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "trace", function, argument: argument)
+    }
+
     private func callPage(api: String, _ function: String, argument: Any?) async -> Any? {
         guard let webView, isPageReady else { return nil }
         var arguments: [String: Any] = [:]
@@ -710,7 +715,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     }
 
     private static func localizedStrings() -> [String: String] {
-        WaveformViewerStrings.all().merging(WaveformDebugger.pageStrings()) { _, new in new }.merging([
+        WaveformViewerStrings.all().merging(WaveformDebugger.pageStrings()) { _, new in new }
+            .merging(WaveformTrace.pageStrings()) { _, new in new }.merging([
             "netlist": String(localized: "filePreview.waveform.netlist", defaultValue: "Netlist"),
             "loading": String(localized: "filePreview.waveform.loading", defaultValue: "Loading waveform…"),
             "openFailed": String(localized: "filePreview.waveform.openFailed", defaultValue: "Unable to open waveform"),
@@ -779,6 +785,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if body["eventType"] as? String == "signalSelect", let panel { WaveformDebugger.rowSelected(in: panel) }
         case "debugger":
             if let panel { WaveformDebugger.pageReported(body, waveform: panel) }
+        case "trace":
+            if let panel { WaveformTrace.pageReported(body, waveform: panel) }
         case "settings":
             if let values = body["values"] as? [String: Any] {
                 Self.storeSettings(values)

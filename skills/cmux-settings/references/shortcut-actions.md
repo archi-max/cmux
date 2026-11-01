@@ -193,6 +193,7 @@ Values for `shortcuts.bindings.<action>`:
 - `shortcuts.bindings.toggleFileEditorWordWrap`
 - `shortcuts.bindings.addSignalToWaveform`
 - `shortcuts.bindings.revealWaveformSignalInSource`
+- `shortcuts.bindings.traceWaveformDriver`
 - `shortcuts.bindings.navigateSourceBack`
 - `shortcuts.bindings.navigateSourceForward`
 - `shortcuts.bindings.stepWaveformCycleForward`

@@ -46,7 +46,7 @@ extension ShortcutAction {
              .simulatorHome, .simulatorRotateLeft, .simulatorRotateRight,
              .simulatorToggleAppearance, .simulatorToggleSoftwareKeyboard:
             return .panes
-        case .openDiffViewer, .saveFilePreview, .toggleFileEditorWordWrap, .addSignalToWaveform, .revealWaveformSignalInSource,
+        case .openDiffViewer, .saveFilePreview, .toggleFileEditorWordWrap, .addSignalToWaveform, .revealWaveformSignalInSource, .traceWaveformDriver,
              .navigateSourceBack, .navigateSourceForward,
              .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback, .reverseContinueWaveform,
              .toggleWaveformBreakpoint,

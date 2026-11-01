@@ -89,11 +89,11 @@ extension KeyboardShortcutSettings {
 
         let shortcut = shortcut(for: action)
         switch action {
-        case .addSignalToWaveform, .revealWaveformSignalInSource, .navigateSourceBack, .navigateSourceForward,
+        case .addSignalToWaveform, .revealWaveformSignalInSource, .traceWaveformDriver, .navigateSourceBack, .navigateSourceForward,
              .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback, .reverseContinueWaveform,
              .toggleWaveformBreakpoint:
-            // Ctrl+W, Opt+Shift+D, Ctrl+-, F10 and F5 are everyday terminal keys
-            // (delete word, `Î`, undo, TUI menus and refresh). Their keyDown routers
+            // Ctrl+W, Opt+Shift+D, Ctrl+T, Ctrl+-, F10 and F5 are everyday terminal keys
+            // (delete word, `Î`, transpose, undo, TUI menus and refresh). Their keyDown routers
             // only fire with an SV editor or a waveform focused, so they never get
             // a menu key equivalent.
             return .unbound

@@ -20,6 +20,10 @@ import Testing
         #expect(SVModelLoad.arguments(target: nil, configBuild: "/abs/files.f", root: "/w") == ["-f", "/abs/files.f"])
     }
 
+    @Test func buildRelativePathsReadsTheFileListRelativeToItself() {
+        #expect(SVModelLoad.arguments(target: nil, configBuild: "adapter_tb.f", buildRelativePaths: true, root: "/w") == ["-F", "/w/adapter_tb.f"])
+    }
+
     @Test func aChosenTargetWinsOverTheConfig() {
         #expect(SVModelLoad.arguments(target: .buildFile("/w/a.f"), configBuild: "b.f", root: "/w") == ["-f", "/w/a.f"])
     }
