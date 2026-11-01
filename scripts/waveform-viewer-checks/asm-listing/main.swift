@@ -166,7 +166,8 @@ var failures = 0
            "a mismatch is said: \(said)")
     AB.commitsReady(checker)
     await settle(100)
-    expect(checker.nativeViewSessions.waveform.calls.filter { $0.function == "say" }.count == 1, "once")
+    expect(checker.nativeViewSessions.waveform.calls.filter { $0.function == "say" }.count == 1
+           && checker.nativeViewSessions.waveform.calls.filter { $0.function == "commitSample" }.count == 1, "once (not asked again)")
     viewer.nativeViewSessions.waveform.answers["commitSample"] = [["pc": "0x80000004", "insn": 0x4501], ["pc": "0x8000000c", "insn": 0xfe02_9ee3]]
     AB.commitsReady(viewer)
     await settle(100)
@@ -188,6 +189,11 @@ var failures = 0
     await settle(100)
     expect(AB.styles(in: again)?.count == 2, "and its breakpoints are drawn: \(AB.styles(in: again) ?? [:])")
     expect(AB.sessionMarks(of: UUID()) == nil, "a workspace without any saves none")
+    // Restored while its listing is open: placed in it at once (a stale PC follows symbol+offset).
+    var stale = decoded ?? []
+    if !stale.isEmpty { stale[0].pc = 0x1234 }
+    AB.restore(stale, in: restored)
+    expect(AB.marks[restored]?.first?.pc == 0x8000_0000, "a restore into an open listing places them: \(String(describing: AB.marks[restored]?.first))")
 
     print(failures == 0 ? "ASM LISTING CHECKS PASSED" : "ASM LISTING CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
