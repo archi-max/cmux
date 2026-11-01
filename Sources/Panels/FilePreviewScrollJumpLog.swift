@@ -27,8 +27,9 @@ final class FilePreviewScrollJumpLog {
             object: clipView,
             queue: nil
         ) { [weak self, weak clipView, weak textView] _ in
-            // Capture the stack here, on the posting call, before any hop.
-            let stack = Thread.callStackSymbols
+            // Capture the stack here, on the posting call, before any hop. Return
+            // addresses are cheap; they are symbolicated only for a logged jump.
+            let stack = Thread.callStackReturnAddresses
             MainActor.assumeIsolated {
                 guard let self, let clipView else { return }
                 self.clipDidMove(clipView, textView: textView, fileName: fileName, stack: stack)
@@ -43,15 +44,15 @@ final class FilePreviewScrollJumpLog {
         deinit { NotificationCenter.default.removeObserver(token) }
     }
 
-    private func clipDidMove(_ clipView: NSClipView, textView: NSTextView?, fileName: String, stack: [String]) {
+    private func clipDidMove(_ clipView: NSClipView, textView: NSTextView?, fileName: String, stack: [NSNumber]) {
         let y = clipView.bounds.minY
         let from = lastY
         lastY = y
         guard abs(y - from) > Self.threshold else { return }
         let caret = textView?.selectedRange().location ?? -1
         let height = textView?.frame.height ?? 0
-        let frames = stack.dropFirst(1).map(Self.symbol)
-            .filter { !$0.contains("Notification") && !$0.contains("CFXRegistration") && !$0.contains("CFXNotification") }
+        let frames = stack.dropFirst(1).map { Self.symbol(at: $0.uintValue) }
+            .filter { !$0.localizedCaseInsensitiveContains("notification") && !$0.contains("CFXRegistration") }
             .prefix(40).joined(separator: " < ")
         logDebugEvent(
             "filePreview.scrollJump file=\(fileName) from=\(Int(from)) to=\(Int(y)) " +
@@ -59,10 +60,14 @@ final class FilePreviewScrollJumpLog {
         )
     }
 
-    /// The symbol part of a `callStackSymbols` line.
-    private static func symbol(_ line: String) -> String {
-        let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-        return parts.count > 3 ? parts[3...].joined(separator: " ") : line
+    /// The symbol containing a return address, or the address in hex.
+    private static func symbol(at address: UInt) -> String {
+        var info = Dl_info()
+        guard let pointer = UnsafeRawPointer(bitPattern: address),
+              dladdr(pointer, &info) != 0, let name = info.dli_sname else {
+            return "0x" + String(address, radix: 16)
+        }
+        return String(cString: name)
     }
     #endif
 

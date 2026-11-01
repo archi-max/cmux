@@ -28,11 +28,13 @@ extension NSTextView {
         typingAttributes[.paragraphStyle] = paragraphStyle
 
         if let storage = textStorage, storage.length > 0 {
-            storage.addAttribute(
-                .paragraphStyle,
-                value: paragraphStyle,
-                range: NSRange(location: 0, length: storage.length)
-            )
+            FilePreviewViewportAnchor.keepingViewport(of: self) {
+                storage.addAttribute(
+                    .paragraphStyle,
+                    value: paragraphStyle,
+                    range: NSRange(location: 0, length: storage.length)
+                )
+            }
         }
         if let savingTextView = self as? SavingTextView {
             savingTextView.appliedFilePreviewTabWidth = columns
