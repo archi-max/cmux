@@ -79,13 +79,14 @@
   const hex = (v) => (v === null || v === undefined ? String(v) : '0x' + BigInt(v).toString(16));
 
   // ---- Spike's --log-commits, replayed independently of the core under test ----
-  function spikeReplay(text) {
+  function spikeReplay(text, minPc) {
+    const lowest = minPc === undefined ? 0x80000000 : minPc;
     const commits = [];
     for (const line of text.split('\n')) {
       const m = /^core\s+\d+:\s+\d+\s+0x([0-9a-f]+)\s+\((0x[0-9a-f]+)\)(.*)$/.exec(line);
       if (!m) { continue; }
       const pc = parseInt(m[1], 16);
-      if (pc < 0x80000000) { continue; }  // the boot ROM
+      if (pc < lowest) { continue; }  // the boot ROM
       const c = { pc, insn: parseInt(m[2], 16), rd: null, rdv: null, mem: [], csrs: [] };
       const rest = m[3];
       let r;
@@ -427,9 +428,14 @@
       ok(pre.table.count === 3 && Array.from(pre.table.time).join() === '15,25,35' && M().num(pre.table.cols.pc_rdata, 0) === 0x80000000,
         'preEdge: the same commits, each one posedge later: ' + Array.from(pre.table.time).join());
     }
+    // Instruction-sequence search (sequence-cases.js, cmux-sequence.js).
+    if (want('sequence') && root.runSequenceCases) { out.push(...root.runSequenceCases(fixtures, { readVcd, posedges, load, spikeReplay, elfSegments })); }
     return out;
   }
 
   root.runMachineCases = runMachineCases;
+  root.machineSpikeReplay = spikeReplay;
+  root.machineLoad = load;
+  root.machineReadVcdPosedges = posedges;
   root.machineReadVcd = readVcd;
 })(typeof window !== 'undefined' ? window : globalThis);

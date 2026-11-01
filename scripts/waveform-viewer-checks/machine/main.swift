@@ -19,6 +19,8 @@ let now: @convention(block) () -> Double = { Date().timeIntervalSince1970 * 1000
 context.setObject(readFile, forKeyedSubscript: "readFile" as NSString)
 context.setObject(readBytes, forKeyedSubscript: "readBytes" as NSString)
 context.setObject(now, forKeyedSubscript: "nowMs" as NSString)
+// The page's scripts publish on `window`.
+context.evaluateScript("var window = this;")
 for path in args[2...] {
   guard let source = try? String(contentsOfFile: path, encoding: .utf8) else { print("cannot read", path); exit(2) }
   context.evaluateScript(source, withSourceURL: URL(fileURLWithPath: path))
