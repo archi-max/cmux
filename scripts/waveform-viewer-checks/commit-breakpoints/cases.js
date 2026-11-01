@@ -188,5 +188,23 @@ async function runCommitCases() {
   waveform.commits = { index: async () => { throw new Error('broken'); } };
   eq('an index that throws: none', await hits(bp('write', { loc: 'a0' })), null);
   waveform.commits = api;
+
+  // ---- a broad pattern on a long trace: the hits are collected in linear time ----
+  // 300k commits over 20k distinct words, every one matching: collecting by copying the hits so far for
+  // each matching word took ~40 s here; collected in place it takes ~1 s (10 s allows for a loaded Mac).
+  {
+    const n = 300000;
+    const distinct = 20000;
+    const big = [];
+    for (let k = 0; k < n; k++) { big.push([k * 10, 0x80000000 + (k % distinct) * 4, ((k % distinct) << 7 | 0x13) >>> 0, 0]); }
+    ix = makeIndex(big);
+    const broad = bp('commitText', { pattern: '.' });
+    const t0 = Date.now();
+    const found = await C.times(broad, warn);
+    const ms = Date.now() - t0;
+    eq('broad pattern: every commit hits', found ? found.length : null, n);
+    eq('broad pattern over 20k distinct words: under 10 s (' + ms + ' ms)', ms < 10000, true);
+    ix = makeIndex(rows);
+  }
   return out;
 }
