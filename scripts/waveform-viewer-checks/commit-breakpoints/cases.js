@@ -151,6 +151,14 @@ async function runCommitCases() {
   eq('order: ascending times', await hits(ord), [10, 20, 30]);
   eq('order: kAt', [C.kAt(ord, 10), C.kAt(ord, 20), C.kAt(ord, 30)], [1, 2, 0]);
 
+  // ---- a condition's scope: the commit source's instance, when the index names it ----
+  eq('scopeOf: none named', C.scopeOf(ord), null);
+  ix.scope = ['top', 'cpu'];
+  const scoped = bp('pc', { pc: '0x80000004' });
+  await hits(scoped);
+  eq('scopeOf: the index\'s', C.scopeOf(scoped), ['top', 'cpu']);
+  eq('scopeOf: before a search', C.scopeOf(bp('pc', { pc: '0x4' })), null);
+
   // ---- landing: the Machine section's commit ----
   const went = [];
   waveform.machine = { goToCommit: (q) => { went.push(q.k); return Promise.resolve({}); } };

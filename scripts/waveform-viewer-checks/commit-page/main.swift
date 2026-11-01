@@ -156,12 +156,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await clearToasts()
     _ = await dbg("jump({ to: 'first' })")
     _ = await marker(5)
+    _ = await call("window.__wentTo.length = 0; return null")
     _ = await dbg("continue({ dir: 1 })")
     expect(await toasts().contains("Breakpoint: PC 0x80000004 at 25 ns (cycle 3)"), "the hit is said: \(await toasts())")
     let went = await call("return window.__wentTo.slice()") as? [Int]
     expect(went == [1], "the Machine section goes to the commit that hit: \(String(describing: went))")
 
-    // A condition, tested at the landing posedge (flag is high only at 35).
+    // A condition, tested at the landing posedge (flag is high only at 35), its names looked up in
+    // the commit source's instance (the index's scope, here top), then from the top.
+    _ = await call("window.__commitIndex.scope = ['top']; return null")
     let cond = await addCommit("kind: 'pc', pcs: ['0x80000004'], condition: 'flag'")
     l = await landings(cond)
     expect(l.forward == [35] && l.back.isEmpty, "pc if flag: only 35: \(l)")
@@ -241,13 +244,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            && toldT?["anyRegisterNames"] as? Bool == false, "cmux is told their fields: \(told.filter { $0["kind"] as? String != "text" })")
     let restored = await call("""
       return cmuxWaveform.debugger.restoreBreakpoints({ items: [
-        { path: [], kind: 'pc', pcs: ['0x80000004'], enabled: true, condition: 'flag' },
+        { path: [], kind: 'pc', pcs: ['0x80000004'], enabled: true, condition: 'top.flag' },
         { path: [], kind: 'commitText', pattern: 'csrw', enabled: false },
         { path: [], kind: 'write', loc: 'csr:mtvec', enabled: true },
         { path: [], kind: 'pc', pcs: ['main'], enabled: true },
         { path: ['top', 'inst'], kind: 'change', enabled: false }] }).map((b) => b.label);
     """) as? [String]
-    expect(restored == ["PC 0x80000004 if flag", "Next instruction ~ /csrw/", "mtvec written", "top.inst changes"],
+    expect(restored == ["PC 0x80000004 if top.flag", "Next instruction ~ /csrw/", "mtvec written", "top.inst changes"],
            "restored (a bad one dropped): \(String(describing: restored))")
     let restoredPc = (await list()).first { $0["kind"] as? String == "pc" }?["id"] as? Int
     l = await landings(restoredPc)
