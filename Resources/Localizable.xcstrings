@@ -695200,6 +695200,124 @@
         }
       }
     },
+    "waveformDebugger.lineFileTooLarge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: the file is too large to find the signals of this line."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‏%@: الملف كبير جدًا للعثور على إشارات هذا السطر."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Die Datei ist zu groß, um die Signale dieser Zeile zu finden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: el archivo es demasiado grande para encontrar las señales de esta línea."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ : le fichier est trop volumineux pour trouver les signaux de cette ligne."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: ファイルが大きすぎるため、この行の信号を見つけられません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: 파일이 너무 커서 이 줄의 신호를 찾을 수 없습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：文件太大，无法找到此行的信号。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：檔案太大，無法找到此行的訊號。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.lineNothingToWatch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: this line assigns no signal, so it has nothing to watch."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‏%@: لا يُسند هذا السطر أي إشارة، فلا يوجد ما يُراقَب."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Diese Zeile weist kein Signal zu, es gibt also nichts zu beobachten."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: esta línea no asigna ninguna señal, así que no hay nada que vigilar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ : cette ligne n’affecte aucun signal, il n’y a donc rien à surveiller."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: この行はどの信号にも代入しないため、監視するものがありません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: 이 줄은 신호를 할당하지 않으므로 감시할 것이 없습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：此行没有给任何信号赋值，因此没有可监视的内容。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：此行沒有給任何訊號賦值，因此沒有可監看的內容。"
+          }
+        }
+      }
+    },
     "waveformDebugger.lineNotPlaced": {
       "extractionState": "manual",
       "localizations": {

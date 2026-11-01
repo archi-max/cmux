@@ -285,12 +285,23 @@ enum WaveformDebuggerLineBreakpoints {
     private static func place(_ tracker: Tracker, in storage: NSTextStorage) {
         tracker.placed = true
         let text = storage.string as NSString
-        let starts = lineTable(of: text).starts
+        let table = lineTable(of: text)
+        let starts = table.starts
         var taken: Set<Int> = []
         guard var list = marks[tracker.workspace] else { return }
+        // Every line by the text marks compare, read once (not one pass over the file per mark).
+        var byText: [String: [Int]] = [:]
+        if list.contains(where: { $0.path == tracker.path }) {
+            for (number, line) in table.texts.enumerated() { byText[WaveformLineBreakpoint.lineText(line), default: []].append(number) }
+        }
         for index in list.indices where list[index].path == tracker.path {
             var mark = list[index]
-            if let line = WaveformLineBreakpoint.lines(matching: mark.text, near: mark.line, in: text).first(where: { !taken.contains($0) }) {
+            let wanted = WaveformLineBreakpoint.lineText(mark.text)
+            let near = mark.line
+            // The nearest free line with its text (the earlier on a tie).
+            let match = wanted.isEmpty ? nil : (byText[wanted] ?? []).filter { !taken.contains($0) }
+                .min { (abs($0 - near), $0) < (abs($1 - near), $1) }
+            if let line = match {
                 mark.line = line
                 mark.lost = false
             } else {
@@ -593,7 +604,7 @@ enum WaveformDebuggerLineBreakpoints {
         marks[workspace] = list
     }
 
-    /// Every line's start and text (without its break): only where the old text is compared.
+    /// Every line's start and text (without its break): where texts are compared (placing, the old text).
     private static func lineTable(of text: NSString) -> (starts: [Int], texts: [String]) {
         var starts: [Int] = [], texts: [String] = []
         text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: .byLines) { line, range, _, _ in
@@ -607,7 +618,8 @@ enum WaveformDebuggerLineBreakpoints {
         return (starts, texts)
     }
 
-    private static func isBreak(_ unit: unichar) -> Bool { unit == 0x0A || unit == 0x0D || unit == 0x2028 || unit == 0x2029 }
+    /// A line break as .byLines (the gutter) splits lines: \n, \r, U+0085, U+2028, U+2029.
+    private static func isBreak(_ unit: unichar) -> Bool { unit == 0x0A || unit == 0x0D || unit == 0x85 || unit == 0x2028 || unit == 0x2029 }
 
     private static func lineIndex(of offset: Int, in starts: [Int]) -> Int {
         var lo = 0, hi = starts.count - 1
@@ -628,8 +640,8 @@ enum WaveformDebuggerLineBreakpoints {
                 text.getCharacters(&buffer, range: NSRange(location: index, length: count))
                 for k in 0..<count {
                     let unit = buffer[k]
-                    // \r\n is one break; a lone \r or \n is one.
-                    if unit == 0x0A { if !previousCR { line += 1 } } else if unit == 0x0D { line += 1 }
+                    // \r\n is one break; a lone \r or \n is one, and so are U+0085, U+2028, U+2029 (as .byLines).
+                    if unit == 0x0A { if !previousCR { line += 1 } } else if isBreak(unit) { line += 1 }
                     previousCR = unit == 0x0D
                 }
                 index += count
@@ -742,10 +754,13 @@ enum WaveformDebuggerLineBreakpoints {
             var paths: [[String]] = []
             var scope: [String]?
             var groups: [[String: Any]] = []
-            if let editor = editors.first(where: { $0.filePath == mark.path }), let textView = editor.debuggerTextView,
-               let offset = trackers.object(forKey: textView)?.offsets[mark.id], let storage = textView.textStorage,
-               let line = editor.breakpointLine(at: offset), let module = line.module {
-                let signals = WaveformLineBreakpoint.watchedSignals(of: line, in: storage.string as NSString)
+            // Why a line has no paths, for the page's list: it watches nothing, or its file is too large to scan.
+            var unwatched: String?
+            scan: if let editor = editors.first(where: { $0.filePath == mark.path }), let textView = editor.debuggerTextView,
+               let offset = trackers.object(forKey: textView)?.offsets[mark.id], let storage = textView.textStorage {
+                guard let line = editor.breakpointLine(at: offset) else { unwatched = "tooLarge"; break scan }
+                let signals = line.module == nil ? [] : WaveformLineBreakpoint.watchedSignals(of: line, in: storage.string as NSString)
+                guard let module = line.module, !signals.isEmpty else { unwatched = "nothing"; break scan }
                 let instances = editor.breakpointInstances(ofModule: module)
                 let dumps = mark.anyInstance ? instances.all : instances.shown.map { [$0] } ?? []
                 // A condition's names are looked up in the instance the line is watched in; in each
@@ -762,6 +777,7 @@ enum WaveformDebuggerLineBreakpoints {
             if let condition = mark.condition { item["condition"] = condition }
             if let scope { item["scope"] = scope }
             if !groups.isEmpty { item["groups"] = groups }
+            if let unwatched { item["unwatched"] = unwatched }
             return item
         }
     }
