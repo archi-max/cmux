@@ -26,11 +26,19 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
     /// A breakpoint dot in the gutter (cmux's waveform debugger).
     enum BreakpointMark { case enabled, conditional, disabled, lost }
     /// Dots by line start offset; nil for a text view that takes no breakpoints (no dot column).
-    static var breakpointMarks: (@MainActor (NSTextView) -> [Int: BreakpointMark]?)? = { WaveformDebuggerLineBreakpoints.styles(in: $0) }
+    static var breakpointMarks: (@MainActor (NSTextView) -> [Int: BreakpointMark]?)? = {
+        WaveformDebuggerLineBreakpoints.styles(in: $0) ?? WaveformDebuggerAsmBreakpoints.styles(in: $0)
+    }
     /// A click on the line starting at the offset; true when it was taken.
-    static var breakpointClicked: (@MainActor (NSTextView, Int) -> Bool)? = { WaveformDebuggerLineBreakpoints.gutterClicked($0, lineStart: $1) }
+    static var breakpointClicked: (@MainActor (NSTextView, Int) -> Bool)? = {
+        WaveformDebuggerLineBreakpoints.gutterClicked($0, lineStart: $1) || WaveformDebuggerAsmBreakpoints.gutterClicked($0, lineStart: $1)
+    }
     /// The menu for a right-click on the line starting at the offset.
-    static var breakpointMenu: (@MainActor (NSTextView, Int) -> NSMenu?)? = { WaveformDebuggerLineBreakpoints.gutterMenu($0, lineStart: $1) }
+    static var breakpointMenu: (@MainActor (NSTextView, Int) -> NSMenu?)? = {
+        WaveformDebuggerLineBreakpoints.gutterMenu($0, lineStart: $1) ?? WaveformDebuggerAsmBreakpoints.gutterMenu($0, lineStart: $1)
+    }
+    /// The line start of the current instruction (an arrow), in an assembly listing.
+    static var currentInstruction: (@MainActor (NSTextView) -> Int?)? = { WaveformDebuggerAsmBreakpoints.currentLineStart(in: $0) }
     private static let breakpointColumn: CGFloat = 12
 
     private var lineIndex = FilePreviewLineIndex(string: "")
@@ -202,6 +210,7 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
         let lineCount = lineIndex.lineCount
         var drewTrailingLine = false
         let breakpoints = Self.breakpointMarks?(textView) ?? [:]
+        let arrowAt = Self.currentInstruction?(textView)
 
         layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, fragmentGlyphRange, _ in
             let characterRange = layoutManager.characterRange(
@@ -216,6 +225,9 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
             }
             if let mark = breakpoints[characterRange.location] {
                 self.drawBreakpoint(mark, atTextViewY: usedRect.minY + textView.textContainerOrigin.y, height: usedRect.height, in: textView)
+            }
+            if characterRange.location == arrowAt {
+                self.drawCurrentInstruction(atTextViewY: usedRect.minY + textView.textContainerOrigin.y, height: usedRect.height, in: textView)
             }
             self.drawLineNumber(
                 lineNumber,
@@ -325,6 +337,24 @@ final class FilePreviewLineNumberGutterView: NSRulerView {
             path.lineWidth = 1
             path.stroke()
         }
+    }
+
+    /// The current instruction's arrow, over the dot column (a debugger's program-counter arrow).
+    private func drawCurrentInstruction(atTextViewY y: CGFloat, height: CGFloat, in textView: NSTextView) {
+        let top = convert(NSPoint(x: 0, y: y), from: textView).y
+        let size: CGFloat = 9
+        let box = NSRect(x: 2, y: top + max(0, (height - size) / 2), width: size, height: size)
+        let arrow = NSBezierPath()
+        arrow.move(to: NSPoint(x: box.minX, y: box.minY + 2))
+        arrow.line(to: NSPoint(x: box.midX, y: box.minY + 2))
+        arrow.line(to: NSPoint(x: box.midX, y: box.minY))
+        arrow.line(to: NSPoint(x: box.maxX, y: box.midY))
+        arrow.line(to: NSPoint(x: box.midX, y: box.maxY))
+        arrow.line(to: NSPoint(x: box.midX, y: box.maxY - 2))
+        arrow.line(to: NSPoint(x: box.minX, y: box.maxY - 2))
+        arrow.close()
+        NSColor.systemGreen.setFill()
+        arrow.fill()
     }
 
     /// The start offset of the line at a click, or nil off the text.

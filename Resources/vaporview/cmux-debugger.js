@@ -166,7 +166,10 @@
   function publicState() { return cycleInfo(markerTime()); }
 
   function post(event, extra) {
-    host.toNative(Object.assign({ type: 'debugger', event }, publicState(), extra || {}));
+    const info = publicState();
+    host.toNative(Object.assign({ type: 'debugger', event }, info, extra || {}));
+    // cmux's listings show the commits at the marker's cycle (none after Stop).
+    if (CB && (event === 'cycle' || event === 'state')) { CB.postCurrent(state.stepping ? info.edgeTime : null); }
   }
 
   // While playing, each move straight from the page (the viewer's markerSet, and so the cycle
@@ -918,6 +921,10 @@
   // cmux owns line breakpoints: the list's checkbox and remove button tell it.
   const toldLine = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'lineBreakpoint', key: bp.key,
     enabled: bp.enabled, removed: false }, extra || {}));
+  // And a listing's PC breakpoints (cmux-debugger-commits.js; keyed by the listing's mark).
+  const toldPc = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'pcBreakpoint', key: bp.key,
+    enabled: bp.enabled, removed: false }, extra || {}));
+  const told = (bp, extra) => { if (bp.kind === 'line') { toldLine(bp, extra); } else if (bp.kind === 'pc' && bp.key) { toldPc(bp, extra); } };
 
   // The signal breakpoints of a restored session (cmux), in place of the page's; checked when
   // searched, since the file may not be open yet.
@@ -1011,6 +1018,34 @@
     breakpoints.push(...lines);
     breakpointsChanged();
     return lines.map(publicBreakpoint);
+  }
+
+  // A listing's PC breakpoints (cmux, WaveformDebuggerAsmBreakpoints.swift): replace cmux's, keep the page's.
+  // items: [{ key, listingLabel, pcs, channel?, enabled, condition? }]
+  function setPcBreakpoints(query) {
+    if (!CB) { return []; }
+    const items = Array.isArray((query || {}).items) ? query.items : [];
+    const old = new Map(breakpoints.filter((b) => b.kind === 'pc' && b.key).map((b) => [b.key, b]));
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind === 'pc' && breakpoints[i].key) { breakpoints.splice(i, 1); } }
+    const marks = [];
+    for (const item of items) {
+      const key = String(item.key || '');
+      const fields = commitFields('pc', item);
+      if (!key || marks.some((b) => b.key === key) || CB.check('pc', fields)) { continue; }
+      const before = old.get(key);
+      const bp = Object.assign({ id: before ? before.id : nextBreakpointId++, kind: 'pc', key, listingLabel: String(item.listingLabel || key),
+        value: null, enabled: item.enabled !== false, times: null, timesFor: null, condition: null, conditionError: null,
+        warned: before ? before.warned : undefined }, fields);
+      conditionOf(bp, item.condition, baseName(bp));
+      if (!!bp.conditionError !== !!(before && before.conditionError) || (bp.conditionError && (!before || before.condition !== bp.condition))) {
+        host.toNative({ type: 'debugger', event: 'pcBreakpoint', key, conditionError: !!bp.conditionError });
+      }
+      marks.push(bp);
+    }
+    if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId) && !marks.some((b) => b.id === lastHitId)) { lastHitId = null; }
+    breakpoints.push(...marks);
+    breakpointsChanged();
+    return marks.map(publicBreakpoint);
   }
 
   const signalOf = async (path) => (await host.findLinkItem(path, true)) || null;
@@ -1199,7 +1234,7 @@
     if (i < 0) { return false; }
     const [bp] = breakpoints.splice(i, 1);
     if (bp.id === lastHitId) { lastHitId = null; }
-    if (bp.kind === 'line') { toldLine(bp, { removed: true }); }
+    told(bp, { removed: true });
     breakpointsChanged();
     return true;
   }
@@ -1217,7 +1252,7 @@
       return false;
     }
     bp.enabled = !!q.enabled;
-    if (bp.kind === 'line') { toldLine(bp); }
+    told(bp);
     breakpointsChanged();
     return true;
   }
@@ -1237,7 +1272,7 @@
     bp.conditionError = null;
     if (bp.units) { for (const u of bp.units) { u.condition = bp.condition; u.conditionError = null; } }
     bp.warned = null;
-    if (bp.kind === 'line') { toldLine(bp, { condition: bp.condition }); }
+    told(bp, { condition: bp.condition });
     breakpointsChanged();
     return publicBreakpoint(bp);
   }
@@ -2247,7 +2282,11 @@
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
-    setTextBreakpoint, setCommitBreakpoint, promptCommitBreakpoint, chooseCommitBreakpoint,
+    setTextBreakpoint, setCommitBreakpoint, promptCommitBreakpoint, chooseCommitBreakpoint, setPcBreakpoints,
+    // cmux's listings: the current commit's PC, a sample of the commits, and cmux's own warnings.
+    currentCommitPc: () => (CB && state.stepping ? CB.currentPc(publicState().edgeTime) : null),
+    commitSample: (query) => (CB ? CB.sample((query || {}).limit) : null),
+    say: (query) => { const q = query || {}; if (q.text) { window.cmuxUI.toast(String(q.text), q.level === 'warning' ? 'warning' : 'info'); } return true; },
     breakpoints: () => breakpoints.map(publicBreakpoint),
     // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
     backendChanged: () => { if (window.cmuxMachine) { window.cmuxMachine.backendChanged(); } renderBreakpoints(); refreshWatches(); },

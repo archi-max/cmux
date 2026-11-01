@@ -1076,11 +1076,13 @@ enum WaveformDebuggerLineBreakpoints {
         let lines = marks[workspace] ?? []
         let signalsByDump = (signals[workspace] ?? [:]).filter { !$0.value.isEmpty }
         let watchesByDump = (watches[workspace] ?? [:]).filter { !$0.value.isEmpty }
-        guard !lines.isEmpty || !signalsByDump.isEmpty || !watchesByDump.isEmpty else { return nil }
+        let pcMarks = WaveformDebuggerAsmBreakpoints.sessionMarks(of: workspace)
+        guard !lines.isEmpty || !signalsByDump.isEmpty || !watchesByDump.isEmpty || pcMarks != nil else { return nil }
         return SessionWaveformBreakpointsSnapshot(
             lines: lines.isEmpty ? nil : lines, signals: nil, watches: nil,
             signalsByDump: signalsByDump.isEmpty ? nil : signalsByDump,
-            watchesByDump: watchesByDump.isEmpty ? nil : watchesByDump
+            watchesByDump: watchesByDump.isEmpty ? nil : watchesByDump,
+            pcMarks: pcMarks
         )
     }
 
@@ -1130,6 +1132,7 @@ enum WaveformDebuggerLineBreakpoints {
         var watchesByDump = snapshot.watchesByDump ?? [:]
         if let legacy = snapshot.watches, !legacy.isEmpty, watchesByDump[""] == nil { watchesByDump[""] = legacy }
         if !watchesByDump.isEmpty { watches[workspace] = watchesByDump }
+        WaveformDebuggerAsmBreakpoints.restore(snapshot.pcMarks, in: workspace)
     }
 }
 
@@ -1143,4 +1146,6 @@ struct SessionWaveformBreakpointsSnapshot: Codable, Sendable, Equatable {
     /// Per viewer's dump (file path).
     var signalsByDump: [String: [WaveformDebuggerLineBreakpoints.SignalBreakpoint]]? = nil
     var watchesByDump: [String: [String]]? = nil
+    /// Breakpoints in assembly listings (WaveformDebuggerAsmBreakpoints), by PC and symbol+offset.
+    var pcMarks: [AsmMark]? = nil
 }
