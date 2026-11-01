@@ -7,6 +7,7 @@ extension WaveformDebugger.Command {
     static let all: [WaveformDebugger.Command] = [
         .step(1), .step(-1), .first, .last, .continueToBreakpoint(1), .continueToBreakpoint(-1), .toggleLineBreakpoint,
         .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop, .evaluateExpression, .addWatch,
+        .toggleMachineState, .loadELF,
     ]
 
     var title: String {
@@ -41,6 +42,10 @@ extension WaveformDebugger.Command {
             return String(localized: "waveformDebugger.command.evaluate", defaultValue: "Evaluate Expression…")
         case .addWatch:
             return String(localized: "waveformDebugger.command.addWatch", defaultValue: "Add Watch…")
+        case .toggleMachineState:
+            return String(localized: "waveformDebugger.command.toggleMachineState", defaultValue: "Show or Hide Machine State")
+        case .loadELF:
+            return String(localized: "waveformDebugger.command.loadELF", defaultValue: "Load ELF for Machine State…")
         }
     }
 
@@ -61,6 +66,8 @@ extension WaveformDebugger.Command {
         case .stop: return "palette.waveformDebugger.stop"
         case .evaluateExpression: return "palette.waveformDebugger.evaluate"
         case .addWatch: return "palette.waveformDebugger.addWatch"
+        case .toggleMachineState: return "palette.waveformDebugger.toggleMachineState"
+        case .loadELF: return "palette.waveformDebugger.loadELF"
         }
     }
 
@@ -82,6 +89,8 @@ extension WaveformDebugger.Command {
         case .stop: return common + ["stop", "exit", "locals"]
         case .evaluateExpression: return common + ["evaluate", "expression", "value", "print"]
         case .addWatch: return common + ["watch", "expression", "add"]
+        case .toggleMachineState: return common + ["machine", "registers", "memory", "riscv", "rvfi", "commit", "instruction"]
+        case .loadELF: return common + ["elf", "program", "image", "symbols", "memory", "riscv"]
         }
     }
 }
@@ -105,7 +114,7 @@ struct WaveformDebuggerMenu: View {
     var body: some View {
         Menu(String(localized: "menu.view.waveformDebugger", defaultValue: "Waveform Debugger")) {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
-                if index == 4 || index == 7 || index == 10 || index == 12 || index == 13 { Divider() }
+                if index == 4 || index == 7 || index == 10 || index == 12 || index == 13 || index == 15 { Divider() }
                 Button(command.title) {
                     if !WaveformDebugger.performFromShortcut(command, window: NSApp.keyWindow ?? NSApp.mainWindow) {
                         NSSound.beep()
