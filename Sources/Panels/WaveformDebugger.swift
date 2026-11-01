@@ -295,6 +295,7 @@ enum WaveformDebugger {
             ),
         ].merging(breakpointPageStrings()) { first, _ in first }.merging(expressionPageStrings()) { first, _ in first }
             .merging(WaveformMachineState.pageStrings()) { first, _ in first }
+            .merging(WaveformDebuggerTextBreakpoint.pageStrings()) { first, _ in first }
     }
 
     /// Strings of the page's Evaluate and watches (cmux-debugger.js, cmux-expr.js).

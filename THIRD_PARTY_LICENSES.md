@@ -441,6 +441,11 @@ from VaporView's VS Code integration:
   setting descriptions and prompt text.
 - `Sources/Panels/WaveformTerminalLinks.swift` and CmuxTerminalCore's
   `WaveformTerminalLink.swift`: terminal links, from `terminal_links.ts`.
+- `cmux-formats.js`: the viewer's value formatters (`value_format.ts`, with
+  the cmux fork's `riscv_disasm.ts` and `value_alias.ts`), bundled unchanged
+  for text breakpoints by `scripts/waveform-viewer-checks/text/build-formats.mjs`.
+  `cmux-textmatch.js` applies the viewer's value-search rules
+  (`value_search.ts`, the fork's `extra_formats.ts`) to their text.
 
 ### wellen
 
