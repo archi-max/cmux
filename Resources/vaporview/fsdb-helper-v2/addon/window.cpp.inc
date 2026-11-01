@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <csignal>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -36,7 +37,12 @@ struct SigStore {
   std::vector<uint8_t> val;
   std::vector<uint8_t> xz;  // empty unless some change holds x or z
   uint64_t lastUsed = 0;
-  size_t bytes() const { return times.capacity() * 8 + val.capacity() + xz.capacity() + sizeof(SigStore); }
+  // searchText: each change's index into the signal's distinct values (built on first
+  // use, accounted in bytes(); dgen names this table, so JS memos keyed on it go stale
+  // when the store is rebuilt). dfirst[d] = the first change holding distinct value d.
+  std::vector<uint32_t> vidx, dfirst;
+  uint64_t dgen = 0;
+  size_t bytes() const { return times.capacity() * 8 + val.capacity() + xz.capacity() + (vidx.capacity() + dfirst.capacity()) * 4 + sizeof(SigStore); }
 };
 
 static std::unordered_map<int64_t, SigStore *> g_store;
@@ -59,7 +65,9 @@ static void onYieldSignal(int) { g_yield = 1; }
 static double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static inline bool bgStop() { return g_bg && (g_yield || (g_bgDeadline > 0 && nowMs() > g_bgDeadline)); }
 
-// bgBegin(deadlineInMs = 0): enter background mode (resets the yield flag).
+// bgBegin(deadlineInMs = 0, keepYield = false): enter background mode. Resets the yield
+// flag unless keepYield (a stoppable task that cleared it with bgEnd() at its start keeps a
+// SIGUSR2 that arrived during its load).
 Napi::Value bgBegin(const Napi::CallbackInfo &info) {
   static bool installed = false;
   if (!installed) {
@@ -71,7 +79,7 @@ Napi::Value bgBegin(const Napi::CallbackInfo &info) {
     sigaction(SIGUSR2, &sa, nullptr);
     installed = true;
   }
-  g_yield = 0;
+  if (!(info.Length() > 1 && info[1].ToBoolean().Value())) g_yield = 0;
   g_bg = true;
   const double in = info.Length() > 0 && info[0].IsNumber() ? info[0].As<Napi::Number>().DoubleValue() : 0;
   g_bgDeadline = in > 0 ? nowMs() + in : 0;
@@ -85,6 +93,10 @@ Napi::Value bgEnd(const Napi::CallbackInfo &info) {
   g_bgDeadline = 0;
   return Napi::Boolean::New(info.Env(), stopped);
 }
+
+// bgPoll() -> true if the running task was asked to stop (SIGUSR2) or ran out of time;
+// for stoppable interactive work (searchText rounds) that polls between values.
+Napi::Value bgPoll(const Napi::CallbackInfo &info) { return Napi::Boolean::New(info.Env(), bgStop()); }
 
 // ---- store files (split-walk slices, derived operands) ----
 // Handed between this helper's own workers through a private 0700 directory.
@@ -435,8 +447,8 @@ struct ReaderScope {
   ReaderScope(const ReaderScope &) = delete;
   ReaderScope &operator=(const ReaderScope &) = delete;
   void unload(fsdbVarIdcode id) {
-    auto it = std::find(loaded.begin(), loaded.end(), id);
-    if (it != loaded.end()) { fsdb_obj->ffrUnloadSignals(id); loaded.erase(it); }
+    auto it = std::remove(loaded.begin(), loaded.end(), id);  // every entry: ids may repeat
+    if (it != loaded.end()) { fsdb_obj->ffrUnloadSignals(id); loaded.erase(it, loaded.end()); }
   }
   ~ReaderScope() {
     for (auto id : loaded) fsdb_obj->ffrUnloadSignals(id);
@@ -845,6 +857,164 @@ Napi::Value cacheSearch(const Napi::CallbackInfo &info) {
   uint64_t hit;
   if (storeSearch(s, argTime(info[1]), dir, info[3].As<Napi::String>().Utf8Value(), bound, hit)) return Napi::Number::New(env, (double)hit);
   return env.Null();
+}
+
+// ---- searchText: text search over a signal's distinct values ----
+// The formatting and matching are JS (the viewer's own formatters); C++ only maps
+// changes to distinct values and scans for the first change whose value is known to
+// match. Distinct values are keyed on the change's raw value and x/z planes.
+static const size_t kMaxDistinct = 1u << 22;
+static uint64_t g_dgen = 0;
+// Change k's value (and x/z plane) hashed and compared in place: the build keeps no key
+// copies, only vidx (4 B per change), dfirst (4 B per distinct value, up to 2x with vector
+// growth) and an open-addressing slot table (2-4 slots of 4 B per distinct value, plus the old
+// table while growing), so its transient memory is at most 4 B per change + 32 B per distinct
+// value (searchText verify N6; spike_rvfi: 5.1 MB peak for 750k changes / 84k values).
+static inline uint64_t changeHash(const SigStore *s, size_t k) {
+  const size_t st = s->stride;
+  uint64_t h = 1469598103934665603ull;
+  const uint8_t *v = &s->val[k * st];
+  for (size_t i = 0; i < st; i++) { h ^= v[i]; h *= 1099511628211ull; }
+  if (!s->xz.empty()) { const uint8_t *x = &s->xz[k * st]; for (size_t i = 0; i < st; i++) { h ^= x[i]; h *= 1099511628211ull; } }
+  return h ^ (h >> 29);
+}
+static inline bool changeEq(const SigStore *s, size_t a, size_t b) {
+  const size_t st = s->stride;
+  if (memcmp(&s->val[a * st], &s->val[b * st], st) != 0) return false;
+  return s->xz.empty() || memcmp(&s->xz[a * st], &s->xz[b * st], st) == 0;
+}
+// -> 0 ok, 1 error (err), 2 too large for the signal cap (err)
+static int buildDistinct(int64_t id, SigStore *s, std::string &err, double *buildBytes) {
+  if (s->dgen) return 0;
+  const size_t n = s->times.size();
+  // The table goes into the store: refuse before building if store + vidx is already over the
+  // signal cap (dfirst is checked once known).
+  if (g_signalCap && s->bytes() + n * 4 > g_signalCap) { err = "signal too large for a text search: store + value table over the " + std::to_string(g_signalCap >> 20) + " MB worker store limit"; return 2; }
+  std::vector<uint32_t> vidx(n), first;
+  size_t cap = 1024;
+  std::vector<uint32_t> slot(cap, UINT32_MAX);
+  size_t peak = n * 4 + cap * 4;
+  for (size_t k = 0; k < n; k++) {
+    const uint64_t hk = changeHash(s, k);
+    size_t i = hk & (cap - 1);
+    uint32_t d;
+    for (;;) {
+      d = slot[i];
+      if (d == UINT32_MAX || changeEq(s, first[d], k)) break;
+      i = (i + 1) & (cap - 1);
+    }
+    if (d == UINT32_MAX) {
+      if (first.size() >= kMaxDistinct) { err = "too many distinct values for a text search (over 4M)"; return 2; }
+      d = (uint32_t)first.size();
+      first.push_back((uint32_t)k);
+      slot[i] = d;
+      if (first.size() * 2 > cap) {  // grow: rehash from the first changes
+        cap *= 2;
+        std::vector<uint32_t> ns(cap, UINT32_MAX);
+        for (uint32_t e = 0; e < first.size(); e++) {
+          size_t j = changeHash(s, first[e]) & (cap - 1);
+          while (ns[j] != UINT32_MAX) j = (j + 1) & (cap - 1);
+          ns[j] = e;
+        }
+        slot.swap(ns);
+        peak = std::max(peak, n * 4 + first.capacity() * 4 + cap * 4 + cap * 2);
+      }
+    }
+    vidx[k] = d;
+  }
+  if (buildBytes) *buildBytes = (double)std::max(peak, n * 4 + first.capacity() * 4 + cap * 4);
+  first.shrink_to_fit();
+  if (g_signalCap && s->bytes() + (vidx.capacity() + first.capacity()) * 4 > g_signalCap) { err = "signal too large for a text search: store + value table over the " + std::to_string(g_signalCap >> 20) + " MB worker store limit"; return 2; }
+  g_bytes -= s->bytes();
+  s->vidx.swap(vidx);
+  s->dfirst.swap(first);
+  s->dgen = ++g_dgen;
+  g_bytes += s->bytes();
+  storeEvict({id});  // the table counts in the store's bytes: make room for it like any load
+  return 0;
+}
+
+// cacheTextScan(id, t, dir, mask, maxNew, fromK = -1, bound?, inclusive = false) ->
+//   {gen, n, t, k, d, v}         the first change (dir 1: time > t; dir -1: time < t, as
+//                                cacheSearch; >= / <= when inclusive) whose distinct value d
+//                                has mask[d] == 1
+//   {tooLarge, error}            the value table doesn't fit the signal cap (store unchanged)
+//   {gen, n, need: [{d, v}], k}  values not yet judged (mask[d] == 0 or d >= mask.length)
+//                                met before any match: at most maxNew, in scan order;
+//                                rescan from change k (fromK) once they are judged
+//   {gen, n, t: null}            no match (mask[d] == 2 for every value in the way)
+// fromK >= 0 starts at that change index (inclusive) instead of t; bound as cacheSearch.
+Napi::Value cacheTextScan(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 5)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  std::string err;
+  double buildBytes = 0;
+  const int b = buildDistinct(argI64(info[0]), s, err, &buildBytes);
+  if (b == 2) {
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("tooLarge", Napi::Boolean::New(env, true));
+    o.Set("error", Napi::String::New(env, err));
+    return o;
+  }
+  if (b) { Napi::Error::New(env, err).ThrowAsJavaScriptException(); return env.Undefined(); }
+  const uint64_t t = argTime(info[1]);
+  const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
+  const uint8_t *mask = nullptr; size_t mlen = 0;
+  if (info[3].IsTypedArray()) { auto a = info[3].As<Napi::Uint8Array>(); mask = a.Data(); mlen = a.ElementLength(); }
+  const uint32_t maxNew = std::max<uint32_t>(1, info[4].As<Napi::Number>().Uint32Value());
+  const int64_t fromK = info.Length() > 5 && info[5].IsNumber() ? argI64(info[5]) : -1;
+  const uint64_t bound = info.Length() > 6 && info[6].IsNumber() ? argTime(info[6]) : (dir > 0 ? UINT64_MAX : 0);
+  const bool inclusive = info.Length() > 7 && info[7].ToBoolean().Value();
+  const size_t n = s->times.size();
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("gen", Napi::Number::New(env, (double)s->dgen));
+  o.Set("n", Napi::Number::New(env, (double)s->dfirst.size()));
+  if (buildBytes > 0) o.Set("buildBytes", Napi::Number::New(env, buildBytes));
+  // k walks change indices; dir -1 walks down from the last change < t (<= t when inclusive),
+  // dir 1 up from the first change > t (>= t when inclusive).
+  int64_t k;
+  if (fromK >= 0) k = std::min<int64_t>(fromK, (int64_t)n - (dir > 0 ? 0 : 1));
+  else if (dir > 0) k = inclusive ? (int64_t)(std::lower_bound(s->times.begin(), s->times.end(), t) - s->times.begin()) : (int64_t)upperIdx(s, t, 0, n);
+  else k = (int64_t)(inclusive ? std::upper_bound(s->times.begin(), s->times.end(), t) - s->times.begin()
+                               : std::lower_bound(s->times.begin(), s->times.end(), t) - s->times.begin()) - 1;
+  Napi::Array need = Napi::Array::New(env);
+  std::unordered_set<uint32_t> seen;
+  int64_t needK = -1;
+  for (; k >= 0 && k < (int64_t)n; k += dir) {
+    const uint64_t tk = s->times[k];
+    if (dir > 0 ? tk > bound : tk < bound) break;
+    const uint32_t d = s->vidx[k];
+    const uint8_t m = d < mlen ? mask[d] : 0;
+    if (m == 1 && needK < 0) {
+      o.Set("t", Napi::Number::New(env, (double)tk));
+      o.Set("k", Napi::Number::New(env, (double)k));
+      o.Set("d", Napi::Number::New(env, d));
+      std::string v(s->bits, 'x');
+      putChars(s, (size_t)k, (uint8_t *)&v[0]);
+      o.Set("v", Napi::String::New(env, v));
+      return o;
+    }
+    if (m == 0 && seen.insert(d).second) {
+      if (needK < 0) needK = k;
+      std::string v(s->bits, 'x');
+      putChars(s, s->dfirst[d], (uint8_t *)&v[0]);
+      Napi::Object e = Napi::Object::New(env);
+      e.Set("d", Napi::Number::New(env, d));
+      e.Set("v", Napi::String::New(env, v));
+      need.Set(need.Length(), e);
+      if (seen.size() >= maxNew) break;
+    }
+  }
+  if (needK >= 0) {
+    o.Set("need", need);
+    o.Set("k", Napi::Number::New(env, (double)needK));
+    o.Set("kt", Napi::Number::New(env, (double)s->times[needK]));
+    return o;
+  }
+  o.Set("t", env.Null());
+  return o;
 }
 
 // ---- search index (opt-in warm-up) ----
@@ -1290,7 +1460,10 @@ template <class F> static void forBatches(const std::vector<fsdbVarIdcode> &ids,
     fsdb_obj->ffrLoadSignals();
     fsdb_obj->ffrResetSignalList();
     const double loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
-    for (size_t k = i; k < j; k++) { each(k, loadMs); batch.unload(ids[k]); }
+    // Unload only after the whole batch: an id listed twice must still be loaded
+    // for its second entry (the scope unloads them if `each` throws).
+    for (size_t k = i; k < j; k++) each(k, loadMs);
+    for (size_t k = i; k < j; k++) batch.unload(ids[k]);
     i = j;
   }
 }
