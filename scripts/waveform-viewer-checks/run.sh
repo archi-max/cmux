@@ -33,6 +33,9 @@
 #   ./run.sh line-breakpoints            line breakpoints: F9, gutter, edits, instances, session
 #   ./run.sh trace                       driver tracing's engine (cmux-trace.js): active drivers on the
 #                                        trace fixtures' models and VCS/Icarus dumps, and the replay oracle
+#   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
+#                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
+#                                        given; its models of the trace fixtures equal trace/models
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
@@ -87,6 +90,34 @@ case "${1:-}" in
   expr)
     swiftc -swift-version 6 -O "$HERE/expr/main.swift" -o "$OUT/expr"
     "$OUT/expr" "$ASSETS/cmux-expr.js" "$HERE/expr/cases.js" "$HERE/expr/fuzz-regressions.js"
+    ;;
+  sv-model)
+    BIN="${2:-}"
+    if [ -z "$BIN" ]; then
+      DEST="$HOME/.cache/cmux/sv-model-check/$(cat "$ASSETS/sv-model/"* | shasum -a 256 | cut -c1-16)"
+      [ -x "$DEST/cmux-sv-model" ] || sh "$ASSETS/sv-model/build.sh" "$ASSETS/sv-model" "$DEST"
+      BIN="$DEST/cmux-sv-model"
+    fi
+    bash "$HERE/trace/regen-models.sh" "$BIN" "$OUT/models"
+    fails=0
+    for f in "$HERE/trace/models/"*.json; do
+      if cmp -s "$f" "$OUT/models/$(basename "$f")"; then echo "ok   $(basename "$f")"; else echo "FAIL $(basename "$f") differs"; fails=$((fails + 1)); fi
+    done
+    # The protocol: ready line, load, lookup, instance, an unknown path, a bad request.
+    cd "$HERE/trace/designs"
+    printf '%s\n' '{"id":1,"cmd":"load","args":["--top","tb_c","c_struct.sv","tb_c.sv"]}' \
+      '{"id":2,"cmd":"lookup","path":"tb_c.dut.u_mid.u_sink.in"}' '{"id":3,"cmd":"instance","path":"tb_c.dut.u_src"}' \
+      '{"id":4,"cmd":"instance","path":"tb_c.nope"}' 'not json' '{"id":5,"cmd":"version"}' '{"id":6,"cmd":"instances"}' | "$BIN" > "$OUT/protocol.log"
+    check() { if grep -q "$1" "$OUT/protocol.log"; then echo "ok   $2"; else echo "FAIL $2"; fails=$((fails + 1)); fi; }
+    check '^{"id":0,"ready":true' 'ready line'
+    check '^{"id":1,"ok":true,"tops":\["tb_c"\],"errors":0' 'load'
+    check '^{"id":2,"ok":true,"instance":"tb_c.dut.u_mid.u_sink","name":"in"}' 'lookup'
+    check '^{"id":3,"ok":true,"model":{"version":1,"path":"tb_c.dut.u_src","module":"c_src"' 'instance'
+    check '^{"id":4,"ok":false,"error":"noInstance"' 'unknown instance'
+    check '^{"id":-1,"ok":false,"error":"badRequest"' 'bad request'
+    check '^{"id":5,"ok":true,"model":1,"slang":"12.1"}' 'version'
+    check '^{"id":6,"ok":true,"tops":\["tb_c"\],"instances":\["tb_c","tb_c.dut","tb_c.dut.u_mid","tb_c.dut.u_mid.u_sink","tb_c.dut.u_src"\]}' 'instances'
+    [ "$fails" = 0 ] && echo "SV MODEL CHECKS PASSED" || { echo "SV MODEL CHECKS FAILED: $fails"; exit 1; }
     ;;
   trace)
     swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
