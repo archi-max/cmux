@@ -215,14 +215,22 @@
   }
 
   // The key a built commit table is cached under (a warm rebuild of the same dump reads nothing), or
-  // null: never cached without the dump's identity { path, size, mtimeMs, helper } (helper: the
-  // reader's version). The source's mapping, the clock edges and the sampling are part of it.
-  function tableKey(identity, source, edges, sampleMode) {
+  // null: never cached without the dump's identity { path, size, mtimeMs, helper, host } (helper: the
+  // reader's version; host: the machine it read on). The source's mapping, the clock (its path and a
+  // hash of every edge) and the sampling are part of it.
+  function tableKey(identity, source, edges, sampleMode, clock) {
     if (!identity || !identity.path || typeof identity.size !== 'number' || typeof identity.mtimeMs !== 'number' || !source || !edges) { return null; }
     const refs = mapping(source).map((r) => [r.role, r.channel, r.path.join('.'), r.msb, r.lsb, r.width]);
-    const n = edges.length;
-    return JSON.stringify([identity.path, identity.size, identity.mtimeMs, identity.helper || '', source.nret, source.xlen, refs,
-      n, n ? edges[0] : null, n ? edges[n >> 1] : null, n ? edges[n - 1] : null, sampleMode || 'edge']);
+    return JSON.stringify([identity.host || '', identity.path, identity.size, identity.mtimeMs, identity.helper || '', source.nret, source.xlen, refs,
+      clock || '', edges.length, edgesHash(edges), sampleMode || 'edge']);
+  }
+
+  // FNV-1a over the edge times' bytes (as float64), as 8 hex digits.
+  function edgesHash(edges) {
+    const bytes = new Uint8Array(Float64Array.from(edges).buffer);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) { h ^= bytes[i]; h = Math.imul(h, 0x01000193); }
+    return (h >>> 0).toString(16).padStart(8, '0');
   }
 
   // ---- columns: a role sampled at each posedge ----

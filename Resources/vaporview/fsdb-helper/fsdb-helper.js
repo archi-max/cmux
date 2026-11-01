@@ -17,6 +17,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const readline = require('node:readline');
 const zlib = require('node:zlib');
 
@@ -98,7 +99,7 @@ const handlers = {
     let identity = null;
     try {
       const st = fs.statSync(String(file));
-      identity = { path: String(file), size: st.size, mtimeMs: st.mtimeMs, helper: path.basename(__dirname) };
+      identity = { host: os.hostname(), path: String(file), size: st.size, mtimeMs: st.mtimeMs, helper: path.basename(__dirname) };
     } catch (e) { identity = null; }
     return { metadata, top, identity };
   },
