@@ -448,6 +448,10 @@
       ok(x0 && x0.lines[0] === '0x1000 <buf>:\t—\t—', 'x/2xw buf before the store: unknown: ' + JSON.stringify(x0 && x0.lines));
       const xi = M().gdb('x/1i 0x80000004', ctx);
       ok(xi && xi.lines[0] === '=> 0x80000004:\tsw\ta0,0(sp)', 'x/1i at pc uses the fetched insn and marks pc: ' + JSON.stringify(xi && xi.lines));
+      // x/i gives disasm each instruction's own address, so a branch or jump prints its absolute target.
+      const seen = [];
+      M().gdb('x/1i 0x80000004', Object.assign({}, ctx, { disasm: (w, at) => { seen.push(at); return 'x'; } }));
+      ok(seen.length === 1 && seen[0] === 0x80000004, 'x/i hands disasm the instruction address: ' + JSON.stringify(seen));
       const p = M().gdb('p/x 0x10 + 2', ctx);
       ok(p && p.lines[0] === '$1 = 0x12', 'p/x 0x10 + 2: ' + JSON.stringify(p && p.lines));
       const p2 = M().gdb('p 0xfffffffe', Object.assign({}, ctx, { history: 1 }));
