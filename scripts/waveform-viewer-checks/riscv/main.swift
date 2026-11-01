@@ -13,7 +13,12 @@
 //     and a restore (a new panel) show the instruction again;
 //   - Load Value Alias File… hands the file cmux reads to the viewer, the Alias
 //     submenu lists its tables, choosing one shows alias names, and
-//     Hexadecimal goes back.
+//     Hexadecimal goes back;
+//   - alias files are kept by full path (two cpu.alias from different folders
+//     both come back), sessions embed at most 256 KiB of alias text and name
+//     the rest by path and SHA-256, which cmux re-reads on restore
+//     (WaveformValueAliasFiles, the app's code, over a stand-in file system);
+//     a missing or changed file is a toast and the rest still load.
 // Prints RISCV CHECKS PASSED, or the failures and RISCV CHECKS FAILED: n.
 // Usage: riscv <assetRoot> <riscv.vcd> <aliases.alias> <out.png>
 import AppKit
@@ -41,6 +46,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var onOpened: (() -> Void)?
   var native: [[String: Any]] = []
   let strings = WaveformViewerStrings.all()
+  /// The stand-in file system cmux re-reads alias files from on restore.
+  var fakeFiles: [String: String] = [:]
+  var readRequests = 0
 
   // Page helpers every check uses.
   static let prelude = """
@@ -263,6 +271,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 
     await aliasChecks()
+    await aliasFileChecks()
     print(failures == 0 ? "RISCV CHECKS PASSED" : "RISCV CHECKS FAILED: \(failures)")
     snap()
   }
@@ -286,7 +295,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     let after = await call("""
       const before = document.querySelectorAll('.cmux-toast').length;
-      window.cmuxWaveform.applyValueAliasFile({ text: \(jsString(text)), path: '/work/sim/cpu.alias' });
+      \(aliasFileJS("/work/sim/cpu.alias", text));
       await sleep(800);
       R.toasted = document.querySelectorAll('.cmux-toast').length > before;
       R.alias = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
@@ -380,6 +389,150 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(toasts.count == 2, "a file cmux couldn't read, and one the viewer can't parse, each show a toast: \(toasts)")
   }
 
+  /// What cmux hands the page after reading the file at `path` on this Mac.
+  func aliasFileJS(_ path: String, _ text: String) -> String {
+    let argument: [String: Any] = ["text": text, "path": path, "key": path, "sha256": WaveformValueAliasFiles.sha256(text)]
+    return "window.cmuxWaveform.applyValueAliasFile(" + String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)! + ")"
+  }
+
+  func aliasFileChecks() async {
+    let ALIAS = "S['submenu.valueAlias']"
+    let a = "alias ta\n  BYTE_A 8'h13\nendalias\n"
+    let b = "alias tb\n  HALF_B 16'h4501\nendalias\n"
+    // A table past the embedding budget: about 300 KiB of entries.
+    var big = "alias tbig\n  BIG_13 32'h00112423\n"
+    var n = 0
+    while big.utf8.count < 300 * 1024 { big += "  FILL_\(n) 32'h\(String(format: "%08x", 0x1000_0000 + n))\n"; n += 1 }
+    big += "endalias\n"
+    fakeFiles = ["/a/cpu.alias": a, "/b/cpu.alias": b, "/big/big.alias": big]
+
+    // A1: two files named cpu.alias, from different folders.
+    await open()
+    await addAll()
+    let both = await call("""
+      \(aliasFileJS("/a/cpu.alias", a));
+      \(aliasFileJS("/b/cpu.alias", b));
+      await sleep(800);
+      R.tables = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
+      click('byte'); await sleep(200);
+      await choose('byte', FMT, \(ALIAS), 'ta');
+      click('half'); await sleep(200);
+      await choose('half', FMT, \(ALIAS), 'tb');
+      R.byte = text('byte'); R.half = text('half');
+      await C.run('vaporview.saveViewerSession');
+      const save = sent.filter((m) => m.type === 'saveSession').pop();
+      R.text = save ? save.text : null;
+      const file = save ? JSON.parse(save.text) : {};
+      R.keys = (file.cmuxValueAliases || []).map((f) => f.key);
+      await sleep(400);
+      R.state = C.sessionSnapshot().state;
+      R.stateKeys = ((R.state && R.state.cmuxValueAliases) || []).map((f) => f.key);
+      """)
+    expect((both["tables"] as? [String])?.contains("ta") == true && (both["tables"] as? [String])?.contains("tb") == true,
+           "both cpu.alias tables load: \(both["tables"] ?? "nil")")
+    expect(both["byte"] as? String == "BYTE_A" && both["half"] as? String == "HALF_B", "both show: \(both["byte"] ?? "nil") / \(both["half"] ?? "nil")")
+    expect(both["keys"] as? [String] == ["/a/cpu.alias", "/b/cpu.alias"], "the saved session keeps both files by path: \(both["keys"] ?? "nil")")
+    expect(both["stateKeys"] as? [String] == ["/a/cpu.alias", "/b/cpu.alias"], "and cmux's kept state: \(both["stateKeys"] ?? "nil")")
+    let bothText = both["text"] as? String ?? "{}"
+    await open()
+    let loaded = await call("""
+      C.applySessionFile({ text: \(jsString(bothText)), path: '/work/sim/riscv.json' });
+      await sleep(1500);
+      await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
+      R.byte = text('byte'); R.half = text('half');
+      """)
+    expect(loaded["byte"] as? String == "BYTE_A" && loaded["half"] as? String == "HALF_B",
+           "loading the session brings both back: \(loaded["byte"] ?? "nil") / \(loaded["half"] ?? "nil")")
+    if let state = both["state"] as? [String: Any] {
+      await open(restore: ["state": state, "dirty": false])
+      let restored = await call("""
+        await sleep(800);
+        await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
+        R.byte = text('byte'); R.half = text('half');
+        """)
+      expect(restored["byte"] as? String == "BYTE_A" && restored["half"] as? String == "HALF_B",
+             "a restore brings both back: \(restored["byte"] ?? "nil") / \(restored["half"] ?? "nil")")
+    }
+
+    // A2: at most 256 KiB of alias text in a session; the rest by path and hash.
+    await open()
+    await addAll()
+    let capped = await call("""
+      \(aliasFileJS("/a/cpu.alias", a));
+      \(aliasFileJS("/big/big.alias", big));
+      await sleep(1500);
+      click('instr'); await sleep(200);
+      await choose('instr', FMT, \(ALIAS), 'tbig');
+      click('byte'); await sleep(200);
+      await choose('byte', FMT, \(ALIAS), 'ta');
+      R.instr = text('instr');
+      await sleep(400);
+      const states = sent.filter((m) => m.type === 'sessionState').slice(-3);
+      R.stateSizes = states.map((m) => JSON.stringify(m.state).length);
+      await C.run('vaporview.saveViewerSession');
+      const save = sent.filter((m) => m.type === 'saveSession').pop();
+      R.text = save ? save.text : null;
+      R.size = R.text ? R.text.length : -1;
+      const file = save ? JSON.parse(save.text) : {};
+      R.entries = (file.cmuxValueAliases || []).map((f) => [f.key, typeof f.text === 'string', /^[0-9a-f]{64}$/.test(f.sha256 || '')]);
+      R.state = C.sessionSnapshot().state;
+      """)
+    expect(capped["instr"] as? String == "BIG_13", "the big table shows: \(capped["instr"] ?? "nil")")
+    let entries = capped["entries"] as? [[Any]] ?? []
+    expect(entries.count == 2 && entries[0][0] as? String == "/a/cpu.alias" && entries[0][1] as? Bool == true
+           && entries[1][0] as? String == "/big/big.alias" && entries[1][1] as? Bool == false
+           && entries.allSatisfy { $0[2] as? Bool == true },
+           "the small file is embedded, the big one named by path and SHA-256: \(entries)")
+    let size = capped["size"] as? Int ?? -1
+    expect(size > 0 && size < 256 * 1024 + 16 * 1024, "the saved session stays small: \(size) bytes")
+    let stateSizes = capped["stateSizes"] as? [Int] ?? []
+    expect(!stateSizes.isEmpty && stateSizes.allSatisfy { $0 < 256 * 1024 + 16 * 1024 }, "so does cmux's kept state: \(stateSizes)")
+
+    let cappedText = capped["text"] as? String ?? "{}"
+    readRequests = 0
+    await open()
+    let reread = await call("""
+      C.applySessionFile({ text: \(jsString(cappedText)), path: '/work/sim/riscv.json' });
+      await sleep(2000);
+      await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
+      R.instr = text('instr'); R.byte = text('byte');
+      """)
+    expect(readRequests == 1, "cmux is asked to re-read the big file: \(readRequests) requests")
+    expect(reread["instr"] as? String == "BIG_13" && reread["byte"] as? String == "BYTE_A",
+           "loading the session re-reads it: \(reread["instr"] ?? "nil") / \(reread["byte"] ?? "nil")")
+    if let state = capped["state"] as? [String: Any] {
+      await open(restore: ["state": state, "dirty": false])
+      let restored = await call("""
+        await sleep(1500);
+        await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
+        R.instr = text('instr');
+        """)
+      expect(restored["instr"] as? String == "BIG_13", "a restore re-reads it too: \(restored["instr"] ?? "nil")")
+    }
+
+    // Missing, then changed: a toast each, and the embedded file still loads.
+    for (label, change) in [("missing", { (h: Harness) in h.fakeFiles["/big/big.alias"] = nil }),
+                            ("changed", { (h: Harness) in h.fakeFiles["/big/big.alias"] = big + "alias tother\n  O 8'h01\nendalias\n" })] {
+      change(self)
+      await open()
+      let r = await call("""
+        const before = document.querySelectorAll('.cmux-toast').length;
+        C.applySessionFile({ text: \(jsString(cappedText)), path: '/work/sim/riscv.json' });
+        await sleep(2000);
+        await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
+        R.toasts = [...document.querySelectorAll('.cmux-toast')].slice(before).map((t) => t.textContent);
+        R.instr = text('instr'); R.byte = text('byte');
+        R.tables = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
+        R.keys = ((C.sessionSnapshot().state || {}).cmuxValueAliases || []).map((f) => f.key);
+        """)
+      let toasts = r["toasts"] as? [String] ?? []
+      expect(toasts.count == 1 && toasts[0].contains("big.alias"), "a \(label) file shows one toast naming it: \(toasts)")
+      expect(r["byte"] as? String == "BYTE_A" && r["instr"] as? String != "BIG_13", "the rest still loads (\(label)): \(r["byte"] ?? "nil") / \(r["instr"] ?? "nil")")
+      expect((r["tables"] as? [String])?.contains("tother") == false, "a changed file's tables are not loaded (\(label)): \(r["tables"] ?? "nil")")
+      expect(r["keys"] as? [String] == ["/a/cpu.alias"], "and it is no longer kept (\(label)): \(r["keys"] ?? "nil")")
+    }
+  }
+
   func jsString(_ s: String) -> String {
     String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
   }
@@ -419,6 +572,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let next = onOpened
       onOpened = nil
       next?()
+    case "readValueAliases":
+      readRequests += 1
+      let requests = WaveformValueAliasFiles.requests(from: body["files"])
+      let id = body["id"] ?? 0
+      Task { @MainActor in
+        let answers = await WaveformValueAliasFiles.answer(requests, remoteIdentity: nil) { location in
+          guard case .local(let path) = location, let text = self.fakeFiles[path] else {
+            throw CocoaError(.fileReadNoSuchFile)
+          }
+          return text
+        }
+        let json = String(data: try! JSONSerialization.data(withJSONObject: ["id": id, "files": answers]), encoding: .utf8)!
+        _ = try? await self.web.evaluateJavaScript("cmuxWaveform.valueAliasFilesRead(\(json))")
+      }
     case "error":
       print("[error]", body["message"] ?? "")
     default:
