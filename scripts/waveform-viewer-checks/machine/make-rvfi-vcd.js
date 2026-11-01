@@ -20,6 +20,9 @@
     // array2 as a writer that leaves signals out of the first time (no $dumpvars-style initial x): the
     // reader's merge of split bits valid [0], valid [1] must still start each bit at its first value.
     array2late: { nret: 2, naming: 'array', mask: 'byte', seed: 37, n: 900, lateStart: true },
+    // NRET 2 whose channel 1 never retires and is never written at all (declared only; no initial x either):
+    // the reader's merge of valid [0], valid [1] must still give channel 0's values, x for channel 1.
+    array2single: { nret: 2, naming: 'array', mask: 'byte', seed: 43, n: 600, lateStart: true, single: true },
     // A struct dumped as a scope (tb.core.rvfi.valid ...), NRET 1, word-relative.
     struct: { nret: 1, naming: 'struct', mask: 'word', seed: 41, n: 600 },
     // A common prefix (monitor_valid ...), no order: sorted by time.
@@ -116,7 +119,7 @@
     while (i < commits.length) {
       const stall = ri(5) === 0;
       if (stall) { cycle++; continue; }
-      const k = v.nret === 2 && ri(2) === 0 ? 2 : 1;
+      const k = v.nret === 2 && ri(2) === 0 && !v.single ? 2 : 1;
       // swap: the older of two commits sometimes retires on channel 1 (order, not the channel, is program order).
       const swap = v.swap && k === 2 && i + 1 < commits.length && ri(2) === 0;
       for (let ch = 0; ch < k && i < commits.length; ch++) { placed.push({ cycle, channel: swap ? 1 - ch : ch, c: commits[i++] }); }
@@ -143,6 +146,7 @@
     }
     // Before reset: valid and pc are x.
     for (let ch = 0; ch < v.nret; ch++) { for (let n = 0; n < 3; n++) { per.valid[ch][n] = 'x'; per.pc_rdata[ch][n] = 'x'.repeat(32); } }
+    if (v.single) { per.valid[1].fill(null); per.pc_rdata[1].fill(null); }
     for (const p of placed) {
       per.valid[p.channel][p.cycle] = '1';
       for (const role of roles) {
