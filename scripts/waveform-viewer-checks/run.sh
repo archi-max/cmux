@@ -126,6 +126,13 @@ case "${1:-}" in
     check '^{"id":-1,"ok":false,"error":"badRequest"' 'bad request'
     check '^{"id":5,"ok":true,"model":1,"slang":"12.1"}' 'version'
     check '^{"id":6,"ok":true,"tops":\["tb_c"\],"instances":\["tb_c","tb_c.dut","tb_c.dut.u_mid","tb_c.dut.u_mid.u_sink","tb_c.dut.u_src"\]}' 'instances'
+    # writers: the instances that write into an interface instance through modport ports.
+    printf '%s\n' '{"id":1,"cmd":"load","args":["--top","tb_f","f_bus.sv","tb_f.sv"]}' \
+      '{"id":2,"cmd":"writers","path":"tb_f.bus"}' '{"id":3,"cmd":"writers","path":"tb_f.dut"}' '{"id":4,"cmd":"writers","path":"tb_f.nope"}' \
+      | "$BIN" > "$OUT/protocol.log"
+    check '^{"id":2,"ok":true,"writers":\["tb_f.dut","tb_f.u_mem"\]}' 'writers of an interface instance'
+    check '^{"id":3,"ok":true,"writers":\[\]}' 'writers: none'
+    check '^{"id":4,"ok":false,"error":"noInstance"' 'writers of an unknown instance'
     [ "$fails" = 0 ] && echo "SV MODEL CHECKS PASSED" || { echo "SV MODEL CHECKS FAILED: $fails"; exit 1; }
     ;;
   trace-ui)

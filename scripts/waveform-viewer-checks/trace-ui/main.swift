@@ -24,6 +24,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// What the next resolve answers (nil: the dump path as the design path).
   var resolveError: String?
   var modelRequests = 0
+  /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
+  var engineAnswer: [String: Any]?
+  var engineRequests = 0
   var checksStarted = false
 
   func call(_ js: String) async -> Any? {
@@ -169,6 +172,48 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(kinds?["whole"] as? String == kinds?["plain"] as? String && kinds?["valuesAsked"] as? Int == 0 && kinds?["changesAsked"] as? Int == 0 && (kinds?["reads"] as? Int ?? 0) > 0,
            "v1 helper: the same step, each signal read once through its changes: \(String(describing: kinds))")
 
+    // The Verdi engine (an FSDB with a KDB on the host): played on this VCD as a whole-signal
+    // FSDB backend, cmux answering the page's engine requests.
+    func verdiStep(_ path: String, _ t: Int) async -> [String: Any]? {
+      await call("""
+        const b = cmuxWaveform.host.currentBackend;
+        b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+        try { return await cmuxWaveform.trace.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(t) }); }
+        finally { delete b.valuesAt; delete b.changes; }
+      """) as? [String: Any]
+    }
+    let asked = engineRequests
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    let agreed = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+    let agreedEngine = agreed?["engine"] as? [String: Any]
+    expect(engineRequests == asked + 1 && agreedEngine?["name"] as? String == "verdi" && agreed?["trust"] as? String == "exact",
+           "Verdi names the same statement: answered by Verdi, still exact: \(String(describing: agreedEngine))")
+    expect(await panelText().contains("Traced by Verdi"), "the panel says Verdi answered")
+    // Ours is a port hop; Verdi names the flop behind the ports: our chain is followed to it.
+    let hopped = await verdiStep("tb_c.dut.q", 60)
+    let via = hopped?["via"] as? [[String: Any]] ?? []
+    expect(hopped?["signal"] as? String == "tb_c.dut.q" && ((hopped?["stmt"] as? [String: Any])?["loc"] as? [String: Any])?["line"] as? Int == 56
+             && via.count >= 1 && (hopped?["engine"] as? [String: Any])?["name"] as? String == "verdi",
+           "a port hop is followed to Verdi's statement: \(via.map { $0["signal"] ?? "" }) line \(String(describing: (hopped?["stmt"] as? [String: Any])?["loc"]))")
+    expect(await panelText().contains("through the ports of"), "the panel lists the port hops")
+    // Verdi's last-transition answer for a value unchanged since 55: ours first, Verdi's second.
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 50]
+    let differs = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+    let differsEngine = differs?["engine"] as? [String: Any]
+    expect(differsEngine?["name"] as? String == "cmux" && differsEngine?["verdiDiffers"] as? Bool == true
+             && ((differs?["stmt"] as? [String: Any])?["loc"] as? [String: Any])?["line"] as? Int == 56
+             && !((differs?["reasons"] as? [[String: Any]] ?? []).contains { $0["code"] as? String == "enginesDiffer" }),
+           "an unchanged value: the statement active at t first, no penalty: \(String(describing: differsEngine))")
+    expect(await panelText().contains("Verdi (driver of the last change): c_struct.sv:50"), "the panel shows Verdi's answer second")
+    // Verdi not there yet, or not usable here.
+    engineAnswer = ["state": "starting"]
+    _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+    expect(await panelText().contains("Verdi is starting on the host"), "the panel says Verdi is starting")
+    engineAnswer = ["state": "unavailable", "reason": "noKDB", "message": ""]
+    _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+    expect(await panelText().contains("no KDB next to the FSDB"), "the panel says why Verdi is not used")
+    engineAnswer = nil
+
     // Status while cmux builds; close.
     _ = await call("cmuxWaveform.trace.status('Building…'); return null")
     expect(!(await panelText().contains("Building")), "status does not cover a shown step")
@@ -213,10 +258,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let instances = models["instances"] as? [String: Any] ?? [:]
       if body["cmd"] as? String == "instance" {
         answer(id, ok: true, result: instances[path] ?? NSNull())
+      } else if body["cmd"] as? String == "writers" {
+        answer(id, ok: true, result: [String]())
       } else {
         let best = instances.keys.filter { path == $0 || path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
         answer(id, ok: true, result: best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull())
       }
+    case "engine":
+      engineRequests += 1
+      answer(id, ok: true, result: engineAnswer ?? ["state": "none"])
     default:
       break
     }
@@ -267,6 +317,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         "traceFailed": "Driver tracing failed.", "traceResolving": "Finding %@ in the design…", "traceRunning": "Tracing %1$@ at %2$@…",
         "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
         "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
+        "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
+        "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiLastChange": "Verdi (driver of the last change):",
+        "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
+        "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
       ]
       let json = String(data: try! JSONSerialization.data(withJSONObject: strings), encoding: .utf8)!
       web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(json)})")

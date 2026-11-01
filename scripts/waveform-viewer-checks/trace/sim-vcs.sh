@@ -3,14 +3,14 @@
 # -xprop=flowctrl alone, -xprop=tmerge, and "course" (an xprop.config of merge=tmerge,
 # xindex_select_method=resolution, xpropOn for the dut instance, plus -xprop=flowctrl, the way
 # the ECE 411 course flows build), for the checks in this folder. Run it on a host with VCS,
-# in a scratch folder holding designs/:   bash sim-vcs.sh <scratch dir>
+# in a scratch folder holding designs/:   bash sim-vcs.sh <scratch dir> (DESIGNS="f" for some only)
 # Outputs <scratch>/out/<design>.<variant>.{fsdb,vcd}.
 set -eu
 W=${1:?scratch dir}
 cd "$W"
 module load Synopsys_x86-64 >/dev/null 2>&1 || true
 mkdir -p out
-for d in a b c e; do
+for d in ${DESIGNS:-a b c e f}; do
   src=$(ls designs/${d}_*.sv)
   for variant in plain flowctrl tmerge course; do
     case $variant in
