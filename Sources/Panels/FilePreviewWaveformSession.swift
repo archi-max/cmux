@@ -387,9 +387,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     }
 
     nonisolated private static func readSessionText(at url: URL) async throws -> String {
-        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard size <= maxSessionFileSize else { throw CocoaError(.fileReadTooLarge) }
-        return try String(contentsOf: url, encoding: .utf8)
+        // Bounded on the file a symlink points to, not the link's own size.
+        try WaveformValueAliasFiles.readText(at: url, maxBytes: maxSessionFileSize)
     }
 
     nonisolated private static func readSiblingSession(at url: URL, displayPath: String) async -> [String: String]? {
@@ -660,6 +659,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private func readValueAliasFiles(id: Int, keys: Any?) {
         let keys = WaveformValueAliasFiles.keys(from: keys)
         let provider = sshLease?.sshProvider
+        // The page that asked: a later page reuses request ids, so an answer
+        // that comes back after a reload or another open is dropped.
+        let loadID = pageLoadID
         Task { @MainActor [weak self] in
             guard let self else { return }
             let answers = await WaveformValueAliasFiles.answer(keys, registry: self.valueAliasFiles) { location in
@@ -676,6 +678,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                     throw CocoaError(.fileReadNoSuchFile)
                 }
             }
+            guard self.pageLoadID == loadID, self.isPageReady else { return }
             self.evaluate(function: "valueAliasFilesRead", argument: ["id": id, "files": answers])
         }
     }

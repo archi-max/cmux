@@ -231331,6 +231331,65 @@
         }
       }
     },
+    "filePreview.waveform.message.valueAliasNotRecorded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux has no record of this file. Load it again with Load Value Alias File..."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux にはこのファイルの記録がありません。「値エイリアスファイルを読み込む...」でもう一度読み込んでください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux kennt diese Datei nicht. Lade sie mit „Wert-Alias-Datei laden...“ erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux n’a aucune trace de ce fichier. Rechargez-le avec « Charger un fichier d’alias de valeurs... »."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يوجد لدى cmux سجل لهذا الملف. حمّله مجددًا باستخدام \"تحميل ملف أسماء مستعارة للقيم...\"."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux no tiene registro de este archivo. Vuelve a cargarlo con «Cargar archivo de alias de valores...»."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 沒有此檔案的記錄。請使用「載入值別名檔案...」重新載入。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 没有此文件的记录。请使用“载入值别名文件...”重新载入。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux에 이 파일의 기록이 없습니다. '값 별칭 파일 불러오기...'로 다시 불러오세요."
+          }
+        }
+      }
+    },
     "filePreview.waveform.message.valueAliasRestoreFailed": {
       "extractionState": "manual",
       "localizations": {
