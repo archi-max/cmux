@@ -201,6 +201,11 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
     """
 
     static func withServer(_ check: (LanguageServerSession, SlangEnumTypeCache) async throws -> Void) async throws {
+        try await withServer { session, cache, _ in try await check(session, cache) }
+    }
+
+    /// `check` also gets the directory the design's files are in (its real path).
+    static func withServer(_ check: (LanguageServerSession, SlangEnumTypeCache, String) async throws -> Void) async throws {
         let root = URL(fileURLWithPath: "/tmp").appendingPathComponent("cmux-enum-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -212,7 +217,7 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         do {
             try await session.start()
             _ = try await session.executeCommand("slang.setBuildFile", argument: .string(real + "/build.f"), timeout: 60)
-            try await check(session, SlangEnumTypeCache())
+            try await check(session, SlangEnumTypeCache(), real)
         } catch {
             await session.shutdown()
             throw error
@@ -328,6 +333,80 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         #expect(may("  pm u5 ();"))
         #expect(may("  state_t s2;"))
         #expect(may("  cpu_pkg::op_t q;"))
+        // Lines inside a multi-line typedef or `#(` (verify N1): a member's value, a new member, a parameter's default.
+        #expect(may("    DECODE = 3'd5,"))
+        #expect(may("    NEWST,"))
+        #expect(may("    B = 3'd4"))
+        // A declaration's type going away one backspace at a time, and the type it ends up with.
+        #expect(may("  state_ s;"))
+        #expect(may("  logic [2:0] s;"))
+        // A declaration of an enum type no read has seen yet.
+        #expect(may("  new_t q;"))
+        #expect(may("  cpu_pkg::new_t q;"))
+        // Statements still keep the types.
+        #expect(!may("    count <= count + 1;"))
+        #expect(!may("      next_state = FETCH;"))
+        #expect(!may("      default: next_state = IDLE;"))
+        #expect(!may("    end"))
+        #expect(!may("  end else begin"))
+        #expect(!may("    endcase"))
+        #expect(!may("    return x;"))
+    }
+
+    @Test func typesAreReadAgainWhenSlangHasCompiledAnEditAndOnSave() {
+        var freshness = SlangEnumTypeFreshness()
+        var answers: [Bool] = []
+        // A compile no edit was sent for (opening, a replayed report) keeps the types.
+        answers.append(freshness.compiled())
+        // Any edit sent, whatever its lines: slang's next compile of it reads the types again, once.
+        freshness.textSent()
+        answers.append(freshness.compiled())
+        answers.append(freshness.compiled())
+        // Saving always does, and covers the edits before it.
+        answers.append(freshness.saved())
+        freshness.textSent()
+        answers.append(freshness.saved())
+        answers.append(freshness.compiled())
+        #expect(answers == [false, true, false, true, true, false])
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
+    func afterSlangReportsOnAnUnsavedEditTheTypesReadAreTheEditedOnes() async throws {
+        try await Self.withServer { session, cache, root in
+            let file = URL(fileURLWithPath: root + "/fsm.sv")
+            let reports = ReportLog(path: file.resolvingSymlinksInPath().path)
+            let updates = await session.diagnosticsUpdates()
+            let listener = Task { for await update in updates { await reports.add(update.uri) } }
+            defer { listener.cancel() }
+            let before = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
+            #expect(before["state"]?.type.members.first { $0.name == "DECODE" }?.bits == "100")
+            await session.open(uri: file, text: Self.fsm, version: 1)
+            #expect(await reports.waitForMore(than: 0), "slang reports on an opened file")
+            let opened = await reports.count
+            // Renumbered in the multi-line way the heuristic can't see, and not saved.
+            await session.change(uri: file, text: Self.fsm.replacingOccurrences(of: "DECODE = 3'd4", with: "DECODE = 3'd6"), version: 2)
+            #expect(await reports.waitForMore(than: opened), "slang reports on an edit (the stale trigger)")
+            await cache.removeAll()
+            let after = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
+            #expect(after["state"]?.type.members.first { $0.name == "DECODE" }?.bits == "110")
+        }
+    }
+
+    /// Diagnostics reports on one file, counted.
+    actor ReportLog {
+        let path: String
+        private(set) var count = 0
+        init(path: String) { self.path = path }
+        func add(_ uri: URL) {
+            if uri.resolvingSymlinksInPath().path == path { count += 1 }
+        }
+        /// Up to 30 s for the count to pass `seen`.
+        func waitForMore(than seen: Int) async -> Bool {
+            for _ in 0..<300 where count <= seen {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return count > seen
+        }
     }
 
     @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
@@ -338,6 +417,10 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             #expect(signals["state"] == nil)
             #expect(signals["pp"]?.type.members.map(\.bits) == ["110", "111"])
             #expect(signals["color"] != nil)
+            // Each type left out for the budget is noted once, to be logged (verify N3).
+            let notes = await cache.takeOverBudget()
+            #expect(notes.contains { $0.contains("fsm.sv") && $0.contains("5 members") })
+            #expect(await cache.takeOverBudget().isEmpty)
         }
     }
 }
