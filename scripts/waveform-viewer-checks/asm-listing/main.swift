@@ -74,9 +74,12 @@ var failures = 0
            && items?.map { $0["listingLabel"] as? String ?? "" } == ["prog.txt: _start", "prog.txt: _start+0x8"]
            && items?.allSatisfy { $0["enabled"] as? Bool == true && ($0["key"] as? String).flatMap(UUID.init(uuidString:)) != nil } == true,
            "the page's items: \(String(describing: items))")
-    expect(viewer.nativeViewSessions.waveform.calls.filter { $0.function == "setPcBreakpoints" }.count == 1, "sent once")
+    let withItems = { viewer.nativeViewSessions.waveform.calls.filter { $0.function == "setPcBreakpoints" && ($0.argument["items"] as? [Any])?.isEmpty == false }.count }
+    expect(withItems() == 1, "sent once")
     await AB.sync(viewer)
-    expect(viewer.nativeViewSessions.waveform.calls.filter { $0.function == "setPcBreakpoints" }.count == 1, "not again while unchanged")
+    expect(withItems() == 1, "not again while unchanged")
+    expect(viewer.nativeViewSessions.waveform.calls.last { $0.function == "setPcBreakpoints" }?.argument["listing"] as? Bool == true,
+           "with word that a listing is open (rows offer Show Value as Address in Listing)")
 
     // The page's list toggles, conditions and removes them.
     let first = AB.marks[workspace]![0].id, second = AB.marks[workspace]![1].id
@@ -163,6 +166,50 @@ var failures = 0
     let manySaid = manyViewer.nativeViewSessions.waveform.calls.filter { $0.function == "say" }.map { $0.argument["text"] as? String ?? "" }
     expect(manySaid.count == 4 && manySaid[0].hasPrefix("four.dis: the breakpoint on li a0,0 moved with its code, from f+0x2 (0x2) to f+0x4 (0x4)")
            && manySaid[3] == "Other breakpoints in four.dis moved with their code too (the breakpoint list has them).", "three, then the rest: \(manySaid)")
+    AB.viewers = { $0 == workspace ? [viewer] : [] }
+
+    // A listing beside the dump: found (by extension and content, newest first), opened, and revealed.
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("asm-listing-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let staleBody = text.replacingOccurrences(of: "80000008:", with: "90000008:")
+    for (name, body, age) in [("old.dis", staleBody, 10.0), ("prog.dis", text, 30.0), ("notes.lst", "not a listing\n", 0.0), ("run.txt", text, 0.0)] {
+        let url = folder.appendingPathComponent(name)
+        try? body.write(to: url, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-age)], ofItemAtPath: url.path)
+    }
+    let beside = AB.listingsBeside(dumpPath: folder.appendingPathComponent("run.vcd").path).map { ($0 as NSString).lastPathComponent }
+    expect(beside == ["notes.lst", "old.dis", "prog.dis"], "the listings beside a dump, newest first: \(beside)")
+    expect(AB.listingsBeside(dumpPath: "/no/such/folder/run.vcd").isEmpty, "none beside a dump in no folder")
+    let farSpace = UUID()
+    let far = FilePreviewPanel(workspaceId: farSpace, filePath: folder.appendingPathComponent("run.vcd").path)
+    AB.viewers = { $0 == workspace ? [viewer] : ($0 == farSpace ? [far] : []) }
+    await AB.sync(far)
+    expect(far.nativeViewSessions.waveform.calls.last { $0.function == "setPcBreakpoints" }?.argument["listing"] as? Bool == true,
+           "a listing beside the dump counts as one at hand")
+    var opened: [String] = []
+    var openedViews: [SavingTextView] = []
+    AB.openListing = { waveform, path in
+        opened.append((path as NSString).lastPathComponent)
+        guard let body = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+        openedViews.append(makeView(body, path: path, workspace: waveform.workspaceId))
+        return true
+    }
+    far.nativeViewSessions.waveform.answers["currentCommitPc"] = "0x80000008"
+    let shownFar = await AB.revealCurrent(of: far)
+    expect(shownFar && opened == ["prog.dis"], "Show Instruction in Listing opens the newest that has the PC (prog.dis; old.dis does not): \(opened)")
+    expect(openedViews.first.map { $0.selectedRange().location == lineStart(10, in: text) } == true, "and shows its line")
+    // Show Value as Address in Listing: an open listing first; one with no such PC is said.
+    AB.showAddress(["pc": "0x8000000c", "name": "top.msg"], waveform: far)
+    await settle(200)
+    expect(opened == ["prog.dis"] && openedViews.first.map { $0.selectedRange().location == lineStart(12, in: text) } == true,
+           "a row's value as an address, in the open listing")
+    AB.showAddress(["pc": "0x12345678", "name": "top.msg"], waveform: far)
+    await settle(300)
+    let farSaid = far.nativeViewSessions.waveform.calls.filter { $0.function == "say" }.map { $0.argument["text"] as? String ?? "" }
+    expect(farSaid == ["No listing has 0x12345678 (the value of top.msg). Open the program's objdump listing (.dis), or put it beside the dump."],
+           "an address no listing has is said: \(farSaid)")
+    for v in openedViews { AB.detach(v) }
     AB.viewers = { $0 == workspace ? [viewer] : [] }
 
     // The current commit: an arrow and a highlight on its line, the cycle's others lighter; Stop clears it.

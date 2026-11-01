@@ -24,6 +24,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var lineEvents: [[String: Any]] = []
   var pcEvents: [[String: Any]] = []
   var commitPcEvents: [[String: Any]] = []
+  var addressEvents: [[String: Any]] = []
   var readyEvents = 0
   var listEvents: [[[String: Any]]] = []
   var movedEvents: [[String: Any]] = []
@@ -195,6 +196,40 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "the list row's menu: \(String(describing: jalMenu))")
     l = await landings(jal)
     expect(l.forward.isEmpty, "and its register-name item turned it off: \(l.forward)")
+
+    // The Machine section's row menus offer Break When Written when the debugger has the kind.
+    let kinds = await call("return cmuxWaveform.debugger.breakpointKinds()") as? [String]
+    expect(kinds == ["change", "equals", "text", "pc", "commitText", "write"], "the kinds it takes: \(String(describing: kinds))")
+
+    // Show Value as Address in Listing: on an 8- to 64-bit row, while cmux has a listing for the dump.
+    func rowItems(_ signal: String, run: String? = nil) async -> [String]? {
+      await call("""
+        const v = await cmuxWaveform.host.findLinkItem(['top', \(Harness.js(signal))], true);
+        const items = window.cmuxDebugger.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
+        const want = \(run.map(Harness.js) ?? "null");
+        if (want) { await items.find((i) => i.label === want).run(); }
+        return items.map((i) => i.label);
+      """) as? [String]
+    }
+    let showAddress = "Show Value as Address in Listing"
+    expect(await rowItems("msg").map { !$0.contains(showAddress) } == true, "not offered with no listing")
+    _ = await dbg("setPcBreakpoints({ items: [], listing: true })")
+    expect(await rowItems("msg")?.last == showAddress, "offered on a 32-bit row with one: \(String(describing: await rowItems("msg")))")
+    expect(await rowItems("flag").map { !$0.contains(showAddress) } == true, "not on a 1-bit row")
+    _ = await dbg("jump({ to: 'last' })")
+    _ = await rowItems("msg", run: showAddress)
+    await sleep(50)
+    expect(addressEvents.map { [$0["pc"] as? String ?? "", $0["name"] as? String ?? ""] } == [["0x61626364", "top.msg"]],
+           "cmux is asked for its value at the marker (\"abcd\"): \(addressEvents)")
+    await clearToasts()
+    _ = await rowItems("inst", run: showAddress)
+    await sleep(50)
+    let xSaid = await toasts()
+    expect(addressEvents.count == 1 && xSaid.contains("top.inst has no address value at the marker"),
+           "an x value is said, not sent: \(xSaid)")
+    await clearToasts()
+    _ = await dbg("setPcBreakpoints({ items: [] })")
+    expect(await rowItems("msg").map { !$0.contains(showAddress) } == true, "and not once the listing is gone")
 
     // Writes: a register, memory (a word: any of its bytes), a CSR.
     for (loc, want) in [("a0", [15]), ("mem:0x1000/4", [65]), ("csr:mtvec", [25])] {
@@ -415,6 +450,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if type == "debugger", body["event"] as? String == "pcBreakpoint" { pcEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "commitPcs" { commitPcEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "commitsReady" { readyEvents += 1; return }
+    if type == "debugger", body["event"] as? String == "showAddress" { addressEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "breakpoints" { listEvents.append(body["items"] as? [[String: Any]] ?? []); return }
     if type == "debugger", body["event"] as? String == "moved" { movedEvents.append(body); return }
     if type == "debugger", body["event"] as? String == "watches" { watchEvents.append(body["items"] as? [String] ?? []); return }
@@ -484,7 +520,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerCommitBadLocation:'give a register (a0, x5), a CSR (mstatus) or memory ([0x80001000])',
    debuggerCommitsNone:'%@: this dump has no commit stream (RVFI or similar) to search',
    debuggerCommitsNoInsn:'%@: the commit stream has no instruction word',
-   debuggerCommitTooMany:'At most %@ breakpoints of this kind can be enabled'}
+   debuggerCommitTooMany:'At most %@ breakpoints of this kind can be enabled',
+   debuggerShowValueAsAddress:'Show Value as Address in Listing', debuggerAddressUnknown:'%@ has no address value at the marker'}
   """
 
   func snap() {

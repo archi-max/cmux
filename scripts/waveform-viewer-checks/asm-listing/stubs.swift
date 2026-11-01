@@ -16,6 +16,7 @@ import AppKit
 
 @MainActor final class FilePreviewPanel {
     enum PreviewMode { case text, waveform }
+    let id = UUID()
     var workspaceId: UUID
     let filePath: String
     var isClosed = false
@@ -32,7 +33,13 @@ final class SavingTextView: NSTextView {
     var panel: FilePreviewPanel?
 }
 
-@MainActor final class Workspace { var panels: [UUID: Any] = [:] }
+@MainActor final class Workspace {
+    var panels: [UUID: Any] = [:]
+    final class Splits { var allPaneIds: [UUID] = []; var focusedPaneId: UUID? }
+    let bonsplitController = Splits()
+    func paneId(forPanelId id: UUID) -> UUID? { nil }
+    func openOrFocusFilePreviewSurface(inPane pane: UUID, filePath: String, focus: Bool) -> FilePreviewPanel? { nil }
+}
 
 @MainActor final class AppDelegate {
     static var shared: AppDelegate? = AppDelegate()
