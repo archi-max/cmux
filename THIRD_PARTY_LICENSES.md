@@ -446,10 +446,13 @@ from VaporView's VS Code integration:
 
 - **Version:** 0.25.7
 - **License:** BSD 3-Clause License
-- **Copyright:** Copyright (c) 2023-2024, The Regents of the University of California
+- **Copyright:** Copyright (c) 2023-2024, The Regents of the University of California; Copyright (c) 2024-2026, Cornell University
 - **Source:** https://github.com/ekiwi/wellen
 
-The waveform parser (VCD, FST, GHW), by Kevin Laeufer. Compiled into `filehandler.wasm`.
+The waveform parser (VCD, FST, GHW), by Kevin Laeufer. Compiled into `filehandler.wasm`, with cmux's
+change to `src/signal/transform.rs` (`Resources/vaporview/wellen-0.25.7-split-bit-start.patch`, under the
+same BSD 3-Clause License): merged split bits start at their first value, take an input that starts
+later than the others, and hold X until it does.
 
 ### fst-reader
 
