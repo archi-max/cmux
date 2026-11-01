@@ -4463,6 +4463,7 @@
 		5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */; };
 		5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */; };
 		5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */; };
+		5A7EF000000000000F5E0001 /* WaveformEnumLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */; };
 		5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */; };
 		CB0EBBD1B828D9EA5B91C951 /* WaveformLinkShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */; };
 		5ED1DB3057555190D5DA13A3 /* WaveformSessionOverwriteCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */; };
@@ -9150,6 +9151,7 @@
 		5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEditorHighlights.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerMenu.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerRTLStatus.swift; sourceTree = "<group>"; };
+		5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformEnumLink.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformFSDBHelper.swift; sourceTree = "<group>"; };
 		E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformLinkShortcutRoutingTests.swift"; sourceTree = "<group>"; };
 		C0702113CF1854B685F578EE /* WaveformSessionOverwriteCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformSessionOverwriteCheckTests.swift"; sourceTree = "<group>"; };
@@ -12026,6 +12028,7 @@
 				5A7EF000000000000000B002 /* WaveformViewerStrings.swift */,
 				5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */,
 				5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */,
+				5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */,
 				5A7EF0000000000000D0B002 /* WaveformDebugger.swift */,
 				5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */,
 				5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */,
@@ -17799,6 +17802,7 @@
 				5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */,
 				5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */,
 				5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */,
+				5A7EF000000000000F5E0001 /* WaveformEnumLink.swift in Sources */,
 				5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */,
 				5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */,
 				5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */,

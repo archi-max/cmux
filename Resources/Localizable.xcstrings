@@ -483044,6 +483044,124 @@
         }
       }
     },
+    "filePreview.inlineValues.enumHover": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waveform: %1$@ = %2$@ (%3$@)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形: %1$@ = %2$@（%3$@）"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenform: %1$@ = %2$@ (%3$@)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chronogramme : %1$@ = %2$@ (%3$@)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الشكل الموجي: %1$@ = %2$@ (%3$@)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forma de onda: %1$@ = %2$@ (%3$@)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形：%1$@ = %2$@（%3$@）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形：%1$@ = %2$@（%3$@）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형: %1$@ = %2$@ (%3$@)"
+          }
+        }
+      }
+    },
+    "filePreview.inlineValues.valueHover": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waveform: %1$@ = %2$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形: %1$@ = %2$@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wellenform: %1$@ = %2$@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chronogramme : %1$@ = %2$@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الشكل الموجي: %1$@ = %2$@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forma de onda: %1$@ = %2$@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形：%1$@ = %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形：%1$@ = %2$@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형: %1$@ = %2$@"
+          }
+        }
+      }
+    },
     "filePreview.inlineValues.onlyShown": {
       "extractionState": "manual",
       "localizations": {
@@ -694488,6 +694606,193 @@
           "stringUnit": {
             "state": "translated",
             "value": "未在 SSH 主機上執行"
+          }
+        }
+      }
+    },
+    "fileExplorer.error.remoteFileChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file changed on the remote host since it was opened."
+          }
+        }
+      }
+    },
+    "filePreview.language.findReferences": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Find References"
+          }
+        }
+      }
+    },
+    "filePreview.language.formatUndo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format Document"
+          }
+        }
+      }
+    },
+    "filePreview.language.goToDefinition": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to Definition"
+          }
+        }
+      }
+    },
+    "filePreview.language.references": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "References"
+          }
+        }
+      }
+    },
+    "filePreview.markdown.showSource": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Source"
+          }
+        }
+      }
+    },
+    "filePreview.remoteConflict.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        }
+      }
+    },
+    "filePreview.remoteConflict.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It was modified after you opened it. Overwrite it with your version, or reload the remote version and discard your changes."
+          }
+        }
+      }
+    },
+    "filePreview.remoteConflict.overwrite": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Overwrite"
+          }
+        }
+      }
+    },
+    "filePreview.remoteConflict.reload": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reload from Remote"
+          }
+        }
+      }
+    },
+    "filePreview.remoteConflict.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file changed on the remote host"
+          }
+        }
+      }
+    },
+    "filePreview.remoteReload.failedTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to reload remote file"
+          }
+        }
+      }
+    },
+    "filePreview.remoteReload.genericFailure": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The remote file could not be downloaded. Reconnect and try again."
+          }
+        }
+      }
+    },
+    "filePreview.remoteSave.failedTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to save remote file"
+          }
+        }
+      }
+    },
+    "filePreview.remoteSave.genericFailure": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your changes were not saved to the remote host. Reconnect and try again."
+          }
+        }
+      }
+    },
+    "filePreview.remoteSave.ok": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "menu.view.toggleMarkdownPreview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Markdown Preview"
           }
         }
       }
