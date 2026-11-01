@@ -1,0 +1,10 @@
+NERV (YosysHQ, in riscv-formal cores/nerv) waveform fixture for cmux's machine-state checks (scripts/waveform-viewer-checks/machine).
+
+The dump (nerv.vcd) was produced by simulating the unmodified upstream core:
+  https://github.com/YosysHQ/riscv-formal
+  commit c992aa61fdfe0846c5ed90324c596202a1c69b76
+  licence: ISC (copy in LICENSE)
+in our own testbench (../../cores/nerv_tb.sv) running our own program (../../prog, built with LLVM clang)
+with Icarus Verilog (-DNERV_RVFI). Only the clock, reset and the core's RVFI outputs are kept in the dump. No upstream
+source is copied into this repository; ../../build-fixtures.sh rebuilds everything from a checkout
+of that commit. spike.log is Spike's --log-commits of the same prog.elf (the checks' oracle).

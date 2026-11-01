@@ -1,0 +1,10 @@
+PicoRV32 (YosysHQ) waveform fixture for cmux's machine-state checks (scripts/waveform-viewer-checks/machine).
+
+The dump (picorv32.vcd) was produced by simulating the unmodified upstream core:
+  https://github.com/YosysHQ/picorv32
+  commit ef203c2b0a3fb793280f5114941416c425c5b461
+  licence: ISC (copy in LICENSE)
+in our own testbench (../../cores/picorv32_tb.v) running our own program (../../prog, built with LLVM clang)
+with Icarus Verilog (-DRISCV_FORMAL, COMPRESSED_ISA, MUL/DIV). Only the clock, reset and the core's RVFI outputs are kept in the dump. No upstream
+source is copied into this repository; ../../build-fixtures.sh rebuilds everything from a checkout
+of that commit. spike.log is Spike's --log-commits of the same prog.elf (the checks' oracle).
