@@ -97,13 +97,15 @@ function generate(seed, count) {
     return s.name + '[' + idx() + (chance(0.5) ? ' +: ' : ' -: ') + w + ']';
   }
 
-  // Unsized literals are not allowed in a concatenation.
+  // Unsized literals are not allowed in a concatenation, bare or in parentheses (cmux-expr rejects
+  // them, as slang does; VCS takes them as 32 bits).
   function sized(depth) {
     const r = rnd();
     if (r < 0.4) { return name().name; }
     if (r < 0.6) { return select(); }
     if (r < 0.8) { let l; do { l = literal(); } while (!/^\d+'/.test(l)); return l; }
-    return '(' + expr(depth + 1) + ')';
+    let e; do { e = expr(depth + 1); } while (/^\(*(\d+|'[sS]?[bBoOdDhH]\w+)\)*$/.test(e));
+    return '(' + e + ')';
   }
 
   const BIN = ['+', '-', '*', '&', '|', '^', '~^', '^~', '==', '!=', '===', '!==', '<', '<=', '>', '>=', '<<', '>>', '<<<', '>>>', '&&', '||'];

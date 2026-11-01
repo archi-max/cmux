@@ -28,6 +28,8 @@ enum WaveformDebuggerLineBreakpoints {
 
     /// Per workspace, in the order they were added.
     private(set) static var marks: [UUID: [Mark]] = [:]
+    /// Marks whose condition the page could not parse (it says why): drawn as lost, never hit.
+    private(set) static var badConditions: Set<UUID> = []
 
     /// Where the marks of an open file are, kept through the text view's edits.
     private final class Tracker {
@@ -155,6 +157,10 @@ enum WaveformDebuggerLineBreakpoints {
         }
         if let enabled = body["enabled"] as? Bool { setEnabled(id, enabled, in: workspace) }
         if body.keys.contains("condition") { setCondition(id, body["condition"] as? String, in: workspace) }
+        if let bad = body["conditionError"] as? Bool, bad != badConditions.contains(id) {
+            if bad { badConditions.insert(id) } else { badConditions.remove(id) }
+            redrawGutters()
+        }
     }
 
     // MARK: Gutter
@@ -167,7 +173,8 @@ enum WaveformDebuggerLineBreakpoints {
         var styles: [Int: FilePreviewLineNumberGutterView.BreakpointMark] = [:]
         for (id, offset) in tracker.offsets {
             guard let mark = byId[id] else { continue }
-            styles[offset] = mark.lost ? .lost : (mark.enabled ? (mark.condition == nil ? .enabled : .conditional) : .disabled)
+            styles[offset] = mark.lost || (mark.enabled && badConditions.contains(id)) ? .lost
+                : (mark.enabled ? (mark.condition == nil ? .enabled : .conditional) : .disabled)
         }
         return styles
     }
@@ -734,22 +741,27 @@ enum WaveformDebuggerLineBreakpoints {
             let label = "\((mark.path as NSString).lastPathComponent):\(mark.line + 1)"
             var paths: [[String]] = []
             var scope: [String]?
+            var groups: [[String: Any]] = []
             if let editor = editors.first(where: { $0.filePath == mark.path }), let textView = editor.debuggerTextView,
                let offset = trackers.object(forKey: textView)?.offsets[mark.id], let storage = textView.textStorage,
                let line = editor.breakpointLine(at: offset), let module = line.module {
                 let signals = WaveformLineBreakpoint.watchedSignals(of: line, in: storage.string as NSString)
                 let instances = editor.breakpointInstances(ofModule: module)
                 let dumps = mark.anyInstance ? instances.all : instances.shown.map { [$0] } ?? []
-                // A condition's names are looked up in the (first) instance the line is watched in.
+                // A condition's names are looked up in the instance the line is watched in; in each
+                // one's own when it breaks in any (groups: each instance's scope and paths).
                 scope = dumps.first.map { HierarchyPathMapping.segments($0) }
                 for dump in dumps {
                     let scope = HierarchyPathMapping.segments(dump)
-                    paths += signals.map { scope + [$0] }
+                    let own = signals.map { scope + [$0] }
+                    paths += own
+                    if dumps.count > 1 { groups.append(["scope": scope, "paths": own]) }
                 }
             }
             var item: [String: Any] = ["key": mark.id.uuidString, "label": label, "paths": paths, "enabled": mark.enabled && !mark.lost]
             if let condition = mark.condition { item["condition"] = condition }
             if let scope { item["scope"] = scope }
+            if !groups.isEmpty { item["groups"] = groups }
             return item
         }
     }
@@ -799,6 +811,9 @@ enum WaveformDebuggerLineBreakpoints {
     /// `{ event: 'breakpoints', items: [{ path, kind, value, enabled, condition }] }` from the page.
     static func signalsReported(_ body: [String: Any], waveform: FilePreviewPanel) {
         let items = body["items"] as? [[String: Any]] ?? []
+        // A viewer that was given an older session's list makes it its own: the list is not
+        // given again to it (after it cleared it) or to other viewers.
+        if signals[waveform.workspaceId]?[waveform.filePath] == nil { signals[waveform.workspaceId]?[""] = nil }
         signals[waveform.workspaceId, default: [:]][waveform.filePath] = items.compactMap { item in
             guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
                   kind == "change" || kind == "equals" else { return nil }
@@ -814,6 +829,7 @@ enum WaveformDebuggerLineBreakpoints {
         let items = (body["items"] as? [String] ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0.count <= maxExpressionLength }
+        if watches[waveform.workspaceId]?[waveform.filePath] == nil { watches[waveform.workspaceId]?[""] = nil }
         watches[waveform.workspaceId, default: [:]][waveform.filePath] = items
     }
 

@@ -696262,6 +696262,65 @@
         }
       }
     },
+    "waveformDebugger.exprUnsizedInConcat": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An unsized number can't be in a concatenation (give it a width, as in 8'd1)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يمكن وضع رقم بلا عرض في الربط (حدّد عرضه، مثل 8'd1)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Eine Zahl ohne Breite kann nicht in einer Verkettung stehen (Breite angeben, z. B. 8'd1)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un número sin tamaño no puede ir en una concatenación (dale un ancho, como 8'd1)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un nombre sans taille ne peut pas figurer dans une concaténation (donnez-lui une largeur, par ex. 8'd1)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "幅のない数値は連結に含められません（8'd1 のように幅を指定してください）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "크기가 없는 숫자는 연결에 넣을 수 없음(8'd1처럼 폭을 지정하세요)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未指定位宽的数字不能放在拼接中（请指定位宽，如 8'd1）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未指定位寬的數字不能放在串接中（請指定位寬，例如 8'd1）"
+          }
+        }
+      }
+    },
     "waveformDebugger.exprNotConstant": {
       "extractionState": "manual",
       "localizations": {

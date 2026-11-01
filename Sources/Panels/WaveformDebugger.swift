@@ -299,6 +299,10 @@ enum WaveformDebugger {
             "debuggerExprTooManySignals": String(localized: "waveformDebugger.exprTooManySignals", defaultValue: "More than %@ signals"),
             "debuggerExprTooWide": String(localized: "waveformDebugger.exprTooWide", defaultValue: "Wider than %@ bits"),
             "debuggerExprBadLiteral": String(localized: "waveformDebugger.exprBadLiteral", defaultValue: "Not a valid literal"),
+            "debuggerExprUnsizedInConcat": String(
+                localized: "waveformDebugger.exprUnsizedInConcat",
+                defaultValue: "An unsized number can't be in a concatenation (give it a width, as in 8'd1)"
+            ),
             "debuggerExprNotConstant": String(localized: "waveformDebugger.exprNotConstant", defaultValue: "Must be a constant"),
             "debuggerExprBadReplication": String(localized: "waveformDebugger.exprBadReplication", defaultValue: "A replication count must be at least 1"),
             "debuggerExprUnknownName": String(localized: "waveformDebugger.exprUnknownName", defaultValue: "%@ is not in this waveform"),
