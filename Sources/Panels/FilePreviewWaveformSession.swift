@@ -824,6 +824,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 localized: "filePreview.waveform.fsdbRefused",
                 defaultValue: "cmux did not start the FSDB reader on %@: its folder there can be changed by other users. Make ~/.cache/cmux private to you, or delete it to reinstall."
             )
+        case .openTimedOut?:
+            summary = String(
+                localized: "filePreview.waveform.fsdbOpenTimedOut",
+                defaultValue: "The FSDB reader on %@ did not open the file in time, even after a restart. Reload to try again."
+            )
         case .notAllowed?:
             summary = String(
                 localized: "filePreview.waveform.fsdbNotAllowed",
