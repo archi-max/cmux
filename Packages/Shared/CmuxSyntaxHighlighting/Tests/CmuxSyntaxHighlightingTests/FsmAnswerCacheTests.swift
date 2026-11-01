@@ -53,6 +53,31 @@ import Testing
         #expect(again != nil, "asked again, the engines run again")
     }
 
+    /// Verify G2: answers (a Verdi model over ssh above all) are kept with no design open, until the
+    /// design opens or changes: a Show or a reload doesn't rerun Verdi each time.
+    @Test func answersAreKeptUntilTheDesignChanges() throws {
+        var cache = FsmAnswerCache<String>()
+        let started = cache.start("w1", "tb.state")
+        let ticket = try #require(started)
+        let shown = cache.finish(ticket, "verdi model", keep: true)
+        #expect(shown)
+        #expect(cache.answer("w1", "tb.state") == "verdi model", "kept: the next Show uses it")
+        cache.designChanged()
+        #expect(cache.answer("w1", "tb.state") == nil, "a design opened or changed: asked again")
+    }
+
+    @Test func aRunStartedBeforeADesignChangeIsShownButNotKept() throws {
+        var cache = FsmAnswerCache<String>()
+        let started = cache.start("w1", "tb.state")
+        let ticket = try #require(started)
+        cache.designChanged()
+        let again = cache.start("w1", "tb.state")
+        #expect(again == nil, "still one run per path")
+        let shown = cache.finish(ticket, "model of the old design", keep: true)
+        #expect(shown, "the pane waits for it: shown")
+        #expect(cache.answer("w1", "tb.state") == nil, "but not kept for the new design")
+    }
+
     @Test func transientNotesAreTheOnesARetryMayChange() {
         let model = FsmModel.observed(signal: "state", width: 3, names: [:])
         func result(_ notes: [FsmPipeline.Note]) -> FsmPipeline.Result { FsmPipeline.Result(model: model, notes: notes) }
