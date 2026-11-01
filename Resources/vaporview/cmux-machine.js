@@ -60,7 +60,7 @@
   };
 
   // ---- the scan: scopes under the tops, three levels down, at most 400 ----
-  // A var's name as the dump has it; a single bit of an array (valid[0]) keeps its index.
+  // A var's name as the dump has it; an element named valid[0] keeps its index.
   function varName(v) { return String(v.name); }
 
   async function scan() {
@@ -78,8 +78,20 @@
           const name = varName(c);
           vars.push({ name, width: Number(c.width) || 1 });
           st.vars.set(JSON.stringify(path.concat([name])), c);
-        } else if (c.kind === 'scope' && depth < MAX_SCOPE_DEPTH) {
-          queue.push({ item: c, path: path.concat([c.name]), depth: depth + 1 });
+        } else if (c.kind === 'scope') {
+          // wellen's array element scope (`order` holding `[0]`, `[1]`) reads as order[0], order[1] here.
+          let elements = null;
+          if (C.mayHoldElements(c.name)) {
+            try { elements = C.elementVars(c.name, await host.getChildren(c)); } catch (error) { host.log(error); }
+          }
+          if (elements) {
+            for (const e of elements) {
+              vars.push({ name: e.name, width: e.width });
+              st.vars.set(JSON.stringify(path.concat([e.name])), e.item);
+            }
+          } else if (depth < MAX_SCOPE_DEPTH) {
+            queue.push({ item: c, path: path.concat([c.name]), depth: depth + 1 });
+          }
         }
       }
       if (vars.length) { scopes.push({ path, depth, vars }); }

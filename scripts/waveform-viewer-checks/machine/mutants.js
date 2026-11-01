@@ -23,5 +23,8 @@ var MACHINE_MUTANTS = [
   ['CSR reads ignored', 'if (rm && rv !== null) { const fresh', 'if (false) { const fresh'],
   ['sampling takes the change after the edge', "Number(changes[ci + 1][0]) < e : Number(changes[ci + 1][0]) <= e", "Number(changes[ci + 1][0]) <= e : Number(changes[ci + 1][0]) < e"],
   ['packed channel slices reversed', 'lsb: c * w, msb: c * w + w - 1, width: w', 'lsb: (nret - 1 - c) * w, msb: (nret - 1 - c) * w + w - 1, width: w'],
+  ['held valid repeats kept', "if (prev !== undefined && orderOf(prev) === orderOf(r) && same('pc_rdata', prev, r)", "if (false && prev !== undefined && orderOf(prev) === orderOf(r) && same('pc_rdata', prev, r)"],
+  ['held repeats ignore pc', "orderOf(prev) === orderOf(r) && same('pc_rdata', prev, r) && same('insn', prev, r)", "orderOf(prev) === orderOf(r)"],
+  ['element scopes take any child', "if (!list.length || list.some((c) => !c || c.kind !== 'var' || !/^\\[\\d+\\]$/.test(String(c.name)))) { return null; }", "if (!list.length) { return null; }"],
   ['store lanes ignore the word base', "const base = this.memMask === 'word' ? a - (a % this.wordBytes) : a;\n      const out = [];", "const base = a;\n      const out = [];"],
 ];

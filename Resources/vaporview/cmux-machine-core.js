@@ -40,6 +40,19 @@
     return m ? { base: m[1], index: Number(m[2]) } : { base: String(name), index: null };
   }
 
+  // Array elements come in two reader styles. FSDB and simple VCD readers put `order[0]` in the scope;
+  // wellen reads a VCD `order [0]` as a scope `order` holding vars `[0]`, `[1]` (and merges 1-bit
+  // elements `valid [0]`, `valid [1]` into one vector valid[1:0], which the packed rule takes).
+  // The scan opens only a scope named like a role (mayHoldElements) and, when it holds nothing but
+  // `[i]` vars, folds them into the parent scope as `order[i]` (elementVars).
+  const ELEMENT_SCOPE = new RegExp('(^|_)(' + ROLES.concat(Object.keys(ALIASES), CSR_PARTS).join('|') + ')$');
+  function mayHoldElements(name) { return ELEMENT_SCOPE.test(String(name)); }
+  function elementVars(name, children) {
+    const list = children || [];
+    if (!list.length || list.some((c) => !c || c.kind !== 'var' || !/^\[\d+\]$/.test(String(c.name)))) { return null; }
+    return list.map((c) => ({ name: String(name) + String(c.name), width: Number(c.width) || 1, item: c }));
+  }
+
   function roleOf(name) {
     if (ROLE_SET.has(name)) { return name; }
     return ALIASES[name] || null;
@@ -269,7 +282,7 @@
   function buildTable(source, columns, edges, options) {
     const opts = options || {};
     const nret = source.nret;
-    const rows = [];
+    let rows = [];
     for (let c = 0; c < nret; c++) {
       const valid = columns['valid/' + c];
       if (!valid) { continue; }
@@ -277,17 +290,33 @@
         if (!valid.xz[k] && (valid.lo[k] & 1)) { rows.push(k * MAX_NRET + c); }
       }
     }
-    const count = rows.length;
     const edgeOf = (r) => Math.floor(r / MAX_NRET);
     const chanOf = (r) => r % MAX_NRET;
     const hasOrder = source.channels.every((ch) => ch.order);
     const orderKnown = hasOrder && rows.every((r) => !columns['order/' + chanOf(r)].xz[edgeOf(r)]);
     const orderOf = (r) => { const col = columns['order/' + chanOf(r)]; const k = edgeOf(r); return col.hi ? col.hi[k] * 4294967296 + col.lo[k] : col.lo[k]; };
+    let heldRepeats = 0;
     if (orderKnown && !opts.timeOrder) {
       rows.sort((a, b) => orderOf(a) - orderOf(b) || a - b);
+      // order names one retirement (RVFI): a later row with the same order, pc and insn is valid held
+      // high over it (a core parked at its halt loop), not another commit. Another pc stays (a gap).
+      const same = (role, a, b) => {
+        const ca = columns[role + '/' + chanOf(a)], cb = columns[role + '/' + chanOf(b)];
+        if (!ca || !cb) { return true; }
+        const ka = edgeOf(a), kb = edgeOf(b);
+        return !ca.xz[ka] && !cb.xz[kb] && ca.lo[ka] === cb.lo[kb] && (ca.hi ? ca.hi[ka] : 0) === (cb.hi ? cb.hi[kb] : 0);
+      };
+      const kept = [];
+      for (const r of rows) {
+        const prev = kept[kept.length - 1];
+        if (prev !== undefined && orderOf(prev) === orderOf(r) && same('pc_rdata', prev, r) && same('insn', prev, r)) { heldRepeats++; continue; }
+        kept.push(r);
+      }
+      rows = kept;
     } else {
       rows.sort((a, b) => a - b);
     }
+    const count = rows.length;
     const table = { count, nret, xlen: source.xlen, time: new Float64Array(count), edge: new Int32Array(count), channel: new Uint8Array(count),
       cols: {}, csrs: Object.keys(source.csrs || {}), sortedBy: orderKnown && !opts.timeOrder ? 'order' : 'time', source };
     rows.forEach((r, i) => { table.edge[i] = edgeOf(r); table.time[i] = edges[edgeOf(r)]; table.channel[i] = chanOf(r); });
@@ -309,6 +338,7 @@
       table.cols[role] = col;
     }
     table.diagnostics = diagnose(table);
+    table.diagnostics.heldRepeats = heldRepeats;
     return table;
   }
 
@@ -1068,7 +1098,7 @@
   }
 
   root.cmuxMachineCore = Object.freeze({
-    ROLES, ABI, CHECKPOINT, memClass, detect, manualSource, mapping, sample, parseBits, sliceBits, buildTable, diagnose, StateIndex,
+    ROLES, ABI, CHECKPOINT, memClass, mayHoldElements, elementVars, detect, manualSource, mapping, sample, parseBits, sliceBits, buildTable, diagnose, StateIndex,
     regNumber, hex, signedOf, gdb, isGdb, gdbExpr, formatScalar, memoryLines, big, num,
   });
 })(typeof window !== 'undefined' ? window : globalThis);
