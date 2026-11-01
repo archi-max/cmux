@@ -81,6 +81,16 @@
     ok(f(d(W['beq a0,a1,pc+8'])) === [C.BRANCH, null, 10, 11, 8].join(','), 'decode beq: ' + f(d(W['beq a0,a1,pc+8'])));
     ok(f(d(W['jal ra,pc+16'])) === [C.JUMP, 1, null, null, 16].join(','), 'decode jal: ' + f(d(W['jal ra,pc+16'])));
     ok(f(d(W['lw a0,4(a1)'])) === [C.LOAD, 10, 11, null, 4].join(',') && d(W['lw a0,4(a1)']).compressed, 'decode c.lw a0,4(a1): ' + f(d(W['lw a0,4(a1)'])));
+    // The link register is written out (jal ra,X), as text atoms and the machine pane show it, for
+    // jal/jalr and RVC c.jal/c.jalr, whose ra is implicit (objdump prints jal X).
+    const has = (w, t) => d(w).texts.includes(t);
+    ok(has(0x2001, 'jal ra pc+0') && has(0x2001, 'jal x1 pc+0') && has(0x9082, 'jalr ra ra') && has(0x000080e7, 'jalr ra ra') && has(0x008000ef, 'jal ra pc+8'),
+      'jal/jalr texts name ra, RVC included: ' + JSON.stringify([d(0x2001).texts, d(0x9082).texts]));
+    const M = root.cmuxMachineCore;
+    ok(M.withLink('jal 0x80000010') === 'jal ra,0x80000010' && M.withLink('jalr a5') === 'jalr ra,a5' && M.withLink('jalr 8(a5)') === 'jalr ra,8(a5)'
+      && M.withLink('jal x1,0x10') === 'jal x1,0x10' && M.withLink('j 0x10') === 'j 0x10' && M.withLink('jal 0x10', 'x1') === 'jal x1,0x10'
+      && M.withLink('c.jal pc+0') === 'c.jal pc+0' && M.withLink(null) === null,
+      'withLink writes the implicit ra of aliased jal/jalr only: ' + [M.withLink('jal 0x80000010'), M.withLink('jalr 8(a5)')].join(' | '));
     ok(d(W['csrw mtvec,a0']).cls === C.CSR && d(W['csrw mtvec,a0']).csr === 0x305 && d(W.mret).cls === C.SYSTEM, 'decode csrw mtvec and mret');
 
     // Parse errors.
