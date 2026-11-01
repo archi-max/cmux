@@ -53,6 +53,16 @@
     return list.map((c) => ({ name: String(name) + String(c.name), width: Number(c.width) || 1, item: c }));
   }
 
+  // objdump's aliases leave the link register out of a call: jal X and jalr X (and RVC c.jal, c.jalr,
+  // printed as the same) write ra. The machine state writes it out, jal ra,X, so the text reads as
+  // the write it is and a text search for "jal ra" finds every call. j/jr (rd = x0) and forms that
+  // already name rd stay as they are.
+  function withLink(text, ra) {
+    if (text === null || text === undefined) { return text; }
+    const m = /^(jalr?) ([^,\s]+)$/.exec(String(text));
+    return m ? m[1] + ' ' + (ra || 'ra') + ',' + m[2] : String(text);
+  }
+
   function roleOf(name) {
     if (ROLE_SET.has(name)) { return name; }
     return ALIASES[name] || null;
@@ -1098,7 +1108,7 @@
   }
 
   root.cmuxMachineCore = Object.freeze({
-    ROLES, ABI, CHECKPOINT, memClass, mayHoldElements, elementVars, detect, manualSource, mapping, sample, parseBits, sliceBits, buildTable, diagnose, StateIndex,
+    ROLES, ABI, CHECKPOINT, memClass, withLink, mayHoldElements, elementVars, detect, manualSource, mapping, sample, parseBits, sliceBits, buildTable, diagnose, StateIndex,
     regNumber, hex, signedOf, gdb, isGdb, gdbExpr, formatScalar, memoryLines, big, num,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

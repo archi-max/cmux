@@ -21,7 +21,7 @@
   const S = () => waveform.strings || {};
   const disasm = (word, pc) => {
     const d = window.cmuxRiscvDisasm;
-    try { return d ? d.disassembleRiscv(word >>> 0, pc === undefined || pc === null ? {} : { pc: Number(pc) }) : null; } catch (error) { return null; }
+    try { return d ? C.withLink(d.disassembleRiscv(word >>> 0, pc === undefined || pc === null ? {} : { pc: Number(pc) })) : null; } catch (error) { return null; }
   };
 
   // A role may hold this many changes; all roles together this many (FSDB v1's budget, §2).

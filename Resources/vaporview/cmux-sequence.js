@@ -25,6 +25,7 @@
 
   const X = () => root.cmuxExpr;
   const D = () => root.cmuxRiscvDisasm;
+  const link = (text, ra) => (root.cmuxMachineCore && text ? root.cmuxMachineCore.withLink(text, ra) : text);
   const CLASSES = ['LOAD', 'STORE', 'BRANCH', 'JUMP', 'ALU', 'ALUI', 'MUL', 'DIV', 'CSR', 'SYSTEM', 'FENCE', 'AMO', 'OTHER'];
   const CLASS_CODE = Object.fromEntries(CLASSES.map((c, i) => [c, i + 1]));
   const CLASS_WORDS = Object.fromEntries(CLASSES.map((c) => [c.toLowerCase(), CLASS_CODE[c]]));
@@ -72,7 +73,8 @@
     const out = { mnemonic: abi ? abi.split(' ')[0] : null, cls: CLASS_CODE.OTHER, compressed, size: compressed ? 2 : 4,
       rd: null, rs1: null, rs2: null, imm: null, csr: null,
       // With and without the pseudo-instructions (jal pc+16 is jal ra,pc+16), ABI and x-number names.
-      texts: Array.from(new Set([abi, num, dis ? dis.disassembleRiscv(key, { aliases: false }) : null, raw].filter(Boolean).map(normalize))) };
+      // and with a call's implicit ra written out (c.jal pc+16 is jal ra,pc+16 too).
+      texts: Array.from(new Set([abi, num, link(abi, 'ra'), link(num, 'x1'), dis ? dis.disassembleRiscv(key, { aliases: false }) : null, raw].filter(Boolean).map(normalize))) };
     const rawName = raw ? raw.split(' ')[0].replace(/^c\./, '') : '';
     if (/^(lr|sc|amo)/.test(rawName)) { out.cls = CLASS_CODE.AMO; } else if (MNEMONIC_CLASS.has(rawName)) { out.cls = MNEMONIC_CLASS.get(rawName); }
     if (!compressed) {
