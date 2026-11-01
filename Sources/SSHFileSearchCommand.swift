@@ -59,9 +59,10 @@ struct SSHFileSearchCommand: Equatable, Sendable {
     /// would: a gitignored virtualenv must not fill the result cap), run
     /// from the root with the same hardening as ``fileList`` and with user
     /// config that would change its output (color, full names, columns)
-    /// turned off. A root that is itself ignored, or that holds a submodule or
-    /// a nested repository (which git grep treats as one opaque entry), is
-    /// searched with grep instead. Elsewhere GNU/BSD `grep -rnIF --null`, which skips binary
+    /// turned off. A root that is itself ignored (even one holding tracked
+    /// files, which rg searches when given that folder but git grep skips), or
+    /// that holds a submodule or a nested repository (which git grep treats as
+    /// one opaque entry), is searched with grep instead. Elsewhere GNU/BSD `grep -rnIF --null`, which skips binary
     /// files and separates the path with a NUL so colons in names stay
     /// unambiguous.
     /// - Parameters:
@@ -88,6 +89,9 @@ struct SSHFileSearchCommand: Equatable, Sendable {
             SSHRemoteShellScript.assign("q", query),
             SSHRemoteShellScript.assign("r", rootPath),
             SSHRemoteShellScript.assign("x", "!"),
+            // tr's NUL and newline escapes: the script itself never holds a backslash.
+            SSHRemoteShellScript.assign("z", "\\000"),
+            SSHRemoteShellScript.assign("l", "\\n"),
             "[ -d \"$r\" ] || exit \(missingRootStatus)",
             SSHRemoteShellScript.timeoutPrefix(seconds: remoteTimeoutSeconds),
             "g=\"git -c core.fsmonitor= -c core.untrackedCache=false\"",
@@ -98,10 +102,14 @@ struct SSHFileSearchCommand: Equatable, Sendable {
                 + "elif command -v git >/dev/null 2>&1 && cd -- \"$r\" 2>/dev/null && \(insideWorkTree) "
                 // An ignored root, or a submodule or nested repository below it:
                 // git grep wouldn't look inside them, so grep searches.
-                + "&& [ -z \"$($g check-ignore . 2>/dev/null)\" ] "
+                // --no-index: a root .gitignore lists still counts as ignored when
+                // it holds tracked files, which git grep --exclude-standard skips too.
+                + "&& [ -z \"$($g check-ignore --no-index . 2>/dev/null)\" ] "
                 + "&& [ -z \"$(nice -n 10 $g ls-files -s -- . 2>/dev/null | grep ^160000 | head -n 1)\" ] "
-                + "&& [ -z \"$(nice -n 10 $g -c core.quotePath=false ls-files -o --exclude-standard -- . 2>/dev/null "
-                + "| grep /$ | head -n 1)\" ]; then \(marker(gitGrepMarker)); "
+                // -z: git quotes names with a quote, a backslash or a control characters otherwise,
+                // so a nested repository's line would not end in /.
+                + "&& [ -z \"$(nice -n 10 $g ls-files -z -o --exclude-standard -- . 2>/dev/null "
+                + "| tr \"$z\" \"$l\" | grep /$ | head -n 1)\" ]; then \(marker(gitGrepMarker)); "
                 + "$w nice -n 10 $g -c color.grep=false -c grep.fullName=false -c grep.column=false "
                 + "grep -nIF -z --untracked --exclude-standard\(caseFlag) -e \"$q\" -- . \(excludePathspecs); "
                 + "else \(marker(grepMarker)); "
