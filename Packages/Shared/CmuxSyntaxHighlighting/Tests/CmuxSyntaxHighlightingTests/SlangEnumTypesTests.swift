@@ -286,4 +286,58 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             #expect(try await session.slangEnumSignals(inScope: "top.qb", cache: SlangEnumTypeCache())["q"]?.type == qa["q"]?.type)
         }
     }
+
+    // MARK: Tables for the viewer, and when to read types again
+
+    @Test func aTablesIdAndLabelDependOnlyOnTheType() {
+        // The same in every process and in any order of asking: a restored row's `alias:<label>`
+        // must name the same type after a relaunch.
+        let narrow = Self.state
+        let wide = SlangEnumType(name: "fsm.state_t", width: 4, members: narrow.members.map { .init(name: $0.name, bits: "0" + $0.bits) })
+        #expect(SlangEnumValues.tableLabel(narrow) == "fsm.state_t [3]")
+        #expect(SlangEnumValues.tableLabel(wide) == "fsm.state_t [4]")
+        #expect(SlangEnumValues.tableId(narrow) == SlangEnumValues.tableId(narrow))
+        #expect(SlangEnumValues.tableId(narrow) != SlangEnumValues.tableId(wide))
+        // A fixed hash (FNV-1a), not Swift's per-process seeded Hasher.
+        #expect(SlangEnumValues.tableId(narrow) == "fsm.state_t|3|\(SlangEnumValues.stableHash(narrow.members))")
+        #expect(SlangEnumValues.stableHash([.init(name: "A", bits: "0")]) == SlangEnumValues.stableHash([.init(name: "A", bits: "0")]))
+        #expect(SlangEnumValues.stableHash([.init(name: "A", bits: "0")]) != SlangEnumValues.stableHash([.init(name: "A", bits: "1")]))
+        #expect(SlangEnumValues.stableHash([]) == "cbf29ce484222325")
+        // Anonymous enums of one spelling can differ in values: their label carries the hash.
+        let a = SlangEnumType(name: "enum{A,B}", width: 2, members: [.init(name: "A", bits: "00"), .init(name: "B", bits: "01")])
+        let b = SlangEnumType(name: "enum{A,B}", width: 2, members: [.init(name: "A", bits: "01"), .init(name: "B", bits: "10")])
+        #expect(SlangEnumValues.tableLabel(a) != SlangEnumValues.tableLabel(b))
+        #expect(SlangEnumValues.tableLabel(a).hasPrefix("enum{A,B} [2] "))
+    }
+
+    @Test func onlyEditsThatCanChangeATypeReadTypesAgain() {
+        let names: Set<String> = ["state_t", "op_t"]
+        let may = { (line: String) in SlangEnumValues.editMayChangeEnumTypes(lines: line, typeNames: names) }
+        #expect(!may("  assign busy = state != IDLE;"))
+        #expect(!may("      FETCH: next_state = DECODE;"))
+        #expect(!may("  always_ff @(posedge clk) begin"))
+        #expect(!may("  // a comment"))
+        #expect(may("  typedef enum logic [2:0] { S0, S1 } t;"))
+        #expect(may("  enum { RED, GREEN } color;"))
+        #expect(may("  parameter int W = 3"))
+        #expect(may("  localparam logic [2:0] K = 3'd6;"))
+        #expect(may("  import cpu_pkg::*;"))
+        #expect(may("`define W 4"))
+        #expect(may("  pm #(.B(4)) u4 ();"))
+        #expect(may("    .B(5),"))
+        #expect(may("  pm u5 ();"))
+        #expect(may("  state_t s2;"))
+        #expect(may("  cpu_pkg::op_t q;"))
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
+    func aScopeReadHoversAtMostItsBudgetOfMembers() async throws {
+        try await Self.withServer { session, cache in
+            // state_t has 5 members: with a budget of 3 it is left out, a 2-member type fits.
+            let signals = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache, maxMemberHovers: 3)
+            #expect(signals["state"] == nil)
+            #expect(signals["pp"]?.type.members.map(\.bits) == ["110", "111"])
+            #expect(signals["color"] != nil)
+        }
+    }
 }
