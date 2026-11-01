@@ -1,0 +1,149 @@
+$date
+	Sun Nov  1 01:03:16 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ns
+$end
+$scope module tb_b $end
+$var wire 8 ! rdata [7:0] $end
+$var reg 1 " clk $end
+$var reg 2 # mode [1:0] $end
+$var reg 2 $ raddr [1:0] $end
+$var reg 1 % rst_n $end
+$var reg 2 & waddr [1:0] $end
+$var reg 8 ' wdata [7:0] $end
+$var reg 1 ( we $end
+$scope module dut $end
+$var wire 1 " clk $end
+$var wire 2 ) mode [1:0] $end
+$var wire 2 * raddr [1:0] $end
+$var wire 1 % rst_n $end
+$var wire 2 + waddr [1:0] $end
+$var wire 8 , wdata [7:0] $end
+$var wire 1 ( we $end
+$var reg 2 - mode_q [1:0] $end
+$var reg 2 . raddr_q [1:0] $end
+$var reg 8 / rdata [7:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+bx /
+bx .
+bx -
+b0 ,
+b0 +
+b0 *
+b0 )
+0(
+b0 '
+b0 &
+0%
+b0 $
+b0 #
+0"
+bx !
+$end
+#5
+b0 -
+b0 .
+1"
+#10
+0"
+#15
+1"
+#20
+0"
+#22
+1%
+#25
+1"
+#30
+0"
+b10001 '
+b10001 ,
+1(
+#35
+b10001 !
+b10001 /
+1"
+#40
+0"
+b100010 '
+b100010 ,
+b1 &
+b1 +
+#45
+1"
+#50
+0"
+bx $
+bx *
+0(
+#55
+bx !
+bx /
+bx .
+1"
+#60
+0"
+#65
+1"
+#70
+0"
+b11 $
+b11 *
+#75
+b11 .
+1"
+#80
+0"
+#85
+1"
+#90
+0"
+b11 #
+b11 )
+b1 $
+b1 *
+#95
+b11 -
+b1 .
+1"
+#100
+0"
+#105
+1"
+#110
+0"
+bx #
+bx )
+#115
+bx -
+1"
+#120
+0"
+#125
+1"
+#130
+0"
+b1 #
+b1 )
+#135
+b11011101 !
+b11011101 /
+b1 -
+1"
+#140
+0"
+#145
+1"
+#150
+0"

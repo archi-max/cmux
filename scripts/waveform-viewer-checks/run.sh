@@ -31,6 +31,8 @@
 #   ./run.sh fsdb-locals                 FSDB inline values of pinned signals
 #   ./run.sh breakpoints                 debugger breakpoints: continue, reverse, landing, play stops, list
 #   ./run.sh line-breakpoints            line breakpoints: F9, gutter, edits, instances, session
+#   ./run.sh trace                       driver tracing's engine (cmux-trace.js): active drivers on the
+#                                        trace fixtures' models and VCS/Icarus dumps, and the replay oracle
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
@@ -85,6 +87,10 @@ case "${1:-}" in
   expr)
     swiftc -swift-version 6 -O "$HERE/expr/main.swift" -o "$OUT/expr"
     "$OUT/expr" "$ASSETS/cmux-expr.js" "$HERE/expr/cases.js" "$HERE/expr/fuzz-regressions.js"
+    ;;
+  trace)
+    swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
+    "$OUT/trace" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-trace.js" "$HERE/trace"
     ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
