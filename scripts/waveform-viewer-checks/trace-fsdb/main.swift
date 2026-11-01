@@ -8,7 +8,7 @@
 // `verdi -nogui` session found through the KDB next to the FSDB), answers the page's engine
 // requests from it, and counts how the two engines' answers compare. TRACE_FSDB_UNDRIVEN=a,b names
 // signals the design leaves undriven (no driver is the right answer for them). TRACE_FSDB_PROFILE=1 prints
-// each step's whole-signal reads (count, signals, changes, summed time, most at once).
+// each step's whole-signal reads (count, signals, how many were read before, changes, summed time, most at once).
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
@@ -189,16 +189,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         _ = await call("""
           const b = cmuxWaveform.host.currentBackend;
           if (!b.__prof) {
-            const p = b.__prof = { calls: 0, signals: 0, changes: 0, ms: 0, most: 0, now: 0 };
+            const p = b.__prof = { calls: 0, signals: 0, changes: 0, ms: 0, most: 0, now: 0, again: 0, againChanges: 0, seen: new Set() };
             window.__traceProf = p;
             const own = b.changes.bind(b);
             b.changes = async (vars, max) => {
               const t = performance.now(); p.calls++; p.signals += vars.length; p.now++; p.most = Math.max(p.most, p.now);
-              try { const r = await own(vars, max); for (const c of r) { p.changes += c ? c.length : 0; } return r; }
+              try {
+                const r = await own(vars, max);
+                r.forEach((c, k) => {
+                  p.changes += c ? c.length : 0;
+                  if (p.seen.has(vars[k].signalId)) { p.again++; p.againChanges += c ? c.length : 0; } else { p.seen.add(vars[k].signalId); }
+                });
+                return r;
+              }
               finally { p.now--; p.ms += performance.now() - t; }
             };
           }
-          Object.assign(window.__traceProf, { calls: 0, signals: 0, changes: 0, ms: 0, most: 0 });
+          Object.assign(window.__traceProf, { calls: 0, signals: 0, changes: 0, ms: 0, most: 0, again: 0, againChanges: 0 });
           return null
           """)
       }
@@ -225,9 +232,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           print("[verdi differs] \(path) @\(t): cmux \((ours?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(ours?["line"] ?? "") verdi \((theirs?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(theirs?["line"] ?? "") since \(step["since"] ?? "")")
         }
       }
-      if profile, let p = await call("return window.__traceProf || null") as? [String: Any] {
-        print(String(format: "[profile] %@: %d reads, %d signals, %d changes, %.0f ms in reads (summed), at most %d at once",
-                     path, p["calls"] as? Int ?? 0, p["signals"] as? Int ?? 0, p["changes"] as? Int ?? 0, p["ms"] as? Double ?? 0, p["most"] as? Int ?? 0))
+      if profile, let p = await call("const p = window.__traceProf; return p ? { calls: p.calls, signals: p.signals, changes: p.changes, ms: p.ms, most: p.most, again: p.again, againChanges: p.againChanges } : null") as? [String: Any] {
+        print(String(format: "[profile] %@: %d reads, %d signals (%d read before, %d changes), %d changes, %.0f ms in reads (summed), at most %d at once",
+                     path, p["calls"] as? Int ?? 0, p["signals"] as? Int ?? 0, p["again"] as? Int ?? 0, p["againChanges"] as? Int ?? 0,
+                     p["changes"] as? Int ?? 0, p["ms"] as? Double ?? 0, p["most"] as? Int ?? 0))
       }
       if times.count <= 12 || ms > 2000 {
         let src = ((step["stmt"] as? [String: Any])?["src"] as? String ?? "").prefix(70)
