@@ -384,6 +384,8 @@ struct FilePreviewEditorTypingStabilityTests {
             "", "a", "a\n", "\n\n", "a\nb", "a\r\nb\r\n", "a\rb\r", "a\r\n\r\nb",
             "a\u{2028}b\u{2029}c\u{0085}d", "x\r", "\r\n",
             String(repeating: "line\r\n", count: 5000) + "tail",
+            // A CR LF split across the scanner's 16K-character chunk boundary.
+            String(repeating: "a", count: 16383) + "\r\nb",
         ]
         for sample in samples {
             let text = sample as NSString
@@ -398,11 +400,21 @@ struct FilePreviewEditorTypingStabilityTests {
             let lineStarts = text.length > 0 && starts.last == text.length && !Self.endsWithLineBreak(text)
                 ? Array(starts.dropLast()) : starts
             // Expected line of every index: the line starts at or before it.
-            for index in 0...text.length {
+            // Long samples: the first indices, both sides of the first and last
+            // line starts, and the end.
+            var indexSet = Set<Int>(0...min(text.length, 200))
+            indexSet.insert(text.length)
+            let boundaryStarts: [Int] = Array(lineStarts.prefix(50)) + Array(lineStarts.suffix(50))
+            for lineStart in boundaryStarts {
+                for index in (lineStart - 2)...(lineStart + 1) where index >= 0 && index <= text.length {
+                    indexSet.insert(index)
+                }
+            }
+            let indices = indexSet.sorted()
+            for index in indices {
                 let expected = lineStarts.dropFirst().filter { $0 <= index }.count
                 #expect(FilePreviewViewportAnchor.lineNumber(at: index, in: text) == expected,
                         "lineNumber(\(index)) in \(sample.debugDescription.prefix(40))")
-                if text.length > 200 { break }
             }
             // The start of every line, and past the last line its start.
             for line in 0..<(lineStarts.count + 2) {
