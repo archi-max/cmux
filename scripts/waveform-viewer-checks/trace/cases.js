@@ -15,6 +15,8 @@ const TRACE_DUMPS = {
   b: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   c: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   e: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
+  // Icarus 12 has no interface ports.
+  f: ['plain', 'flowctrl', 'tmerge', 'course'],
 };
 
 const XX = 'xxxxxxxx';
@@ -94,6 +96,17 @@ const TRACE_CASES = [
   { d: 'e', sig: 'tb_e.dut.xf', t: 80, kind: 'proc', act: 75, value: '01x1xxx0', dec: [['!rst_n', 'else'], ['sel', 'merge']], reasons: ['xprop'], dumps: ['tmerge', 'course'] },
   // Branches that agree: the merge is the common value.
   { d: 'e', sig: 'tb_e.dut.xc', t: 60, kind: 'proc', value: '01010110', trust: 'exact' },
+
+  // ---- F: interface signals written by other instances through modport ports ----
+  // The memory model's comb read of a never-written element (its memory isn't in the VCD).
+  { d: 'f', sig: 'tb_f.bus.rdata', t: 60, kind: 'proc', proc: 'AlwaysComb', writer: 'tb_f.u_mem', file: 'f_bus.sv', line: 23,
+    stmt: 'bus.rdata = store[bus.addr[1:0]];', value: XX, dec: [['bus.req', 'then']], fanin: { 'tb_f.bus.req': '1', 'tb_f.bus.addr': '00000011' } },
+  { d: 'f', sig: 'tb_f.bus.rdata', t: 20, kind: 'proc', writer: 'tb_f.u_mem', line: 24, stmt: "bus.rdata = 8'h00;", value: '00000000', dec: [['bus.req', 'else']], trust: 'exact' },
+  { d: 'f', sig: 'tb_f.bus.resp', t: 40, kind: 'proc', proc: 'AlwaysFF', writer: 'tb_f.u_mem', line: 28, stmt: 'bus.resp <= bus.req;', act: 35, sample: 34, value: '1', trust: 'exact' },
+  { d: 'f', sig: 'tb_f.bus.addr', t: 55, kind: 'assign', writer: 'tb_f.dut', line: 32, stmt: 'bus.addr = a', value: '00000011', fanin: { 'tb_f.dut.a': '00000011' }, trust: 'exact' },
+  { d: 'f', sig: 'tb_f.bus.req', t: 30, kind: 'proc', writer: 'tb_f.dut', line: 38, stmt: "bus.req <= 1'b1;", act: 25, value: '1', dec: [['!rst_n', 'else']], trust: 'exact' },
+  // The reader's side: the dut's flop takes the interface's x.
+  { d: 'f', sig: 'tb_f.dut.q', t: 60, kind: 'proc', proc: 'AlwaysFF', line: 39, stmt: 'q <= bus.rdata;', act: 55, value: XX, fanin: { 'tb_f.bus.rdata': XX } },
 ];
 
 function runTraceChecks() {
@@ -116,6 +129,8 @@ function runTraceChecks() {
     const vcd = traceVcd(traceFiles.dumps[`${d}.${variant}`]);
     const models = {
       instance: async (p) => all.instances[p],
+      // What cmux-sv-model's `writers` answers: the instances that write into `p` from outside it.
+      writers: async (p) => Object.keys(all.instances).filter((k) => k !== p && JSON.stringify(all.instances[k]).includes('"name":"$abs:' + p + '.')),
       lookup: async (p) => {
         let best = null;
         for (const k of Object.keys(all.instances)) { if ((p === k || p.startsWith(k + '.')) && (!best || k.length > best.length)) { best = k; } }
@@ -133,6 +148,7 @@ function runTraceChecks() {
     if (step.error) { bad.push('error ' + step.error); return bad; }
     const kind = step.driver && step.driver.kind;
     if (c.kind) { want('kind', kind, c.kind); }
+    if (c.writer) { want('writer', step.driver && step.driver.writer, c.writer); }
     if (c.proc) { want('proc', step.procKind || (step.driver && step.driver.procKind), c.proc); }
     if (c.file) { want('file', base(step.stmt && step.stmt.loc && step.stmt.loc.file), c.file); }
     if (c.line) { want('line', step.stmt && step.stmt.loc && step.stmt.loc.line, c.line); }
@@ -198,6 +214,7 @@ function runTraceChecks() {
             for (const [t] of s.changes) {
               const step = await engine.active(p, t);
               tally.steps++;
+              if (step.driver && step.driver.kind === 'none') { tally.noDriver = (tally.noDriver || 0) + 1; if (tally.noDriver <= 3) { out.push(`ORACLE ${d}.${variant} ${p} @${t}: no driver`); } }
               tally[step.trust] = (tally[step.trust] || 0) + 1;
               // Inconsistent with no reason the engine can name: a modelling bug.
               if (step.trust === 'inconsistent' && (step.reasons || []).some((r) => r.code === 'mismatch')) {
@@ -212,6 +229,7 @@ function runTraceChecks() {
         results.oracle[`${d}.${variant}`] = tally;
         const expectClean = variant === 'plain' || variant === 'icarus' || variant === 'flowctrl';
         const line = `${d}.${variant}: ${tally.steps} steps, exact ${tally.exact}, computed ${tally.computed}, approximate ${tally.approximate}, inconsistent ${tally.inconsistent}, unexplained ${tally.unexplained}`;
+        if (tally.noDriver) { results.failures++; out.push(`FAIL oracle ${d}.${variant}: ${tally.noDriver} steps found no driver`); }
         if (expectClean && tally.unexplained) { results.failures++; out.push('FAIL oracle ' + line); } else { out.push('oracle ' + line); }
       }
     }
