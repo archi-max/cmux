@@ -108,9 +108,17 @@
     return at;
   }
 
-  async function changesOf(v) {
+  // One read per signal: a read already under way is shared (a step asks for its leaves together).
+  function changesOf(v) {
     const s = session;
-    if (s.changes.has(v.netlistId)) { return s.changes.get(v.netlistId); }
+    if (s.changes.has(v.netlistId)) { return Promise.resolve(s.changes.get(v.netlistId)); }
+    if (!s.reading) { s.reading = new Map(); }
+    if (s.reading.has(v.netlistId)) { return s.reading.get(v.netlistId); }
+    const read = readChanges(s, v).finally(() => { s.reading.delete(v.netlistId); });
+    s.reading.set(v.netlistId, read);
+    return read;
+  }
+  async function readChanges(s, v) {
     const changes = await host.signalChanges(v, MAX_CHANGES);
     const out = Array.isArray(changes) ? changes : null;
     s.changes.set(v.netlistId, out);
@@ -139,16 +147,16 @@
   };
   const dump = {
     async values(paths, time) {
-      const vars = new Map();
-      for (const p of paths) { vars.set(p, await varOf(p)); }
+      // Every leaf at once: a whole-signal helper reads them in parallel (its workers), not one by one.
+      const unique = [...new Set(paths)];
+      const vars = new Map(await Promise.all(unique.map(async (p) => [p, await varOf(p)])));
       const list = [...new Set([...vars.values()].filter(Boolean))];
       let raw = new Map();
       if (session.kind !== 'whole') {
         try { raw = (await host.rawValuesAt(time, list)) || new Map(); } catch (error) { host.log(error); }
       }
-      const out = new Map();
-      for (const [p, v] of vars) {
-        if (!v) { out.set(p, undefined); continue; }
+      const read = await Promise.all([...vars].map(async ([p, v]) => {
+        if (!v) { return [p, undefined]; }
         const width = Number(v.width) || 1;
         let bits = raw.get(v.netlistId);
         if (bits === undefined || bits === null) {
@@ -156,9 +164,9 @@
           const i = changes ? indexAt(changes, time) : -1;
           bits = i >= 0 ? changes[i][1] : (changes ? 'x'.repeat(width) : undefined);
         }
-        out.set(p, bits === undefined || bits === null ? undefined : bitsOf(bits, width).toLowerCase());
-      }
-      return out;
+        return [p, bits === undefined || bits === null ? undefined : bitsOf(bits, width).toLowerCase()];
+      }));
+      return new Map(read);
     },
     async lastChange(p, time) {
       const v = await varOf(p);
@@ -244,6 +252,9 @@
     const s = S();
     const run = ++running;
     showBusy(format(s.traceRunning, designPath, number(time)));
+    // Verdi (when this dump may have it) is asked while our engine runs, not after it.
+    const dumpPath = toDump(designPath);
+    const verdi = session.kind === 'local' ? null : askVerdi(dumpPath, time);
     let step;
     try {
       step = await session.engine.active(designPath, time);
@@ -253,8 +264,8 @@
       return null;
     }
     if (run !== running) { return null; }
-    step.dumpPath = toDump(designPath);
-    try { step = await withVerdi(step, time); } catch (error) { host.log(error); }
+    step.dumpPath = dumpPath;
+    try { step = await withVerdi(step, time, verdi); } catch (error) { host.log(error); }
     if (run !== running) { return null; }
     if (push) { history.steps.push(step); history.at = history.steps.length - 1; }
     render();
@@ -271,13 +282,17 @@
   const VERDI_WAIT_MS = 20000;
   const sameFile = (a, b) => !!a && !!b && (a === b || String(a).split('/').pop() === String(b).split('/').pop());
   const isPort = (st) => !!st.driver && (st.driver.kind === 'portIn' || st.driver.kind === 'portOut');
-  async function withVerdi(step, time) {
+  // Verdi's answer, or null after VERDI_WAIT_MS (counted from the ask).
+  function askVerdi(signal, time) {
+    return Promise.race([request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; }),
+      new Promise((resolve) => { setTimeout(() => resolve(null), VERDI_WAIT_MS); })]);
+  }
+  async function withVerdi(step, time, asked) {
     step.engine = { name: 'cmux' };
     if (session.kind === 'local' || step.error) { return step; }
     let v = null;
     try {
-      v = await Promise.race([request('engine', { cmd: 'active', signal: step.dumpPath, time }),
-        new Promise((resolve) => { setTimeout(() => resolve(null), VERDI_WAIT_MS); })]);
+      v = await (asked || askVerdi(step.dumpPath, time));
     } catch (error) { host.log(error); }
     const state = (v && v.state) || 'none';
     step.engine.verdi = state;
