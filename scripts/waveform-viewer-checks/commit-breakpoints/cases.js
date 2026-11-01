@@ -13,6 +13,7 @@ async function runCommitCases() {
     debuggerBreakpointWritten: '%@ written', debuggerCommitsNone: '%@: no commit stream', debuggerCommitsNoInsn: '%@: no instruction word',
     debuggerCommitError: 'Breakpoint %1$@: %2$@', debuggerCommitBadAddress: 'bad address', debuggerCommitBadLocation: 'bad location',
     debuggerTextError: 'Text breakpoint %1$@: %2$@', debuggerTextNoPattern: 'empty',
+    debuggerCommitAddressTooLarge: 'too large', debuggerCommitTextJalHint: '%@: hint',
   });
 
   // k: time, pc (NaN: x), insn, channel. Two commits share the cycle at 20 (channels 0 and 1).
@@ -55,6 +56,14 @@ async function runCommitCases() {
   eq('address: 0x alone', C.parseAddress('0x'), null);
   eq('address: 17 digits', C.parseAddress('1' + '0'.repeat(16)), null);
   eq('address 64-bit', C.parseAddress('ffffffff80000000'), '0xffffffff80000000');
+  // The commit index keeps PCs as doubles, exact below 2^53: an address from there up is refused (it would
+  // hit every PC of its 2 KiB bucket), not searched.
+  eq('check pc: 2^53 - 1 is exact', C.check('pc', C.fields('pc', { pc: '1fffffffffffff' })), null);
+  eq('check pc: 2^53 is too large', C.check('pc', C.fields('pc', { pc: '20000000000000' })), 'addressTooLarge');
+  eq('check pc: RV64 high half', C.check('pc', C.fields('pc', { pcs: ['0x80000000', 'ffffffff80000000'] })), 'addressTooLarge');
+  eq('check write: memory ending past 2^53', C.check('write', C.fields('write', { loc: 'mem:0x1ffffffffffffe/4' })), 'addressTooLarge');
+  eq('check write: memory below 2^53', C.check('write', C.fields('write', { loc: 'mem:0x1ffffffffffff0/4' })), null);
+  eq('too large: said', C.errorText('addressTooLarge'), 'too large');
   eq('location a0', C.parseLocation('a0'), 'a0');
   eq('location X5', C.parseLocation('X5'), 'x5');
   eq('location $sp', C.parseLocation('$sp'), 'sp');
@@ -124,6 +133,10 @@ async function runCommitCases() {
   await hits(jal);
   eq('kAt for text in the shared cycle', C.kAt(jal, 20), 2);
 
+  warnings.length = 0;
+  eq('pc above 2^53: no search', await hits(bp('pc', { pc: 'ffffffff80000004' })), null);
+  eq('pc above 2^53: said', warnings, ['Breakpoint PC 0xffffffff80000004: too large']);
+
   // ---- writes ----
   eq('write a0', await hits(bp('write', { loc: 'a0' })), [20, 30, 60]);
   eq('write asks for a0', writeQueries.slice(-1), ['a0']);
@@ -188,6 +201,15 @@ async function runCommitCases() {
   waveform.commits = { index: async () => { throw new Error('broken'); } };
   eq('an index that throws: none', await hits(bp('write', { loc: 'a0' })), null);
   waveform.commits = api;
+
+  // ---- a PC from 2^53 up is not given to the listings (its double is rounded): no arrow, not sampled ----
+  ix = makeIndex([[10, 0x80000000, 0x13, 0], [20, Number(0xffffffff80000004n), 0x13, 0], [30, 0x80000008, 0x13, 0]]);
+  waveform.commits.current = () => ix;
+  eq('currentPc: an exact PC', C.currentPc(10), '0x80000000');
+  eq('currentPc: none from 2^53 up', C.currentPc(20), null);
+  eq('sample: PCs from 2^53 up left out', (await C.sample(10)).map((x) => x.pc), ['0x80000000', '0x80000008']);
+  delete waveform.commits.current;
+  ix = makeIndex(rows);
 
   // ---- a broad pattern on a long trace: the hits are collected in linear time ----
   // 300k commits over 20k distinct words, every one matching: collecting by copying the hits so far for
