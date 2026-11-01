@@ -980,6 +980,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await dbg("stop()")
     await removeAll()
 
+    // verify-bp2 R3: the page posts its signal list while it handles setLineBreakpoints, before the
+    // reply reaches cmux (line-breakpoints' stub page does the same, for the restore order).
+    let before = listEvents.count
+    _ = await dbg("setLineBreakpoints({ items: [] })")
+    expect(listEvents.count > before, "the page's list is posted before setLineBreakpoints replies: \(listEvents.count - before) before the reply")
+
     // review-bp L10: a line with no paths says why: nothing to watch, or a file too large to scan.
     _ = await dbg("""
       setLineBreakpoints({ items: [

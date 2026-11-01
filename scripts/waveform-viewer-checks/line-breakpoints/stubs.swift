@@ -5,8 +5,11 @@ import AppKit
 
 @MainActor final class FilePreviewWaveformSession {
     var calls: [(function: String, argument: [String: Any])] = []
+    /// What the page does while it handles a call, before it replies (posts to cmux, say).
+    var onCall: ((String) -> Void)?
     func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
         calls.append((function, argument as? [String: Any] ?? [:]))
+        onCall?(function)
         return nil
     }
 }

@@ -231,6 +231,7 @@ endmodule
 
     await runTrackingChecks()
     await runVerifyChecks()
+    await runVerify2Checks()
     print(failures == 0 ? "LINE BREAKPOINT CHECKS PASSED" : "LINE BREAKPOINT CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
 }
@@ -509,6 +510,139 @@ endmodule
     expect(given == [["TOP", "x"]] && LB.signals(for: again).isEmpty && LB.signals(for: unrelated).isEmpty
            && LB.watches(for: again).isEmpty && LB.watches(for: unrelated).isEmpty,
            "a cleared older-manifest list stays cleared: \(given) \(LB.signals(for: again).map(\.path)) \(LB.signals(for: unrelated).map(\.path)) \(LB.watches(for: unrelated))")
+}
+
+/// The app's editor stack: TextKit 1 (FilePreviewTextEditor), typed through insertText/insertTab/
+/// deleteBackward with a real UndoManager. AppKit widens editedRange by didProcessEditing here
+/// (attribute fixing), which raw replaceCharacters on a plain storage does not show.
+@MainActor final class UndoHost: NSObject, NSTextViewDelegate {
+    let manager = UndoManager()
+    func undoManager(for view: NSTextView) -> UndoManager? { manager }
+}
+
+// verify-bp-39828a5 R1: typing through the real path keeps the marks and costs O(edit); R3: a page
+// that reports its (empty) list while handling setLineBreakpoints does not wipe the saved one.
+@MainActor func runVerify2Checks() async {
+    typealias LB = WaveformDebuggerLineBreakpoints
+    WaveformSourceLink.waveform = nil
+    LB.isUndoing = { $0.undoManager?.isUndoing == true || $0.undoManager?.isRedoing == true }
+    let host = UndoHost()
+    host.manager.groupsByEvent = false
+    func tk1(_ text: String, workspace: UUID) -> SavingTextView {
+        let storage = NSTextStorage(), layout = NSLayoutManager()
+        layout.allowsNonContiguousLayout = true
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: 1e7, height: 1e7))
+        container.widthTracksTextView = false
+        layout.addTextContainer(container)
+        let view = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), textContainer: container)
+        view.isEditable = true
+        view.allowsUndo = true
+        view.delegate = host
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.isAutomaticSpellingCorrectionEnabled = false
+        view.smartInsertDeleteEnabled = false
+        view.string = text
+        let editor = FilePreviewLanguageFeatures(textView: view, path: "/rtl/core.sv", workspace: workspace)
+        FilePreviewLanguageFeatures.all.append(editor)
+        _ = LB.styles(in: view)
+        return view
+    }
+    func starts(_ view: NSTextView) -> [Int] { (view.string as NSString).lineStarts() }
+    func dots(_ view: NSTextView) -> [Int] { let s = starts(view); return (LB.styles(in: view) ?? [:]).keys.map { s.firstIndex(of: $0) ?? -1 }.sorted() }
+    func caret(_ view: NSTextView, _ line: Int, _ column: Int) { view.setSelectedRange(NSRange(location: starts(view)[line] + column, length: 0)) }
+    func key(_ view: NSTextView, _ action: () -> Void) { host.manager.beginUndoGrouping(); action(); host.manager.endUndoGrouping() }
+    func type(_ view: NSTextView, _ text: String) { key(view) { view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0)) } }
+    func fresh(_ lines: [Int]) -> (SavingTextView, UUID) {
+        let workspace = UUID()
+        let view = tk1(source, workspace: workspace)
+        for line in lines { _ = LB.gutterClicked(view, lineStart: starts(view)[line]) }
+        return (view, workspace)
+    }
+
+    do {
+        let (view, workspace) = fresh([4])
+        caret(view, 4, 0); type(view, " ")
+        expect(dots(view) == [4] && LB.marks[workspace]?.count == 1, "TK1: a space at column 0 of a marked line keeps it: \(dots(view))")
+        host.manager.undo()
+        expect(dots(view) == [4] && LB.marks[workspace]?.count == 1, "TK1: and its undo: \(dots(view))")
+    }
+    do {
+        let (view, workspace) = fresh([4])
+        caret(view, 4, 0); key(view) { view.insertTab(nil) }
+        expect(dots(view) == [4] && LB.marks[workspace]?.count == 1, "TK1: a Tab at column 0 keeps it: \(dots(view))")
+    }
+    do {
+        let (view, workspace) = fresh([4])
+        view.setSelectedRange(NSRange(location: starts(view)[4], length: 6)); type(view, "assign")
+        expect(dots(view) == [4] && LB.marks[workspace]?.count == 1, "TK1: select from column 0 and retype keeps it: \(dots(view))")
+    }
+    do {
+        let (view, _) = fresh([4])
+        caret(view, 3, 10); type(view, "x")
+        caret(view, 4, 0); key(view) { view.insertNewline(nil) }
+        caret(view, 5, 2); key(view) { view.deleteBackward(nil) }
+        expect(dots(view) == [5], "TK1: typing above, Enter at column 0, backspace in the indentation: \(dots(view))")
+    }
+    // The first key in a file over ~1,500 lines (AppKit widens it to the whole paragraph).
+    var mid = "module big(input logic clk);\n"
+    for i in 0..<3000 { mid += "  always_ff @(posedge clk) r\(i) <= r\(i) + 1; // filler\n" }
+    mid += "endmodule\n"
+    do {
+        let workspace = UUID()
+        let view = tk1(mid, workspace: workspace)
+        _ = LB.gutterClicked(view, lineStart: starts(view)[1500])
+        caret(view, 1500, 30); type(view, "x")
+        expect(dots(view) == [1500] && LB.marks[workspace]?.count == 1, "TK1: the first key in a 3,000-line file, on the marked line: \(dots(view))")
+    }
+    // N1 on the real path: typing on the line above a mark in a 100k-line file costs what typing
+    // with no mark does (AppKit's own cost is several ms per key here).
+    var big = "module big(input logic clk);\n"
+    for i in 0..<100_000 { big += "  always_ff @(posedge clk) r\(i) <= r\(i) + 1; // filler\n" }
+    big += "endmodule\n"
+    do {
+        let workspace = UUID()
+        let view = tk1(big, workspace: workspace)
+        func time(_ keys: Int) -> Double {
+            caret(view, 50_000, 30)
+            let started = Date()
+            for _ in 0..<keys { type(view, "x") }
+            return Date().timeIntervalSince(started) * 1000 / Double(keys)
+        }
+        _ = time(20)
+        let without = time(200)
+        _ = LB.gutterClicked(view, lineStart: starts(view)[50_001])
+        let with = time(200)
+        expect(with < without + 2 && dots(view) == [50_001],
+               "TK1: typing on the line above a mark at 100k lines: \(String(format: "%.2f", with)) ms/key, \(String(format: "%.2f", without)) without (within 2): \(dots(view))")
+    }
+    LB.isUndoing = { _ in false }
+
+    // R3: the page posts its (empty) signal list while it handles setLineBreakpoints, before the
+    // reply (a real WKWebView does: see breakpoints' ordering check). The saved list still goes back.
+    for legacy in [false, true] {
+        let workspace = UUID()
+        let manifest = legacy ? #"{"signals":[{"path":["TOP","x"],"kind":"change","enabled":true}],"watches":["x + 1"]}"#
+            : #"{"signalsByDump":{"/w/a.vcd":[{"path":["TOP","x"],"kind":"change","enabled":true}]},"watchesByDump":{"/w/a.vcd":["x + 1"]}}"#
+        LB.restore(try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: Data(manifest.utf8)), in: workspace)
+        let viewer = FilePreviewPanel(workspaceId: workspace)
+        let page = viewer.nativeViewSessions.waveform
+        page.onCall = { function in
+            if function == "setLineBreakpoints" {
+                LB.signalsReported(["items": []], waveform: viewer)
+                LB.watchesReported(["items": []], waveform: viewer)
+            }
+        }
+        LB.pageLoaded(viewer)
+        for _ in 0..<40 where !page.calls.contains(where: { $0.function == "restoreWatches" }) { try? await Task.sleep(nanoseconds: 20_000_000) }
+        let restored = (page.calls.first { $0.function == "restoreBreakpoints" }?.argument["items"] as? [[String: Any]])?.compactMap { $0["path"] as? [String] }
+        let watched = page.calls.first { $0.function == "restoreWatches" }?.argument["items"] as? [String]
+        expect(restored == [["TOP", "x"]] && watched == ["x + 1"] && LB.signals(for: viewer).map(\.path) == [["TOP", "x"]],
+               "a page that reports its empty list while loading still gets the saved one\(legacy ? " (older manifest)" : ""): \(page.calls.map(\.function)) \(String(describing: restored)) \(String(describing: watched)) kept \(LB.signals(for: viewer).map(\.path))")
+        page.onCall = nil
+    }
 }
 
 extension NSString {
