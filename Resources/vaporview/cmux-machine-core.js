@@ -934,7 +934,7 @@
 
   // ---- gdb commands (§3.6) ----
   // ctx: { index (StateIndex), k, xlen, evaluate(exprText) -> { value: BigInt|null, error } ,
-  //        disasm(word) -> text | null, pendingOf?, last: { fmt, unit } (kept between calls), history }
+  //        disasm(word, address) -> text | null, pendingOf?, last: { fmt, unit } (kept between calls), history }
   // `info registers`, `p/x …`, `x/8xw …` always; `p …` and `x …` only when the text is not a
   // SystemVerilog expression (so `x + 1` and `p` are signals).
   const GDB_RE = /^(?:(?:info|i)\s+(?:r|reg|registers|all-registers|symbol)\b|(?:p|print|output)\/\w+|x\/\w*)/;
@@ -1082,7 +1082,7 @@
           const f = ix.fetchedAt(a);
           if (f !== null) { word = f; size = (f & 3) === 3 ? 4 : 2; }
         }
-        const text = word === null ? '??' : ((ctx.disasm && ctx.disasm(size === 2 ? word & 0xffff : word >>> 0)) || '.word 0x' + (word >>> 0).toString(16));
+        const text = word === null ? '??' : ((ctx.disasm && ctx.disasm(size === 2 ? word & 0xffff : word >>> 0, a)) || '.word 0x' + (word >>> 0).toString(16));
         lines.push((pc !== null && Number(pc) === a ? '=> ' : '   ') + label(ix, a) + '\t' + text);
         a += size;
       }
