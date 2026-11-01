@@ -24,6 +24,8 @@
   };
   // Changes read per signal for edges and "since" (larger: the signal's step says so).
   const MAX_CHANGES = 2000000;
+  // Changes kept per trace session, all signals together (a whole-signal FSDB helper reads long ones).
+  const CACHED_CHANGES = 8000000;
   // Native requests that get no answer in this long fail (the sidecar may be building: minutes).
   const REQUEST_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -52,7 +54,7 @@
   // A trace session: the prefixes cmux mapped the design onto the dump with, its caches.
   let session = null;
   function newSession(designPrefix, dumpPrefix) {
-    return { designPrefix: designPrefix || '', dumpPrefix: dumpPrefix || '', backend: host.currentBackend, vars: new Map(), changes: new Map(), engine: null };
+    return { designPrefix: designPrefix || '', dumpPrefix: dumpPrefix || '', backend: host.currentBackend, vars: new Map(), changes: new Map(), edges: new Map(), kind: dumpKind(), engine: null };
   }
   const segs = (p) => (p ? String(p).split('.') : []);
   // The prefixes are whole segments; either may be empty (the dump adds or drops a wrapper scope).
@@ -76,12 +78,49 @@
   // `a.b[3].c`: segments a, b[3], c (a generate or array index stays on its segment).
   function dumpSegments(path) { return segs(path); }
 
+  // How the open dump answers history questions:
+  //  'v2'     a windowed FSDB helper (WINDOWING.md): edge queries in the helper, nothing downloaded;
+  //  'whole'  a v1 FSDB helper: whole signals, so each signal is read once (values from its changes
+  //           too, not a second read through rawValuesAt);
+  //  'local'  a file the page reads itself (VCD, FST, GHW): rawValuesAt plus changes.
+  function dumpKind() {
+    const b = host.currentBackend;
+    if (b && typeof b.windowed === 'function' && typeof b.v2 === 'function' && b.windowed()) { return 'v2'; }
+    return b && typeof b.changes === 'function' ? 'whole' : 'local';
+  }
+  let nextV2Id = 1;
+  // One v2 query through the viewer's relay: its result, or undefined when the helper failed it.
+  async function v2(req) {
+    const b = session.backend;
+    const answer = await b.v2(Object.assign({ id: 2000000000 + nextV2Id++ }, req));
+    const r = answer && answer.reply;
+    if (!r || r.error) { if (r && r.error) { host.log(new Error('trace ' + req.cmd + ': ' + r.error)); } return undefined; }
+    return r.result;
+  }
+  // The last time before `t` that `v` changed (edge 'any'), or rose/fell (1-bit), from the helper; cached.
+  async function v2Edge(v, t, kind) {
+    const s = session;
+    const key = v.netlistId + ':' + kind + ':' + t;
+    if (s.edges.has(key)) { return s.edges.get(key); }
+    const r = await v2({ cmd: 'edge', signalId: v.signalId, t, dir: -1, kind });
+    const at = r === undefined ? undefined : (r.t === null || r.t === undefined ? null : Number(r.t));
+    s.edges.set(key, at);
+    return at;
+  }
+
   async function changesOf(v) {
     const s = session;
     if (s.changes.has(v.netlistId)) { return s.changes.get(v.netlistId); }
     const changes = await host.signalChanges(v, MAX_CHANGES);
     const out = Array.isArray(changes) ? changes : null;
     s.changes.set(v.netlistId, out);
+    // Keep at most CACHED_CHANGES changes across signals: the oldest read go first.
+    s.cached = (s.cached || 0) + (out ? out.length : 0);
+    for (const [id, list] of s.changes) {
+      if (s.cached <= CACHED_CHANGES || id === v.netlistId) { break; }
+      s.changes.delete(id);
+      s.cached -= list ? list.length : 0;
+    }
     return out;
   }
   const bitsOf = (value, width) => {
@@ -104,7 +143,9 @@
       for (const p of paths) { vars.set(p, await varOf(p)); }
       const list = [...new Set([...vars.values()].filter(Boolean))];
       let raw = new Map();
-      try { raw = (await host.rawValuesAt(time, list)) || new Map(); } catch (error) { host.log(error); }
+      if (session.kind !== 'whole') {
+        try { raw = (await host.rawValuesAt(time, list)) || new Map(); } catch (error) { host.log(error); }
+      }
       const out = new Map();
       for (const [p, v] of vars) {
         if (!v) { out.set(p, undefined); continue; }
@@ -122,6 +163,11 @@
     async lastChange(p, time) {
       const v = await varOf(p);
       if (!v) { return null; }
+      if (session.kind === 'v2') {
+        // Integer times: the last change at or before `time` is the last one before time + 1.
+        const at = await v2Edge(v, Math.floor(time) + 1, 'any');
+        if (at !== undefined) { return at === null ? 0 : at; }
+      }
       const changes = await changesOf(v);
       if (!changes) { return null; }
       const i = indexAt(changes, time);
@@ -130,9 +176,15 @@
     async prevEdge(p, time, edge) {
       const v = await varOf(p);
       if (!v) { return null; }
+      const width = Number(v.width) || 1;
+      // The helper's rise/fall is a change to 1/0 (x to 1 counts, 0 to x does not); a wide
+      // clock (its last bit) is read from its changes.
+      if (session.kind === 'v2' && width === 1) {
+        const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any');
+        if (at !== undefined) { return at; }
+      }
       const changes = await changesOf(v);
       if (!changes) { return null; }
-      const width = Number(v.width) || 1;
       for (let i = indexAt(changes, time); i > 0; i--) {
         const prev = bitsOf(changes[i - 1][1], width).slice(-1).toLowerCase();
         const now = bitsOf(changes[i][1], width).slice(-1).toLowerCase();
@@ -179,7 +231,7 @@
     const time = q.time !== undefined && q.time !== null ? Number(q.time) : markerTime();
     if (!q.designPath) { showError(S().traceNoSignal); return null; }
     if (time === null || !Number.isFinite(time)) { showError(S().traceNoMarker); return null; }
-    if (!session || session.backend !== host.currentBackend || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')) {
+    if (!session || session.backend !== host.currentBackend || session.kind !== dumpKind() || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')) {
       session = newSession(q.designPrefix, q.dumpPrefix);
       session.engine = window.cmuxTrace.createEngine({ models, dump, options: { xprop: q.xprop || 'auto' } });
     }
