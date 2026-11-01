@@ -1146,7 +1146,7 @@
     const error = CB.check(kind, fields);
     const checked = checkCondition(q.condition);
     // Refused: named as it was given.
-    const given = error === 'address' || error === 'addressTooLarge' ? { pcs: [].concat(q.pcs ?? q.pc ?? []).map(String) } : error === 'location' ? { loc: String(q.loc ?? '') } : {};
+    const given = error === 'address' ? { pcs: [].concat(q.pcs ?? q.pc ?? []).map(String) } : error === 'location' ? { loc: String(q.loc ?? '') } : {};
     const name = CB.label(Object.assign({ kind }, fields, given));
     if (error) {
       window.cmuxUI.toast(format(S().debuggerCommitError, name, CB.errorText(error)), 'warning');
