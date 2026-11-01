@@ -122,6 +122,11 @@ var failures = 0
     let followed = AB.marks[workspace]?.first { $0.id == bnez }
     expect(followed?.pc == 0x8000_0010 && followed?.offset == 0x10 && followed?.lost == false, "bnez's breakpoint followed its code: \(String(describing: followed))")
     expect(AB.styles(in: view)?[lineStart(14, in: moved)] == .enabled, "drawn on its new line")
+    // ...and the user is told, with its old and new places (never moved silently).
+    let movedSaid = viewer.nativeViewSessions.waveform.calls.filter { $0.function == "say" }.map { $0.argument["text"] as? String ?? "" }
+    expect(movedSaid == ["prog.txt: the breakpoint on bnez t0,<_start> moved with its code, from _start+0xc (0x8000000c) to _start+0x10 (0x80000010)."],
+           "the move is said: \(movedSaid)")
+    expect(viewer.nativeViewSessions.waveform.calls.last { $0.function == "say" }?.argument["level"] as? String == "info", "as a notice")
     await settle()
     expect(pageItems(viewer)?.contains { $0["pcs"] as? [String] == ["0x80000010"] } == true, "the page has its new PC")
 
@@ -179,7 +184,8 @@ var failures = 0
     viewer.nativeViewSessions.waveform.answers["commitSample"] = [["pc": "0x80000004", "insn": 0x4501], ["pc": "0x8000000c", "insn": 0xfe02_9ee3]]
     AB.commitsReady(viewer)
     await settle(100)
-    expect(!viewer.nativeViewSessions.waveform.calls.contains { $0.function == "say" }, "nothing said when it matches")
+    expect(!viewer.nativeViewSessions.waveform.calls.contains { $0.function == "say" && ($0.argument["text"] as? String)?.contains("match") == true },
+           "nothing said when it matches")
     var none = AsmListingMatch()
     none.notInListing = 5
     expect(AB.mismatchText(none, listingPath: "/w/a.dis") == "a.dis doesn't match this dump: none of the 5 committed PCs checked are in it.",
