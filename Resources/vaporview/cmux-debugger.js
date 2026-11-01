@@ -1025,6 +1025,7 @@
   // Whether cmux has a listing for this dump (an open one, or one beside the dump): rows then offer
   // Show Value as Address in Listing.
   let listingAvailable = false;
+  const refusedMarks = new Set();  // key + pcs of marks refused (said once)
 
   function setPcBreakpoints(query) {
     listingAvailable = !!(query || {}).listing;
@@ -1036,7 +1037,14 @@
     for (const item of items) {
       const key = String(item.key || '');
       const fields = commitFields('pc', item);
-      if (!key || marks.some((b) => b.key === key) || CB.check('pc', fields)) { continue; }
+      const error = CB.check('pc', fields);
+      // A mark cmux can't search (a PC from 2^53 up): said once, not placed.
+      if (key && error === 'addressTooLarge' && !refusedMarks.has(key + '\u0000' + fields.pcs.join())) {
+        refusedMarks.add(key + '\u0000' + fields.pcs.join());
+        const name = CB.label(Object.assign({ kind: 'pc', listingLabel: String(item.listingLabel || key) }, fields));
+        window.cmuxUI.toast(format(S().debuggerCommitError, name, CB.errorText(error)), 'warning');
+      }
+      if (!key || marks.some((b) => b.key === key) || error) { continue; }
       const before = old.get(key);
       const bp = Object.assign({ id: before ? before.id : nextBreakpointId++, kind: 'pc', key, listingLabel: String(item.listingLabel || key),
         value: null, enabled: item.enabled !== false, times: null, timesFor: null, condition: null, conditionError: null,
@@ -1127,7 +1135,7 @@
     const error = CB.check(kind, fields);
     const checked = checkCondition(q.condition);
     // Refused: named as it was given.
-    const given = error === 'address' ? { pcs: [].concat(q.pcs ?? q.pc ?? []).map(String) } : error === 'location' ? { loc: String(q.loc ?? '') } : {};
+    const given = error === 'address' || error === 'addressTooLarge' ? { pcs: [].concat(q.pcs ?? q.pc ?? []).map(String) } : error === 'location' ? { loc: String(q.loc ?? '') } : {};
     const name = CB.label(Object.assign({ kind }, fields, given));
     if (error) {
       window.cmuxUI.toast(format(S().debuggerCommitError, name, CB.errorText(error)), 'warning');

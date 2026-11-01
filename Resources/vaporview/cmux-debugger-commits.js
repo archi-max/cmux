@@ -16,7 +16,7 @@
 // window.cmuxWaveform.debuggerCommits:
 //   isKind(kind) -> bool
 //   fields(kind, item) -> the fields a breakpoint of `kind` keeps (and cmux saves)
-//   check(kind, fields) -> null | 'address' | 'location' | 'pattern' | 'patternTooLong'
+//   check(kind, fields) -> null | 'address' | 'addressTooLarge' | 'location' | 'pattern' | 'patternTooLong'
 //   parseAddress(text) -> '0x…' | null        parseLocation(text) -> 'a0' | 'csr:mstatus' | 'mem:0x…/4' | null
 //   label(bp) -> string                       errorText(error) -> string
 //   times(bp, warn) -> Promise<Float64Array | null | undefined>   (undefined: the index is still building)
@@ -43,6 +43,12 @@
     return String(template || '').replace(/%(\d+\$)?@/g, (_, n) => String(args[n ? parseInt(n, 10) - 1 : i++] ?? ''));
   }
   const isKind = (kind) => KINDS.has(kind);
+  // The commit index keeps PCs as doubles (cmux-machine.js): exact below 2^53. An address from there up
+  // would match every PC of its bucket (2 KiB above 2^63), so it is refused, and such a PC is not shown.
+  // TODO(machine-state): exact 64-bit pc columns in the index.
+  const EXACT_LIMIT = 2n ** 53n;
+  const EXACT_LIMIT_NUMBER = 2 ** 53;
+  const tooLarge = (address, size) => BigInt(address) + BigInt(size || 1) - 1n >= EXACT_LIMIT;
 
   // '0x80000010', '80000010', '8000_0010' (addresses are hex, as objdump prints them): '0x80000010'.
   function parseAddress(text) {
@@ -86,8 +92,12 @@
   }
 
   function check(kind, f) {
-    if (kind === 'pc') { return f.pcs && f.pcs.length ? null : 'address'; }
-    if (kind === 'write') { return f.loc ? null : 'location'; }
+    if (kind === 'pc') { return !(f.pcs && f.pcs.length) ? 'address' : f.pcs.some((pc) => tooLarge(pc)) ? 'addressTooLarge' : null; }
+    if (kind === 'write') {
+      if (!f.loc) { return 'location'; }
+      const mem = /^mem:(0x[0-9a-f]+)\/(\d+)$/.exec(f.loc);
+      return mem && tooLarge(mem[1], Number(mem[2])) ? 'addressTooLarge' : null;
+    }
     if (!f.pattern) { return 'pattern'; }
     return f.pattern.length > T.MAX_PATTERN ? 'patternTooLong' : null;
   }
@@ -108,7 +118,7 @@
 
   function errorText(error) {
     const s = S();
-    return { address: s.debuggerCommitBadAddress, location: s.debuggerCommitBadLocation, pattern: s.debuggerTextNoPattern,
+    return { address: s.debuggerCommitBadAddress, addressTooLarge: s.debuggerCommitAddressTooLarge, location: s.debuggerCommitBadLocation, pattern: s.debuggerTextNoPattern,
       patternTooLong: format(s.debuggerTextPatternTooLong, T.MAX_PATTERN) }[error] || error;
   }
 
@@ -244,7 +254,7 @@
     const api = commitsApi();
     const ix = api && typeof api.current === 'function' ? api.current() : null;
     if (!ix || time === null || time === undefined) { return { pcs: [], current: null }; }
-    const ks = commitsAt(ix, time).filter((k) => !Number.isNaN(ix.pc[k]));
+    const ks = commitsAt(ix, time).filter((k) => !Number.isNaN(ix.pc[k]) && ix.pc[k] < EXACT_LIMIT_NUMBER);
     // The Machine section's own commit, when it is one of these (stepping by commit within a cycle).
     const own = api.currentK ? api.currentK() : null;
     const k = ks.includes(own) ? own : (ks.length ? ks[0] : null);
@@ -271,7 +281,7 @@
     const out = [];
     for (let k = 0; k < ix.count && out.length < max; k++) {
       const pc = ix.pc[k];
-      if (Number.isNaN(pc) || seen.has(pc)) { continue; }
+      if (Number.isNaN(pc) || pc >= EXACT_LIMIT_NUMBER || seen.has(pc)) { continue; }
       seen.add(pc);
       out.push({ pc: hexOf(pc), insn: ix.insn[k] >>> 0 });
     }
