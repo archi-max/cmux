@@ -40,6 +40,10 @@ enum WaveformDebuggerLineBreakpoints {
         /// Each mark's line as it is now (raw, without its line break), kept per edit in O(line).
         var lineTexts: [UUID: String] = [:]
         var observer: (any NSObjectProtocol)?
+        var willObserver: (any NSObjectProtocol)?
+        /// The edit as it was made (willProcessEditing): by didProcessEditing AppKit's attribute
+        /// fixing has widened editedRange (to the next line start, or the whole paragraph).
+        var exactEdit: (range: NSRange, delta: Int)?
         /// The text before the edits since: a copy taken when marks appear, and the edits made since
         /// as (range in the text then, its new characters). Only a large edit (a Format Document or
         /// a reload) or one that moves a mark's line start needs the old text; typing only logs.
@@ -59,6 +63,7 @@ enum WaveformDebuggerLineBreakpoints {
         }
         deinit {
             if let observer { NotificationCenter.default.removeObserver(observer) }
+            if let willObserver { NotificationCenter.default.removeObserver(willObserver) }
         }
         /// The text before the current edit.
         func oldText() -> NSString {
@@ -249,6 +254,16 @@ enum WaveformDebuggerLineBreakpoints {
         // An empty storage is a file still loading (its text comes as one replace): placed then.
         if storage.length > 0 { place(tracker, in: storage) }
         tracker.takeSnapshot()
+        tracker.willObserver = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.willProcessEditingNotification,
+            object: storage,
+            queue: nil
+        ) { [weak textView] _ in
+            MainActor.assumeIsolated {
+                guard let textView, let tracker = trackers.object(forKey: textView), let storage = tracker.storage else { return }
+                tracker.exactEdit = storage.editedMask.contains(.editedCharacters) ? (storage.editedRange, storage.changeInLength) : nil
+            }
+        }
         tracker.observer = NotificationCenter.default.addObserver(
             forName: NSTextStorage.didProcessEditingNotification,
             object: storage,
@@ -258,6 +273,8 @@ enum WaveformDebuggerLineBreakpoints {
             MainActor.assumeIsolated {
                 guard let textView, let tracker = trackers.object(forKey: textView), let storage = tracker.storage,
                       storage.editedMask.contains(.editedCharacters) else { return }
+                let exact = tracker.exactEdit
+                tracker.exactEdit = nil
                 if !tracker.placed {
                     guard storage.length > 0 else { return }
                     place(tracker, in: storage)
@@ -271,7 +288,7 @@ enum WaveformDebuggerLineBreakpoints {
                     tracker.log = []
                     return
                 }
-                edited(tracker, storage: storage, undoing: isUndoing(textView))
+                edited(tracker, storage: storage, edit: exact ?? (storage.editedRange, storage.changeInLength), undoing: isUndoing(textView))
                 scheduleRefresh(tracker.workspace)
             }
         }
@@ -335,10 +352,11 @@ enum WaveformDebuggerLineBreakpoints {
     /// start) costs O(edit + marks): offsets after it shift, a mark before it stays (also when its
     /// line is split or another is joined into it), and the edited line's text is re-read.
     /// Anything else goes to `relocate`, which looks at the old text.
-    private static func edited(_ tracker: Tracker, storage: NSTextStorage, undoing: Bool) {
+    private static func edited(_ tracker: Tracker, storage: NSTextStorage, edit: (range: NSRange, delta: Int), undoing: Bool) {
         let text = storage.string as NSString
-        let edited = storage.editedRange
-        let delta = storage.changeInLength
+        // The edit as made, not as widened by attribute fixing (Tracker.exactEdit).
+        let edited = edit.range
+        let delta = edit.delta
         // A whole-range replace (Format Document, a reload) or a large paste: compare with the old text.
         if edited.length > 1024 || (undoing && !tracker.merged.isEmpty) {
             relocate(tracker, text: text, edited: edited, undoing: undoing)
