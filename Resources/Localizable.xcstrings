@@ -705052,6 +705052,124 @@
           }
         }
       }
+    },
+    "waveformDebugger.asm.moved": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: the breakpoint on %2$@ moved with its code, from %3$@ to %4$@."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: Der Haltepunkt auf %2$@ ist mit seinem Code verschoben worden, von %3$@ nach %4$@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ : le point d’arrêt sur %2$@ a suivi son code, de %3$@ à %4$@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: نُقلت نقطة التوقف على %2$@ مع الشيفرة الخاصة بها، من %3$@ إلى %4$@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: el punto de interrupción en %2$@ se movió con su código, de %3$@ a %4$@."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：%2$@ 上的中斷點已隨程式碼移動，從 %3$@ 移至 %4$@。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：%2$@ 上的断点已随代码移动，从 %3$@ 移到 %4$@。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: %2$@의 중단점이 코드와 함께 %3$@에서 %4$@(으)로 이동했습니다."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: %2$@ のブレークポイントがコードとともに %3$@ から %4$@ に移動しました。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.asm.movedOthers": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Other breakpoints in %@ moved with their code too (the breakpoint list has them)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weitere Haltepunkte in %@ sind ebenfalls mit ihrem Code verschoben worden (siehe Haltepunktliste)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "D’autres points d’arrêt de %@ ont aussi suivi leur code (voir la liste des points d’arrêt)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نُقلت نقاط توقف أخرى في %@ مع الشيفرة الخاصة بها أيضًا (تجدها في قائمة نقاط التوقف)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otros puntos de interrupción de %@ también se movieron con su código (están en la lista de puntos de interrupción)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 中的其他中斷點也已隨程式碼移動（見中斷點清單）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 中的其他断点也已随代码移动（见断点列表）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 다른 중단점도 코드와 함께 이동했습니다(중단점 목록 참조)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ の他のブレークポイントもコードとともに移動しました（ブレークポイント一覧を参照）。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -63,7 +63,7 @@ public struct AsmMark: Codable, Sendable, Equatable, Identifiable {
         /// At its symbol+offset, whose instruction text is unchanged.
         case symbol
         /// In its symbol at another offset (code was added or removed before it in the function): the
-        /// instruction with its text nearest its old offset.
+        /// instruction with its text nearest its old offset, when exactly one is nearest. The UI says so.
         case moved
         /// At its PC (no symbol, or the symbol's instruction changed).
         case pc
@@ -172,21 +172,28 @@ public struct AsmListingMatch: Sendable, Equatable {
 }
 
 extension AsmListing {
-    /// In `symbol`, the instruction whose text key is `textKey` nearest `offset` (code first; the earlier on a tie).
+    /// In `symbol`, the instruction whose text key is `textKey` nearest `offset` (code first). Nil on a
+    /// tie (two as near, both code or both not): which one was meant is unknown, so none is guessed.
     func nearestInstruction(symbol: String, offset: UInt64, textKey: String) -> AsmInstruction? {
         var best: AsmInstruction?
+        var tied = false
         for index in indicesBySymbol[symbol] ?? [] {
             let inst = instructions[Int(index)]
             guard AsmMark.textKey(inst.text) == textKey else { continue }
             let distance = inst.offset > offset ? inst.offset - offset : offset - inst.offset
             if let b = best {
                 let bestDistance = b.offset > offset ? b.offset - offset : offset - b.offset
-                if (inst.isCode && !b.isCode) || (inst.isCode == b.isCode && distance < bestDistance) { best = inst }
+                if (inst.isCode && !b.isCode) || (inst.isCode == b.isCode && distance < bestDistance) {
+                    best = inst
+                    tied = false
+                } else if inst.isCode == b.isCode && distance == bestDistance && inst.pc != b.pc {
+                    tied = true
+                }
             } else {
                 best = inst
             }
         }
-        return best
+        return tied ? nil : best
     }
 
     /// Compares up to `limit` distinct committed PCs' instructions with the listing's encodings. A

@@ -145,15 +145,52 @@ enum WaveformDebuggerAsmBreakpoints {
     }
 
     /// The marks of `path` re-placed in its new parse (they follow their code; see AsmMark.resolved).
+    /// One moved to another offset is said, with where it was and is (never moved silently).
     private static func resolveMarks(of path: String, in listing: AsmListing, workspace: UUID) {
         guard var list = marks[workspace], list.contains(where: { $0.listingPath == path }) else { return }
         var changedAny = false
+        var notices: [String] = []
         for i in list.indices where list[i].listingPath == path {
-            let placed = list[i].resolved(in: listing).mark
-            if placed != list[i] { list[i] = placed; changedAny = true }
+            let placed = list[i].resolved(in: listing)
+            if placed.how == .moved, placed.mark.pc != list[i].pc || placed.mark.offset != list[i].offset {
+                notices.append(movedText(from: list[i], to: placed.mark))
+            }
+            if placed.mark != list[i] { list[i] = placed.mark; changedAny = true }
         }
         marks[workspace] = list
         if changedAny { changed(workspace) } else { redrawGutters() }
+        guard !notices.isEmpty else { return }
+        let shown = Array(notices.prefix(maxMoveNotices))
+        let texts = notices.count > shown.count
+            ? shown + [String(format: String(localized: "waveformDebugger.asm.movedOthers",
+                                             defaultValue: "Other breakpoints in %@ moved with their code too (the breakpoint list has them)."),
+                              (path as NSString).lastPathComponent)]
+            : shown
+        for waveform in viewers(workspace) {
+            Task { @MainActor in
+                for text in texts {
+                    _ = await waveform.nativeViewSessions.waveform.callDebugger("say", argument: ["text": text, "level": "info"])
+                }
+            }
+        }
+    }
+
+    /// Moves said one by one; the rest in one line.
+    static let maxMoveNotices = 3
+
+    /// `prog.dis: the breakpoint on bnez t0,<loop> moved with its code, from f+0xc (0x8000000c) to f+0x10 (0x80000010).`
+    static func movedText(from old: AsmMark, to new: AsmMark) -> String {
+        func place(_ mark: AsmMark) -> String {
+            let at = mark.symbol.map { mark.offset == 0 ? $0 : "\($0)+0x\(String(mark.offset, radix: 16))" } ?? hex(mark.pc)
+            return "\(at) (\(hex(mark.pc)))"
+        }
+        return String(
+            format: String(
+                localized: "waveformDebugger.asm.moved",
+                defaultValue: "%1$@: the breakpoint on %2$@ moved with its code, from %3$@ to %4$@."
+            ),
+            (new.listingPath as NSString).lastPathComponent, new.text, place(old), place(new)
+        )
     }
 
     // MARK: Editing
