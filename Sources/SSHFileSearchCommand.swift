@@ -105,11 +105,13 @@ struct SSHFileSearchCommand: Equatable, Sendable {
                 // --no-index: a root .gitignore lists still counts as ignored when
                 // it holds tracked files, which git grep --exclude-standard skips too.
                 + "&& [ -z \"$($g check-ignore --no-index . 2>/dev/null)\" ] "
-                + "&& [ -z \"$(nice -n 10 $g ls-files -s -- . 2>/dev/null | grep ^160000 | head -n 1)\" ] "
+                + "&& [ -z \"$(nice -n 10 $g ls-files -s -- . 2>/dev/null | LC_ALL=C grep ^160000 | head -n 1)\" ] "
                 // -z: git quotes names with a quote, a backslash or a control characters otherwise,
                 // so a nested repository's line would not end in /.
+                // LC_ALL=C: in a UTF-8 locale GNU grep prints nothing for a line that
+                // isn't valid UTF-8 (a Latin-1 name) and BSD tr stops at it, so that entry would be missed.
                 + "&& [ -z \"$(nice -n 10 $g ls-files -z -o --exclude-standard -- . 2>/dev/null "
-                + "| tr \"$z\" \"$l\" | grep /$ | head -n 1)\" ]; then \(marker(gitGrepMarker)); "
+                + "| LC_ALL=C tr \"$z\" \"$l\" | LC_ALL=C grep /$ | head -n 1)\" ]; then \(marker(gitGrepMarker)); "
                 + "$w nice -n 10 $g -c color.grep=false -c grep.fullName=false -c grep.column=false "
                 + "grep -nIF -z --untracked --exclude-standard\(caseFlag) -e \"$q\" -- . \(excludePathspecs); "
                 + "else \(marker(grepMarker)); "
