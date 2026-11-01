@@ -5469,5 +5469,28 @@
     "identityLocales": {
       "es": "The word decimal is spelled the same in this locale. The translated entry is still required."
     }
+  },
+  "waveformDebugger.commit.pcLabel": {
+    "source": "PC %@",
+    "identityLocales": {
+      "de": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "fr": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "ar": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "es": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hant": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hans": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "ko": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "ja": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.commit.pcAtLabel": {
+    "source": "%1$@ (%2$@)",
+    "identityLocales": {
+      "de": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "fr": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "ar": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "es": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "ko": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required."
+    }
   }
 }
