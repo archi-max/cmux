@@ -207,6 +207,7 @@ endmodule
     expect(LB.snapshot(of: UUID()) == nil, "a workspace without breakpoints saves none")
 
     await runTrackingChecks()
+    await runVerifyChecks()
     print(failures == 0 ? "LINE BREAKPOINT CHECKS PASSED" : "LINE BREAKPOINT CHECKS FAILED: \(failures)")
     exit(failures == 0 ? 0 : 1)
 }
@@ -308,8 +309,119 @@ endmodule
            "no enabled breakpoint without a dot: \(state(twins))")
 }
 
+// verify-bp-b03a64a: typing cost (N1), the diff narrowing (duplicate `end`), reloads and formats
+// that change a mark's line (N2, N3), undo (N6), joined lines (N7), an empty new file (N12).
+@MainActor func runVerifyChecks() async {
+    typealias LB = WaveformDebuggerLineBreakpoints
+    WaveformSourceLink.waveform = nil
+    func open(_ text: String, workspace: UUID, path: String = "/rtl/core.sv") -> SavingTextView {
+        let view = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        view.string = text
+        let editor = FilePreviewLanguageFeatures(textView: view, path: path, workspace: workspace)
+        FilePreviewLanguageFeatures.all.append(editor)
+        return view
+    }
+    func starts(_ text: String) -> [Int] { [0] + text.utf16.enumerated().filter { $0.element == 0x0A }.map { $0.offset + 1 } }
+    func lines(_ view: NSTextView) -> [Int] {
+        let s = starts(view.string)
+        return (LB.styles(in: view) ?? [:]).keys.map { s.firstIndex(of: $0) ?? -1 }.sorted()
+    }
+    func state(_ workspace: UUID) -> [String] {
+        (LB.marks[workspace] ?? []).map { "\($0.line) \($0.lost ? "lost" : "ok") \($0.enabled) \($0.text)" }.sorted()
+    }
+    func click(_ view: NSTextView, _ line: Int) { _ = LB.gutterClicked(view, lineStart: starts(view.string)[line]) }
+    func edit(_ view: NSTextView, _ range: NSRange, _ text: String) { view.textStorage!.replaceCharacters(in: range, with: text) }
+
+    // N1: typing in a 100k-line file costs about what it costs with no breakpoint code: no copy of
+    // the text and no line table per keystroke, with no breakpoints and with one.
+    var big = "module big(input logic clk);\n"
+    for i in 0..<100_000 { big += "  always_ff @(posedge clk) r\(i) <= r\(i) + 1; // filler\n" }
+    big += "endmodule\n"
+    for withMark in [false, true] {
+        let view = open(big, workspace: UUID(), path: "/rtl/big.sv")
+        _ = LB.styles(in: view)
+        let ns = view.string as NSString
+        if withMark { _ = LB.gutterClicked(view, lineStart: ns.range(of: "  always_ff @(posedge clk) r50000 <=").location) }
+        let at = ns.range(of: "r10 <=").location
+        let started = Date()
+        for i in 0..<200 { edit(view, NSRange(location: at + i, length: 0), "x") }
+        let perKey = Date().timeIntervalSince(started) * 1000 / 200
+        expect(perKey < 1.0, "typing in a 100k-line file \(withMark ? "with a breakpoint" : "without breakpoints"): \(String(format: "%.3f", perKey)) ms per key (under 1)")
+        if withMark {
+            expect(lines(view) == [50_001], "the breakpoint stays on its line while typing above it: \(lines(view))")
+        }
+    }
+
+    // The diff: a reload that adds 3 lines on top keeps a mark on the middle of three `end`s on its
+    // own `end` (the raw edited range would send it to the nearest `end` by line number).
+    let dup = UUID()
+    let block = "module m;\n  begin\n  end\n  begin\n    x = 1;\n  end\n  begin\n  end\nendmodule\n"
+    let dupView = open(block, workspace: dup)
+    click(dupView, 5)
+    dupView.string = "// a\n// b\n// c\n" + block
+    expect(lines(dupView) == [8], "a reload with lines added above keeps the mark on its own `end`: \(lines(dupView))")
+
+    // N2: a reload that removes a line above and changes a mark's own line keeps all three.
+    let reload = UUID()
+    let reloadView = open(source, workspace: reload)
+    for line in [3, 4, 5] { click(reloadView, line) }
+    reloadView.string = source.replacingOccurrences(of: "assign done = count == limit;", with: "assign done = count >= limit;")
+    reloadView.string = source.replacingOccurrences(of: "  logic done;\n", with: "")
+    expect(lines(reloadView) == [2, 3, 4] && LB.marks[reload]?.count == 3, "a reload removing a line above and changing a marked line keeps every mark: \(lines(reloadView)) \(state(reload))")
+    reloadView.string = source
+    expect(lines(reloadView) == [3, 4, 5] && LB.marks[reload]?.count == 3, "and a reload back puts them back: \(lines(reloadView))")
+
+    // N3: Format Document that splits a line above and re-spaces the marked one keeps it on its statement.
+    let format = UUID()
+    let formatView = open(source, workspace: format)
+    click(formatView, 4)
+    let formatted = source.replacingOccurrences(of: "logic [7:0] count, limit;", with: "logic [7:0] count;\n  logic [7:0] limit;")
+        .replacingOccurrences(of: "assign done = count == limit;", with: "assign done = (count == limit);")
+    edit(formatView, NSRange(location: 0, length: (formatView.string as NSString).length), formatted)
+    expect(lines(formatView) == [5], "a format that re-spaces the line and adds one above keeps the statement: \(lines(formatView))")
+    for _ in 0..<20 { try? await Task.sleep(nanoseconds: 25_000_000) }
+    expect(LB.marks[format]?.first?.text.contains("assign done") == true, "its saved text is still its statement: \(state(format))")
+    let respaced = UUID()
+    let respacedView = open(source, workspace: respaced)
+    click(respacedView, 4)
+    edit(respacedView, NSRange(location: 0, length: (respacedView.string as NSString).length),
+         "// header\n" + source.replacingOccurrences(of: "assign done = count == limit;", with: "assign done = count==limit;"))
+    expect(lines(respacedView) == [5], "only spacing changed in its line, a line added above: \(lines(respacedView))")
+
+    // N6: an undo that does not put back the deleted line brings no merged mark back.
+    let undo = UUID()
+    let undoView = open(source, workspace: undo)
+    click(undoView, 4); click(undoView, 5)
+    let s = starts(undoView.string)
+    edit(undoView, NSRange(location: s[4], length: s[5] - s[4]), "")
+    edit(undoView, NSRange(location: starts(undoView.string)[2], length: 0), "  assign done = count == limit;\n")
+    edit(undoView, NSRange(location: 0, length: 0), "x")
+    LB.isUndoing = { _ in true }
+    edit(undoView, NSRange(location: 0, length: 1), "")
+    LB.isUndoing = { _ in false }
+    expect(lines(undoView) == [5], "an unrelated undo brings no deleted breakpoint back: \(lines(undoView)) \(state(undo))")
+
+    // N7: joining a line into the one above keeps the upper mark and its condition.
+    let join = UUID()
+    let joinView = open(source, workspace: join)
+    click(joinView, 4); click(joinView, 5)
+    let upper = LB.marks[join]!.first { $0.line == 4 }!.id
+    LB.setCondition(upper, "count == 3", in: join)
+    edit(joinView, NSRange(location: starts(joinView.string)[5] - 1, length: 1), "")
+    expect(lines(joinView) == [4] && LB.marks[join]?.map(\.id) == [upper] && LB.marks[join]?.first?.condition == "count == 3",
+           "joining lines keeps the upper breakpoint and its condition: \(lines(joinView)) \(String(describing: LB.marks[join]?.map(\.condition)))")
+
+    // N12: F9 in a new empty file, then typing: the breakpoint stays (not lost, still enabled).
+    let empty = UUID()
+    let emptyView = open("", workspace: empty)
+    _ = LB.styles(in: emptyView)
+    _ = LB.toggle(in: emptyView.languageFeatures!, textView: emptyView, at: 0)
+    edit(emptyView, NSRange(location: 0, length: 0), "a")
+    expect(lines(emptyView) == [0] && state(empty).first?.contains("ok true") == true, "a new empty file's breakpoint survives typing: \(lines(emptyView)) \(state(empty))")
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in await run() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 30) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 90) { print("timeout"); exit(1) }
 app.run()
