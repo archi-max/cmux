@@ -275,9 +275,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const g = document.querySelector('#fsm .fsm-grip');
       if (!g) { return -1; }
       const r = g.getBoundingClientRect(); const x = r.left + 2; const y = r.top + 40;
-      g.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: x, clientY: y }));
-      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x - 60, clientY: y }));
-      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x - 100, clientY: y }));
+      g.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, clientX: x, clientY: y }));
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: x - 60, clientY: y }));
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: x - 100, clientY: y }));
       window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: x - 100, clientY: y }));
       return document.getElementById('fsm').getBoundingClientRect().width;
     """) as? Double ?? -1
