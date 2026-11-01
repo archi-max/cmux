@@ -114,6 +114,10 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
                 localized: "waveformDebugger.commit.addressTooLarge",
                 defaultValue: "addresses from 0x20000000000000 (2^53) up are not supported yet"
             ),
+            "debuggerCommitTextJalHint": String(
+                localized: "waveformDebugger.commit.jalHint",
+                defaultValue: "%@: no instruction matched, but jal instructions that link ra committed. They are shown as “jal <target>” (ra implied), so leave ra out of the pattern."
+            ),
             "debuggerCommitBadLocation": String(
                 localized: "waveformDebugger.commit.badLocation",
                 defaultValue: "give a register (a0, x5), a CSR (mstatus) or memory ([0x80001000])"

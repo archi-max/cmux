@@ -198,6 +198,17 @@
     return (await api.writesOf({ loc: query })) || [];
   }
 
+  // jal with rd = ra prints as `jal <target>` (objdump style, ra implied): a pattern of `jal ra` finds none
+  // of them, which is said when one committed. c.jal (RV32) links ra too.
+  function linksRa(ix) {
+    for (const w of byInsn(ix).keys()) {
+      const word = w >>> 0;
+      if ((word & 0x7f) === 0x6f && ((word >>> 7) & 31) === 1) { return true; }
+      if (ix.xlen === 32 && (word & 3) !== 3 && (word & 0xe003) === 0x2001) { return true; }
+    }
+    return false;
+  }
+
   // bp.commitHits: { ix, times (unique, ascending), at: [[time, k]] by time then k }.
   async function times(bp, warn) {
     const error = check(bp.kind, bp);
@@ -208,6 +219,9 @@
     if (bp.commitHits && bp.commitHits.ix === ix && bp.commitHits.key === key) { return bp.commitHits.times; }
     const ks = await commitsOf(bp, ix, warn);
     if (!ks) { return null; }
+    if (!ks.length && bp.kind === 'commitText' && linksRa(ix) && /\bjal\s+(ra|x1)\b/i.test(bp.pattern.replace(/\\s[+*]?/g, ' '))) {
+      warn(format(S().debuggerCommitTextJalHint, label(bp)));
+    }
     const at = Array.from(new Set(ks)).map((k) => [ix.time[k], k]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     const out = [];
     for (const [time] of at) { if (!out.length || out[out.length - 1] !== time) { out.push(time); } }
