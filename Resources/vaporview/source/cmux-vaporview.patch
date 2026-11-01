@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..fb48310
+index 0000000..4068679
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,226 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -206,8 +206,32 @@ index 0000000..fb48310
 +string, enum, fixed point, epoch time) takes the formatted path (`searchFormatted`), which
 +calls the format's own `checkSearchValue` as non-windowed rows do. cmux's `run.sh windowed`
 +checks `x1` and `0` in RISC-V on a windowed row; it was red before this change.
++
++## Text searches on windowed rows run next to the dump (helper searchText)
++
++A value search in RISC-V, ASCII or an alias table on a windowed row used to fetch exact
++chunks of the signal and scan them in the viewer (`scanChunks`): on a long dump that is every
++change crossing the connection. Now `searchFormatted` (`window_cache.ts`) first asks the FSDB
++helper's `searchText` (WINDOWING.md), which formats each distinct value once with the
++viewer's own formatters and returns only the hit's time:
++- RISC-V (all four ids) and `alias:<table>` send the viewer's pattern (regex, else plain
++  text, case-insensitive). An alias table goes with the file it was read from
++  (`aliasSearchSource` in `extra_formats.ts`), and only when that one file holds the table
++  and every table its slices name; otherwise the page scan runs.
++- ASCII sends the text as typed (`ControlBar.rawSearchValue`); the helper turns it into the
++  same bit regex as `formatAscii.parseSearchValue`.
++- No marker: `t: 0, inclusive: true`, so a match at t=0 counts. Next/previous from the
++  marker are exclusive, as before.
++- A request that hits its budget (5 s) answers `incomplete` with a resume point; the search
++  resumes there (inclusive) until it ends or `longQueryMs` passes (then the timeout note).
++  Escape cancels the request in flight, as for other host searches.
++- The page scan still answers when the helper has no `searchText` (an unknown-command or
++  not-relayed error; not asked again until the file reloads), when it reports `tooLarge`, on
++  any other error, and for the other text formats (string, enum, fixed point, epoch).
++cmux's `run.sh windowed` checks t=0, far and no-match, resume, cancel, ASCII, alias, tooLarge
++and the unknown-command fallback against a mock that runs the shipped helper's `text.js`.
 diff --git a/src/webview/control_bar.ts b/src/webview/control_bar.ts
-index 54acd7a..4bf8c32 100644
+index 54acd7a..e16d8fb 100644
 --- a/src/webview/control_bar.ts
 +++ b/src/webview/control_bar.ts
 @@ -1,6 +1,6 @@
@@ -218,7 +242,15 @@ index 54acd7a..4bf8c32 100644
  import { CustomVariable, NetlistVariable } from './signal_item';
  
  enum ButtonState {
-@@ -137,6 +137,8 @@ export class ControlBar {
+@@ -52,6 +52,7 @@ export class ControlBar {
+   private events: EventHandler;
+ 
+   parsedSearchValue: string | null = null;
++  rawSearchValue: string | null = null; // cmux: the text parsedSearchValue was parsed from
+ 
+   constructor(events: EventHandler) {
+     this.events = events;
+@@ -137,6 +138,8 @@ export class ControlBar {
      let nearestTime = markerType === 0 ? viewerState.markerTime : viewerState.altMarkerTime;
      if (nearestTime === null) {return;}
      if (viewerState.selectedSignal.length === 0) {return;}
@@ -227,7 +259,7 @@ index 54acd7a..4bf8c32 100644
  
      const nextTransitionTime: number[] = [];
      viewerState.selectedSignal.forEach((rowId) => {
-@@ -287,6 +289,7 @@ export class ControlBar {
+@@ -287,6 +290,7 @@ export class ControlBar {
    }
  
    handleSearchBarKeyDown(event: KeyboardEvent) {
@@ -235,13 +267,22 @@ index 54acd7a..4bf8c32 100644
      if (event.key === 'Enter') {
        event.preventDefault();
        this.handleSearchGoTo(1);
-@@ -345,6 +348,12 @@ export class ControlBar {
+@@ -312,7 +316,7 @@ export class ControlBar {
+           inputValid = this.checkValidTimeString(inputText);
+         } else if (this.searchState === SearchState.Value) {
+           inputValid = checkValidSearch(inputText);
+-          if (inputValid) {this.parsedSearchValue = parseValue(inputText);}
++          if (inputValid) {this.parsedSearchValue = parseValue(inputText); this.rawSearchValue = inputText;}
+           //console.log(inputValid);
+           //console.log(this.parsedSearchValue);
+         }
+@@ -345,6 +349,12 @@ export class ControlBar {
      const rowId  = viewerState.selectedSignal[0];
      const rowItem = rowHandler.rowItems[rowId];
      if (rowItem === undefined || !(rowItem instanceof NetlistVariable) && !(rowItem instanceof CustomVariable)) {return;}
 +    // cmux: windowed rows search loaded windows, then the host
 +    if (rowItem instanceof NetlistVariable && windowCache.isWindowed(rowItem.signalId)) {
-+      if (this.searchState !== SearchState.Time) {windowCache.searchValue(rowItem, this.parsedSearchValue, direction, rowItem.valueFormat.id === 'signed' && this.searchBar.value.trim().startsWith('-'));}
++      if (this.searchState !== SearchState.Time) {windowCache.searchValue(rowItem, this.parsedSearchValue, direction, rowItem.valueFormat.id === 'signed' && this.searchBar.value.trim().startsWith('-'), this.rawSearchValue ?? undefined);}
 +      else if (direction === 1) {this.events.markerSet(parseInt(this.parsedSearchValue), 0, false); vscodeWrapper.sendWebviewContext(StateChangeType.User);}
 +      return;
 +    }
@@ -281,10 +322,10 @@ index 8044f8e..eaf25db 100644
        let tempData = this.valueChangeDataTemp[signalId];
 diff --git a/src/webview/extra_formats.ts b/src/webview/extra_formats.ts
 new file mode 100644
-index 0000000..cee9024
+index 0000000..3e86834
 --- /dev/null
 +++ b/src/webview/extra_formats.ts
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,276 @@
 +// Extra value formats for the webview: RISC-V disassembly and user value aliases
 +// (Verdi .alias/.rc, JSON, CSV). Kept out of value_format.ts so the hooks into
 +// existing files are small: getExtraValueFormat() in getNumberFormatById(),
@@ -353,6 +394,10 @@ index 0000000..cee9024
 +
 +// #region Value aliases
 +const aliasTables = new Map<string, ValueTable>();
++// The file each table was read from, for the FSDB helper's text search (searchText takes
++// the alias file itself): one object per load, shared by the tables it defined.
++interface AliasSource { text: string; fileName: string; bareRadix?: BareRadix }
++const aliasSources = new Map<string, AliasSource>();
 +const aliasBindings = new Map<string, string>(); // signal path -> table name or format id
 +// Rows that already existed when bindings were last applied. Keyed by the row
 +// object, because rowIds are reused after the viewer empties (unload resets them).
@@ -462,7 +507,8 @@ index 0000000..cee9024
 +export function loadValueAliases(text: string, fileName: string, opts: LoadAliasOptions = {}): LoadAliasResult {
 +  const parsed = parseAliasFile(String(text), String(fileName), { bareRadix: opts.bareRadix });
 +  const names = new Set<string>();
-+  parsed.tables.forEach((t) => {aliasTables.set(t.name, t); names.add(t.name);});
++  const source: AliasSource = { text: String(text), fileName: String(fileName), bareRadix: opts.bareRadix };
++  parsed.tables.forEach((t) => {aliasTables.set(t.name, t); aliasSources.set(t.name, source); names.add(t.name);});
 +  parsed.bindings.forEach((b) => aliasBindings.set(b.signal, b.table));
 +  refreshTables(names);
 +  const paths = new Set(parsed.bindings.map((b) => b.signal));
@@ -486,8 +532,26 @@ index 0000000..cee9024
 +export function clearValueAliases() {
 +  const names = new Set(aliasTables.keys());
 +  aliasTables.clear();
++  aliasSources.clear();
 +  aliasBindings.clear();
 +  refreshTables(names);
++}
++
++// The alias file a table came from, when that one file alone formats the table as the
++// viewer does: the table and every table its slices name were read from it (a slice can
++// name a table another file defined). Otherwise undefined.
++export function aliasSearchSource(tableName: string): AliasSource | undefined {
++  const source = aliasSources.get(tableName);
++  if (!source) {return undefined;}
++  const seen = new Set<string>();
++  const walk = (name: string): boolean => {
++    if (seen.has(name)) {return true;}
++    seen.add(name);
++    const table = aliasTables.get(name);
++    if (!table || aliasSources.get(name) !== source) {return false;}
++    return table.kind !== "slice" || table.slices.every((d) => d.table === undefined || walk(d.table));
++  };
++  return walk(tableName) ? source : undefined;
 +}
 +
 +export function listExtraFormats(): { id: string; label: string }[] {
@@ -2275,10 +2339,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..05a5478
+index 0000000..8a335de
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1846 @@
+@@ -0,0 +1,1917 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2322,6 +2386,7 @@ index 0000000..05a5478
 +import { viewport, viewerState, rowHandler, labelsPanel, vscodeWrapper, styles, events, dataManager } from './vaporview';
 +import { copyWaveDrom } from './wavedrom';
 +import { searchesBitPattern } from './value_format';
++import { aliasSearchSource } from './extra_formats';
 +import { ActionType } from './event_handler';
 +
 +const BUCKETS = 1024;      // per tile: a tile spans 512..1024 CSS px at its level
@@ -2349,6 +2414,9 @@ index 0000000..05a5478
 +const COUNT_BATCH        = 32;                // signals per count request
 +const MAX_HOST_BUCKETS   = 4194304;          // the helper clamps `buckets` to this
 +const SCAN_BUCKETS       = 32768; // formatted value search: exact chunks of up to 65536 changes
++const TEXT_BUDGET_MS     = 5000;  // searchText: helper time per request; an unfinished one is resumed
++const TEXT_MAX_PATTERN   = 4096;  // searchText's limit; longer searches use the page scan
++const TEXT_FORMATS       = new Set(['riscv', 'riscv_numeric', 'riscv_noalias', 'riscv_numeric_noalias']);
 +const PREFETCH_DELAY_MS  = 80;   // the marker must sit this long before edges are prefetched
 +const PREFETCH_ROWS      = 4;    // selected windowed rows prefetched
 +const PREFETCH_AHEAD     = 3;    // edges / matches prefetched in the direction of travel ...
@@ -2503,6 +2571,7 @@ index 0000000..05a5478
 +  private hybridPending = 0; // ... and of those being loaded
 +  countTimeoutMs        = QUERY_TIMEOUT_MS;
 +  private countSupported = true;
++  private textSupported  = true; // the helper answers searchText (cleared by an unknown-command reply)
 +  private countBusy      = false;
 +  private loadsBusy      = 0;
 +
@@ -2591,6 +2660,7 @@ index 0000000..05a5478
 +    this.hybridBytes = 0;
 +    this.hybridPending = 0;
 +    this.countSupported = true;
++    this.textSupported = true;
 +    this.countBusy = false;
 +    this.loadsBusy = 0;
 +    this.navCache.clear();
@@ -3921,7 +3991,8 @@ index 0000000..05a5478
 +  // controlBar.handleSearchGoTo (value search) for a windowed row. `negative`: the search
 +  // text is a negative number in the signed format (its parsed form is the minimal two's
 +  // complement, which must be sign-extended).
-+  searchValue(item: NetlistVariable, parsedSearchValue: string, direction: number, negative = false) {
++  // `raw`: the search text as typed (ASCII's helper search parses it itself).
++  searchValue(item: NetlistVariable, parsedSearchValue: string, direction: number, negative = false, raw?: string) {
 +    const s = this.signals.get(item.signalId!);
 +    if (!s) {return;}
 +    // Only bit-pattern formats go to the helper as a pattern. Text formats (RISC-V, alias,
@@ -3929,7 +4000,7 @@ index 0000000..05a5478
 +    // upstream does, over loaded windows and then exact chunks from the host. Their text is
 +    // never read as bits, even "x1" or "0" (toHostPattern would take those for a pattern).
 +    const pattern = searchesBitPattern(item.valueFormat) ? toHostPattern(parsedSearchValue, s.width, negative) : null;
-+    if (pattern === null) {this.searchFormatted(s, item, parsedSearchValue, direction); return;}
++    if (pattern === null) {this.searchFormatted(s, item, parsedSearchValue, direction, raw); return;}
 +    this.runNav(async (gen) => {
 +      const start = viewerState.markerTime === null ? -1 : viewerState.markerTime;
 +      let t = this.localEdge(s, start, direction, (v) => matchPattern(v, pattern));
@@ -3947,22 +4018,86 @@ index 0000000..05a5478
 +
 +  // Value search with upstream's rule: the first change after the marker (or last before it)
 +  // whose value passes format.checkSearchValue(parsed, bits, formatted). Loaded windows
-+  // answer when they decide it; otherwise exact chunks are fetched from the host, adapting
-+  // their span to stay exact, scanned locally and kept as windows (so the next search in the
-+  // same stretch is local). Escape cancels; a timeout shows the note.
-+  private searchFormatted(s: SignalWindows, item: NetlistVariable, parsed: string, direction: number) {
++  // answer when they decide it. Otherwise the helper's searchText formats and matches the
++  // values next to the dump (RISC-V, ASCII, alias tables: the viewer's own formatters, see
++  // WINDOWING.md), and only the hit's time comes back. For the other text formats, a helper
++  // without searchText, or a signal too large for it, exact chunks are fetched from the
++  // host, adapting their span to stay exact, scanned locally and kept as windows (so the
++  // next search in the same stretch is local). Escape cancels; a timeout shows the note.
++  private searchFormatted(s: SignalWindows, item: NetlistVariable, parsed: string, direction: number, raw?: string) {
 +    const fmt = item.valueFormat;
 +    const ok = (v: string) => {
 +      try {return fmt.checkSearchValue(parsed, v, fmt.formatString(v, s.width, !fmt.is9State(v)));} catch {return false;}
 +    };
++    const text = this.textSearchArgs(fmt.id, parsed, raw);
 +    this.runNav(async (gen) => {
 +      const start = viewerState.markerTime === null ? -1 : viewerState.markerTime;
 +      let t = this.localEdge(s, start, direction, ok);
++      if (t === undefined && text) {t = await this.hostTextSearch(s, start, direction, text, gen);}
 +      if (t === undefined) {t = await this.scanChunks(s, start, direction, ok, gen);}
 +      if (t === null || t === undefined || gen !== this.generation) {return;}
 +      events.markerSet(t, 0, false);
 +      vscodeWrapper.sendWebviewContext(StateChangeType.User);
 +    }, 'value search');
++  }
++
++  // searchText's format and pattern for a row's format, or null when the helper can't
++  // search it (the page scan does). RISC-V and alias patterns are the viewer's (a regex, else
++  // plain text, case-insensitive); ASCII sends the typed text, which the helper turns into
++  // the same bit regex as formatAscii.parseSearchValue. An alias table goes with its file.
++  private textSearchArgs(formatId: string, parsed: string, raw?: string): Record<string, unknown> | null {
++    if (!this.textSupported) {return null;}
++    const ok = (p: string | undefined): p is string => typeof p === 'string' && p.length > 0 && p.length <= TEXT_MAX_PATTERN;
++    if (TEXT_FORMATS.has(formatId)) {return ok(parsed) ? {format: formatId, pattern: parsed} : null;}
++    if (formatId === 'ascii') {return ok(raw) ? {format: 'ascii', pattern: raw} : null;}
++    if (formatId.startsWith('alias:')) {
++      const table = formatId.slice('alias:'.length);
++      const source = aliasSearchSource(table);
++      if (!source || !ok(parsed)) {return null;}
++      const alias: Record<string, unknown> = {text: source.text, table, fileName: source.fileName};
++      if (source.bareRadix) {alias.bareRadix = source.bareRadix;}
++      return {format: 'alias', pattern: parsed, alias};
++    }
++    return null;
++  }
++
++  // The helper's searchText from `start` (-1: no marker, so t=0 counts): the hit's time,
++  // null for no match, or undefined when the helper can't answer (no searchText, tooLarge,
++  // an error), so the page scan runs. A request the helper stops at its budget says where it
++  // got to; the search resumes there (inclusive: that change is not judged yet) until it
++  // ends or longQueryMs has passed. Escape cancels the request in flight (navQuery).
++  private async hostTextSearch(s: SignalWindows, start: number, dir: number, text: Record<string, unknown>, gen: number): Promise<number | null | undefined> {
++    if (dir < 0 && start < 0) {return null;}
++    const epoch = this.navEpoch;
++    const began = performance.now();
++    let t = Math.max(0, start), inclusive = start < 0;
++    for (;;) {
++      const left = this.longQueryMs - (performance.now() - began);
++      if (left <= 0) {throw Object.assign(new Error('value search timed out'), {timedOut: true});}
++      let result: any;
++      try {
++        ({result} = await this.navQuery('searchText', {signalId: s.signalId, t, dir, inclusive, ...text,
++          budgetMs: Math.max(100, Math.min(TEXT_BUDGET_MS, Math.floor(left)))}));
++      } catch (e) {
++        const msg = e instanceof Error ? e.message : String(e);
++        if ((e as {timedOut?: boolean}).timedOut || msg === 'cancelled' || msg === 'reset') {throw e;}
++        // An older helper (or relay) without searchText: don't ask again for this file.
++        if (/unknown command|not relayed/.test(msg)) {this.textSupported = false;}
++        vscodeWrapper.outputLog('value search: searchText failed (' + msg + '), scanning in the viewer');
++        return undefined;
++      }
++      if (this.navEpoch !== epoch || gen !== this.generation) {throw new Error('cancelled');}
++      if (typeof result?.t === 'number') {return result.t;}
++      const inc = result?.incomplete;
++      if (!inc) {return result && result.t === null ? null : undefined;}
++      if (inc.cancelled) {throw new Error('cancelled');}
++      if (inc.timedOut && inc.resume && typeof inc.resume.t === 'number') {
++        t = inc.resume.t; inclusive = inc.resume.inclusive === true;
++        continue;
++      }
++      if (inc.tooLarge) {vscodeWrapper.outputLog('value search: ' + (inc.reason || 'signal too large for searchText') + ', scanning in the viewer');}
++      return undefined;
++    }
 +  }
 +
 +  private async scanChunks(s: SignalWindows, start: number, dir: number, ok: Pred, gen: number): Promise<number | null | undefined> {

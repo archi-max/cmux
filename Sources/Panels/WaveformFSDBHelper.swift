@@ -110,8 +110,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// Exit status of a launcher that refuses an install others can write.
     static let refusedStatus: Int32 = 86
     /// What the page sends: host.js (open, children, signals, valueAt) and the
-    /// windowed viewer (window, valueAt, edge, search, count, cancel).
-    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "count", "cancel"]
+    /// windowed viewer (window, valueAt, edge, search, searchText, count, cancel).
+    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "searchText", "count", "cancel"]
     /// Verdi's libraries load slowly from NFS on a busy host.
     static let defaultReadyTimeout: TimeInterval = 90
     static let installTimeout: TimeInterval = 10 * 60
