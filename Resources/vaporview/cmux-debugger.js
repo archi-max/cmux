@@ -313,12 +313,19 @@
     moveMarker(edges[next]);
     postMoved(edges[next], left, missed);
     if (stop) { pause(); announceHit(stop, edges); return; }
-    if (next >= edges.length - 1) { pause(); return; }
+    if (next >= edges.length - 1) { playEnded(); return; }
     scheduleTick(gap);
   }
 
   let playBackend = null;
   let playStarts = 0;
+
+  // Play reached the last edge: a hit after it (no edge to land on) is said, as continue says it.
+  function playEnded() {
+    const after = playStop && playStop.index >= (state.edges || []).length ? playStop : null;
+    pause();
+    if (after) { window.cmuxUI.toast(format(S().debuggerHitAfterLastEdge, breakpointName(after.bp), timeText(after.time)), 'info'); }
+  }
 
   function tick() {
     if (!state.playing || !state.edges) { return; }
@@ -339,7 +346,7 @@
       postMoved(edges[target], left, false);
     }
     if (stop) { pause(); announceHit(stop, edges); return; }
-    if (target >= edges.length - 1) { pause(); return; }
+    if (target >= edges.length - 1) { playEnded(); return; }
     scheduleTick();
   }
 
