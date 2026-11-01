@@ -86,6 +86,57 @@
         }
       }
       expect(s.memMask === x.mask, opts.name + ': ' + x.mask + '-relative masks detected: ' + s.memMask);
+      // The reader's own values, every signal the generator wrote, at the dump's first time and every
+      // edge (x included): split 1-bit arrays the reader merged (valid [0], valid [1] as valid[1:0]),
+      // array elements it made scopes of (order > [0]) and plain vectors.
+      {
+        const at = (changes, t) => { let v = null; for (const c of changes) { if (Number(c[0]) <= t) { v = String(c[1]); } else { break; } } return v; };
+        const groups = new Map();
+        for (const g of run.signals) {
+          const leaf = g.path[g.path.length - 1];
+          const m = /^(.*)\[(\d+)\]$/.exec(leaf);
+          const key = JSON.stringify(g.path.slice(0, -1).concat([m && g.width === 1 ? m[1] : leaf]));
+          if (!groups.has(key)) { groups.set(key, []); }
+          groups.get(key).push({ g, index: m ? Number(m[2]) : null });
+        }
+        let bad = 0, checked = 0, firstBad = null;
+        for (const [key, parts] of groups) {
+          const path = JSON.parse(key);
+          const leaf = path[path.length - 1];
+          const m = /^(.*)\[(\d+)\]$/.exec(leaf);
+          let v = await W.host.findLinkItem(path, true);
+          if (!v && m) { v = await W.host.findLinkItem(path.slice(0, -1).concat([m[1], '[' + m[2] + ']']), true); }
+          if (!v) { bad++; firstBad = firstBad || path.join('.') + ' not found'; continue; }
+          const read = await W.host.signalChanges(v, 1e6);
+          const ordered = parts.slice().sort((a, b) => (b.index || 0) - (a.index || 0));
+          const times = [0, Number(read[0] ? read[0][0] : 0)].concat(run.edges);
+          for (const t of times) {
+            const want = ordered.map((p) => at(p.g.changes, t) || 'x'.repeat(p.g.width)).join('');
+            const got = at(read, t) || 'x'.repeat(want.length);
+            checked++;
+            if (got !== want) { bad++; firstBad = firstBad || path.join('.') + ' at t ' + t + ': ' + got + ' != ' + want; }
+          }
+        }
+        expect(bad === 0, opts.name + ': the reader has every written value (' + groups.size + ' signals, ' + checked + ' samples): ' + (firstBad || 'all equal'));
+      }
+      // The reader's own values: a 1-bit array (valid [0], valid [1]) the reader merged into one vector
+      // has, at every edge and the dump's first time, the bits the generator wrote (x included).
+      const parts = run.signals.filter((g) => /^valid\[\d+\]$/.test(g.path[g.path.length - 1]));
+      if (parts.length) {
+        const merged = await W.host.findLinkItem(x.scope.concat(['valid']), true);
+        if (merged && Number(merged.width) === parts.length) {
+          const at = (changes, t) => { let v = null; for (const c of changes) { if (Number(c[0]) <= t) { v = String(c[1]); } else { break; } } return v; };
+          const read = await W.host.signalChanges(merged, 1e6);
+          const times = [Number(read[0][0])].concat(run.edges);
+          let bad = 0, firstBad = null;
+          for (const t of times) {
+            const want = parts.slice().reverse().map((g) => at(g.changes, t) || 'x').join('');
+            const got = at(read, t);
+            if (got !== want) { bad++; firstBad = firstBad || 't ' + t + ': ' + got + ' != ' + want; }
+          }
+          expect(bad === 0, opts.name + ': the reader\'s merged valid[' + (parts.length - 1) + ':0] equals the written bits at ' + times.length + ' times: ' + (firstBad || 'all equal'));
+        }
+      }
       expect(s.source === x.scope.join('.') + (opts.name === 'monitor' ? '.monitor_*' : ''), opts.name + ': found at ' + s.source);
       let checked = 0, bad = 0, firstBad = null;
       for (const probe of x.states.slice(0, 24)) {

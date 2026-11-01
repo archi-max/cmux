@@ -103,7 +103,7 @@ case "${1:-}" in
     shift
     swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
-    cases="${*:-nerv picorv32 ibex prefixed packed2 array2 struct monitor forward none}"
+    cases="${*:-nerv picorv32 ibex prefixed packed2 array2 array2late struct monitor forward none}"
     for c in $cases; do
       "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" "$c" | tee "$OUT/machine-$c.log"
       grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-$c.log"
