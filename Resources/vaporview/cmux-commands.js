@@ -17,6 +17,7 @@
 //   addSignalByName(path, msb, lsb, quiet)   -> whether it found the signal
 //   sessionSaved(), applySessionFile({ text, path, error }), sessionFailed({ message })   replies from cmux
 //   setSessionFile({ path, text })   <dump>.json, which cmux reads after the file opens
+//   applyValueAliasFile({ text, path, error })   the file cmux read for Load Value Alias File...
 
 (function () {
   const host = () => window.cmuxWaveform.host;
@@ -104,7 +105,12 @@
       // cmux additions: the viewer's RISC-V instruction formats (extra_formats.ts,
       // 16 bits and wider; ordering in when clauses compares numbers).
       {submenu: "vaporview.riscvFormat", group: "1_instruction@1", when: "webviewSection == 'signal' && width >= '16'"},
+      // Value aliases (Verdi .alias/.rc, JSON or CSV): the file's tables, by name.
+      {command: "vaporview.loadValueAliases", group: "2_alias@1", when: "webviewSection == 'signal'"},
+      {submenu: "vaporview.valueAlias", group: "2_alias@2", when: "webviewSection == 'signal'"},
     ],
+    // Built when the menu opens, from the viewer's loaded tables (aliasMenuEntries).
+    "vaporview.valueAlias": [],
     "vaporview.riscvFormat": [
       {command: "vaporview.displayAsRiscv", group: "0_default@1"},
       {command: "vaporview.displayAsRiscvNumeric", group: "0_default@2"},
@@ -450,6 +456,86 @@
   let keptIsCurrent = false;
   let dirty = false;
 
+  // ---- value aliases ----
+  // The alias files loaded into this viewer, [{ fileName, text }] (one per name,
+  // the latest kept). The tables live in the viewer frame; cmux keeps the files
+  // so a saved session, cmux's kept state and a restore bring them back.
+  let aliasFiles = [];
+  // Loads posted and not answered yet, in order: { fileName, text, user }.
+  let aliasLoads = [];
+  const MAX_ALIAS_FILES = 16;
+  const MAX_ALIAS_TEXT = 8 * 1024 * 1024;
+
+  function postAliasFile(fileName, text, user) {
+    aliasLoads.push({ fileName, text, user });
+    // A file's own signal bindings apply when the user loads it, not on a restore.
+    host().toWebview({ command: 'loadValueAliases', fileName, text, apply: user });
+  }
+
+  function keepAliasFile(fileName, text) {
+    aliasFiles = aliasFiles.filter((f) => f.fileName !== fileName).concat([{ fileName, text }]).slice(-MAX_ALIAS_FILES);
+  }
+
+  // cmux read the file the user picked (or couldn't).
+  function applyValueAliasFile({ text, path, error } = {}) {
+    const fileName = String(path || '').split('/').pop() || 'alias';
+    if (error || typeof text !== 'string') {
+      ui().toast(format(S().messageValueAliasLoadFailed, error || fileName), 'error');
+      return;
+    }
+    postAliasFile(fileName, text, true);
+  }
+
+  // The viewer's answer to loadValueAliases (extra_formats.ts).
+  function valueAliasesLoaded(result) {
+    const r = result && typeof result === 'object' ? result : {};
+    const index = aliasLoads.findIndex((l) => l.fileName === r.fileName);
+    const load = index >= 0 ? aliasLoads.splice(index, 1)[0] : null;
+    if (!load) { return; }
+    const tables = Array.isArray(r.tables) ? r.tables : [];
+    if (r.error || !tables.length) {
+      if (load.user) { ui().toast(format(S().messageValueAliasLoadFailed, r.error || S().messageValueAliasNoTables), 'error'); }
+      return;
+    }
+    keepAliasFile(load.fileName, load.text);
+    const warnings = Array.isArray(r.warnings) ? r.warnings : [];
+    if (load.user && warnings.length) {
+      host().log('alias file ' + load.fileName + ': ' + warnings.join('; '));
+      ui().toast(format(S().messageValueAliasWarnings, load.fileName, warnings[0]), 'warning');
+    }
+    if (load.user) { setDirty(true); }
+    scheduleSessionSnapshot();
+  }
+
+  // A session's files, as saved (cmuxValueAliases): only well-formed entries.
+  function sessionAliasFiles(session) {
+    const list = session && Array.isArray(session.cmuxValueAliases) ? session.cmuxValueAliases : [];
+    return list.filter((f) => f && typeof f.fileName === 'string' && typeof f.text === 'string' && f.text.length <= MAX_ALIAS_TEXT)
+      .slice(-MAX_ALIAS_FILES);
+  }
+
+  function withAliasFiles(state) {
+    return state && aliasFiles.length ? Object.assign(state, { cmuxValueAliases: aliasFiles.slice() }) : state;
+  }
+
+  // The viewer's loaded alias tables (window.vaporviewValueFormats in the frame).
+  function aliasFormats() {
+    try {
+      const formats = document.getElementById('viewer').contentWindow.vaporviewValueFormats;
+      return formats.listFormats().filter((f) => f && typeof f.id === 'string' && f.id.startsWith('alias:'));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // The Alias submenu: one entry per table, then Remove Alias (back to hex).
+  function aliasMenuEntries() {
+    const tables = aliasFormats();
+    if (!tables.length) { return []; }
+    return tables.map((f, i) => ({ alias: f.id, label: f.id.slice('alias:'.length), group: '0_tables@' + i }))
+      .concat([{ command: 'vaporview.removeValueAlias', group: '1_remove@1' }]);
+  }
+
   function contextSession(context) {
     if (!context) { return null; }
     return {
@@ -538,7 +624,7 @@
   function sendSessionSnapshot() {
     clearTimeout(snapshotTimer);
     snapshotScheduled = false;
-    const state = plainJSON(contextSession(webviewContext));
+    const state = plainJSON(withAliasFiles(contextSession(webviewContext)));
     if (state && !restorePending) { host().toNative({ type: 'sessionState', state, dirty }); }
   }
   function scheduleSessionSnapshot() {
@@ -584,6 +670,8 @@
       scrollLeft: w.scrollLeft,
       defaultPixelTime: w.defaultPixelTime,
       displayedSignals: withoutLocals(w.displayedSignals || []),
+      // cmux addition: the value alias files the rows' alias formats need.
+      ...(aliasFiles.length ? { cmuxValueAliases: aliasFiles.slice() } : {}),
     };
   }
 
@@ -689,6 +777,9 @@
     }
     if (host().loadGeneration !== generation) { return false; }
     if (stateChangeType !== StateChangeType.Restore) { restorePending = false; }
+    // The alias tables first: the viewer handles messages in order, so the
+    // rows' alias formats find them.
+    for (const f of sessionAliasFiles(session)) { postAliasFile(f.fileName, f.text, false); }
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
       extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
       altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
@@ -736,7 +827,8 @@
     if (kept) {
       sessionFileOffered = true;
       restorePending = true;
-      const state = Object.assign(contextSession(kept), { selectedSignal: kept.cmuxSelected || undefined });
+      // The alias files too, in case the reloaded frame lost its tables.
+      const state = withAliasFiles(Object.assign(contextSession(kept), { selectedSignal: kept.cmuxSelected || undefined }));
       if (await applySession(state, StateChangeType.Restore)) { appliedRestoreConfig = config; }
       return;
     }
@@ -745,7 +837,7 @@
     if (m.state && !afterUnload) {
       sessionFileOffered = true;
       restorePending = true;
-      if (await applySession(m.state, StateChangeType.Restore)) { appliedRestoreConfig = config; }
+      if (await applySession(withAliasFiles(Object.assign({}, m.state)), StateChangeType.Restore)) { appliedRestoreConfig = config; }
       return;
     }
     if (config.restore && config.restore.state) {
@@ -1137,6 +1229,11 @@
     // Sessions and file
     'vaporview.saveViewerSession': () => saveSession(),
     'vaporview.loadViewerSession': () => host().toNative({ type: 'loadSession' }),
+    // Value aliases: cmux picks and reads the file (on this Mac or the SSH host).
+    'vaporview.loadValueAliases': () => host().toNative({ type: 'loadValueAliases' }),
+    'vaporview.displayAsAlias': (e) => { if (e && e.aliasFormat) { displayFormat(e, { numberFormat: e.aliasFormat }); } },
+    'vaporview.removeValueAlias': (e) => displayFormat(e, { numberFormat: 'hexadecimal' }),
+    'vaporview.valueAliasesLoaded': (result) => valueAliasesLoaded(result),
     'vaporview.reloadFile': () => host().toNative({ type: 'reload' }),
     'cmux.undo': () => undo(undoStack, redoStack, StateChangeType.Undo),
     'cmux.redo': () => undo(redoStack, undoStack, StateChangeType.Redo),
@@ -1187,7 +1284,11 @@
   function resolveEntry(args) {
     return (entry) => {
       if (entry.group && entry.group.startsWith('inline')) { return null; }
+      if (entry.submenu === 'vaporview.valueAlias') { return { label: title(entry.submenu), entries: aliasMenuEntries() }; }
       if (entry.submenu) { return { label: title(entry.submenu), entries: MENUS[entry.submenu] || [] }; }
+      if (entry.alias) {
+        return { label: entry.label, run: () => run('vaporview.displayAsAlias', Object.assign({}, args, { aliasFormat: entry.alias })) };
+      }
       if (!COMMANDS[entry.command]) { return null; }
       return { label: title(entry.command), keybinding: KEY_LABELS[entry.command], run: () => run(entry.command, args) };
     };
@@ -1287,6 +1388,9 @@
     waitingHistory = [];
     failedReload = false;
     historyPath = config.path || null;
+    // A new viewer frame has no tables.
+    aliasFiles = [];
+    aliasLoads = [];
     resetApplying();
     pendingReload = false;
     setDirty(false);
@@ -1355,9 +1459,10 @@
     setSessionFile: (file) => { host().config.sessionFile = file; return offerSessionFile(); },
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
     sessionFailed: ({ message }) => ui().toast(format(S().messageSessionSaveFailed, message), 'error'),
+    applyValueAliasFile,
     applySessionFile: ({ text, path, error }) => (error
       ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path, true)),
-    sessionSnapshot: () => ({ state: plainJSON(contextSession(webviewContext)), dirty }),
+    sessionSnapshot: () => ({ state: plainJSON(withAliasFiles(contextSession(webviewContext))), dirty }),
     undoDepth: () => undoStack.length,
     commandIds: () => Object.keys(COMMANDS),
     menus: MENUS,

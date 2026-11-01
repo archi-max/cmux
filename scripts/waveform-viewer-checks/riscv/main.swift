@@ -267,16 +267,16 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     snap()
   }
 
-  // Load Value Alias File…: the page asks cmux for a file, cmux reads it and
-  // answers with its text; the Alias submenu lists the file's tables.
-  var aliasAnswer: (() -> Void)?
-
+  // Load Value Alias File…: the page asks cmux for a file, cmux reads it (on
+  // this Mac or the SSH host) and hands its text to applyValueAliasFile; the
+  // Alias submenu lists the file's tables. The tables go with the session.
   func aliasChecks() async {
     let text = (try? String(contentsOf: aliasURL, encoding: .utf8)) ?? ""
+    let ALIAS = "S['submenu.valueAlias']"
     let ask = await call("""
       sent.length = 0;
       R.hasLoad = !!sub(menuAt('byte'), FMT, T('loadValueAliases'));
-      R.noAliasMenu = !sub(menuAt('byte'), FMT, S['submenu.valueAlias']);
+      R.noAliasMenu = !sub(menuAt('byte'), FMT, \(ALIAS));
       R.ok = await choose('byte', FMT, T('loadValueAliases'));
       R.asked = sent.filter((m) => m.type === 'loadValueAliases').length;
       """)
@@ -285,39 +285,99 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(ask["asked"] as? Int == 1, "choosing it asks cmux for the file once: \(ask["asked"] ?? "nil")")
 
     let after = await call("""
-      C.applyValueAliasFile({ text: \(jsString(text)), path: '/work/sim/cpu.alias' });
+      const before = document.querySelectorAll('.cmux-toast').length;
+      window.cmuxWaveform.applyValueAliasFile({ text: \(jsString(text)), path: '/work/sim/cpu.alias' });
       await sleep(800);
-      R.toasts = [...document.querySelectorAll('.cmux-toast')].map((t) => t.textContent);
-      R.alias = labels(sub(menuAt('byte'), FMT, S['submenu.valueAlias']));
-      R.half = labels(sub(menuAt('half'), FMT, S['submenu.valueAlias']));
+      R.toasted = document.querySelectorAll('.cmux-toast').length > before;
+      R.alias = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
+      R.half = labels(sub(menuAt('half'), FMT, \(ALIAS)));
+      R.remove = T('removeValueAlias');
       """)
     let aliasItems = after["alias"] as? [String] ?? []
-    expect(aliasItems.contains("opcode"), "the Alias submenu lists the file's tables: \(aliasItems)")
+    let remove = after["remove"] as? String ?? "?"
+    expect(after["toasted"] as? Bool == false, "a clean file loads without a toast")
+    expect(aliasItems == ["opcode", remove], "the Alias submenu lists the file's table and Remove Alias: \(aliasItems)")
     expect((after["half"] as? [String])?.contains("opcode") == true, "for every width")
 
     let chosen = await call("""
       click('byte');
       await sleep(200);
-      R.ok = await choose('byte', FMT, S['submenu.valueAlias'], 'opcode');
+      R.ok = await choose('byte', FMT, \(ALIAS), 'opcode');
       R.byte = text('byte'); R.fmt = formatOf('byte');
       R.ok2 = await choose('byte', FMT, T('displayAsHexadecimal'));
       R.hex = text('byte'); R.fmt2 = formatOf('byte');
       await C.run('cmux.undo'); await sleep(500);
       R.undone = text('byte');
+      R.ok3 = await choose('byte', FMT, \(ALIAS), T('removeValueAlias'));
+      R.removed = text('byte'); R.fmt3 = formatOf('byte');
+      await C.run('cmux.undo'); await sleep(500);
+      R.back = text('byte');
       """)
     expect(chosen["byte"] as? String == "OP_IMM" && chosen["fmt"] as? String == "alias:opcode",
            "choosing the table shows its name: \(chosen["byte"] ?? "nil") (\(chosen["fmt"] ?? "nil"))")
     expect(chosen["fmt2"] as? String == "hexadecimal" && chosen["hex"] as? String == "13",
            "Hexadecimal goes back: \(chosen["hex"] ?? "nil")")
     expect(chosen["undone"] as? String == "OP_IMM", "undo of Hexadecimal shows the alias again: \(chosen["undone"] ?? "nil")")
+    expect(chosen["fmt3"] as? String == "hexadecimal" && chosen["removed"] as? String == "13",
+           "Remove Alias goes back to hex: \(chosen["removed"] ?? "nil")")
+    expect(chosen["back"] as? String == "OP_IMM", "and undoes: \(chosen["back"] ?? "nil")")
+
+    // The tables go with the session: a saved file, a fresh viewer loading it,
+    // a reload, and a restore in a new panel.
+    let saved = await call("""
+      await C.run('vaporview.saveViewerSession');
+      const save = sent.filter((m) => m.type === 'saveSession').pop();
+      R.text = save ? save.text : null;
+      const file = save ? JSON.parse(save.text) : {};
+      R.tables = (file.cmuxValueAliases || []).map((a) => a.fileName);
+      """)
+    expect(saved["tables"] as? [String] == ["cpu.alias"], "the saved session holds the alias file: \(saved["tables"] ?? "nil")")
+    let sessionText = saved["text"] as? String ?? "{}"
+    await open()
+    let loaded = await call("""
+      C.applySessionFile({ text: \(jsString(sessionText)), path: '/work/sim/riscv.json' });
+      await sleep(1500);
+      await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 });
+      await sleep(400);
+      R.byte = text('byte'); R.instr = text('instr');
+      R.alias = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
+      """)
+    expect(loaded["byte"] as? String == "OP_IMM" && loaded["instr"] as? String == "sw x1,8(x2)",
+           "a loaded session shows the alias and the instruction: \(loaded["byte"] ?? "nil") / \(loaded["instr"] ?? "nil")")
+    expect((loaded["alias"] as? [String])?.contains("opcode") == true, "and its Alias submenu: \(loaded["alias"] ?? "nil")")
+    let reloaded = await call("""
+      window.cmuxWaveform.reload({});
+      await reloaded();
+      await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 });
+      await sleep(400);
+      R.byte = text('byte');
+      await sleep(400);
+      R.state = C.sessionSnapshot().state;
+      R.snapshotTables = ((R.state && R.state.cmuxValueAliases) || []).map((a) => a.fileName);
+      """)
+    expect(reloaded["byte"] as? String == "OP_IMM", "a reload keeps the alias: \(reloaded["byte"] ?? "nil")")
+    expect(reloaded["snapshotTables"] as? [String] == ["cpu.alias"], "cmux's kept state holds the file: \(reloaded["snapshotTables"] ?? "nil")")
+    if let state = reloaded["state"] as? [String: Any] {
+      await open(restore: ["state": state, "dirty": false])
+      try? await Task.sleep(nanoseconds: 800_000_000)
+      let restored = await call("""
+        await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 });
+        await sleep(400);
+        R.byte = text('byte');
+        """)
+      expect(restored["byte"] as? String == "OP_IMM", "a restore (new panel) keeps the alias: \(restored["byte"] ?? "nil")")
+    }
 
     let failed = await call("""
       const before = document.querySelectorAll('.cmux-toast').length;
-      C.applyValueAliasFile({ path: '/work/sim/missing.alias', error: 'No such file' });
+      window.cmuxWaveform.applyValueAliasFile({ path: '/work/sim/missing.alias', error: 'No such file' });
       await sleep(300);
-      R.toasted = document.querySelectorAll('.cmux-toast').length > before;
+      window.cmuxWaveform.applyValueAliasFile({ text: 'alias broken\\n  A 8\\'h01\\n', path: '/work/sim/broken.alias' });
+      await sleep(600);
+      R.toasts = [...document.querySelectorAll('.cmux-toast')].slice(before).map((t) => t.textContent);
       """)
-    expect(failed["toasted"] as? Bool == true, "a file cmux couldn't read shows a toast")
+    let toasts = failed["toasts"] as? [String] ?? []
+    expect(toasts.count == 2, "a file cmux couldn't read, and one the viewer can't parse, each show a toast: \(toasts)")
   }
 
   func jsString(_ s: String) -> String {

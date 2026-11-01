@@ -72,6 +72,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     nonisolated private static let maxSessionFileSize = 8 * 1024 * 1024
     /// The session file saved or loaded last: the save and open panels start there.
     private var lastSessionURL: URL?
+    /// The last value alias file loaded, on this Mac or (as a path) on the SSH host.
+    private var lastValueAliasURL: URL?
+    private var lastValueAliasRemotePath: String?
     /// Counts page loads, so a session file read for an older load is dropped.
     private var pageLoadID = 0
 
@@ -566,6 +569,96 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         }
     }
 
+    // MARK: Value aliases
+
+    // Load Value Alias File… (the page's Format Values menu): cmux reads the
+    // file the user names and hands its text to the page, which loads the
+    // tables into the viewer. A file on an SSH host offers a path on that host,
+    // read through the same Files connection as its session file.
+    private func loadValueAliasFile() {
+        guard let lease = sshLease, let provider = lease.sshProvider else {
+            chooseLocalValueAliasFile()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = String(
+            format: String(localized: "filePreview.waveform.valueAliasRemote.title", defaultValue: "Load a value alias file from %@?"),
+            provider.displayTarget
+        )
+        alert.informativeText = String(
+            localized: "filePreview.waveform.valueAliasRemote.detail",
+            defaultValue: "Enter the alias file's path on the host."
+        )
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.stringValue = lastValueAliasRemotePath ?? ((lease.remotePath as NSString).deletingLastPathComponent + "/")
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: String(localized: "filePreview.waveform.valueAliasRemote.load", defaultValue: "Load from Host"))
+        alert.addButton(withTitle: String(
+            localized: "filePreview.waveform.valueAliasRemote.chooseLocally",
+            defaultValue: "Choose on This Mac…"
+        ))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            switch response {
+            case .alertFirstButtonReturn:
+                let path = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !path.isEmpty, !path.hasSuffix("/") else { return }
+                self?.lastValueAliasRemotePath = path
+                self?.downloadValueAliasFile(path: path, provider: provider)
+            case .alertSecondButtonReturn:
+                // After the alert's sheet has closed.
+                Task { @MainActor [weak self] in self?.chooseLocalValueAliasFile() }
+            default:
+                break
+            }
+        }
+        if let window = webView?.window {
+            alert.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(alert.runModal())
+        }
+    }
+
+    private func downloadValueAliasFile(path: String, provider: SSHFileExplorerProvider) {
+        Task { [weak self] in
+            do {
+                guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
+                // Too big to be an alias file: nothing is downloaded.
+                let stamp = try await provider.fileStamp(path: path)
+                guard stamp.size <= Int64(Self.maxSessionFileSize) else { throw CocoaError(.fileReadTooLarge) }
+                let text = try await Self.downloadSessionText(path: path, provider: provider)
+                self?.evaluate(function: "applyValueAliasFile", argument: ["text": text, "path": path])
+            } catch {
+                self?.evaluate(function: "applyValueAliasFile", argument: ["path": path, "error": error.localizedDescription])
+            }
+        }
+    }
+
+    private func chooseLocalValueAliasFile() {
+        let openPanel = NSOpenPanel()
+        openPanel.allowsMultipleSelection = false
+        openPanel.canChooseDirectories = false
+        openPanel.directoryURL = lastValueAliasURL?.deletingLastPathComponent() ?? sessionPanelDirectory
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let url = openPanel.url else { return }
+            Task { [weak self] in
+                do {
+                    let text = try await Self.readSessionText(at: url)
+                    self?.lastValueAliasURL = url
+                    self?.evaluate(function: "applyValueAliasFile", argument: ["text": text, "path": url.path])
+                } catch {
+                    self?.evaluate(function: "applyValueAliasFile", argument: ["path": url.path, "error": error.localizedDescription])
+                }
+            }
+        }
+        if let window = webView?.window {
+            openPanel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion(openPanel.runModal())
+        }
+    }
+
     // MARK: Remote FSDB
 
     /// Where a remote FSDB preview lives: its path on the host and the workspace's SSH route.
@@ -879,6 +972,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             )
         case "loadSession":
             loadSession()
+        case "loadValueAliases":
+            loadValueAliasFile()
         case "reload":
             reloadFileInPage()
         case "retryWindowed":
