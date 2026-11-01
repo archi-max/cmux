@@ -230,12 +230,51 @@
       let diff = 0;
       for (const st of w.expect.states) { for (const [addr, exp] of st.mem) { const g = forced.index.byte(addr, st.k); if (exp !== null && (!g.known || g.value !== exp)) { diff++; } } }
       ok(diff > 0, 'packed2 with byte masks forced: ' + diff + ' bytes differ from the word-relative truth');
+      // A valid held high over one retirement (same order, pc and insn: a core parked at its halt
+      // loop) is one commit; a repeated order with another pc stays two, and the gap is reported.
+      const held = (pcs, orders) => {
+        const ch = (vals, w) => vals.map((v, i) => [10 * i + 5, v.toString(2).padStart(w, '0')]);
+        const sig = (n, vals, w) => ({ path: ['tb', 'dut', 'rvfi_' + n], width: w, changes: ch(vals, w) });
+        const sigs = [sig('valid', [1, 1, 1, 1, 0], 1), sig('order', orders.concat([0]), 64), sig('pc_rdata', pcs.concat([0]), 32),
+          sig('insn', [0x13, 0x13, 0x63, 0x63, 0], 32), sig('rd_addr', [1, 2, 0, 0, 0], 5), sig('rd_wdata', [7, 8, 0, 0, 0], 32)];
+        return load(sigs, Float64Array.from([10, 20, 30, 40, 50])).table;
+      };
+      const h1 = held([0x100, 0x104, 0x108, 0x108], [0, 1, 2, 2]);
+      ok(h1.count === 3 && h1.diagnostics.orderContiguous === true && h1.diagnostics.heldRepeats === 1,
+        'a valid held over one retirement (same order, pc, insn) is one commit: ' + JSON.stringify([h1.count, h1.diagnostics]));
+      const h2 = held([0x100, 0x104, 0x108, 0x10c], [0, 1, 2, 2]);
+      ok(h2.count === 4 && h2.diagnostics.orderGaps === 1 && h2.diagnostics.heldRepeats === 0,
+        'a repeated order with another pc stays, as a gap: ' + JSON.stringify([h2.count, h2.diagnostics]));
       // The offer rule never auto-uses a lone commit_valid/pc pair.
       const offer = M().detect([{ path: ['tb', 'core'], depth: 1, vars: [{ name: 'commit_valid', width: 1 }, { name: 'commit_pc', width: 32 }] }]);
       ok(offer.length === 1 && offer[0].family === 'offer', 'commit_valid + commit_pc is offered, not used: ' + JSON.stringify(offer.map((s) => s.family)));
       // A packed role whose width doesn't divide by NRET rejects the source.
       const bad = M().detect([{ path: ['t'], depth: 0, vars: [{ name: 'rvfi_valid', width: 2 }, { name: 'rvfi_pc_rdata', width: 48 }, { name: 'rvfi_order', width: 128 }] }]);
       ok(bad.length && bad[0].xlen === 24 ? false : !bad.length, 'pc_rdata of 48 bits over NRET 2 (24-bit pc) is rejected: ' + JSON.stringify(bad));
+      // Array elements in both reader styles: `order[0]` in the scope (FSDB, the checks' reader), or
+      // wellen's scope `order` holding `[0]`, `[1]` with 1-bit `valid [0]`, `valid [1]` merged to valid[1:0].
+      const roles = ['order', 'inst', 'pc_rdata', 'rd_addr', 'rd_wdata'];
+      const ew = { order: 64, inst: 32, pc_rdata: 32, rd_addr: 5, rd_wdata: 32 };
+      const els = (n) => [0, 1].map((i) => ({ kind: 'var', name: '[' + i + ']', width: ew[n] }));
+      const fold = (n) => (M().mayHoldElements(n) ? M().elementVars(n, els(n)) : null);
+      const folded = roles.map(fold);
+      ok(folded.every((f) => f && f.map((x) => x.name).join() === [0, 1].map((i) => roles[folded.indexOf(f)] + '[' + i + ']').join()),
+        'wellen element scopes fold to name[i]: ' + JSON.stringify(folded.map((f) => f && f.map((x) => x.name))));
+      ok(!M().mayHoldElements('alu') && !M().mayHoldElements('genblk1') && M().mayHoldElements('rvfi_pc_rdata') && M().mayHoldElements('monitor_valid')
+        && M().mayHoldElements('rvfi_csr_mstatus_rdata'), 'only role-named scopes are opened as element scopes');
+      ok(M().elementVars('order', [{ kind: 'var', name: '[0]', width: 64 }, { kind: 'scope', name: 'x' }]) === null
+        && M().elementVars('order', [{ kind: 'var', name: 'q', width: 64 }]) === null && M().elementVars('order', []) === null,
+        'a scope with anything but [i] vars is not an element scope');
+      const styles = {
+        wellen: [{ name: 'valid', width: 2 }].concat(...folded.map((f) => f.map((x) => ({ name: x.name, width: x.width })))),
+        named: [{ name: 'valid[0]', width: 1 }, { name: 'valid[1]', width: 1 }].concat(...roles.map((n) => [0, 1].map((i) => ({ name: n + '[' + i + ']', width: ew[n] })))),
+      };
+      for (const [style, vars] of Object.entries(styles)) {
+        const got = M().detect([{ path: ['tb', 'mon'], depth: 1, vars }]);
+        ok(got.length === 1 && got[0].nret === 2 && got[0].roles.includes('insn') && got[0].channels[1].pc_rdata.path.join('.') === 'tb.mon.pc_rdata[1]'
+          && got[0].channels[1].valid.path.join('.') === (style === 'wellen' ? 'tb.mon.valid' : 'tb.mon.valid[1]'),
+          'NRET 2 array elements, ' + style + ' style: ' + JSON.stringify(got.map((s) => [s.label, s.nret, s.roles.length])));
+      }
       // Ranking: more roles first; then shallower.
       const two = M().detect([
         { path: ['tb', 'mon'], depth: 1, vars: ['valid', 'pc_rdata', 'order', 'insn'].map((n) => ({ name: n, width: n === 'valid' ? 1 : 32 })) },

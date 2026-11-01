@@ -155,7 +155,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             web.evaluateJavaScript("cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(String(decoding: data, as: UTF8.self))})")
         } else if type == "opened", !started {
             started = true
+            if isFSDB { print("      [page] opened") }
             Task { @MainActor in await self.run() }
+        } else if type == "progress" {
+            print("      [page]", body["text"] ?? "")
         } else if type == "error" {
             print("ERROR", body["message"] ?? "")
             exit(1)
@@ -216,6 +219,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 }
 
+setvbuf(stdout, nil, _IOLBF, 0)  // a hang shows where it stopped
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
