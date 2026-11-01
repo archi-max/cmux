@@ -10,6 +10,13 @@ import Foundation
 /// page can't name a path or a hash, so it can't make cmux read, or probe,
 /// any other file. A file is handed back only if its content still has the
 /// recorded hash: a changed file is reported rather than loaded.
+///
+/// By design, a session file cmux reads (Load Session, `<dump>.json`) may name
+/// any path on this Mac or the open file's SSH host, and cmux reads it on
+/// restore (a regular file, at most 8 MiB). Its text reaches the page only if
+/// the session's hash matches, so the session's author must already know the
+/// content; the read error (missing, no permission, too large, changed) does
+/// reach the page.
 enum WaveformValueAliasFiles {
     /// At most this many keys per request, as the page keeps at most 16.
     static let maxFiles = 16
@@ -94,21 +101,62 @@ enum WaveformValueAliasFiles {
         value.count == 64 && value.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
-    /// The key of a file on the SSH host whose Files identity is `identity`.
+    /// The prefix of a remote file's key.
+    static let remoteKeyPrefix = "ssh://"
+
+    /// The host part of a remote key for the Files identity `identity`. For an
+    /// SSH identity (`ssh:<dest>|<port>|<identity file>|<options>`) that is the
+    /// destination and port only: the identity file and ssh options are never
+    /// written into a session. Any other identity is named by a hash of it.
+    static func remoteHost(identity: String) -> String {
+        if identity.hasPrefix("ssh:") {
+            let fields = identity.dropFirst(4).split(separator: "|", omittingEmptySubsequences: false)
+            let destination = fields.first.map(String.init) ?? ""
+            let port = fields.count > 1 ? String(fields[1]) : ""
+            if !destination.isEmpty, !destination.contains("/") {
+                return port.isEmpty ? destination : destination + ":" + port
+            }
+        }
+        return "id-" + sha256(identity).prefix(16)
+    }
+
+    /// The key of a file on the SSH host whose Files identity is `identity`:
+    /// `ssh://<dest>[:port]<path>`.
     static func remoteKey(identity: String, path: String) -> String {
-        identity + ":" + path
+        remoteKeyPrefix + remoteHost(identity: identity) + path
     }
 
     /// Where a session file's key points: a path on this Mac, a path on the
-    /// open file's SSH host, or another host's file. Nil when it is neither.
+    /// open file's SSH host (`remoteIdentity`), or another host's file. Nil
+    /// when it is neither.
     static func location(ofKey key: String, remoteIdentity: String?) -> Location? {
         if key.hasPrefix("/") { return .local(key) }
-        if let remoteIdentity, key.hasPrefix(remoteIdentity + ":") {
-            let path = String(key.dropFirst(remoteIdentity.count + 1))
-            return path.hasPrefix("/") ? .remote(path) : nil
-        }
-        guard let colon = key.firstIndex(of: ":"), key[key.index(after: colon)...].hasPrefix("/") else { return nil }
-        return .otherHost(String(key[key.index(after: colon)...]))
+        guard key.hasPrefix(remoteKeyPrefix) else { return nil }
+        let rest = key.dropFirst(remoteKeyPrefix.count)
+        // The host part has no "/": the path starts at the first one.
+        guard let slash = rest.firstIndex(of: "/"), slash > rest.startIndex else { return nil }
+        let host = String(rest[..<slash])
+        let path = String(rest[slash...])
+        if let remoteIdentity, host == remoteHost(identity: remoteIdentity) { return .remote(path) }
+        return .otherHost(path)
+    }
+
+    /// The text of the regular file at `url` (a symlink is followed), refused
+    /// when it is bigger than `maxBytes`: the size is checked on the file the
+    /// link points to, and the read itself stops after `maxBytes + 1` bytes, so
+    /// a file that grows (or a link swapped) after the check is still bounded.
+    /// Not a FIFO or device: those are refused before anything is opened.
+    nonisolated static func readText(at url: URL, maxBytes: Int) throws -> String {
+        let target = url.resolvingSymlinksInPath()
+        let values = try target.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true else { throw CocoaError(.fileReadNoSuchFile) }
+        guard (values.fileSize ?? 0) <= maxBytes else { throw CocoaError(.fileReadTooLarge) }
+        let handle = try FileHandle(forReadingFrom: target)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maxBytes + 1) ?? Data()
+        guard data.count <= maxBytes else { throw CocoaError(.fileReadTooLarge) }
+        guard let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+        return text
     }
 
     /// The keys in the page's `readValueAliases` request (strings only, at most

@@ -585,7 +585,7 @@
       if (a && typeof a.text === 'string' && a.text.length <= MAX_ALIAS_TEXT) {
         postAliasFile(Object.assign({}, f, { text: a.text }), false);
       } else {
-        ui().toast(format(S().messageValueAliasRestoreFailed, f.path || f.key, (a && a.error) || S().messageValueAliasNoTables), 'warning');
+        ui().toast(format(S().messageValueAliasRestoreFailed, f.path || f.key, a ? (a.error || S().messageValueAliasNoTables) : S().messageValueAliasNotRecorded), 'warning');
       }
     }
   }
