@@ -938,7 +938,8 @@
           conditionError: bp.conditionError, enabled: true, warned: bp.warned, times: keep ? was.times : null, timesFor: keep ? was.timesFor : null };
       }) : null;
       // cmux draws a line whose condition does not parse as an error.
-      if (!!bp.conditionError !== !!(before && before.conditionError) || (!before && bp.conditionError)) {
+      // (Also a new bad text: cmux forgets the error when it changes the condition.)
+      if (!!bp.conditionError !== !!(before && before.conditionError) || (bp.conditionError && (!before || before.condition !== bp.condition))) {
         host.toNative({ type: 'debugger', event: 'lineBreakpoint', key: bp.key, conditionError: !!bp.conditionError });
       }
       lines.push(bp);
