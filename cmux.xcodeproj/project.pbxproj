@@ -2236,6 +2236,7 @@
 		C01E00070000000000000001 /* FilePreviewCodeViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00070000000000000002 /* FilePreviewCodeViewTests.swift */; };
 		C01E00060000000000000001 /* FilePreviewEditorChromeOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00060000000000000002 /* FilePreviewEditorChromeOverlay.swift */; };
 		C01E00010000000000000001 /* FilePreviewEditorSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01E00010000000000000002 /* FilePreviewEditorSettings.swift */; };
+		D64EA50AF5AA58A0213CDB4A /* FilePreviewEditorTypingStabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00557CE53F2945845FFF7D0D /* FilePreviewEditorTypingStabilityTests.swift */; };
 		C0DE8652000000000000000F /* FilePreviewFileState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE86520000000000000010 /* FilePreviewFileState.swift */; };
 		A5001432A5001432A5001432 /* FilePreviewFocusCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001431A5001431A5001431 /* FilePreviewFocusCoordinator.swift */; };
 		C0DE86520000000000000101 /* FilePreviewImageLoadResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE86520000000000000102 /* FilePreviewImageLoadResult.swift */; };
@@ -6956,6 +6957,7 @@
 		C01E00070000000000000002 /* FilePreviewCodeViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewCodeViewTests.swift; sourceTree = "<group>"; };
 		C01E00060000000000000002 /* FilePreviewEditorChromeOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewEditorChromeOverlay.swift; sourceTree = "<group>"; };
 		C01E00010000000000000002 /* FilePreviewEditorSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewEditorSettings.swift; sourceTree = "<group>"; };
+		00557CE53F2945845FFF7D0D /* FilePreviewEditorTypingStabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FilePreviewEditorTypingStabilityTests.swift"; sourceTree = "<group>"; };
 		C0DE86520000000000000010 /* FilePreviewFileState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewFileState.swift; sourceTree = "<group>"; };
 		A5001431A5001431A5001431 /* FilePreviewFocusCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewFocusCoordinator.swift; sourceTree = "<group>"; };
 		C0DE86520000000000000102 /* FilePreviewImageLoadResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewImageLoadResult.swift; sourceTree = "<group>"; };
@@ -14389,6 +14391,7 @@
 				A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */,
 				A003858F5C6CA0CAD63EC5E5 /* GoToFileTests.swift */,
 				D612CDB3EA4F9E63F350E5C4 /* RemotePreviewCacheBudgetTests.swift */,
+				00557CE53F2945845FFF7D0D /* FilePreviewEditorTypingStabilityTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -19095,6 +19098,7 @@
 				FE002102 /* FileExplorerStoreTests.swift in Sources */,
 				828800010000000000000002 /* FileExplorerStyleContrastTests.swift in Sources */,
 				C01E00070000000000000001 /* FilePreviewCodeViewTests.swift in Sources */,
+				D64EA50AF5AA58A0213CDB4A /* FilePreviewEditorTypingStabilityTests.swift in Sources */,
 				C0DE49950000000000000001 /* FilePreviewKindResolverTests.swift in Sources */,
 				C0DE86520000000000000117 /* FilePreviewNativeRefreshStateTests.swift in Sources */,
 				10200F1E000000000000000D /* FilePreviewObserverReloadTests.swift in Sources */,
