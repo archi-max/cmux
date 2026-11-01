@@ -123,6 +123,52 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(selected?["signal"] as? String == "tb_c.dut.q" && selected?["time"] as? Int == 60, "selected row at the marker: \(String(describing: selected?["signal"])) @\(String(describing: selected?["time"]))")
     expect((selected?["driver"] as? [String: Any])?["kind"] as? String == "portOut", "dut.q is driven through u_mid's output port")
 
+    // FSDB helpers: a windowed (v2) one answers "last change" and "last edge" itself, so no signal's
+    // history is downloaded; a whole-signal (v1) one is read once per signal (values from those
+    // changes, not a second read). Played on this VCD by giving its backend the FSDB methods.
+    let kinds = await call("""
+      const h = cmuxWaveform.host, b = h.currentBackend;
+      const pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
+      const q = () => cmuxWaveform.trace.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      const plain = pick(await q());
+      const own = b.signalChanges.bind(b);
+      let downloads = 0, inFake = false;
+      b.signalChanges = (v, max) => { if (!inFake) { downloads++; } return own(v, max); };
+      const asked = [];
+      b.windowed = () => true;
+      b.v2 = async (req) => {
+        asked.push(req.cmd + ':' + (req.kind || ''));
+        if (req.cmd !== 'edge') { return { reply: { id: req.id, error: 'not here' } }; }
+        inFake = true;
+        const ch = await own({ signalId: req.signalId }, 10000000);
+        inFake = false;
+        let t = null;
+        for (let i = ch.length - 1; i >= 0; i--) {
+          const at = Number(ch[i][0]), val = String(ch[i][1]);
+          if (at >= req.t) { continue; }
+          if (req.kind === 'any' || (req.kind === 'rise' ? val === '1' : val === '0')) { t = at; break; }
+        }
+        return { reply: { id: req.id, result: { t } } };
+      };
+      const v2 = pick(await q());
+      const v2Downloads = downloads;
+      delete b.windowed; delete b.v2;
+      downloads = 0;
+      let valuesAsked = 0, changesAsked = 0;
+      b.valuesAt = async () => { valuesAsked++; return null; };
+      b.changes = async () => { changesAsked++; throw new Error('not here'); };
+      const whole = pick(await q());
+      const reads = downloads;
+      delete b.valuesAt; delete b.changes; b.signalChanges = own;
+      return { plain, v2, whole, asked: [...new Set(asked)].sort(), v2Downloads, valuesAsked, changesAsked, reads };
+    """) as? [String: Any]
+    expect(kinds?["plain"] as? String != nil && kinds?["v2"] as? String == kinds?["plain"] as? String,
+           "v2 helper: the same step: \(String(describing: kinds?["v2"])) vs \(String(describing: kinds?["plain"]))")
+    expect((kinds?["asked"] as? [String])?.contains("edge:any") == true && (kinds?["asked"] as? [String])?.contains("edge:rise") == true && kinds?["v2Downloads"] as? Int == 0,
+           "v2 helper: edges asked of it, no history downloaded: \(String(describing: kinds?["asked"])) downloads \(String(describing: kinds?["v2Downloads"]))")
+    expect(kinds?["whole"] as? String == kinds?["plain"] as? String && kinds?["valuesAsked"] as? Int == 0 && kinds?["changesAsked"] as? Int == 0 && (kinds?["reads"] as? Int ?? 0) > 0,
+           "v1 helper: the same step, each signal read once through its changes: \(String(describing: kinds))")
+
     // Status while cmux builds; close.
     _ = await call("cmuxWaveform.trace.status('Building…'); return null")
     expect(!(await panelText().contains("Building")), "status does not cover a shown step")
