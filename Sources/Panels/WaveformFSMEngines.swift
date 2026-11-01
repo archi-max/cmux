@@ -27,6 +27,12 @@ enum WaveformFSMEngines {
         cache.opened(waveformKey(waveform))
     }
 
+    /// A SystemVerilog design was opened or changed: answers are worked out again on the next Show
+    /// (states may now be named, Yosys may now run).
+    static func designChanged() {
+        cache.designChanged()
+    }
+
     /// The page's `fsmRequest`: the state machine of the register at dump path `value`.
     /// - refresh: the pane asks again after a reload; its graph stays up until the answer.
     static func requested(_ value: Any?, refresh: Bool = false, waveform: FilePreviewPanel) {
@@ -35,13 +41,13 @@ enum WaveformFSMEngines {
         let pathKey = HierarchyPathMapping.join(path)
         let page = waveform.nativeViewSessions.waveform
         if let answer = cache.answer(waveformKey, pathKey) {
-            Task { @MainActor in _ = await page.callFsm("show", argument: answer) }
+            Task { @MainActor in _ = await page.callFsm("answer", argument: answer) }
             return
         }
         guard let ticket = cache.start(waveformKey, pathKey) else { return }
         Task { @MainActor in
             if !refresh {
-                _ = await page.callFsm("show", argument: [
+                _ = await page.callFsm("answer", argument: [
                     "path": path,
                     "status": String(localized: "waveformFSM.looking", defaultValue: "Looking for the state machine…"),
                 ] as [String: Any])
@@ -61,10 +67,10 @@ enum WaveformFSMEngines {
                 "model": result.model.pageObject(),
                 "note": note(for: result, hasDesign: lookup != nil),
             ]
-            // Not kept: a transient failure, or no design open yet (opening one may name the states).
-            let keep = !result.hasTransientFailure && lookup != nil
-            guard cache.finish(ticket, answer, keep: keep) else { return }
-            _ = await page.callFsm("show", argument: answer)
+            // Not kept: a transient failure. Kept with no design open too (a Verdi run is ~20 s and a
+            // seat); opening or changing the design drops it (designChanged).
+            guard cache.finish(ticket, answer, keep: !result.hasTransientFailure) else { return }
+            _ = await page.callFsm("answer", argument: answer)
         }
     }
 

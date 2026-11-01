@@ -11,6 +11,8 @@
 //   show({ path, model, note })              model: FsmModel.pageObject() (FsmModel.swift)
 //     { signal, width, engine: 'verdi' | 'yosys' | 'observed', controls, reset?, resetSignal?,
 //       states: [{ bits, name? }], transitions: [{ from: bits | '*', to, condition? }], counts? }
+//   answer(info)                             show(info) if info.path is the row last asked about
+//                                            (request) and the pane wasn't closed since; else dropped
 //   hide()
 //   state() -> { open, path, current: { bits, name } | null, nodes: [{ bits, name, visits, listed }],
 //                edges: [{ from, to, condition, count, observed }] }
@@ -38,6 +40,7 @@
   let data = null;      // { key, times: Float64Array, codes: [bits | null], visits, counts, tooMany }
   let loading = null;
   let drawn = null;     // { nodes, edges } as last drawn
+  let wanted = null;    // pathKey of the row cmux was last asked about, or shown; null once closed
   let width = null;     // the width the user dragged the pane to (px), kept while the page lives
   try { width = Number(sessionStorage.getItem('cmux.fsm.width')) || null; } catch (e) { width = null; }
 
@@ -246,21 +249,29 @@
     const startX = event.clientX;
     const startW = pane.el.getBoundingClientRect().width;
     const room = pane.el.parentElement ? pane.el.parentElement.getBoundingClientRect().width : Infinity;
+    // The viewer frame takes no pointer events while dragging (body.cmux-fsm-resizing): over it the
+    // host page would otherwise see neither the moves nor the release.
     pane.el.classList.add('resizing');
-    const move = (e) => {
+    document.body.classList.add('cmux-fsm-resizing');
+    const resize = (e) => {
       const next = Math.round(Math.max(MIN_WIDTH, Math.min(room * 0.7, startW + (startX - e.clientX))));
       pane.el.style.width = next + 'px';
       width = next;
     };
-    const up = (e) => {
-      move(e);
+    const end = () => {
       window.removeEventListener('mousemove', move, true);
       window.removeEventListener('mouseup', up, true);
+      window.removeEventListener('blur', end);
       pane.el.classList.remove('resizing');
+      document.body.classList.remove('cmux-fsm-resizing');
       try { sessionStorage.setItem('cmux.fsm.width', String(width)); } catch (error) { /* not kept */ }
     };
+    // A move with no button held: the release happened where the page didn't see it.
+    const move = (e) => { if (e.buttons === 0) { end(); } else { resize(e); } };
+    const up = (e) => { resize(e); end(); };
     window.addEventListener('mousemove', move, true);
     window.addEventListener('mouseup', up, true);
+    window.addEventListener('blur', end);
   }
 
   function svgEl(name, attrs, parent) {
@@ -444,22 +455,36 @@
     link.setMarker(found);
   }
 
+  const segmentsOf = (path) => (Array.isArray(path) ? path.map(String) : String(path || '').split('.'));
+
   function show(info) {
     const i = info || {};
-    current = { path: Array.isArray(i.path) ? i.path.map(String) : String(i.path || '').split('.'), model: i.model || null,
+    current = { path: segmentsOf(i.path), model: i.model || null,
       note: i.note ? String(i.note) : '', status: i.status ? String(i.status) : '' };
+    wanted = pathKey(current.path);
     return render();
+  }
+
+  // cmux's answer to a request: shown only for the row last asked about, and while the pane wasn't
+  // closed since (a late answer for another row, or after a close, is dropped).
+  async function answer(info) {
+    const i = info || {};
+    if (wanted === null || pathKey(segmentsOf(i.path)) !== wanted) { return false; }
+    await show(info);
+    return true;
   }
 
   function hide() {
     current = null;
+    wanted = null;
     drawn = null;
     if (pane) { pane.el.hidden = true; pane.body.textContent = ''; }
   }
 
   // refresh: asked again after a reload; cmux leaves the graph up until its answer.
   function request(path, refresh) {
-    const segments = Array.isArray(path) ? path.map(String) : String(path || '').split('.');
+    const segments = segmentsOf(path);
+    wanted = pathKey(segments);
     host.toNative(refresh ? { type: 'fsmRequest', path: segments, refresh: true } : { type: 'fsmRequest', path: segments });
   }
 
@@ -496,6 +521,6 @@
   // Test hook (run.sh fsm): a lower change cap; null for the default.
   function setMaxChangesForTesting(n) { maxChanges = n === null || n === undefined ? MAX_CHANGES : Number(n); }
 
-  const api = Object.freeze({ show, hide, state, request: (path) => request(path, false), isOpen: () => !!current, setMaxChangesForTesting });
+  const api = Object.freeze({ show, answer, hide, state, request: (path) => request(path, false), isOpen: () => !!current, setMaxChangesForTesting });
   Object.defineProperty(window.cmuxWaveform, 'fsm', { value: api, writable: false, configurable: false, enumerable: true });
 })();
