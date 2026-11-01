@@ -414,6 +414,90 @@ struct SSHFileSearchTests {
     }
 
     @Test
+    func testNestedRepoCheckWorksWhenGrepPrintsNothingForBinaryInput() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        // GNU grep 3.5+ (Linux hosts) prints nothing on stdout for input with a
+        // NUL; BSD grep prints "Binary file ... matches", which hides a missing tr.
+        let shim = try Self.makeGNULikeGrepShim()
+        defer { try? FileManager.default.removeItem(at: shim) }
+        let nested = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: nested) }
+        let inner = nested.appendingPathComponent("plain")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        try Data("hello nested\n".utf8).write(to: inner.appendingPathComponent("n.sv"))
+        let innerInit = try Self.run("git init -q .", shell: "/bin/sh", path: "/usr/bin:/bin", directory: inner.path)
+        #expect(innerInit.status == 0)
+        for shell in Self.availableShells {
+            let found = try Self.search("hello", root: nested.path, shell: shell, path: shim.path + ":" + Self.pathWithoutRipgrep)
+            #expect(found.format == .grep, "GNU-like grep, shell \(shell)")
+            #expect(found.relativePaths.contains("plain/n.sv"), "GNU-like grep, shell \(shell)")
+        }
+    }
+
+    @Test
+    func testNestedRepoAndSubmoduleNamesThatAreNotUTF8StillFallBack() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        // GNU grep in a UTF-8 locale treats a matching line holding invalid
+        // UTF-8 (a Latin-1 "été") as binary and prints nothing on stdout.
+        // APFS refuses such names, so a git shim adds the entry a Linux host's
+        // `ls-files -z -o` would print for a nested repository named n\351t\351.
+        let shim = try Self.makeGNULikeGrepShim()
+        defer { try? FileManager.default.removeItem(at: shim) }
+        let git = shim.appendingPathComponent("git")
+        try Data("""
+        #!/bin/sh
+        case " $* " in
+        *" ls-files -z -o "*) /usr/bin/git "$@" || exit; printf 'n\\351t\\351/\\000'; exit 0 ;;
+        esac
+        exec /usr/bin/git "$@"
+
+        """.utf8).write(to: git)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: git.path)
+        let nested = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: nested) }
+        // A submodule named m\351, listed raw because the user's config sets core.quotePath=false.
+        // Its own shim has no git wrapper, so only the submodule check can catch it.
+        let grepOnly = try Self.makeGNULikeGrepShim()
+        defer { try? FileManager.default.removeItem(at: grepOnly) }
+        let submodule = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: submodule) }
+        let gitlink = try Self.run(
+            "git config core.quotePath false && git update-index --add --cacheinfo "
+                + "\"160000,1111111111111111111111111111111111111111,$(printf 'm\\351')\"",
+            shell: "/bin/sh", path: "/usr/bin:/bin", directory: submodule.path
+        )
+        #expect(gitlink.status == 0)
+        for shell in Self.availableShells {
+            let withNested = try Self.search("hello", root: nested.path, shell: shell, path: shim.path + ":" + Self.pathWithoutRipgrep)
+            #expect(withNested.format == .grep, "non-UTF-8 nested repo, shell \(shell)")
+            let withSubmodule = try Self.search("hello", root: submodule.path, shell: shell, path: grepOnly.path + ":" + Self.pathWithoutRipgrep)
+            #expect(withSubmodule.format == .grep, "non-UTF-8 submodule, shell \(shell)")
+        }
+    }
+
+    @Test
+    func testAnIgnoredNestedRepoKeepsGitGrep() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        // A repository cloned into an ignored folder (deps/ in .gitignore):
+        // rg skips it, so git grep keeps the root and its ignore rules.
+        let root = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dep = root.appendingPathComponent("deps/dep")
+        try FileManager.default.createDirectory(at: dep, withIntermediateDirectories: true)
+        try Data("hello from an ignored dependency\n".utf8).write(to: dep.appendingPathComponent("d.sv"))
+        let setup = try Self.run(
+            "printf 'deps/\\n' >> .gitignore && (cd deps/dep && git init -q .)",
+            shell: "/bin/sh", path: "/usr/bin:/bin", directory: root.path
+        )
+        #expect(setup.status == 0)
+        for shell in Self.availableShells {
+            let found = try Self.search("hello", root: root.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(found.format == .gitGrep, "shell \(shell)")
+            #expect(!found.relativePaths.contains("deps/dep/d.sv"), "shell \(shell)")
+        }
+    }
+
+    @Test
     func testGitGrepIgnoresTheRepositorysOwnConfig() throws {
         guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
         let root = try Self.makeGitSearchTree(hostileConfig: true)
@@ -716,6 +800,31 @@ struct SSHFileSearchTests {
 
     private static func grepLine(_ path: String, _ line: Int, _ text: String) -> Data {
         Data(path.utf8) + Data([0]) + Data("\(line):\(text)\n".utf8)
+    }
+
+    /// A directory holding a `grep` that acts like GNU grep 3.5+ on a Linux
+    /// host: binary input prints nothing on stdout, and in a UTF-8 locale input
+    /// with invalid UTF-8 counts as binary. Put it first on PATH.
+    static func makeGNULikeGrepShim() throws -> URL {
+        let shim = FileManager.default.temporaryDirectory.appendingPathComponent("gnu-grep-shim-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: shim, withIntermediateDirectories: true)
+        let grep = shim.appendingPathComponent("grep")
+        try Data("""
+        #!/bin/sh
+        case "$1" in -r*) exec /usr/bin/grep --binary-files=without-match "$@" ;; esac
+        case "${LC_ALL:-${LC_CTYPE:-$LANG}}" in
+        *UTF-8*|*utf8*) exec /usr/bin/perl -e '
+            local $/; my $data = <STDIN>; my $text = $data;
+            utf8::decode($text) or exit 1;
+            open(my $grep, "|-", "/usr/bin/grep", "--binary-files=without-match", @ARGV) or exit 2;
+            print $grep $data; close $grep; exit($? >> 8);
+            ' -- "$@" ;;
+        esac
+        exec /usr/bin/grep --binary-files=without-match "$@"
+
+        """.utf8).write(to: grep)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: grep.path)
+        return shim
     }
 
     /// A Git work tree: `hello` in tracked, untracked and non-ASCII-named
