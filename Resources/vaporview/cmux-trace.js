@@ -849,8 +849,14 @@
       r.bits = { lsb: pick.lsb, width: pick.width };
       r.consistent = consistent;
       r.path = (pick.path || []).map((x) => ({ loc: locOf(m, x.stmt.loc), branch: x.branch }));
+      // A plain `always @*` does not run at time 0 (always_comb does): x since the start
+      // with an input that has not changed yet is the block not having run.
+      if (consistent === false && !edge && p.kind === 'Always' && now && hasX(now) && (since === 0 || since === null || since === undefined)) {
+        r.reasons.push({ code: 'noActivation', time: 0 });
+        r.consistent = undefined;
+      }
       notDumped(r, ctx);
-      if (consistent === false) { explainMismatch(r, ctx); }
+      if (r.consistent === false) { explainMismatch(r, ctx); }
       return r;
     }
 
