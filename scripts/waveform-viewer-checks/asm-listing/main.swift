@@ -89,12 +89,20 @@ var failures = 0
     AB.pageReported(["key": first.uuidString, "conditionError": false], waveform: viewer)
     WaveformDebuggerEvaluate.promptAnswer = "$a0 == 3"
     let menu = AB.gutterMenu(view, lineStart: lineStart(7, in: text))
-    expect(menu?.items.map(\.title) == ["Disable Breakpoint", "Edit Condition…", "", "Remove Breakpoint"], "the dot's menu: \(menu?.items.map(\.title) ?? [])")
+    expect(menu?.items.map(\.title) == ["Run to Next Commit Here", "Run to Previous Commit Here", "", "Disable Breakpoint", "Edit Condition…", "",
+                                        "Remove Breakpoint"], "the dot's menu: \(menu?.items.map(\.title) ?? [])")
     if let edit = menu?.items.first(where: { $0.title == "Edit Condition…" }) { _ = edit.target?.perform(edit.action, with: edit) }
     expect(AB.marks[workspace]?.first?.condition == "$a0 == 3" && AB.styles(in: view)?[lineStart(7, in: text)] == .conditional,
            "Edit Condition… sets it")
     expect(AB.gutterMenu(view, lineStart: lineStart(7, in: text))?.items.map(\.title).contains("Remove Condition") == true, "and offers to remove it")
-    expect(AB.gutterMenu(view, lineStart: lineStart(9, in: text)) == nil, "no menu where there is no breakpoint")
+    // Any instruction line runs the viewer to that PC's next or previous commit (the listing to the waveform).
+    let runMenu = AB.gutterMenu(view, lineStart: lineStart(9, in: text))
+    expect(runMenu?.items.map(\.title) == ["Run to Next Commit Here", "Run to Previous Commit Here"], "an instruction line's menu: \(runMenu?.items.map(\.title) ?? [])")
+    for item in runMenu?.items ?? [] { _ = item.target?.perform(item.action, with: item) }
+    await settle(100)
+    let runs = viewer.nativeViewSessions.waveform.calls.filter { $0.function == "runToPc" }.map { [($0.argument["pcs"] as? [String])?.first ?? "", "\($0.argument["dir"] ?? "")"] }
+    expect(runs == [["0x80000006", "1"], ["0x80000006", "-1"]], "they ask the viewer: \(runs)")
+    expect(AB.gutterMenu(view, lineStart: lineStart(4, in: text)) == nil, "no menu on a line that is no instruction")
     AB.pageReported(["key": second.uuidString, "removed": true], waveform: viewer)
     expect(AB.marks[workspace]?.map(\.id) == [first], "removed from the list")
     await settle()

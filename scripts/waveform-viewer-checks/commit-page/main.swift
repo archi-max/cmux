@@ -326,6 +326,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(!listed.contains { $0["key"] as? String == "K4" } && listed.contains { $0["label"] as? String == "PC 0x80000010" },
            "setting the listing's keeps the page's: \(listed.map { $0["label"] ?? "" })")
 
+    // Run to a PC's next or previous commit (a listing's gutter menu): no breakpoint is added.
+    let before = (await list()).count
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    var runs: [Int] = []
+    for dir in [1, 1, -1] {
+      let r = await dbg("runToPc({ pcs: ['0x80000004'], dir: \(dir) })")
+      runs.append(((r?["hit"] as? [String: Any])?["landed"] as? Int) ?? -1)
+      _ = await marker(runs.last)
+    }
+    expect(runs == [25, 35, 25], "run to 0x80000004: next, next, previous: \(runs)")
+    let none = await dbg("runToPc({ pcs: ['0x90000000'], dir: 1 })")
+    expect(none?["reason"] as? String == "end" && (await list()).count == before, "never committed: the end, and the list is as it was")
+
     // The commits at the marker go to the listings while debugging; none after Stop.
     commitPcEvents.removeAll()
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } return null")
