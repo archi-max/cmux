@@ -95,7 +95,10 @@ struct FilePreviewViewportAnchor: Equatable {
             withoutAdditionalLayout: true
         )
         let top = visibleTop - origin.y
-        guard fragment.height > 0, fragment.minY <= top + 0.5, fragment.maxY > top else { return nil }
+        // After invalidateLayout with no layout since, the call answers with an
+        // estimated fragment about 0.001 pt wide that belongs to another line.
+        guard fragment.width >= 1, fragment.height > 0,
+              fragment.minY <= top + 0.5, fragment.maxY > top else { return nil }
         let characterOffset = top - fragment.minY
         return FilePreviewViewportAnchor(
             line: nil,
