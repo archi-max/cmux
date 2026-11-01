@@ -180,10 +180,22 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
       always_comb next_state = state == IDLE && go ? FETCH : state;
       assign busy = state != IDLE;
     endmodule
+    module pm #(parameter logic [2:0] B = 0) ();
+      typedef enum logic [2:0] { S0 = B, S1 } t;
+      t s;
+    endmodule
+    module pq #(parameter logic [2:0] B = 0) ();
+      typedef enum logic [2:0] { Q0 = B, Q1 } t;
+      t q;
+    endmodule
     module top;
       logic clk, rst, go, busy, busy4;
       fsm u_fsm (.*);
       fsm #(.W(4)) u_fsm4 (.clk, .rst, .go, .busy(busy4));
+      pm #(.B(0)) u0 ();
+      pm #(.B(4)) u4 ();
+      pq #(.B(2)) qa ();
+      pq #(.B(2)) qb ();
     endmodule
 
     """
@@ -256,6 +268,22 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             #expect(wide["state"]?.type.members.map(\.bits) == ["0000", "0001", "0100", "0101", "0111"])
             #expect(wide["state"]?.type.members.map(\.name) == Self.state.members.map(\.name))
             #expect(try await session.slangEnumSignals(inScope: "top.nope", cache: cache).isEmpty)
+        }
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
+    func valuesThatDependOnAParameterAreNeverTakenFromAnotherInstance() async throws {
+        try await Self.withServer { session, cache in
+            // u0 has S0 = 0, u4 has S0 = 4, both 3 bits wide. slang's hover lists both values without
+            // saying which instance has which, so the type is left out in both, not given u0's values.
+            for scope in ["top.u4", "top.u0", "top.u4"] {
+                let signals = try await session.slangEnumSignals(inScope: scope, cache: cache)
+                #expect(signals["s"] == nil, "\(scope)")
+            }
+            // Where every instance agrees, the values are certain.
+            let qa = try await session.slangEnumSignals(inScope: "top.qa", cache: cache)
+            #expect(qa["q"]?.type.members.map(\.bits) == ["010", "011"])
+            #expect(try await session.slangEnumSignals(inScope: "top.qb", cache: SlangEnumTypeCache())["q"]?.type == qa["q"]?.type)
         }
     }
 }
