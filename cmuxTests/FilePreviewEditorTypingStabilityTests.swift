@@ -257,6 +257,39 @@ struct FilePreviewEditorTypingStabilityTests {
         }
     }
 
+    /// Right after invalidateLayout, the layout manager answers the
+    /// no-additional-layout queries with an estimated fragment about 0.001 pt
+    /// wide that belongs to another line. Reading the anchor from it sent the
+    /// viewport hundreds of lines away on the next zoom.
+    @Test("zooming right after a layout invalidation keeps the top line")
+    func fontZoomAfterLayoutInvalidationKeepsTopLine() throws {
+        let editor = Self.offscreenEditor(text: Self.systemVerilogText(lines: 3000))
+        defer { editor.window.close() }
+        let textView = editor.textView
+        let scrollView = editor.scrollView
+        let clipView = scrollView.contentView
+        let layoutManager = try #require(textView.layoutManager)
+        let storage = try #require(textView.textStorage)
+        FilePreviewSyntaxStyler().applyHighlightedText(Self.highlighted(textView.string), to: textView, defaultColor: .textColor)
+        let marker = "data_1503 <="
+        let lineTop = Self.viewportY(of: marker, in: textView) + clipView.bounds.minY
+        clipView.scroll(to: NSPoint(x: 0, y: lineTop))
+        scrollView.reflectScrolledClipView(clipView)
+        editor.settle()
+        try #require(abs(Self.viewportY(of: marker, in: textView)) <= 1)
+
+        layoutManager.invalidateLayout(
+            forCharacterRange: NSRange(location: 0, length: storage.length),
+            actualCharacterRange: nil
+        )
+        #expect(textView.zoomPreviewFontIn())
+        editor.settle()
+
+        let lineHeight = layoutManager.defaultLineHeight(for: try #require(textView.font))
+        let markerY = Self.viewportY(of: marker, in: textView)
+        #expect(abs(markerY) <= lineHeight, "marker line moved to \(markerY) pt from the viewport top")
+    }
+
     /// Word wrap captures an anchor on every live-resize tick; only reloads
     /// need the line number, so a character anchor must not count lines.
     @Test("a character anchor does not count lines")
