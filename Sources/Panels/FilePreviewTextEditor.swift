@@ -74,6 +74,11 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
         FilePreviewLanguageFeatures.sync(textView, filePath: filePath)
 
         scrollView.documentView = textView
+        context.coordinator.scrollJumpLog = FilePreviewScrollJumpLog.installIfEnabled(
+            on: scrollView,
+            textView: textView,
+            filePath: filePath
+        )
         textView.applyFilePreviewWordWrap(wordWrap, scrollView: scrollView)
         Self.installChrome(on: scrollView, textView: textView)
         Self.applyTheme(
@@ -264,6 +269,8 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
         var isApplyingPanelUpdate = false
         var lastAppliedContentRevision: Int?
         var isHighlightingVisible = false
+        /// Debug builds: the clip-origin jump log, when turned on.
+        var scrollJumpLog: FilePreviewScrollJumpLog?
         // `FilePreviewSyntaxStyler` owns the cancellable task and cancels it in
         // its own deinitializer. Keeping teardown in that owner also avoids an
         // actor-isolated generic deinitializer that older Swift optimizers can
