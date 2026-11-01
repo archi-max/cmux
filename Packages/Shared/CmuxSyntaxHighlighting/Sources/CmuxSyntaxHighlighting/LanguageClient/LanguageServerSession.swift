@@ -345,9 +345,12 @@ public actor LanguageServerSession {
         notify("textDocument/didSave", params: .object(params))
     }
 
-    /// A clean buffer reloaded from its file (changed by git, an agent, another editor).
+    /// A clean buffer reloaded from its file (changed by git, an agent, another editor): the new
+    /// text, then a save of it. The buffer is the saved file, and slang-server elaborates a document
+    /// changed since its last save without source locations until a save (verify X1).
     public func reloadedFromDisk(uri: URL, text: String, version: Int) async {
         await change(uri: uri, text: text, version: version)
+        await save(uri: uri, text: text)
     }
 
     /// The text of an open document, as last sent.

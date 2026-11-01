@@ -59,9 +59,12 @@ enum WaveformEnumLink {
     }
 
     /// The clean buffer of an editor was reloaded from its file, changed by something else (an
-    /// agent, git, another editor). The buffer is the saved text (verify X1).
+    /// agent, git, another editor). The buffer is the saved text, so it's sent and handled as a
+    /// save: otherwise slang refuses every read of the file, and the types from before the change
+    /// would stay (verify X1).
     static func documentReloadedFromDisk(_ session: LanguageServerSession, uri: URL, text: String, version: Int) async {
         await session.reloadedFromDisk(uri: uri, text: text, version: version)
+        documentSaved(session)
     }
 
     /// A waveform is loading its file again, usually a new simulation of changed sources: every
