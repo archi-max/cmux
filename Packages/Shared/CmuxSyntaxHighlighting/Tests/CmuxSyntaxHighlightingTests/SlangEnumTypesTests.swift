@@ -154,7 +154,8 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             M_A,   /* block */ M_B = 4'h3,
           M_C
         } multi2_t;
-      typedef enum logic { LO, HI } lvl_t;
+      typedef enum logic [1:0] { LO, MID, HI } lvl_t;
+      typedef enum logic { OFF, ON } bit_t;
       localparam logic [2:0] K = 3'd6;
     endpackage
 
@@ -172,6 +173,7 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
       param_t pp;
       state_t hist [2];
       cpu_pkg::lvl_t lv [2];
+      cpu_pkg::bit_t flag;
       enum { RED, GREEN, BLUE } color;
       logic [2:0] plain;
       always_ff @(posedge clk) state <= rst ? IDLE : next_state;
@@ -210,7 +212,7 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
     func aScopesEnumSignalsComeWithTheirMembers() async throws {
         try await Self.withServer { session, cache in
             let signals = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
-            #expect(Set(signals.keys) == ["state", "next_state", "op_q", "mm2", "pp", "hist", "lv", "color"])
+            #expect(Set(signals.keys) == ["state", "next_state", "op_q", "mm2", "pp", "hist", "lv", "flag", "color"])
             #expect(signals["state"]?.type == Self.state)
             #expect(signals["state"]?.isArray == false)
             #expect(signals["next_state"]?.type == Self.state)
@@ -222,7 +224,9 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             #expect(signals["color"]?.type.members.map(\.name) == ["RED", "GREEN", "BLUE"])
             // An array of a type no scalar here has: found through workspace symbols.
             #expect(signals["lv"]?.isArray == true)
-            #expect(signals["lv"]?.type.members == [.init(name: "LO", bits: "0"), .init(name: "HI", bits: "1")])
+            #expect(signals["lv"]?.type.members.map(\.bits) == ["00", "01", "10"])
+            // A 1-bit enum: slang prints its values unsized (`0`), the same in every instance.
+            #expect(signals["flag"]?.type.members == [.init(name: "OFF", bits: "0"), .init(name: "ON", bits: "1")])
             #expect(signals["plain"] == nil)
         }
     }
