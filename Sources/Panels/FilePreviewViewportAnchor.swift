@@ -1,7 +1,9 @@
 import AppKit
 
 /// The line at the top of a text view's viewport, so a whole-buffer
-/// replacement (a reload, format on save) can show the same lines afterward.
+/// replacement (a reload, format on save) can show the same lines afterward,
+/// and the character there, so a reflow of the same text (word wrap turned on
+/// or off, a new wrap width) can.
 ///
 /// The editor uses non-contiguous layout: heights of lines that were never
 /// laid out are estimates, and replacing the buffer re-estimates them. The
@@ -15,6 +17,10 @@ struct FilePreviewViewportAnchor: Equatable {
     let offset: CGFloat
     /// Horizontal clip origin, kept as is.
     let x: CGFloat
+    /// First character of the line fragment at the viewport top.
+    var character: Int = 0
+    /// How far the viewport top sits below that fragment's top, in points.
+    var characterOffset: CGFloat = 0
 
     /// Reads the anchor of `textView`'s viewport; nil outside a scroll view.
     @MainActor
@@ -42,10 +48,15 @@ struct FilePreviewViewportAnchor: Equatable {
             let character = min(layoutManager.characterIndexForGlyph(at: glyph), text.length - 1)
             let lineStart = text.lineRange(for: NSRange(location: character, length: 0)).location
             let lineTop = Self.top(ofCharacterAt: lineStart, in: textView)
+            var fragmentGlyphs = NSRange(location: 0, length: 0)
+            let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &fragmentGlyphs)
+            let fragmentCharacter = min(layoutManager.characterIndexForGlyph(at: fragmentGlyphs.location), text.length - 1)
             anchor = FilePreviewViewportAnchor(
                 line: Self.lineNumber(at: lineStart, in: text),
                 offset: visibleTop - lineTop,
-                x: clipView.bounds.minX
+                x: clipView.bounds.minX,
+                character: fragmentCharacter,
+                characterOffset: visibleTop - (fragment.minY + origin.y)
             )
             if abs(clipView.bounds.minY - visibleTop) < 0.5 { break }
         }
@@ -55,10 +66,33 @@ struct FilePreviewViewportAnchor: Equatable {
     /// Scrolls `textView` so its anchored line is back at the viewport top.
     @MainActor
     func restore(in textView: NSTextView) {
+        let text = textView.string as NSString
+        scroll(textView, toTopOf: Self.offset(ofLine: line, in: text), plus: offset)
+    }
+
+    /// Scrolls `textView` so its anchored character is back at the viewport
+    /// top, for a reflow that kept the text: the line may wrap differently now.
+    @MainActor
+    func restoreCharacter(in textView: NSTextView) {
+        let length = (textView.string as NSString).length
+        let character = min(character, max(0, length - 1))
+        var offset = characterOffset
+        if length > 0, let layoutManager = textView.layoutManager {
+            // The fragment may be shorter now (wrap turned off joins rows).
+            _ = Self.top(ofCharacterAt: character, in: textView)
+            let glyph = layoutManager.glyphIndexForCharacter(at: character)
+            let height = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).height
+            offset = min(max(0, offset), max(0, height - 1))
+        }
+        scroll(textView, toTopOf: character, plus: offset)
+    }
+
+    @MainActor
+    private func scroll(_ textView: NSTextView, toTopOf character: Int, plus offset: CGFloat) {
         guard let scrollView = textView.enclosingScrollView else { return }
         let clipView = scrollView.contentView
         let text = textView.string as NSString
-        let lineStart = Self.offset(ofLine: line, in: text)
+        let lineStart = character
         // Laying out the target region can re-estimate the lines above it and
         // move the anchored line, so place it again until it holds still.
         for _ in 0..<4 {

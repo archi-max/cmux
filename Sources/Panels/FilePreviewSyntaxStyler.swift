@@ -167,9 +167,10 @@ final class FilePreviewSyntaxStyler {
         if let highlighted, highlighted.value.length == storage.length {
             let full = NSRange(location: 0, length: highlighted.value.length)
             highlighted.value.enumerateAttributes(in: full, options: []) { attributes, range, _ in
-                storage.setAttributes(
+                Self.setAttributes(
                     Self.normalized(attributes, fonts: fonts),
-                    range: range
+                    whereDifferentIn: range,
+                    of: storage
                 )
             }
             appliedHighlighted = true
@@ -183,6 +184,34 @@ final class FilePreviewSyntaxStyler {
         storage.endEditing()
         restoreSelection(selectedRanges, in: textView)
         return appliedHighlighted
+    }
+
+    /// Sets `attributes` on the parts of `range` whose attributes differ, so a
+    /// restyle after a keystroke edits only the tokens that changed. An
+    /// attribute edit over the whole buffer re-lays out every line: with
+    /// non-contiguous layout AppKit re-estimates the line heights and re-anchors
+    /// the clip view while it does, which moved the viewport by up to a hundred
+    /// lines (to the top of a short file) and often left it lines off.
+    static func setAttributes(
+        _ attributes: [NSAttributedString.Key: Any],
+        whereDifferentIn range: NSRange,
+        of storage: NSTextStorage
+    ) {
+        let target = attributes as NSDictionary
+        var location = range.location
+        let end = NSMaxRange(range)
+        while location < end {
+            var run = NSRange(location: location, length: 0)
+            let current = storage.attributes(
+                at: location,
+                longestEffectiveRange: &run,
+                in: NSRange(location: location, length: end - location)
+            )
+            if !target.isEqual(to: current) {
+                storage.setAttributes(attributes, range: run)
+            }
+            location = max(NSMaxRange(run), location + 1)
+        }
     }
 
     private func recordAppliedState(
