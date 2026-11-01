@@ -73,6 +73,44 @@ struct AsmMarkTests {
         #expect(placed.how == .moved && placed.mark.pc == 0xa)
     }
 
+    static let twins = """
+    Disassembly of section .text:
+
+    00000000 <f>:
+       0:\t4501                \tli\ta0,0
+       2:\t0001                \tnop
+       4:\t4505                \tli\ta0,1
+       6:\t0001                \tnop
+       8:\t4509                \tli\ta0,2
+    """
+
+    @Test func aTieIsNotMoved() throws {
+        // Its old offset 4 holds another instruction now, and the two `nop`s at 2 and 6 are as near:
+        // which one it meant is unknown, so it isn't moved to either (design Q8: never guess).
+        let listing = AsmListingParser.parse(Self.twins)
+        let gone = AsmMark(pc: 0x100, symbol: "f", offset: 4, encoding: 0x0001, text: "nop")
+        let placed = gone.resolved(in: listing)
+        #expect(placed.how == .lost && placed.mark.lost && placed.line == nil)
+        // With its PC still an instruction, it stays there (by PC, not moved).
+        let atPC = AsmMark(pc: 4, symbol: "f", offset: 4, encoding: 0x0001, text: "nop").resolved(in: listing)
+        #expect(atPC.how == .pc && atPC.mark.pc == 4 && atPC.mark.offset == 4)
+        // One nearer than the other: moved to that one.
+        let near = AsmMark(pc: 0x100, symbol: "f", offset: 5, encoding: 0x0001, text: "nop").resolved(in: listing)
+        #expect(near.how == .moved && near.mark.pc == 6 && near.mark.offset == 6)
+    }
+
+    @Test func aChangedInstructionIsNeverMoved() throws {
+        // No instruction in its symbol has its text (`li a0,3` was edited away): not moved anywhere,
+        // even to the instruction now at its offset or one with the same mnemonic.
+        let listing = AsmListingParser.parse(Self.twins)
+        let edited = AsmMark(pc: 0x100, symbol: "f", offset: 4, encoding: 0x450d, text: "li a0,3")
+        let placed = edited.resolved(in: listing)
+        #expect(placed.how == .lost && placed.mark.lost && placed.mark.offset == 4 && placed.mark.text == "li a0,3")
+        // Nor by its operands' spacing alone being equal: the key is the whole text.
+        let other = AsmMark(pc: 0x100, symbol: "f", offset: 4, encoding: nil, text: "li a0,10").resolved(in: listing)
+        #expect(other.how == .lost)
+    }
+
     @Test func fallsBackToItsPCThenIsLost() throws {
         let rv32 = try Self.parse("gnu-rv32-code.dis")
         var mark = try Self.mark(at: 0x8000_0004, in: rv32)
