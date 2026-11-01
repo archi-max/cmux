@@ -149,23 +149,48 @@ extension LanguageServerSession {
         guard let item = scope.first(where: { $0.name == name && !$0.isScope }),
               let width = try await declaredWidth(of: item, at: path, texts: &texts) else { return [] }
         var aliases: [String] = []
-        for child in scope where child.kind == "Instance" {
+        // An instance array (`sub u [3:0] (...)`) shares one instantiation, module and parameters:
+        // a connection as wide as the port goes to each element whole (`u[3].port` ... `u[0].port`).
+        // One as wide as all elements' ports is sliced (no element has the whole net) and any other
+        // width is an error, so the width check below leaves both out. (slang-server doesn't list
+        // multi-dimensional arrays, and VCS and Icarus reject them.)
+        for child in scope where child.kind == "Instance" || child.kind == "InstanceArray" {
             guard let connections = instanceConnections(child, texts: &texts) else { continue }
             let ports = connections.filter { $0.signal == name }
             guard !ports.isEmpty else { continue }
             let childPath = parent + "." + child.name
-            let childScope = try await scopeChildrenSkippingUnresolved(childPath)
+            let elements: [String]
+            if child.kind == "Instance" {
+                elements = [childPath]
+            } else {
+                elements = try await scopeChildrenSkippingUnresolved(childPath)
+                    .filter { $0.kind == "Instance" && $0.name.hasPrefix("[") }
+                    .prefix(Self.fragmentSearchResultLimit)
+                    .map { childPath + $0.name }
+            }
+            guard let first = elements.first else { continue }
+            let childScope = try await scopeChildrenSkippingUnresolved(first)
             for connection in ports {
                 guard let port = childScope.first(where: { $0.name == connection.port && $0.kind == "Port" }),
-                      try await declaredWidth(of: port, at: childPath + "." + connection.port, texts: &texts) == width else { continue }
-                aliases.append(childPath + "." + connection.port)
+                      try await declaredWidth(of: port, at: first + "." + connection.port, texts: &texts) == width else { continue }
+                aliases += elements.map { $0 + "." + connection.port }
             }
         }
-        let grandparent = Self.parentPath(of: parent)
-        let instanceName = String(parent.dropFirst(grandparent.isEmpty ? 0 : grandparent.count + 1))
+        var grandparent = Self.parentPath(of: parent)
+        // (parentPath also ends at an element's `[`, which the name keeps.)
+        var instanceName = String(parent.dropFirst(grandparent.count).drop { $0 == "." })
+        var instanceKind = "Instance"
+        // An element of a one-dimensional instance array (`u[2]`): the array's instantiation.
+        if !grandparent.isEmpty, instanceName.hasPrefix("["), instanceName.hasSuffix("]"), instanceName.count > 2,
+           instanceName.dropFirst().dropLast().allSatisfy({ $0.isASCII && ($0.isNumber || $0 == "-") }) {
+            let array = grandparent
+            grandparent = Self.parentPath(of: array)
+            instanceName = String(array.dropFirst(grandparent.count).drop { $0 == "." })
+            instanceKind = "InstanceArray"
+        }
         if item.kind == "Port", !grandparent.isEmpty, Self.isPlainIdentifier(instanceName) {
             let siblings = try await scopeChildrenSkippingUnresolved(grandparent)
-            if let instance = siblings.first(where: { $0.name == instanceName && $0.kind == "Instance" }),
+            if let instance = siblings.first(where: { $0.name == instanceName && $0.kind == instanceKind }),
                let connections = instanceConnections(instance, texts: &texts) {
                 for connection in connections where connection.port == name {
                     // Declared in this scope (not further up, as from inside a generate block).
@@ -357,10 +382,15 @@ extension LanguageServerSession {
     /// The `` `.port (signal)` `` items of an instantiation's text (`name (...)`): the port, and
     /// the signal when the connection is one plain identifier (nil for an expression, a slice or
     /// an empty connection). `.port` alone connects the same-named signal; `.*` and positional
-    /// connections are skipped.
+    /// connections are skipped. An instance array's text has its range before the list.
     static func portConnections(inInstanceText text: String) -> [(port: String, signal: String?)] {
         let units = blankingCommentsAndStrings(Array(text.utf16))
-        guard let open = units.firstIndex(of: UInt16(UInt8(ascii: "("))) else { return [] }
+        // The list's parenthesis, after an instance array's range (`u [$clog2(N):0] (...)`).
+        var bracketDepth = 0
+        guard let open = units.firstIndex(where: { unit in
+            if unit == UInt16(UInt8(ascii: "[")) { bracketDepth += 1 } else if unit == UInt16(UInt8(ascii: "]")) { bracketDepth -= 1 }
+            return unit == openUnit && bracketDepth == 0
+        }) else { return [] }
         var connections: [(port: String, signal: String?)] = []
         var index = open + 1
         var depth = 1
