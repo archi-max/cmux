@@ -35,13 +35,21 @@ enum WaveformDebuggerLineBreakpoints {
         let workspace: UUID
         let path: String
         var offsets: [UUID: Int] = [:]
+        /// Each mark's line as it is now (raw, without its line break), kept per edit in O(line).
+        var lineTexts: [UUID: String] = [:]
         var observer: (any NSObjectProtocol)?
-        /// The text as of the last edit seen (to find what a whole-range replace really changed).
-        var text: NSString = ""
+        /// The text before the edits since: a copy taken when marks appear, and the edits made since
+        /// as (range in the text then, its new characters). Only a large edit (a Format Document or
+        /// a reload) or one that moves a mark's line start needs the old text; typing only logs.
+        /// Nil while the file has no marks: then an edit costs nothing.
+        var snapshot: NSString?
+        var log: [(range: NSRange, text: String)] = []
         /// The marks were placed by text; not while the storage is still empty (the file loading).
         var placed = false
-        /// Marks an edit merged into another's line, kept so an undo of that edit brings them back.
-        var merged: [Mark] = []
+        /// Marks an edit merged into another's line, with the text that edit took out: the undo that
+        /// puts that text back brings them back (and no other undo does).
+        var merged: [(mark: Mark, removed: String)] = []
+        var hasMarks: Bool { !offsets.isEmpty || !merged.isEmpty }
         init(storage: NSTextStorage, workspace: UUID, path: String) {
             self.storage = storage
             self.workspace = workspace
@@ -49,6 +57,19 @@ enum WaveformDebuggerLineBreakpoints {
         }
         deinit {
             if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+        /// The text before the current edit.
+        func oldText() -> NSString {
+            guard let snapshot else { return "" }
+            guard !log.isEmpty else { return snapshot }
+            let text = NSMutableString(string: snapshot)
+            for edit in log { text.replaceCharacters(in: edit.range, with: edit.text) }
+            return text
+        }
+        /// The current text is the old text from here on (an O(file) copy: not per keystroke).
+        func takeSnapshot() {
+            if hasMarks, let storage { snapshot = NSString(string: storage.string) } else { snapshot = nil }
+            log = []
         }
     }
 
@@ -83,14 +104,23 @@ enum WaveformDebuggerLineBreakpoints {
         let line = lineNumber(at: start, in: text)
         let mark = Mark(id: UUID(), path: editor.filePath, line: line, text: lineText(at: start, in: text))
         marks[workspace, default: []].append(mark)
+        let first = !tracker.hasMarks
         tracker.offsets[mark.id] = start
+        tracker.lineTexts[mark.id] = rawLine(at: start, in: text)
+        // A mark made here is where it is (an empty new file is not one still loading).
+        tracker.placed = true
+        if first { tracker.takeSnapshot() }
         changed(workspace)
         return true
     }
 
     static func remove(_ id: UUID, in workspace: UUID) {
         marks[workspace]?.removeAll { $0.id == id }
-        for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] { tracker.offsets[id] = nil }
+        for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] {
+            tracker.offsets[id] = nil
+            tracker.lineTexts[id] = nil
+            tracker.merged.removeAll { $0.mark.id == id }
+        }
         changed(workspace)
     }
 
@@ -211,7 +241,7 @@ enum WaveformDebuggerLineBreakpoints {
         let tracker = Tracker(storage: storage, workspace: workspace, path: editor.filePath)
         // An empty storage is a file still loading (its text comes as one replace): placed then.
         if storage.length > 0 { place(tracker, in: storage) }
-        tracker.text = NSString(string: storage.string)
+        tracker.takeSnapshot()
         tracker.observer = NotificationCenter.default.addObserver(
             forName: NSTextStorage.didProcessEditingNotification,
             object: storage,
@@ -221,13 +251,20 @@ enum WaveformDebuggerLineBreakpoints {
             MainActor.assumeIsolated {
                 guard let textView, let tracker = trackers.object(forKey: textView), let storage = tracker.storage,
                       storage.editedMask.contains(.editedCharacters) else { return }
-                if tracker.placed {
-                    edited(tracker, storage: storage, undoing: isUndoing(textView))
-                } else if storage.length > 0 {
+                if !tracker.placed {
+                    guard storage.length > 0 else { return }
                     place(tracker, in: storage)
+                    tracker.takeSnapshot()
                     changed(tracker.workspace)
+                    return
                 }
-                tracker.text = NSString(string: storage.string)
+                // No breakpoints in this file: nothing to keep up per keystroke.
+                guard tracker.hasMarks else {
+                    tracker.snapshot = nil
+                    tracker.log = []
+                    return
+                }
+                edited(tracker, storage: storage, undoing: isUndoing(textView))
                 scheduleRefresh(tracker.workspace)
             }
         }
@@ -241,7 +278,7 @@ enum WaveformDebuggerLineBreakpoints {
     private static func place(_ tracker: Tracker, in storage: NSTextStorage) {
         tracker.placed = true
         let text = storage.string as NSString
-        let starts = lineStarts(of: text)
+        let starts = lineTable(of: text).starts
         var taken: Set<Int> = []
         guard var list = marks[tracker.workspace] else { return }
         for index in list.indices where list[index].path == tracker.path {
@@ -259,6 +296,7 @@ enum WaveformDebuggerLineBreakpoints {
             list[index] = mark
             guard mark.line < starts.count, taken.insert(mark.line).inserted else { continue }
             tracker.offsets[mark.id] = starts[mark.line]
+            tracker.lineTexts[mark.id] = rawLine(at: starts[mark.line], in: text)
         }
         marks[tracker.workspace] = list
     }
@@ -275,88 +313,245 @@ enum WaveformDebuggerLineBreakpoints {
         return nil
     }
 
-    /// Moves the file's breakpoints with an edit. What changed is found by comparing the text before
-    /// and after (a Format Document or a reload replaces the whole range but changes less): a mark
-    /// before it stays, one after it moves by the change in length, and one whose line start was in
-    /// it goes to its text again (the nearest free line with it), else keeps its line number. Two
-    /// that meet on one line become one, kept aside so an undo of that edit brings it back.
+    /// Moves the file's breakpoints with an edit. Typing (an edit that takes out no mark's line
+    /// start) costs O(edit + marks): offsets after it shift, a mark before it stays (also when its
+    /// line is split or another is joined into it), and the edited line's text is re-read.
+    /// Anything else goes to `relocate`, which looks at the old text.
     private static func edited(_ tracker: Tracker, storage: NSTextStorage, undoing: Bool) {
-        let old = tracker.text
         let text = storage.string as NSString
-        let span = changedSpan(old: old, new: text, edited: storage.editedRange)
-        let delta = text.length - old.length
-        let starts = lineStarts(of: text)
-        let lineOf: (Int) -> Int = { offset in
-            var lo = 0, hi = starts.count - 1
-            while lo < hi { let mid = (lo + hi + 1) / 2; if starts[mid] <= offset { lo = mid } else { hi = mid - 1 } }
-            return lo
+        let edited = storage.editedRange
+        let delta = storage.changeInLength
+        // A whole-range replace (Format Document, a reload) or a large paste: compare with the old text.
+        if edited.length > 1024 || (undoing && !tracker.merged.isEmpty) {
+            relocate(tracker, text: text, edited: edited, undoing: undoing)
+            return
         }
+        let start = edited.location, newEnd = NSMaxRange(edited), oldEnd = newEnd - delta
+        let inserted = text.substring(with: edited)
+        let editLine = WaveformLineBreakpoint.lineStart(containing: start, in: text)
+        // A mark's line start taken out or replaced: compare with the old text.
+        if oldEnd > start, tracker.offsets.values.contains(where: { $0 >= start && $0 <= oldEnd }) {
+            relocate(tracker, text: text, edited: edited, undoing: undoing)
+            return
+        }
+        let splits = inserted.rangeOfCharacter(from: .newlines) != nil
+        var moved: [UUID: Int] = [:]
+        var dropped: [UUID] = []
+        // In offset order: of two that meet on one line, the one already at its start stays.
+        for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
+            var new = offset > oldEnd ? offset + delta
+                : (offset == oldEnd && offset >= start ? WaveformLineBreakpoint.lineStart(containing: offset + delta, in: text) : offset)
+            // Its line split: it goes with its statement (Enter in the indentation moves it down).
+            if splits && offset == editLine && offset < start, let old = tracker.lineTexts[id] {
+                new = splitLine(old: old, head: offset, tail: WaveformLineBreakpoint.lineStart(containing: newEnd, in: text), in: text)
+            }
+            if moved.values.contains(new) { dropped.append(id); continue }
+            moved[id] = new
+        }
+        tracker.offsets = moved
+        for (id, offset) in moved where offset >= editLine && offset <= newEnd { tracker.lineTexts[id] = rawLine(at: offset, in: text) }
+        merge(dropped, in: tracker, removed: "")
+        tracker.log.append((NSRange(location: start, length: oldEnd - start), inserted))
+        if tracker.log.count > 4096 { tracker.takeSnapshot() }
+        changed(tracker.workspace, redraw: true)
+    }
+
+    /// Moves the marks with an edit by comparing the old text with the new (O(file)). The span
+    /// that really changed is, for a whole or large replace, the edited range narrowed to where
+    /// the texts differ (a reload replaces everything but changes less). A mark before the span stays; one after it moves by
+    /// the change in length; one whose line the span touched goes to the line its old line now
+    /// lines up with (by the unchanged lines around it), else to its text (exact, then ignoring
+    /// whitespace) nearest that line. A reload or Format Document never drops one: when its line
+    /// is taken it goes to the nearest free line, lost and disabled. A user's edit that puts two on
+    /// one line keeps one, the other kept aside for the undo that puts its text back.
+    private static func relocate(_ tracker: Tracker, text: NSString, edited: NSRange, undoing: Bool) {
+        let old = tracker.oldText()
+        let whole = edited.location == 0 && edited.length == text.length
+        let delta = text.length - old.length
+        // A user's edit changed exactly its range (narrowing it could move a deleted line's start
+        // into the next line); a whole or large replace changed only where the texts differ.
+        let span = whole || edited.length > 1024
+            ? changedSpan(old: old, new: text, edited: edited)
+            : (start: edited.location, oldEnd: NSMaxRange(edited) - delta)
+        let newSpanEnd = span.oldEnd + delta
+        let oldTable = lineTable(of: old), newTable = lineTable(of: text)
+        let oldLineOf = { (offset: Int) in lineIndex(of: offset, in: oldTable.starts) }
+        let newLineOf = { (offset: Int) in lineIndex(of: offset, in: newTable.starts) }
         let byId = Dictionary((marks[tracker.workspace] ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var taken: [Int: UUID] = [:]
         var inside: [(id: UUID, line: Int, text: String)] = []
         var dropped: [UUID] = []
-        // An edit within lines (no line break taken out or put in) moves no line: no text to look for.
-        let newlines = CharacterSet.newlines
-        let joinsOrSplits = old.substring(with: NSRange(location: span.start, length: span.oldEnd - span.start)).rangeOfCharacter(from: newlines) != nil
-            || text.substring(with: NSRange(location: span.start, length: span.oldEnd + delta - span.start)).rangeOfCharacter(from: newlines) != nil
+        let joinsOrSplits = old.substring(with: NSRange(location: span.start, length: span.oldEnd - span.start)).rangeOfCharacter(from: .newlines) != nil
+            || text.substring(with: NSRange(location: span.start, length: newSpanEnd - span.start)).rangeOfCharacter(from: .newlines) != nil
         for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
-            let oldRange = old.lineRange(for: NSRange(location: min(offset, old.length), length: 0))
-            // Its line was changed, or had lines put inside it (after its start).
-            let touched = joinsOrSplits && (span.oldEnd > span.start
-                ? oldRange.location < span.oldEnd && NSMaxRange(oldRange) > span.start
-                : oldRange.location < span.start && span.start < NSMaxRange(oldRange))
+            // Its line start was in the changed span (a line start before it is still one, on the
+            // same line: a mark there stays, also when lines are joined into or split off its line).
+            let touched = joinsOrSplits && offset >= span.start && offset < span.oldEnd
             if touched {
-                // Its line before the edit: what to look for.
-                let oldLine = old.substring(with: oldRange).trimmingCharacters(in: .newlines)
-                inside.append((id, lineNumber(at: offset, in: old), WaveformLineBreakpoint.lineText(oldLine)))
+                let line = oldLineOf(offset)
+                inside.append((id, line, oldTable.texts[line]))
                 continue
             }
-            let line = lineOf(WaveformLineBreakpoint.lineStart(containing: offset >= span.oldEnd ? offset + delta : offset, in: text))
+            var start = WaveformLineBreakpoint.lineStart(containing: offset >= span.oldEnd ? offset + delta : offset, in: text)
+            // Its line split by the edit: it goes with its statement.
+            if joinsOrSplits && offset < span.start && span.start <= NSMaxRange(old.lineRange(for: NSRange(location: offset, length: 0))) {
+                let tail = WaveformLineBreakpoint.lineStart(containing: newSpanEnd, in: text)
+                if taken[newLineOf(tail)] == nil { start = splitLine(old: oldTable.texts[oldLineOf(offset)], head: start, tail: tail, in: text) }
+            }
+            let line = newLineOf(start)
             if taken[line] != nil { dropped.append(id); continue }
             taken[line] = id
         }
-        // Those whose text is still there first, then the rest at their line numbers.
-        var unmatched: [(id: UUID, line: Int, text: String)] = []
-        for mark in inside {
-            if let line = WaveformLineBreakpoint.lines(matching: mark.text, near: mark.line, in: text).first(where: { taken[$0] == nil }) {
+        var lost: Set<UUID> = []
+        if !inside.isEmpty {
+            // Old line → new line through the span's lines that are the same, once each, in both.
+            let firstOld = oldLineOf(span.start), lastOld = oldLineOf(max(span.start, span.oldEnd))
+            let lastNew = newLineOf(max(span.start, newSpanEnd))
+            let anchors = alignment(old: Array(oldTable.texts[firstOld...lastOld]), new: Array(newTable.texts[firstOld...lastNew]))
+                .map { (old: $0.old + firstOld, new: $0.new + firstOld) }
+            // Where an old line lines up, and whether the lines between its neighbours are one for one
+            // (so a changed line there is the same statement changed).
+            let aligned = { (line: Int) -> (line: Int, oneForOne: Bool) in
+                let above = anchors.last { $0.old <= line } ?? (old: firstOld - 1, new: firstOld - 1)
+                let below = anchors.first { $0.old > line } ?? (old: lastOld + 1, new: lastNew + 1)
+                let target = max(0, min(newTable.starts.count - 1, min(above.new + (line - above.old), below.new - 1 < above.new + 1 ? above.new + 1 : below.new - 1)))
+                return (target, below.old - above.old == below.new - above.new)
+            }
+            for mark in inside {
+                // A user's edit that took out the whole line takes its breakpoint (kept for the undo).
+                let oldRange = old.lineRange(for: NSRange(location: oldTable.starts[mark.line], length: 0))
+                if !whole && oldRange.location >= span.start && NSMaxRange(oldRange) <= span.oldEnd {
+                    dropped.append(mark.id)
+                    continue
+                }
+                let (target, oneForOne) = aligned(mark.line)
+                let wanted = WaveformLineBreakpoint.lineText(mark.text)
+                let bare = squeezed(mark.text)
+                var line: Int?
+                if taken[target] == nil, WaveformLineBreakpoint.lineText(newTable.texts[target]) == wanted || squeezed(newTable.texts[target]) == bare {
+                    line = target
+                } else if let match = nearest(in: newTable.texts, near: target, where: { taken[$0] == nil }, matching: { WaveformLineBreakpoint.lineText($0) == wanted })
+                            ?? nearest(in: newTable.texts, near: target, where: { taken[$0] == nil }, matching: { squeezed($0) == bare }) {
+                    line = match
+                } else if taken[target] == nil && oneForOne {
+                    // Its line was changed where it stands (the lines around it line it up one for one).
+                    line = target
+                } else if whole {
+                    // Not found: never moved silently onto another statement, never dropped by a reload.
+                    line = taken[target] == nil ? target : nearestFree(to: target, count: newTable.starts.count, taken: Set(taken.keys))
+                    lost.insert(mark.id)
+                } else if taken[target] == nil {
+                    line = target
+                }
+                guard let line else { dropped.append(mark.id); continue }
                 taken[line] = mark.id
-            } else {
-                unmatched.append(mark)
             }
         }
-        for mark in unmatched {
-            let line = min(mark.line, starts.count - 1)
-            if taken[line] != nil { dropped.append(mark.id); continue }
-            taken[line] = mark.id
-        }
-        // An undo of an edit that merged marks: those whose text is back on a free line return.
+        // An undo that puts back the text of an edit that merged marks: those come back.
         var restored: [Mark] = []
-        if undoing {
-            tracker.merged.removeAll { mark in
-                guard let line = WaveformLineBreakpoint.lines(matching: mark.text, near: mark.line, in: text)
-                    .first(where: { taken[$0] == nil }) else { return false }
-                var back = mark
+        if undoing, !tracker.merged.isEmpty {
+            let putBack = text.substring(with: NSRange(location: span.start, length: newSpanEnd - span.start))
+            tracker.merged.removeAll { entry in
+                guard !entry.removed.isEmpty, putBack.contains(entry.removed) else { return false }
+                let wanted = WaveformLineBreakpoint.lineText(entry.mark.text)
+                guard let line = nearest(in: newTable.texts, near: entry.mark.line, where: { taken[$0] == nil },
+                                         matching: { WaveformLineBreakpoint.lineText($0) == wanted }) else { return false }
+                var back = entry.mark
                 back.line = line
                 taken[line] = back.id
                 restored.append(back)
                 return true
             }
         }
-        tracker.offsets = Dictionary(uniqueKeysWithValues: taken.map { ($0.value, starts[$0.key]) })
-        if !dropped.isEmpty {
-            for id in dropped {
-                guard var mark = byId[id] else { continue }
-                if let at = inside.first(where: { $0.id == id }) {
-                    mark.line = at.line
-                    mark.text = at.text
-                }
-                tracker.merged.append(mark)
+        tracker.offsets = Dictionary(uniqueKeysWithValues: taken.map { ($0.value, newTable.starts[$0.key]) })
+        tracker.lineTexts = Dictionary(uniqueKeysWithValues: taken.map { ($0.value, newTable.texts[$0.key]) })
+        if !lost.isEmpty {
+            for index in marks[tracker.workspace]?.indices ?? 0..<0 where lost.contains(marks[tracker.workspace]![index].id) {
+                marks[tracker.workspace]![index].lost = true
+                marks[tracker.workspace]![index].enabled = false
             }
-            if tracker.merged.count > 64 { tracker.merged.removeFirst(tracker.merged.count - 64) }
-            marks[tracker.workspace]?.removeAll { dropped.contains($0.id) }
         }
+        // What the edit took out, for the undo that puts it back.
+        let removed = old.substring(with: NSRange(location: span.start, length: span.oldEnd - span.start))
+        merge(dropped.map { id in (id, inside.first { $0.id == id }) }, in: tracker, removed: removed, byId: byId)
         if !restored.isEmpty { marks[tracker.workspace, default: []].append(contentsOf: restored) }
+        tracker.takeSnapshot()
         changed(tracker.workspace, redraw: true)
+    }
+
+    /// A line `old` split in two (its head stays at `head`, the rest starts at `tail`): where its
+    /// statement went. The head unless only the tail still reads as the old line.
+    private static func splitLine(old: String, head: Int, tail: Int, in text: NSString) -> Int {
+        guard tail != head else { return head }
+        let wanted = squeezed(old)
+        if squeezed(rawLine(at: head, in: text)) == wanted { return head }
+        return squeezed(rawLine(at: tail, in: text)) == wanted ? tail : head
+    }
+
+    /// Marks an edit put on another's line: out of the list, kept for the undo of that edit.
+    private static func merge(_ dropped: [UUID], in tracker: Tracker, removed: String) {
+        let byId = Dictionary((marks[tracker.workspace] ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        merge(dropped.map { ($0, nil) }, in: tracker, removed: removed, byId: byId)
+    }
+
+    private static func merge(_ dropped: [(id: UUID, at: (id: UUID, line: Int, text: String)?)], in tracker: Tracker,
+                              removed: String, byId: [UUID: Mark]) {
+        guard !dropped.isEmpty else { return }
+        for entry in dropped {
+            guard var mark = byId[entry.id] else { continue }
+            if let at = entry.at {
+                mark.line = at.line
+                mark.text = WaveformLineBreakpoint.lineText(at.text)
+            } else if let raw = tracker.lineTexts[entry.id] {
+                mark.text = WaveformLineBreakpoint.lineText(raw)
+            }
+            tracker.merged.append((mark, removed))
+            tracker.lineTexts[entry.id] = nil
+        }
+        if tracker.merged.count > 64 { tracker.merged.removeFirst(tracker.merged.count - 64) }
+        let ids = Set(dropped.map(\.id))
+        marks[tracker.workspace]?.removeAll { ids.contains($0.id) }
+    }
+
+    /// Pairs (old index, new index) of lines that are the same (ignoring whitespace) and appear
+    /// once in each, kept in order in both (the longest such run, as patience diff does).
+    private static func alignment(old: [String], new: [String]) -> [(old: Int, new: Int)] {
+        var oldCount: [String: (count: Int, index: Int)] = [:], newCount: [String: (count: Int, index: Int)] = [:]
+        for (index, line) in old.enumerated() { let key = squeezed(line); guard !key.isEmpty else { continue }; oldCount[key] = ((oldCount[key]?.count ?? 0) + 1, index) }
+        for (index, line) in new.enumerated() { let key = squeezed(line); guard !key.isEmpty else { continue }; newCount[key] = ((newCount[key]?.count ?? 0) + 1, index) }
+        let pairs = oldCount.compactMap { key, value -> (old: Int, new: Int)? in
+            guard value.count == 1, let other = newCount[key], other.count == 1 else { return nil }
+            return (value.index, other.index)
+        }.sorted { $0.old < $1.old }
+        // Longest increasing run of new indices.
+        var tails: [Int] = [], previous = [Int](repeating: -1, count: pairs.count), tailIndex: [Int] = []
+        for (k, pair) in pairs.enumerated() {
+            var lo = 0, hi = tails.count
+            while lo < hi { let mid = (lo + hi) / 2; if tails[mid] < pair.new { lo = mid + 1 } else { hi = mid } }
+            if lo > 0 { previous[k] = tailIndex[lo - 1] }
+            if lo == tails.count { tails.append(pair.new); tailIndex.append(k) } else { tails[lo] = pair.new; tailIndex[lo] = k }
+        }
+        var run: [(old: Int, new: Int)] = []
+        var k = tailIndex.last ?? -1
+        while k >= 0 { run.append(pairs[k]); k = previous[k] }
+        return run.reversed()
+    }
+
+    /// The line of `texts` nearest `line` (the earlier on a tie) that `free` and `matching` accept.
+    private static func nearest(in texts: [String], near line: Int, where free: (Int) -> Bool, matching: (String) -> Bool) -> Int? {
+        guard !texts.isEmpty else { return nil }
+        let start = max(0, min(line, texts.count - 1))
+        for distance in 0..<texts.count {
+            for candidate in [start - distance, start + distance] where candidate >= 0 && candidate < texts.count && free(candidate) && matching(texts[candidate]) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// A line's text with no whitespace at all (Format Document may re-space inside a line).
+    private static func squeezed(_ line: String) -> String {
+        String(line.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(Character.init))
     }
 
     /// The span an edit really changed: `start` (the common prefix's end) and the old text's end of
@@ -372,53 +567,82 @@ enum WaveformDebuggerLineBreakpoints {
         return (prefix, oldLength - suffix)
     }
 
-    /// The marks' line numbers and texts from where their open files have them (one pass per file).
+    /// The marks' line numbers and texts from where their open files have them (one pass per file
+    /// with marks), and their trackers' old text brought up to date.
     private static func refreshPositions(in workspace: UUID) {
         guard var list = marks[workspace] else { return }
-        for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] where tracker.workspace == workspace {
+        for case let tracker as Tracker in trackers.objectEnumerator()?.allObjects ?? [] where tracker.workspace == workspace && tracker.hasMarks {
             guard let storage = tracker.storage else { continue }
             let text = storage.string as NSString
             let sorted = tracker.offsets.sorted { $0.value < $1.value }
-            var line = 0
-            var index = 0
-            for (id, offset) in sorted {
-                let end = min(offset, text.length)
-                while index < end {
-                    let unit = text.character(at: index)
-                    if unit == 0x0A || (unit == 0x0D && (index + 1 >= text.length || text.character(at: index + 1) != 0x0A)) { line += 1 }
-                    index += 1
-                }
+            let lines = lineNumbers(at: sorted.map(\.value), in: text)
+            for ((id, offset), line) in zip(sorted, lines) {
                 guard let at = list.firstIndex(where: { $0.id == id }) else { continue }
                 list[at].line = line
-                list[at].text = lineText(at: offset, in: text)
+                list[at].text = WaveformLineBreakpoint.lineText(tracker.lineTexts[id] ?? rawLine(at: offset, in: text))
             }
+            if !tracker.log.isEmpty { tracker.takeSnapshot() }
         }
         marks[workspace] = list
     }
 
-    private static func lineStarts(of text: NSString) -> [Int] {
-        var starts: [Int] = []
-        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
+    /// Every line's start and text (without its break): only where the old text is compared.
+    private static func lineTable(of text: NSString) -> (starts: [Int], texts: [String]) {
+        var starts: [Int] = [], texts: [String] = []
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: .byLines) { line, range, _, _ in
             starts.append(range.location)
+            texts.append(line ?? "")
         }
-        return starts.isEmpty ? [0] : starts
+        if starts.isEmpty || (text.length > 0 && isBreak(text.character(at: text.length - 1))) {
+            starts.append(text.length)
+            texts.append("")
+        }
+        return (starts, texts)
+    }
+
+    private static func isBreak(_ unit: unichar) -> Bool { unit == 0x0A || unit == 0x0D || unit == 0x2028 || unit == 0x2029 }
+
+    private static func lineIndex(of offset: Int, in starts: [Int]) -> Int {
+        var lo = 0, hi = starts.count - 1
+        while lo < hi { let mid = (lo + hi + 1) / 2; if starts[mid] <= offset { lo = mid } else { hi = mid - 1 } }
+        return lo
+    }
+
+    /// The 0-based lines of ascending `offsets`, counted in one pass over the text up to the last.
+    private static func lineNumbers(at offsets: [Int], in text: NSString) -> [Int] {
+        var result: [Int] = []
+        var line = 0, index = 0
+        var buffer = [unichar](repeating: 0, count: 4096)
+        var previousCR = false
+        for offset in offsets {
+            let end = min(offset, text.length)
+            while index < end {
+                let count = min(buffer.count, end - index)
+                text.getCharacters(&buffer, range: NSRange(location: index, length: count))
+                for k in 0..<count {
+                    let unit = buffer[k]
+                    // \r\n is one break; a lone \r or \n is one.
+                    if unit == 0x0A { if !previousCR { line += 1 } } else if unit == 0x0D { line += 1 }
+                    previousCR = unit == 0x0D
+                }
+                index += count
+            }
+            result.append(line)
+        }
+        return result
     }
 
     private static func lineNumber(at offset: Int, in text: NSString) -> Int {
-        var line = 0
-        var index = 0
-        let end = min(offset, text.length)
-        while index < end {
-            let unit = text.character(at: index)
-            if unit == 0x0A || (unit == 0x0D && (index + 1 >= text.length || text.character(at: index + 1) != 0x0A)) { line += 1 }
-            index += 1
-        }
-        return line
+        lineNumbers(at: [offset], in: text)[0]
+    }
+
+    /// The line at `start` as it is, without its break.
+    private static func rawLine(at start: Int, in text: NSString) -> String {
+        text.substring(with: text.lineRange(for: NSRange(location: min(start, text.length), length: 0))).trimmingCharacters(in: .newlines)
     }
 
     private static func lineText(at start: Int, in text: NSString) -> String {
-        WaveformLineBreakpoint.lineText(text.substring(with: text.lineRange(for: NSRange(location: start, length: 0)))
-            .trimmingCharacters(in: .newlines))
+        WaveformLineBreakpoint.lineText(rawLine(at: start, in: text))
     }
 
     // MARK: To the viewer
