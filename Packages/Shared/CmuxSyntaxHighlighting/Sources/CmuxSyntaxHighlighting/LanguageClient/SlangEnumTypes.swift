@@ -294,6 +294,22 @@ public enum SlangEnumValues {
         return out
     }
 
+    /// The one value of `width` bits a member's hover sections give, or nil.
+    /// The hover has one section per elaborated instance but doesn't say which, so instances of
+    /// one width that disagree (a value from a parameter, `S0 = B`) leave the member, and so
+    /// its type, out: never another instance's value. slang prints a 1-bit value unsized (`0`);
+    /// such values are taken only when every section agrees.
+    static func memberValue(_ sections: [HoverMemberValue], width: Int) -> (bits: String, scope: String)? {
+        var sized = sections.filter { literalWidth($0.literal) == width }
+        if sized.isEmpty, !sections.isEmpty, sections.allSatisfy({ literalWidth($0.literal) == nil }) {
+            sized = sections
+        }
+        let values = Set(sized.compactMap { literalBits($0.literal, width: width) })
+        guard values.count == 1, sized.count == sized.compactMap({ literalBits($0.literal, width: width) }).count,
+              let bits = values.first, let scope = sized.first?.scope else { return nil }
+        return (bits, scope)
+    }
+
     // MARK: Document symbols
 
     /// An enum member as slang-server's documentSymbol lists it: its name and where it is declared.
@@ -426,6 +442,8 @@ extension LanguageServerSession {
     }
 
     /// The enum whose name is at `link`, as an instance of width `width` has it.
+    /// Keyed by typedef and width, not by instance. This is safe because `memberValue` takes a value only when
+    /// every instance of that width agrees, so the answer is the same whichever instance asks.
     private func enumType(at link: SlangEnumValues.TypeLink, width: Int, cache: SlangEnumTypeCache) async throws -> SlangEnumType? {
         let key = Self.key(link.uri, link.position) + "/\(width)"
         if let cached = await cache.type(key) { return cached }
@@ -473,16 +491,9 @@ extension LanguageServerSession {
         for member in members {
             guard let hover = try await enumHover(uri, member.position) else { return nil }
             let sections = SlangEnumValues.hoverMemberValues(hover).filter { $0.name == member.name }
-            // The section of this instance's width; slang prints a 1-bit value unsized (`0`):
-            // then every instance must agree.
-            var value = sections.first { SlangEnumValues.literalWidth($0.literal) == width }
-            if value == nil, !sections.isEmpty, sections.allSatisfy({ SlangEnumValues.literalWidth($0.literal) == nil }),
-               Set(sections.map(\.literal)).count == 1 {
-                value = sections.first
-            }
-            guard let value, let bits = SlangEnumValues.literalBits(value.literal, width: width) else { return nil }
+            guard let value = SlangEnumValues.memberValue(sections, width: width) else { return nil }
             scopeName = scopeName ?? value.scope
-            out.append(.init(name: member.name, bits: bits))
+            out.append(.init(name: member.name, bits: value.bits))
         }
         guard let scopeName else { return nil }
         return SlangEnumType(name: scopeName, width: width, members: out)
