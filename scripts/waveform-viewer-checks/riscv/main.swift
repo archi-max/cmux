@@ -16,9 +16,13 @@
 //     Hexadecimal goes back;
 //   - alias files are kept by full path (two cpu.alias from different folders
 //     both come back), sessions embed at most 256 KiB of alias text and name
-//     the rest by path and SHA-256, which cmux re-reads on restore
+//     the rest by key and SHA-256, which cmux re-reads on restore
 //     (WaveformValueAliasFiles, the app's code, over a stand-in file system);
-//     a missing or changed file is a toast and the rest still load.
+//     a missing or changed file is a toast and the rest still load;
+//   - the restore asks by key only: cmux reads only files its own registry
+//     recorded (picked, or named by a session file cmux read), so an unknown
+//     key gets nothing, and a path or hash the page or kept state supplies is
+//     ignored.
 // Prints RISCV CHECKS PASSED, or the failures and RISCV CHECKS FAILED: n.
 // Usage: riscv <assetRoot> <riscv.vcd> <aliases.alias> <out.png>
 import AppKit
@@ -49,6 +53,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// The stand-in file system cmux re-reads alias files from on restore.
   var fakeFiles: [String: String] = [:]
   var readRequests = 0
+  /// What native code recorded: alias files cmux read and session files it loaded.
+  let registry = WaveformValueAliasFiles.Registry()
+  /// Paths the stand-in file system was asked to read, and the answers by request id.
+  var reads: [String] = []
+  var answersByID: [Int: [[String: String]]] = [:]
 
   // Page helpers every check uses.
   static let prelude = """
@@ -236,7 +245,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     await open()
     let loaded = await call("""
-      C.applySessionFile({ text: \(jsString(sessionText)), path: '/work/sim/riscv.json' });
+      \(sessionFileJS(sessionText));
       await sleep(1500);
       await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 });
       await sleep(400);
@@ -344,7 +353,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let sessionText = saved["text"] as? String ?? "{}"
     await open()
     let loaded = await call("""
-      C.applySessionFile({ text: \(jsString(sessionText)), path: '/work/sim/riscv.json' });
+      \(sessionFileJS(sessionText));
       await sleep(1500);
       await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 });
       await sleep(400);
@@ -389,8 +398,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(toasts.count == 2, "a file cmux couldn't read, and one the viewer can't parse, each show a toast: \(toasts)")
   }
 
-  /// What cmux hands the page after reading the file at `path` on this Mac.
+  /// What cmux hands the page after reading the file at `path` on this Mac
+  /// (and records, as FilePreviewWaveformSession.chooseLocalValueAliasFile does).
   func aliasFileJS(_ path: String, _ text: String) -> String {
+    registry.noteLoaded(key: path, location: .local(path), text: text)
     let argument: [String: Any] = ["text": text, "path": path, "key": path, "sha256": WaveformValueAliasFiles.sha256(text)]
     return "window.cmuxWaveform.applyValueAliasFile(" + String(data: try! JSONSerialization.data(withJSONObject: argument), encoding: .utf8)! + ")"
   }
@@ -436,7 +447,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let bothText = both["text"] as? String ?? "{}"
     await open()
     let loaded = await call("""
-      C.applySessionFile({ text: \(jsString(bothText)), path: '/work/sim/riscv.json' });
+      \(sessionFileJS(bothText));
       await sleep(1500);
       await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
       R.byte = text('byte'); R.half = text('half');
@@ -492,7 +503,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     readRequests = 0
     await open()
     let reread = await call("""
-      C.applySessionFile({ text: \(jsString(cappedText)), path: '/work/sim/riscv.json' });
+      \(sessionFileJS(cappedText));
       await sleep(2000);
       await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
       R.instr = text('instr'); R.byte = text('byte');
@@ -518,7 +529,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let r = await call("""
         // Toasts already shown (an earlier one may leave while this waits) aren't this load's.
         document.querySelectorAll('.cmux-toast').forEach((t) => { t.dataset.seen = '1'; });
-        C.applySessionFile({ text: \(jsString(cappedText)), path: '/work/sim/riscv.json' });
+        \(sessionFileJS(cappedText));
         await sleep(2000);
         await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
         R.toasts = [...document.querySelectorAll('.cmux-toast:not([data-seen])')].map((t) => t.textContent);
@@ -532,6 +543,107 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       expect((r["tables"] as? [String])?.contains("tother") == false, "a changed file's tables are not loaded (\(label)): \(r["tables"] ?? "nil")")
       expect(r["keys"] as? [String] == ["/a/cpu.alias"], "and it is no longer kept (\(label)): \(r["keys"] ?? "nil")")
     }
+
+    await keyOnlyChecks(big: big, capped: capped)
+  }
+
+  // Key-only restore: cmux reads only what its registry recorded.
+  func keyOnlyChecks(big: String, capped: [String: Any]) async {
+    let ALIAS = "S['submenu.valueAlias']"
+    let secret = "alias tsecret\n  SECRET 8'h13\nendalias\n"
+    let secretSHA = WaveformValueAliasFiles.sha256(secret)
+    fakeFiles["/big/big.alias"] = big
+    fakeFiles["/secret/key.alias"] = secret
+
+    // The registry itself (the app's code, no page).
+    let r = WaveformValueAliasFiles.Registry()
+    let h = String(repeating: "a", count: 64)
+    let sessionJSON: [String: Any] = ["displayedSignals": [], "cmuxValueAliases": [
+      ["key": "/m/local.alias", "path": "/elsewhere/x.alias", "sha256": h],
+      ["key": "hostA:/r/remote.alias", "path": "/r/remote.alias", "sha256": h],
+      ["key": "hostB:/r/other.alias", "sha256": h],
+      ["key": "relative.alias", "sha256": h],
+      ["key": "/m/nohash.alias", "text": "alias t\nendalias\n"],
+      ["key": "/m/badhash.alias", "sha256": "ABC"],
+    ]]
+    r.noteSession(text: String(data: try! JSONSerialization.data(withJSONObject: sessionJSON), encoding: .utf8)!, remoteIdentity: "hostA")
+    expect(r.record(for: "/m/local.alias") == .init(location: .local("/m/local.alias"), sha256: h),
+           "a session's local entry is read from its key, not its path field: \(String(describing: r.record(for: "/m/local.alias")))")
+    expect(r.record(for: "hostA:/r/remote.alias")?.location == .remote("/r/remote.alias"), "the open file's host: remote")
+    expect(r.record(for: "hostB:/r/other.alias")?.location == .otherHost("/r/other.alias"), "another host's file: other host")
+    expect(r.record(for: "relative.alias") == nil && r.record(for: "/m/nohash.alias") == nil && r.record(for: "/m/badhash.alias") == nil,
+           "entries without a path key or a well-formed hash are not recorded")
+    expect(r.count == 3, "three recorded: \(r.count)")
+    let keys = WaveformValueAliasFiles.keys(from: ["/a", ["key": "/b", "path": "/etc/hosts"], "/a", 7, ""] + (0..<20).map { "/k\($0)" })
+    expect(keys.first == "/a" && !keys.contains("/b") && keys.count == 16 && Set(keys).count == 16,
+           "request keys: strings only, no repeats, at most 16: \(keys.prefix(3))… \(keys.count)")
+    let other = await WaveformValueAliasFiles.answer(["hostB:/r/other.alias"], registry: r) { _ in "read" }
+    expect(other.count == 1 && other[0]["text"] == nil && other[0]["error"] != nil, "another host's file is an error, not a read: \(other)")
+
+    // A page that posts readValueAliases itself: an unknown key with a real path
+    // and hash gets nothing, and nothing is read.
+    await open()
+    reads = []
+    answersByID = [:]
+    _ = await call("""
+      H.toNative({ type: 'readValueAliases', id: 9001, keys: ['/secret/key.alias'],
+        files: [{ key: '/secret/key.alias', path: '/secret/key.alias', sha256: '\(secretSHA)' }], path: '/secret/key.alias' });
+      H.toNative({ type: 'readValueAliases', id: 9002, files: [{ key: '/big/big.alias', path: '/secret/key.alias', sha256: '\(secretSHA)' }] });
+      H.toNative({ type: 'readValueAliases', id: 9003, keys: ['/big/big.alias'],
+        files: [{ key: '/big/big.alias', path: '/secret/key.alias', sha256: '\(secretSHA)' }], path: '/secret/key.alias', sha256: '\(secretSHA)' });
+      await sleep(600);
+      """)
+    expect(answersByID[9001].map { $0.isEmpty } == true, "a forged key gets no answer: \(String(describing: answersByID[9001]))")
+    expect(answersByID[9002].map { $0.isEmpty } == true, "a path and hash without keys get no answer: \(String(describing: answersByID[9002]))")
+    let known = answersByID[9003] ?? []
+    expect(known.count == 1 && known[0]["key"] == "/big/big.alias" && known[0]["path"] == "/big/big.alias"
+           && known[0]["text"].map(WaveformValueAliasFiles.sha256) == WaveformValueAliasFiles.sha256(big),
+           "a known key with a forged path and hash reads cmux's own file: \(known.map { [$0["key"] ?? "", $0["path"] ?? "", $0["error"] ?? "", String($0["text"]?.count ?? -1)] })")
+    expect(!reads.contains("/secret/key.alias") && reads == ["/big/big.alias"], "only the recorded file is read: \(reads)")
+
+    // Kept state is the page's: a restore whose entries name an unknown key,
+    // or a known key with another path and hash, reads only cmux's record.
+    guard var state = capped["state"] as? [String: Any], var entries = state["cmuxValueAliases"] as? [[String: Any]] else {
+      expect(false, "the capped state has alias entries")
+      return
+    }
+    entries = entries.map { e in
+      var e = e
+      if e["key"] as? String == "/big/big.alias" { e["path"] = "/secret/key.alias"; e["sha256"] = secretSHA }
+      return e
+    }
+    entries.append(["key": "/secret/key.alias", "path": "/secret/key.alias", "fileName": "key.alias", "sha256": secretSHA])
+    state["cmuxValueAliases"] = entries
+    reads = []
+    // The restore starts as the file opens: earlier toasts are marked first.
+    _ = await call("document.querySelectorAll('.cmux-toast').forEach((t) => { t.dataset.seen = '1'; }); sent.length = 0;")
+    await open(restore: ["state": state, "dirty": false])
+    let forged = await call("""
+      await sleep(1500);
+      await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
+      R.toasts = [...document.querySelectorAll('.cmux-toast:not([data-seen])')].map((t) => t.textContent);
+      R.instr = text('instr'); R.byte = text('byte');
+      R.tables = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
+      R.asked = sent.filter((m) => m.type === 'readValueAliases').slice(-1).map((m) => [Object.keys(m).sort().join(','), m.keys]);
+      """)
+    let tables = forged["tables"] as? [String] ?? []
+    expect(forged["instr"] as? String == "BIG_13" && forged["byte"] as? String == "BYTE_A",
+           "the known files load from cmux's record: \(forged["instr"] ?? "nil") / \(forged["byte"] ?? "nil")")
+    expect(!tables.contains("tsecret") && tables.contains("tbig"), "the forged entry's table is not loaded: \(tables)")
+    expect(!reads.contains("/secret/key.alias"), "the forged path is never read: \(reads)")
+    let asked = forged["asked"] as? [[Any]] ?? []
+    expect(asked.count == 1 && asked[0][0] as? String == "id,keys,type"
+           && (asked[0][1] as? [String]).map(Set.init) == Set(["/big/big.alias", "/secret/key.alias"]),
+           "the page asks with keys only: \(asked)")
+    let toasts = forged["toasts"] as? [String] ?? []
+    expect(toasts.count == 1 && toasts[0].contains("key.alias"), "the unknown key is one toast: \(toasts)")
+  }
+
+  /// cmux read the session file `text` (loadSession): it records the file's
+  /// alias entries, then hands the text to the page.
+  func sessionFileJS(_ text: String) -> String {
+    registry.noteSession(text: text, remoteIdentity: nil)
+    return "C.applySessionFile({ text: \(jsString(text)), path: '/work/sim/riscv.json' })"
   }
 
   func jsString(_ s: String) -> String {
@@ -575,15 +687,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       next?()
     case "readValueAliases":
       readRequests += 1
-      let requests = WaveformValueAliasFiles.requests(from: body["files"])
+      // As FilePreviewWaveformSession.readValueAliasFiles: keys only.
+      let keys = WaveformValueAliasFiles.keys(from: body["keys"])
       let id = body["id"] ?? 0
       Task { @MainActor in
-        let answers = await WaveformValueAliasFiles.answer(requests, remoteIdentity: nil) { location in
+        let answers = await WaveformValueAliasFiles.answer(keys, registry: self.registry) { location in
+          self.reads.append(location.path)
           guard case .local(let path) = location, let text = self.fakeFiles[path] else {
             throw CocoaError(.fileReadNoSuchFile)
           }
           return text
         }
+        self.answersByID[(id as? NSNumber)?.intValue ?? 0] = answers
         let json = String(data: try! JSONSerialization.data(withJSONObject: ["id": id, "files": answers]), encoding: .utf8)!
         _ = try? await self.web.evaluateJavaScript("cmuxWaveform.valueAliasFilesRead(\(json))")
       }
