@@ -71,6 +71,60 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(300)
     expect(menu == [true, false], "a vector row's menu has Show State Machine, a 1-bit row's not: \(menu)")
     expect(requested.last == ["tb", "dut", "u_ctl", "state"], "and it asks cmux for the row's state machine: \(requested)")
+
+    // The real menu path, as a user takes it: a right-click on the row's label in the viewer frame
+    // opens cmux's menu (cmux-commands.js contextmenu → cmux-ui.js), a click on its Show State Machine
+    // item posts `fsmRequest` to cmux, and cmux answers the way FilePreviewWaveformSession.callPage does.
+    func rightClickRow(scope: String, signal: String) async -> [String] {
+      await call("""
+        document.querySelectorAll('.cmux-menu').forEach((m) => m.remove());
+        const doc = document.getElementById('viewer').contentDocument;
+        const label = Array.from(doc.querySelectorAll('.waveform-label[data-vscode-context]')).find((el) => {
+          try {
+            const c = JSON.parse(el.getAttribute('data-vscode-context').replace(/%x20/g, ' '));
+            return c.webviewSection === 'signal' && c.scopePath === \(String(reflecting: scope)) && c.signalName === \(String(reflecting: signal));
+          } catch (e) { return false; }
+        });
+        if (!label) { return ['no row']; }
+        const r = label.getBoundingClientRect();
+        label.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 5, clientY: r.top + 5 }));
+        return Array.from(document.querySelectorAll('.cmux-menu .cmux-menu-item .label')).map((l) => l.textContent);
+      """) as? [String] ?? []
+    }
+    let showLabel = await call("return (cmuxWaveform.strings || {})['command.showStateMachine'] || 'showStateMachine'") as? String ?? "showStateMachine"
+    _ = await call("return await cmuxWaveform.link.addSignal(['tb', 'dut', 'u_ctl', 'go'])")
+    await sleep(500)
+    let bitLabels = await rightClickRow(scope: "tb.dut.u_ctl", signal: "go")
+    expect(!bitLabels.isEmpty && bitLabels != ["no row"] && !bitLabels.contains(showLabel),
+           "a right-click on a 1-bit row opens a menu without \(showLabel): \(bitLabels)")
+    let asked = requested.count
+    let vectorLabels = await rightClickRow(scope: "tb.dut.u_ctl", signal: "state")
+    expect(vectorLabels.contains(showLabel), "a right-click on the state register's row offers \(showLabel): \(vectorLabels)")
+    let clicked = await call("""
+      const item = Array.from(document.querySelectorAll('.cmux-menu .cmux-menu-item')).find((i) => i.querySelector('.label').textContent === \(String(reflecting: showLabel)));
+      if (!item) { return false; }
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return document.querySelectorAll('.cmux-menu').length === 0;
+    """) as? Bool
+    await sleep(300)
+    expect(clicked == true, "clicking the item runs it and closes the menu")
+    expect(requested.count == asked + 1 && requested.last == ["tb", "dut", "u_ctl", "state"],
+           "the click posts one fsmRequest with the row's dump path: \(requested.suffix(2))")
+    // cmux's answers (WaveformFSMEngines.requested): the status, then the model, through callPage's body.
+    let native = "const link = window.cmuxWaveform && window.cmuxWaveform.fsm;\nreturn link ? await link.show(argument) : null;"
+    func answer(_ argument: [String: Any]) async {
+      do { _ = try await web.callAsyncJavaScript(native, arguments: ["argument": argument], in: nil, contentWorld: .page) }
+      catch { print("JS ERROR native show", error) }
+      await sleep(400)
+    }
+    await answer(["path": ["tb", "dut", "u_ctl", "state"], "status": "Looking for the state machine…"])
+    let nativeStatus = await call("const p = document.getElementById('fsm'); return !p.hidden && p.textContent.includes('Looking for the state machine…')") as? Bool
+    expect(nativeStatus == true, "cmux's status answer opens the pane")
+    let modelObject = await call("return \(ctlModel)") as? [String: Any] ?? [:]
+    await answer(["path": ["tb", "dut", "u_ctl", "state"], "model": modelObject, "note": "From Verdi"])
+    let nativeGraph = await call("return document.querySelectorAll('#fsm svg .fsm-node').length") as? Int
+    expect(nativeGraph == 5, "cmux's model answer draws the graph: \(nativeGraph ?? -1) nodes")
+    _ = await call("cmuxWaveform.fsm.hide(); return null")
     let pending = await call("""
       cmuxWaveform.fsm.show({ path: \(ctlPath), status: 'Looking for the state machine…' });
       const p = document.getElementById('fsm');
