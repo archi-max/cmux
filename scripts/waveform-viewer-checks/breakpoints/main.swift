@@ -815,6 +815,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       hits.append(hit?["landed"] as? Int ?? -1)
     }
     expect(hits == [105, 305, 505], "any instance with a condition: each instance's own state: \(hits)")
+    // verify-bp2 R5: the 64-path cap holds across the instances (8 instances of 16 signals each).
+    let groupsJS = (0..<8).map { i in "{ scope: ['top', 'i\(i)'], paths: [" + (0..<16).map { "['top', 'i\(i)', 's\($0)']" }.joined(separator: ", ") + "] }" }.joined(separator: ", ")
+    _ = await dbg("setLineBreakpoints({ items: [{ key: 'wide#1', label: 'wide.sv:1', enabled: true, condition: 'state == 3', scope: ['top'], paths: [], groups: [\(groupsJS)] }] })")
+    let searched = (await list()).first?["searchedPaths"] as? Int
+    expect(searched == 64, "a line in many instances searches at most 64 paths, with a condition too: \(String(describing: searched))")
     _ = await dbg("setLineBreakpoints({ items: [] })")
 
     // N5: a line's condition that does not parse is kept and never true, said once, and cmux is told.
@@ -833,6 +838,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(said.count == 1, "said once, not on every sync: \(said)")
     let toldError = lineEvents.filter { $0["conditionError"] != nil }.map { "\($0["key"] as? String ?? ""):\($0["conditionError"] as? Bool ?? false)" }
     expect(toldError == ["core.sv#3:true"], "cmux is told (it draws the dot as an error): \(toldError)")
+    // verify-bp2 R4: cmux clears its error mark when it changes the condition, so another bad text
+    // is told again.
+    lineEvents.removeAll()
+    _ = await dbg(badLine.replacingOccurrences(of: "state = 3", with: "state = 4"))
+    let toldAgain = lineEvents.filter { $0["conditionError"] != nil }.map { "\($0["key"] as? String ?? ""):\($0["conditionError"] as? Bool ?? false)" }
+    expect(toldAgain == ["core.sv#3:true"], "another bad condition is told again: \(toldAgain)")
+    _ = await dbg(badLine)
     let errorRow = await call("const l = document.querySelector('#cmux-breakpoints .cmux-breakpoint .label'); return l ? [l.classList.contains('condition-error'), l.title] : null") as? [Any]
     expect(errorRow?.first as? Bool == true && (errorRow?.last as? String ?? "").hasPrefix("Condition of core.sv:3: "), "the list row shows the error: \(String(describing: errorRow))")
     _ = await dbg("setLineBreakpoints({ items: [] })")
