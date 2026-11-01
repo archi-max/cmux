@@ -127,13 +127,13 @@ struct AsmListingTests {
     @Test func everyGnuVariantAgreesOnThePlaces() throws {
         let code = try Self.parse("gnu-rv32-code.dis")
         let expected = Self.places(code)
-        for name in ["gnu-rv32-noraw.dis", "gnu-rv32-jumps.dis", "gnu-rv32-l.dis", "gnu-rv32-S.dis",
+        for name in ["gnu-rv32-noraw.dis", "gnu-rv32-l.dis", "gnu-rv32-S.dis",
                      "gnu-rv32-numeric-noaliases.dis", "gnu-rv32-prefix.dis", "gnu-rv32-prefix-raw.dis"] {
             let other = try Self.parse(name)
             #expect(Self.places(other) == expected, "\(name)")
         }
         // Encodings agree wherever both show raw bytes.
-        for name in ["gnu-rv32-jumps.dis", "gnu-rv32-l.dis", "gnu-rv32-S.dis", "gnu-rv32-prefix-raw.dis",
+        for name in ["gnu-rv32-l.dis", "gnu-rv32-S.dis", "gnu-rv32-prefix-raw.dis",
                      "gnu-rv32-numeric-noaliases.dis"] {
             let other = try Self.parse(name)
             #expect(other.instructions.map(\.encoding) == code.instructions.map(\.encoding), "\(name)")
@@ -153,13 +153,28 @@ struct AsmListingTests {
         #expect(li.text == "li\ta0,0")
         #expect(li.size == 2)  // from the next address
         #expect(listing.instruction(forPC: 0x8000_0000)?.size == 4)
+        // A mnemonic made of hex digits is not raw bytes: bytes come in pairs.
+        let add = try #require(listing.instruction(forPC: 0x8000_0024))
+        #expect(add.text == "add\ta1,a2,a3")
+        #expect(add.encoding == nil)
     }
 
     @Test func visualizedJumpsAreNotPartOfTheBytes() throws {
-        let listing = try Self.parse("gnu-rv32-jumps.dis")
-        let addi = try #require(listing.instruction(forPC: 0x8000_0008))
+        // Up to the zero gap (`--stop-address`): the same instructions as -d, arrows left out.
+        let code = try Self.parse("gnu-rv32-code.dis")
+        let jumps = try Self.parse("gnu-rv32-jumps-start.dis")
+        let start = code.instructions.filter { $0.pc < 0x8000_002c }
+        #expect(Self.places(jumps) == start.map { "\(String($0.pc, radix: 16)) \($0.symbol ?? "-")+\($0.offset) \($0.section ?? "-")" })
+        #expect(jumps.instructions.map(\.encoding) == start.map(\.encoding))
+        let addi = try #require(jumps.instruction(forPC: 0x8000_0008))
         #expect(addi.encoding == 0x050d)
         #expect(addi.text == "addi\ta0,a0,3")
+        // The whole of .text: binutils then prints it as `.word`s (its own quirk with the gap); still
+        // read as 4-byte units at their addresses, under their symbols.
+        let words = try Self.parse("gnu-rv32-jumps.dis")
+        let word = try #require(words.instruction(forPC: 0x8000_0008))
+        #expect(word.encoding == 0x12fd_050d && word.size == 4 && word.text == ".word\t0x12fd050d")
+        #expect(words.instruction(forPC: 0x8000_0052)?.symbol == "sum")
     }
 
     @Test func sourceInterleavedListingsKeepSourceLinesOut() throws {
@@ -167,6 +182,76 @@ struct AsmListingTests {
         let listing = try Self.parse("gnu-rv32-S.dis")
         #expect(listing.instruction(forPC: 1) == nil)
         #expect(listing.instructions.allSatisfy { $0.pc >= 0x8000_0000 })
+    }
+
+    @Test func sourceTextWithTabsStaysSourceText() {
+        // An -S source line written with tabs (`1:\tj\t1b`) has a tab like an instruction; its
+        // address goes back, and objdump writes a section's addresses in order.
+        let text = """
+        Disassembly of section .text:
+
+        80000000 <_start>:
+        80000000:\t00000013          \tnop
+        1:\tj\t1b
+        /* see /src/util.c:12 for why */
+        80000004:\t0000006f          \tj\t80000004 <_start+0x4>
+        """
+        let listing = AsmListingParser.parse(text)
+        #expect(listing.instructions.map(\.pc) == [0x8000_0000, 0x8000_0004])
+        #expect(listing.sourceLocations.isEmpty)
+        // A record is the whole line, but for objdump's discriminator.
+        let records = AsmListingParser.parse("/src/a.c:12 (discriminator 3)\n/src/a.c:13 foo\n./b.c:4\nC:/w/c.c:5\n")
+        #expect(records.sourceLocations.map(\.source) == [AsmSourceRef(file: "/src/a.c", line: 12), AsmSourceRef(file: "./b.c", line: 4),
+                                                         AsmSourceRef(file: "C:/w/c.c", line: 5)])
+    }
+
+    @Test func eachSourceGuardHoldsOnItsOwn() {
+        // An object file's listing (symbols at 0): source text whose address is past the symbol.
+        let text = """
+        Disassembly of section .text:
+
+        00000000 <f>:
+           0:\t00000013          \tnop
+           4:\t00000013          \tnop
+        2:\tj\t1b
+           8:  addi a0, a0, 1
+           8:\t00150513          \taddi\ta0,a0,1
+        """
+        let listing = AsmListingParser.parse(text)
+        #expect(listing.instructions.map(\.pc) == [0, 4, 8])
+        #expect(listing.instruction(forPC: 8)?.encoding == 0x0015_0513)
+    }
+
+    @Test func aFunctionWithoutLineRecordsHasNoSource() {
+        let text = """
+        Disassembly of section .text:
+
+        00000000 <f>:
+        /src/f.c:3
+           0:\t00000013          \tnop
+
+        00000004 <crt>:
+           4:\t00000013          \tnop
+        """
+        let listing = AsmListingParser.parse(text)
+        #expect(listing.instruction(forPC: 0)?.source == AsmSourceRef(file: "/src/f.c", line: 3))
+        #expect(listing.instruction(forPC: 4)?.source == nil)
+    }
+
+    @Test func symbolAndOffsetPreferCode() {
+        let text = """
+        Disassembly of section .data:
+
+        00000000 <f>:
+           0:\t00000000          \t.word\t0x0
+
+        Disassembly of section .text:
+
+        00001000 <f>:
+            1000:\t00000013          \tnop
+        """
+        let listing = AsmListingParser.parse(text)
+        #expect(listing.instruction(symbol: "f", offset: 0)?.pc == 0x1000)
     }
 
     @Test func lineRecordsGiveSourceLocations() throws {
@@ -287,7 +372,7 @@ struct AsmListingTests {
     @Test func truncatesPastItsLineCap() throws {
         let listing = AsmListingParser.parse(try Self.fixture("gnu-rv32-code.dis"), maxLines: 12)
         #expect(listing.truncated)
-        #expect(listing.instructions.count == 4)
+        #expect(listing.instructions.count == 5)  // lines 7–11
         #expect(!AsmListingParser.parse(try Self.fixture("gnu-rv32-code.dis")).truncated)
     }
 
@@ -313,6 +398,20 @@ struct AsmListingTests {
         #expect(!AsmListingDetector.isListing(try String(contentsOf: Self.fixtures.appendingPathComponent("src/sum.c"), encoding: .utf8)))
         #expect(!AsmListingDetector.isListing("module top;\n  assign a = b;\nendmodule\n"))
         #expect(!AsmListingDetector.isListing(""))
+    }
+
+    /// The 4M-line cap's cost (ASM_LISTING_BENCH=1): a listing of that size, parsed once.
+    @Test func parsesTheLineCapInReasonableTime() throws {
+        guard ProcessInfo.processInfo.environment["ASM_LISTING_BENCH"] != nil else { return }
+        var text = "Disassembly of section .text:\n\n00000000 <f>:\n"
+        text.reserveCapacity(4_000_000 * 40)
+        for i in 0..<3_999_990 { text += String(i * 4, radix: 16) + ":\t00000013          \tnop\n" }
+        let clock = ContinuousClock()
+        var listing: AsmListing?
+        let elapsed = clock.measure { listing = AsmListingParser.parse(text) }
+        #expect(listing?.instructions.count == 3_999_990)
+        #expect(listing?.line(forPC: 0x400) == 3 + 0x100)
+        print("4M-line listing parsed in \(elapsed)")
     }
 
     // MARK: a real course listing (read only; never committed)
