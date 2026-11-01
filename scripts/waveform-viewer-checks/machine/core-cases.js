@@ -260,6 +260,12 @@
         const other = M().detect([{ path: ['t'], depth: 0, vars: ['valid', 'pc_rdata', 'order', 'insn', 'rd_addr'].map((n) => ({ name: 'rvfi_' + n, width: n === 'valid' ? 1 : (n === 'rd_addr' ? 5 : 32) })) }])[0];
         ok(k(id, other) !== base, 'another mapping is another key');
         ok(k(null) === null && k({ path: '/a' }) === null && k(Object.assign({}, id, { mtimeMs: null })) === null, 'no identity (or no size/mtime): no key');
+        // The clock and the host are part of it too; so is every edge, not only a few samples.
+        const kc = (clock, e2, i2) => M().tableKey(i2 || id, src, e2 || e, 'edge', clock);
+        ok(kc('tb.clk') !== kc('tb.clk2') && kc('tb.clk') === kc('tb.clk'), 'another clock is another key');
+        const e5 = Float64Array.from([5, 15, 25, 35, 45]), e5b = Float64Array.from([5, 17, 25, 35, 45]);
+        ok(kc('tb.clk', e5) !== kc('tb.clk', e5b), 'clocks that differ only between the sampled edges are other keys');
+        ok(kc('tb.clk', null, Object.assign({}, id, { host: 'h1' })) !== kc('tb.clk', null, Object.assign({}, id, { host: 'h2' })), 'another host is another key');
       }
       // The offer rule never auto-uses a lone commit_valid/pc pair.
       const offer = M().detect([{ path: ['tb', 'core'], depth: 1, vars: [{ name: 'commit_valid', width: 1 }, { name: 'commit_pc', width: 32 }] }]);
