@@ -1,0 +1,129 @@
+$date
+	Sun Nov  1 01:03:37 2026
+$end
+
+$version
+	Synopsys VCS version W-2024.09_Full64
+$end
+
+$timescale
+	1ns
+$end
+
+$comment Csum: 1 911589959ce70108 $end
+
+
+$scope module tb_a $end
+$var reg 1 ! clk $end
+$var reg 1 " rst_n $end
+$var reg 1 # en $end
+$var reg 8 $ din [7:0] $end
+$var reg 8 % dout [7:0] $end
+
+$scope module dut $end
+$var reg 1 & clk $end
+$var reg 1 ' rst_n $end
+$var reg 1 ( en $end
+$var reg 8 ) din [7:0] $end
+$var reg 8 * dout [7:0] $end
+$var reg 8 + acc [7:0] $end
+$var reg 1 , valid_q $end
+$var reg 8 - sum [7:0] $end
+$var reg 8 . stage [7:0] $end
+
+$scope begin unnamed$$_0 $end
+$var reg 8 / tmp [7:0] $end
+$upscope $end
+
+$upscope $end
+
+$upscope $end
+
+$enddefinitions $end
+
+#0
+$dumpvars
+0!
+0(
+0#
+0"
+0,
+bxxxxxxxx +
+b00000011 $
+b00000000 %
+b00000011 )
+b00000000 *
+b00000011 .
+bxxxxxxxx -
+bxxxxxxxx /
+0'
+0&
+$end
+#5
+1!
+1&
+#10
+0!
+0&
+#15
+1!
+1&
+#20
+0!
+0&
+#22
+1"
+1'
+#25
+1!
+1&
+b00000011 *
+b00000011 %
+#30
+0!
+0&
+#35
+1!
+1&
+#40
+1#
+1(
+0!
+0&
+#45
+1!
+1&
+1,
+bxxxxxxxx .
+#50
+0!
+0&
+#55
+1!
+1&
+bxxxxxxxx *
+bxxxxxxxx %
+#60
+0!
+0&
+#65
+1!
+1&
+#70
+0!
+0&
+#75
+1!
+1&
+#80
+0!
+0&
+#85
+1!
+1&
+#90
+0!
+0&
+#95
+1!
+1&

@@ -1,0 +1,245 @@
+$date
+	Sun Nov  1 01:03:16 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ns
+$end
+$scope module tb_e $end
+$var wire 8 ! y [7:0] $end
+$var wire 8 " xf [7:0] $end
+$var wire 8 # xc [7:0] $end
+$var wire 8 $ t2 [7:0] $end
+$var wire 8 % pk [7:0] $end
+$var wire 8 & lat [7:0] $end
+$var wire 8 ' hi_lo [7:0] $end
+$var wire 4 ( dec [3:0] $end
+$var wire 8 ) asc [0:7] $end
+$var reg 8 * a [7:0] $end
+$var reg 8 + b [7:0] $end
+$var reg 1 , clk $end
+$var reg 1 - en $end
+$var reg 4 . op [3:0] $end
+$var reg 1 / rst_n $end
+$var reg 1 0 sel $end
+$scope module dut $end
+$var wire 8 1 a [7:0] $end
+$var wire 8 2 b [7:0] $end
+$var wire 1 , clk $end
+$var wire 1 - en $end
+$var wire 4 3 op [3:0] $end
+$var wire 1 / rst_n $end
+$var wire 1 0 sel $end
+$var wire 8 4 y [7:0] $end
+$var wire 32 5 words [31:0] $end
+$var wire 8 6 sum [7:0] $end
+$var wire 8 7 pk [7:0] $end
+$var wire 8 8 hi_lo [7:0] $end
+$var wire 1 9 carry $end
+$var wire 8 : asc [0:7] $end
+$var reg 4 ; dec [3:0] $end
+$var reg 8 < lat [7:0] $end
+$var reg 8 = t2 [7:0] $end
+$var reg 8 > tmp2 [7:0] $end
+$var reg 8 ? xc [7:0] $end
+$var reg 8 @ xf [7:0] $end
+$scope begin lane[0] $end
+$var parameter 2 A g $end
+$var reg 8 B r [7:0] $end
+$upscope $end
+$scope begin lane[1] $end
+$var parameter 2 C g $end
+$var reg 8 D r [7:0] $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+b1 C
+b0 A
+$end
+#0
+$dumpvars
+bx D
+bx B
+bx @
+b110100 ?
+bx >
+bx =
+bx <
+b0 ;
+b1001000 :
+09
+b100011 8
+b1011010 7
+b1000110 6
+b10010001101000100011001011010 5
+bx 4
+b0 3
+b110100 2
+b10010 1
+00
+0/
+b0 .
+0-
+0,
+b110100 +
+b10010 *
+b1001000 )
+b0 (
+b100011 '
+bx &
+b1011010 %
+bx $
+b110100 #
+bx "
+bx !
+$end
+#5
+b1 !
+b1 4
+b0 B
+b1 D
+b0 "
+b0 @
+b0 $
+b0 =
+b0 >
+1,
+#10
+0,
+#15
+1,
+#20
+0,
+#22
+1/
+#25
+b10010 B
+b10011 D
+b110100 "
+b110100 @
+b100111 $
+b100111 =
+b100110 >
+1,
+#30
+b100 (
+b100 ;
+b110100 %
+b110100 7
+b10010 &
+b10010 <
+0,
+b110 .
+b110 3
+1-
+#35
+b100101 D
+b100100 B
+1,
+#40
+b10001010 6
+b1100011 '
+b1100011 8
+b1101010 )
+b1101010 :
+0,
+b1010110001101001000101001011010 5
+b1010110 *
+b1010110 1
+0-
+#45
+b1111010 B
+b1111011 D
+b1100011 $
+b1100011 =
+b1100010 >
+1,
+#50
+b10101100 6
+b1100101 '
+b1100101 8
+b1000 (
+b1000 ;
+b1010110 #
+b1010110 ?
+0,
+b10101100 %
+b10101100 7
+b1010110010101101010110001011010 5
+b1010110 +
+b1010110 2
+b1001 .
+b1001 3
+x0
+#55
+b1 $
+b1 =
+b1010110 "
+b1010110 @
+b11010001 D
+b11010000 B
+b0 >
+1,
+#60
+0,
+#65
+b100110 B
+b100111 D
+1,
+#70
+b1111000 #
+b1111000 ?
+b11001110 %
+b11001110 7
+b11001110 6
+b1100111 '
+b1100111 8
+0,
+b1010110011110001100111001011010 5
+b1111000 +
+b1111000 2
+#75
+b101111 $
+b101111 =
+b1111000 "
+b1111000 @
+b1111101 D
+b1111100 B
+b101110 >
+1,
+#80
+0,
+#85
+b11010010 B
+b11010011 D
+1,
+#90
+b10 (
+b10 ;
+b1111000 %
+b1111000 7
+b1010110 #
+b1010110 ?
+0,
+b10 .
+b10 3
+10
+#95
+b1010110 "
+b1010110 @
+b101001 D
+b101000 B
+1,
+#100
+0,
+#105
+b1111110 B
+b1111111 D
+1,
+#110
+0,

@@ -1,0 +1,178 @@
+$date
+	Sun Nov  1 01:03:16 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ns
+$end
+$scope module tb_c $end
+$var wire 8 ! qd [7:0] $end
+$var wire 8 " q [7:0] $end
+$var reg 1 # clk $end
+$var reg 8 $ d [7:0] $end
+$var reg 1 % go $end
+$var reg 1 & rst_n $end
+$scope module dut $end
+$var wire 1 # clk $end
+$var wire 8 ' d [7:0] $end
+$var wire 1 % go $end
+$var wire 1 & rst_n $end
+$var wire 8 ( qd [7:0] $end
+$var wire 8 ) q [7:0] $end
+$var wire 13 * p [12:0] $end
+$scope module u_mid $end
+$var wire 1 # clk $end
+$var wire 1 & rst_n $end
+$var wire 8 + qd [7:0] $end
+$var wire 8 , q [7:0] $end
+$var wire 13 - pin [12:0] $end
+$scope module u_sink $end
+$var wire 1 # clk $end
+$var wire 1 & rst_n $end
+$var wire 8 . mix [7:0] $end
+$var wire 13 / in [12:0] $end
+$var reg 8 0 q [7:0] $end
+$var reg 8 1 qd [7:0] $end
+$upscope $end
+$upscope $end
+$scope module u_src $end
+$var wire 1 # clk $end
+$var wire 8 2 d [7:0] $end
+$var wire 1 % go $end
+$var wire 1 & rst_n $end
+$var wire 13 3 out [12:0] $end
+$var reg 8 4 data_q [7:0] $end
+$var reg 4 5 id_q [3:0] $end
+$var reg 1 6 valid_q $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+x6
+bx 5
+bx 4
+bx 3
+b10000 2
+bx 1
+bx 0
+bx /
+bx .
+bx -
+bx ,
+bx +
+bx *
+bx )
+bx (
+b10000 '
+0&
+0%
+b10000 $
+0#
+bx "
+bx !
+$end
+#5
+b0xxxxxxxxxxxx *
+b0xxxxxxxxxxxx -
+b0xxxxxxxxxxxx /
+b0xxxxxxxxxxxx 3
+06
+b0 !
+b0 (
+b0 +
+b0 1
+b0 "
+b0 )
+b0 ,
+b0 0
+1#
+#10
+0#
+#15
+1#
+#20
+0#
+#22
+1&
+#25
+1#
+#30
+0#
+#35
+1#
+#40
+0#
+1%
+#45
+16
+b1xxxx00010000 *
+b1xxxx00010000 -
+b1xxxx00010000 /
+b1xxxx00010000 3
+b10000 4
+1#
+#50
+0#
+#55
+b10000 !
+b10000 (
+b10000 +
+b10000 1
+bx "
+bx )
+bx ,
+bx 0
+1#
+#60
+0#
+bx $
+bx '
+bx 2
+#65
+b1xxxxxxxxxxxx *
+b1xxxxxxxxxxxx -
+b1xxxxxxxxxxxx /
+b1xxxxxxxxxxxx 3
+bx 4
+1#
+#70
+0#
+b100000 $
+b100000 '
+b100000 2
+#75
+bx !
+bx (
+bx +
+bx 1
+b1xxxx00100000 *
+b1xxxx00100000 -
+b1xxxx00100000 /
+b1xxxx00100000 3
+b100000 4
+1#
+#80
+0#
+#85
+b100000 !
+b100000 (
+b100000 +
+b100000 1
+1#
+#90
+0#
+#95
+1#
+#100
+0#
+#105
+1#
+#110
+0#
