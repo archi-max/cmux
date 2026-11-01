@@ -872,7 +872,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if let panel { WaveformDebugger.pageReported(body, waveform: panel) }
         case "fsmRequest":
             // Show State Machine on a row: the engines find the register's machine.
-            if let panel { WaveformFSMEngines.requested(body["path"], waveform: panel) }
+            if let panel { WaveformFSMEngines.requested(body["path"], refresh: body["refresh"] as? Bool == true, waveform: panel) }
         case "enumTypes":
             // Shown rows the page doesn't know the types of: slang-server says which are enums.
             if let panel { WaveformEnumLink.typesRequested(body["paths"], waveform: panel) }

@@ -12,37 +12,40 @@ import CmuxSyntaxHighlighting
 /// - The dump alone: slang's enum members or localparams as the states, the dump's transitions.
 @MainActor
 enum WaveformFSMEngines {
-    /// The answers so far, per waveform and dump path, until the waveform is opened again.
-    private static var answers: [String: [String: Any]] = [:]
-    private static var running: [String: Task<Void, Never>] = [:]
+    /// The answers so far and the engine runs, per waveform and dump path, until the waveform is
+    /// opened or reloaded again (an answer computed across a reload is neither kept nor shown).
+    private static var cache = FsmAnswerCache<[String: Any]>()
     /// A Yosys to use instead of looking for one (a hidden default; empty: look on PATH and in
     /// the usual OSS CAD Suite and Homebrew folders).
     static let yosysPathKey = "filePreview.waveform.fsm.yosysPath"
 
-    private static func prefix(_ waveform: FilePreviewPanel) -> String { "\(ObjectIdentifier(waveform).hashValue)|" }
+    private static func waveformKey(_ waveform: FilePreviewPanel) -> String { "\(ObjectIdentifier(waveform).hashValue)" }
 
-    /// The waveform was opened or reloaded: its answers may be out of date.
+    /// The waveform was opened or reloaded: its answers may be out of date. An open pane asks
+    /// again itself (cmux-fsm.js, `refresh`).
     static func waveformOpened(_ waveform: FilePreviewPanel) {
-        let start = prefix(waveform)
-        answers = answers.filter { !$0.key.hasPrefix(start) }
+        cache.opened(waveformKey(waveform))
     }
 
     /// The page's `fsmRequest`: the state machine of the register at dump path `value`.
-    static func requested(_ value: Any?, waveform: FilePreviewPanel) {
+    /// - refresh: the pane asks again after a reload; its graph stays up until the answer.
+    static func requested(_ value: Any?, refresh: Bool = false, waveform: FilePreviewPanel) {
         guard let path = WaveformSourceLink.dumpPath(fromPage: value), let signal = path.last else { return }
-        let key = prefix(waveform) + HierarchyPathMapping.join(path)
+        let waveformKey = waveformKey(waveform)
+        let pathKey = HierarchyPathMapping.join(path)
         let page = waveform.nativeViewSessions.waveform
-        if let answer = answers[key] {
+        if let answer = cache.answer(waveformKey, pathKey) {
             Task { @MainActor in _ = await page.callFsm("show", argument: answer) }
             return
         }
-        guard running[key] == nil else { return }
-        running[key] = Task { @MainActor in
-            defer { running[key] = nil }
-            _ = await page.callFsm("show", argument: [
-                "path": path,
-                "status": String(localized: "waveformFSM.looking", defaultValue: "Looking for the state machine…"),
-            ] as [String: Any])
+        guard let ticket = cache.start(waveformKey, pathKey) else { return }
+        Task { @MainActor in
+            if !refresh {
+                _ = await page.callFsm("show", argument: [
+                    "path": path,
+                    "status": String(localized: "waveformFSM.looking", defaultValue: "Looking for the state machine…"),
+                ] as [String: Any])
+            }
             let dumpScope = Array(path.dropLast())
             let lookup = await WaveformSourceLink.designLookup(for: waveform)
             var context: SlangFsmContext?
@@ -58,7 +61,9 @@ enum WaveformFSMEngines {
                 "model": result.model.pageObject(),
                 "note": note(for: result, hasDesign: lookup != nil),
             ]
-            answers[key] = answer
+            // Not kept: a transient failure, or no design open yet (opening one may name the states).
+            let keep = !result.hasTransientFailure && lookup != nil
+            guard cache.finish(ticket, answer, keep: keep) else { return }
             _ = await page.callFsm("show", argument: answer)
         }
     }
