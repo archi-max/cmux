@@ -730,6 +730,16 @@ final class SavingTextView: NSTextView {
                 { [weak self] in _ = self?.languageFeatures?.addSignalUnderCaretToWaveform() }
             ))
         }
+        let traceDriver = KeyboardShortcutSettings.shortcut(for: .traceWaveformDriver)
+        if languageFeatures?.canAddToWaveform == true, !traceDriver.isUnbound {
+            candidates.append((
+                traceDriver,
+                { [weak self] event in
+                    self?.previewFontZoomShortcutWhenClauseAllows(action: .traceWaveformDriver, event: event) ?? false
+                },
+                { [weak self] in _ = self?.languageFeatures?.traceDriverUnderCaret() }
+            ))
+        }
         for (action, canGo) in [
             (KeyboardShortcutSettings.Action.navigateSourceBack, languageFeatures?.canNavigateBack == true),
             (.navigateSourceForward, languageFeatures?.canNavigateForward == true),

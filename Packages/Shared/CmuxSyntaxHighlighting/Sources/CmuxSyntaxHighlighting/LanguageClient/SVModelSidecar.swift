@@ -10,8 +10,14 @@ public enum SVModelLoad {
     /// slang arguments for the editor's compilation: the chosen build file (a profile), else the
     /// `"build"` of the folder's server.json (relative to `root`), else a top-level file with the
     /// modules it instantiates found by file name in its folder and the root. Nil when nothing
-    /// is chosen (explore mode): the design's top is unknown.
-    public static func arguments(target: SlangCompilationTarget?, configBuild: String?, root: String) -> [String]? {
+    /// is chosen (explore mode): the design's top is unknown. `buildRelativePaths` (server.json's
+    /// option of that name) reads the config's build file with its paths relative to it (`-F`).
+    public static func arguments(
+        target: SlangCompilationTarget?,
+        configBuild: String?,
+        buildRelativePaths: Bool = false,
+        root: String
+    ) -> [String]? {
         switch target {
         case .buildFile(let path)?:
             return ["-f", path]
@@ -23,7 +29,7 @@ public enum SVModelLoad {
             return args
         case nil:
             guard let build = configBuild?.trimmingCharacters(in: .whitespacesAndNewlines), !build.isEmpty else { return nil }
-            return ["-f", build.hasPrefix("/") ? build : (root as NSString).appendingPathComponent(build)]
+            return [buildRelativePaths ? "-F" : "-f", build.hasPrefix("/") ? build : (root as NSString).appendingPathComponent(build)]
         }
     }
 
@@ -66,6 +72,13 @@ public final class SVModelSidecar: @unchecked Sendable {
     /// Turns a POSIX shell command into the process that runs it where the design is.
     public typealias Runner = @Sendable (_ shellCommand: String) -> Command
 
+    /// A reply object (a JSON object from the sidecar, read-only once made).
+    public struct Reply: @unchecked Sendable {
+        public let object: [String: Any]
+
+        public subscript(key: String) -> Any? { object[key] }
+    }
+
     public enum Status: Sendable, Equatable {
         case connecting
         case building
@@ -105,10 +118,10 @@ public final class SVModelSidecar: @unchecked Sendable {
     private var isReady = false
     private var generation = 0
     private var nextId = 1
-    private var pending: [Int: CheckedContinuation<[String: Any], any Error>] = [:]
+    private var pending: [Int: CheckedContinuation<Reply, any Error>] = [:]
     private var readyContinuation: CheckedContinuation<Void, any Error>?
     private var stderrTail = Data()
-    private var lastLoad: [String: Any]?
+    private var lastLoad: [String: any Sendable]?
     private var loadGeneration = 0
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.sv-model.write")
 
@@ -142,7 +155,7 @@ public final class SVModelSidecar: @unchecked Sendable {
     // MARK: Requests
 
     /// Sends one request object and returns the reply object.
-    public func request(_ object: [String: Any], timeout: TimeInterval = SVModelSidecar.requestTimeout) async throws -> [String: Any] {
+    public func request(_ object: [String: any Sendable], timeout: TimeInterval = SVModelSidecar.requestTimeout) async throws -> Reply {
         try await ensureRunning()
         if object["cmd"] as? String == "load" {
             lock.withLock { lastLoad = object }
@@ -150,7 +163,7 @@ public final class SVModelSidecar: @unchecked Sendable {
             lock.withLock { loadGeneration = generation }
             return reply
         }
-        let replay: [String: Any]? = lock.withLock { loadGeneration == generation ? nil : lastLoad }
+        let replay: [String: any Sendable]? = lock.withLock { loadGeneration == generation ? nil : lastLoad }
         if let replay {
             _ = try await send(replay, timeout: timeout)
             lock.withLock { loadGeneration = generation }
@@ -158,8 +171,8 @@ public final class SVModelSidecar: @unchecked Sendable {
         return try await send(object, timeout: timeout)
     }
 
-    private func send(_ request: [String: Any], timeout: TimeInterval) async throws -> [String: Any] {
-        var object = request
+    private func send(_ request: [String: any Sendable], timeout: TimeInterval) async throws -> Reply {
+        var object: [String: Any] = request
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             guard !isStopped, let input else {
@@ -347,7 +360,7 @@ public final class SVModelSidecar: @unchecked Sendable {
         if object["ok"] as? Bool == false {
             continuation?.resume(throwing: Failure.request(code: object["error"] as? String ?? "", message: object["message"] as? String ?? ""))
         } else {
-            continuation?.resume(returning: object)
+            continuation?.resume(returning: Reply(object: object))
         }
     }
 
@@ -363,7 +376,7 @@ public final class SVModelSidecar: @unchecked Sendable {
     }
 
     private func didExit(status: Int32, generation: Int) {
-        let (ready, waiting, error): (CheckedContinuation<Void, any Error>?, [CheckedContinuation<[String: Any], any Error>], any Error) = lock.withLock {
+        let (ready, waiting, error): (CheckedContinuation<Void, any Error>?, [CheckedContinuation<Reply, any Error>], any Error) = lock.withLock {
             let detail = Self.tail(of: stderrTail)
             let error: any Error
             if status == Self.notInstalledStatus, !isReady {

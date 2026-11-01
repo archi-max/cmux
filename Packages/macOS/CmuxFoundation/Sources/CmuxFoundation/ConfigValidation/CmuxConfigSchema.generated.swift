@@ -2711,6 +2711,7 @@ enum CmuxEmbeddedConfigSchema {
               "toggleFileEditorWordWrap",
               "addSignalToWaveform",
               "revealWaveformSignalInSource",
+              "traceWaveformDriver",
               "navigateSourceBack",
               "navigateSourceForward",
               "stepWaveformCycleForward",
