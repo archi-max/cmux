@@ -137,6 +137,21 @@ async function runCommitCases() {
   eq('pc above 2^53: no search', await hits(bp('pc', { pc: 'ffffffff80000004' })), null);
   eq('pc above 2^53: said', warnings, ['Breakpoint PC 0xffffffff80000004: too large']);
 
+  // ---- jal ra prints as jal <target> (ra implied): 0 hits for `jal ra` is explained when such a jal committed ----
+  warnings.length = 0;
+  eq('jal ra: none without a jal that links ra', await hits(bp('commitText', { pattern: 'jal ra' })), []);
+  eq('jal ra: nothing said then', warnings, []);
+  ix = makeIndex(rows.concat([[80, 0x80000020, 0x008000ef, 0]]));  // jal ra,pc+8
+  eq('jal pc+8 (rd = ra) is found as jal <target>', await hits(bp('commitText', { pattern: '^jal\\s+pc' })), [80]);
+  warnings.length = 0;
+  eq('jal ra: still no hit', await hits(bp('commitText', { pattern: 'jal ra' })), []);
+  eq('jal ra: the hint is said', warnings, ['Next instruction ~ /jal ra/: hint']);
+  warnings.length = 0;
+  eq('jal x1: the same', [await hits(bp('commitText', { pattern: '^jal\\s+x1\\b' })), warnings], [[], ['Next instruction ~ /^jal\\s+x1\\b/: hint']]);
+  warnings.length = 0;
+  eq('jal t0: no hint (it hits)', [await hits(bp('commitText', { pattern: 'jal t0' })), warnings], [[20, 50], []]);
+  ix = makeIndex(rows);
+
   // ---- writes ----
   eq('write a0', await hits(bp('write', { loc: 'a0' })), [20, 30, 60]);
   eq('write asks for a0', writeQueries.slice(-1), ['a0']);
