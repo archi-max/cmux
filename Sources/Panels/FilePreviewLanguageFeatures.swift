@@ -67,6 +67,9 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Waveform values drawn after the visible lines, at the waveform's marker.
     private var inlineValueTask: Task<Void, Never>?
     private var inlineValueOverlay: FilePreviewInlineValueOverlay?
+    /// The values drawn last, by module and name, and (enums) the raw values their names stand for: for hover.
+    private var inlineShownValues: [String: [String: String]] = [:]
+    private var inlineRawValues: [String: [String: String]] = [:]
     /// Keeps marker-driven refreshes from starving while the waveform debugger plays.
     private var inlineRefreshThrottle = WaveformRefreshThrottle()
     /// Per module of this file: slang's design instances of it, and when to ask again while it has none.
@@ -461,6 +464,9 @@ final class FilePreviewLanguageFeatures: NSObject {
         guard !Task.isCancelled, let textView = self.textView,
               textView.textStorage?.string == snapshot else { return }
         var sections = messages
+        if let wordRange, let waveformValue = inlineValueHover(at: wordRange, in: text) {
+            sections.append(waveformValue)
+        }
         if let hoverText = hoverText?.trimmingCharacters(in: .whitespacesAndNewlines), !hoverText.isEmpty {
             sections.append(hoverText)
         }
@@ -913,6 +919,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         inlineValueTask?.cancel()
         inlineRefreshThrottle.cleared()
         inlineValueOverlay?.clear()
+        inlineShownValues = [:]
+        inlineRawValues = [:]
         WaveformDebuggerEditorHighlights.clear(in: textView)
     }
 
@@ -930,6 +938,8 @@ final class FilePreviewLanguageFeatures: NSObject {
     private func textChangedForInlineValues(from location: Int) {
         inlineScanEditedFrom = min(inlineScanEditedFrom ?? location, location)
         inlineTextGeneration += 1
+        // A typedef may have changed: enum types are read again.
+        if let session { WaveformEnumLink.invalidate(session) }
     }
 
     /// The scanner, caught up with the text view's current text.
@@ -1022,6 +1032,8 @@ final class FilePreviewLanguageFeatures: NSObject {
               let waveform = WaveformSourceLink.waveformPanel(near: linkPanel),
               let time = WaveformSourceLink.markerTime(of: waveform) else {
             inlineValueOverlay?.clear()
+            inlineShownValues = [:]
+            inlineRawValues = [:]
             WaveformDebuggerEditorHighlights.clear(in: textView)
             return
         }
@@ -1041,6 +1053,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         inlineValueOverlay?.isStale = true
         let rootKey = linkRootKey
         var valueByModule: [String: [String: String]] = [:]
+        var rawValueByModule: [String: [String: String]] = [:]
         var hints: [String: String] = [:]
         var reasons: [String: WaveformDebuggerRTLStatus.Reason] = [:]
         for module in modules.prefix(4) {
@@ -1098,13 +1111,22 @@ final class FilePreviewLanguageFeatures: NSObject {
                 )
                 continue
             }
-            let values = await WaveformSourceLink.inlineValues(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time)
+            // Enum signals show their member's name (the type from slang, the bits from the dump).
+            let enums = await WaveformEnumLink.enumSignals(designInstance: designOfDump[dumpInstance] ?? "", session: session)
+            guard !Task.isCancelled else { return }
+            WaveformEnumLink.setInlineEnums(enums, dumpInstance: dumpInstance, waveform: waveform)
+            let values = await WaveformSourceLink.inlineValuesWithRaw(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time)
             guard !Task.isCancelled else { return }
             var byName: [String: String] = [:]
+            var rawByName: [String: String] = [:]
             for (name, value) in zip(names, values) {
-                if let value { byName[name] = value }
+                if let value {
+                    byName[name] = value.shown
+                    if let raw = value.raw { rawByName[name] = raw }
+                }
             }
             valueByModule[module] = byName
+            rawValueByModule[module] = rawByName
             inlineShownInstances[module] = .init(design: designOfDump[dumpInstance] ?? "", dump: dumpInstance)
             if byName.isEmpty {
                 reasons[module] = WaveformSourceLink.showsUnshownValues(in: waveform) ? .noneDumped(instance: dumpInstance) : .onlyShownValues
@@ -1159,11 +1181,33 @@ final class FilePreviewLanguageFeatures: NSObject {
         let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         let font = NSFont.monospacedSystemFont(ofSize: max(9, baseFont.pointSize - 1), weight: .regular)
         overlay.show(annotations, font: font, in: textView)
+        inlineShownValues = valueByModule
+        inlineRawValues = rawValueByModule
         WaveformDebuggerEditorHighlights.valuesShown(.init(
             editor: self, textView: textView, lines: lines, waveform: waveform, time: time,
             values: valueByModule, instances: inlineShownInstances.filter { valueByModule[$0.key] != nil },
             reasons: reasons
         ))
+    }
+
+    /// The waveform value drawn for the signal at `range`: an enum's member with its raw value.
+    private func inlineValueHover(at range: NSRange, in text: NSString) -> String? {
+        guard !isDetached, let textView else { return nil }
+        let name = text.substring(with: range)
+        var scan = syncedInlineScan(of: textView)
+        let module = scan.lines(in: NSRange(location: range.location, length: 0)).first?.module
+        inlineScan = scan
+        guard let module, let shown = inlineShownValues[module]?[name] else { return nil }
+        if let raw = inlineRawValues[module]?[name] {
+            return String(
+                format: String(localized: "filePreview.inlineValues.enumHover", defaultValue: "Waveform: %1$@ = %2$@ (%3$@)"),
+                name, shown, raw
+            )
+        }
+        return String(
+            format: String(localized: "filePreview.inlineValues.valueHover", defaultValue: "Waveform: %1$@ = %2$@"),
+            name, shown
+        )
     }
 
     /// The instance the caret's module showed values of, for the waveform debugger's Locals.

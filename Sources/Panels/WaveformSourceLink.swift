@@ -991,6 +991,7 @@ enum WaveformSourceLink {
     /// The viewer is closing: its editors' values go away with it.
     static func waveformClosed(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
+        WaveformEnumLink.waveformReset(waveform)
         if lastWaveformPanel === waveform { lastWaveformPanel = nil }
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
@@ -998,6 +999,7 @@ enum WaveformSourceLink {
     /// The viewer is loading its file again (a reload or a new page): the old values and marker no longer hold.
     static func waveformReloading(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
+        WaveformEnumLink.waveformReset(waveform)
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
 
@@ -1077,21 +1079,43 @@ enum WaveformSourceLink {
     /// Values at `time` in `waveform` of the signals `names` of dump scope
     /// `dumpInstance`; nil where the dump has no such signal (or, see
     /// `showsUnshownValues`, the viewer does not show it).
+    /// An enum signal's value is its member's name (`WaveformEnumLink`), as the editor last
+    /// found the instance's enum types.
     static func inlineValues(names: [String], dumpInstance: String, waveform: FilePreviewPanel, time: Int64) async -> [String?] {
+        await inlineValuesWithRaw(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time).map { $0?.shown }
+    }
+
+    /// Like `inlineValues`, with the raw value an enum's member name stands for.
+    static func inlineValuesWithRaw(names: [String], dumpInstance: String, waveform: FilePreviewPanel, time: Int64) async -> [WaveformEnumLink.Value?] {
         let names = Array(names.prefix(maxInlineValues))
         let scope = HierarchyPathMapping.segments(dumpInstance)
+        let enums = WaveformEnumLink.inlineEnums(dumpInstance: dumpInstance, waveform: waveform)
         let result = await waveform.nativeViewSessions.waveform.callLink(
             "valuesAt",
             argument: [
                 "time": NSNumber(value: time),
                 "paths": names.map { scope + [$0] },
                 "unshown": Self.showsUnshownValues(in: waveform),
+                "raw": names.map { enums[$0].map { !$0.isArray } ?? false },
             ] as [String: Any]
         ) as? [Any] ?? []
-        return names.indices.map { index in
+        let values: [String?] = names.indices.map { index in
             guard index < result.count, let value = result[index] as? String else { return nil }
             return Self.displayableValue(value)
         }
+        return WaveformEnumLink.named(values, names: names, enums: enums).map { value in
+            value.flatMap { value in
+                Self.displayableValue(value.shown).map { WaveformEnumLink.Value(shown: $0, raw: value.raw) }
+            }
+        }
+    }
+
+    /// The editor that answers for `waveform`'s design, and its saved dump-to-design mapping.
+    static func designLookup(for waveform: FilePreviewPanel) async -> (session: LanguageServerSession, mapping: HierarchyPathMapping)? {
+        guard let editor = Self.linkedEditor(for: waveform), let session = editor.linkSession?.session else { return nil }
+        let rootKey = editor.linkRootKey
+        let mapping = await Self.mappingKey(rootKey: rootKey, waveform: waveform).map(Self.mapping(forKey:)) ?? HierarchyPathMapping()
+        return (session, mapping)
     }
 
     /// A value from the page as drawn: no control or bidirectional formatting

@@ -205,7 +205,7 @@ public enum SlangEnumValues {
 
     /// `bits` as `width` bits: a shorter value is extended with its top bit when that is x or z
     /// (as VCD does), else with 0; a longer one keeps its low bits.
-    static func fitted(_ bits: String, width: Int) -> String {
+    public static func fitted(_ bits: String, width: Int) -> String {
         if bits.count == width { return bits }
         if bits.count > width { return String(bits.suffix(width)) }
         let top = bits.first ?? "0"
