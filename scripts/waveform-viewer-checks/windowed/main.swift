@@ -553,6 +553,75 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("return await cmuxWaveform.debugger.stop()")
   }
 
+  /// Value search in a RISC-V format on a windowed row (bus0, 32 bits): the
+  /// formatted-text path (window_cache.ts searchFormatted), not a bit pattern.
+  func riscvSearchChecks() async {
+    _ = await call("await cmuxCommands.run('vaporview.displayAsRiscvNumeric', { netlistId: 3 }); return null")
+    await sleep(500)
+    let windowed = await wc("w.isWindowed(2)") as? Bool
+    expect(windowed == true, "bus0 is windowed: \(String(describing: windowed))")
+    let cellJS = """
+      const d = document.getElementById('viewer').contentDocument;
+      const el = [...d.querySelectorAll('.value-display-item')].find((e) => (e.getAttribute('data-vscode-context') || '').includes('"signalName":"bus0"'));
+      """
+    // The value at the marker (a cell on a change shows "before->after").
+    func cellText() async -> String {
+      let t = await call(cellJS + "return el ? el.textContent.trim() : ''") as? String ?? ""
+      return t.components(separatedBy: "->").last ?? t
+    }
+    func marker() async -> Int { await call("return cmuxWaveform.link.markerTime()") as? Int ?? -1 }
+    // A far change's text, read at the marker (the helper's valueAt): the first
+    // decodable one from 90% of the dump on (random words are often not instructions).
+    let end = await call("return cmuxWaveform.host.doc.metadata.timeEnd") as? Int ?? 0
+    var target = ""
+    var at = end * 9 / 10
+    for _ in 0..<60 {
+      _ = await call("cmuxWaveform.link.setMarker(\(at)); return null")
+      var text = ""
+      _ = await waitFor(3000) { text = await cellText(); return !text.isEmpty }
+      if text.contains(" ") { target = text; break }
+      at += 2000
+    }
+    expect(target.contains(" "), "bus0 shows an instruction near the end: \(target) at \(at)")
+    func search(_ text: String, from t0: Int) async -> Int {
+      _ = await call("cmuxWaveform.link.setMarker(\(t0)); return null")
+      _ = await call("return await cmuxWaveform.link.selectSignal(['tb','dut','bus0'])")
+      await sleep(300)
+      _ = await call("""
+        const d = document.getElementById('viewer').contentDocument;
+        d.getElementById('value-equals-button').click();
+        const bar = d.getElementById('search-bar');
+        bar.focus(); bar.value = \(jsString(text));
+        bar.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+        d.getElementById('next-button').click();
+        return null
+        """)
+      _ = await waitFor(20000) { await marker() != t0 }
+      return await marker()
+    }
+    let escaped = NSRegularExpression.escapedPattern(for: target)
+    let found = await search("^" + escaped + "$", from: 0)
+    let foundText = await cellText()
+    expect(found > 0 && foundText == target, "a RISC-V text search on a windowed row finds the instruction: t \(found), \(foundText) vs \(target)")
+    // A search made only of 0/1/x/z characters is still text in a text format
+    // (a register name, an immediate), never a bit pattern for the helper.
+    for pattern in ["x1,", "x1", "0"] {
+      let t = await search(pattern, from: 0)
+      let text = await cellText()
+      expect(t > 0 && text.lowercased().contains(pattern), "searching \(pattern) in RISC-V matches the text, not bits: t \(t), \(text)")
+    }
+    _ = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      d.getElementById('search-bar').blur();
+      return null
+      """)
+    _ = await call("await cmuxCommands.run('vaporview.displayAsHexadecimal', { netlistId: 3 }); return null")
+  }
+
+  func jsString(_ s: String) -> String {
+    String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
+  }
+
   /// The page side of the fallback notice, and what host.js relays.
   func hostChecks() async {
     // The notice: shown with its reason and a Retry that asks native to retry windowed.
@@ -638,7 +707,7 @@ func run() async {
     let page = Page(loading: .auto)
     let ok = await page.open(home: home)
     expect(ok, "v2 page opened the synthetic dump")
-    if ok { await page.windowedChecks(); await page.hostChecks() }
+    if ok { await page.windowedChecks(); await page.riscvSearchChecks(); await page.hostChecks() }
     await page.snapshot()
     page.close()
     let whole = Page(loading: .whole)
