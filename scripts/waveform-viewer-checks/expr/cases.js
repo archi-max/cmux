@@ -86,6 +86,18 @@ function runExprCases() {
     ["w64 | 'hx", "64'hxxxxxxxxxxxxxxxx"], ["w64 | 'h1x", "64'h000000000000001x"], ["w64 ^ 'bz", "64'hxxxxxxxxxxxxxxxx"],
     ["w64 + 'dx", "64'hxxxxxxxxxxxxxxxx"], ["{1'b1, 63'h0} | 'hz0", "64'hXxxxxxxxxxxxxxx0"], ["'hx", "32'hxxxxxxxx"],
     ["w64 | 36'hx", "64'h0000000xxxxxxxxx"],
+    // slang semantics (the VCS fuzz found these): unary plus is the operand itself, z included.
+    ['+c4', "4'b10x1"], ['+z4', "4'bzzzz"], ["+'hz", "32'hzzzzzzzz"],
+    // Unsized decimals and 's literals are signed: a negative index, sign extension in a signed
+    // context, signed comparison, and >>> shifting in the top bit (x and z too).
+    ['c4[-1 +: 2]', "2'b1x"], ['r[7 +: 3]', "3'b01x"], ['asc[-1 +: 3]', "3'bx10"], ['a[-2 +: 4]', "4'b00xx"],
+    ["8'sd178 * 219", "32'hffffbd46"], ['-16 >>> 16', "32'hffffffff"], ['- 1 >>> 22', "32'hffffffff"], ['-2 < 50', "1'b1"],
+    ["4'sb1000 < 4'sb0111", "1'b1"], ["4'sb1000 < 4'b0111", "1'b0"], ["8'sb10000000 + 9'b0", "9'h080"], ["8'sb10000000 + 9'sb0", "9'h180"],
+    ["4'sb1x00 >>> 1", "4'b11x0"], ["4'sbz000 >>> 2", "4'bzzz0"], ["4'sb1000 >>> 9", "4'b1111"], ["4'b1000 >>> 1", "4'b0100"],
+    ["(4'sb1000 >>> 1) + 8'd0", "8'h04"], ["4'sb1111 == 8'hff", "1'b0"], ["4'sb1111 == 8'shff", "1'b1"], ['-1 == 32\'hffffffff', "1'b1"],
+    ["{4'sb1000}  + 8'sd0", "8'h08"], ["c4[asc[0 +: 1] - 2]", "1'bx"],
+    // An unknown condition with equal arms is that value, z kept (slang: SVInt::conditional).
+    ['xbit ? z4 : z4', "4'bzzzz"], ["xbit ? 4'b1z01 : 4'b1z01", "4'b1z01"], ["xbit ? 4'b1z01 : 4'b1z00", "4'b1x0x"],
     // refused
     ['', 'error:empty@0'], ['   ', 'error:empty@3'], ['a +', 'error:syntax@3'], ['a / b', 'error:unsupported@2'], ['a % b', 'error:unsupported@2'],
     ['a ** 2', 'error:unsupported@2'], ['a ==? b', 'error:unsupported@2'], ['a !=? b', 'error:unsupported@2'], ['a = b', 'error:unsupported@2'],
@@ -114,6 +126,21 @@ function runExprCases() {
       }
     }
     check(got === expected, JSON.stringify(text.length > 60 ? text.slice(0, 57) + '...' : text) + ' -> ' + got + (got === expected ? '' : '  (expected ' + expected + ')'));
+  }
+  // VCS differential-fuzz regressions (expr/fuzz-regressions.js, from fuzz.js): each case with its
+  // own signals, against the bits VCS printed.
+  if (typeof FUZZ_REGRESSIONS !== 'undefined') {
+    for (const c of FUZZ_REGRESSIONS) {
+      const byName = new Map(c.signals.map((s) => [s.name, s]));
+      const fenv = (p) => {
+        const s = p.length === 1 ? byName.get(p[0]) : null;
+        return s ? { width: s.width, msb: s.msb, lsb: s.lsb, value: E.fromBits(s.value, s.width) } : null;
+      };
+      const parsed = E.parse(c.text);
+      const r = parsed.error ? parsed : E.evaluate(parsed.ast, fenv);
+      const got = r.error ? 'error:' + r.error : E.toBits(r.value);
+      check(got === c.want, 'fuzz ' + c.seed + '#' + c.i + ' ' + JSON.stringify(c.text.length > 50 ? c.text.slice(0, 47) + '...' : c.text) + (got === c.want ? '' : '  (vcs ' + c.want + ', got ' + got + ')'));
+    }
   }
   // names(): each signal once, in order, as written (resolution is the caller's).
   const names = E.names(E.parse('a + u_core.count + a + gen[0].q + \\a.b ').ast);

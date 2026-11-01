@@ -84,7 +84,7 @@ case "${1:-}" in
     ;;
   expr)
     swiftc -swift-version 6 -O "$HERE/expr/main.swift" -o "$OUT/expr"
-    "$OUT/expr" "$ASSETS/cmux-expr.js" "$HERE/expr/cases.js"
+    "$OUT/expr" "$ASSETS/cmux-expr.js" "$HERE/expr/cases.js" "$HERE/expr/fuzz-regressions.js"
     ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
