@@ -26,13 +26,23 @@ let LATENCY = Number(opt('latency', 40));
 let JITTER = Number(opt('jitter', 60));
 const OUT = 3;
 const V1 = argv.includes('--v1');
-// --stall-open-file F --stall-opens N: each launch appends a line to F; the first N launches
-// never answer `open` (a reader stuck opening the file), later ones answer normally.
+// --stall-open-file F --stall-opens N: each launch appends its pid as a line to F; the first
+// N launches never answer `open` (a reader stuck opening the file), later ones answer
+// normally. --stall-launches 2,4 stalls those launches (1-based) instead, and
+// --hang-ready-launches 2 never sends the ready line on those. A stalled open stands in for
+// the coordinator's main thread blocked in the reader: from then on it ignores the end of
+// stdin and SIGTERM, so only a SIGKILL ends it.
 const STALL_FILE = opt('stall-open-file', '');
+const listOpt = (name) => String(opt(name, '')).split(',').filter(Boolean).map(Number);
 let stallOpen = false;
+let hangReady = false;
+let stuck = false;
 if (STALL_FILE) {
-  fs.appendFileSync(STALL_FILE, 'launch\n');
-  stallOpen = fs.readFileSync(STALL_FILE, 'utf8').split('\n').filter(Boolean).length <= Number(opt('stall-opens', 1));
+  fs.appendFileSync(STALL_FILE, process.pid + '\n');
+  const launch = fs.readFileSync(STALL_FILE, 'utf8').split('\n').filter(Boolean).length;
+  const list = listOpt('stall-launches');
+  stallOpen = list.length ? list.includes(launch) : launch <= Number(opt('stall-opens', 1));
+  hangReady = listOpt('hang-ready-launches').includes(launch);
 }
 const V1_COMMANDS = new Set(['open', 'children', 'signals']);
 
@@ -328,7 +338,12 @@ const handlers = {
   textControl(c) { Object.assign(textCtl, c); return { ...textCtl }; },
   textStats() { return { ...textStats, signalsLast }; },
   async open({ file }) {
-    if (stallOpen) { await new Promise(() => {}); }
+    if (stallOpen) {
+      stuck = true;
+      process.on('SIGTERM', () => {});
+      setInterval(() => {}, 1 << 30);
+      await new Promise(() => {});
+    }
     dump = await openDump(file); stored.clear(); distinct.clear();
     const r = { metadata: dump.metadata, top: dump.top };
     if (dump.topVars) { r.topVars = dump.topVars; }
@@ -422,7 +437,8 @@ function schedule(req) {
   }, rtt / 2);
 }
 
-send(V1 ? { id: 0, ready: true } : { id: 0, ready: true, pid: process.pid, protocol: 2 });
+if (hangReady) { setInterval(() => {}, 1 << 30); }
+else { send(V1 ? { id: 0, ready: true } : { id: 0, ready: true, pid: process.pid, protocol: 2 }); }
 
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) { return; }
@@ -441,4 +457,4 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   schedule(req);
-}).on('close', () => process.exit(0));
+}).on('close', () => { if (!stuck) { process.exit(0); } });

@@ -382,20 +382,38 @@ func fallbackChecks() async throws {
   // again; a second stall is an error that says the file did not open.
   WaveformFSDBHelper.openTimeout = 2
   defer { WaveformFSDBHelper.openTimeout = WaveformFSDBHelper.defaultOpenTimeout }
-  func stalling(_ name: String, opens: Int) throws -> (WaveformFSDBHelper, URL) {
+  func stalling(_ name: String, opens: Int = 0, _ extra: String = "", readyTimeout: TimeInterval = 20, log: StatusLog? = nil) throws -> (WaveformFSDBHelper, URL) {
     let launches = scratch.appendingPathComponent("stall-\(name).txt")
-    let home = try makeHome("stall-\(name)", installs: [v2Launching("exec node \(shellQuoted(mock)) --latency 20 --jitter 10 --stall-open-file \(shellQuoted(launches.path)) --stall-opens \(opens) \"$@\" 3>&1 1>&2"), v1Install])
-    return (makeHelper(home: home, loading: .auto, hostKey: "host-stall-\(name)"), launches)
+    let home = try makeHome("stall-\(name)", installs: [v2Launching("exec node \(shellQuoted(mock)) --latency 20 --jitter 10 --stall-open-file \(shellQuoted(launches.path)) --stall-opens \(opens) \(extra) \"$@\" 3>&1 1>&2"), v1Install])
+    return (makeHelper(home: home, loading: .auto, hostKey: "host-stall-\(name)", readyTimeout: readyTimeout, log: log), launches)
   }
+  // The pids of a stalling mock's launches (one line each), and whether they are gone: a stuck
+  // mock ignores the end of its stdin and SIGTERM, as a coordinator blocked in the reader does.
+  func launchPids(_ url: URL) -> [Int32] {
+    ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").compactMap { Int32($0) }
+  }
+  func alive(_ pids: [Int32]) -> [Int32] { pids.filter { kill($0, 0) == 0 } }
+  func gone(_ pids: [Int32], within seconds: Double) async -> [Int32] {
+    let end = Date().addingTimeInterval(seconds)
+    while !alive(pids).isEmpty, Date() < end { try? await Task.sleep(nanoseconds: 200_000_000) }
+    return alive(pids)
+  }
+  // So a red run leaves nothing behind.
+  func reap(_ url: URL) { launchPids(url).forEach { _ = kill($0, SIGKILL) } }
   do {
     let (once, launches) = try stalling("once", opens: 1)
     let s0 = Date()
     let r = await open(once)
     let took = Date().timeIntervalSince(s0)
     let kids = await once.response(for: json(["cmd": "children", "scopeOffsetIdx": 0, "id": 2]), failureMessage: fail)
+    let old = Array(launchPids(launches).prefix(1))
+    let left = await gone(old, within: 8)
     once.stop()
+    reap(launches)
     expect(proto(r) == "2" && header(r)["result"] != nil && lines(launches) == 2 && took >= 1.5 && took < 10 && header(kids)["result"] != nil,
            "an open stuck once: the helper is relaunched and the file opens (v2, \(lines(launches)) launches, \(String(format: "%.1f", took)) s, then children \(header(kids).keys.sorted()))")
+    expect(old.count == 1 && left.isEmpty,
+           "the relaunch ends the stuck helper on the host, not only its connection (stuck pid \(old), still running \(left))")
   }
   do {
     let (stuck, launches) = try stalling("always", opens: 99)
@@ -403,8 +421,40 @@ func fallbackChecks() async throws {
     let r = await open(stuck)
     let took = Date().timeIntervalSince(s0)
     stuck.stop()
+    let pids = launchPids(launches)
+    let left = await gone(pids, within: 8)
+    reap(launches)
     expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && lines(launches) == 2 && took < 10,
            "an open stuck twice is an error after one relaunch, not a 5-minute wait: \(header(r)), \(lines(launches)) launches, \(String(format: "%.1f", took)) s")
+    expect(pids.count == 2 && left.isEmpty, "stop() ends both stuck helpers on the host (pids \(pids), still running \(left))")
+  }
+  do {
+    // A request that comes while the page's open is stuck sends its own reopen, which sticks
+    // on the same launch. The open times out first and relaunches; the reopen waiting on that
+    // launch is retried on the new one instead of failing as "the connection ended".
+    let (re, launches) = try stalling("reopen", "--stall-launches 1")
+    let a = Task { await open(re) }
+    try await Task.sleep(nanoseconds: 1_000_000_000)
+    let b = Task { await re.response(for: json(["cmd": "children", "scopeOffsetIdx": 0, "id": 6]), failureMessage: fail) }
+    let ra = await a.value, rb = await b.value
+    re.stop()
+    reap(launches)
+    expect(proto(ra) == "2" && header(ra)["result"] != nil && header(rb)["result"] != nil && lines(launches) == 2,
+           "concurrent reopens stuck on one launch both succeed after its relaunch: \(header(ra).keys.sorted()), \(header(rb)), \(lines(launches)) launches")
+  }
+  do {
+    // The relaunched helper doesn't get ready: the page stays on v2 (no v1 mid-page, nothing
+    // remembered) and the open fails within its bound (2 x openTimeout), not after a full
+    // ready timeout and a v1 start.
+    let pinLog = StatusLog()
+    let (pin, launches) = try stalling("pinned", "--stall-launches 1 --hang-ready-launches 2", readyTimeout: 20, log: pinLog)
+    let s0 = Date()
+    let r = await open(pin)
+    let took = Date().timeIntervalSince(s0)
+    pin.stop()
+    reap(launches)
+    expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && pinLog.fellBack.isEmpty && lines(launches) == 2 && took < 7,
+           "a relaunch keeps the helper version and the total wait is bounded: \(header(r)), fell back \(pinLog.fellBack), \(lines(launches)) launches, \(String(format: "%.1f", took)) s")
   }
   do {
     // Only open has the short bound: a slow reply to another request still arrives.
