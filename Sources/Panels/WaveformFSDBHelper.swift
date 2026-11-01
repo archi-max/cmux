@@ -124,6 +124,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// once and the open sent again, then it is an error. (Writable for the tests.)
     static let defaultOpenTimeout: TimeInterval = 120
     nonisolated(unsafe) static var openTimeout: TimeInterval = defaultOpenTimeout
+    /// How long a helper whose stdin ended may take to exit on its own before the launch
+    /// command's watchdog kills it (see `supervised`).
+    static let stuckGrace = 3
 
     private let sshArguments: SSHArguments
     private let installs: [Install]
@@ -162,6 +165,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// (a retry after a timeout or a dropped connection) so that one has the file open too.
     private var lastOpen: [String: Any]?
     private var openGeneration = 0
+    /// The launch `relaunch` last ended: its waiting requests failed with `helperExited`,
+    /// and a reopen among them is sent again on the next launch.
+    private var relaunchedGeneration = 0
+    /// Set by `relaunch`: the protocol the page runs, which later starts keep (no v1 mid-page).
+    private var pinnedProtocol: Int?
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.waveform-fsdb.write")
 
     /// `executable` runs `sshArguments(command)`: `/usr/bin/ssh`, or a local shell in tests.
@@ -296,30 +304,72 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     }
 
     /// Sends an `open` with its own, shorter timeout. An open still unanswered then is
-    /// stuck (the reader's NFS read, a host loading Verdi): the helper is relaunched once
-    /// and the open sent again, since a fresh helper usually opens the same file at once.
+    /// stuck (the reader's NFS read, a host loading Verdi): the helper is relaunched once,
+    /// with the same protocol, and the open sent again, since a fresh helper usually opens
+    /// the same file at once. The whole wait, relaunch included, is at most 2 x openTimeout.
+    ///
+    /// Requests can share a launch: a request that comes while the page's open is still
+    /// unanswered sends its own reopen first. When another caller relaunches that launch,
+    /// such a reopen fails with `helperExited` and is retried here like a timed-out one.
+    /// Other requests in flight on a relaunched launch fail with `helperExited` (the page
+    /// sends them only after its open answered, so that needs an open of a new file
+    /// sticking while they run); they are not retried.
     private func sendOpen(_ object: [String: Any]) async throws -> Reply {
-        for attempt in 0..<2 {
+        let deadline = Date().addingTimeInterval(2 * Self.openTimeout)
+        var relaunched = false
+        while true {
             let launch = lock.withLock { generation }
+            let timeout = relaunched ? deadline.timeIntervalSinceNow : Self.openTimeout
+            guard timeout > 0 else { throw Failure.openTimedOut }
             do {
-                let reply = try await send(object, timeout: Self.openTimeout)
+                let reply = try await send(object, timeout: timeout)
                 lock.withLock { openGeneration = launch }
                 return reply
             } catch Failure.timedOut(_) {
-                guard attempt == 0 else { break }
+                guard !relaunched else { throw Failure.openTimedOut }
                 relaunch(generation: launch)
-                try await ensureRunning()
+            } catch Failure.helperExited(let detail) {
+                // Relaunched by another caller's timeout while this one waited on it (on the
+                // second launch, that open was stuck as well).
+                let byRelaunch = lock.withLock { relaunchedGeneration == launch }
+                guard byRelaunch, !relaunched else {
+                    throw byRelaunch ? Failure.openTimedOut : Failure.helperExited(detail: detail)
+                }
+            }
+            relaunched = true
+            try await waitRunning(until: deadline)
+        }
+    }
+
+    /// `ensureRunning`, given up (as `openTimedOut`) at `deadline`; the start itself goes on,
+    /// and the next request waits for it.
+    private func waitRunning(until deadline: Date) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let once = ResumeOnce(continuation)
+            Task {
+                do {
+                    try await self.ensureRunning()
+                    once.resume(with: nil)
+                } catch {
+                    once.resume(with: error)
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + max(0, deadline.timeIntervalSinceNow)) {
+                once.resume(with: Failure.openTimedOut)
             }
         }
-        throw Failure.openTimedOut
     }
 
     /// Ends launch `generation` (still running, but stuck) so the next request starts a
-    /// new helper. Its requests fail; its exit, which comes later, is ignored.
+    /// new helper of the same protocol. Closing its input ends the ssh session, and the
+    /// launch command's watchdog then kills the stuck helper's processes on the host.
+    /// Its requests fail; its exit, which comes later, is ignored.
     private func relaunch(generation launch: Int) {
         let (process, input, waiting): (Process?, FileHandle?, [CheckedContinuation<Reply, Error>]) = lock.withLock {
             guard launch == generation, !isStopped else { return (nil, nil, []) }
             generation += 1  // helperDidExit of the old process no longer matches
+            relaunchedGeneration = launch
+            if pinnedProtocol == nil { pinnedProtocol = runningProtocol }
             let old = (self.process, self.input, Array(pending.values))
             self.process = nil
             self.input = nil
@@ -420,8 +470,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         }
     }
 
-    /// Ends the helper (closing its stdin ends it on the host), any install in
-    /// progress, and fails waiting requests.
+    /// Ends the helper (closing its stdin ends it on the host; one stuck in a read is
+    /// killed there by the launch command's watchdog), any install in progress, and
+    /// fails waiting requests.
     func stop() {
         lock.lock()
         isStopped = true
@@ -493,6 +544,12 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// Anything v1 would hit the same way (no Verdi, Node.js or compiler, a
     /// failed install, an unreachable host) is an error.
     private func start() async throws {
+        if let pinned = lock.withLock({ pinnedProtocol }),
+           let install = installs.first(where: { $0.protocolVersion == pinned }) {
+            // After a relaunch: the page's own protocol or an error, never a fallback.
+            try await start(install, canFallBack: false)
+            return
+        }
         var candidates = installs
         if let v2 = candidates.first, v2.protocolVersion >= 2, candidates.count > 1,
            let detail = Self.rememberedFailure(Self.failureKey(host: hostKey, install: v2, machine: nil)) {
@@ -593,11 +650,33 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         + "&& P=$(find \"$D/..\" \"$D/../..\" -maxdepth 0 \\( ! -user \"$U\" -o -perm -g+w -o -perm -o+w \\) -print 2>&1) "
         + "&& [ -z \"$P\" ] || { echo \"cmux: refusing to run $D, it is not private to $(id -un)\" >&2; exit \(refusedStatus); };"
 
+    /// Runs `command` (the launcher) with a watchdog on its stdin, so a helper whose main
+    /// thread is stuck (a read blocked on NFS) can't outlive its session. A copy of the
+    /// session's stdin feeds `command` through a fifo; when the stdin ends (ssh closed:
+    /// `stop()`, a relaunch) and `command` hasn't exited `stuckGrace` s later, its
+    /// processes (the coordinator, its workers) are killed, then itself. It stops each
+    /// process before killing its children, so nothing is respawned. Only processes
+    /// still children of this shell are touched (`m`: a reused pid is never killed), so
+    /// this shell and the watchdog outlive a SIGTERM or SIGHUP to the session's process
+    /// group (their trap; `command` gets the default handlers back; a `cat` it ends counts
+    /// as the end of stdin). The shell waits for `command`, whose status it exits with. No single quotes: it runs inside `sh -c '…'`.
+    static func supervised(_ command: String) -> String {
+        "T=$(mktemp -d \"${TMPDIR:-/tmp}/cmux-fsdb-in.XXXXXX\") && mkfifo \"$T/i\" || exit 1; "
+            + "k() { kill -STOP $1 2>/dev/null; for c in $(pgrep -P $1); do k $c; done; kill -KILL $1 2>/dev/null; }; "
+            + "m() { [ \"$(ps -o ppid= -p $1 2>/dev/null | tr -d \" \")\" = \"$2\" ]; }; "
+            + "trap : HUP TERM; exec 9<&0; { rm -rf \"$T\"; \(command); } <\"$T/i\" 9<&- & L=$!; "
+            + "{ trap : HUP TERM; cat <&9 >\"$T/i\" 2>/dev/null; exec 9<&-; n=0; "
+            + "while m $L $$ && [ $n -lt \(stuckGrace) ]; do sleep 1; n=$((n+1)); done; "
+            + "if m $L $$; then for c in $(pgrep -P $L); do k $c; done; sleep 1; m $L $$ && k $L; fi; } & W=$!; "
+            + "exec 9<&- 0</dev/null; while :; do wait $L; s=$?; m $L $$ || break; done; m $W $$ && k $W; exit $s"
+    }
+
     /// Starts the install's launcher and waits for its ready line.
     private func launch(_ install: Install, installDirectory: String) async throws {
         let checks = install.requiredFiles.map { "[ -f \"$D/\($0)\" ]" }.joined(separator: " && ")
         let script = "D=\"\(installDirectory)\"; \(checks) "
-            + "|| { echo \"\(Self.machinePrefix)$(uname -m)\" >&2; exit \(Self.notInstalledStatus); }; \(install.protocolVersion >= 2 ? Self.privacyCheck : "") exec bash \"$D/\(install.launcher)"
+            + "|| { echo \"\(Self.machinePrefix)$(uname -m)\" >&2; exit \(Self.notInstalledStatus); }; \(install.protocolVersion >= 2 ? Self.privacyCheck : "") "
+            + Self.supervised("exec bash \"$D/\(install.launcher)")  // launcher closes the quote (then its arguments)
         let process = Process()
         process.executableURL = executable
         process.arguments = sshArguments("sh -c '\(script)'")
@@ -1036,5 +1115,23 @@ struct FrameParser {
         guard binLength >= 0, binLength <= Self.maxBinaryLength else { return .tooLarge }
         pendingHeader = (line, id, binLength, object["ready"] as? Bool == true, object["error"] as? String, object["partial"] as? Bool == true)
         return next()
+    }
+}
+
+/// A continuation resumed by whichever of several paths comes first (`waitRunning`).
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+
+    /// nil: success.
+    func resume(with error: Error?) {
+        let continuation: CheckedContinuation<Void, Error>? = lock.withLock {
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        guard let continuation else { return }
+        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
     }
 }
