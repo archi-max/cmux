@@ -58,6 +58,33 @@ struct FilePreviewEditorTypingStabilityTests {
         }
     }
 
+    /// The movements AppKit's list reports (seen under lldb with the real
+    /// NSTextViewCompletionWindow): only a final Return or Tab chooses a
+    /// candidate. A double-click on a row arrives as a final Return; a single
+    /// click is non-final; a click anywhere else, scrolling or typing on ends
+    /// the list with a final "other" or "right" call.
+    @Test("only a final Return or Tab inserts a completion")
+    func completionInsertionDecision() {
+        let other = NSTextMovement.other.rawValue
+        let returnKey = NSTextMovement.return.rawValue
+        let tab = NSTextMovement.tab.rawValue
+        let right = NSTextMovement.right.rawValue
+        let cancel = NSTextMovement.cancel.rawValue
+        let up = NSTextMovement.up.rawValue
+        let down = NSTextMovement.down.rawValue
+        for movement in [returnKey, tab] {
+            #expect(SavingTextView.completionInsertionIsChosen(isFinal: true, movement: movement))
+        }
+        // Typing on (word character, `,`, space, `"`), Escape, a click outside the list, scroll, focus loss.
+        for movement in [other, right, cancel] {
+            #expect(!SavingTextView.completionInsertionIsChosen(isFinal: true, movement: movement))
+        }
+        // Opening, arrows and a single click on a row only highlight.
+        for movement in [other, up, down, returnKey, tab] {
+            #expect(!SavingTextView.completionInsertionIsChosen(isFinal: false, movement: movement))
+        }
+    }
+
     private static func completionTextView(text: String) -> SavingTextView {
         let textView = SavingTextView.makeFilePreviewTextView()
         textView.string = text
@@ -261,6 +288,53 @@ struct FilePreviewEditorTypingStabilityTests {
             result.setAttributes([.font: font, .foregroundColor: NSColor(srgbRed: 1, green: 0.3, blue: 0.3, alpha: 1)], range: match.range)
         }
         return HighlightedText(result)
+    }
+
+    // MARK: - Line counting for the viewport anchor
+
+    /// `lineNumber(at:)` and `offset(ofLine:)` agree with NSString's own
+    /// line ranges for every line ending it knows.
+    @Test("the viewport anchor counts lines like NSString.lineRange")
+    func viewportAnchorLineCounting() {
+        let samples = [
+            "", "a", "a\n", "\n\n", "a\nb", "a\r\nb\r\n", "a\rb\r", "a\r\n\r\nb",
+            "a\u{2028}b\u{2029}c\u{0085}d", "x\r", "\r\n",
+            String(repeating: "line\r\n", count: 5000) + "tail",
+        ]
+        for sample in samples {
+            let text = sample as NSString
+            var starts = [0]
+            var location = 0
+            while location < text.length {
+                let next = NSMaxRange(text.lineRange(for: NSRange(location: location, length: 0)))
+                starts.append(next)
+                location = next
+            }
+            // The end of an unterminated last line starts no line of its own.
+            let lineStarts = text.length > 0 && starts.last == text.length && !Self.endsWithLineBreak(text)
+                ? Array(starts.dropLast()) : starts
+            // Expected line of every index: the line starts at or before it.
+            for index in 0...text.length {
+                let expected = lineStarts.dropFirst().filter { $0 <= index }.count
+                #expect(FilePreviewViewportAnchor.lineNumber(at: index, in: text) == expected,
+                        "lineNumber(\(index)) in \(sample.debugDescription.prefix(40))")
+                if text.length > 200 { break }
+            }
+            // The start of every line, and past the last line its start.
+            for line in 0..<(lineStarts.count + 2) {
+                let expected = lineStarts[min(line, lineStarts.count - 1)]
+                #expect(FilePreviewViewportAnchor.offset(ofLine: line, in: text) == expected,
+                        "offset(ofLine: \(line)) in \(sample.debugDescription.prefix(40))")
+            }
+        }
+        let long = String(repeating: "line\r\n", count: 5000) + "tail" as NSString
+        #expect(FilePreviewViewportAnchor.lineNumber(at: long.length, in: long) == 5000)
+        #expect(FilePreviewViewportAnchor.offset(ofLine: 4999, in: long) == 4999 * 6)
+    }
+
+    private static func endsWithLineBreak(_ text: NSString) -> Bool {
+        guard text.length > 0 else { return false }
+        return [0x0A, 0x0D, 0x2028, 0x2029, 0x85].contains(text.character(at: text.length - 1))
     }
 
     /// The marker's line top, measured from the viewport top.
