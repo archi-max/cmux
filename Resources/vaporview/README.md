@@ -140,7 +140,9 @@ keybindings, netlist view, settings, sessions and terminal links).
   128 cap count only the rest. An explicit add of one signal (double-click,
   Enter, a drop, the API by id) adds another row, as VaporView does; a pick
   by name or the editor's Add to Waveform selects the shown row, as
-  VaporView's add with reveal does.
+  VaporView's add with reveal does. An add made while an Undo, Redo or
+  restore looks up its rows waits for that view and counts its rows as the
+  shown ones; a reload or open in between drops it.
   Instance-path terminal links never take file names (see
   `WaveformTerminalLink.swift`), and there is no WCP server or remote
   (surfer) viewer.
