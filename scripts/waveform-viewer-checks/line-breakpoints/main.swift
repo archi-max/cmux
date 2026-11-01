@@ -75,6 +75,19 @@ endmodule
         ($0["scope"] as? [String] ?? []).joined(separator: ".") + ":" + ($0["paths"] as? [[String]] ?? []).map { $0.joined(separator: ".") }.joined(separator: ",")
     }
     expect(groups == ["TOP.u_core:TOP.u_core.limit", "TOP.u_core2:TOP.u_core2.limit"], "any instance: per-instance groups: \(groups)")
+    // review-bp L10: why a line has no paths: it watches nothing (endmodule), or its file is too large to scan.
+    _ = LB.gutterClicked(view, lineStart: lineStart(6, in: source))
+    await LB.sync(waveform)
+    let nothing = lastItems().first { $0["label"] as? String == "core.sv:7" }
+    editor.tooLargeToScan = true
+    LB.instancesLearned(by: editor)
+    await LB.sync(waveform)
+    let unscanned = lastItems().first { $0["label"] as? String == "core.sv:7" }
+    editor.tooLargeToScan = false
+    expect(nothing?["unwatched"] as? String == "nothing" && unscanned?["unwatched"] as? String == "tooLarge",
+           "a line with no paths says why: \(String(describing: nothing?["unwatched"])) \(String(describing: unscanned?["unwatched"]))")
+    _ = LB.gutterClicked(view, lineStart: lineStart(6, in: source))
+    await LB.sync(waveform)
     expect(styles()[lineStart(5, in: source)] == .disabled, "a disabled dot: \(styles())")
 
     // Edits above move them; the label follows.
@@ -436,6 +449,49 @@ endmodule
     edit(emptyView, NSRange(location: 0, length: 0), "a")
     expect(lines(emptyView) == [0] && state(empty).first?.contains("ok true") == true, "a new empty file's breakpoint survives typing: \(lines(emptyView)) \(state(empty))")
 
+    // review-bp L9: a session restored after the file's gutter drew already (its tracker made with no
+    // marks) still places them; a snapshot taken off the main thread keeps the last one, and a
+    // restore there is applied on the main thread, not dropped.
+    let early = UUID()
+    let earlyView = open(source, workspace: early)
+    _ = LB.styles(in: earlyView)
+    LB.restore(SessionWaveformBreakpointsSnapshot(lines: [LB.Mark(id: UUID(), path: "/rtl/core.sv", line: 4, text: "assign done = count == limit;")],
+                                                  signals: nil), in: early)
+    expect(lines(earlyView) == [4], "restored into a file already drawn: placed: \(lines(earlyView)) \(state(early))")
+    let onMain = LB.sessionSnapshot(of: early)
+    let offMain = await Task.detached { LB.sessionSnapshot(of: early) }.value
+    expect(onMain?.lines?.count == 1 && offMain == onMain, "a snapshot off the main thread keeps the last one: \(String(describing: offMain))")
+    let later = UUID()
+    let restoreSnapshot = onMain
+    await Task.detached { LB.sessionRestore(restoreSnapshot, in: later) }.value
+    for _ in 0..<40 where LB.marks[later] == nil { try? await Task.sleep(nanoseconds: 25_000_000) }
+    expect(LB.marks[later]?.count == 1, "a restore off the main thread is applied: \(state(later))")
+
+    // L10: lines split as the gutter splits them (U+2028, U+2029, U+0085 too), so a mark's saved line
+    // is the line its dot is on.
+    let separators = UUID()
+    let separated = "// a\u{2028}b\u{85}c\n" + source
+    let separatedView = open(separated, workspace: separators)
+    let separatedStarts = (separated as NSString).lineStarts()
+    _ = LB.gutterClicked(separatedView, lineStart: separatedStarts[7])
+    _ = LB.sessionSnapshot(of: separators)
+    expect(LB.marks[separators]?.first?.line == 7 && LB.marks[separators]?.first?.text == "assign done = count == limit;",
+           "line numbers count every line break the gutter does: \(state(separators))")
+
+    // L10: placing many marks in a big file is one pass, not one per mark.
+    let many = UUID()
+    var manyText = "module many(input logic clk);\n"
+    for i in 0..<50_000 { manyText += "  assign w\(i) = r\(i);\n" }
+    manyText += "endmodule\n"
+    LB.restore(SessionWaveformBreakpointsSnapshot(lines: (0..<2000).map {
+        LB.Mark(id: UUID(), path: "/rtl/many.sv", line: 1 + $0 * 25, text: "assign w\($0 * 25) = r\($0 * 25);")
+    }, signals: nil), in: many)
+    let manyView = open(manyText, workspace: many, path: "/rtl/many.sv")
+    let placeStarted = Date()
+    _ = LB.styles(in: manyView)
+    let placeMs = Date().timeIntervalSince(placeStarted) * 1000
+    expect(placeMs < 500 && (LB.marks[many] ?? []).allSatisfy { !$0.lost }, "2000 marks in a 50k-line file placed in \(Int(placeMs)) ms (under 500)")
+
     // N8: an older manifest's list goes to the first viewer that reports; cleared there, it does not
     // come back after a relaunch, nor go to an unrelated viewer.
     let legacy = UUID()
@@ -453,6 +509,15 @@ endmodule
     expect(given == [["TOP", "x"]] && LB.signals(for: again).isEmpty && LB.signals(for: unrelated).isEmpty
            && LB.watches(for: again).isEmpty && LB.watches(for: unrelated).isEmpty,
            "a cleared older-manifest list stays cleared: \(given) \(LB.signals(for: again).map(\.path)) \(LB.signals(for: unrelated).map(\.path)) \(LB.watches(for: unrelated))")
+}
+
+extension NSString {
+    /// Line starts as the gutter splits lines (.byLines).
+    func lineStarts() -> [Int] {
+        var starts: [Int] = []
+        enumerateSubstrings(in: NSRange(location: 0, length: length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in starts.append(range.location) }
+        return starts
+    }
 }
 
 let app = NSApplication.shared

@@ -956,6 +956,43 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // Shown in the strip while stepping, else as a toast: either way 'data' (the older) is not shown last.
     expect(latest?.contains("\"delayed\":1") == true && latest?.contains("\"expr\":\"data\"") == false && latest?.contains("data = ") == false,
            "the newer evaluation stays shown: \(String(describing: latest))")
+
+    // review-bp L3: play reaching the end with a hit after the last posedge says so, as continue does
+    // (top.late changes at 1000; the last posedge is 995), also while waiting for the editors.
+    await removeAll()
+    _ = await add("late")
+    for wait in [false, true] {
+      await clearToasts()
+      await setMarker(905)
+      _ = await call("cmuxWaveform.debugger.setRtlStatus({ wait: \(wait), ok: true, text: '' }); return null")
+      _ = await dbg("play({ rate: 100 })")
+      let paused = await waitForPause(200)
+      var said: [String] = []
+      for _ in 0..<20 {
+        said = await toasts()
+        if said.contains("Breakpoint: top.late changes at 1,000 ns, after the last clock edge.") { break }
+        await sleep(50)
+      }
+      expect(paused && said.contains("Breakpoint: top.late changes at 1,000 ns, after the last clock edge."),
+             "play to the end says a hit after the last edge\(wait ? " (waiting for the editors)" : ""): \(said)")
+    }
+    _ = await call("cmuxWaveform.debugger.setRtlStatus({ wait: false, ok: true, text: '' }); return null")
+    _ = await dbg("stop()")
+    await removeAll()
+
+    // review-bp L10: a line with no paths says why: nothing to watch, or a file too large to scan.
+    _ = await dbg("""
+      setLineBreakpoints({ items: [
+        { key: 'core.sv#20', label: 'core.sv:20', paths: [], enabled: true, unwatched: 'nothing' },
+        { key: 'core.sv#21', label: 'core.sv:21', paths: [], enabled: true, unwatched: 'tooLarge' },
+        { key: 'core.sv#22', label: 'core.sv:22', paths: [], enabled: true } ] })
+    """)
+    let titles = await call("return Array.from(document.querySelectorAll('#cmux-breakpoints .cmux-breakpoint .label')).map((l) => l.title)") as? [String] ?? []
+    expect(titles == ["core.sv:20: this line assigns no signal, so it has nothing to watch.",
+                      "core.sv:21: the file is too large to find the signals of this line.",
+                      "core.sv:22: none of its signals are in the waveform (not placed in the design yet)."],
+           "why a line watches nothing: \(titles)")
+    _ = await dbg("setLineBreakpoints({ items: [] })")
   }
 
   /// Line breakpoints (cmux sends them: the editor's gutter and F9): any of the line's signals changing hits.
@@ -1159,7 +1196,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerExprNoValue:'%@ has no value at the marker', debuggerExprNoMarker:'Put the marker on a cycle first.',
    debuggerBreakpointIf:'%1$@ if %2$@', debuggerEditCondition:'Edit Condition…', debuggerConditionPrompt:'Break only when this is true at the clock edge',
    debuggerConditionError:'Condition of %1$@: %2$@', debuggerLinePathsCapped:'%1$@: watching the first %2$@ of %3$@ signals', debuggerLoading:'The waveform is still loading; try again in a moment.',
-   debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
+   debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).',
+   debuggerLineNothingToWatch:'%@: this line assigns no signal, so it has nothing to watch.',
+   debuggerLineFileTooLarge:'%@: the file is too large to find the signals of this line.'}
   """
 
   func snap() {

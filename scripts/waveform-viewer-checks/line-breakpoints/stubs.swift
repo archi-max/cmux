@@ -45,7 +45,10 @@ final class SavingTextView: NSTextView {
     static func linkables(inWorkspace workspaceId: UUID) -> [FilePreviewLanguageFeatures] { all.filter { $0.linkWorkspaceId == workspaceId } }
     var debuggerTextView: NSTextView? { textView }
     func breakpointInstances(ofModule module: String) -> (shown: String?, all: [String]) { instances[module] ?? (nil, []) }
+    /// A file too large to scan: no line (as FilePreviewLanguageFeatures past backgroundScanThreshold).
+    var tooLargeToScan = false
     func breakpointLine(at offset: Int) -> SystemVerilogInlineScan.Line? {
+        guard !tooLargeToScan else { return nil }
         let text = textView.string
         return SystemVerilogInlineScan.lines(in: text, range: NSRange(location: offset, length: 0)).first
     }
