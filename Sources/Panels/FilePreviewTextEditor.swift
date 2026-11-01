@@ -590,13 +590,9 @@ final class SavingTextView: NSTextView {
         // AppKit's list types the highlighted candidate into the buffer as the
         // selection moves (non-final calls) and keeps it when the list closes
         // for any reason. Here the buffer changes only when a candidate is
-        // chosen: Return, Tab or a click in the list.
-        if Self.completionInsertionIsChosen(
-            isFinal: flag,
-            movement: movement,
-            event: NSApp?.currentEvent,
-            editorWindow: window
-        ) {
+        // chosen: Return, Tab, or a double-click on a row (AppKit reports that
+        // as Return).
+        if Self.completionInsertionIsChosen(isFinal: flag, movement: movement) {
             super.insertCompletion(word, forPartialWordRange: charRange, movement: movement, isFinal: flag)
         }
         if flag {
@@ -604,23 +600,12 @@ final class SavingTextView: NSTextView {
         }
     }
 
-    /// Whether a completion-list callback inserts its word: only a final one
-    /// from Return, Tab or a click in the list's own window. Typing on, Escape,
-    /// a click in the editor and the list closing by itself keep the typed text.
-    static func completionInsertionIsChosen(
-        isFinal: Bool,
-        movement: Int,
-        event: NSEvent?,
-        editorWindow: NSWindow?
-    ) -> Bool {
-        guard isFinal else { return false }
-        if movement == NSTextMovement.return.rawValue || movement == NSTextMovement.tab.rawValue {
-            return true
-        }
-        guard movement != NSTextMovement.cancel.rawValue,
-              let event, event.type == .leftMouseDown || event.type == .leftMouseUp,
-              let listWindow = event.window else { return false }
-        return listWindow !== editorWindow
+    /// Whether a completion-list callback inserts its word: only a final
+    /// Return or Tab. Typing on, Escape, scrolling, a click outside the list and
+    /// the list closing by itself keep the typed text; a single click on a row
+    /// only highlights it (a non-final call).
+    static func completionInsertionIsChosen(isFinal: Bool, movement: Int) -> Bool {
+        isFinal && (movement == NSTextMovement.return.rawValue || movement == NSTextMovement.tab.rawValue)
     }
 
     override func magnify(with event: NSEvent) {
