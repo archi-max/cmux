@@ -28,7 +28,7 @@ struct FilePreviewViewportAnchor: Equatable {
         guard let clipView = textView.enclosingScrollView?.contentView,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return nil }
-        let text = textView.string as NSString
+        let text = Self.characters(of: textView)
         guard text.length > 0 else {
             return FilePreviewViewportAnchor(line: 0, offset: clipView.bounds.minY, x: clipView.bounds.minX)
         }
@@ -66,7 +66,7 @@ struct FilePreviewViewportAnchor: Equatable {
     /// Scrolls `textView` so its anchored line is back at the viewport top.
     @MainActor
     func restore(in textView: NSTextView) {
-        let text = textView.string as NSString
+        let text = Self.characters(of: textView)
         scroll(textView, toTopOf: Self.offset(ofLine: line, in: text), plus: offset)
     }
 
@@ -74,7 +74,7 @@ struct FilePreviewViewportAnchor: Equatable {
     /// top, for a reflow that kept the text: the line may wrap differently now.
     @MainActor
     func restoreCharacter(in textView: NSTextView) {
-        let length = (textView.string as NSString).length
+        let length = Self.characters(of: textView).length
         let character = min(character, max(0, length - 1))
         var offset = characterOffset
         if length > 0, let layoutManager = textView.layoutManager {
@@ -91,7 +91,7 @@ struct FilePreviewViewportAnchor: Equatable {
     private func scroll(_ textView: NSTextView, toTopOf character: Int, plus offset: CGFloat) {
         guard let scrollView = textView.enclosingScrollView else { return }
         let clipView = scrollView.contentView
-        let text = textView.string as NSString
+        let text = Self.characters(of: textView)
         let lineStart = character
         // Laying out the target region can re-estimate the lines above it and
         // move the anchored line, so place it again until it holds still.
@@ -113,6 +113,13 @@ struct FilePreviewViewportAnchor: Equatable {
         }
     }
 
+    /// The text view's characters without a copy: `NSTextView.string` bridges
+    /// the mutable storage into a new Swift string, 40 ms for a million lines.
+    @MainActor
+    private static func characters(of textView: NSTextView) -> NSString {
+        textView.textStorage?.mutableString ?? (textView.string as NSString)
+    }
+
     /// The text-view y of the line fragment holding `index`, laid out first.
     @MainActor
     private static func top(ofCharacterAt index: Int, in textView: NSTextView) -> CGFloat {
@@ -125,35 +132,83 @@ struct FilePreviewViewportAnchor: Equatable {
         return fragment.minY + textView.textContainerOrigin.y
     }
 
-    /// Zero-based line of `index` (lines end at \n, \r\n or \r).
+    /// Zero-based line of `index`: the line breaks that end at or before it.
+    /// Breaks are those of `NSString.lineRange`: \n, \r\n, \r, U+0085, U+2028, U+2029.
     static func lineNumber(at index: Int, in text: NSString) -> Int {
-        var line = 0
-        var location = 0
-        let end = min(index, text.length)
-        while location < end {
-            let next = NSMaxRange(text.lineRange(for: NSRange(location: location, length: 0)))
-            guard next <= end, next > location else { break }
-            line += 1
-            location = next
+        var count = 0
+        forEachLineEnd(in: text, through: min(index, text.length)) { _ in
+            count += 1
+            return true
         }
-        return line
+        return count
     }
 
     /// UTF-16 offset where zero-based `line` starts; the last line's start when beyond the end.
     static func offset(ofLine line: Int, in text: NSString) -> Int {
+        guard line > 0 else { return 0 }
         var location = 0
         var remaining = line
-        while remaining > 0, location < text.length {
-            let next = NSMaxRange(text.lineRange(for: NSRange(location: location, length: 0)))
-            guard next < text.length else {
-                // The end starts a line of its own only after a trailing line break.
-                let last = text.character(at: text.length - 1)
-                if next == text.length, last == 0x0A || last == 0x0D { location = next }
-                break
-            }
-            location = next
+        forEachLineEnd(in: text, through: text.length) { end in
+            location = end
             remaining -= 1
+            return remaining > 0
         }
         return location
+    }
+
+    /// Calls `body` with the end offset of each line break that ends at or
+    /// before `limit`, in order, until it returns false. Reads the UTF-16
+    /// units in chunks: one `lineRange` call per line took 115 ms for a
+    /// million lines.
+    private static func forEachLineEnd(in text: NSString, through limit: Int, _ body: (Int) -> Bool) {
+        let length = text.length
+        guard limit > 0, length > 0 else { return }
+        let chunk = 16_384
+        let buffer = UnsafeMutablePointer<unichar>.allocate(capacity: chunk)
+        defer { buffer.deallocate() }
+        var start = 0
+        // A \r whose \n may be the first unit of the next chunk.
+        var pendingCR = false
+        while start < length {
+            let count = min(chunk, length - start)
+            text.getCharacters(buffer, range: NSRange(location: start, length: count))
+            var offset = 0
+            if pendingCR {
+                pendingCR = false
+                // \r\n ends after the \n; a lone \r ended right after itself.
+                let end = buffer[0] == 0x0A ? start + 1 : start
+                if end > limit || !body(end) { return }
+                if buffer[0] == 0x0A { offset = 1 }
+            }
+            while offset < count {
+                let unit = buffer[offset]
+                // Most units are neither \n, \r nor U+0085/2028/2029.
+                if unit > 0x0D, unit != 0x85, unit < 0x2028 || unit > 0x2029 {
+                    offset += 1
+                    continue
+                }
+                let position = start + offset
+                switch unit {
+                case 0x0D:
+                    if offset + 1 < count {
+                        let crlf = buffer[offset + 1] == 0x0A
+                        let end = position + (crlf ? 2 : 1)
+                        if end > limit || !body(end) { return }
+                        if crlf { offset += 1 }
+                    } else if position + 1 == length {
+                        if position + 1 > limit || !body(position + 1) { return }
+                    } else {
+                        pendingCR = true
+                    }
+                case 0x0A, 0x85, 0x2028, 0x2029:
+                    if position + 1 > limit || !body(position + 1) { return }
+                default:
+                    break
+                }
+                offset += 1
+            }
+            if start + count >= limit, !pendingCR { return }
+            start += count
+        }
     }
 }
