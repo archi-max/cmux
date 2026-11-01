@@ -530,6 +530,53 @@ public enum YosysFsm {
     }
 
     static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) async throws -> (status: Int32, output: String) {
+        do {
+            return try await FsmProcess.run(executable, arguments, input: nil, timeout: timeout)
+        } catch {
+            throw Failure.failed(error.localizedDescription)
+        }
+    }
+
+    // MARK: Where the sources are (another host)
+
+    /// What the remote runner (`cmux-fsm-yosys.sh`) printed.
+    public enum RemoteOutcome: Sendable, Equatable {
+        /// Yosys's `write_json` output.
+        case json(String)
+        /// reason: no-yosys | failed.
+        case unavailable(reason: String, detail: String)
+    }
+
+    /// The command that runs the runner, sent on its standard input, on the sources' host:
+    /// both scripts (`read_slang` and `read_verilog`; the runner picks the one its Yosys can
+    /// run, writing `fsm.json` in its own folder) base64 encoded, and the Yosys to use ("": look for one).
+    public static func remoteCommand(slangScript: String, nativeScript: String, yosys: String) -> String {
+        let encode = { (text: String) in Data(text.utf8).base64EncodedString() }
+        return "bash -l -s -- " + [encode(slangScript), encode(nativeScript), yosys].map(VerdiFsmEngine.shellQuoted).joined(separator: " ")
+    }
+
+    public static func remoteOutcome(ofOutput output: String) -> RemoteOutcome {
+        let lines = output.components(separatedBy: "\n")
+        let marker = "cmux-fsm: "
+        if let begin = lines.firstIndex(of: marker + "json-begin") {
+            guard let end = lines[begin...].firstIndex(of: marker + "json-end") else {
+                return .unavailable(reason: "failed", detail: "the output was cut off")
+            }
+            return .json(lines[(begin + 1)..<end].joined(separator: "\n"))
+        }
+        if let line = lines.last(where: { $0.hasPrefix(marker + "unavailable ") }) {
+            let rest = line.dropFirst((marker + "unavailable ").count)
+            let reason = rest.prefix { $0 != " " }
+            return .unavailable(reason: String(reason), detail: String(rest.dropFirst(reason.count)).trimmingCharacters(in: .whitespaces))
+        }
+        let other = lines.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix(marker) }
+        return .unavailable(reason: "failed", detail: other.last ?? "")
+    }
+}
+
+/// Runs a tool and gathers its output (standard error too), with a time limit.
+public enum FsmProcess {
+    public static func run(_ executable: String, _ arguments: [String], input: Data?, timeout: TimeInterval) async throws -> (status: Int32, output: String) {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
@@ -537,7 +584,8 @@ public enum YosysFsm {
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
-            process.standardInput = FileHandle.nullDevice
+            let inputPipe = input.map { _ in Pipe() }
+            process.standardInput = inputPipe ?? FileHandle.nullDevice
             let collected = OutputBuffer()
             pipe.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
@@ -551,8 +599,14 @@ public enum YosysFsm {
             do {
                 try process.run()
             } catch {
-                continuation.resume(throwing: Failure.failed(error.localizedDescription))
+                continuation.resume(throwing: error)
                 return
+            }
+            if let inputPipe, let input {
+                DispatchQueue.global().async {
+                    try? inputPipe.fileHandleForWriting.write(contentsOf: input)
+                    try? inputPipe.fileHandleForWriting.close()
+                }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 if process.isRunning { process.terminate() }
