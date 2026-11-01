@@ -1,0 +1,125 @@
+import AppKit
+
+/// The line at the top of a text view's viewport, so a whole-buffer
+/// replacement (a reload, format on save) can show the same lines afterward.
+///
+/// The editor uses non-contiguous layout: heights of lines that were never
+/// laid out are estimates, and replacing the buffer re-estimates them. The
+/// clip view's old numeric origin then points at different text, so restoring
+/// it moves the visible lines by several rows. Anchoring to a line and laying
+/// that line out before scrolling keeps the view where it was.
+struct FilePreviewViewportAnchor: Equatable {
+    /// Zero-based line shown at the top of the viewport.
+    let line: Int
+    /// How far the viewport top sits below that line's top, in points.
+    let offset: CGFloat
+    /// Horizontal clip origin, kept as is.
+    let x: CGFloat
+
+    /// Reads the anchor of `textView`'s viewport; nil outside a scroll view.
+    @MainActor
+    static func capture(in textView: NSTextView) -> FilePreviewViewportAnchor? {
+        guard let clipView = textView.enclosingScrollView?.contentView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return nil }
+        let text = textView.string as NSString
+        guard text.length > 0 else {
+            return FilePreviewViewportAnchor(line: 0, offset: clipView.bounds.minY, x: clipView.bounds.minX)
+        }
+        let origin = textView.textContainerOrigin
+        // Laying out lines can re-estimate the lines above them, and AppKit then
+        // moves the clip origin to keep the shown text still. Read the origin
+        // only once a pass leaves it where it was.
+        var anchor = FilePreviewViewportAnchor(line: 0, offset: 0, x: clipView.bounds.minX)
+        for _ in 0..<4 {
+            layoutManager.ensureLayout(
+                forBoundingRect: clipView.bounds.offsetBy(dx: -origin.x, dy: -origin.y),
+                in: container
+            )
+            let visibleTop = clipView.bounds.minY
+            let point = NSPoint(x: 0, y: max(0, visibleTop - origin.y))
+            let glyph = layoutManager.glyphIndex(for: point, in: container)
+            let character = min(layoutManager.characterIndexForGlyph(at: glyph), text.length - 1)
+            let lineStart = text.lineRange(for: NSRange(location: character, length: 0)).location
+            let lineTop = Self.top(ofCharacterAt: lineStart, in: textView)
+            anchor = FilePreviewViewportAnchor(
+                line: Self.lineNumber(at: lineStart, in: text),
+                offset: visibleTop - lineTop,
+                x: clipView.bounds.minX
+            )
+            if abs(clipView.bounds.minY - visibleTop) < 0.5 { break }
+        }
+        return anchor
+    }
+
+    /// Scrolls `textView` so its anchored line is back at the viewport top.
+    @MainActor
+    func restore(in textView: NSTextView) {
+        guard let scrollView = textView.enclosingScrollView else { return }
+        let clipView = scrollView.contentView
+        let text = textView.string as NSString
+        let lineStart = Self.offset(ofLine: line, in: text)
+        // Laying out the target region can re-estimate the lines above it and
+        // move the anchored line, so place it again until it holds still.
+        for _ in 0..<4 {
+            let lineTop = text.length == 0 ? 0 : Self.top(ofCharacterAt: lineStart, in: textView)
+            let target = NSRect(origin: NSPoint(x: x, y: lineTop + offset), size: clipView.bounds.size)
+            if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+                let origin = textView.textContainerOrigin
+                layoutManager.ensureLayout(
+                    forBoundingRect: target.offsetBy(dx: -origin.x, dy: -origin.y),
+                    in: container
+                )
+            }
+            scrollView.layoutSubtreeIfNeeded()
+            clipView.scroll(to: clipView.constrainBoundsRect(target).origin)
+            scrollView.reflectScrolledClipView(clipView)
+            let settled = text.length == 0 ? 0 : Self.top(ofCharacterAt: lineStart, in: textView)
+            if abs(settled - lineTop) < 0.5 { return }
+        }
+    }
+
+    /// The text-view y of the line fragment holding `index`, laid out first.
+    @MainActor
+    private static func top(ofCharacterAt index: Int, in textView: NSTextView) -> CGFloat {
+        guard let layoutManager = textView.layoutManager,
+              let length = textView.textStorage?.length, length > 0 else { return 0 }
+        let character = min(index, length - 1)
+        layoutManager.ensureLayout(forCharacterRange: NSRange(location: character, length: 1))
+        let glyph = layoutManager.glyphIndexForCharacter(at: character)
+        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return fragment.minY + textView.textContainerOrigin.y
+    }
+
+    /// Zero-based line of `index` (lines end at \n, \r\n or \r).
+    static func lineNumber(at index: Int, in text: NSString) -> Int {
+        var line = 0
+        var location = 0
+        let end = min(index, text.length)
+        while location < end {
+            let next = NSMaxRange(text.lineRange(for: NSRange(location: location, length: 0)))
+            guard next <= end, next > location else { break }
+            line += 1
+            location = next
+        }
+        return line
+    }
+
+    /// UTF-16 offset where zero-based `line` starts; the last line's start when beyond the end.
+    static func offset(ofLine line: Int, in text: NSString) -> Int {
+        var location = 0
+        var remaining = line
+        while remaining > 0, location < text.length {
+            let next = NSMaxRange(text.lineRange(for: NSRange(location: location, length: 0)))
+            guard next < text.length else {
+                // The end starts a line of its own only after a trailing line break.
+                let last = text.character(at: text.length - 1)
+                if next == text.length, last == 0x0A || last == 0x0D { location = next }
+                break
+            }
+            location = next
+            remaining -= 1
+        }
+        return location
+    }
+}
