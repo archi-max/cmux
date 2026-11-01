@@ -5388,5 +5388,13 @@
         ]
       }
     }
+  },
+  "filePreview.waveform.submenu.valueAlias": {
+    "source": "Alias",
+    "identityLocales": {
+      "de": "Alias is the standard German word for a substituted name (as in Verdi's value aliases). The translated entry is still required.",
+      "fr": "Alias is the standard French word for a substituted name (as in Verdi's value aliases). The translated entry is still required.",
+      "es": "Alias is the standard Spanish word for a substituted name (as in Verdi's value aliases). The translated entry is still required."
+    }
   }
 }
