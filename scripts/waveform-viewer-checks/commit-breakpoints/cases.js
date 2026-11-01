@@ -226,6 +226,28 @@ async function runCommitCases() {
   delete waveform.commits.current;
   ix = makeIndex(rows);
 
+  // ---- commitsReady: an index built before this file subscribed (cmux-machine.js loads later; under load
+  // its first build can finish first) is still told, once ----
+  {
+    const posted = [];
+    const listeners = [];
+    const realHost = waveform.host;
+    waveform.host = { toNative: (m) => posted.push(m.event) };
+    const savedApi = waveform.commits;
+    waveform.commits = Object.assign({}, savedApi, { current: () => ix, onChange: (fn) => { listeners.push(fn); } });
+    C.subscribe();
+    C.subscribe();
+    eq('commitsReady: an index already built is told once', posted, ['commitsReady']);
+    listeners.forEach((fn) => fn({ reason: 'ready' }));
+    eq('commitsReady: and each rebuild after', posted, ['commitsReady', 'commitsReady']);
+    waveform.commits = Object.assign({}, savedApi, { current: () => null, onChange: (fn) => { listeners.push(fn); } });
+    posted.length = 0;
+    C.subscribe();
+    eq('commitsReady: none built yet, none told', posted, []);
+    waveform.commits = savedApi;
+    if (realHost === undefined) { delete waveform.host; } else { waveform.host = realHost; }
+  }
+
   // ---- a broad pattern on a long trace: the hits are collected in linear time ----
   // 300k commits over 20k distinct words, every one matching: collecting by copying the hits so far for
   // each matching word took ~40 s here; collected in place it takes ~1 s (10 s allows for a loaded Mac).
