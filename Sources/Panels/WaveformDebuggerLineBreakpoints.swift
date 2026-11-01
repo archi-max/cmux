@@ -993,18 +993,21 @@ enum WaveformDebuggerLineBreakpoints {
 
     // MARK: Signal breakpoints
 
-    /// A breakpoint the page made on a waveform signal (Break When Changes / Equals…).
+    /// A breakpoint the page made on a waveform signal (Break When Changes / Equals… / Text Matches…).
     struct SignalBreakpoint: Codable, Equatable, Sendable {
         var path: [String]
         var kind: String
         var value: String?
         var enabled: Bool
         var condition: String? = nil
+        /// Text breakpoints (cmux-debugger-text.js); absent in older sessions and for other kinds.
+        var text: WaveformDebuggerTextBreakpoint? = nil
 
         var pageItem: [String: Any] {
             var item: [String: Any] = ["path": path, "kind": kind, "enabled": enabled]
             if let value { item["value"] = value }
             if let condition { item["condition"] = condition }
+            if let text { item.merge(text.pageFields) { first, _ in first } }
             return item
         }
     }
@@ -1037,10 +1040,13 @@ enum WaveformDebuggerLineBreakpoints {
         if signals[waveform.workspaceId]?[waveform.filePath] == nil { signals[waveform.workspaceId]?[""] = nil }
         signals[waveform.workspaceId, default: [:]][waveform.filePath] = items.compactMap { item in
             guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
-                  kind == "change" || kind == "equals" else { return nil }
+                  kind == "change" || kind == "equals" || kind == "text" else { return nil }
             let condition = (item["condition"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let text = kind == "text" ? WaveformDebuggerTextBreakpoint(pageItem: item) : nil
+            if kind == "text", text == nil { return nil }
             return SignalBreakpoint(
-                path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true, condition: condition
+                path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true, condition: condition,
+                text: text
             )
         }
     }
