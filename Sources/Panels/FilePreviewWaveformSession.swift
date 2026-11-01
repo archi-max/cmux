@@ -75,6 +75,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     /// The last value alias file loaded, on this Mac or (as a path) on the SSH host.
     private var lastValueAliasURL: URL?
     private var lastValueAliasRemotePath: String?
+    /// The alias files cmux read for this viewer (picked, or named by a session
+    /// file it loaded): a restore's `readValueAliases` names them by key only.
+    private let valueAliasFiles = WaveformValueAliasFiles.Registry()
     /// Counts page loads, so a session file read for an older load is dropped.
     private var pageLoadID = 0
 
@@ -131,6 +134,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         isPageReady = false
         webContentProcessRecoveryAttempts = 0
         restoreState = nil
+        valueAliasFiles.removeAll()
         topScopes = []
         isFileOpen = false
     }
@@ -435,6 +439,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 file = await Self.readSiblingSession(at: URL(fileURLWithPath: path), displayPath: path)
             }
             guard let self, let file, self.pageLoadID == loadID, self.isPageReady else { return }
+            if let text = file["text"] { self.valueAliasFiles.noteSession(text: text, remoteIdentity: self.remoteAliasIdentity) }
             self.evaluate(function: "setSessionFile", argument: file)
         }
     }
@@ -555,8 +560,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             Task { [weak self] in
                 do {
                     let text = try await Self.readSessionText(at: url)
-                    self?.lastSessionURL = url
-                    self?.evaluate(function: "applySessionFile", argument: ["text": text, "path": url.path])
+                    guard let self else { return }
+                    self.lastSessionURL = url
+                    self.valueAliasFiles.noteSession(text: text, remoteIdentity: self.remoteAliasIdentity)
+                    self.evaluate(function: "applySessionFile", argument: ["text": text, "path": url.path])
                 } catch {
                     self?.evaluate(function: "applySessionFile", argument: ["path": url.path, "error": error.localizedDescription])
                 }
@@ -631,6 +638,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 guard let self else { return }
                 // Keyed by host and path, so a same-named file elsewhere is another file.
                 let key = WaveformValueAliasFiles.remoteKey(identity: self.remoteAliasIdentity ?? "ssh", path: path)
+                self.valueAliasFiles.noteLoaded(key: key, location: .remote(path), text: text)
                 self.evaluate(function: "applyValueAliasFile", argument: [
                     "text": text, "path": path, "key": key, "sha256": WaveformValueAliasFiles.sha256(text),
                 ])
@@ -645,15 +653,16 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         sshLease == nil ? nil : panel?.cloudPreviewProviderIdentity
     }
 
-    /// A restored session names alias files it didn't embed: read them again,
-    /// from this Mac or the open file's SSH host, and hand back those that
-    /// still have their saved hash (WaveformValueAliasFiles).
-    private func readValueAliasFiles(id: Int, files: Any?) {
-        let requests = WaveformValueAliasFiles.requests(from: files)
-        let identity = remoteAliasIdentity
+    /// A restored session names alias files it didn't embed: the page sends
+    /// their keys only. cmux reads again the files its own registry has for
+    /// those keys (this Mac or the open file's SSH host) and hands back those
+    /// that still have the recorded hash. Unknown keys get no answer.
+    private func readValueAliasFiles(id: Int, keys: Any?) {
+        let keys = WaveformValueAliasFiles.keys(from: keys)
         let provider = sshLease?.sshProvider
         Task { @MainActor [weak self] in
-            let answers = await WaveformValueAliasFiles.answer(requests, remoteIdentity: identity) { location in
+            guard let self else { return }
+            let answers = await WaveformValueAliasFiles.answer(keys, registry: self.valueAliasFiles) { location in
                 switch location {
                 case .local(let path):
                     return try await Self.readSessionText(at: URL(fileURLWithPath: path))
@@ -663,9 +672,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                     let stamp = try await provider.fileStamp(path: path)
                     guard stamp.size <= Int64(Self.maxSessionFileSize) else { throw CocoaError(.fileReadTooLarge) }
                     return try await Self.downloadSessionText(path: path, provider: provider)
+                case .otherHost:
+                    throw CocoaError(.fileReadNoSuchFile)
                 }
             }
-            self?.evaluate(function: "valueAliasFilesRead", argument: ["id": id, "files": answers])
+            self.evaluate(function: "valueAliasFilesRead", argument: ["id": id, "files": answers])
         }
     }
 
@@ -680,6 +691,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 do {
                     let text = try await Self.readSessionText(at: url)
                     self?.lastValueAliasURL = url
+                    self?.valueAliasFiles.noteLoaded(key: url.path, location: .local(url.path), text: text)
                     self?.evaluate(function: "applyValueAliasFile", argument: [
                         "text": text, "path": url.path, "key": url.path, "sha256": WaveformValueAliasFiles.sha256(text),
                     ])
@@ -1011,7 +1023,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         case "loadValueAliases":
             loadValueAliasFile()
         case "readValueAliases":
-            readValueAliasFiles(id: (body["id"] as? NSNumber)?.intValue ?? 0, files: body["files"])
+            readValueAliasFiles(id: (body["id"] as? NSNumber)?.intValue ?? 0, keys: body["keys"])
         case "reload":
             reloadFileInPage()
         case "retryWindowed":
