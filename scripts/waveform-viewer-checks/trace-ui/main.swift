@@ -61,7 +61,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     let api = await call("return Object.keys(cmuxWaveform.trace).sort()") as? [String]
-    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "reply", "state", "status"], "trace API: \(String(describing: api))")
+    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "reply", "settled", "state", "status"], "trace API: \(String(describing: api))")
 
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
@@ -356,6 +356,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func handleTrace(_ body: [String: Any]) {
     events.append(body)
+    if body["event"] as? String == "update" { updates += 1; return }
     guard let id = (body["id"] as? NSNumber)?.intValue else { return }
     switch body["event"] as? String {
     case "resolve":
@@ -374,8 +375,6 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let best = instances.keys.filter { path == $0 || path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
         answer(id, ok: true, result: best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull())
       }
-    case "update":
-      updates += 1
     case "engine":
       engineRequests += 1
       if engineHang { return }

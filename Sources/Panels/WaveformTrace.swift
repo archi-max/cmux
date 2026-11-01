@@ -534,6 +534,8 @@ enum WaveformTrace {
             "traceEngineCmux": String(localized: "waveformTrace.page.engine.cmux", defaultValue: "Traced by cmux (slang design model)"),
             "traceEngineVerdi": String(localized: "waveformTrace.page.engine.verdi", defaultValue: "Traced by Verdi, re-executed by cmux"),
             "traceVerdiStarting": String(localized: "waveformTrace.page.verdi.starting", defaultValue: "Verdi is starting on the host"),
+            "traceVerdiChecking": String(localized: "waveformTrace.page.verdi.checking", defaultValue: "Verdi is checking…"),
+            "traceVerdiTimedOut": String(localized: "waveformTrace.page.verdi.timedOut", defaultValue: "Verdi: not checked (timed out)"),
             "traceVerdiNotFound": String(localized: "waveformTrace.page.verdi.notFound", defaultValue: "Verdi does not know this signal"),
             "traceVerdiLastChange": String(localized: "waveformTrace.page.verdi.lastChange", defaultValue: "Verdi (driver of the last change):"),
             "traceThroughPorts": String(localized: "waveformTrace.page.throughPorts", defaultValue: "through the ports of %@"),

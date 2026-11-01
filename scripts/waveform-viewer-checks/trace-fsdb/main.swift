@@ -173,6 +173,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var seen = Set<String>()
     var trust: [String: Int] = [:], kinds: [String: Int] = [:], reasons: [String: Int] = [:]
     var times: [Double] = []
+    var verdiTimes: [Double] = []
     var noDriver: [String] = []
     // Signals the design itself leaves undriven (TRACE_FSDB_UNDRIVEN, comma-separated): "none" is right for them.
     let undriven = Set((ProcessInfo.processInfo.environment["TRACE_FSDB_UNDRIVEN"] ?? "").split(separator: ",").map(String.init))
@@ -210,9 +211,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           """)
       }
       let t0 = Date()
-      let step = await call("return await cmuxWaveform.trace.driverOfDesign(argument)",
-                            ["argument": ["designPath": path, "designPrefix": "", "dumpPrefix": "", "time": t]]) as? [String: Any]
+      let shown = await call("return await cmuxWaveform.trace.driverOfDesign(argument)",
+                             ["argument": ["designPath": path, "designPrefix": "", "dumpPrefix": "", "time": t]]) as? [String: Any]
       let ms = Date().timeIntervalSince(t0) * 1000
+      // The step as shown is what is timed; Verdi's fill-in (after it) is waited for, timed apart.
+      var step = shown
+      if shown != nil, let settled = await call("const t = cmuxWaveform.trace; if (!t.settled) { return null; } const t0 = performance.now(); const st = (await t.settled()).step; return { st, ms: performance.now() - t0 }") as? [String: Any] {
+        step = settled["st"] as? [String: Any] ?? shown
+        verdiTimes.append(settled["ms"] as? Double ?? 0)
+      }
       guard let step else { errors += 1; print("ERROR tracing \(path) @\(t)"); continue }
       times.append(ms)
       if let error = step["error"] as? String { kinds["error:" + error, default: 0] += 1; continue }
@@ -242,7 +249,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         print(String(format: "%7.1f ms  %@ @%d = %@  %@ [%@] %@", ms, path, t, step["value"] as? String ?? "?", kind, step["trust"] as? String ?? "?", String(src)))
       }
       if depth < 2 {
-        for f in step["fanin"] as? [[String: Any]] ?? [] {
+        // The shown step's fan-in (ours), so Verdi on and off trace the same signals.
+        for f in (shown?["fanin"] ?? step["fanin"]) as? [[String: Any]] ?? [] {
           if let p = f["path"] as? String, let ft = (f["time"] as? NSNumber)?.intValue { queue.append((p, ft, depth + 1)) }
         }
       }
@@ -254,6 +262,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     print("engines: \(engines)")
     print(String(format: "time per step: median %.1f ms, p90 %.1f ms, max %.1f ms, total %.1f s", median,
                  sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, sorted.count * 9 / 10)], sorted.last ?? 0, times.reduce(0, +) / 1000))
+    if !verdiTimes.isEmpty, verdiTimes.contains(where: { $0 > 0 }) {
+      let v = verdiTimes.sorted()
+      print(String(format: "Verdi fill-in after the shown step: median %.1f ms, max %.1f ms", v[v.count / 2], v.last ?? 0))
+    }
     expect(errors == 0, "no trace threw (\(errors))")
     if !knownUndriven.isEmpty { print("undriven in the design (TRACE_FSDB_UNDRIVEN):", knownUndriven) }
     expect(noDriver.isEmpty, "every traced design signal has a driver: \(noDriver.prefix(8))")
