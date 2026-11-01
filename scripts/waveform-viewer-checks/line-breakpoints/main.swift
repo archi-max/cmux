@@ -205,6 +205,32 @@ endmodule
         #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","path":"/a.sv","line":1,"text":"x","enabled":true,"anyInstance":false,"lost":false}"#.utf8))
     let olderSignal = try? JSONDecoder().decode(LB.SignalBreakpoint.self, from: Data(#"{"path":["a"],"kind":"change","enabled":true}"#.utf8))
     expect(olderMark != nil && olderMark?.condition == nil && olderSignal != nil, "older marks and signal breakpoints decode")
+    // Text breakpoints (Break When Text Matches…): their fields are kept, saved and given back; one
+    // without a pattern is not kept; an older build's list (no text field) still decodes.
+    let textWorkspace = UUID()
+    let textViewer = FilePreviewPanel(workspaceId: textWorkspace, filePath: "/w/t.vcd")
+    LB.signalsReported(["items": [
+      ["path": ["TOP", "inst"], "kind": "text", "format": "riscv", "pattern": "jal ra", "caseSensitive": false, "anyRegisterNames": true,
+       "enabled": true, "condition": "valid"],
+      ["path": ["TOP", "inst"], "kind": "text", "format": "riscv", "enabled": true],
+      ["path": ["TOP", "inst"], "kind": "text", "format": "riscv", "pattern": String(repeating: "a", count: 4097), "enabled": true],
+    ]], waveform: textViewer)
+    let kept = LB.signals(for: textViewer)
+    expect(kept.count == 1 && kept.first?.text == WaveformDebuggerTextBreakpoint(format: "riscv", pattern: "jal ra", caseSensitive: false, anyRegisterNames: true),
+           "a text breakpoint's fields are kept, bad ones dropped: \(kept)")
+    let textItem = kept.first?.pageItem
+    expect(textItem?["format"] as? String == "riscv" && textItem?["pattern"] as? String == "jal ra" && textItem?["kind"] as? String == "text"
+           && textItem?["anyRegisterNames"] as? Bool == true && textItem?["condition"] as? String == "valid",
+           "and go back to the page as it sent them: \(String(describing: textItem))")
+    let textSaved = LB.snapshot(of: textWorkspace)
+    let textDecoded = (try? JSONEncoder().encode(textSaved)).flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }
+    expect(textDecoded == textSaved && textDecoded?.signalsByDump?["/w/t.vcd"]?.first?.text?.pattern == "jal ra",
+           "a session keeps them: \(String(describing: textDecoded))")
+    let textOlder = try? JSONDecoder().decode(LB.SignalBreakpoint.self, from: Data(
+        #"{"path":["a"],"kind":"text","enabled":true,"text":{"format":"ascii","pattern":"ok"}}"#.utf8))
+    expect(textOlder?.text?.caseSensitive == nil && textOlder?.pageItem["caseSensitive"] == nil && textOlder?.pageItem["pattern"] as? String == "ok",
+           "optional fields stay optional: \(String(describing: textOlder))")
+    LB.signalsReported(["items": []], waveform: textViewer)
     expect(decoded?.watchesByDump?["/w/a.vcd"] == ["count + 1", "limit"] && decoded?.watchesByDump?["/w/b.vcd"] == ["y + 1"],
            "the watches are in it, per dump: \(String(describing: decoded?.watchesByDump))")
     // An older manifest (one list for the workspace) still decodes, and any viewer gets that list.
