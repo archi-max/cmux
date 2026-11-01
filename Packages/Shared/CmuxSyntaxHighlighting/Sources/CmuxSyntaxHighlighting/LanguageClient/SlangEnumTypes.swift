@@ -84,8 +84,23 @@ public actor SlangEnumTypeCache {
     var types: [String: SlangEnumType?] = [:]
     var declarationLinks: [String: SlangEnumValues.TypeLink?] = [:]
     var documentSymbols: [String: JSONValue] = [:]
+    /// Types left out of a read for the hover budget, not yet taken (`takeOverBudget`), and every one ever noted.
+    var overBudget: [String] = []
+    var notedOverBudget: Set<String> = []
 
     public init() {}
+
+    /// The types left out for the hover budget since the last call, each once ever, as
+    /// "`file:line` (N members)", for a log line saying why a big enum shows no names.
+    public func takeOverBudget() -> [String] {
+        defer { overBudget.removeAll() }
+        return overBudget
+    }
+
+    func noteOverBudget(_ uri: URL, line: Int, members: Int) {
+        let note = "\(uri.lastPathComponent):\(line + 1) (\(members) members)"
+        if notedOverBudget.insert(note).inserted { overBudget.append(note) }
+    }
 
     public func removeAll() {
         types.removeAll()
@@ -99,6 +114,34 @@ public actor SlangEnumTypeCache {
     func setLink(_ link: SlangEnumValues.TypeLink?, _ key: String) { declarationLinks[key] = link }
     func symbols(_ key: String) -> JSONValue? { documentSymbols[key] }
     func setSymbols(_ symbols: JSONValue, _ key: String) { documentSymbols[key] = symbols }
+}
+
+/// When the enum types read for a session are read again. slang-server (0.3.1) elaborates the
+/// saved files: while a buffer has unsaved edits, getScope gives no source locations, so no
+/// named enum can be read then (`SlangEnumScopeError.unsavedEdits`). A dump is simulated from
+/// saved sources too. So types are read again after a save, once slang has reported on it
+/// (its compile), and not on edits: an edit's lines can't tell every type change anyway
+/// (verify N1: member lines in a multi-line typedef, a declaration's type backspaced away).
+public struct SlangEnumTypeFreshness: Sendable {
+    private var savedSinceCompile = false
+
+    public init() {}
+
+    /// A document was saved (didSave sent).
+    public mutating func saved() { savedSinceCompile = true }
+
+    /// slang reported diagnostics on a document: true when that is its compile of a save.
+    public mutating func compiled() -> Bool {
+        defer { savedSinceCompile = false }
+        return savedSinceCompile
+    }
+}
+
+/// A scope slang can't give enum types for right now.
+public enum SlangEnumScopeError: Error, Equatable {
+    /// getScope has enum signals with no source location: slang has unsaved edits. Keep
+    /// the types already read; they are read again after the save.
+    case unsavedEdits
 }
 
 /// Reading enum types from slang-server's text: getScope's `type`, hovers and declarations.
@@ -142,54 +185,6 @@ public enum SlangEnumValues {
         return String(hash, radix: 16).leftPadded(to: 16)
     }
 
-    // MARK: When to read types again
-
-    /// Whether an edit whose lines (before and after it) are `lines` may change an enum type
-    /// or which signals have one, so the types are read again: a typedef, an enum, a parameter
-    /// or its override, an import, a macro, an instance, or a declaration of one of `typeNames`.
-    /// Other edits (statements, comments) keep the types already read.
-    public static func editMayChangeEnumTypes(lines: String, typeNames: Set<String>) -> Bool {
-        for raw in lines.split(separator: "\n", omittingEmptySubsequences: false) {
-            var line = Substring(raw)
-            if let comment = line.range(of: "//") { line = line[..<comment.lowerBound] }
-            let text = line.trimmingCharacters(in: .whitespaces)
-            if text.isEmpty { continue }
-            if text.contains("`") || text.contains("#(") || text.contains("# (") { return true }
-            let words = identifiers(text)
-            if !keywordsThatChangeTypes.isDisjoint(with: words) { return true }
-            if !typeNames.isDisjoint(with: words) { return true }
-            // `.B(5),` (a named override or port on its own line) and `mod inst (` (an instance).
-            if text.range(of: #"^\.\s*[A-Za-z_]\w*\s*\("#, options: .regularExpression) != nil { return true }
-            if text.range(of: #"^[A-Za-z_]\w*\s+[A-Za-z_]\w*\s*(\[[^\]]*\]\s*)*\("#, options: .regularExpression) != nil,
-               let first = words.first, !statementKeywords.contains(first) { return true }
-        }
-        return false
-    }
-
-    private static let keywordsThatChangeTypes: Set<String> = [
-        "enum", "typedef", "parameter", "localparam", "defparam", "import", "package", "endpackage",
-        "module", "endmodule", "interface", "endinterface", "generate", "endgenerate", "type",
-    ]
-    private static let statementKeywords: Set<String> = [
-        "if", "else", "for", "foreach", "while", "case", "casez", "casex", "unique", "unique0", "priority",
-        "assign", "always", "always_ff", "always_comb", "always_latch", "initial", "final", "return", "begin", "end",
-        "assert", "assume", "cover", "wait", "repeat", "forever", "do", "function", "task",
-    ]
-
-    private static func identifiers(_ text: String) -> [String] {
-        var out: [String] = []
-        var current = ""
-        for ch in text {
-            if ch == "_" || ch == "$" || ch.isLetter || ch.isNumber {
-                current.append(ch)
-            } else {
-                if !current.isEmpty, current.first?.isNumber == false { out.append(current) }
-                current = ""
-            }
-        }
-        if !current.isEmpty, current.first?.isNumber == false { out.append(current) }
-        return out
-    }
     static let maxWidth = 4096
 
     public enum ScopeType: Sendable, Equatable {
@@ -474,14 +469,15 @@ extension LanguageServerSession {
                let url = editorURL(forServerURI: uri) {
                 location = LSPLocation(uri: url, range: range)
             }
-            switch scopeType {
-            case .anonymous(let enumType):
+            if case .anonymous(let enumType) = scopeType {
                 out[name] = SlangEnumSignal(type: enumType, isArray: false)
-            case .named(let typeName, let width):
-                if let location { named.append((name, typeName, width, location)) }
-            case .array(let element):
-                if let location { arrays.append((name, element, location)) }
+                continue
             }
+            // `fromExpansion` with an empty uri: slang elaborated a buffer with unsaved edits.
+            if item["instLoc"]?["uri"]?.stringValue?.isEmpty != false { throw SlangEnumScopeError.unsavedEdits }
+            guard let location else { continue }
+            if case .named(let typeName, let width) = scopeType { named.append((name, typeName, width, location)) }
+            if case .array(let element) = scopeType { arrays.append((name, element, location)) }
         }
         var byTypeName: [String: SlangEnumType] = [:]
         for signal in named {
@@ -542,7 +538,10 @@ extension LanguageServerSession {
             return nil
         }
         // Over the budget: left out of this read, not cached as having no type.
-        guard budget.take(members.count) else { return nil }
+        guard budget.take(members.count) else {
+            await cache.noteOverBudget(link.uri, line: link.position.line, members: members.count)
+            return nil
+        }
         let type = try await enumType(members: members, uri: link.uri, width: width)
         await cache.setType(type, key)
         return type
@@ -569,7 +568,11 @@ extension LanguageServerSession {
             guard let members = SlangEnumValues.enumMembers(inSymbols: symbols, named: name), let first = members.first,
                   let hover = try await enumHover(file, first.position) else { continue }
             let widths = Set(SlangEnumValues.hoverMemberValues(hover).filter { $0.name == first.name }.compactMap { SlangEnumValues.literalWidth($0.literal) })
-            guard widths.count == 1, let width = widths.first, budget.take(members.count) else { return nil }
+            guard widths.count == 1, let width = widths.first else { return nil }
+            guard budget.take(members.count) else {
+                await cache.noteOverBudget(file, line: first.position.line, members: members.count)
+                return nil
+            }
             return try await enumType(members: members, uri: file, width: width)
         }
         return nil

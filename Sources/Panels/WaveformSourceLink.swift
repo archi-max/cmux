@@ -1000,6 +1000,7 @@ enum WaveformSourceLink {
     static func waveformReloading(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
         WaveformEnumLink.waveformReset(waveform)
+        WaveformEnumLink.waveformReloading()
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
 

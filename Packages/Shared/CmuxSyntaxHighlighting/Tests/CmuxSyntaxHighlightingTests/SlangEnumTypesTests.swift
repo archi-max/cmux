@@ -315,91 +315,95 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         #expect(SlangEnumValues.tableLabel(a).hasPrefix("enum{A,B} [2] "))
     }
 
-    @Test func onlyEditsThatCanChangeATypeReadTypesAgain() {
-        let names: Set<String> = ["state_t", "op_t"]
-        let may = { (line: String) in SlangEnumValues.editMayChangeEnumTypes(lines: line, typeNames: names) }
-        #expect(!may("  assign busy = state != IDLE;"))
-        #expect(!may("      FETCH: next_state = DECODE;"))
-        #expect(!may("  always_ff @(posedge clk) begin"))
-        #expect(!may("  // a comment"))
-        #expect(may("  typedef enum logic [2:0] { S0, S1 } t;"))
-        #expect(may("  enum { RED, GREEN } color;"))
-        #expect(may("  parameter int W = 3"))
-        #expect(may("  localparam logic [2:0] K = 3'd6;"))
-        #expect(may("  import cpu_pkg::*;"))
-        #expect(may("`define W 4"))
-        #expect(may("  pm #(.B(4)) u4 ();"))
-        #expect(may("    .B(5),"))
-        #expect(may("  pm u5 ();"))
-        #expect(may("  state_t s2;"))
-        #expect(may("  cpu_pkg::op_t q;"))
-        // Lines inside a multi-line typedef or `#(` (verify N1): a member's value, a new member, a parameter's default.
-        #expect(may("    DECODE = 3'd5,"))
-        #expect(may("    NEWST,"))
-        #expect(may("    B = 3'd4"))
-        // A declaration's type going away one backspace at a time, and the type it ends up with.
-        #expect(may("  state_ s;"))
-        #expect(may("  logic [2:0] s;"))
-        // A declaration of an enum type no read has seen yet.
-        #expect(may("  new_t q;"))
-        #expect(may("  cpu_pkg::new_t q;"))
-        // Statements still keep the types.
-        #expect(!may("    count <= count + 1;"))
-        #expect(!may("      next_state = FETCH;"))
-        #expect(!may("      default: next_state = IDLE;"))
-        #expect(!may("    end"))
-        #expect(!may("  end else begin"))
-        #expect(!may("    endcase"))
-        #expect(!may("    return x;"))
-    }
-
-    @Test func typesAreReadAgainWhenSlangHasCompiledAnEditAndOnSave() {
+    @Test func typesAreReadAgainWhenSlangHasCompiledASave() {
         var freshness = SlangEnumTypeFreshness()
         var answers: [Bool] = []
-        // A compile no edit was sent for (opening, a replayed report) keeps the types.
+        // A report with no save before it (opening, an unsaved edit, a replayed report) keeps the types.
         answers.append(freshness.compiled())
-        // Any edit sent, whatever its lines: slang's next compile of it reads the types again, once.
-        freshness.textSent()
+        // slang's report after a save is its compile of the saved files: read again, once.
+        freshness.saved()
         answers.append(freshness.compiled())
         answers.append(freshness.compiled())
-        // Saving always does, and covers the edits before it.
-        answers.append(freshness.saved())
-        freshness.textSent()
-        answers.append(freshness.saved())
-        answers.append(freshness.compiled())
-        #expect(answers == [false, true, false, true, true, false])
+        #expect(answers == [false, true, false])
     }
 
+    /// The verifier's N1 edits, each made in the editor (unsaved), then saved. slang-server
+    /// elaborates saved files: an unsaved edit of the module's file gives no locations (the read
+    /// refuses), one of a package leaves the package's types out. After the save, the edit is
+    /// what a read gives.
     @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
-    func afterSlangReportsOnAnUnsavedEditTheTypesReadAreTheEditedOnes() async throws {
+    func everyTypeChangingEditIsReadOnceSaved() async throws {
         try await Self.withServer { session, cache, root in
-            let file = URL(fileURLWithPath: root + "/fsm.sv")
-            let reports = ReportLog(path: file.resolvingSymlinksInPath().path)
+            let fsmFile = URL(fileURLWithPath: root + "/fsm.sv")
+            let pkgFile = URL(fileURLWithPath: root + "/pkg.sv")
+            let reports = ReportLog()
             let updates = await session.diagnosticsUpdates()
-            let listener = Task { for await update in updates { await reports.add(update.uri) } }
+            let listener = Task { for await _ in updates { await reports.add() } }
             defer { listener.cancel() }
-            let before = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
-            #expect(before["state"]?.type.members.first { $0.name == "DECODE" }?.bits == "100")
-            await session.open(uri: file, text: Self.fsm, version: 1)
-            #expect(await reports.waitForMore(than: 0), "slang reports on an opened file")
-            let opened = await reports.count
-            // Renumbered in the multi-line way the heuristic can't see, and not saved.
-            await session.change(uri: file, text: Self.fsm.replacingOccurrences(of: "DECODE = 3'd4", with: "DECODE = 3'd6"), version: 2)
-            #expect(await reports.waitForMore(than: opened), "slang reports on an edit (the stale trigger)")
-            await cache.removeAll()
-            let after = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
-            #expect(after["state"]?.type.members.first { $0.name == "DECODE" }?.bits == "110")
+            #expect(try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)["mm2"]?.type.members.map(\.bits) == ["0000", "0011", "0100"])
+            await session.open(uri: fsmFile, text: Self.fsm, version: 1)
+            await session.open(uri: pkgFile, text: Self.pkg, version: 1)
+            #expect(await reports.waitForMore(than: 0))
+            var version = 1
+            var saved: [String: [String: SlangEnumSignal]] = [
+                "top.u_fsm": try await session.slangEnumSignals(inScope: "top.u_fsm", cache: SlangEnumTypeCache()),
+                "top.qa": try await session.slangEnumSignals(inScope: "top.qa", cache: SlangEnumTypeCache()),
+            ]
+            var fsmText = Self.fsm
+            var pkgText = Self.pkg
+            func edit(_ file: URL, _ text: String, scope: String) async throws -> [String: SlangEnumSignal] {
+                version += 1
+                var seen = await reports.count
+                await session.change(uri: file, text: text, version: version)
+                #expect(await reports.waitForMore(than: seen), "slang reports on the unsaved edit")
+                // Unsaved: an edited file of the scope's module gives no locations (refused); an edited
+                // package leaves its types out. Either way no type differs from the saved design's.
+                do {
+                    let unsaved = try await session.slangEnumSignals(inScope: scope, cache: SlangEnumTypeCache())
+                    #expect(file == pkgFile, "an unsaved edit of the module's own file is refused")
+                    for (name, signal) in unsaved { #expect(saved[scope]?[name] == signal, "\(name)") }
+                } catch {
+                    #expect(error as? SlangEnumScopeError == .unsavedEdits)
+                }
+                try text.write(to: file, atomically: true, encoding: .utf8)
+                seen = await reports.count
+                await session.save(uri: file, text: text)
+                #expect(await reports.waitForMore(than: seen), "slang reports on the save")
+                let signals = try await session.slangEnumSignals(inScope: scope, cache: SlangEnumTypeCache())
+                saved[scope] = signals
+                return signals
+            }
+            // A member's value on its own line in a multi-line typedef (`DECODE = 3'd5,`).
+            pkgText = pkgText.replacingOccurrences(of: "M_B = 4'h3,", with: "M_B = 4'h5,")
+            var signals = try await edit(pkgFile, pkgText, scope: "top.u_fsm")
+            #expect(signals["mm2"]?.type.members.map(\.bits) == ["0000", "0101", "0110"])
+            // A new member on its own line (`NEWST,`).
+            pkgText = pkgText.replacingOccurrences(of: "      M_C\n", with: "      M_C,\n        M_NEW\n")
+            signals = try await edit(pkgFile, pkgText, scope: "top.u_fsm")
+            #expect(signals["mm2"]?.type.members.map(\.name) == ["M_A", "M_B", "M_C", "M_NEW"])
+            // A declaration's type replaced (`state_t s;` backspaced to `logic [2:0] s;`), and a
+            // declaration of a type no read had seen (`cpu_pkg::new_t q;`).
+            pkgText = pkgText.replacingOccurrences(of: "endpackage", with: "  typedef enum logic [1:0] { N0, N1 = 2'd3 } new_t;\nendpackage")
+            _ = try await edit(pkgFile, pkgText, scope: "top.u_fsm")
+            fsmText = fsmText.replacingOccurrences(of: "  state_t state, next_state;", with: "  logic [2:0] state;\n  state_t next_state;\n  cpu_pkg::new_t nq;")
+            signals = try await edit(fsmFile, fsmText, scope: "top.u_fsm")
+            #expect(signals["state"] == nil)
+            #expect(signals["next_state"]?.type == Self.state)
+            #expect(signals["nq"]?.type.members.map(\.bits) == ["00", "11"])
+            // A parameter's default on its own line inside a multi-line `#(` (`B = 3'd4`).
+            fsmText = fsmText
+                .replacingOccurrences(of: "module pq #(parameter logic [2:0] B = 0) ();", with: "module pq #(\n    parameter logic [2:0]\n    B = 3'd5\n) ();")
+                .replacingOccurrences(of: "pq #(.B(2)) qa ();", with: "pq qa ();")
+                .replacingOccurrences(of: "pq #(.B(2)) qb ();", with: "pq qb ();")
+            signals = try await edit(fsmFile, fsmText, scope: "top.qa")
+            #expect(signals["q"]?.type.members.map(\.bits) == ["101", "110"])
         }
     }
 
-    /// Diagnostics reports on one file, counted.
+    /// Diagnostics reports, counted.
     actor ReportLog {
-        let path: String
         private(set) var count = 0
-        init(path: String) { self.path = path }
-        func add(_ uri: URL) {
-            if uri.resolvingSymlinksInPath().path == path { count += 1 }
-        }
+        func add() { count += 1 }
         /// Up to 30 s for the count to pass `seen`.
         func waitForMore(than seen: Int) async -> Bool {
             for _ in 0..<300 where count <= seen {
