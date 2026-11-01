@@ -23,10 +23,6 @@ const addon = require(process.env.FSDB_ADDON || path.join(__dirname, 'addon/buil
 // whose first background task hasn't started yet, and the default action kills.
 addon.bgBegin(0);
 addon.bgEnd();
-// A cancel of a running searchText also sends SIGINT: inside its vm judging call (breakOnSigint)
-// node stops the script at once, even inside one regex call (text.js). Anywhere else SIGINT is
-// ignored; the worker ends when the coordinator's channel closes ('disconnect').
-process.on('SIGINT', () => {});
 let openFile = null;
 let cacheLimit = 0;
 // Memory bound for this process (store + reader + V8). The reader keeps memory
