@@ -1031,8 +1031,8 @@
     listingAvailable = !!(query || {}).listing;
     if (!CB) { return []; }
     const items = Array.isArray((query || {}).items) ? query.items : [];
-    const old = new Map(breakpoints.filter((b) => b.kind === 'pc' && b.key).map((b) => [b.key, b]));
-    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind === 'pc' && breakpoints[i].key) { breakpoints.splice(i, 1); } }
+    const oldMarks = breakpoints.filter((b) => b.kind === 'pc' && b.key);
+    const old = new Map(oldMarks.map((b) => [b.key, b]));
     const marks = [];
     for (const item of items) {
       const key = String(item.key || '');
@@ -1046,6 +1046,15 @@
       }
       if (!key || marks.some((b) => b.key === key) || error) { continue; }
       const before = old.get(key);
+      const listingLabel = String(item.listingLabel || key);
+      const enabled = item.enabled !== false;
+      const condition = String(item.condition === undefined || item.condition === null ? '' : item.condition).trim() || null;
+      // Unchanged: the same object (its hits and a play stop on it are kept).
+      if (before && before.listingLabel === listingLabel && before.enabled === enabled && (before.condition || null) === condition
+        && before.channel === fields.channel && before.pcs.join() === fields.pcs.join()) {
+        marks.push(before);
+        continue;
+      }
       const bp = Object.assign({ id: before ? before.id : nextBreakpointId++, kind: 'pc', key, listingLabel: String(item.listingLabel || key),
         value: null, enabled: item.enabled !== false, times: null, timesFor: null, condition: null, conditionError: null,
         warned: before ? before.warned : undefined }, fields);
@@ -1055,6 +1064,8 @@
       }
       marks.push(bp);
     }
+    if (marks.length === oldMarks.length && marks.every((b, i) => b === oldMarks[i])) { return marks.map(publicBreakpoint); }
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind === 'pc' && breakpoints[i].key) { breakpoints.splice(i, 1); } }
     if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId) && !marks.some((b) => b.id === lastHitId)) { lastHitId = null; }
     breakpoints.push(...marks);
     breakpointsChanged();
