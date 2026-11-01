@@ -1,0 +1,30 @@
+
+prog32.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text:
+80000000 <_start> 80004137          	lui	sp,0x80004
+80000004 <_start+0x4> 4501                	li	a0,0
+80000006 <_start+0x6> 4295                	li	t0,5
+80000008 <_start+0x8> 050d                	addi	a0,a0,3
+8000000a <_start+0xa> 12fd                	addi	t0,t0,-1
+8000000c <_start+0xc> fe029ee3          	bnez	t0,80000008 <_start+0x8>
+80000010 <_start+0x10> 283d                	jal	8000004e <sum>
+80000012 <_start+0x12> 00001317          	auipc	t1,0x1
+80000016 <_start+0x16> fee30313          	addi	t1,t1,-18 # 80001000 <result>
+8000001a <_start+0x1a> 00a32023          	sw	a0,0(t1)
+8000001e <_start+0x1e> 30531073          	csrw	mtvec,t1
+80000022 <_start+0x22> 0001                	nop
+80000024 <_start+0x24> 00d605b3          	add	a1,a2,a3
+80000028 <_start+0x28> a001                	j	80000028 <_start+0x28>
+8000002a <_start+0x2a> 0001                	nop
+	...
+8000004c <after_gap> 9002                	ebreak
+8000004e <sum> 00000597          	auipc	a1,0x0
+80000052 <sum+0x4> 01a58593          	addi	a1,a1,26 # 80000068 <table>
+80000056 <sum+0x8> 02058613          	addi	a2,a1,32
+8000005a <sum+0xc> 4194                	lw	a3,0(a1)
+8000005c <sum+0xe> 0591                	addi	a1,a1,4
+8000005e <sum+0x10> 9536                	add	a0,a0,a3
+80000060 <sum+0x12> fec59de3          	bne	a1,a2,8000005a <sum+0xc>
+80000064 <sum+0x16> 8082                	ret
