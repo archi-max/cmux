@@ -186,6 +186,88 @@ struct FilePreviewEditorTypingStabilityTests {
         #expect(abs(clipView.bounds.minY - before) <= 1)
     }
 
+    // MARK: - A restyle of every run (theme, font size) keeps the viewport
+
+    /// A theme change (or the system light/dark switch) changes every run, so
+    /// the restyle edits the whole buffer and AppKit's re-anchoring moved the
+    /// clip view about 2700 points away and back inside the call. The line
+    /// heights above the viewport are re-estimated, so the origin may end at a
+    /// new number; it must go there in one move, keeping the same top line.
+    @Test("a theme change does not move the viewport")
+    func themeChangeKeepsViewport() throws {
+        let editor = Self.offscreenEditor(text: Self.systemVerilogText(lines: 3000))
+        defer { editor.window.close() }
+        let textView = editor.textView
+        let clipView = editor.scrollView.contentView
+        let styler = FilePreviewSyntaxStyler()
+        styler.applyHighlightedText(Self.highlighted(textView.string), to: textView, defaultColor: .textColor)
+        let marker = (textView.string as NSString).range(of: "data_1503 <=").location
+        try #require(marker != NSNotFound)
+        textView.setSelectedRange(NSRange(location: marker, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
+        editor.settle()
+
+        let before = clipView.bounds.minY
+        let topBefore = Self.viewportY(of: "data_1503 <=", in: textView)
+        let origins = ClipOriginLog(clipView: clipView)
+        styler.applyHighlightedText(Self.highlighted(textView.string, otherTheme: true), to: textView, defaultColor: .textColor)
+        editor.settle()
+        origins.stop()
+
+        let final = clipView.bounds.minY
+        let strays = origins.values.filter { abs($0 - final) > 1 }
+        #expect(strays.isEmpty, "clip origin went \(origins.values) from \(before) to \(final)")
+        #expect(abs(Self.viewportY(of: "data_1503 <=", in: textView) - topBefore) <= 1)
+        // The new theme was applied.
+        let color = try #require(textView.textStorage?.attribute(.foregroundColor, at: marker, effectiveRange: nil) as? NSColor)
+        #expect(abs(color.redComponent - 0.1) < 0.01)
+    }
+
+    /// Zooming the font rewrites the font of every character; the character at
+    /// the viewport top must stay there and the clip view must not wander off.
+    @Test("zooming the font keeps the top line and does not wander")
+    func fontZoomKeepsTopLine() throws {
+        let editor = Self.offscreenEditor(text: Self.systemVerilogText(lines: 3000))
+        defer { editor.window.close() }
+        let textView = editor.textView
+        let scrollView = editor.scrollView
+        let clipView = scrollView.contentView
+        FilePreviewSyntaxStyler().applyHighlightedText(Self.highlighted(textView.string), to: textView, defaultColor: .textColor)
+        let marker = "data_1503 <="
+        let lineTop = Self.viewportY(of: marker, in: textView) + clipView.bounds.minY
+        clipView.scroll(to: NSPoint(x: 0, y: lineTop))
+        scrollView.reflectScrolledClipView(clipView)
+        editor.settle()
+        try #require(abs(Self.viewportY(of: marker, in: textView)) <= 1)
+
+        let before = clipView.bounds.minY
+        let origins = ClipOriginLog(clipView: clipView)
+        #expect(textView.zoomPreviewFontIn())
+        editor.settle()
+        origins.stop()
+        let after = clipView.bounds.minY
+
+        let lineHeight = try #require(textView.layoutManager).defaultLineHeight(for: try #require(textView.font))
+        #expect(abs(Self.viewportY(of: marker, in: textView)) <= lineHeight)
+        let low = min(before, after) - lineHeight
+        let high = max(before, after) + lineHeight
+        let strays = origins.values.filter { $0 < low || $0 > high }
+        #expect(strays.isEmpty, "clip origin strayed to \(strays) between \(before) and \(after)")
+    }
+
+    /// Word wrap captures an anchor on every live-resize tick; only reloads
+    /// need the line number, so a character anchor must not count lines.
+    @Test("a character anchor does not count lines")
+    func characterAnchorSkipsLineNumber() throws {
+        let editor = Self.offscreenEditor(text: Self.systemVerilogText(lines: 300))
+        defer { editor.window.close() }
+        let counted = try #require(FilePreviewViewportAnchor.capture(in: editor.textView))
+        #expect(counted.line != nil)
+        let uncounted = try #require(FilePreviewViewportAnchor.capture(in: editor.textView, countingLines: false))
+        #expect(uncounted.line == nil)
+        #expect(uncounted.character == counted.character)
+    }
+
     // MARK: - Turning word wrap on or off keeps the top line
 
     /// Toggling wrap re-lays out every line, and the old numeric clip origin
@@ -270,22 +352,24 @@ struct FilePreviewEditorTypingStabilityTests {
         return lines.joined(separator: "\n")
     }
 
-    /// A highlighter result for `text`: bold blue keywords, red strings.
-    private static func highlighted(_ text: String) -> HighlightedText {
+    /// A highlighter result for `text`: bold blue keywords, red strings, on
+    /// light-gray text; `otherTheme` changes the plain text color of every run.
+    private static func highlighted(_ text: String, otherTheme: Bool = false) -> HighlightedText {
         let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         let bold = NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+        let plain = otherTheme ? 0.1 : 0.9
         let result = NSMutableAttributedString(string: text, attributes: [
             .font: font,
-            .foregroundColor: NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1),
+            .foregroundColor: NSColor(srgbRed: plain, green: plain, blue: plain, alpha: 1),
         ])
         let full = NSRange(location: 0, length: (text as NSString).length)
         let keywords = try! NSRegularExpression(pattern: #"\b(?:module|endmodule|logic|always|posedge|begin|end|if)\b"#)
         for match in keywords.matches(in: text, range: full) {
-            result.setAttributes([.font: bold, .foregroundColor: NSColor(srgbRed: 0.2, green: 0.4, blue: 1, alpha: 1)], range: match.range)
+            result.setAttributes([.font: bold, .foregroundColor: NSColor(srgbRed: 0.2, green: 0.4, blue: otherTheme ? 0.5 : 1, alpha: 1)], range: match.range)
         }
         let strings = try! NSRegularExpression(pattern: #""[^"\n]*""#)
         for match in strings.matches(in: text, range: full) {
-            result.setAttributes([.font: font, .foregroundColor: NSColor(srgbRed: 1, green: 0.3, blue: 0.3, alpha: 1)], range: match.range)
+            result.setAttributes([.font: font, .foregroundColor: NSColor(srgbRed: otherTheme ? 0.5 : 1, green: 0.3, blue: 0.3, alpha: 1)], range: match.range)
         }
         return HighlightedText(result)
     }
