@@ -28,6 +28,9 @@
   const MAX_ROLE_CHANGES = 4000000;
   const MAX_TOTAL_CHANGES = 12000000;
   const MAX_SCOPE_DEPTH = 3;
+  // Built commit tables by dump identity (C.tableKey), newest last; kept across reloads of the page's dump.
+  const TABLE_CACHE_SIZE = 2;
+  const tableCache = new Map();
   const MAX_SCOPES = 400;
   const HISTORY = 20;
   const CONSOLE_LINES = 200;
@@ -175,6 +178,39 @@
     const edges = waveform.debugger.edges ? await waveform.debugger.edges() : null;
     if (host.currentBackend !== backend) { return null; }
     if (!edges || !edges.length) { return fail('noClock'); }
+    // A dump the page has read already (same file, size, mtime and helper; same mapping and clock):
+    // its table again, nothing read. Only with an identity (the FSDB helper's); VCD/FST build fast.
+    const key = C.tableKey(host.dumpIdentity ? host.dumpIdentity() : null, source, edges, source.sample === 'preEdge' ? 'preEdge' : 'edge');
+    let table = key ? tableCache.get(key) : null;
+    st.cacheHit = !!table;
+    if (table) {
+      tableCache.delete(key);
+      tableCache.set(key, table);
+    } else {
+      table = await readTable(backend, source, edges);
+      if (!table) { return null; }
+      if (key) {
+        tableCache.set(key, table);
+        while (tableCache.size > TABLE_CACHE_SIZE) { tableCache.delete(tableCache.keys().next().value); }
+      }
+    }
+    const index = new C.StateIndex(table, imageOptions());
+    if (host.currentBackend !== backend) { return null; }
+    st.index = index;
+    st.edges = edges;
+    st.error = null;
+    st.errorDetail = '';
+    st.k = null;
+    st.kTime = null;
+    st.buildMs = Date.now() - t0;
+    st.view = null;
+    changed('ready');
+    host.toNative({ type: 'debugger', event: 'machine', status: 'ready', count: table.count, source: source.label, ms: st.buildMs });
+    return index;
+  }
+
+  // The source's roles read and sampled at the edges into a commit table, or null (failed or gone: fail() says).
+  async function readTable(backend, source, edges) {
     // One read per signal; a packed role's channels are slices of the same changes.
     const byPath = new Map();
     for (const ref of C.mapping(source)) {
@@ -197,20 +233,8 @@
       const cols = C.sample(changes, edges, Number(v.width) || 1, refs, source.sample === 'preEdge');
       refs.forEach((ref, i) => { columns[ref.role + '/' + ref.channel] = cols[i]; });
     }
-    const table = C.buildTable(source, columns, edges);
-    const index = new C.StateIndex(table, imageOptions());
     if (host.currentBackend !== backend) { return null; }
-    st.index = index;
-    st.edges = edges;
-    st.error = null;
-    st.errorDetail = '';
-    st.k = null;
-    st.kTime = null;
-    st.buildMs = Date.now() - t0;
-    st.view = null;
-    changed('ready');
-    host.toNative({ type: 'debugger', event: 'machine', status: 'ready', count: table.count, source: source.label, ms: st.buildMs });
-    return index;
+    return C.buildTable(source, columns, edges);
   }
 
   function imageOptions() {
@@ -601,7 +625,7 @@
       nret: source ? source.nret : null, xlen: ix ? ix.xlen : null, count: ix ? ix.count : null, k: ix ? currentK() : null,
       memMask: ix ? ix.memMask : null, diagnostics: d, gated: ix ? ix.gated : null,
       disagreements: ix ? { regs: ix.regDisagreements.length, mem: ix.memDisagreements.length, elf: ix.elfMismatch } : null,
-      image: st.image ? { path: st.image.path, segments: st.image.segments.length, symbols: st.image.symbols.length } : null, buildMs: st.buildMs,
+      image: st.image ? { path: st.image.path, segments: st.image.segments.length, symbols: st.image.symbols.length } : null, buildMs: st.buildMs, cacheHit: !!st.cacheHit,
       sources: (st.sources || []).map((s) => ({ label: s.label || (s.valid ? s.valid.join('.') : ''), family: s.family, nret: s.nret || null })) };
   }
 
