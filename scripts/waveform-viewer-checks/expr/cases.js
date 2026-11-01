@@ -84,7 +84,7 @@ function runExprCases() {
     // An unsized based literal whose leftmost digit is x or z fills the whole context width (1800 5.7.1;
     // VCS W-2024.09: logic [63:0] b = 0; b | 'hx is 64 x's); another leftmost digit zero-extends.
     ["w64 | 'hx", "64'hxxxxxxxxxxxxxxxx"], ["w64 | 'h1x", "64'h000000000000001x"], ["w64 ^ 'bz", "64'hxxxxxxxxxxxxxxxx"],
-    ["w64 + 'dx", "64'hxxxxxxxxxxxxxxxx"], ["{1'b1, 63'h0} | 'hz0", "64'hxxxxxxxxxxxxxxx0"], ["'hx", "32'hxxxxxxxx"],
+    ["w64 + 'dx", "64'hxxxxxxxxxxxxxxxx"], ["{1'b1, 63'h0} | 'hz0", "64'hXxxxxxxxxxxxxxx0"], ["'hx", "32'hxxxxxxxx"],
     ["w64 | 36'hx", "64'h0000000xxxxxxxxx"],
     // refused
     ['', 'error:empty@0'], ['   ', 'error:empty@3'], ['a +', 'error:syntax@3'], ['a / b', 'error:unsupported@2'], ['a % b', 'error:unsupported@2'],
