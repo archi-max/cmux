@@ -1002,12 +1002,15 @@ enum WaveformDebuggerLineBreakpoints {
         var condition: String? = nil
         /// Text breakpoints (cmux-debugger-text.js); absent in older sessions and for other kinds.
         var text: WaveformDebuggerTextBreakpoint? = nil
+        /// Commit breakpoints (cmux-debugger-commits.js; their path is empty); absent for other kinds.
+        var commit: WaveformDebuggerCommitBreakpoint? = nil
 
         var pageItem: [String: Any] {
             var item: [String: Any] = ["path": path, "kind": kind, "enabled": enabled]
             if let value { item["value"] = value }
             if let condition { item["condition"] = condition }
             if let text { item.merge(text.pageFields) { first, _ in first } }
+            if let commit { item.merge(commit.pageFields) { first, _ in first } }
             return item
         }
     }
@@ -1039,9 +1042,13 @@ enum WaveformDebuggerLineBreakpoints {
         // given again to it (after it cleared it) or to other viewers.
         if signals[waveform.workspaceId]?[waveform.filePath] == nil { signals[waveform.workspaceId]?[""] = nil }
         signals[waveform.workspaceId, default: [:]][waveform.filePath] = items.compactMap { item in
-            guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
-                  kind == "change" || kind == "equals" || kind == "text" else { return nil }
+            guard let path = item["path"] as? [String], let kind = item["kind"] as? String else { return nil }
             let condition = (item["condition"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            if WaveformDebuggerCommitBreakpoint.kinds.contains(kind) {
+                guard path.isEmpty, let commit = WaveformDebuggerCommitBreakpoint(pageItem: item, kind: kind) else { return nil }
+                return SignalBreakpoint(path: [], kind: kind, value: nil, enabled: item["enabled"] as? Bool ?? true, condition: condition, commit: commit)
+            }
+            guard !path.isEmpty, kind == "change" || kind == "equals" || kind == "text" else { return nil }
             let text = kind == "text" ? WaveformDebuggerTextBreakpoint(pageItem: item) : nil
             if kind == "text", text == nil { return nil }
             return SignalBreakpoint(

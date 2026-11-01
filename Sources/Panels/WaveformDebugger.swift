@@ -31,6 +31,9 @@ enum WaveformDebugger {
         /// Evaluate Expression… / Add Watch…: the viewer page asks for the expression.
         case evaluateExpression
         case addWatch
+        /// Add Instruction Breakpoint…: the page offers Break at Address…, Break When Next Instruction
+        /// Matches… and Break When Written… (cmux-debugger-commits.js).
+        case addInstructionBreakpoint
         /// The Machine section (registers, memory, CSRs, history from the dump's commit stream).
         case toggleMachineState
         /// Load ELF…: the program image memory starts from.
@@ -158,6 +161,8 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("promptEvaluate")
             case .addWatch:
                 _ = await page.callDebugger("promptAddWatch")
+            case .addInstructionBreakpoint:
+                _ = await page.callDebugger("chooseCommitBreakpoint")
             case .toggleMachineState:
                 if (await page.callMachine("toggle") as? [String: Any])?["shown"] as? Bool == true {
                     WaveformMachineStateLoader.loadImageBeside(waveform)
@@ -296,6 +301,7 @@ enum WaveformDebugger {
         ].merging(breakpointPageStrings()) { first, _ in first }.merging(expressionPageStrings()) { first, _ in first }
             .merging(WaveformMachineState.pageStrings()) { first, _ in first }
             .merging(WaveformDebuggerTextBreakpoint.pageStrings()) { first, _ in first }
+            .merging(WaveformDebuggerCommitBreakpoint.pageStrings()) { first, _ in first }
     }
 
     /// Strings of the page's Evaluate and watches (cmux-debugger.js, cmux-expr.js).

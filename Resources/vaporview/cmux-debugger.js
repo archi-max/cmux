@@ -784,6 +784,18 @@
   const textFields = (q) => ({ format: String(q.format || 'hexadecimal'), pattern: String(q.pattern || ''),
     caseSensitive: !!q.caseSensitive, anyRegisterNames: q.anyRegisterNames !== false });
   const enabledTexts = () => breakpoints.filter((b) => b.kind === 'text' && b.enabled).length;
+  // Commit breakpoints (cmux-debugger-commits.js): { id, kind: 'pc' | 'commitText' | 'write', pcs, channel,
+  // key (a listing's, which cmux owns), pattern, caseSensitive, anyRegisterNames, loc, enabled, condition }; no path.
+  const CB = waveform.debuggerCommits;
+  const isCommit = (b) => !!(CB && CB.isKind(b.kind));
+  const MAX_COMMIT_BREAKPOINTS = { pc: 1024, commitText: 32, write: 256 };
+  const enabledOfKind = (kind) => breakpoints.filter((b) => b.kind === kind && b.enabled).length;
+  const commitFields = (kind, q) => {
+    const f = CB.fields(kind, q);
+    return kind === 'pc' ? { pcs: f.pcs, channel: f.channel } : kind === 'write' ? { loc: f.loc }
+      : { pattern: f.pattern, caseSensitive: f.caseSensitive, anyRegisterNames: f.anyRegisterNames };
+  };
+  const pathsOf = (b) => (b.kind === 'line' ? b.paths : b.path ? [b.path] : []);
   let lastHitId = null;
   let lastHitBackend = null;  // a reload clears the hit mark
   let continueRequest = 0;
@@ -855,7 +867,7 @@
     return true;
   }
 
-  const baseName = (bp) => (bp.kind === 'line' ? bp.label : bp.kind === 'text' ? TB.label(bp) : (bp.kind === 'equals'
+  const baseName = (bp) => (bp.kind === 'line' ? bp.label : bp.kind === 'text' ? TB.label(bp) : isCommit(bp) ? CB.label(bp) : (bp.kind === 'equals'
     ? format(S().debuggerBreakpointEquals, bp.path.join('.'), bp.value)
     : format(S().debuggerBreakpointChanges, bp.path.join('.'))));
   const breakpointName = (bp) => (bp.condition ? format(S().debuggerBreakpointIf, baseName(bp), bp.condition) : baseName(bp));
@@ -863,9 +875,11 @@
   const isLastHit = (bp) => bp.id === lastHitId && lastHitBackend === host.currentBackend;
   const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: isLastHit(bp), label: breakpointName(bp),
     path: bp.path ? bp.path.slice() : null, value: bp.kind === 'equals' ? bp.value : null,
-    format: bp.kind === 'text' ? bp.format : null, pattern: bp.kind === 'text' ? bp.pattern : null,
-    caseSensitive: bp.kind === 'text' ? bp.caseSensitive : null, anyRegisterNames: bp.kind === 'text' ? bp.anyRegisterNames : null,
-    key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
+    format: bp.kind === 'text' ? bp.format : null, pattern: bp.kind === 'text' || bp.kind === 'commitText' ? bp.pattern : null,
+    caseSensitive: bp.kind === 'text' || bp.kind === 'commitText' ? bp.caseSensitive : null,
+    anyRegisterNames: bp.kind === 'text' || bp.kind === 'commitText' ? bp.anyRegisterNames : null,
+    pcs: bp.kind === 'pc' ? bp.pcs.slice() : null, channel: bp.kind === 'pc' ? bp.channel : null, loc: bp.kind === 'write' ? bp.loc : null,
+    key: bp.kind === 'line' || bp.kind === 'pc' ? bp.key || null : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
     condition: bp.condition || null, conditionError: bp.conditionError || null,
     // The paths a line's search reads (its units' with a condition).
     searchedPaths: bp.kind === 'line' ? (bp.condition && bp.units ? bp.units : [bp]).reduce((n, u) => n + u.paths.length, 0) : null });
@@ -894,7 +908,7 @@
     const checked = checkCondition(raw);
     bp.condition = checked.error ? String(raw).trim() : (checked.condition || null);
     bp.conditionError = checked.error ? checked.message : null;
-    const said = (bp.key || JSON.stringify(bp.path)) + '\u0000' + bp.condition;
+    const said = (bp.key || (bp.path ? JSON.stringify(bp.path) : name)) + '\u0000' + bp.condition;
     if (checked.error && !conditionErrorsSaid.has(said)) {
       conditionErrorsSaid.add(said);
       window.cmuxUI.toast(format(S().debuggerConditionError, name, checked.message), 'warning');
@@ -909,9 +923,19 @@
   // searched, since the file may not be open yet.
   function restoreBreakpoints(query) {
     const items = Array.isArray((query || {}).items) ? query.items : [];
-    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind !== 'line') { breakpoints.splice(i, 1); } }
+    const listingOwned = (b) => b.kind === 'line' || (b.kind === 'pc' && b.key);
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (!listingOwned(breakpoints[i])) { breakpoints.splice(i, 1); } }
     const restored = [];
     for (const item of items) {
+      if (CB && CB.isKind(item.kind)) {
+        const bp = Object.assign({ id: nextBreakpointId++, kind: item.kind, key: null, value: null, enabled: item.enabled !== false,
+          times: null, timesFor: null, condition: null, conditionError: null }, commitFields(item.kind, item));
+        if (CB.check(bp.kind, bp)) { continue; }
+        if (bp.enabled && restored.filter((b) => b.kind === bp.kind && b.enabled).length >= MAX_COMMIT_BREAKPOINTS[bp.kind]) { bp.enabled = false; }
+        conditionOf(bp, item.condition, baseName(bp));
+        restored.push(bp);
+        continue;
+      }
       const path = Array.isArray(item.path) ? item.path.map(String) : null;
       const kind = signalKind(item.kind);
       if (!path || !path.length || !kind) { continue; }
@@ -993,6 +1017,7 @@
 
   async function addBreakpoint(query) {
     const q = query || {};
+    if (CB && CB.isKind(q.kind)) { return addCommitBreakpoint(q); }
     const path = Array.isArray(q.path) ? q.path.map(String) : null;
     const kind = signalKind(q.kind);
     if (!path || !path.length || !kind) { return null; }
@@ -1054,6 +1079,104 @@
     return publicBreakpoint(bp);
   }
 
+  // A commit breakpoint (Break at Address…, Break When Next Instruction Matches…, Break When Written…):
+  // checked, the same one enabled again.
+  function addCommitBreakpoint(q) {
+    const kind = q.kind;
+    const fields = commitFields(kind, q);
+    const error = CB.check(kind, fields);
+    const checked = checkCondition(q.condition);
+    // Refused: named as it was given.
+    const given = error === 'address' ? { pcs: [].concat(q.pcs ?? q.pc ?? []).map(String) } : error === 'location' ? { loc: String(q.loc ?? '') } : {};
+    const name = CB.label(Object.assign({ kind }, fields, given));
+    if (error) {
+      window.cmuxUI.toast(format(S().debuggerCommitError, name, CB.errorText(error)), 'warning');
+      return null;
+    }
+    if (checked.error) {
+      window.cmuxUI.toast(format(S().debuggerConditionError, name, checked.message), 'warning');
+      return null;
+    }
+    const condition = checked.condition || null;
+    const same = breakpoints.find((b) => b.kind === kind && !b.key && JSON.stringify(commitFields(kind, b)) === JSON.stringify(fields)
+      && (b.condition || null) === condition);
+    if (!(same && same.enabled) && enabledOfKind(kind) >= MAX_COMMIT_BREAKPOINTS[kind]) {
+      window.cmuxUI.toast(format(S().debuggerCommitTooMany, number(MAX_COMMIT_BREAKPOINTS[kind])), 'warning');
+      return null;
+    }
+    if (same) {
+      same.enabled = true;
+      breakpointsChanged();
+      return publicBreakpoint(same);
+    }
+    const bp = Object.assign({ id: nextBreakpointId++, kind, key: null, value: null, enabled: true, times: null, timesFor: null,
+      condition, conditionError: null }, fields);
+    breakpoints.push(bp);
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
+  // setCommitBreakpoint({ id, pattern?, caseSensitive?, anyRegisterNames?, loc?, pcs? }): a commit
+  // breakpoint's fields changed (its list menu); one that does not check is refused (said, the old kept).
+  function setCommitBreakpoint(query) {
+    const q = query || {};
+    const bp = breakpoints.find((b) => b.id === Number(q.id) && isCommit(b) && !b.key);
+    if (!bp) { return null; }
+    const fields = commitFields(bp.kind, Object.assign({}, bp, Object.fromEntries(Object.entries(q).filter(([k, v]) => v !== undefined && k !== 'id'))));
+    const error = CB.check(bp.kind, fields);
+    if (error) {
+      window.cmuxUI.toast(format(S().debuggerCommitError, CB.label(Object.assign({ kind: bp.kind }, fields)), CB.errorText(error)), 'warning');
+      return null;
+    }
+    Object.assign(bp, fields, { warned: null });
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
+  // The three ways to add one, as prompts (the list's and View > Waveform Debugger's Add Instruction Breakpoint…).
+  async function promptCommitBreakpoint(query) {
+    const s = S();
+    const kind = (query || {}).kind;
+    const prompts = {
+      pc: { title: s.debuggerAddressPrompt, placeholder: s.debuggerAddressPlaceholder },
+      commitText: { title: s.debuggerCommitTextPrompt, placeholder: s.debuggerTextPlaceholder },
+      write: { title: s.debuggerWrittenPrompt, placeholder: s.debuggerWrittenPlaceholder },
+    };
+    if (!CB || !prompts[kind]) { return null; }
+    try {
+      const text = await window.cmuxUI.prompt({ title: prompts[kind].title || '', placeholder: prompts[kind].placeholder || '' });
+      if (text === undefined || !String(text).trim().length) { return null; }
+      const value = String(text);
+      if (kind === 'pc') {
+        const pcs = value.split(/[\s,]+/).filter(Boolean);
+        return addBreakpoint({ kind, pcs: pcs.map((p) => CB.parseAddress(p) || p) });
+      }
+      if (kind === 'write') { return addBreakpoint({ kind, loc: CB.parseLocation(value) || value }); }
+      return addBreakpoint({ kind, pattern: value });
+    } catch (error) {
+      host.log(error);
+      return null;
+    }
+  }
+
+  const commitMenuItems = () => {
+    const s = S();
+    return [
+      { label: s.debuggerBreakAtAddress || '', run: () => promptCommitBreakpoint({ kind: 'pc' }) },
+      { label: s.debuggerBreakOnCommitText || '', run: () => promptCommitBreakpoint({ kind: 'commitText' }) },
+      { label: s.debuggerBreakWhenWritten || '', run: () => promptCommitBreakpoint({ kind: 'write' }) },
+    ];
+  };
+  // View > Waveform Debugger > Add Instruction Breakpoint…: the three, as a menu in the viewer.
+  function chooseCommitBreakpoint(query) {
+    if (!CB) { return false; }
+    const q = query || {};
+    const x = Number.isFinite(q.x) ? q.x : Math.round(window.innerWidth / 2);
+    const y = Number.isFinite(q.y) ? q.y : Math.round(window.innerHeight / 3);
+    window.cmuxUI.showMenu(commitMenuItems(), x, y);
+    return true;
+  }
+
   // setTextBreakpoint({ id, pattern?, caseSensitive?, anyRegisterNames?, format? }): a text breakpoint's
   // fields changed (its list menu); one that does not check is refused (said, the old kept).
   function setTextBreakpoint(query) {
@@ -1085,6 +1208,10 @@
     const q = query || {};
     const bp = breakpoints.find((b) => b.id === Number(q.id));
     if (!bp) { return false; }
+    if (isCommit(bp) && q.enabled && !bp.enabled && enabledOfKind(bp.kind) >= MAX_COMMIT_BREAKPOINTS[bp.kind]) {
+      window.cmuxUI.toast(format(S().debuggerCommitTooMany, number(MAX_COMMIT_BREAKPOINTS[bp.kind])), 'warning');
+      return false;
+    }
     if (bp.kind === 'text' && q.enabled && !bp.enabled && enabledTexts() >= MAX_TEXT_BREAKPOINTS) {
       window.cmuxUI.toast(format(S().debuggerTextTooMany, number(MAX_TEXT_BREAKPOINTS)), 'warning');
       return false;
@@ -1119,12 +1246,12 @@
     // Changes no breakpoint watches any more are let go (each may hold up to 1M).
     const watched = new Set();
     // A disabled one's are let go too (read again when it is enabled).
-    for (const b of breakpoints.filter((x) => x.enabled)) { for (const path of (b.kind === 'line' ? b.paths : [b.path])) { watched.add(JSON.stringify(path)); } }
+    for (const b of breakpoints.filter((x) => x.enabled)) { for (const path of pathsOf(b)) { watched.add(JSON.stringify(path)); } }
     for (const key of Array.from(changeCache.keys())) { if (!watched.has(key)) { changeCache.delete(key); } }
     // cmux keeps the signal breakpoints for the workspace's session (restoreBreakpoints).
-    host.toNative({ type: 'debugger', event: 'breakpoints', items: breakpoints.filter((b) => b.kind !== 'line')
-      .map((b) => Object.assign({ path: b.path.slice(), kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled,
-        condition: b.condition || null }, b.kind === 'text' ? textFields(b) : {})) });
+    host.toNative({ type: 'debugger', event: 'breakpoints', items: breakpoints.filter((b) => b.kind !== 'line' && !(b.kind === 'pc' && b.key))
+      .map((b) => Object.assign({ path: b.path ? b.path.slice() : [], kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled,
+        condition: b.condition || null }, b.kind === 'text' ? textFields(b) : isCommit(b) ? commitFields(b.kind, b) : {})) });
     renderBreakpoints();
     // Play does not stop on a breakpoint just disabled or removed while the next one is searched.
     if (playStop && (!playStop.bp.enabled || !breakpoints.includes(playStop.bp))) { playStop = null; }
@@ -1180,7 +1307,7 @@
   function releaseChanges(paths, bp, backend) {
     for (const path of paths) {
       const key = JSON.stringify(path);
-      const wants = (b) => b !== bp && b.timesFor !== backend && (b.kind === 'line' ? b.paths : [b.path]).some((p) => JSON.stringify(p) === key);
+      const wants = (b) => b !== bp && b.timesFor !== backend && pathsOf(b).some((p) => JSON.stringify(p) === key);
       // A line searched per instance builds its times per instance (its units), not as a whole.
       const needed = breakpoints.some((b) => b.enabled && (b.condition && b.units ? b.units.some(wants) : wants(b)));
       if (!needed) { changeCache.delete(key); }
@@ -1213,6 +1340,8 @@
     const backend = host.currentBackend;
     // Still loading: nothing to say yet (a warning now would hide the real one later).
     if (!host.dataReady()) { return undefined; }
+    // A commit breakpoint's times are kept with the commit index they came from.
+    if (isCommit(bp)) { return CB.times(bp, (text) => warnOnce(bp, text)); }
     if (bp.timesFor === backend && bp.times) { return bp.times; }
     const paths = bp.kind === 'line' ? bp.paths : [bp.path];
     let times = [];
@@ -1305,7 +1434,7 @@
     const say = (message) => { warnOnce(bp, format(S().debuggerConditionError, baseName(bp), message)); return false; };
     const parsed = X.parse(bp.condition);
     if (parsed.error) { return say(exprMessage(parsed.error, parsed.at)); }
-    const scope = bp.kind === 'line' ? (bp.scope || (bp.paths[0] ? bp.paths[0].slice(0, -1) : null)) : bp.path.slice(0, -1);
+    const scope = bp.kind === 'line' ? (bp.scope || (bp.paths[0] ? bp.paths[0].slice(0, -1) : null)) : bp.path ? bp.path.slice(0, -1) : (isCommit(bp) ? CB.scopeOf(bp) : null);
     const prepared = await machineEnv(parsed.ast, (m) => m.prepare());
     if (prepared && prepared.error) { return say(prepared.error.message); }
     const paths = X.names(parsed.ast).filter((path) => !isMachineName(path));
@@ -1426,6 +1555,8 @@
       return Object.assign(publicState(), { hit: null, reason: 'afterLastEdge', time: found.time });
     }
     moveMarker(edges[found.index]);
+    // A commit breakpoint: the Machine section shows the commit that hit (several may share the cycle).
+    if (isCommit(found.bp)) { CB.landed(found.bp, found.time); }
     const hit = announceHit(found, edges);
     return Object.assign(cycleInfo(edges[found.index]), { hit, reason: 'hit' });
   }
@@ -1498,6 +1629,31 @@
     }
   }
 
+  // A commit breakpoint's own list items: its address, pattern or location; then the three adds.
+  function commitListItems(bp) {
+    if (!isCommit(bp)) { return []; }
+    const s = S();
+    const edit = (title, value, apply) => async () => {
+      try {
+        const text = await window.cmuxUI.prompt({ title: title || '', value });
+        if (text !== undefined && String(text).trim().length) { apply(String(text)); }
+      } catch (error) {
+        host.log(error);
+      }
+    };
+    const own = bp.key ? [] : bp.kind === 'pc'
+      ? [{ label: s.debuggerEditAddress || '', run: edit(s.debuggerAddressPrompt, bp.pcs.join(', '),
+        (t) => setCommitBreakpoint({ id: bp.id, pcs: t.split(/[\s,]+/).filter(Boolean) })) }]
+      : bp.kind === 'write'
+        ? [{ label: s.debuggerEditLocation || '', run: edit(s.debuggerWrittenPrompt, CB.locationText(bp.loc),
+          (t) => setCommitBreakpoint({ id: bp.id, loc: CB.parseLocation(t) || t })) }]
+        : [{ label: s.debuggerEditTextPattern || '', run: edit(s.debuggerCommitTextPrompt, bp.pattern, (t) => setCommitBreakpoint({ id: bp.id, pattern: t })) },
+          { label: (bp.caseSensitive ? '\u2713 ' : '') + (s.debuggerTextMatchCase || ''), run: () => setCommitBreakpoint({ id: bp.id, caseSensitive: !bp.caseSensitive }) },
+          { label: (bp.anyRegisterNames ? '\u2713 ' : '') + (s.debuggerTextAnyRegisterNames || ''),
+            run: () => setCommitBreakpoint({ id: bp.id, anyRegisterNames: !bp.anyRegisterNames }) }];
+    return own.concat(commitMenuItems());
+  }
+
   // The list row's menu: the condition, and remove.
   function breakpointMenuItems(bp) {
     const s = S();
@@ -1513,7 +1669,7 @@
       { label: (bp.caseSensitive ? '\u2713 ' : '') + (s.debuggerTextMatchCase || ''), run: () => setTextBreakpoint({ id: bp.id, caseSensitive: !bp.caseSensitive }) },
     ].concat(TB.isRiscv(bp.format) ? [{ label: (bp.anyRegisterNames ? '\u2713 ' : '') + (s.debuggerTextAnyRegisterNames || ''),
       run: () => setTextBreakpoint({ id: bp.id, anyRegisterNames: !bp.anyRegisterNames }) }] : []);
-    return text.concat([
+    return text.concat(commitListItems(bp), [
       { label: s.debuggerEditCondition || '', run: async () => {
         try {
           const text = await window.cmuxUI.prompt({ title: s.debuggerConditionPrompt || '', value: bp.condition || '', placeholder: 'state == 3' });
@@ -2091,7 +2247,7 @@
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
-    setTextBreakpoint,
+    setTextBreakpoint, setCommitBreakpoint, promptCommitBreakpoint, chooseCommitBreakpoint,
     breakpoints: () => breakpoints.map(publicBreakpoint),
     // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
     backendChanged: () => { if (window.cmuxMachine) { window.cmuxMachine.backendChanged(); } renderBreakpoints(); refreshWatches(); },
