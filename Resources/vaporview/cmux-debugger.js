@@ -1558,6 +1558,31 @@
     return { id: found.bp.id, time: found.time, landed: edges[found.index], cycle: found.index + 1 };
   }
 
+  // Run to a PC's next (dir 1) or previous (-1) commit, without a breakpoint (a listing's gutter menu).
+  async function runToPc(query) {
+    const q = query || {};
+    const dir = Number(q.dir) < 0 ? -1 : 1;
+    if (!CB) { return Object.assign(publicState(), { hit: null, reason: 'none' }); }
+    const bp = Object.assign({ kind: 'pc', key: null, enabled: true }, commitFields('pc', q));
+    if (CB.check('pc', bp)) { return Object.assign(publicState(), { hit: null, reason: 'address' }); }
+    const request = ++continueRequest;
+    const edges = await start();
+    if (!edges) { return Object.assign(publicState(), { hit: null, reason: startFailure || 'noClock' }); }
+    pause();
+    const backend = host.currentBackend;
+    const times = await CB.times(bp, (text) => window.cmuxUI.toast(text, 'warning'));
+    if (request !== continueRequest || host.currentBackend !== backend) { return Object.assign(publicState(), { hit: null, reason: 'superseded' }); }
+    if (!times) { return Object.assign(publicState(), { hit: null, reason: 'noStream' }); }
+    const hit = nearestHit(times, edges, markerTime(), dir);
+    if (!hit || hit.index >= edges.length) {
+      window.cmuxUI.toast((dir > 0 ? S().debuggerNoHitForward : S().debuggerNoHitBack) || '', 'info');
+      return Object.assign(publicState(), { hit: null, reason: dir > 0 ? 'end' : 'start' });
+    }
+    moveMarker(edges[hit.index]);
+    CB.landed(bp, hit.time);
+    return Object.assign(cycleInfo(edges[hit.index]), { hit: { time: hit.time, landed: edges[hit.index], cycle: hit.index + 1 }, reason: 'hit' });
+  }
+
   // F5 (with `orTogglePlay`: Play/Pause when no breakpoint is enabled) and Shift-F5 (dir -1).
   async function continueRun(query) {
     const q = query || {};
@@ -2282,7 +2307,7 @@
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
-    setTextBreakpoint, setCommitBreakpoint, promptCommitBreakpoint, chooseCommitBreakpoint, setPcBreakpoints,
+    setTextBreakpoint, setCommitBreakpoint, promptCommitBreakpoint, chooseCommitBreakpoint, setPcBreakpoints, runToPc,
     // cmux's listings: the current commit's PC, a sample of the commits, and cmux's own warnings.
     currentCommitPc: () => (CB && state.stepping ? CB.currentPc(publicState().edgeTime) : null),
     commitSample: (query) => (CB ? CB.sample((query || {}).limit) : null),

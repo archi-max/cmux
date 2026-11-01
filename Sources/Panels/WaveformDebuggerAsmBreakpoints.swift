@@ -262,12 +262,21 @@ enum WaveformDebuggerAsmBreakpoints {
         return toggle(in: textView, at: start)
     }
 
-    /// The menu of a breakpoint's dot: enable, condition, remove. Nil without one on the line.
+    /// The menu of an instruction line: run the viewer to its next or previous commit; on a breakpoint's
+    /// dot also enable, condition, remove. Nil on a line that is no instruction.
     static func gutterMenu(_ textView: NSTextView, lineStart start: Int) -> NSMenu? {
         guard let state = listing(in: textView), let workspace = workspaceOf(textView), let line = state.line(atOffset: start),
-              let mark = mark(atLine: line, in: state, workspace: workspace) else { return nil }
-        let id = mark.id
+              let pc = state.listing?.pc(forLine: line) else { return nil }
         let menu = NSMenu()
+        menu.addItem(MenuItem(
+            title: String(localized: "waveformDebugger.asm.runToNext", defaultValue: "Run to Next Commit Here")
+        ) { runTo(pc: pc, dir: 1, inWorkspace: workspace) })
+        menu.addItem(MenuItem(
+            title: String(localized: "waveformDebugger.asm.runToPrevious", defaultValue: "Run to Previous Commit Here")
+        ) { runTo(pc: pc, dir: -1, inWorkspace: workspace) })
+        guard let mark = mark(atLine: line, in: state, workspace: workspace) else { return menu }
+        let id = mark.id
+        menu.addItem(.separator())
         menu.addItem(MenuItem(
             title: mark.enabled
                 ? String(localized: "waveformDebugger.lineBreakpoint.disable", defaultValue: "Disable Breakpoint")
@@ -291,6 +300,14 @@ enum WaveformDebuggerAsmBreakpoints {
             title: String(localized: "waveformDebugger.removeBreakpoint", defaultValue: "Remove Breakpoint")
         ) { remove(id, in: workspace) })
         return menu
+    }
+
+    /// The workspace's viewer runs to `pc`'s next (1) or previous (-1) commit (no breakpoint is added).
+    static func runTo(pc: UInt64, dir: Int, inWorkspace workspace: UUID) {
+        guard let waveform = viewers(workspace).first else { NSSound.beep(); return }
+        Task { @MainActor in
+            _ = await waveform.nativeViewSessions.waveform.callDebugger("runToPc", argument: ["pcs": [hex(pc)], "dir": dir])
+        }
     }
 
     @MainActor private final class MenuItem: NSMenuItem {
