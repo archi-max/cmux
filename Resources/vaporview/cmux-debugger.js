@@ -227,6 +227,14 @@
   async function step(query) {
     const asked = Number((query || {}).by);
     const by = Number.isFinite(asked) ? Math.trunc(asked) : 1;
+    // Instruction mode (cmux-machine.js): F10 / Shift-F10 go by commit, not by cycle.
+    const machine = window.cmuxMachine;
+    if (machine && by !== 0 && !(query || {}).cycle && machine.instructionMode()) {
+      if (!await start()) { return publicState(); }
+      pause();
+      await machine.stepCommit({ by });
+      return publicState();
+    }
     const edges = await start();
     if (!edges) { return publicState(); }
     pause();
@@ -1226,7 +1234,9 @@
     const parsed = X.parse(bp.condition);
     if (parsed.error) { return say(exprMessage(parsed.error, parsed.at)); }
     const scope = bp.kind === 'line' ? (bp.scope || (bp.paths[0] ? bp.paths[0].slice(0, -1) : null)) : bp.path.slice(0, -1);
-    const paths = X.names(parsed.ast);
+    const prepared = await machineEnv(parsed.ast, (m) => m.prepare());
+    if (prepared && prepared.error) { return say(prepared.error.message); }
+    const paths = X.names(parsed.ast).filter((path) => !isMachineName(path));
     const vars = await resolveNames(paths, scope);
     for (const path of paths) {
       if (!vars.has(JSON.stringify(path))) { return say(exprMessage('unknownName', null, path.join('.'))); }
@@ -1247,7 +1257,10 @@
       return { width, msb: v.msb, lsb: v.lsb, value: X.fromBits(bits === undefined ? 'x' : String(bits), width) };
     };
     return (time) => {
-      const r = X.evaluate(parsed.ast, env(time));
+      // A register or memory with no value yet (before its first write) is false, not an error.
+      const m = prepared ? machineWrap(prepared.env.envAt(time)) : null;
+      const r = X.evaluate(parsed.ast, m ? m.wrap(env(time)) : env(time));
+      if (r.error && m && m.env.missing) { return false; }
       if (r.error) { say(exprMessage(r.error, r.at)); return false; }
       return X.truthy(r.value);
     };
@@ -1448,7 +1461,7 @@
         }
       } },
       { label: s.debuggerAddWatch || '', run: () => addWatch({ expr: pathExpression(path) }) },
-    ];
+    ].concat(window.cmuxMachine ? window.cmuxMachine.rowMenuItems(c) : []);
   }
 
   // A dump path as an expression: a segment that is not an identifier (or gen[3]) is escaped.
@@ -1515,24 +1528,65 @@
     return out;
   }
 
+  // ---- machine state names: $a0 / $x5 / $pc / $mstatus / $mem32(addr) (cmux-machine.js) ----
+  const isMachineName = (path) => !!window.cmuxMachine && window.cmuxMachine.isName(path);
+  function usesMachine(node) {
+    if (!node || typeof node !== 'object') { return false; }
+    if (node.t === 'mem') { return true; }
+    if (node.t === 'name') { return isMachineName(node.path); }
+    for (const key of ['c', 'l', 'e', 'i', 'r', 'a', 'b']) { if (usesMachine(node[key])) { return true; } }
+    return (node.parts || []).some(usesMachine);
+  }
+  // A machine env's lookup around a signal lookup: { env, wrap(lookup) }.
+  function machineWrap(env) {
+    if (!env) { return null; }
+    return { env, wrap: (lookup) => {
+      const fn = (path) => {
+        if (!isMachineName(path)) { return lookup(path); }
+        const v = env.value(path[0]);
+        if (v && v.missing) { env.missing = path[0]; return null; }
+        return v;
+      };
+      fn.memory = env.memory;
+      return fn;
+    } };
+  }
+  // null: the expression has no machine names; { error }: it has, but there is no commit stream.
+  async function machineEnv(ast, get) {
+    if (!usesMachine(ast)) { return null; }
+    const m = window.cmuxMachine;
+    const env = m ? await get(m) : null;
+    if (!env) {
+      const why = (m && m.problem()) || S().machineNoStream || '';
+      return { error: { error: 'noValue', at: null, message: why } };
+    }
+    return env.envAt ? { env } : machineWrap(env);
+  }
+
   // { value (text), width, bits, decimal, raw } or { error, at, message }.
   async function evaluateAt(text, scope, time) {
     const parsed = X.parse(text);
     if (parsed.error) { return { error: parsed.error, at: parsed.at, message: exprMessage(parsed.error, parsed.at) }; }
     if (time === null) { return { error: 'noMarker', at: null, message: exprMessage('noMarker', null) }; }
-    const paths = X.names(parsed.ast);
+    const machine = await machineEnv(parsed.ast, (m) => m.envAt(time));
+    if (machine && machine.error) { return machine.error; }
+    const paths = X.names(parsed.ast).filter((path) => !isMachineName(path));
     const vars = await resolveNames(paths, scope);
     const bits = await bitsAt(Array.from(new Set(vars.values())), time);
     // A signal with no value here (too many changes to read) says so, not "not in this waveform".
     for (const [key, v] of vars) {
       if (!bits.has(v.netlistId)) { return { error: 'noValue', at: null, message: exprMessage('noValue', null, JSON.parse(key).join('.')) }; }
     }
-    const result = X.evaluate(parsed.ast, (path) => {
+    const lookup = (path) => {
       const v = vars.get(JSON.stringify(path));
       if (!v) { return null; }
       const width = Number(v.width) || 1;
       return { width, msb: v.msb, lsb: v.lsb, value: X.fromBits(bits.get(v.netlistId), width) };
-    });
+    };
+    const result = X.evaluate(parsed.ast, machine ? machine.wrap(lookup) : lookup);
+    if (result.error && machine && machine.env.missing) {
+      return { error: 'noValue', at: null, message: exprMessage('noValue', null, machine.env.missing) };
+    }
     if (result.error) {
       const name = result.error === 'unknownName' ? nameAt(parsed.ast, result.at) : undefined;
       return { error: result.error, at: result.at, message: exprMessage(result.error, result.at, name === null ? undefined : name) };
@@ -1556,7 +1610,11 @@
     const time = q.time !== undefined && q.time !== null && Number.isFinite(Number(q.time)) ? Number(q.time) : markerTime();
     let r;
     try {
-      r = await evaluateAt(text, scope, time);
+      // gdb's commands (info registers, p/x, x/8xw $sp, x/4i $pc) go to the machine state.
+      const gdb = window.cmuxMachine && window.cmuxMachine.isGdb(text.trim())
+        ? await window.cmuxMachine.gdb({ text, time }) : null;
+      r = gdb ? { gdb: true, lines: gdb.lines, value: gdb.lines[0] || '', error: gdb.error ? 'gdb' : null, message: gdb.lines[0] || '' }
+        : await evaluateAt(text, scope, time);
     } catch (error) {
       host.log(error);
       r = { error: 'noValue', at: null, message: exprMessage('noValue', null, text) };
@@ -1622,7 +1680,7 @@
 
   function showEvaluation(text, r) {
     const s = S();
-    const shown = r.error ? r.message : format(s.debuggerEvalResult, r.value, number(r.width));
+    const shown = r.error ? r.message : (r.gdb ? r.value + (r.lines.length > 1 ? ' …' : '') : format(s.debuggerEvalResult, r.value, number(r.width)));
     const el = state.stepping ? ensureStrip() : null;
     const box = el && el.querySelector('.cmux-eval');
     if (!box) { window.cmuxUI.toast(text + ' ' + shown, r.error ? 'warning' : 'info'); return; }
@@ -1630,7 +1688,7 @@
     if (input.value.trim() !== text) { input.value = text; }
     const result = box.querySelector('.result');
     result.textContent = shown;
-    result.title = r.error ? '' : format(s.debuggerEvalTooltip, r.bits, r.decimal);
+    result.title = r.gdb ? r.lines.join('\n') : (r.error ? '' : format(s.debuggerEvalTooltip, r.bits, r.decimal));
     result.style.color = r.error ? 'var(--vscode-editorWarning-foreground, #cca700)' : '';
     result.dataset.expr = text;
   }
@@ -1921,10 +1979,12 @@
     render();
     queuePlace();
     const info = publicState();
-    const key = info.time + ':' + info.cycle;
+    // With a commit stream (cmux-machine.js): the marker cycle's commits and the current one.
+    const commits = window.cmuxMachine ? window.cmuxMachine.cycleCommits(info.edgeTime) : null;
+    const key = info.time + ':' + info.cycle + ':' + (commits ? commits.current : '');
     if (key === state.lastCycleKey) { return; }
     state.lastCycleKey = key;
-    post('cycle');
+    post('cycle', commits || undefined);
   });
 
   const api = Object.freeze({
@@ -1939,7 +1999,28 @@
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
     // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
-    backendChanged: () => { renderBreakpoints(); refreshWatches(); },
+    backendChanged: () => { if (window.cmuxMachine) { window.cmuxMachine.backendChanged(); } renderBreakpoints(); refreshWatches(); },
+    // cmux-machine.js: the current commit moved inside the marker's cycle (cmux hears the new `current`).
+    commitMoved: () => {
+      if (!state.stepping || !window.cmuxMachine) { return false; }
+      const info = publicState();
+      const commits = window.cmuxMachine.cycleCommits(info.edgeTime);
+      const key = info.time + ':' + info.cycle + ':' + (commits ? commits.current : '');
+      if (key === state.lastCycleKey) { return false; }
+      state.lastCycleKey = key;
+      post('cycle', commits || undefined);
+      return true;
+    },
+    // cmux-machine.js: the clock's posedges, the marker (as the debugger knows it) and a move.
+    edges: () => ensureEdges(),
+    markerTime: () => markerTime(),
+    moveTo: async (query) => {
+      const time = Number((query || {}).time);
+      if (!Number.isFinite(time) || !await start()) { return false; }
+      pause();
+      moveMarker(time);
+      return true;
+    },
     cacheSizes: () => ({ changes: changeCache.size, conditions: conditionCache.size, conditionChanges: cachedChanges() }),
     // The harness: a smaller cap on the conditions' cache (null: the real one).
     setConditionChangeCap: (n) => { maxConditionChanges = n === null || n === undefined ? MAX_CONDITION_CHANGES : Number(n); },

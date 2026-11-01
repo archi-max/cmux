@@ -31,6 +31,10 @@ enum WaveformDebugger {
         /// Evaluate Expression… / Add Watch…: the viewer page asks for the expression.
         case evaluateExpression
         case addWatch
+        /// The Machine section (registers, memory, CSRs, history from the dump's commit stream).
+        case toggleMachineState
+        /// Load ELF…: the program image memory starts from.
+        case loadELF
     }
 
     static let shortcutCommands: [(KeyboardShortcutSettings.Action, Command)] = [
@@ -154,6 +158,12 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("promptEvaluate")
             case .addWatch:
                 _ = await page.callDebugger("promptAddWatch")
+            case .toggleMachineState:
+                if (await page.callMachine("toggle") as? [String: Any])?["shown"] as? Bool == true {
+                    WaveformMachineStateLoader.loadImageBeside(waveform)
+                }
+            case .loadELF:
+                WaveformMachineStateLoader.chooseELF(for: waveform)
             }
         }
     }
@@ -170,6 +180,15 @@ enum WaveformDebugger {
         // Its signal breakpoints changed: kept for the workspace's session.
         if body["event"] as? String == "breakpoints" {
             WaveformDebuggerLineBreakpoints.signalsReported(body, waveform: waveform)
+            return
+        }
+        // The Machine section asked for an ELF, or its commit stream is ready (the ELF next to the dump is loaded).
+        if body["event"] as? String == "machineLoadELF" {
+            WaveformMachineStateLoader.chooseELF(for: waveform)
+            return
+        }
+        if body["event"] as? String == "machine" {
+            if body["status"] as? String == "ready" { WaveformMachineStateLoader.loadImageBeside(waveform) }
             return
         }
         // Its watch expressions changed: kept for the workspace's session.
@@ -275,6 +294,7 @@ enum WaveformDebugger {
                 defaultValue: "Select a 1-bit signal in the waveform to use as the clock."
             ),
         ].merging(breakpointPageStrings()) { first, _ in first }.merging(expressionPageStrings()) { first, _ in first }
+            .merging(WaveformMachineState.pageStrings()) { first, _ in first }
     }
 
     /// Strings of the page's Evaluate and watches (cmux-debugger.js, cmux-expr.js).
