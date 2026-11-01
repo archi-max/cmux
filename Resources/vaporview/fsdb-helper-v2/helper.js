@@ -52,6 +52,13 @@
 //     last before t) whose new value matches `value` (MSB first, 'x' and '?' wildcards,
 //     short patterns left-padded with 0). wildcard: '?' -> only '?' is a wildcard,
 //     x and z are literal. All answers use the normalized change stream (see below).
+//   searchText {signalId, t, dir, inclusive?, format, pattern, caseSensitive?, alias?, budgetMs = 5000}
+//     -> {t, value, text, distinct, formatted} | {t: null}
+//        | {t: null, incomplete: {timedOut | cancelled, at, resume: {t: at, inclusive: true}}}
+//        | {t: null, incomplete: {tooLarge, reason}}:
+//     as search (inclusive: >= t / <= t), but the value is formatted the way the viewer formats
+//     it (format riscv*, alias, ascii; text.js) and the pattern is matched against the text.
+//     Numeric formats (hex/bin/dec/sdec) are refused: they are value searches (`search`).
 //   cancel {id}                    -> the target's reply becomes {id, cancelled: true};
 //     queued parts are dropped, running ones finish and are discarded (background
 //     ones are told to stop). If `id` isn't running, one {id, cancelled: false} line.
@@ -60,7 +67,9 @@
 //   stats {}                       -> {workers: [{worker, pid, loaded, bytesCached, limit, queue, background, busy, rss}],
 //                                      coordinatorRss, recycled, splitting, derived, index, searching}
 //   free {signalIds?}, close {}    -> {}
-//   signals {signalIds, widths}    -> v1 whole-signal reply (reader traversal, not the store)
+//   signals {signalIds, widths, maxChanges?} -> v1 whole-signal reply (reader traversal, not the
+//     store). maxChanges (count first): a signal with more changes is {signalId, width, count,
+//     overCap: true, bytes: 0} with no records (countKind 'normalized' when answered from the store).
 // Unsolicited {id: 0, ready|error} lines report startup and worker deaths. A dead
 // worker is restarted (and reopens the file); its queued and running parts fail
 // with an error, so no request waits forever. Requests other than open/stats/
@@ -309,14 +318,33 @@ function recycleWorker(w) {
   if (openFile && held.length) { nw.reloaded = true; enqueue(nw, { op: 'bgLoad', signalIds: held, bg: true }).done = () => {}; }
   w.proc.kill();
 }
-let recycled = 0;
+let recycled = 0, rssCapRaised = null;
+// Backoff (defence in depth against a storm): a slot recycled 3 times within 10 s waits 1 s,
+// 2 s, 4 s ... (max 60 s) before its next recycle; it keeps serving meanwhile (the addon's hard
+// bound still refuses loads over twice the cap).
+const slotRecycles = new Map();  // slot -> {times: [], backoff, until}
+function recycleAllowed(i) {
+  const now = Date.now(), r = slotRecycles.get(i) || { times: [], backoff: 0, until: 0, last: 0 };
+  slotRecycles.set(i, r);
+  if (now < r.until) { return false; }
+  r.times = r.times.filter((t) => now - t < 10e3);
+  if (r.times.length >= 3) { r.backoff = Math.min(60e3, r.backoff ? 2 * r.backoff : 1e3); r.until = now + r.backoff; return false; }
+  if (now - r.last > 60e3) { r.backoff = 0; }  // calm for a minute: start over
+  r.times.push(now); r.last = now;
+  return true;
+}
 
 function pump(w) {
   if (!w.busy && w.recycle && workers[w.i] === w) {
     // Write what is queued for the store cache first: it needs this store.
     const k = w.bgQueue.findIndex((t) => t.op === 'persist');
-    if (k < 0 || w.queue.length) { recycleWorker(w); return; }
-    w.bgQueue.unshift(...w.bgQueue.splice(k, 1));
+    if (k >= 0 && !w.queue.length) {
+      w.bgQueue.unshift(...w.bgQueue.splice(k, 1));
+    } else if (w.forceRecycle || recycleAllowed(w.i)) {
+      recycleWorker(w); return;
+    } else if (!w.recycleTimer) {  // backing off: keep serving, look again when the backoff ends
+      w.recycleTimer = setTimeout(() => { w.recycleTimer = null; pump(w); }, Math.max(0, slotRecycles.get(w.i).until - Date.now()) + 10);
+    }
   }
   if (workers[w.i] !== w) { return; }  // replaced: its queues moved over or were failed
   if (w.busy || !w.ready || !(w.queue.length || w.bgQueue.length)) { return; }
@@ -343,6 +371,10 @@ function onWorkerMessage(w, m) {
     if (m.state.sizes) { w.sizes = new Map(m.state.sizes.map((e) => [e[0], e])); }  // absent: unchanged
   }
   if (m.state && m.state.recycle) { w.recycle = true; }
+  if (m.state && m.state.capRaised && !rssCapRaised) {  // warn once
+    rssCapRaised = m.state.capRaised;
+    process.stderr.write(`helper-v2: FSDB_WORKER_RSS_MB=${rssCapRaised.configuredMB} is below what an idle worker needs; using ${rssCapRaised.usedMB} MB\n`);
+  }
   if (task && !task.bg && task.op !== 'open') { w.reloaded = false; }  // it has served real work since its reload
   if (m.badFiles) {  // a stale reply still drops entries whose file is gone (L7: a reopen may have listed it first)
     let changed = false;
@@ -354,7 +386,15 @@ function onWorkerMessage(w, m) {
   }
   if (m.walked && !stale) { persistLater(w, m.walked); }
   if (DEBUG && task) { process.stderr.write(`[w${w.i}] ${task.op} ${JSON.stringify(task.signalIds || task.signalId)} wait->done ${(performance.now() - task.startedAt).toFixed(1)} ms, worker ${m.ms.toFixed(1)} ms, queue ${w.queue.length}\n`); }
-  if (task && task.tid === m.tid && task.done) { task.done(stale ? { tid: m.tid, error: 'file reopened', ms: m.ms } : m); }
+  const memErr = (e) => /worker memory limit/.test(String(e || ''));
+  if (task && task.tid === m.tid && task.done && !stale && !task.bg && !task.memRetried && workers[w.i] === w
+      && (memErr(m.error) || (Array.isArray(m.result) && m.result.some((r) => r && memErr(r.error))))) {
+    // Refused by the hard memory bound (the worker's RSS is near twice its cap): run it once
+    // more, first, on a recycled worker. A second refusal is the answer.
+    task.memRetried = true;
+    w.recycle = true; w.forceRecycle = true;  // tied to a refused request, not idle: no backoff
+    enqueue(w, task, true);
+  } else if (task && task.tid === m.tid && task.done) { task.done(stale ? { tid: m.tid, error: 'file reopened', ms: m.ms } : m); }
   pump(w);
 }
 
@@ -556,6 +596,10 @@ function scheduleBgLoad(id) {
 
 // ---- full hierarchy index (paths for expressions and searchAll) ----
 let index = null;  // {byPath, byId, list: [{path, signalId, width, msb, lsb, encoding}]}
+// SystemVerilog strings (FSDB varType 63, 2 bytes per bit) are listed as width-1 BitVectors of type
+// 'unknown_var_type'; the reader can't give them as bit vectors, so they're never search or
+// warm-up candidates (they made every search containing them incomplete).
+const bitVector = (v) => v.encoding === 'BitVector' && v.type !== 'unknown_var_type';
 function getIndex() {
   if (index) { return index; }
   const t0 = performance.now();
@@ -748,25 +792,43 @@ function globMatch(g, s) {
   return i === g.length;
 }
 
-// Copy `fixed` operands (loaded once on their owner) to the other workers
-// that will evaluate candidates; -> [{w, id}] copies to free afterwards.
-async function spreadFixed(fixed, targets) {
-  const copies = [];
+// `fixed` operands of a searchAll expr: loaded once on their owner without evicting anything,
+// and copied only to workers whose store has room for them (a copy must not evict the viewer's
+// signals: verify V4). The primary (fixed[0]'s owner) gets every other fixed operand; candidates
+// of workers that don't hold them all are moved to it. -> {copies, temps, holders}: what to free
+// afterwards, and the workers that can evaluate. Stops early once the search is cancelled.
+async function spreadFixed(req, fixed, targets) {
+  const copies = [], temps = [];
+  const primary = workerFor(fixed[0]);
+  const ws = [...new Set([...targets, primary])];
+  const has = new Map(ws.map((w) => [w, new Set()]));
+  try {
   for (const id of fixed) {
+    if (req.cancelled) { break; }
     const owner = workerFor(id);
-    await runTask(owner, { op: 'load', signalIds: [id] });
-    for (const w of targets) {
-      if (w === owner) { continue; }
+    const had = owner.state.cached.includes(id);
+    const [info] = await runTask(owner, { op: 'loadTemp', signalIds: [id] });
+    if (!had) { temps.push({ w: owner, id }); }
+    if (info.error) { throw new Error(info.error); }
+    if (has.has(owner)) { has.get(owner).add(id); }
+    for (const w of ws) {
+      if (w === owner || req.cancelled) { continue; }
+      const room = (w.state.limit || 0) - (w.state.bytes || 0);
+      if (w !== primary && room < info.bytes * 1.05 + 1e6) { continue; }
       const p = tmpPath(`f${id}`);
       try {
         await runTask(owner, { op: 'export', signalIds: [id], paths: [p] });
         await runTask(w, { op: 'adopt', signalId: id, paths: [p] });
         copies.push({ w, id });
+        has.get(w).add(id);
       } finally { fs.rmSync(p, { force: true }); }
     }
   }
-  return copies;
+  } catch (e) { freeAll([...copies, ...temps]); throw e; }
+  const holders = new Set(ws.filter((w) => fixed.every((id) => has.get(w).has(id))));
+  return { copies, temps, holders, primary };
 }
+const freeAll = (list) => { for (const { w, id } of list) { runTask(workers[w.i] || w, { op: 'free', signalIds: [id] }).catch(() => {}); } };
 
 // ---- search index warm-up (opt-in) ----
 // `open {file, warm: true}` (or `warm {on: true}`) walks the file's BitVector
@@ -887,7 +949,7 @@ function startWarm() {
   const seen = new Set();
   warm.todo = [];
   for (const v of getIndex().list) {
-    if (v.encoding !== 'BitVector' || seen.has(v.signalId)) { continue; }
+    if (!bitVector(v) || seen.has(v.signalId)) { continue; }
     seen.add(v.signalId);
     if (!warm.files.has(v.signalId) && !warm.failed.has(v.signalId)) { warm.todo.push(v.signalId); }
   }
@@ -995,6 +1057,7 @@ function checkIds(ids) {
   }
   return ids;
 }
+const textCheck = require('./text.js').check;
 function checkTime(name, t) {
   if (typeof t !== 'number' || !Number.isFinite(t) || t < 0 || t > 1.8e19) { throw new Error(`bad ${name}: ${t}`); }
   return Math.floor(t);
@@ -1043,7 +1106,7 @@ async function runSearchAll(req) {
   const onPath = glob && glob.includes('.');
   const seen = new Set(), cands = [];
   for (const v of idx.list) {
-    if (v.encoding !== 'BitVector' || seen.has(v.signalId)) { continue; }
+    if (!bitVector(v) || seen.has(v.signalId)) { continue; }
     if (req.scope && v.path !== req.scope && !v.path.startsWith(req.scope + '.')) { continue; }
     if (glob && !globMatch(glob, onPath ? v.path : v.path.slice(v.path.lastIndexOf('.') + 1))) { continue; }
     seen.add(v.signalId);
@@ -1075,8 +1138,18 @@ async function runSearchAll(req) {
     if (!perWorker.has(w)) { perWorker.set(w, []); }
     perWorker.get(w).push(v.signalId);
   }
-  const copies = fixed.length ? await spreadFixed(fixed, [...perWorker.keys()]) : [];
-  if (req.cancelled) { return {}; }
+  let copies = [];
+  if (fixed.length) {
+    const sp = await spreadFixed(req, fixed, [...perWorker.keys()]);
+    copies = [...sp.copies, ...sp.temps];
+    if (req.cancelled) { freeAll(copies); return {}; }
+    for (const [w, ids] of [...perWorker]) {  // no room for the operand there: its candidates go to the primary
+      if (sp.holders.has(w)) { continue; }
+      perWorker.delete(w);
+      if (!perWorker.has(sp.primary)) { perWorker.set(sp.primary, []); }
+      perWorker.get(sp.primary).push(...ids);
+    }
+  }
   const rank = (w, id) => (w.state.cached.includes(id) ? 0 : warm.files.has(id) && warm.epoch === epoch ? 1 : 2);
   // Stored and indexed candidates go to their own worker. Cold value scans keep
   // nothing, so any worker can do them: they wait in one pool, in small chunks,
@@ -1101,7 +1174,7 @@ async function runSearchAll(req) {
       finished = true;
       clearTimeout(timer);
       for (const { w, task } of req.parts) { dequeue(w, task); }
-      for (const { w, id } of copies) { runTask(w, { op: 'free', signalIds: [id] }).catch(() => {}); }
+      freeAll(copies);
       matches.sort((a, b) => (a.t - b.t) * dir || a.signalId - b.signalId);  // ties by id: deterministic
       const unsearched = cands.length - searched;
       const complete = !timedOut && !req.cancelled && errors === 0 && unsearched === 0;
@@ -1394,7 +1467,9 @@ const handlers = {
     const cold = new Set(ranged ? ids.filter((id) => isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
     const warmIds = [...new Set(ids.filter((id) => !cold.has(id)))];
     const sp = prep(req, warmIds);
-    if (sp) { await sp; }
+    // A failed split walk (e.g. an unreadable signal) is not the request's error: the regular
+    // load below reports it for that signal only.
+    if (sp) { try { await sp; } catch (e) { if (req.cancelled || /reopened|closed/.test(String(e && e.message))) { throw e; } } }
     if (req.cancelled) { return {}; }
     const [warmRes, coldRes] = await Promise.all([
       warmIds.length ? scatter(req, 'window', warmIds, { t0, t1, buckets }, (m) => m.result) : [],
@@ -1447,6 +1522,18 @@ const handlers = {
     return single(req, 'search', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, value: (strictWildcard(req) ? '!' : '') + req.value });
   },
 
+  // searchText {signalId, t, dir, inclusive?, format, pattern, caseSensitive?, alias?, budgetMs?}: the first
+  // change from t (as search) whose value, formatted as the viewer formats it, matches the
+  // pattern (WINDOWING.md "searchText"). -> {t, value, text, distinct, formatted} | {t: null}
+  // | {t: null, incomplete: {timedOut: true, at}}
+  async searchText(req) {
+    const t = checkTime('t', req.t);
+    textCheck(req);
+    const sp = prep(req, checkIds([req.signalId])); if (sp) { await sp; }
+    return single(req, 'searchText', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, inclusive: req.inclusive === true, format: req.format, pattern: req.pattern,
+      caseSensitive: req.caseSensitive === true, alias: req.alias, budgetMs: req.budgetMs, stoppable: true });
+  },
+
   // derive {expr, name?} -> {signalId, width, signed, name, operands, count, materializeMs, ...}
   async derive(req) {
     const { d, created, refs } = defineDerived(req.expr, req.name);
@@ -1468,20 +1555,34 @@ const handlers = {
   },
 
   // v1: whole signals, deflated [u64 delta][chars] records.
+  // maxChanges (count first, debugger M5(c)): a signal with more changes than that comes back
+  // as {signalId, width, count, overCap: true, bytes: 0} and sends no records. One whose
+  // normalized count (store, store-cache file) is already over is answered here without a
+  // reader load: its count is then the normalized count (countKind: 'normalized'), a lower
+  // bound of the raw count, which only normalization can make smaller.
   async signals(req) {
     const { signalIds, widths } = req;
     checkIds(signalIds);
     if (signalIds.some((id) => id >= DERIVED_BASE)) { throw new Error('signals does not take derived signals'); }
+    const capped = req.maxChanges !== undefined;
+    if (capped && !(Number.isInteger(req.maxChanges) && req.maxChanges >= 0)) { throw new Error(`bad maxChanges: ${JSON.stringify(req.maxChanges)} (an integer >= 0)`); }
     const wOf = new Map(signalIds.map((id, k) => [id, widths ? widths[k] : undefined]));
+    const known = new Map();
+    if (capped) {
+      for (const id of signalIds) {
+        const c = countOf(id);
+        if (c && c.count > req.maxChanges) { known.set(id, { signalId: id, width: wOf.get(id) !== undefined ? wOf.get(id) : c.bits, count: c.count, countKind: 'normalized', overCap: true }); }
+      }
+    }
     const res = await new Promise((resolve, reject) => {
       const groups = new Map();
-      for (const id of signalIds) { const w = workerFor(id); if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); }
-      const byId = new Map();
+      const byId = new Map(known);
+      for (const id of signalIds) { if (known.has(id)) { continue; } const w = workerFor(id); if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); }
       let left = groups.size;
-      if (!left) { resolve([]); return; }
+      if (!left) { resolve(signalIds.map((id) => byId.get(id))); return; }
       req.parts = [];
       for (const [w, ids] of groups) {
-        const task = enqueue(w, { op: 'signals', signalIds: ids, widths: widths && ids.map((id) => wOf.get(id)), req });
+        const task = enqueue(w, { op: 'signals', signalIds: ids, widths: widths && ids.map((id) => wOf.get(id)), ...(capped ? { maxChanges: req.maxChanges } : {}), req });
         req.parts.push({ w, task });
         task.done = (m) => {
           if (m.error) { reject(new Error(m.error)); return; }
@@ -1496,6 +1597,8 @@ const handlers = {
         const b = asBuf(r.records);
         out.push({ signalId: r.signalId, width: r.width, count: r.count, bytes: b.length, min: 0, max: 0 });
         parts.push(b);
+      } else if (r.overCap) {
+        out.push({ ...r, bytes: 0 });
       } else {
         out.push(r);
       }
@@ -1548,6 +1651,7 @@ const handlers = {
       searching: activeSearch ? activeSearch.id : null,
       coordinatorRss: process.memoryUsage().rss,
       recycled,
+      ...(rssCapRaised ? { rssCapRaised } : {}),
       splitting: [...splitting.keys()],
       coldWalks: { pending: [...bgLoads.keys()], failed: [...bgFailed.keys()] },
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
@@ -1566,7 +1670,13 @@ const handlers = {
       const x = runner(w, task);
       if (!x) { continue; }  // already answered
       running++; task.done = () => {};
-      if (task.bg && !task.yieldSent && x.pid) { task.yieldSent = true; try { process.kill(x.pid, 'SIGUSR2'); } catch (e) { /* gone */ } }
+      // background tasks and stoppable interactive ones (searchText) stop early on SIGUSR2
+      if ((task.bg || task.stoppable) && !task.yieldSent && x.pid) {
+        task.yieldSent = true;
+        try { process.kill(x.pid, 'SIGUSR2'); } catch (e) { /* gone */ }
+        // searchText: SIGINT ends its vm judging call even inside one slow regex call (text.js)
+        if (task.stoppable) { try { process.kill(x.pid, 'SIGINT'); } catch (e) { /* gone */ } }
+      }
     }
     for (const sp of req.splits || []) {  // split walks no other request waits for are cancelled too
       sp.reqs.delete(req);
@@ -1618,11 +1728,35 @@ const handlers = {
 spawnPool(DEFAULT_WORKERS);
 send({ id: 0, ready: true, pid: process.pid, workers: workers.length });
 
+// The integer value of the line's top-level "id" key (the last one, as JSON.parse would keep), or -1.
+// Skips strings and nested objects/arrays, so an id-like number elsewhere is never taken.
+function topLevelId(line) {
+  let depth = 0, id = -1, i = 0;
+  const n = line.length;
+  while (i < n) {
+    const c = line.charCodeAt(i);
+    if (c === 34) {  // a string: a key if at depth 1 and followed by ':'
+      const start = i + 1; i++;
+      while (i < n && line.charCodeAt(i) !== 34) { i += line.charCodeAt(i) === 92 ? 2 : 1; }
+      const key = line.slice(start, i); i++;
+      if (depth !== 1 || key !== 'id') { continue; }
+      let j = i; while (j < n && /\s/.test(line[j])) { j++; }
+      if (line[j] !== ':') { continue; }
+      j++; while (j < n && /\s/.test(line[j])) { j++; }
+      const m = /^(\d{1,15})\s*[,}]/.exec(line.slice(j, j + 40));
+      id = m ? Number(m[1]) : -1;
+      continue;
+    }
+    if (c === 123 || c === 91) { depth++; } else if (c === 125 || c === 93) { depth--; }
+    i++;
+  }
+  return id;
+}
+
 readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   if (!line.trim()) { return; }
   if (line.length > MAX_LINE) {  // answered under the request's own id when it can be read (verify F6)
-    const m = /[{,]\s*"id"\s*:\s*(\d+)\s*[,}]/.exec(line);
-    send({ id: m ? Number(m[1]) : -1, error: `request longer than ${MAX_LINE} bytes` });
+    send({ id: topLevelId(line), error: `request longer than ${MAX_LINE} bytes` });
     return;
   }
   let req;
