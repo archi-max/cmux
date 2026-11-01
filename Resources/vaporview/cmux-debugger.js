@@ -848,7 +848,9 @@
   const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: isLastHit(bp), label: breakpointName(bp),
     path: bp.path ? bp.path.slice() : null, value: bp.kind === 'equals' ? bp.value : null,
     key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
-    condition: bp.condition || null, conditionError: bp.conditionError || null });
+    condition: bp.condition || null, conditionError: bp.conditionError || null,
+    // The paths a line's search reads (its units' with a condition).
+    searchedPaths: bp.kind === 'line' ? (bp.condition && bp.units ? bp.units : [bp]).reduce((n, u) => n + u.paths.length, 0) : null });
 
   // A condition as given: trimmed, '' for none; { error, at, message } when it does not parse.
   function checkCondition(text) {
@@ -906,6 +908,16 @@
     return restored.map(publicBreakpoint);
   }
 
+  // At most `limit` of the lists' items, taken from each list in turn (each keeps its order).
+  function capAcross(lists, limit) {
+    const out = lists.map(() => []);
+    let left = limit;
+    for (let k = 0; left > 0 && lists.some((l) => l.length > k); k++) {
+      lists.forEach((list, i) => { if (left > 0 && k < list.length) { out[i].push(list[k]); left--; } });
+    }
+    return out;
+  }
+
   // The editors' line breakpoints (cmux): replaces the page's, keeps the signal breakpoints.
   function setLineBreakpoints(query) {
     const items = Array.isArray((query || {}).items) ? query.items : [];
@@ -916,22 +928,26 @@
       const key = String(item.key || '');
       if (!key || lines.some((b) => b.key === key)) { continue; }
       const allPaths = (Array.isArray(item.paths) ? item.paths : []).filter(Array.isArray).map((p) => p.map(String));
-      // Each path may hold up to 1M changes while its times are built: a line watches at most 64.
-      const paths = allPaths.slice(0, MAX_LINE_PATHS);
+      const groups = (Array.isArray(item.groups) ? item.groups : []).filter((g) => g && Array.isArray(g.paths) && Array.isArray(g.scope))
+        .map((g) => ({ scope: g.scope.map(String), paths: g.paths.filter(Array.isArray).map((p) => p.map(String)) }));
+      // Each path may hold up to 1M changes while its times are built: a line watches at most 64,
+      // in all its instances together (taken from each in turn, so every instance is watched).
+      const capped = groups.length > 1 ? capAcross(groups.map((g) => g.paths), MAX_LINE_PATHS) : null;
+      const paths = capped ? capped.flat() : allPaths.slice(0, MAX_LINE_PATHS);
+      const total = groups.length > 1 ? groups.reduce((n, g) => n + g.paths.length, 0) : allPaths.length;
       const before = old.get(key);
       const same = before && JSON.stringify(before.paths) === JSON.stringify(paths);
       const scope = Array.isArray(item.scope) ? item.scope.map(String) : null;
       const bp = { id: before ? before.id : nextBreakpointId++, kind: 'line', key, label: String(item.label || key), paths,
         enabled: item.enabled !== false, times: same ? before.times : null, timesFor: same ? before.timesFor : null,
-        condition: null, conditionError: null, scope, pathsTotal: allPaths.length, warned: before ? before.warned : undefined,
+        condition: null, conditionError: null, scope, pathsTotal: total, warned: before ? before.warned : undefined,
         // Why it has no paths, when cmux knows: the line watches nothing, or its file is too large to scan.
         unwatched: item.unwatched === 'nothing' || item.unwatched === 'tooLarge' ? item.unwatched : null };
       conditionOf(bp, item.condition, bp.label);
       // Break in any instance with a condition: each instance's changes are tested in its own scope.
-      const groups = (Array.isArray(item.groups) ? item.groups : []).filter((g) => g && Array.isArray(g.paths) && Array.isArray(g.scope));
       bp.warned = bp.warned || new Set();
       bp.units = groups.length > 1 ? groups.map((g, i) => {
-        const unitPaths = g.paths.filter(Array.isArray).map((p) => p.map(String)).slice(0, MAX_LINE_PATHS);
+        const unitPaths = capped[i];
         const was = same && before.units && before.units[i];
         const keep = was && JSON.stringify(was.paths) === JSON.stringify(unitPaths);
         return { kind: 'line', key, label: bp.label, paths: unitPaths, scope: g.scope.map(String), condition: bp.condition,
