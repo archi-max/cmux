@@ -365,6 +365,53 @@ struct SSHFileSearchTests {
     }
 
     @Test
+    func testGitGrepFallsBackWhereCheckIgnoreAndQuotingMissIt() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
+        // A folder .gitignore lists but that holds tracked files (committed
+        // before the rule, or force-added): plain check-ignore says "not
+        // ignored", yet git grep --untracked --exclude-standard finds nothing
+        // in it. rg, given that folder as its root, searches it.
+        let tracked = try Self.makeGitSearchTree()
+        defer { try? FileManager.default.removeItem(at: tracked) }
+        for relativePath in ["gen/g.sv", "build/sub/b.sv"] {
+            let url = tracked.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("hello generated\n".utf8).write(to: url)
+        }
+        let addIgnored = try Self.run(
+            "git add gen/g.sv && printf 'gen/\\nbuild\\n' >> .gitignore && git add -f build/sub/b.sv",
+            shell: "/bin/sh", path: "/usr/bin:/bin", directory: tracked.path
+        )
+        #expect(addIgnored.status == 0)
+        for shell in Self.availableShells {
+            for (root, expected) in [("gen", "g.sv"), ("build", "sub/b.sv"), ("build/sub", "b.sv")] {
+                let found = try Self.search("hello", root: tracked.path + "/" + root, shell: shell, path: Self.pathWithoutRipgrep)
+                #expect(found.format == .grep, "\(root), shell \(shell)")
+                #expect(found.relativePaths == [expected], "rg searches an explicitly opened ignored folder: \(root), shell \(shell)")
+            }
+            // The work-tree top level keeps git grep (rg skips those tracked files there too).
+            let top = try Self.search("hello", root: tracked.path, shell: shell, path: Self.pathWithoutRipgrep)
+            #expect(top.format == .gitGrep, "shell \(shell)")
+        }
+
+        // Nested repositories whose names git quotes in ls-files output.
+        for name in ["r\u{E9}sum\u{E9}", "q\"x", "back\\slash", "tab\tname"] {
+            let nested = try Self.makeGitSearchTree()
+            defer { try? FileManager.default.removeItem(at: nested) }
+            let inner = nested.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+            try Data("hello nested\n".utf8).write(to: inner.appendingPathComponent("n.sv"))
+            let innerInit = try Self.run("git init -q .", shell: "/bin/sh", path: "/usr/bin:/bin", directory: inner.path)
+            #expect(innerInit.status == 0)
+            for shell in Self.availableShells {
+                let found = try Self.search("hello", root: nested.path, shell: shell, path: Self.pathWithoutRipgrep)
+                #expect(found.format == .grep, "nested repo \(name), shell \(shell)")
+                #expect(found.relativePaths.contains(name + "/n.sv"), "nested repo \(name), shell \(shell)")
+            }
+        }
+    }
+
+    @Test
     func testGitGrepIgnoresTheRepositorysOwnConfig() throws {
         guard FileManager.default.isExecutableFile(atPath: "/usr/bin/git") else { return }
         let root = try Self.makeGitSearchTree(hostileConfig: true)
@@ -452,6 +499,7 @@ struct SSHFileSearchTests {
 
         #expect(parser.parse(line: Data("Binary file /srv/repo/core.bin matches".utf8)) == nil)
         #expect(parser.parse(line: Data("/srv/repo/x".utf8) + Data([0]) + Data("notanumber:text".utf8)) == nil)
+        #expect(parser.parse(line: Data("/srv/repo/x".utf8) + Data([0]) + Data("0:needle".utf8)) == nil)
     }
 
     @Test
