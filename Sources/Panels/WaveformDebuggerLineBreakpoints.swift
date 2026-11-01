@@ -419,68 +419,74 @@ enum WaveformDebuggerLineBreakpoints {
         var dropped: [UUID] = []
         let joinsOrSplits = old.substring(with: NSRange(location: span.start, length: span.oldEnd - span.start)).rangeOfCharacter(from: .newlines) != nil
             || text.substring(with: NSRange(location: span.start, length: newSpanEnd - span.start)).rangeOfCharacter(from: .newlines) != nil
-        for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
-            // Its line start was in the changed span (a line start before it is still one, on the
-            // same line: a mark there stays, also when lines are joined into or split off its line).
-            let touched = joinsOrSplits && offset >= span.start && offset < span.oldEnd
-            if touched {
-                let line = oldLineOf(offset)
-                inside.append((id, line, oldTable.texts[line]))
-                continue
-            }
-            var start = WaveformLineBreakpoint.lineStart(containing: offset >= span.oldEnd ? offset + delta : offset, in: text)
-            // Its line split by the edit: it goes with its statement.
-            if joinsOrSplits && offset < span.start && span.start <= NSMaxRange(old.lineRange(for: NSRange(location: offset, length: 0))) {
-                let tail = WaveformLineBreakpoint.lineStart(containing: newSpanEnd, in: text)
-                if taken[newLineOf(tail)] == nil { start = splitLine(old: oldTable.texts[oldLineOf(offset)], head: start, tail: tail, in: text) }
-            }
-            let line = newLineOf(start)
-            if taken[line] != nil { dropped.append(id); continue }
-            taken[line] = id
-        }
         var lost: Set<UUID> = []
-        if !inside.isEmpty {
-            // Old line → new line through the span's lines that are the same, once each, in both.
-            let firstOld = oldLineOf(span.start), lastOld = oldLineOf(max(span.start, span.oldEnd))
-            let lastNew = newLineOf(max(span.start, newSpanEnd))
-            let anchors = alignment(old: Array(oldTable.texts[firstOld...lastOld]), new: Array(newTable.texts[firstOld...lastNew]))
-                .map { (old: $0.old + firstOld, new: $0.new + firstOld) }
-            // Where an old line lines up, and whether the lines between its neighbours are one for one
-            // (so a changed line there is the same statement changed).
-            let aligned = { (line: Int) -> (line: Int, oneForOne: Bool) in
-                let above = anchors.last { $0.old <= line } ?? (old: firstOld - 1, new: firstOld - 1)
-                let below = anchors.first { $0.old > line } ?? (old: lastOld + 1, new: lastNew + 1)
-                let target = max(0, min(newTable.starts.count - 1, min(above.new + (line - above.old), below.new - 1 < above.new + 1 ? above.new + 1 : below.new - 1)))
-                return (target, below.old - above.old == below.new - above.new)
-            }
-            for mark in inside {
-                // A user's edit that took out the whole line takes its breakpoint (kept for the undo).
-                let oldRange = old.lineRange(for: NSRange(location: oldTable.starts[mark.line], length: 0))
-                if !whole && oldRange.location >= span.start && NSMaxRange(oldRange) <= span.oldEnd {
-                    dropped.append(mark.id)
+        if whole || edited.length > 1024 {
+            // A reload, Format Document or large paste: every mark by the lines that stayed the same.
+            matchLines(tracker, old: old, oldTable: oldTable, newTable: newTable, edited: whole ? nil : (edited.location, NSMaxRange(edited) - delta),
+                       taken: &taken, lost: &lost, dropped: &dropped, inside: &inside)
+        } else {
+            for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
+                // Its line start was in the changed span (a line start before it is still one, on the
+                // same line: a mark there stays, also when lines are joined into or split off its line).
+                let touched = joinsOrSplits && offset >= span.start && offset < span.oldEnd
+                if touched {
+                    let line = oldLineOf(offset)
+                    inside.append((id, line, oldTable.texts[line]))
                     continue
                 }
-                let (target, oneForOne) = aligned(mark.line)
-                let wanted = WaveformLineBreakpoint.lineText(mark.text)
-                let bare = squeezed(mark.text)
-                var line: Int?
-                if taken[target] == nil, WaveformLineBreakpoint.lineText(newTable.texts[target]) == wanted || squeezed(newTable.texts[target]) == bare {
-                    line = target
-                } else if let match = nearest(in: newTable.texts, near: target, where: { taken[$0] == nil }, matching: { WaveformLineBreakpoint.lineText($0) == wanted })
-                            ?? nearest(in: newTable.texts, near: target, where: { taken[$0] == nil }, matching: { squeezed($0) == bare }) {
-                    line = match
-                } else if taken[target] == nil && oneForOne {
-                    // Its line was changed where it stands (the lines around it line it up one for one).
-                    line = target
-                } else if whole {
-                    // Not found: never moved silently onto another statement, never dropped by a reload.
-                    line = taken[target] == nil ? target : nearestFree(to: target, count: newTable.starts.count, taken: Set(taken.keys))
-                    lost.insert(mark.id)
-                } else if taken[target] == nil {
-                    line = target
+                var start = WaveformLineBreakpoint.lineStart(containing: offset >= span.oldEnd ? offset + delta : offset, in: text)
+                // Its line split by the edit: it goes with its statement.
+                if joinsOrSplits && offset < span.start && span.start <= NSMaxRange(old.lineRange(for: NSRange(location: offset, length: 0))) {
+                    let tail = WaveformLineBreakpoint.lineStart(containing: newSpanEnd, in: text)
+                    if taken[newLineOf(tail)] == nil { start = splitLine(old: oldTable.texts[oldLineOf(offset)], head: start, tail: tail, in: text) }
                 }
-                guard let line else { dropped.append(mark.id); continue }
-                taken[line] = mark.id
+                let line = newLineOf(start)
+                if taken[line] != nil { dropped.append(id); continue }
+                taken[line] = id
+            }
+            if !inside.isEmpty {
+                // Old line → new line through the span's lines that are the same, once each, in both.
+                let firstOld = oldLineOf(span.start), lastOld = oldLineOf(max(span.start, span.oldEnd))
+                let lastNew = newLineOf(max(span.start, newSpanEnd))
+                let anchors = alignment(old: Array(oldTable.texts[firstOld...lastOld]), new: Array(newTable.texts[firstOld...lastNew]))
+                    .map { (old: $0.old + firstOld, new: $0.new + firstOld) }
+                // Where an old line lines up, and whether the lines between its neighbours are one for one
+                // (so a changed line there is the same statement changed).
+                let aligned = { (line: Int) -> (line: Int, oneForOne: Bool) in
+                    let above = anchors.last { $0.old <= line } ?? (old: firstOld - 1, new: firstOld - 1)
+                    let below = anchors.first { $0.old > line } ?? (old: lastOld + 1, new: lastNew + 1)
+                    let target = max(0, min(newTable.starts.count - 1, min(above.new + (line - above.old), below.new - 1 < above.new + 1 ? above.new + 1 : below.new - 1)))
+                    return (target, below.old - above.old == below.new - above.new)
+                }
+                for mark in inside {
+                    // A user's edit that took out the whole line takes its breakpoint (kept for the undo).
+                    let oldRange = old.lineRange(for: NSRange(location: oldTable.starts[mark.line], length: 0))
+                    if !whole && oldRange.location >= span.start && NSMaxRange(oldRange) <= span.oldEnd {
+                        dropped.append(mark.id)
+                        continue
+                    }
+                    let (target, oneForOne) = aligned(mark.line)
+                    let wanted = WaveformLineBreakpoint.lineText(mark.text)
+                    let bare = squeezed(mark.text)
+                    var line: Int?
+                    if taken[target] == nil, WaveformLineBreakpoint.lineText(newTable.texts[target]) == wanted || squeezed(newTable.texts[target]) == bare {
+                        line = target
+                    } else if let match = nearest(in: newTable.texts, near: target, where: { taken[$0] == nil }, matching: { WaveformLineBreakpoint.lineText($0) == wanted })
+                                ?? nearest(in: newTable.texts, near: target, where: { taken[$0] == nil }, matching: { squeezed($0) == bare }) {
+                        line = match
+                    } else if taken[target] == nil && oneForOne {
+                        // Its line was changed where it stands (the lines around it line it up one for one).
+                        line = target
+                    } else if whole {
+                        // Not found: never moved silently onto another statement, never dropped by a reload.
+                        line = taken[target] == nil ? target : nearestFree(to: target, count: newTable.starts.count, taken: Set(taken.keys))
+                        lost.insert(mark.id)
+                    } else if taken[target] == nil {
+                        line = target
+                    }
+                    guard let line else { dropped.append(mark.id); continue }
+                    taken[line] = mark.id
+                }
             }
         }
         // An undo that puts back the text of an edit that merged marks: those come back.
@@ -513,6 +519,128 @@ enum WaveformDebuggerLineBreakpoints {
         if !restored.isEmpty { marks[tracker.workspace, default: []].append(contentsOf: restored) }
         tracker.takeSnapshot()
         changed(tracker.workspace, redraw: true)
+    }
+
+    /// A whole or large replace: each mark goes where its line went, by the lines that stayed the
+    /// same (as a patience diff pairs them). One whose line changed is looked for only in its gap
+    /// (between the same lines above and below it), the k-th of its text there going to the k-th:
+    /// its text (spaced alike, then ignoring spacing), a line it was joined into or split from, the
+    /// same place when the gap is one for one, else the most similar line there. Else, when its text
+    /// is once in each file, there (a moved block). Else it is lost (said, disabled), never moved
+    /// onto another statement. A large paste over a marked line merges it (as typing over it does).
+    private static func matchLines(_ tracker: Tracker, old: NSString, oldTable: (starts: [Int], texts: [String]),
+                                   newTable: (starts: [Int], texts: [String]), edited: (start: Int, oldEnd: Int)?,
+                                   taken: inout [Int: UUID], lost: inout Set<UUID>, dropped: inout [UUID],
+                                   inside: inout [(id: UUID, line: Int, text: String)]) {
+        let oldTexts = oldTable.texts, newTexts = newTable.texts
+        let match = lineMatching(old: oldTexts, new: newTexts)
+        let matchedNew = Set(match.values)
+        var pending: [(id: UUID, line: Int)] = []
+        for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
+            let line = lineIndex(of: offset, in: oldTable.starts)
+            inside.append((id, line, oldTexts[line]))
+            if let edited {
+                let range = old.lineRange(for: NSRange(location: oldTable.starts[line], length: 0))
+                if range.location >= edited.start && NSMaxRange(range) <= edited.oldEnd && match[line] == nil { dropped.append(id); continue }
+            }
+            if let new = match[line], taken[new] == nil { taken[new] = id } else { pending.append((id, line)) }
+        }
+        guard !pending.isEmpty else { return }
+        let matchedOld = match.keys.sorted()
+        var oldCount: [String: Int] = [:], newCount: [String: Int] = [:]
+        for text in oldTexts { oldCount[squeezed(text), default: 0] += 1 }
+        for text in newTexts { newCount[squeezed(text), default: 0] += 1 }
+        for (id, line) in pending {
+            // Its gap: the unmatched lines between the matched ones around it, in both texts.
+            var lo = 0, hi = matchedOld.count
+            while lo < hi { let mid = (lo + hi) / 2; if matchedOld[mid] < line { lo = mid + 1 } else { hi = mid } }
+            let above = lo > 0 ? matchedOld[lo - 1] : -1
+            let below = lo < matchedOld.count ? matchedOld[lo] : oldTexts.count
+            let oldGap = (above + 1)..<below
+            let newGap = (above >= 0 ? match[above]! + 1 : 0)..<(below < oldTexts.count ? match[below]! : newTexts.count)
+            func free(_ candidate: Int) -> Bool { taken[candidate] == nil && !matchedNew.contains(candidate) }
+            let text = oldTexts[line], wanted = WaveformLineBreakpoint.lineText(text), bare = squeezed(text)
+            let target = newGap.isEmpty ? min(newGap.lowerBound, newTexts.count - 1) : min(newGap.upperBound - 1, newGap.lowerBound + (line - oldGap.lowerBound))
+            // The k-th line of its text in the old gap goes to the k-th in the new one.
+            func byOrder(_ same: (String) -> Bool) -> Int? {
+                guard same(text) else { return nil }
+                let olds = oldGap.filter { same(oldTexts[$0]) }
+                let news = newGap.filter { same(newTexts[$0]) && free($0) }
+                guard !news.isEmpty, let k = olds.firstIndex(of: line) else { return nil }
+                return olds.count == news.count ? news[k] : news.min { (abs($0 - target), $0) < (abs($1 - target), $1) }
+            }
+            var found = bare.isEmpty ? nil : byOrder { WaveformLineBreakpoint.lineText($0) == wanted } ?? byOrder { squeezed($0) == bare }
+            if found == nil, !bare.isEmpty {
+                // Joined into a line (a format putting `begin` on it) or split from one.
+                found = newGap.filter { free($0) && { (new: String) in !new.isEmpty && (new.hasPrefix(bare) || bare.hasPrefix(new)) }(squeezed(newTexts[$0])) }
+                    .min { (abs($0 - target), $0) < (abs($1 - target), $1) }
+            }
+            if found == nil, !bare.isEmpty, oldCount[bare] == 1, newCount[bare] == 1,
+               let moved = newTexts.indices.first(where: { squeezed(newTexts[$0]) == bare }), free(moved) {
+                found = moved
+            }
+            if found == nil, oldGap.count == newGap.count, !newGap.isEmpty, free(target) {
+                // Changed where it stands: the lines around it line it up one for one.
+                found = target
+            }
+            if found == nil, !bare.isEmpty {
+                // The gap's line most like it (a changed statement among added or removed lines).
+                var best: (line: Int, score: Double)?, tie = false
+                for candidate in newGap where free(candidate) {
+                    let score = similarity(bare, squeezed(newTexts[candidate]))
+                    if best == nil || score > best!.score { best = (candidate, score); tie = false } else if score == best!.score { tie = true }
+                }
+                if let best, best.score >= 0.6, !tie { found = best.line }
+            }
+            if let found { taken[found] = id; continue }
+            let place = free(target) ? target : nearestFree(to: target, count: newTable.starts.count, taken: Set(taken.keys))
+            guard let place else { dropped.append(id); continue }
+            taken[place] = id
+            lost.insert(id)
+        }
+    }
+
+    /// Old line → new line for the lines that are the same (ignoring spacing), as patience diff pairs
+    /// them: equal lines at a range's ends, then lines once in each side, in order, and so on inside.
+    private static func lineMatching(old: [String], new: [String]) -> [Int: Int] {
+        var map: [Int: Int] = [:]
+        var oldKeys: [String?] = Array(repeating: nil, count: old.count), newKeys: [String?] = Array(repeating: nil, count: new.count)
+        func oldKey(_ i: Int) -> String { if let k = oldKeys[i] { return k }; let k = squeezed(old[i]); oldKeys[i] = k; return k }
+        func newKey(_ i: Int) -> String { if let k = newKeys[i] { return k }; let k = squeezed(new[i]); newKeys[i] = k; return k }
+        func same(_ o: Int, _ n: Int) -> Bool { old[o] == new[n] || oldKey(o) == newKey(n) }
+        var work: [(Int, Int, Int, Int)] = [(0, old.count, 0, new.count)]
+        while let (oStart, oEnd, nStart, nEnd) = work.popLast() {
+            var oLo = oStart, nLo = nStart, oHi = oEnd, nHi = nEnd
+            while oLo < oHi && nLo < nHi && same(oLo, nLo) { map[oLo] = nLo; oLo += 1; nLo += 1 }
+            while oLo < oHi && nLo < nHi && same(oHi - 1, nHi - 1) { map[oHi - 1] = nHi - 1; oHi -= 1; nHi -= 1 }
+            guard oLo < oHi && nLo < nHi else { continue }
+            let anchors = alignment(old: Array(old[oLo..<oHi]), new: Array(new[nLo..<nHi]))
+            guard !anchors.isEmpty else { continue }
+            var po = oLo, pn = nLo
+            for anchor in anchors {
+                let ao = anchor.old + oLo, an = anchor.new + nLo
+                map[ao] = an
+                work.append((po, ao, pn, an))
+                po = ao + 1
+                pn = an + 1
+            }
+            work.append((po, oHi, pn, nHi))
+        }
+        return map
+    }
+
+    /// How alike two lines are: the Dice coefficient of their character pairs (0 to 1).
+    private static func similarity(_ a: String, _ b: String) -> Double {
+        let x = Array(a.utf16), y = Array(b.utf16)
+        guard x.count > 1, y.count > 1 else { return a == b ? 1 : 0 }
+        var pairs: [UInt32: Int] = [:]
+        for i in 0..<(x.count - 1) { pairs[UInt32(x[i]) << 16 | UInt32(x[i + 1]), default: 0] += 1 }
+        var common = 0
+        for i in 0..<(y.count - 1) {
+            let key = UInt32(y[i]) << 16 | UInt32(y[i + 1])
+            if let n = pairs[key], n > 0 { pairs[key] = n - 1; common += 1 }
+        }
+        return Double(2 * common) / Double(x.count + y.count - 2)
     }
 
     /// A line `old` split in two (its head stays at `head`, the rest starts at `tail`): where its
