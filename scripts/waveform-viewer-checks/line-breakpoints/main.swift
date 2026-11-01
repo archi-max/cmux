@@ -271,6 +271,19 @@ endmodule
     let olderViewer = FilePreviewPanel(workspaceId: olderWorkspace, filePath: "/w/c.vcd")
     expect(LB.signals(for: olderViewer).map(\.path) == [["TOP", "z"]] && LB.watches(for: olderViewer) == ["z"],
            "an older manifest's lists go to its viewers: \(String(describing: older))")
+    // Listing breakpoints (WaveformDebuggerAsmBreakpoints, stubbed here) are saved with the rest, alone too.
+    let asmOnly = UUID()
+    let asmMark = AsmMark(listingPath: "/w/prog.dis", pc: 0x8000_0004, symbol: "_start", offset: 4, encoding: 0x4501, text: "li a0,0")
+    WaveformDebuggerAsmBreakpoints.saved[asmOnly] = [asmMark]
+    let asmSnapshot = LB.snapshot(of: asmOnly)
+    expect(asmSnapshot?.pcMarks == [asmMark], "a workspace with only listing breakpoints saves them: \(String(describing: asmSnapshot))")
+    let asmDecoded = (try? JSONEncoder().encode(asmSnapshot)).flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }
+    expect(asmDecoded == asmSnapshot, "and they decode")
+    let asmRestored = UUID()
+    LB.restore(asmDecoded, in: asmRestored)
+    expect(WaveformDebuggerAsmBreakpoints.restored.last?.workspace == asmRestored && WaveformDebuggerAsmBreakpoints.restored.last?.marks == [asmMark],
+           "a restore gives them back: \(WaveformDebuggerAsmBreakpoints.restored)")
+    expect((older?.pcMarks) == nil, "an older manifest has none")
     // Only watches: still saved.
     let watchOnly = UUID()
     LB.watchesReported(["items": ["state"]], waveform: FilePreviewPanel(workspaceId: watchOnly))
