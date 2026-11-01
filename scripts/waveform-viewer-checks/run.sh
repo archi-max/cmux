@@ -33,6 +33,15 @@
 #   ./run.sh line-breakpoints            line breakpoints: F9, gutter, edits, instances, session
 #   ./run.sh trace                       driver tracing's engine (cmux-trace.js): active drivers on the
 #                                        trace fixtures' models and VCS/Icarus dumps, and the replay oracle
+#   ./run.sh trace-ui                    driver tracing's page (cmux-trace-ui.js): Trace Driver from a
+#                                        row and a path, the panel, fan-in clicks, Back/Forward, the row
+#                                        menu, errors; the harness answers as cmux from trace/models
+#   ./run.sh trace-smoke <model.json> <dump.vcd>
+#                                        the replay oracle on one real design (cmux-sv-model --once '*'
+#                                        output and its VCD): steps by trust, reasons, time per step
+#   ./run.sh trace-fsdb <ssh-host> <remote.fsdb> <model.json> <instance> <time>
+#                                        driver tracing on a remote FSDB through the helper: every signal
+#                                        of <instance> at <time> and two levels of fan-in, with timings
 #   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
 #                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
 #                                        given; its models of the trace fixtures equal trace/models
@@ -118,6 +127,29 @@ case "${1:-}" in
     check '^{"id":5,"ok":true,"model":1,"slang":"12.1"}' 'version'
     check '^{"id":6,"ok":true,"tops":\["tb_c"\],"instances":\["tb_c","tb_c.dut","tb_c.dut.u_mid","tb_c.dut.u_mid.u_sink","tb_c.dut.u_src"\]}' 'instances'
     [ "$fails" = 0 ] && echo "SV MODEL CHECKS PASSED" || { echo "SV MODEL CHECKS FAILED: $fails"; exit 1; }
+    ;;
+  trace-ui)
+    swiftc -O "$HERE/trace-ui/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/trace-ui"
+    "$OUT/trace-ui" "$ASSETS" "$HERE/trace" "$OUT/trace-ui.png" | tee "$OUT/trace-ui.log"
+    grep -q '^TRACE UI CHECKS PASSED' "$OUT/trace-ui.log"
+    ;;
+  trace-fsdb)
+    shift
+    if [ $# -lt 5 ]; then echo "trace-fsdb: needs <ssh-host> <remote.fsdb> <model.json> <instance> <time>"; exit 2; fi
+    swiftc -O "$HERE/trace-fsdb/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/trace-fsdb"
+    "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
+    grep -q '^TRACE FSDB CHECKS PASSED' "$OUT/trace-fsdb.log"
+    ;;
+  trace-smoke)
+    mkdir -p "$OUT/smoke/models" "$OUT/smoke/dumps" "$OUT/smoke/designs"
+    cp "$2" "$OUT/smoke/models/design.json"
+    cp "$3" "$OUT/smoke/dumps/design.vcd"
+    cp "$HERE/trace/vcd.js" "$OUT/smoke/vcd.js"
+    cp "$HERE/trace/smoke.js" "$OUT/smoke/cases.js"
+    swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
+    "$OUT/trace" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-trace.js" "$OUT/smoke"
     ;;
   trace)
     swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
