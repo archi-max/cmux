@@ -43,7 +43,8 @@
 // (the debugger's docs say these too): z is x in every operator but ===, selects,
 // concatenation, unary plus and the display; the whole expression is one context with no
 // assignment target; no $signed / $unsigned, / % ** ==? !=?, no function calls, no memories or
-// struct members.
+// struct members. `$` names ($a0, $x5, $pc) are names the env resolves (the machine state), and
+// $mem8/$mem16/$mem32/$mem64(addr) read memory through env.memory(bytes, addressValue).
 (function (root) {
   'use strict';
   const MAX_TEXT = 1000;
@@ -160,7 +161,12 @@
         tokens.push({ t: 'id', at, name: text.slice(i, j) });
         i = j;
       } else if (c === '$') {
-        fail('unsupported', at);
+        // Machine-state names ($a0, $x5, $pc, $mstatus) and $mem8/16/32/64(addr): the env resolves them.
+        let j = i + 1;
+        while (j < n && /[A-Za-z0-9_]/.test(text[j])) { j++; }
+        if (j === i + 1 || !/[A-Za-z_]/.test(text[i + 1])) { fail('syntax', at); }
+        tokens.push({ t: 'id', at, name: text.slice(i, j), sys: true });
+        i = j;
       } else if (/[0-9]/.test(c)) {
         let j = i;
         while (j < n && /[0-9_]/.test(text[j])) { j++; }
@@ -245,6 +251,20 @@
       const tok = peek();
       if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v, fill: tok.fill || null, signed: !!tok.signed, unsized: !!tok.unsized }; }
       if (tok.t === 'fill') { k++; return { t: 'fill', at: tok.at, bit: tok.bit }; }
+      if (tok.t === 'id' && tok.sys) {
+        k++;
+        const mem = /^\$mem(8|16|32|64)$/.exec(tok.name);
+        if (isOp(peek(), '(')) {
+          if (!mem) { fail('unsupported', tok.at); }
+          k++;
+          const e = expr(0);
+          expect(')');
+          return { t: 'mem', at: tok.at, bytes: Number(mem[1]) / 8, e };
+        }
+        if (mem || /^\$(signed|unsigned)$/.test(tok.name)) { fail('syntax', peek().at); }
+        if (isOp(peek(), '.')) { fail('syntax', peek().at); }
+        return { t: 'name', at: tok.at, path: [tok.name] };
+      }
       if (tok.t === 'id') {
         k++;
         const path = [tok.name];
@@ -421,6 +441,7 @@
         case 'lit': w = node.v.w; break;
         case 'fill': w = 1; break;
         case 'name': w = Number(signal(node).width) || 1; break;
+        case 'mem': w = node.bytes * 8; width(node.e); break;
         case 'un': w = ['+', '-', '~'].includes(node.op) ? width(node.e) : 1; break;
         case 'bin':
           if (ARITH.has(node.op) || BITWISE.has(node.op)) { w = Math.max(width(node.l), width(node.r)); } else if (SHIFT.has(node.op)) { w = width(node.l); width(node.r); } else { width(node.l); width(node.r); w = 1; }
@@ -509,6 +530,12 @@
           return node.bit === '0' ? val(w, 0n, 0n) : (node.bit === '1' ? val(w, m, 0n) : (node.bit === 'x' ? allX(w) : val(w, 0n, m)));
         }
         case 'name': return extend(signal(node).value, w, s);
+        case 'mem': {
+          // env.memory(bytes, address) -> { value } | null: memory at the evaluation time.
+          const m = typeof env.memory === 'function' ? env.memory(node.bytes, ev(node.e, width(node.e), signed(node.e))) : null;
+          if (!m) { fail('unknownName', node.at); }
+          return extend(m.value, w, s);
+        }
         case 'un': {
           // Unary plus is the operand itself (slang: OP(Plus, v)); minus of any unknown is all x.
           if (node.op === '+') { return ev(node.e, w, s); }
