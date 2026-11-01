@@ -193,8 +193,9 @@
       },
       search(query, scope) { return call('searchnetlist', { query, scopeId: scope ? scope.id : 0xFFFFFFFF }); },
       valuesAtTime(time, paths) { return call('getvaluesattime', { time, paths: paths.join(' ') }); },
-      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js).
-      signalChanges(v) { return call('getsignalchanges', { signalId: v.signalId }); },
+      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js, cmux-fsm.js);
+      // null for one with more than maxChanges changes, which is not decoded.
+      signalChanges(v, maxChanges) { return call('getsignalchanges', { signalId: v.signalId, maxChanges }); },
       // A 1-bit variable's rising-edge times (Float64Array), found in the worker.
       signalPosedges(v, maxEdges) { return call('getsignalposedges', { signalId: v.signalId, maxEdges }); },
       // Ends the worker and settles every call still waiting on it.
@@ -521,7 +522,11 @@
     // The viewer posts ready from its unload too: from then on, during a
     // reload, it shows nothing of the old view.
     ready: () => { webviewReady = true; window.cmuxCommands.frameUnloaded(); sendInit(); },
-    initialized: () => { toNative({ type: 'opened', top: doc.netlist.map((t) => t.name) }); },
+    initialized: () => {
+      toNative({ type: 'opened', top: doc.netlist.map((t) => t.name) });
+      // After cmux has heard of it: an open pane asks cmux again (cmux-fsm.js).
+      hostApi.openedListeners.forEach((listener) => { try { listener(); } catch (error) { hostApi.log(error); } });
+    },
     // Until the backend has opened (doc.metadata), a request is the old
     // viewer's: the reloaded one asks again for what it shows.
     fetchDataFromFile: async (m) => { if (dataReady()) { await backend.fetch(m.requestList); } },
@@ -845,6 +850,8 @@
     get currentBackend() { return backend; },
     viewerEventListeners: [],
     contextListeners: [],
+    // Called on each open and reload, once the viewer has the new file (after cmux's `opened`).
+    openedListeners: [],
     quietEvents: 0,
     isTransientGroup: null,
     topLevelIndexOutsideTransient: null,

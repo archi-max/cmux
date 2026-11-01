@@ -170,7 +170,8 @@ keybindings, netlist view, settings, sessions and terminal links).
   scope shows once, and goes back to Locals when that row is removed.
   `wellen-worker.js` gains `getsignalchanges`, which keeps a signal's data in
   the page (decoding wellen's LZ4 frame, written from the LZ4 format
-  description) instead of sending it to the viewer frame; `host.js` exposes a
+  description) instead of sending it to the viewer frame, and answers null
+  past a change cap; `host.js` exposes a
   variable's changes and VaporView's events to it; `cmux-commands.js` leaves
   the Locals group out of sessions and undo.
 - `cmux-enum.js` (new, written for cmux): SystemVerilog enum member names.
