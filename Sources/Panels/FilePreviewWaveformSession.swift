@@ -630,6 +630,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         Task { [weak self] in
             do {
                 guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
+                try WaveformValueAliasFiles.checkRemotePath(path)
                 // Too big to be an alias file: nothing is downloaded.
                 let stamp = try await provider.fileStamp(path: path)
                 guard stamp.size <= Int64(Self.maxSessionFileSize) else { throw CocoaError(.fileReadTooLarge) }
