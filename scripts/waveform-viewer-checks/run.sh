@@ -16,6 +16,9 @@
 #                                        WaveformEnumLink.swift on a scripted
 #                                        session): saves, slang's reports, reloads,
 #                                        refused reads; and its call sites
+#   ./run.sh fsm                         the state machine view (cmux-fsm.js): the
+#                                        graph, the state at the marker, jumps to
+#                                        a transition's next occurrence, counts
 #   ./run.sh debugger                    the waveform debugger (cmux-debugger.js):
 #                                        clock, stepping, play, Locals, highlights
 #   ./run.sh debugger-fsdb <ssh-host> <remote.fsdb> <scope.path>
@@ -80,6 +83,12 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/enum"
     "$OUT/enum" "$ASSETS" "$HERE/enum/fsm.vcd" "$OUT/enum.png" | tee "$OUT/enum.log"
     grep -q '^ENUM CHECKS PASSED' "$OUT/enum.log"
+    ;;
+  fsm)
+    swiftc -O "$HERE/fsm/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/fsm"
+    "$OUT/fsm" "$ASSETS" "$HERE/fsm/fsm.vcd" "$OUT/fsm.png" | tee "$OUT/fsm.log"
+    grep -q '^FSM CHECKS PASSED' "$OUT/fsm.log"
     ;;
   link)
     swiftc -O "$HERE/link/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
