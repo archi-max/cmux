@@ -17,7 +17,8 @@
 //   addSignalByName(path, msb, lsb, quiet)   -> whether it found the signal
 //   sessionSaved(), applySessionFile({ text, path, error }), sessionFailed({ message })   replies from cmux
 //   setSessionFile({ path, text })   <dump>.json, which cmux reads after the file opens
-//   applyValueAliasFile({ text, path, error })   the file cmux read for Load Value Alias File...
+//   applyValueAliasFile({ text, path, key, sha256, error })   the file cmux read for Load Value Alias File...
+//   valueAliasFilesRead({ id, files })   alias files a session names, read again (readValueAliases)
 
 (function () {
   const host = () => window.cmuxWaveform.host;
@@ -457,39 +458,53 @@
   let dirty = false;
 
   // ---- value aliases ----
-  // The alias files loaded into this viewer, [{ fileName, text }] (one per name,
-  // the latest kept). The tables live in the viewer frame; cmux keeps the files
-  // so a saved session, cmux's kept state and a restore bring them back.
+  // The alias files loaded into this viewer, [{ key, path, fileName, text, sha256 }],
+  // one per key (the full path on this Mac, or host and path for an SSH host;
+  // cmux names it), the latest kept. The tables live in the viewer frame; cmux
+  // keeps the files so a saved session, cmux's kept state and a restore bring
+  // them back. Sessions embed at most ALIAS_EMBED_BYTES of their text; the rest
+  // are named by key, path and SHA-256, and cmux reads them again (readValueAliases).
   let aliasFiles = [];
-  // Loads posted and not answered yet, in order: { fileName, text, user }.
+  // Loads posted and not answered yet: { key, path, fileName, text, sha256, user }.
   let aliasLoads = [];
+  // readValueAliases requests not answered yet, by id (one per restore).
+  let aliasReads = new Map();
+  let aliasReadId = 0;
   const MAX_ALIAS_FILES = 16;
   const MAX_ALIAS_TEXT = 8 * 1024 * 1024;
+  const ALIAS_EMBED_BYTES = 256 * 1024;
+  const SHA256 = /^[0-9a-f]{64}$/;
 
-  function postAliasFile(fileName, text, user) {
-    aliasLoads.push({ fileName, text, user });
-    // A file's own signal bindings apply when the user loads it, not on a restore.
-    host().toWebview({ command: 'loadValueAliases', fileName, text, apply: user });
+  const baseName = (path) => String(path || '').split('/').pop() || 'alias';
+
+  function postAliasFile(file, user) {
+    aliasLoads.push(Object.assign({}, file, { user }));
+    // The viewer names the file in its warnings and picks the syntax by its
+    // extension; the key ends with the path. A file's own signal bindings apply
+    // when the user loads it, not on a restore.
+    host().toWebview({ command: 'loadValueAliases', fileName: file.key, text: file.text, apply: user });
   }
 
-  function keepAliasFile(fileName, text) {
-    aliasFiles = aliasFiles.filter((f) => f.fileName !== fileName).concat([{ fileName, text }]).slice(-MAX_ALIAS_FILES);
+  function keepAliasFile(file) {
+    const kept = { key: file.key, path: file.path, fileName: file.fileName, text: file.text, sha256: file.sha256 };
+    aliasFiles = aliasFiles.filter((f) => f.key !== file.key).concat([kept]).slice(-MAX_ALIAS_FILES);
   }
 
-  // cmux read the file the user picked (or couldn't).
-  function applyValueAliasFile({ text, path, error } = {}) {
-    const fileName = String(path || '').split('/').pop() || 'alias';
+  // cmux read the file the user picked (or couldn't): { text, path, key, sha256 } or { path, error }.
+  function applyValueAliasFile({ text, path, key, sha256, error } = {}) {
+    const fileName = baseName(path);
     if (error || typeof text !== 'string') {
       ui().toast(format(S().messageValueAliasLoadFailed, error || fileName), 'error');
       return;
     }
-    postAliasFile(fileName, text, true);
+    postAliasFile({ key: String(key || path || fileName), path: String(path || ''), fileName, text,
+      sha256: SHA256.test(sha256 || '') ? sha256 : null }, true);
   }
 
-  // The viewer's answer to loadValueAliases (extra_formats.ts).
+  // The viewer's answer to loadValueAliases (extra_formats.ts); it names the file by key.
   function valueAliasesLoaded(result) {
     const r = result && typeof result === 'object' ? result : {};
-    const index = aliasLoads.findIndex((l) => l.fileName === r.fileName);
+    const index = aliasLoads.findIndex((l) => l.key === r.fileName);
     const load = index >= 0 ? aliasLoads.splice(index, 1)[0] : null;
     if (!load) { return; }
     const tables = Array.isArray(r.tables) ? r.tables : [];
@@ -497,25 +512,79 @@
       if (load.user) { ui().toast(format(S().messageValueAliasLoadFailed, r.error || S().messageValueAliasNoTables), 'error'); }
       return;
     }
-    keepAliasFile(load.fileName, load.text);
+    keepAliasFile(load);
     const warnings = Array.isArray(r.warnings) ? r.warnings : [];
     if (load.user && warnings.length) {
-      host().log('alias file ' + load.fileName + ': ' + warnings.join('; '));
+      host().log('alias file ' + load.key + ': ' + warnings.join('; '));
       ui().toast(format(S().messageValueAliasWarnings, load.fileName, warnings[0]), 'warning');
     }
     if (load.user) { setDirty(true); }
     scheduleSessionSnapshot();
   }
 
-  // A session's files, as saved (cmuxValueAliases): only well-formed entries.
-  function sessionAliasFiles(session) {
-    const list = session && Array.isArray(session.cmuxValueAliases) ? session.cmuxValueAliases : [];
-    return list.filter((f) => f && typeof f.fileName === 'string' && typeof f.text === 'string' && f.text.length <= MAX_ALIAS_TEXT)
-      .slice(-MAX_ALIAS_FILES);
+  // The files as a session or cmux's kept state holds them: every file by key,
+  // path and hash, with its text while the embedded total stays within `budget`
+  // (in file order; a file that doesn't fit is named only).
+  function aliasEntries(budget) {
+    let left = budget;
+    return aliasFiles.map((f) => {
+      const entry = { key: f.key, path: f.path, fileName: f.fileName, sha256: f.sha256 || undefined };
+      const size = budget === Infinity ? 0 : new TextEncoder().encode(f.text).length;
+      // A file without a hash can't be read back, so it is embedded whatever its size.
+      if (size <= left || !f.sha256) { entry.text = f.text; left -= size; }
+      return entry;
+    });
   }
 
-  function withAliasFiles(state) {
-    return state && aliasFiles.length ? Object.assign(state, { cmuxValueAliases: aliasFiles.slice() }) : state;
+  function withAliasFiles(state, budget = ALIAS_EMBED_BYTES) {
+    return state && aliasFiles.length ? Object.assign(state, { cmuxValueAliases: aliasEntries(budget) }) : state;
+  }
+
+  // A session's files (cmuxValueAliases): only well-formed entries. Older
+  // sessions name a file by fileName only.
+  function sessionAliasFiles(session) {
+    const list = session && Array.isArray(session.cmuxValueAliases) ? session.cmuxValueAliases : [];
+    return list.map((f) => {
+      if (!f || typeof f !== 'object') { return null; }
+      const text = typeof f.text === 'string' && f.text.length <= MAX_ALIAS_TEXT ? f.text : null;
+      const path = typeof f.path === 'string' ? f.path : '';
+      const key = typeof f.key === 'string' && f.key ? f.key : (path || (typeof f.fileName === 'string' ? f.fileName : ''));
+      const sha256 = typeof f.sha256 === 'string' && SHA256.test(f.sha256) ? f.sha256 : null;
+      if (!key || (text === null && (!sha256 || !path))) { return null; }
+      return { key, path, fileName: typeof f.fileName === 'string' && f.fileName ? f.fileName : baseName(path || key), text, sha256 };
+    }).filter(Boolean).slice(-MAX_ALIAS_FILES);
+  }
+
+  // Loads a session's files: the embedded ones now, the others once cmux has
+  // read them again (valueAliasFilesRead). Rows with a table that isn't loaded
+  // yet show hex until it is.
+  function loadSessionAliasFiles(session) {
+    const files = sessionAliasFiles(session);
+    const toRead = [];
+    for (const f of files) {
+      if (f.text !== null) { postAliasFile(f, false); } else { toRead.push(f); }
+    }
+    if (!toRead.length) { return; }
+    const id = ++aliasReadId;
+    aliasReads.set(id, { generation: host().loadGeneration, files: toRead });
+    host().toNative({ type: 'readValueAliases', id, files: toRead.map((f) => ({ key: f.key, path: f.path, sha256: f.sha256 })) });
+  }
+
+  // cmux's answer to readValueAliases: { id, files: [{ key, path, text } | { key, path, error }] }.
+  function valueAliasFilesRead({ id, files } = {}) {
+    const read = aliasReads.get(id);
+    aliasReads.delete(id);
+    // An answer for a viewer a reload or open has replaced is dropped.
+    if (!read || read.generation !== host().loadGeneration) { return; }
+    const answers = new Map((Array.isArray(files) ? files : []).filter((a) => a && typeof a.key === 'string').map((a) => [a.key, a]));
+    for (const f of read.files) {
+      const a = answers.get(f.key);
+      if (a && typeof a.text === 'string' && a.text.length <= MAX_ALIAS_TEXT) {
+        postAliasFile(Object.assign({}, f, { text: a.text }), false);
+      } else {
+        ui().toast(format(S().messageValueAliasRestoreFailed, f.path || f.key, (a && a.error) || S().messageValueAliasNoTables), 'warning');
+      }
+    }
   }
 
   // The viewer's loaded alias tables (window.vaporviewValueFormats in the frame).
@@ -671,7 +740,7 @@
       defaultPixelTime: w.defaultPixelTime,
       displayedSignals: withoutLocals(w.displayedSignals || []),
       // cmux addition: the value alias files the rows' alias formats need.
-      ...(aliasFiles.length ? { cmuxValueAliases: aliasFiles.slice() } : {}),
+      ...(aliasFiles.length ? { cmuxValueAliases: aliasEntries(ALIAS_EMBED_BYTES) } : {}),
     };
   }
 
@@ -779,7 +848,7 @@
     if (stateChangeType !== StateChangeType.Restore) { restorePending = false; }
     // The alias tables first: the viewer handles messages in order, so the
     // rows' alias formats find them.
-    for (const f of sessionAliasFiles(session)) { postAliasFile(f.fileName, f.text, false); }
+    loadSessionAliasFiles(session);
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
       extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
       altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
@@ -828,7 +897,7 @@
       sessionFileOffered = true;
       restorePending = true;
       // The alias files too, in case the reloaded frame lost its tables.
-      const state = withAliasFiles(Object.assign(contextSession(kept), { selectedSignal: kept.cmuxSelected || undefined }));
+      const state = withAliasFiles(Object.assign(contextSession(kept), { selectedSignal: kept.cmuxSelected || undefined }), Infinity);
       if (await applySession(state, StateChangeType.Restore)) { appliedRestoreConfig = config; }
       return;
     }
@@ -837,7 +906,7 @@
     if (m.state && !afterUnload) {
       sessionFileOffered = true;
       restorePending = true;
-      if (await applySession(withAliasFiles(Object.assign({}, m.state)), StateChangeType.Restore)) { appliedRestoreConfig = config; }
+      if (await applySession(withAliasFiles(Object.assign({}, m.state), Infinity), StateChangeType.Restore)) { appliedRestoreConfig = config; }
       return;
     }
     if (config.restore && config.restore.state) {
@@ -1391,6 +1460,7 @@
     // A new viewer frame has no tables.
     aliasFiles = [];
     aliasLoads = [];
+    aliasReads = new Map();
     resetApplying();
     pendingReload = false;
     setDirty(false);
@@ -1460,6 +1530,7 @@
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
     sessionFailed: ({ message }) => ui().toast(format(S().messageSessionSaveFailed, message), 'error'),
     applyValueAliasFile,
+    valueAliasFilesRead,
     applySessionFile: ({ text, path, error }) => (error
       ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path, true)),
     sessionSnapshot: () => ({ state: plainJSON(withAliasFiles(contextSession(webviewContext))), dirty }),

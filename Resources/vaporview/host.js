@@ -26,13 +26,15 @@
 //   runCommand({ command, args })  a VaporView command id (cmux-commands.js)
 //   sessionSaved() | sessionFailed({ message }) | applySessionFile({ text, path, error })
 //   setSessionFile({ path, text })   <dump>.json, offered per promptLoadSettings
-//   applyValueAliasFile({ text, path, error })   the file read for Load Value Alias File...
+//   applyValueAliasFile({ text, path, key, sha256, error })   the file read for Load Value Alias File...
+//   valueAliasFilesRead({ id, files })   alias files a session names, read again
 // and hears back on window.webkit.messageHandlers.cmuxWaveform:
 //   { type: 'ready' } | { type: 'opened', top } | { type: 'error', message }
 //   { type: 'copy', text } | { type: 'log', message } | { type: 'openReadme' }
 //   { type: 'settings', values } | { type: 'sessionState', state, dirty }
 //   { type: 'saveSession', text, suggestedName } | { type: 'loadSession' } | { type: 'reload' }
 //   { type: 'loadValueAliases' }   pick and read an alias file, answered with applyValueAliasFile
+//   { type: 'readValueAliases', id, files: [{ key, path, sha256 }] }   answered with valueAliasFilesRead
 //   { type: 'keyState', viewerFocused, blocked }   which of VaporView's keys the page will run
 //   { type: 'event', eventType, eventData }   VaporView's API events (markerSet, signalSelect, ...)
 
@@ -1208,6 +1210,7 @@
     sessionFailed: (m) => window.cmuxCommands.sessionFailed(m),
     applySessionFile: (m) => window.cmuxCommands.applySessionFile(m),
     applyValueAliasFile: (m) => window.cmuxCommands.applyValueAliasFile(m),
+    valueAliasFilesRead: (m) => window.cmuxCommands.valueAliasFilesRead(m),
     setSessionFile: (m) => window.cmuxCommands.setSessionFile(m) };
   // Fixed before the viewer frame loads, so a script in it can't swap the link cmux trusts.
   Object.defineProperty(window.cmuxWaveform, 'link', { value: link, writable: false, configurable: false, enumerable: true });
