@@ -511,6 +511,19 @@ From esbuild's metafile for the production `webview.js`:
 `codicon.css` and `codicon.ttf` are bundled unmodified in
 `Resources/vaporview/codicons/` with both license files.
 
+### slang (the waveform debugger's expression semantics)
+
+- **Version:** master, commit `cd5a3d2` (2026-10-31; includes `0f89ca187`, unsized x/z literal extension)
+- **License:** MIT License (notice repeated in the file header)
+- **Copyright:** Copyright (c) 2015-2026 Michael Popoloski
+- **Source:** https://github.com/MikePopoloski/slang/tree/cd5a3d2
+
+`Resources/vaporview/cmux-expr.js` (Evaluate, watches and condition
+breakpoints) follows slang's constant evaluation: the four-state operator
+results of `SVInt` (`source/numeric/SVInt.cpp`) and the width and signedness
+rules of expression type propagation (`source/ast/expressions/`). It is a
+JavaScript reimplementation of those semantics; no slang code is bundled.
+
 ### FSDB helper sources (`Resources/vaporview/fsdb-helper/`)
 
 cmux uploads these to an SSH host the first time an FSDB file is opened there

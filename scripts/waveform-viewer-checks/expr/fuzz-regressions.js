@@ -1,7 +1,8 @@
 // VCS differential-fuzz regressions for cmux-expr.js (run.sh expr): cases from
-// scripts/waveform-viewer-checks/expr/fuzz.js (seeds 1-5) that the evaluator before the slang port
-// got wrong, each with the signals it reads and the bits VCS W-2024.09 printed for it. Expected
-// values only; regenerate with fuzz.js gen/check.
+// scripts/waveform-viewer-checks/expr/fuzz.js that the evaluator got wrong (seeds 1-5, before the
+// slang port; seeds 7-8, ?: with an unknown condition and z in both arms), each with the signals
+// it reads and the bits VCS W-2024.09 printed for it. Expected values only; regenerate with
+// fuzz.js gen/check.
 /* exported FUZZ_REGRESSIONS */
 const FUZZ_REGRESSIONS = [
   {"seed":1,"i":95,"text":"+ s4","want":"0001xz0101110z1101z0x11z000z0xx1","signals":[{"name":"s4","width":32,"msb":37,"lsb":6,"value":"0001xz0101110z1101z0x11z000z0xx1"}]},
@@ -143,4 +144,6 @@ const FUZZ_REGRESSIONS = [
   {"seed":5,"i":3631,"text":"+ 41'b10110001110111111100001z01110z01111101111","want":"10110001110111111100001z01110z01111101111","signals":[]},
   {"seed":5,"i":3767,"text":"s2[-1 +: 2]","want":"0x","signals":[{"name":"s2","width":2,"msb":1,"lsb":0,"value":"00"}]},
   {"seed":5,"i":3786,"text":"s4[-2 +: 3]","want":"xx1","signals":[{"name":"s4","width":25,"msb":0,"lsb":24,"value":"11x00z0011111x01x10x01z1x"}]},
+  {"seed":7,"i":2440,"text":"{((s8 ^~ ({5'h1e}))), ((({s3, s8}) - (s9[13:4] == s3[2 -: 1])) ? {s8} : s8)}","want":"1x100x0x1110000011100010x010011110011x1x1001xx000000000111011010x0xx01011010x011x1x0001111100011101x101100001100x0x0110xx111111111000100101x1xx1001100","signals":[{"name":"s3","width":3,"msb":2,"lsb":0,"value":"011"},{"name":"s8","width":75,"msb":74,"lsb":0,"value":"0z011z1z0001111100011101z101100001100z0x0110zz111111111000100101x1zz1001100"},{"name":"s9","width":68,"msb":67,"lsb":0,"value":"00111x000x00111011100010100x0111110100111101010111111x0000x00111x000"}]},
+  {"seed":8,"i":3593,"text":"({(({s2, (({s3, ((13'd7291 & 11'h650))}))})), s4, ((12 > s5[11 -: 5]) ^~ (s1 * s0[3]) ? s8 : s8)})","want":"11z111010100100010100000110000110011100000101001111110010010101101111001001010101000110101001111xxx10101x00101001001001110x0xxx11x101x101110011x00x0110x1000001x11111","signals":[{"name":"s0","width":2,"msb":3,"lsb":2,"value":"10"},{"name":"s1","width":7,"msb":6,"lsb":0,"value":"zz01xz1"},{"name":"s2","width":7,"msb":6,"lsb":0,"value":"11z1110"},{"name":"s3","width":3,"msb":2,"lsb":0,"value":"101"},{"name":"s4","width":70,"msb":69,"lsb":0,"value":"0110000110011100000101001111110010010101101111001001010101000110101001"},{"name":"s5","width":19,"msb":18,"lsb":0,"value":"1x0100z1011010110x0"},{"name":"s8","width":72,"msb":71,"lsb":0,"value":"111zxz10101x00101001001001110x0xzz11z101z101110011x00x0110z1000001z11111"}]},
 ];

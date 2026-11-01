@@ -11,6 +11,11 @@
 // widths 1-130 with descending, offset and ascending ranges, sized and unsized literals (x/z
 // leading too), selects, concatenation and replication. Each case is `$display("%0d %b", i, e)`,
 // so both sides print the expression at its self-determined width.
+//
+// Count a mismatch only after `repro` shows it alone: VCS W-2024.09 printed a different value for
+// a few cases in a 4000-case file than for the same case compiled by itself (Icarus and the case
+// alone agreed). VCS also gives 0 for some `a == b + c` with unknown bits in b, where the LRM,
+// slang and Icarus give x (b + c is all x); cmux-expr keeps the LRM's x.
 'use strict';
 const fs = require('fs');
 const path = require('path');
