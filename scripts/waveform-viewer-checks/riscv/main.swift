@@ -545,6 +545,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
 
     await keyOnlyChecks(big: big, capped: capped)
+    boundedReadChecks()
   }
 
   // Key-only restore: cmux reads only what its registry recorded.
@@ -560,17 +561,39 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let h = String(repeating: "a", count: 64)
     let sessionJSON: [String: Any] = ["displayedSignals": [], "cmuxValueAliases": [
       ["key": "/m/local.alias", "path": "/elsewhere/x.alias", "sha256": h],
-      ["key": "hostA:/r/remote.alias", "path": "/r/remote.alias", "sha256": h],
-      ["key": "hostB:/r/other.alias", "sha256": h],
+      ["key": "ssh://ews-01:22/r/remote.alias", "path": "/r/remote.alias", "sha256": h],
+      ["key": "ssh://other-host/r/other.alias", "sha256": h],
       ["key": "relative.alias", "sha256": h],
       ["key": "/m/nohash.alias", "text": "alias t\nendalias\n"],
       ["key": "/m/badhash.alias", "sha256": "ABC"],
     ]]
-    r.noteSession(text: String(data: try! JSONSerialization.data(withJSONObject: sessionJSON), encoding: .utf8)!, remoteIdentity: "hostA")
+    // A real Files identity: destination, port, identity file, ssh options (\u{1f}-joined).
+    let identity = "ssh:ews-01|22|/Users/u/.ssh/id_ed25519|ProxyJump=bastion:2222\u{1f}ServerAliveInterval=30"
+    r.noteSession(text: String(data: try! JSONSerialization.data(withJSONObject: sessionJSON), encoding: .utf8)!, remoteIdentity: identity)
     expect(r.record(for: "/m/local.alias") == .init(location: .local("/m/local.alias"), sha256: h),
            "a session's local entry is read from its key, not its path field: \(String(describing: r.record(for: "/m/local.alias")))")
-    expect(r.record(for: "hostA:/r/remote.alias")?.location == .remote("/r/remote.alias"), "the open file's host: remote")
-    expect(r.record(for: "hostB:/r/other.alias")?.location == .otherHost("/r/other.alias"), "another host's file: other host")
+    expect(r.record(for: "ssh://ews-01:22/r/remote.alias")?.location == .remote("/r/remote.alias"), "the open file's host: remote")
+    expect(r.record(for: "ssh://other-host/r/other.alias")?.location == .otherHost("/r/other.alias"), "another host's file: other host")
+    // Remote keys: destination and port only, never the identity file or ssh options.
+    let remote = WaveformValueAliasFiles.remoteKey(identity: identity, path: "/r/a.alias")
+    expect(remote == "ssh://ews-01:22/r/a.alias", "a remote key is ssh://<dest>:<port><path>: \(remote)")
+    expect(!remote.contains(".ssh") && !remote.contains("ProxyJump") && !remote.contains("|"), "and carries no identity file or ssh options")
+    let otherKey = "ssh:ews-01|22|/Users/u/.ssh/other_key|"
+    expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: otherKey) == .remote("/r/a.alias"),
+           "the same host with another identity file or options is the same host")
+    expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:ews-02|22||") == .otherHost("/r/a.alias")
+           && WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:ews-01|2222||") == .otherHost("/r/a.alias"),
+           "another destination or port is another host")
+    expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: nil) == .otherHost("/r/a.alias"),
+           "an SSH key in a viewer on this Mac is another host")
+    expect(WaveformValueAliasFiles.remoteKey(identity: "ssh:ews-01||||", path: "/r/a.alias") == "ssh://ews-01/r/a.alias",
+           "no port: ssh://<dest><path>")
+    let vm = WaveformValueAliasFiles.remoteKey(identity: "vm:abc|/secret/thing", path: "/p")
+    expect(vm.hasPrefix("ssh://id-") && !vm.contains("secret") && WaveformValueAliasFiles.location(ofKey: vm, remoteIdentity: "vm:abc|/secret/thing") == .remote("/p"),
+           "another kind of identity is named by its hash: \(vm)")
+    expect(WaveformValueAliasFiles.location(ofKey: "ssh:ews-01|22|/k|:/r/a.alias", remoteIdentity: identity) == nil
+           && WaveformValueAliasFiles.location(ofKey: "ssh:///r/a.alias", remoteIdentity: identity) == nil,
+           "a key in another shape is not recorded")
     expect(r.record(for: "relative.alias") == nil && r.record(for: "/m/nohash.alias") == nil && r.record(for: "/m/badhash.alias") == nil,
            "entries without a path key or a well-formed hash are not recorded")
     expect(r.count == 3, "three recorded: \(r.count)")
@@ -636,7 +659,59 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            && (asked[0][1] as? [String]).map(Set.init) == Set(["/big/big.alias", "/secret/key.alias"]),
            "the page asks with keys only: \(asked)")
     let toasts = forged["toasts"] as? [String] ?? []
-    expect(toasts.count == 1 && toasts[0].contains("key.alias"), "the unknown key is one toast: \(toasts)")
+    let notRecorded = strings["messageValueAliasNotRecorded"] as? String ?? "?"
+    expect(toasts.count == 1 && toasts[0].contains("key.alias") && toasts[0].contains(notRecorded),
+           "the unknown key is one toast saying cmux has no record of it: \(toasts)")
+
+    // A session file cmux read naming another host's file: recorded as such,
+    // and its own toast (not read).
+    guard var otherSession = (try? JSONSerialization.jsonObject(with: Data((capped["text"] as? String ?? "{}").utf8))) as? [String: Any] else {
+      expect(false, "the capped session parses")
+      return
+    }
+    otherSession["cmuxValueAliases"] = (otherSession["cmuxValueAliases"] as? [[String: Any]] ?? [])
+      + [["key": "ssh://other-host:22/r/x.alias", "path": "/r/x.alias", "fileName": "x.alias", "sha256": String(repeating: "b", count: 64)]]
+    let otherText = String(data: try! JSONSerialization.data(withJSONObject: otherSession), encoding: .utf8)!
+    reads = []
+    await open()
+    let otherHost = await call("""
+      document.querySelectorAll('.cmux-toast').forEach((t) => { t.dataset.seen = '1'; });
+      \(sessionFileJS(otherText));
+      await sleep(2000);
+      R.toasts = [...document.querySelectorAll('.cmux-toast:not([data-seen])')].map((t) => t.textContent);
+      R.instr = text('instr');
+      """)
+    let otherToasts = otherHost["toasts"] as? [String] ?? []
+    let otherHostText = String(localized: "filePreview.waveform.valueAlias.otherHost", defaultValue: "The file is on another host.")
+    expect(otherToasts.count == 1 && otherToasts[0].contains("x.alias") && otherToasts[0].contains(otherHostText),
+           "another host's file is one toast saying so: \(otherToasts)")
+    expect(!reads.contains("/r/x.alias") && otherHost["instr"] as? String == "BIG_13", "it is not read, and the rest loads: \(reads)")
+  }
+
+  // Reads are bounded on the file a symlink points to; FIFOs are refused.
+  func boundedReadChecks() {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("riscv-bounded-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let max = 8 * 1024 * 1024
+    let huge = dir.appendingPathComponent("huge.alias"), hugeLink = dir.appendingPathComponent("link.alias")
+    let small = dir.appendingPathComponent("small.alias"), smallLink = dir.appendingPathComponent("small-link.alias")
+    let exact = dir.appendingPathComponent("exact.alias"), fifo = dir.appendingPathComponent("fifo.alias")
+    FileManager.default.createFile(atPath: huge.path, contents: Data(repeating: 0x41, count: 20 * 1024 * 1024))
+    FileManager.default.createFile(atPath: exact.path, contents: Data(repeating: 0x41, count: max))
+    try? "alias t\nendalias\n".write(to: small, atomically: true, encoding: .utf8)
+    try? FileManager.default.createSymbolicLink(at: hugeLink, withDestinationURL: huge)
+    try? FileManager.default.createSymbolicLink(at: smallLink, withDestinationURL: small)
+    mkfifo(fifo.path, 0o600)
+    func refused(_ url: URL) -> String? {
+      do { _ = try WaveformValueAliasFiles.readText(at: url, maxBytes: max); return nil } catch { return "\(error)" }
+    }
+    expect(refused(hugeLink) != nil, "a symlink to a 20 MiB file is refused: \(refused(hugeLink) ?? "read")")
+    expect(refused(huge) != nil, "so is the 20 MiB file itself")
+    expect((try? WaveformValueAliasFiles.readText(at: smallLink, maxBytes: max)) == "alias t\nendalias\n", "a symlink to a small file is read")
+    expect((try? WaveformValueAliasFiles.readText(at: exact, maxBytes: max))?.utf8.count == max, "a file of exactly the limit is read")
+    expect(refused(fifo) != nil, "a FIFO is refused without blocking")
+    expect(refused(dir) != nil, "so is a folder")
   }
 
   /// cmux read the session file `text` (loadSession): it records the file's
@@ -724,5 +799,12 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { h.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 120) { print("timeout"); exit(1) }
+// The whole run's limit, scaled by the machine's load (the checks sleep in
+// real time and a loaded Mac runs them slower): 240 s, plus 4 s per point of
+// one-minute load average, at most 840 s (run.sh callers wrap it in 900 s).
+var loads = [Double](repeating: 0, count: 3)
+let load = getloadavg(&loads, 3) > 0 ? loads[0] : 0
+let limit = min(840.0, 240.0 + 4.0 * load)
+print("timeout limit \(Int(limit)) s at load \(Int(load))")
+DispatchQueue.main.asyncAfter(deadline: .now() + limit) { print("timeout after \(Int(limit)) s"); exit(1) }
 app.run()
