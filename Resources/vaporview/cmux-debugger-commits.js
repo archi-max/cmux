@@ -311,6 +311,8 @@
     api.onChange((change) => {
       if (change && change.reason === 'ready') { waveform.host.toNative({ type: 'debugger', event: 'commitsReady' }); }
     });
+    // Built before this subscribed (its first build can beat the subscribe): told now.
+    if (typeof api.current === 'function' && api.current()) { waveform.host.toNative({ type: 'debugger', event: 'commitsReady' }); }
   }
   // cmux-machine.js loads after this file.
   if (typeof setTimeout === 'function') { setTimeout(subscribe, 0); }
