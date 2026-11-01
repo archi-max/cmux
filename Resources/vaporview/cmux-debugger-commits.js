@@ -158,8 +158,8 @@
   async function commitsOf(bp, ix, warn) {
     if (bp.kind === 'pc') {
       const table = byPc(ix);
-      let ks = [];
-      for (const pc of bp.pcs) { ks = ks.concat(table.get(Number(BigInt(pc))) || []); }
+      const ks = [];
+      for (const pc of bp.pcs) { for (const k of table.get(Number(BigInt(pc))) || []) { ks.push(k); } }
       return bp.channel === null ? ks : ks.filter((k) => ix.channel[k] === bp.channel);
     }
     if (bp.kind === 'commitText') {
@@ -170,8 +170,9 @@
       const spec = { format: 'riscv', pattern: bp.pattern, caseSensitive: bp.caseSensitive, anyRegisterNames: bp.anyRegisterNames };
       const verdicts = await TB.verdicts('\u0000commits', spec, bits, (text) => warn(format(S().debuggerTextError, label(bp), text)));
       if (!verdicts) { return null; }
-      let ks = [];
-      words.forEach((w, i) => { if (verdicts.get(bits[i])) { ks = ks.concat(table.get(w)); } });
+      // Collected in place: a copy per matching word is quadratic on a broad pattern.
+      const ks = [];
+      words.forEach((w, i) => { if (verdicts.get(bits[i])) { for (const k of table.get(w)) { ks.push(k); } } });
       return ks;
     }
     const api = commitsApi();
@@ -179,8 +180,8 @@
     if (loc.startsWith('mem:')) {
       const addr = BigInt(loc.slice(4, loc.lastIndexOf('/')));
       const size = Number(loc.slice(loc.lastIndexOf('/') + 1));
-      let ks = [];
-      for (let i = 0; i < size; i++) { ks = ks.concat((await api.writesOf({ loc: { addr: Number(addr + BigInt(i)) } })) || []); }
+      const ks = [];
+      for (let i = 0; i < size; i++) { for (const k of (await api.writesOf({ loc: { addr: Number(addr + BigInt(i)) } })) || []) { ks.push(k); } }
       return ks;
     }
     const query = loc.startsWith('csr:') ? { csr: loc.slice(4) } : loc;
