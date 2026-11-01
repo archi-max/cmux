@@ -227,6 +227,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     func documentDidSave(_ text: String) {
         guard let session, let documentURI else { return }
         Task { await session.save(uri: documentURI, text: text) }
+        WaveformEnumLink.documentSaved(session)
     }
 
     private func startSession() async {
@@ -263,11 +264,12 @@ final class FilePreviewLanguageFeatures: NSObject {
         // Subscribe before opening so the first publish is not missed.
         let updates = await session.diagnosticsUpdates()
         let documentPath = context.documentURI.standardizedFileURL.path
-        diagnosticsTask = Task { [weak self] in
+        diagnosticsTask = Task { [weak self, weak session] in
             for await update in updates {
                 guard !Task.isCancelled else { return }
                 guard update.uri.standardizedFileURL.path == documentPath else { continue }
                 self?.applyDiagnostics(update.diagnostics)
+                if let session { WaveformEnumLink.serverReported(session) }
             }
         }
         documentVersion = 1
@@ -941,20 +943,6 @@ final class FilePreviewLanguageFeatures: NSObject {
         inlineTextGeneration += 1
     }
 
-    /// Most text of an edit's lines looked at for enum-type changes.
-    private static let enumEditLineLimit = 4096
-
-    /// An edit of `range` (as it is now) that removed `deleted` characters: enum types are read
-    /// again if it may have changed one (WaveformEnumLink.textEdited); typing elsewhere doesn't.
-    private func textEditedForEnumTypes(_ storage: NSTextStorage, range: NSRange, deleted: Int) {
-        guard let session else { return }
-        let string = storage.string as NSString
-        guard range.location <= string.length else { return }
-        let lines = string.lineRange(for: NSRange(location: range.location, length: min(range.length, string.length - range.location)))
-        let limited = NSRange(location: lines.location, length: min(lines.length, Self.enumEditLineLimit))
-        WaveformEnumLink.textEdited(session, lines: string.substring(with: limited), deleted: deleted)
-    }
-
     /// slang may have new enum types for `session`: editors show the values again.
     static func enumTypesMayHaveChanged(session: LanguageServerSession) {
         for editor in liveInstances.allObjects where editor.session === session && editor.inlineValueOverlay?.hasAnnotations == true {
@@ -1268,7 +1256,6 @@ final class FilePreviewLanguageFeatures: NSObject {
                     guard let self, let storage = notification.object as? NSTextStorage,
                           storage === self.textView?.textStorage, storage.editedMask.contains(.editedCharacters) else { return }
                     self.textChangedForInlineValues(from: storage.editedRange.location)
-                    self.textEditedForEnumTypes(storage, range: storage.editedRange, deleted: max(0, storage.editedRange.length - storage.changeInLength))
                 }
             }
         }
