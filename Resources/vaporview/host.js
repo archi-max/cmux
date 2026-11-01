@@ -681,6 +681,9 @@
     if (generation !== loadGeneration) { return false; }
     doc.metadata = metadata;
     showMessage('', '');
+    // cmux-debugger.js redraws what depended on the old backend (the breakpoint list's hit mark).
+    const debuggerApi = window.cmuxWaveform && window.cmuxWaveform.debugger;
+    if (debuggerApi && debuggerApi.backendChanged) { debuggerApi.backendChanged(); }
     return true;
   }
 
@@ -775,6 +778,7 @@
     // Null when the backend has no faster way than signalChanges.
     signalPosedges: (v, maxEdges) => (dataReady() && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
     get currentBackend() { return backend; },
+    dataReady: () => dataReady(),
     viewerEventListeners: [],
     contextListeners: [],
     quietEvents: 0,

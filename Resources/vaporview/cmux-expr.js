@@ -99,7 +99,9 @@
       if (width === null) { width = Math.max(32, bits.length); } else if (!(width >= 1 && width <= MAX_WIDTH)) { fail('badLiteral', at); }
       const fitted = fit(bits, width);
       if (fitted === null) { fail('badLiteral', at); }
-      tokens.push({ t: 'lit', at, v: fromBits(fitted, width) });
+      // Unsized with a leftmost x or z digit: that x/z fills whatever width the context gives (5.7.1).
+      const fill = size === null && (fitted[0] === 'x' || fitted[0] === 'z') ? fitted[0] : null;
+      tokens.push({ t: 'lit', at, v: fromBits(fitted, width), fill });
     };
     for (;;) {
       space();
@@ -198,7 +200,7 @@
 
     function primary() {
       const tok = peek();
-      if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v }; }
+      if (tok.t === 'lit') { k++; return { t: 'lit', at: tok.at, v: tok.v, fill: tok.fill || null }; }
       if (tok.t === 'fill') { k++; return { t: 'fill', at: tok.at, bit: tok.bit }; }
       if (tok.t === 'id') {
         k++;
@@ -422,7 +424,11 @@
 
     function ev(node, w) {
       switch (node.t) {
-        case 'lit': return ext(node.v, w);
+        case 'lit': {
+          if (!node.fill || w <= node.v.w) { return ext(node.v, w); }
+          const high = maskOf(w) & ~maskOf(node.v.w);
+          return val(w, node.v.a | (node.fill === 'x' ? high : 0n), node.v.b | high);
+        }
         case 'fill': {
           const m = maskOf(w);
           return node.bit === '0' ? val(w, 0n, 0n) : (node.bit === '1' ? val(w, m, 0n) : (node.bit === 'x' ? allX(w) : val(w, 0n, m)));
@@ -588,7 +594,10 @@
     if (radix === 'binary') { return v.w + "'b" + bits; }
     if (radix === 'decimal') {
       if (v.b === 0n) { return v.w + "'d" + v.a.toString(10); }
-      return v.w + "'d" + (/^z+$/.test(bits) ? 'z' : 'x');
+      // As $display's %d: x or z when every bit is, X or Z when some are (x first).
+      if (/^x+$/.test(bits)) { return v.w + "'dx"; }
+      if (/^z+$/.test(bits)) { return v.w + "'dz"; }
+      return v.w + "'d" + (bits.includes('x') ? 'X' : 'Z');
     }
     const per = radix === 'octal' ? 3 : 4;
     let out = '';

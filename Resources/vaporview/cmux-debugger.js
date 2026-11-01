@@ -355,8 +355,19 @@
     const started = ++playStarts;
     const backend = host.currentBackend;
     playStopRequest++;
-    playStop = breakpoints.some((b) => b.enabled) ? await findHit(edges, edges[index], 1) : null;
+    // From before the first edge (or from the start again), a hit landing on edge 0 counts.
+    const from = time === null || time < edges[0] || index !== Math.max(0, edgeIndexAt(edges, time)) ? null : edges[index];
+    const found = breakpoints.some((b) => b.enabled) ? await findHit(edges, from, 1) : null;
+    playStop = found && !found.loading ? found : null;
     if (started !== playStarts || host.currentBackend !== backend) { return publicState(); }
+    if (playStop && playStop.index === index) {
+      // The hit is where play starts: it stops there at once.
+      moveMarker(edges[index]);
+      const stop = playStop;
+      playStop = null;
+      announceHit(stop, edges);
+      return Object.assign(publicState(), { hit: stop.bp.id });
+    }
     playOrigin = { index, at: performance.now() };
     playIndex = index;
     rtlPending = null;
@@ -371,6 +382,7 @@
   function pause() {
     clearTimeout(playTimer);
     playStarts++;
+    playStopRequest++;
     playStop = null;
     if (!state.playing) { return publicState(); }
     state.playing = false;
@@ -985,6 +997,8 @@
       .map((b) => ({ path: b.path.slice(), kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled,
         condition: b.condition || null })) });
     renderBreakpoints();
+    // Play does not stop on a breakpoint just disabled or removed while the next one is searched.
+    if (playStop && (!playStop.bp.enabled || !breakpoints.includes(playStop.bp))) { playStop = null; }
     if (state.playing) { refreshPlayStop(); }
   }
 
@@ -1061,6 +1075,8 @@
   // not in the file are left out: the line's list row says when none are).
   async function hitTimes(bp) {
     const backend = host.currentBackend;
+    // Still loading: nothing to say yet (a warning now would hide the real one later).
+    if (!host.dataReady()) { return undefined; }
     if (bp.timesFor === backend && bp.times) { return bp.times; }
     const paths = bp.kind === 'line' ? bp.paths : [bp.path];
     let times = [];
@@ -1090,7 +1106,7 @@
       found++;
       times = times.concat(timesOf(entry, bp.kind, bp.pattern));
     }
-    if (!found) { return null; }
+    if (!found) { return incomplete ? undefined : null; }
     if (!incomplete) { releaseChanges(paths, bp, backend); }
     times.sort((a, b) => a - b);
     const unique = Float64Array.from(times.filter((t, i) => i === 0 || t !== times[i - 1]));
@@ -1190,8 +1206,10 @@
   async function findHit(edges, from, dir) {
     let best = null;
     const backend = host.currentBackend;
+    let loading = false;
     for (const bp of breakpoints.filter((b) => b.enabled)) {
       const times = await hitTimes(bp);
+      if (times === undefined) { loading = true; continue; }
       if (!times) { continue; }
       const test = await conditionTest(bp, backend);
       if (test === false) { continue; }
@@ -1201,7 +1219,7 @@
         : hit.index > best.index || (hit.index === best.index && hit.time > best.time));
       if (nearer) { best = Object.assign({ bp }, hit); }
     }
-    return best;
+    return best || (loading ? { loading: true } : null);
   }
 
   const timeText = (time) => {
@@ -1221,6 +1239,8 @@
   async function continueRun(query) {
     const q = query || {};
     const dir = Number(q.dir) < 0 ? -1 : 1;
+    // F5 while playing pauses (as a debugger's Pause does); continue again from there.
+    if (q.orTogglePlay && state.playing) { return Object.assign(pause(), { hit: null, reason: 'paused' }); }
     if (!breakpoints.some((b) => b.enabled)) {
       if (q.orTogglePlay && dir > 0) { return Object.assign(await togglePlay(), { hit: null, reason: 'play' }); }
       window.cmuxUI.toast(S().debuggerNoBreakpoints || '', 'info');
@@ -1234,6 +1254,10 @@
     const found = await findHit(edges, markerTime(), dir);
     // A newer continue, or a reload, since: it says what happened.
     if (request !== continueRequest || host.currentBackend !== backend) { return Object.assign(publicState(), { hit: null, reason: 'superseded' }); }
+    if (found && found.loading) {
+      window.cmuxUI.toast(S().debuggerLoading || '', 'info');
+      return Object.assign(publicState(), { hit: null, reason: 'loading' });
+    }
     if (!found) {
       window.cmuxUI.toast((dir > 0 ? S().debuggerNoHitForward : S().debuggerNoHitBack) || '', 'info');
       return Object.assign(publicState(), { hit: null, reason: dir > 0 ? 'end' : 'start' });
@@ -1256,6 +1280,7 @@
     if (!edges) { playStop = null; return; }
     const found = breakpoints.some((b) => b.enabled) ? await findHit(edges, edges[playIndex], 1) : null;
     if (request !== playStopRequest || state.edges !== edges) { return; }
+    if (found && found.loading) { playStop = null; return; }
     // Play went past it while it was searched: search again from where play is (play never moves back).
     if (found && found.index <= playIndex && state.playing) { refreshPlayStop(); return; }
     playStop = found;
@@ -1833,6 +1858,8 @@
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
     breakpoints: () => breakpoints.map(publicBreakpoint),
+    // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
+    backendChanged: () => { renderBreakpoints(); },
     cacheSizes: () => ({ changes: changeCache.size, conditions: conditionCache.size }),
     evaluate, promptEvaluate, promptAddWatch, addWatch, removeWatch, editWatch, restoreWatches, watches: () => watches.map(publicWatch),
   });
