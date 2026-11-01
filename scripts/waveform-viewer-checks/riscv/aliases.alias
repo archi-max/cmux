@@ -1,0 +1,6 @@
+# Value aliases for riscv.vcd (Verdi .alias syntax)
+alias opcode
+  LOAD   8'h03
+  OP_IMM 8'h13
+  STORE  8'h23
+endalias

@@ -56,6 +56,10 @@
 #                                        link misses fall through, settings
 #                                        clamps, no page-named save path,
 #                                        missing-signal rows, double reload
+#   ./run.sh riscv                       Format Values > RISC-V (16 bits and wider)
+#                                        and the value-alias items from the context
+#                                        menu: decoded text, selection, undo, session
+#                                        save/load, reload, restore
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -161,6 +165,12 @@ case "${1:-}" in
       "$ROOT/Packages/macOS/CmuxTerminalCore/Sources/CmuxTerminalCore/LinkRouting/WaveformTerminalLink.swift" \
       -o "$OUT/parity"
     "$OUT/parity" "$ASSETS" "$HERE/parity/parity.vcd"
+    ;;
+  riscv)
+    swiftc -O "$HERE/riscv/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerStrings.swift" -o "$OUT/riscv"
+    "$OUT/riscv" "$ASSETS" "$HERE/riscv/riscv.vcd" "$HERE/riscv/aliases.alias" "$OUT/riscv.png" | grep -v '^\[log\]' | tee "$OUT/riscv.log"
+    grep -q '^RISCV CHECKS PASSED' "$OUT/riscv.log"
     ;;
   *) sed -n "2,$(( $(grep -n '^set -euo' "$0" | cut -d: -f1) - 1 ))p" "$0"; exit 2 ;;
 esac
