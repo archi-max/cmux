@@ -10,6 +10,8 @@ top.busy: 0 throughout (never changes).
 top.pulse: 0, 1 at 41 (lands on 45, cycle 5).
 top.mode [1:0]: 0, 1 at 105, 3 at 205, 2 at 305, 1 at 405 (registered).
 top.late: 0, 1 at 1000 (after the last posedge, 995).
+top.u1.state [3:0]: 0, 3 from 495 (registered); top.u1.go: 0, 1 at 205, 0 at 505 (registered): a
+second instance, for a condition tested in each instance's own scope.
 """
 import sys
 
@@ -31,14 +33,18 @@ at(41, "1&")
 for t, v in [(105, 1), (205, 3), (305, 2), (405, 1)]:
     at(t, f"b{v:b} '")
 at(1000, "1(")
+at(495, "b11 )")
+at(205, "1*")
+at(505, "0*")
 
 def write(name, data_width):
   out = ["$timescale 1ns $end", "$scope module top $end",
        "$var wire 1 ! clk $end", '$var wire 4 " state [3:0] $end', "$var wire 1 # irq $end",
        f"$var wire {data_width} $ data [{data_width - 1}:0] $end", "$var wire 1 % busy $end",
        "$var wire 1 & pulse $end", "$var wire 2 ' mode [1:0] $end", "$var wire 1 ( late $end",
+       "$scope module u1 $end", '$var wire 4 ) state [3:0] $end', "$var wire 1 * go $end", "$upscope $end",
        "$upscope $end", "$enddefinitions $end",
-       "#0", "$dumpvars", "0!", 'b0 "', "0#", "bx $", "0%", "0&", "b0 '", "0(", "$end"]
+       "#0", "$dumpvars", "0!", 'b0 "', "0#", "bx $", "0%", "0&", "b0 '", "0(", "b0 )", "0*", "$end"]
   for t in sorted(events):
     out.append(f"#{t}")
     out += events[t]

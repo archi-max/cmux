@@ -70,6 +70,11 @@ endmodule
     await LB.sync(waveform)
     expect(describe(lastItems()).first == "core.sv:6 [TOP.u_core.limit,TOP.u_core2.limit] false",
            "any instance: both instances' limit; disabled: \(describe(lastItems()))")
+    // verify-bp N4: and each instance's own paths and scope, for a condition tested in each one.
+    let groups = (lastItems().first?["groups"] as? [[String: Any]] ?? []).map {
+        ($0["scope"] as? [String] ?? []).joined(separator: ".") + ":" + ($0["paths"] as? [[String]] ?? []).map { $0.joined(separator: ".") }.joined(separator: ",")
+    }
+    expect(groups == ["TOP.u_core:TOP.u_core.limit", "TOP.u_core2:TOP.u_core2.limit"], "any instance: per-instance groups: \(groups)")
     expect(styles()[lineStart(5, in: source)] == .disabled, "a disabled dot: \(styles())")
 
     // Edits above move them; the label follows.
@@ -119,6 +124,11 @@ endmodule
            "cancel keeps it: \(WaveformDebuggerEvaluate.prompted)")
     LB.pageReported(["key": conditionKey, "enabled": true, "condition": "limit != 0"], waveform: waveform)
     expect(LB.marks[workspace]?.first { $0.id == conditionId }?.condition == "limit != 0", "the page's list changes it")
+    // verify-bp N5: a condition the page can't parse is drawn as an error (the lost style) until fixed.
+    LB.pageReported(["key": conditionKey, "conditionError": true], waveform: waveform)
+    expect(styles()[conditionStart] == .lost, "a condition that does not parse: drawn as an error: \(styles())")
+    LB.pageReported(["key": conditionKey, "conditionError": false], waveform: waveform)
+    expect(styles()[conditionStart] == .conditional, "fixed: a conditional dot again: \(styles())")
     LB.pageReported(["key": conditionKey, "enabled": true, "condition": NSNull()], waveform: waveform)
     expect(LB.marks[workspace]?.first { $0.id == conditionId }?.condition == nil && styles()[conditionStart] == .enabled,
            "and clears it: \(styles())")
@@ -425,6 +435,24 @@ endmodule
     _ = LB.toggle(in: emptyView.languageFeatures!, textView: emptyView, at: 0)
     edit(emptyView, NSRange(location: 0, length: 0), "a")
     expect(lines(emptyView) == [0] && state(empty).first?.contains("ok true") == true, "a new empty file's breakpoint survives typing: \(lines(emptyView)) \(state(empty))")
+
+    // N8: an older manifest's list goes to the first viewer that reports; cleared there, it does not
+    // come back after a relaunch, nor go to an unrelated viewer.
+    let legacy = UUID()
+    LB.restore(try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: Data(
+        #"{"signals":[{"path":["TOP","x"],"kind":"change","enabled":true}],"watches":["x"]}"#.utf8)), in: legacy)
+    let legacyViewer = FilePreviewPanel(workspaceId: legacy, filePath: "/w/a.vcd")
+    let given = LB.signals(for: legacyViewer).map(\.path)
+    LB.signalsReported(["items": []], waveform: legacyViewer)
+    LB.watchesReported(["items": []], waveform: legacyViewer)
+    let relaunched = UUID()
+    let legacyData = try? JSONEncoder().encode(LB.snapshot(of: legacy))
+    LB.restore(legacyData.flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }, in: relaunched)
+    let again = FilePreviewPanel(workspaceId: relaunched, filePath: "/w/a.vcd")
+    let unrelated = FilePreviewPanel(workspaceId: relaunched, filePath: "/w/unrelated.fst")
+    expect(given == [["TOP", "x"]] && LB.signals(for: again).isEmpty && LB.signals(for: unrelated).isEmpty
+           && LB.watches(for: again).isEmpty && LB.watches(for: unrelated).isEmpty,
+           "a cleared older-manifest list stays cleared: \(given) \(LB.signals(for: again).map(\.path)) \(LB.signals(for: unrelated).map(\.path)) \(LB.watches(for: unrelated))")
 }
 
 let app = NSApplication.shared
