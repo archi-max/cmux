@@ -218,10 +218,12 @@
     body.className = 'fsm-body';
     const foot = document.createElement('div');
     foot.className = 'fsm-note';
-    el.append(head, signal, now, body, foot);
+    const countsNote = document.createElement('div');
+    countsNote.className = 'fsm-note fsm-counts-note';
+    el.append(head, signal, now, body, countsNote, foot);
     body.addEventListener('click', onClick);
     document.getElementById('panes').appendChild(el);
-    pane = { el, title, close, signal, now, body, foot };
+    pane = { el, title, close, signal, now, body, countsNote, foot };
     return pane;
   }
 
@@ -360,6 +362,7 @@
     if (!shown.model) {
       drawn = null;
       p.now.textContent = '';
+      p.countsNote.textContent = '';
       p.body.textContent = '';
       const status = document.createElement('div');
       status.className = 'fsm-status';
@@ -371,7 +374,10 @@
     try { d = await load(); } catch (error) { host.log(error); }
     if (current !== shown) { return; }
     if (d && d.tooMany) { p.foot.textContent = [shown.note, S().fsmTooManyChanges || 'Too many changes to count.'].filter(Boolean).join(' · '); }
-    draw(graph(shown.model, d && !d.tooMany && !d.missing ? d : null), d);
+    const counted = d && !d.tooMany && !d.missing;
+    // Phase 1 counts the dump's changes; a self loop (no change) has none.
+    p.countsNote.textContent = counted ? S().fsmCountsNote || 'Counts are entries into a state and transitions taken, not clock cycles.' : '';
+    draw(graph(shown.model, counted ? d : null), d);
     markCurrent();
   }
 
