@@ -10,109 +10,89 @@ nonisolated private let waveformEnumLogger = Logger(subsystem: "com.cmuxterm.app
 ///   (`inlineValues`), and the hover gives the raw value too.
 /// - The viewer page asks for the types of the rows it shows (`typesRequested`), and gets each
 ///   enum type as a value alias table it makes the rows' default format (cmux-enum.js).
+/// When types are used, read again, kept or dropped is `SlangEnumScopeState`'s decision, one
+/// per language server session; this type runs its timers and reads.
 @MainActor
 enum WaveformEnumLink {
-    /// One per language server session: the typedefs and declarations already read.
-    private static var caches: [ObjectIdentifier: (session: WeakSession, cache: SlangEnumTypeCache)] = [:]
-    /// Enum signals per (session, design instance), with when they were read; `stale` after a
-    /// save or a reload: still used until the read again has finished.
-    private static var scopes: [String: (signals: [String: SlangEnumSignal], at: Date, stale: Bool)] = [:]
-    /// Scopes whose last read slang refused for unsaved edits, and when: asked again after
-    /// `emptyScopeLifetime`, or at once after a save.
-    private static var refusedAt: [String: Date] = [:]
-    /// Reads in flight, per scope key.
-    private static var reads: [String: Task<ReadResult, Never>] = [:]
-
-    /// A scope read's answer; `refused` when slang had unsaved edits (the signals are the old ones).
-    struct ReadResult {
-        var signals: [String: SlangEnumSignal]
-        var refused = false
+    /// Per language server session: the typedefs and declarations already read, and the scopes.
+    private final class SessionTypes {
+        weak var session: LanguageServerSession?
+        let cache = SlangEnumTypeCache()
+        var state = SlangEnumScopeState()
+        /// Reads in flight, per design instance.
+        var reads: [String: (read: SlangEnumScopeState.Read, task: Task<[String: SlangEnumSignal], Never>)] = [:]
+        /// The debounced "types may have changed".
+        var staleTimer: Task<Void, Never>?
+        init(_ session: LanguageServerSession) { self.session = session }
     }
-    /// The debounced "types may have changed" per session.
-    private static var staleTimers: [ObjectIdentifier: Task<Void, Never>] = [:]
-    /// After a save, if slang hasn't reported on it by then.
-    private static let staleDelay: Duration = .milliseconds(1500)
-    /// After slang's report on a save: only long enough to take its reports on other files together.
-    private static let compiledDelay: Duration = .milliseconds(300)
-    /// Per session: whether slang's next report is its compile of a save (verify N1).
-    private static var freshness: [ObjectIdentifier: SlangEnumTypeFreshness] = [:]
-    /// A scope read with no enum in it (or before the design compiled) is asked again after this.
-    private static let emptyScopeLifetime: TimeInterval = 10
+
+    private static var sessions: [ObjectIdentifier: SessionTypes] = [:]
     /// Enum signals per waveform and dump instance, as the editor's last refresh found them:
     /// every caller of `inlineValues` for that instance formats alike.
     private static var inlineEnums: [ObjectIdentifier: [String: [String: SlangEnumSignal]]] = [:]
     /// Most rows asked about per page message.
     private static let maxPaths = 200
 
-    final class WeakSession {
-        weak var session: LanguageServerSession?
-        init(_ session: LanguageServerSession) { self.session = session }
-    }
-
-    private static func cache(for session: LanguageServerSession) -> SlangEnumTypeCache {
-        caches = caches.filter { $0.value.session.session != nil }
+    private static func types(for session: LanguageServerSession) -> SessionTypes {
+        sessions = sessions.filter { $0.value.session != nil }
         let key = ObjectIdentifier(session)
-        if let entry = caches[key], entry.session.session === session { return entry.cache }
-        let cache = SlangEnumTypeCache()
-        caches[key] = (WeakSession(session), cache)
-        return cache
+        if let entry = sessions[key], entry.session === session { return entry }
+        let entry = SessionTypes(session)
+        sessions[key] = entry
+        return entry
     }
-
-    private static func prefix(_ session: LanguageServerSession) -> String { "\(ObjectIdentifier(session).hashValue)|" }
 
     /// slang reported diagnostics on a document of `session`: after a save, that is its compile
     /// of the saved files, so the types are read again, whatever the edit was. Unsaved edits
     /// don't read them again: slang-server gives no types until they're saved
     /// (`SlangEnumScopeError.unsavedEdits`), and the dump comes from saved sources too.
     static func serverReported(_ session: LanguageServerSession) {
-        guard freshness[ObjectIdentifier(session), default: SlangEnumTypeFreshness()].compiled() else { return }
-        scheduleStale(session, after: compiledDelay)
+        guard let delay = types(for: session).state.serverReported() else { return }
+        scheduleStale(session, after: delay)
     }
 
     /// A document of `session` was saved: the types are read again once slang has compiled it
-    /// (`serverReported`), or after `staleDelay` if it doesn't report.
+    /// (`serverReported`), or after a delay if it doesn't report.
     static func documentSaved(_ session: LanguageServerSession) {
-        freshness[ObjectIdentifier(session), default: SlangEnumTypeFreshness()].saved()
-        scheduleStale(session, after: staleDelay)
+        let delay = types(for: session).state.saved(at: Date())
+        scheduleStale(session, after: delay)
     }
 
     /// A waveform is loading its file again, usually a new simulation of changed sources: every
     /// session's types are read again.
     static func waveformReloading() {
-        for entry in caches.values {
-            guard let session = entry.session.session else { continue }
-            staleTimers.removeValue(forKey: ObjectIdentifier(session))?.cancel()
-            Task { @MainActor in await markStale(session) }
+        for entry in sessions.values {
+            guard let session = entry.session else { continue }
+            designChanged(session)
         }
     }
 
     /// Types are read again after `delay` with no newer reason to (each reason restarts it).
     private static func scheduleStale(_ session: LanguageServerSession, after delay: Duration) {
-        let key = ObjectIdentifier(session)
-        staleTimers[key]?.cancel()
-        staleTimers[key] = Task { @MainActor [weak session] in
+        let entry = types(for: session)
+        entry.staleTimer?.cancel()
+        entry.staleTimer = Task { @MainActor [weak session, weak entry] in
             try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, let session else { return }
-            staleTimers[key] = nil
+            guard !Task.isCancelled, let session, let entry else { return }
+            entry.staleTimer = nil
             await markStale(session)
         }
     }
 
     /// The design changed (a new top level, a compile): every type is read again, in the background.
     static func designChanged(_ session: LanguageServerSession) {
-        staleTimers.removeValue(forKey: ObjectIdentifier(session))?.cancel()
+        let entry = types(for: session)
+        entry.staleTimer?.cancel()
+        entry.staleTimer = nil
         Task { @MainActor in await markStale(session) }
     }
 
     private static func markStale(_ session: LanguageServerSession) async {
-        await cache(for: session).removeAll()
-        let prefix = prefix(session)
-        for (key, entry) in scopes where key.hasPrefix(prefix) {
-            scopes[key] = (entry.signals, entry.at, true)
-        }
-        for key in refusedAt.keys where key.hasPrefix(prefix) { refusedAt[key] = nil }
-        // Reads started before the edit may hold old types: their answers are read again.
-        for (key, _) in reads where key.hasPrefix(prefix) { reads[key] = nil }
+        let entry = types(for: session)
+        await entry.cache.removeAll()
+        entry.state.markStale()
+        // Reads started before it may hold old types: their answers don't count.
+        entry.reads = [:]
         FilePreviewLanguageFeatures.enumTypesMayHaveChanged(session: session)
     }
 
@@ -124,69 +104,52 @@ enum WaveformEnumLink {
     /// The enum-typed signals of design instance `designInstance`, by name ([:] when slang
     /// can't say), waiting for a read when there is none yet or it is stale (the viewer's rows).
     static func enumSignals(designInstance: String, session: LanguageServerSession) async -> [String: SlangEnumSignal] {
-        let key = prefix(session) + designInstance
-        if let entry = scopes[key], isCurrent(entry, key: key) { return entry.signals }
-        return await read(key: key, designInstance: designInstance, session: session).value.signals
+        if let signals = types(for: session).state.current(designInstance, now: Date()) { return signals }
+        return await read(designInstance: designInstance, session: session).value
     }
 
     /// The enum signals already read for `designInstance`, without waiting (the editor's inline
     /// values and the debugger's steps). A missing or stale entry is read in the background, and
     /// the editors refresh when it brings something new.
     static func enumSignalsNow(designInstance: String, session: LanguageServerSession) -> [String: SlangEnumSignal] {
-        let key = prefix(session) + designInstance
-        let entry = scopes[key]
-        if entry.map({ isCurrent($0, key: key) }) != true {
-            let task = read(key: key, designInstance: designInstance, session: session)
-            Task { @MainActor [weak session] in
-                let signals = await task.value.signals
-                if signals != entry?.signals ?? [:], let session {
-                    FilePreviewLanguageFeatures.enumTypesMayHaveChanged(session: session)
-                }
+        let entry = types(for: session)
+        if let signals = entry.state.current(designInstance, now: Date()) { return signals }
+        let known = entry.state.known(designInstance)
+        let task = read(designInstance: designInstance, session: session)
+        Task { @MainActor [weak session] in
+            let signals = await task.value
+            if signals != known, let session {
+                FilePreviewLanguageFeatures.enumTypesMayHaveChanged(session: session)
             }
         }
-        return entry?.signals ?? [:]
+        return known
     }
 
-    private static func isCurrent(_ entry: (signals: [String: SlangEnumSignal], at: Date, stale: Bool), key: String) -> Bool {
-        if let refused = refusedAt[key], Date().timeIntervalSince(refused) < emptyScopeLifetime { return true }
-        return !entry.stale && (!entry.signals.isEmpty || Date().timeIntervalSince(entry.at) < emptyScopeLifetime)
-    }
-
-    /// One read per scope at a time; its answer replaces the entry (unless it went stale meanwhile).
-    private static func read(key: String, designInstance: String, session: LanguageServerSession) -> Task<ReadResult, Never> {
-        if let running = reads[key] { return running }
-        let cache = cache(for: session)
-        let task = Task { @MainActor [weak session] () -> ReadResult in
-            guard let session else { return ReadResult(signals: [:]) }
-            var result: ReadResult
+    /// One read per scope at a time; `SlangEnumScopeState` decides what its answer leaves.
+    private static func read(designInstance: String, session: LanguageServerSession) -> Task<[String: SlangEnumSignal], Never> {
+        let entry = types(for: session)
+        if let running = entry.reads[designInstance] { return running.task }
+        let ticket = entry.state.readStarted(designInstance, at: Date())
+        let cache = entry.cache
+        let task = Task { @MainActor [weak session, weak entry] () -> [String: SlangEnumSignal] in
+            guard let session, let entry else { return [:] }
+            let outcome: SlangEnumScopeState.Outcome
             do {
-                result = ReadResult(signals: try await session.slangEnumSignals(inScope: designInstance, cache: cache))
+                outcome = .signals(try await session.slangEnumSignals(inScope: designInstance, cache: cache))
             } catch SlangEnumScopeError.unsavedEdits {
-                // slang can't say while a buffer has unsaved edits: the types already read stay.
-                result = ReadResult(signals: scopes[key]?.signals ?? [:], refused: true)
+                outcome = .refused
             } catch {
-                result = ReadResult(signals: [:])
+                outcome = .failed
             }
             for note in await cache.takeOverBudget() {
                 waveformEnumLogger.info("enum type at \(note, privacy: .public) is over the \(SlangEnumValues.defaultMaxMemberHovers) member hover budget of a scope read: its values show without names")
             }
-            return result
+            if entry.reads[designInstance]?.read == ticket { entry.reads[designInstance] = nil }
+            if let kept = entry.state.readFinished(ticket, outcome, at: Date()) { return kept }
+            // A save or reload came while it ran: its answer may be the old types, so read again.
+            return await read(designInstance: designInstance, session: session).value
         }
-        reads[key] = task
-        Task { @MainActor in
-            let result = await task.value
-            // Superseded by a save or reload while it ran (markStale dropped it): leave the entry stale.
-            guard reads[key] == task else { return }
-            reads[key] = nil
-            if result.refused {
-                // Still stale: read after a save, or retried after `emptyScopeLifetime`.
-                refusedAt[key] = Date()
-                scopes[key] = (result.signals, scopes[key]?.at ?? Date(), true)
-            } else {
-                refusedAt[key] = nil
-                scopes[key] = (result.signals, Date(), false)
-            }
-        }
+        entry.reads[designInstance] = (ticket, task)
         return task
     }
 

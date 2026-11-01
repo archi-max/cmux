@@ -137,10 +137,134 @@ public struct SlangEnumTypeFreshness: Sendable {
     }
 }
 
+/// The enum signals read per design instance for one language server session, and whether they
+/// are used, read again, kept or dropped (WaveformEnumLink holds one per session). Names may be
+/// missing, never wrong:
+/// - Types are read again once slang has compiled a save (`saved`, `serverReported`), on a
+///   waveform reload and on a design change (`markStale`); a stale entry is used until the
+///   read again ends.
+/// - slang refuses a read while a buffer has unsaved edits (`SlangEnumScopeError.unsavedEdits`).
+///   Then the types already read are kept only if no save came after their read: before it they
+///   matched the saved sources, after it they may not (verify N4: renumber, save, type on,
+///   re-simulate, reload). Otherwise the scope has no names until a read succeeds.
+public struct SlangEnumScopeState: Sendable {
+    /// After a save, if slang hasn't reported on it by then.
+    public static let staleDelay: Duration = .milliseconds(1500)
+    /// After slang's report on a save: only long enough to take its reports on other files together.
+    public static let compiledDelay: Duration = .milliseconds(300)
+    /// A scope read with no enum in it (or before the design compiled), or refused, is asked again after this.
+    public static let retryLifetime: TimeInterval = 10
+
+    public struct Entry: Sendable, Equatable {
+        public var signals: [String: SlangEnumSignal]
+        /// When the read that gave them started.
+        public var readAt: Date
+        public var stale: Bool
+    }
+
+    /// A read in flight: its answer counts only if no stale mark came since it started.
+    public struct Read: Sendable, Equatable {
+        public let key: String
+        let started: Date
+        let generation: Int
+        let serial: Int
+    }
+
+    /// What slang answered a scope read.
+    public enum Outcome: Sendable, Equatable {
+        case signals([String: SlangEnumSignal])
+        /// `SlangEnumScopeError.unsavedEdits`.
+        case refused
+        /// Any other error: no names, asked again after `retryLifetime`.
+        case failed
+    }
+
+    private var entries: [String: Entry] = [:]
+    private var refusedAt: [String: Date] = [:]
+    private var lastSave: Date?
+    private var freshness = SlangEnumTypeFreshness()
+    private var generation = 0
+    private var serial = 0
+
+    public init() {}
+
+    /// A document was saved (didSave sent): returns how long to wait before marking the types
+    /// stale if slang doesn't report on it.
+    public mutating func saved(at now: Date) -> Duration {
+        freshness.saved()
+        lastSave = now
+        return Self.staleDelay
+    }
+
+    /// slang reported diagnostics on a document: after a save, how long to wait before marking
+    /// the types stale (its compile of the save); nil for any other report.
+    public mutating func serverReported() -> Duration? {
+        freshness.compiled() ? Self.compiledDelay : nil
+    }
+
+    /// The types may have changed: every entry is read again (and used meanwhile), refusals are
+    /// asked again at once, and reads in flight no longer count.
+    public mutating func markStale() {
+        for key in entries.keys { entries[key]?.stale = true }
+        refusedAt = [:]
+        generation += 1
+    }
+
+    /// The signals of `key` to use as they are, or nil when it should be read.
+    public func current(_ key: String, now: Date) -> [String: SlangEnumSignal]? {
+        guard let entry = entries[key] else { return nil }
+        if let refused = refusedAt[key], now.timeIntervalSince(refused) < Self.retryLifetime { return entry.signals }
+        if !entry.stale, !entry.signals.isEmpty || now.timeIntervalSince(entry.readAt) < Self.retryLifetime { return entry.signals }
+        return nil
+    }
+
+    /// The signals last kept for `key`, current or not (shown while it is read again).
+    public func known(_ key: String) -> [String: SlangEnumSignal] {
+        entries[key]?.signals ?? [:]
+    }
+
+    public mutating func readStarted(_ key: String, at now: Date) -> Read {
+        serial += 1
+        return Read(key: key, started: now, generation: generation, serial: serial)
+    }
+
+    /// A read's answer: the signals `key` now has, or nil when a stale mark came while it ran
+    /// (the entry stays as it was, stale).
+    public mutating func readFinished(_ read: Read, _ outcome: Outcome, at now: Date) -> [String: SlangEnumSignal]? {
+        guard read.generation == generation else { return nil }
+        let key = read.key
+        switch outcome {
+        case .signals(let signals):
+            refusedAt[key] = nil
+            entries[key] = Entry(signals: signals, readAt: read.started, stale: false)
+            return signals
+        case .failed:
+            refusedAt[key] = nil
+            entries[key] = Entry(signals: [:], readAt: read.started, stale: false)
+            return [:]
+        case .refused:
+            refusedAt[key] = now
+            guard let entry = entries[key] else {
+                entries[key] = Entry(signals: [:], readAt: read.started, stale: true)
+                return [:]
+            }
+            let kept = keptOnRefusal(entry)
+            entries[key] = Entry(signals: kept, readAt: entry.readAt, stale: true)
+            return kept
+        }
+    }
+
+    /// Verify N4: types read before the last save may differ from the saved sources.
+    private func keptOnRefusal(_ entry: Entry) -> [String: SlangEnumSignal] {
+        guard let lastSave else { return entry.signals }
+        return entry.readAt > lastSave ? entry.signals : [:]
+    }
+}
+
 /// A scope slang can't give enum types for right now.
 public enum SlangEnumScopeError: Error, Equatable {
-    /// getScope has enum signals with no source location: slang has unsaved edits. Keep
-    /// the types already read; they are read again after the save.
+    /// getScope has enum signals with no source location: slang has unsaved edits. The types
+    /// already read are kept only if no save came after their read (`SlangEnumScopeState`).
     case unsavedEdits
 }
 
