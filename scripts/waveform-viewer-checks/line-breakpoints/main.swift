@@ -620,6 +620,68 @@ endmodule
     }
     LB.isUndoing = { _ in false }
 
+    // R2 and the older silent moves (verify-bp2's adversarial set): a reload or Format Document puts
+    // a mark on its statement, or says it is lost; never silently on another statement.
+    enum Want { case line(Int), lineOrLost(Int), lost }
+    func moved(_ name: String, _ text: String, mark: Int, _ newText: String, _ want: Want, format: Bool = false) {
+        let workspace = UUID()
+        let view = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        view.string = text
+        FilePreviewLanguageFeatures.all.append(FilePreviewLanguageFeatures(textView: view, path: "/rtl/x.sv", workspace: workspace))
+        _ = LB.styles(in: view)
+        _ = LB.gutterClicked(view, lineStart: (text as NSString).lineStarts()[mark])
+        if format { view.textStorage!.replaceCharacters(in: NSRange(location: 0, length: view.textStorage!.length), with: newText) } else { view.string = newText }
+        let starts = (view.string as NSString).lineStarts()
+        let dot = (LB.styles(in: view) ?? [:]).keys.compactMap { starts.firstIndex(of: $0) }.first
+        let mark = LB.marks[workspace]?.first
+        let ok: Bool
+        switch want {
+        case .line(let line): ok = mark?.lost == false && dot == line
+        case .lineOrLost(let line): ok = mark != nil && dot != nil && (mark?.lost == true || dot == line)
+        case .lost: ok = mark?.lost == true && dot != nil
+        }
+        expect(ok, "\(name): dot \(String(describing: dot)) lost \(String(describing: mark?.lost)) (want \(want))")
+    }
+    let twoModules = "module a(input logic clk);\n  logic [7:0] count, limit;\n  logic done;\n  assign done = count == limit;\nendmodule\nmodule b(input logic clk);\n  logic [7:0] count, limit;\n  logic done;\n  assign done = count == limit;\nendmodule\n"
+    let twoModulesNew = twoModules.replacingOccurrences(of: "module b(input logic clk);\n  logic [7:0] count, limit;\n  logic done;\n  assign done = count == limit;",
+                                                        with: "module b(input logic clk);\n  logic [7:0] count, limit;\n  logic done, busy;\n  logic go;\n  assign done = count >= limit;")
+    moved("module b's line changed, a line added above: not module a's", twoModules, mark: 8, twoModulesNew, .lineOrLost(9))
+    moved("the same as a format", twoModules, mark: 8, twoModulesNew, .lineOrLost(9), format: true)
+    let twins = "module c(input logic clk);\n  always_ff @(posedge clk) begin\n    q <= d;\n    q <= d;\n  end\n  assign y = q;\nendmodule\n"
+    moved("the second of two same lines, a line added above and a change below", twins, mark: 3,
+          twins.replacingOccurrences(of: "begin\n", with: "begin\n    r <= 1;\n").replacingOccurrences(of: "assign y = q;", with: "assign y = ~q;"), .line(4))
+    let nested = "module e(input logic clk);\n  always_ff @(posedge clk) begin\n    if (go) begin\n      q <= d;\n    end\n  end\n  assign y = q;\nendmodule\n"
+    moved("the outer end of end/end, a line added inside", nested, mark: 5,
+          nested.replacingOccurrences(of: "      q <= d;\n", with: "      q <= d;\n      r <= d;\n").replacingOccurrences(of: "assign y = q;", with: "assign y = ~q;"), .line(6))
+    let swapped = "module s(input logic clk);\n  always_ff @(posedge clk) begin\n    x <= x + 1;\n    y <= 0;\n  end\n  always_ff @(posedge clk) begin\n    z <= z + 1;\n    w <= 0;\n  end\nendmodule\n"
+    let swappedNew = "module s(input logic clk);\n  always_ff @(posedge clk) begin\n    z <= z + 1;\n    w <= 0;\n  end\n  always_ff @(posedge clk) begin\n    x <= x + 1;\n    y <= 0;\n  end\nendmodule\n"
+    moved("always blocks swapped, the mark's line unchanged", swapped, mark: 2, swappedNew, .line(6))
+    moved("swapped, the mark's line changed", swapped, mark: 3, swappedNew.replacingOccurrences(of: "y <= 0;", with: "y <= 1;"), .lineOrLost(7))
+    moved("swapped, the mark's line changed, its old text elsewhere", swapped.replacingOccurrences(of: "w <= 0;", with: "y <= 0;"), mark: 3,
+          swappedNew.replacingOccurrences(of: "w <= 0;", with: "y <= 0;").replacingOccurrences(of: "    x <= x + 1;\n    y <= 0;", with: "    x <= x + 1;\n    y <= 2;"), .lineOrLost(7))
+    let functions = "module f(input logic [7:0] a, output logic [7:0] o);\n  function automatic logic [7:0] inc(input logic [7:0] v);\n    return v + 1;\n  endfunction\n  assign o = inc(a);\n  function automatic logic [7:0] dec(input logic [7:0] v);\n    return v - 1;\n  endfunction\nendmodule\n"
+    let functionsNew = "module f(input logic [7:0] a, output logic [7:0] o);\n  function automatic logic [7:0] dec(input logic [7:0] v);\n    return v - 1;\n  endfunction\n  assign o = inc(a);\n  function automatic logic [7:0] inc(input logic [7:0] v);\n    return v + 1;\n  endfunction\nendmodule\n"
+    moved("functions swapped", functions, mark: 2, functionsNew, .line(6))
+    moved("a format joining begin onto the marked always line", "module k(input logic clk);\n  always_ff @(posedge clk)\n  begin\n    q <= d;\n  end\n  logic z;\nendmodule\n", mark: 1,
+          "module k(input logic clk);\n  always_ff @(posedge clk) begin\n    q <= d;\n  end\n  logic z;\nendmodule\n", .line(1), format: true)
+    let arms = "module m(input logic clk, input logic [1:0] s);\n  always_comb begin\n    case (s)\n      2'd0: q = 0;\n      2'd1: begin\n        q = 1;\n      end\n      2'd2: begin\n        q = 1;\n      end\n    endcase\n  end\nendmodule\n"
+    moved("a case arm's body changed, another arm has its old text", arms, mark: 8,
+          arms.replacingOccurrences(of: "      2'd2: begin\n        q = 1;", with: "      2'd3: q = 3;\n      2'd2: begin\n        q = 2;"), .lineOrLost(9))
+    let hunks = "module p(input logic clk);\n  logic [7:0] count, limit;\n  logic done;\n  assign done = count == limit;\n  always_ff @(posedge clk) count <= count + 1;\n  assign busy = !done;\nendmodule\n"
+    let hunksNew = hunks.replacingOccurrences(of: "  assign done = count == limit;", with: "  logic busy;\n  assign done = count == limit;").replacingOccurrences(of: "assign busy = !done;", with: "assign busy = ~done;")
+    moved("two hunks: a line added right above the mark, a change below", hunks, mark: 3, hunksNew, .line(4))
+    moved("the same as a format", hunks, mark: 3, hunksNew, .line(4), format: true)
+    // N2's lost branch: the marked line and its neighbours replaced by other lines (not one for one).
+    moved("the marked line replaced by unrelated lines", source, mark: 4,
+          source.replacingOccurrences(of: "  logic done;\n  always_ff @(posedge clk) count <= count + 1;\n  assign done = count == limit;\n",
+                                      with: "  wire a;\n  wire b;\n  wire c;\n  wire d;\n"), .lost)
+    // The two whitespace tiers: the same words spaced alike win over a nearer match that differs only
+    // in spacing inside them; that one wins over a nearer line that is merely similar.
+    moved("its text spaced alike wins over a nearer one spaced differently", source, mark: 4,
+          source.replacingOccurrences(of: "  assign done = count == limit;\n", with: "  wire w;\n  assign done = count==limit;\n  wire v;\n  assign  done  =  count == limit;\n"), .line(7))
+    moved("spacing aside, the same text wins over a nearer similar line", source, mark: 4,
+          source.replacingOccurrences(of: "  assign done = count == limit;\n", with: "  wire w;\n  assign done = count == limits;\n  wire v;\n  assign done = count==limit;\n"), .line(7))
+
     // R3: the page posts its (empty) signal list while it handles setLineBreakpoints, before the
     // reply (a real WKWebView does: see breakpoints' ordering check). The saved list still goes back.
     for legacy in [false, true] {
