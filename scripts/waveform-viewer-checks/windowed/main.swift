@@ -12,8 +12,8 @@
 //           helper's searchText (the mock runs the shipped text.js): t=0 with no marker,
 //           far and no-match (timed against the page scan), resume after an incomplete
 //           reply, Escape cancels, ASCII sends the typed text, and the page scan answers
-//           when the helper has no searchText or reports tooLarge; the debugger's whole-signal
-//           reads send maxChanges
+//           when the helper has no searchText or reports tooLarge; host.js changes()
+//           sends maxChanges (only it, only a finite cap)
 // Usage: windowed <assetRoot> <v2HelperRoot> <v1HelperRoot> <mock.cjs> <scratch> <out.png>
 import AppKit
 import WebKit
@@ -605,6 +605,9 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         return null
         """)
       _ = await waitFor(20000) { await marker() != t0 }
+      // searchText jumps straight to the match, whose window may not be loaded yet
+      // (the viewer's own scan had loaded it): wait for the cell to show a value.
+      _ = await waitFor(5000) { !(await cellText()).isEmpty }
       return await marker()
     }
     let escaped = NSRegularExpression.escapedPattern(for: target)
@@ -801,17 +804,22 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     print(String(format: "[timing] searchText far %.0f ms, no match %.0f ms; page scan no match %.0f ms (500k changes, 19 distinct values, mock)", far.ms, none.ms, scanNone.ms))
   }
 
-  /// The debugger's whole-signal reads (host.js changes / signalPosedges) send their cap, so
-  /// an over-cap signal comes back as a count, not its data (helper-v2 signals maxChanges).
+  /// The debugger's whole-signal reads through host.js changes() send their cap, so an over-cap
+  /// signal comes back as a count, not its data (helper-v2 signals maxChanges); only changes().
   func capChecks() async {
     let changes = await call("return JSON.stringify(await cmuxWaveform.host.signalChanges({ signalId: 0, width: 1 }, 1000))") as? String
     let c = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
     expect(changes == "null" && c["maxChanges"] as? Int == 1000 && c["bytes"] as? Int == 0 && c["overCap"] as? Int == 1,
            "signalChanges past its cap asks signals with maxChanges and gets no data: \(changes ?? "?"), request \(c)")
+    // signalPosedges inflates every entry it gets, so it never asks with a cap (no overCap entry).
     let edges = await call("try { await cmuxWaveform.host.signalPosedges({ signalId: 0, width: 1 }, 100); return 'ok' } catch (e) { return String(e.message) }") as? String
     let p = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
-    expect(edges == "too many clock edges" && p["maxChanges"] as? Int == 202 && p["bytes"] as? Int == 0,
-           "signalPosedges past maxEdges asks with maxChanges 2*maxEdges+2 and gets no data: \(edges ?? "?"), request \(p)")
+    expect(edges == "too many clock edges" && p["maxChanges"] is NSNull && p["overCap"] as? Int == 0,
+           "signalPosedges sends no maxChanges and still refuses too many edges: \(edges ?? "?"), request \(p)")
+    // No cap given (or not a finite integer): no maxChanges (JSON would turn Infinity into null).
+    let uncapped = await call("const c = await cmuxWaveform.host.signalChanges({ signalId: 1, width: 1 }, Infinity); return c ? c.length : -1") as? Int
+    let u = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
+    expect(uncapped == 2 && u["maxChanges"] is NSNull, "signalChanges with an infinite cap sends no maxChanges: \(uncapped ?? -1), request \(u)")
     let small = await call("const c = await cmuxWaveform.host.signalChanges({ signalId: 1, width: 1 }, 1000); return c ? c.length : -1") as? Int
     let sl = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
     expect(small == 2 && (sl["bytes"] as? Int ?? 0) > 0, "a signal under the cap still comes back whole: rst \(small ?? -1) changes, request \(sl)")
