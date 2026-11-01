@@ -538,6 +538,43 @@ enum WaveformDebuggerLineBreakpoints {
         let oldTexts = oldTable.texts, newTexts = newTable.texts
         let match = lineMatching(old: oldTexts, new: newTexts)
         let matchedNew = Set(match.values)
+        // How often each text (ignoring spacing) is in each file, and where the new file's once-only
+        // texts are: counted on first need.
+        var oldCount: [String: Int] = [:], newCount: [String: Int] = [:], newOnce: [String: Int] = [:], counted = false
+        func count() {
+            guard !counted else { return }
+            counted = true
+            for text in oldTexts { oldCount[squeezed(text), default: 0] += 1 }
+            for text in newTexts { newCount[squeezed(text), default: 0] += 1 }
+            for (index, text) in newTexts.enumerated() { let key = squeezed(text); if newCount[key] == 1 { newOnce[key] = index } }
+        }
+        // A line whose text is not once in each file is paired by where it stands, so it can be paired
+        // with a copy in a block that another was swapped past. Its block: the nearest line above it
+        // that is once in each file (below it when none is above, within 8 lines), with the lines in
+        // between the same. When that line moved (the diff left it unpaired), the mark's line went
+        // with it: where it is in the moved block, and whether it is still its text there.
+        func movedWithBlock(_ line: Int) -> (line: Int, same: Bool)? {
+            count()
+            let bare = squeezed(oldTexts[line])
+            guard oldCount[bare] != 1 || newCount[bare] != 1 else { return nil }
+            for step in [-1, 1] {
+                var index = line + step
+                while index >= 0, index < oldTexts.count, abs(index - line) <= 8 {
+                    let key = squeezed(oldTexts[index])
+                    guard key.isEmpty || oldCount[key] != 1 || newOnce[key] == nil else {
+                        // A block that stayed keeps the mark where the diff put it.
+                        guard match[index] == nil, let at = newOnce[key] else { return nil }
+                        let target = at + (line - index)
+                        guard target >= 0, target < newTexts.count else { return nil }
+                        let between = step < 0 ? (index + 1)..<line : (line + 1)..<index
+                        guard between.allSatisfy({ squeezed(oldTexts[$0]) == squeezed(newTexts[at + ($0 - index)]) }) else { return nil }
+                        return (target, squeezed(newTexts[target]) == bare)
+                    }
+                    index += step
+                }
+            }
+            return nil
+        }
         var pending: [(id: UUID, line: Int)] = []
         for (id, offset) in tracker.offsets.sorted(by: { $0.value < $1.value }) {
             let line = lineIndex(of: offset, in: oldTable.starts)
@@ -546,13 +583,20 @@ enum WaveformDebuggerLineBreakpoints {
                 let range = old.lineRange(for: NSRange(location: oldTable.starts[line], length: 0))
                 if range.location >= edited.start && NSMaxRange(range) <= edited.oldEnd && match[line] == nil { dropped.append(id); continue }
             }
+            if match[line] != nil, let moved = movedWithBlock(line) {
+                // Its text there (or a changed statement like it) is its line; else it is lost there.
+                let free = taken[moved.line] == nil
+                if free, moved.same || similarity(squeezed(oldTexts[line]), squeezed(newTexts[moved.line])) >= 0.6 { taken[moved.line] = id; continue }
+                guard let place = free ? moved.line : nearestFree(to: moved.line, count: newTable.starts.count, taken: Set(taken.keys)) else { dropped.append(id); continue }
+                taken[place] = id
+                lost.insert(id)
+                continue
+            }
             if let new = match[line], taken[new] == nil { taken[new] = id } else { pending.append((id, line)) }
         }
         guard !pending.isEmpty else { return }
         let matchedOld = match.keys.sorted()
-        var oldCount: [String: Int] = [:], newCount: [String: Int] = [:]
-        for text in oldTexts { oldCount[squeezed(text), default: 0] += 1 }
-        for text in newTexts { newCount[squeezed(text), default: 0] += 1 }
+        count()
         for (id, line) in pending {
             // Its gap: the unmatched lines between the matched ones around it, in both texts.
             var lo = 0, hi = matchedOld.count
