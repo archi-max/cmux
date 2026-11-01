@@ -360,6 +360,13 @@ endmodule
     click(dupView, 5)
     dupView.string = "// a\n// b\n// c\n" + block
     expect(lines(dupView) == [8], "a reload with lines added above keeps the mark on its own `end`: \(lines(dupView))")
+    // With no line that is there once (nothing to line up by), only the narrowed span keeps it.
+    let alike = UUID()
+    let pairs = String(repeating: "begin\nend\n", count: 3)
+    let alikeView = open(pairs, workspace: alike)
+    click(alikeView, 3)
+    alikeView.string = "end\n" + pairs
+    expect(lines(alikeView) == [4], "a reload adding an `end` above lines that all repeat keeps the mark on its `end`: \(lines(alikeView))")
 
     // N2: a reload that removes a line above and changes a mark's own line keeps all three.
     let reload = UUID()
