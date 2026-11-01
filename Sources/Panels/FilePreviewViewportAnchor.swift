@@ -10,9 +10,17 @@ import AppKit
 /// clip view's old numeric origin then points at different text, so restoring
 /// it moves the visible lines by several rows. Anchoring to a line and laying
 /// that line out before scrolling keeps the view where it was.
+/// A text view that ignores AppKit's own scroll-to-visible calls while
+/// `suppressesAutomaticScrolling` is set (see `keepingViewport`).
+@MainActor
+protocol FilePreviewAutomaticScrollSuppressing: NSTextView {
+    var suppressesAutomaticScrolling: Bool { get set }
+}
+
 struct FilePreviewViewportAnchor: Equatable {
-    /// Zero-based line shown at the top of the viewport.
-    let line: Int
+    /// Zero-based line shown at the top of the viewport; nil when captured
+    /// without counting lines (a reflow of the same text needs only `character`).
+    let line: Int?
     /// How far the viewport top sits below that line's top, in points.
     let offset: CGFloat
     /// Horizontal clip origin, kept as is.
@@ -23,8 +31,10 @@ struct FilePreviewViewportAnchor: Equatable {
     var characterOffset: CGFloat = 0
 
     /// Reads the anchor of `textView`'s viewport; nil outside a scroll view.
+    /// `countingLines: false` skips the line number, which costs a scan of
+    /// the text up to the viewport: `restoreCharacter` does not use it.
     @MainActor
-    static func capture(in textView: NSTextView) -> FilePreviewViewportAnchor? {
+    static func capture(in textView: NSTextView, countingLines: Bool = true) -> FilePreviewViewportAnchor? {
         guard let clipView = textView.enclosingScrollView?.contentView,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return nil }
@@ -52,7 +62,7 @@ struct FilePreviewViewportAnchor: Equatable {
             let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &fragmentGlyphs)
             let fragmentCharacter = min(layoutManager.characterIndexForGlyph(at: fragmentGlyphs.location), text.length - 1)
             anchor = FilePreviewViewportAnchor(
-                line: Self.lineNumber(at: lineStart, in: text),
+                line: countingLines ? Self.lineNumber(at: lineStart, in: text) : nil,
                 offset: visibleTop - lineTop,
                 x: clipView.bounds.minX,
                 character: fragmentCharacter,
@@ -66,8 +76,29 @@ struct FilePreviewViewportAnchor: Equatable {
     /// Scrolls `textView` so its anchored line is back at the viewport top.
     @MainActor
     func restore(in textView: NSTextView) {
+        guard let line else {
+            restoreCharacter(in: textView)
+            return
+        }
         let text = Self.characters(of: textView)
         scroll(textView, toTopOf: Self.offset(ofLine: line, in: text), plus: offset)
+    }
+
+    /// Runs `edit`, an attribute edit over much of the buffer (a theme or font
+    /// change), with AppKit's own scrolling held off, then puts the character
+    /// at the viewport top back. Re-laying out every line makes AppKit
+    /// re-anchor through `scrollRangeToVisible` of estimated rects, which
+    /// moved the clip view thousands of points away and back.
+    @MainActor
+    static func keepingViewport(of textView: NSTextView, _ edit: () -> Void) {
+        let anchor = capture(in: textView, countingLines: false)
+        let suppressing = textView as? FilePreviewAutomaticScrollSuppressing
+        let wasSuppressing = suppressing?.suppressesAutomaticScrolling ?? false
+        suppressing?.suppressesAutomaticScrolling = true
+        edit()
+        // AppKit re-anchors again while the restore lays lines out; keep it off.
+        anchor?.restoreCharacter(in: textView)
+        suppressing?.suppressesAutomaticScrolling = wasSuppressing
     }
 
     /// Scrolls `textView` so its anchored character is back at the viewport
@@ -92,24 +123,31 @@ struct FilePreviewViewportAnchor: Equatable {
         guard let scrollView = textView.enclosingScrollView else { return }
         let clipView = scrollView.contentView
         let text = Self.characters(of: textView)
-        let lineStart = character
         // Laying out the target region can re-estimate the lines above it and
-        // move the anchored line, so place it again until it holds still.
-        for _ in 0..<4 {
-            let lineTop = text.length == 0 ? 0 : Self.top(ofCharacterAt: lineStart, in: textView)
-            let target = NSRect(origin: NSPoint(x: x, y: lineTop + offset), size: clipView.bounds.size)
+        // move the anchored line. Lay it out until it holds still, then scroll
+        // once, so the clip view goes straight to where it ends up.
+        var lineTop: CGFloat = 0
+        for _ in 0..<6 {
+            lineTop = text.length == 0 ? 0 : Self.top(ofCharacterAt: character, in: textView)
             if let layoutManager = textView.layoutManager, let container = textView.textContainer {
                 let origin = textView.textContainerOrigin
+                let target = NSRect(origin: NSPoint(x: x, y: lineTop + offset), size: clipView.bounds.size)
                 layoutManager.ensureLayout(
                     forBoundingRect: target.offsetBy(dx: -origin.x, dy: -origin.y),
                     in: container
                 )
             }
+            let settled = text.length == 0 ? 0 : Self.top(ofCharacterAt: character, in: textView)
+            if abs(settled - lineTop) < 0.5 { break }
+        }
+        for _ in 0..<3 {
             scrollView.layoutSubtreeIfNeeded()
+            let target = NSRect(origin: NSPoint(x: x, y: lineTop + offset), size: clipView.bounds.size)
             clipView.scroll(to: clipView.constrainBoundsRect(target).origin)
             scrollView.reflectScrolledClipView(clipView)
-            let settled = text.length == 0 ? 0 : Self.top(ofCharacterAt: lineStart, in: textView)
+            let settled = text.length == 0 ? 0 : Self.top(ofCharacterAt: character, in: textView)
             if abs(settled - lineTop) < 0.5 { return }
+            lineTop = settled
         }
     }
 

@@ -137,7 +137,8 @@ final class FilePreviewSyntaxStyler {
             self.lastAppliedHighlighted = self.applyHighlightedText(
                 highlighted,
                 to: textView,
-                defaultColor: defaultColor
+                defaultColor: defaultColor,
+                restylesEverything: !stylingParametersMatch
             )
             self.recordAppliedState(
                 contentRevision: contentRevision,
@@ -151,37 +152,44 @@ final class FilePreviewSyntaxStyler {
         highlightTask = task
     }
 
+    /// Styles `textView` with `highlighted`, or the uniform default style when
+    /// it is nil or stale. `restylesEverything`: the styling parameters
+    /// changed (theme, font size), so every run differs and comparing them
+    /// first only costs time.
     @discardableResult
     func applyHighlightedText(
         _ highlighted: HighlightedText?,
         to textView: NSTextView,
-        defaultColor: NSColor
+        defaultColor: NSColor,
+        restylesEverything: Bool = false
     ) -> Bool {
         guard let storage = textView.textStorage else { return false }
         let selectedRanges = textView.selectedRanges
         let effectivePointSize = (textView.font
             ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)).pointSize
         let fonts = SyntaxFonts(pointSize: effectivePointSize)
-        storage.beginEditing()
-        let appliedHighlighted: Bool
-        if let highlighted, highlighted.value.length == storage.length {
-            let full = NSRange(location: 0, length: highlighted.value.length)
-            highlighted.value.enumerateAttributes(in: full, options: []) { attributes, range, _ in
-                Self.setAttributes(
-                    Self.normalized(attributes, fonts: fonts),
-                    whereDifferentIn: range,
-                    of: storage
-                )
+        var appliedHighlighted = false
+        FilePreviewViewportAnchor.keepingViewport(of: textView) {
+            storage.beginEditing()
+            if let highlighted, highlighted.value.length == storage.length {
+                let full = NSRange(location: 0, length: highlighted.value.length)
+                highlighted.value.enumerateAttributes(in: full, options: []) { attributes, range, _ in
+                    let normalized = Self.normalized(attributes, fonts: fonts)
+                    if restylesEverything {
+                        storage.setAttributes(normalized, range: range)
+                    } else {
+                        Self.setAttributes(normalized, whereDifferentIn: range, of: storage)
+                    }
+                }
+                appliedHighlighted = true
+            } else {
+                let full = NSRange(location: 0, length: storage.length)
+                storage.addAttribute(.foregroundColor, value: defaultColor, range: full)
+                storage.addAttribute(.font, value: fonts.regular, range: full)
+                storage.removeAttribute(.backgroundColor, range: full)
             }
-            appliedHighlighted = true
-        } else {
-            let full = NSRange(location: 0, length: storage.length)
-            storage.addAttribute(.foregroundColor, value: defaultColor, range: full)
-            storage.addAttribute(.font, value: fonts.regular, range: full)
-            storage.removeAttribute(.backgroundColor, range: full)
-            appliedHighlighted = false
+            storage.endEditing()
         }
-        storage.endEditing()
         restoreSelection(selectedRanges, in: textView)
         return appliedHighlighted
     }
@@ -197,21 +205,33 @@ final class FilePreviewSyntaxStyler {
         whereDifferentIn range: NSRange,
         of storage: NSTextStorage
     ) {
-        let target = attributes as NSDictionary
         var location = range.location
         let end = NSMaxRange(range)
         while location < end {
             var run = NSRange(location: location, length: 0)
-            let current = storage.attributes(
-                at: location,
-                longestEffectiveRange: &run,
-                in: NSRange(location: location, length: end - location)
-            )
-            if !target.isEqual(to: current) {
-                storage.setAttributes(attributes, range: run)
+            let current = storage.attributes(at: location, effectiveRange: &run)
+            let piece = NSIntersectionRange(run, NSRange(location: location, length: end - location))
+            if !Self.attributes(attributes, equal: current) {
+                storage.setAttributes(attributes, range: piece)
             }
-            location = max(NSMaxRange(run), location + 1)
+            location = max(NSMaxRange(piece), location + 1)
         }
+    }
+
+    /// Attribute dictionaries compared value by value. Bridging a Swift
+    /// dictionary to NSDictionary for `isEqual` cost twice as much per run.
+    private static func attributes(
+        _ lhs: [NSAttributedString.Key: Any],
+        equal rhs: [NSAttributedString.Key: Any]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (key, value) in lhs {
+            guard let other = rhs[key] else { return false }
+            let object = value as AnyObject
+            if object === (other as AnyObject) { continue }
+            guard (object as? NSObject)?.isEqual(other) == true else { return false }
+        }
+        return true
     }
 
     private func recordAppliedState(

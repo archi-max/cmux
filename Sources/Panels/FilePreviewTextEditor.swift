@@ -445,7 +445,7 @@ extension NSTextView {
 }
 
 
-final class SavingTextView: NSTextView {
+final class SavingTextView: NSTextView, FilePreviewAutomaticScrollSuppressing {
     private static let defaultPreviewFontSize: CGFloat = 13
     private static let minimumPreviewFontSize: CGFloat = 8
     private static let maximumPreviewFontSize: CGFloat = 36
@@ -567,6 +567,24 @@ final class SavingTextView: NSTextView {
         return menu
     }
 
+    /// Set while a whole-buffer attribute edit runs (`FilePreviewViewportAnchor.keepingViewport`).
+    var suppressesAutomaticScrolling = false
+
+    override func scrollRangeToVisible(_ range: NSRange) {
+        guard !suppressesAutomaticScrolling else { return }
+        super.scrollRangeToVisible(range)
+    }
+
+    override func scroll(_ point: NSPoint) {
+        guard !suppressesAutomaticScrolling else { return }
+        super.scroll(point)
+    }
+
+    override func scrollToVisible(_ rect: NSRect) -> Bool {
+        guard !suppressesAutomaticScrolling else { return false }
+        return super.scrollToVisible(rect)
+    }
+
     override var rangeForUserCompletion: NSRange {
         languageFeatures?.userCompletionRange ?? super.rangeForUserCompletion
     }
@@ -663,10 +681,13 @@ final class SavingTextView: NSTextView {
 
     func applyCurrentPreviewFont() {
         let nextFont = GlobalFontMagnification.monospacedSystemFont(ofSize: previewFontSize, weight: .regular)
-        font = nextFont
-        typingAttributes[.font] = nextFont
-        if let storage = textStorage, storage.length > 0 {
-            storage.addAttribute(.font, value: nextFont, range: NSRange(location: 0, length: storage.length))
+        // Setting `font` on a plain-text view already rewrites every character.
+        FilePreviewViewportAnchor.keepingViewport(of: self) {
+            font = nextFont
+            typingAttributes[.font] = nextFont
+            if let storage = textStorage, storage.length > 0 {
+                storage.addAttribute(.font, value: nextFont, range: NSRange(location: 0, length: storage.length))
+            }
         }
         FilePreviewEditorChromeOverlay.installed(in: self)?.needsDisplay = true
         onPreviewFontDidChange?()

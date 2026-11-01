@@ -13,7 +13,7 @@ extension NSTextView {
         // A reflow re-lays out every line, and the numeric clip origin then
         // points at other text; keep the character at the viewport top instead.
         let reflows = changed || (wrap && visibleWidth > 0 && textContainer.size.width != wrapWidth)
-        let viewportAnchor = reflows ? FilePreviewViewportAnchor.capture(in: self) : nil
+        let viewportAnchor = reflows ? FilePreviewViewportAnchor.capture(in: self, countingLines: false) : nil
         scrollView.hasHorizontalScroller = !wrap
         isHorizontallyResizable = !wrap
         if wrap {
