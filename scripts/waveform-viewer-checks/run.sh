@@ -144,8 +144,12 @@ case "${1:-}" in
   trace-fsdb)
     shift
     if [ $# -lt 5 ]; then echo "trace-fsdb: needs <ssh-host> <remote.fsdb> <model.json> <instance> <time>"; exit 2; fi
+    # The Verdi engine's client (SVModelSidecar) in one module: only the target enum of its package file.
+    L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    sed -n '/^public enum SlangCompilationTarget/,/^}/p' "$L/SlangDesignHierarchy.swift" > "$OUT/slang-target.swift"
     swiftc -O "$HERE/trace-fsdb/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
-      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/trace-fsdb"
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$L/SVModelSidecar.swift" "$L/VerdiTraceLaunch.swift" \
+      "$L/HierarchyPathMapping.swift" "$OUT/slang-target.swift" -o "$OUT/trace-fsdb"
     "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
     grep -q '^TRACE FSDB CHECKS PASSED' "$OUT/trace-fsdb.log"
     ;;
