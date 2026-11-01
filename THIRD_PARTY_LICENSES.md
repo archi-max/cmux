@@ -524,6 +524,27 @@ results of `SVInt` (`source/numeric/SVInt.cpp`) and the width and signedness
 rules of expression type propagation (`source/ast/expressions/`). It is a
 JavaScript reimplementation of those semantics; no slang code is bundled.
 
+### riscv-formal's RISC-V Formal Interface (the machine state's commit stream)
+
+- **Version:** master, commit `c992aa6` (2026-07-16)
+- **License:** ISC License (text below)
+- **Copyright:** Copyright (C) 2017 Claire Xenia Wolf <claire@yosyshq.com>
+- **Source:** https://github.com/YosysHQ/riscv-formal (`docs/rvfi.md`)
+
+`Resources/vaporview/cmux-machine-core.js` finds a core's retired-instruction
+stream by the RVFI signal names (`rvfi_valid`, `rvfi_pc_rdata`, ...) and
+replays it with the interface's documented meaning (masks, traps, NRET
+channels, order). Only the names and semantics are used; no riscv-formal code
+is bundled.
+
+The machine-state checks' fixture dumps
+(`scripts/waveform-viewer-checks/machine/fixtures/`, not bundled in the app)
+come from simulating NERV (riscv-formal `cores/nerv`, ISC), PicoRV32
+(https://github.com/YosysHQ/picorv32, ISC, Copyright (C) 2015-2021 Claire
+Xenia Wolf) and Ibex (https://github.com/lowRISC/ibex, Apache-2.0, Copyright
+lowRISC contributors) at pinned commits; each fixture directory carries the
+core's licence and a NOTICE.
+
 ### FSDB helper sources (`Resources/vaporview/fsdb-helper/`)
 
 cmux uploads these to an SSH host the first time an FSDB file is opened there
