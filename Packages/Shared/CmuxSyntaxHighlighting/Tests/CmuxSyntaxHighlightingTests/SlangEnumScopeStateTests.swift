@@ -71,6 +71,12 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         #expect(Self.read(&state, "top.u_fsm", .refused, start: 3, end: 3.1) == Self.old)
         #expect(state.current("top.u_fsm", now: Self.t0 + 9) == Self.old, "refused: kept for the retry lifetime")
         #expect(state.current("top.u_fsm", now: Self.t0 + 14) == nil, "then asked again")
+        // A read after a save, then a refused reload: that read matches the saved sources, so it stays.
+        _ = state.saved(at: Self.t0 + 14.5)
+        state.markStale()
+        #expect(Self.read(&state, "top.u_fsm", .signals(Self.renumbered), start: 14.6, end: 14.7) == Self.renumbered)
+        state.markStale()
+        #expect(Self.read(&state, "top.u_fsm", .refused, start: 14.8, end: 14.9) == Self.renumbered)
         // A save after the read: dropped on the next refusal.
         _ = state.saved(at: Self.t0 + 15)
         #expect(Self.read(&state, "top.u_fsm", .refused, start: 15.2, end: 15.3) == [:])
@@ -148,13 +154,16 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             await session.open(uri: fsmFile, text: SlangEnumTypesTests.fsm, version: 1)
             #expect(await reports.waitForMore(than: 0))
             #expect(await read()["state"]?.type.memberName(forBits: "100") == "DECODE")
-            // Renumbered (DECODE 3'd4 -> 3'd5, EXEC follows to 110), saved, and typed on within ms.
+            // Renumbered in the editor (DECODE 3'd4 -> 3'd5, EXEC follows to 110), saved, and typed
+            // on 100 ms later, before slang's report on the save.
             let renumbered = SlangEnumTypesTests.fsm.replacingOccurrences(of: "DECODE = 3'd4", with: "DECODE = 3'd5")
+            await session.change(uri: fsmFile, text: renumbered, version: 2)
             try renumbered.write(to: fsmFile, atomically: true, encoding: .utf8)
             let seen = await reports.count
             await session.save(uri: fsmFile, text: renumbered)
             _ = state.saved(at: Date())
-            await session.change(uri: fsmFile, text: renumbered + " ", version: 2)
+            try await Task.sleep(for: .milliseconds(100))
+            await session.change(uri: fsmFile, text: renumbered + "// typed\n", version: 3)
             #expect(await reports.waitForMore(than: seen))
             #expect(state.serverReported() != nil, "slang's report after the save marks the types stale")
             try await Task.sleep(for: SlangEnumScopeState.compiledDelay)
