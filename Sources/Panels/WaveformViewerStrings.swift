@@ -148,6 +148,10 @@ enum WaveformViewerStrings {
             "fsmObservedTooltip": String(localized: "filePreview.waveform.fsm.observedTooltip", defaultValue: "Seen in the waveform; not in the model"),
             "fsmUnlistedTooltip": String(localized: "filePreview.waveform.fsm.unlistedTooltip", defaultValue: "Not in the model"),
             "fsmTooManyChanges": String(localized: "filePreview.waveform.fsm.tooManyChanges", defaultValue: "Too many changes to count."),
+            "fsmCountsNote": String(
+                localized: "filePreview.waveform.fsm.countsNote",
+                defaultValue: "Counts are entries into a state and transitions taken, not clock cycles."
+            ),
             "statusTimeUnitsTooltip": String(localized: "filePreview.waveform.status.timeUnitsTooltip", defaultValue: "Select Time Units"),
             "netlistSearchPlaceholder": String(localized: "filePreview.waveform.netlist.searchPlaceholder", defaultValue: "Search netlist by instance path..."),
             "netlistSearchScope": String(localized: "filePreview.waveform.netlist.searchScope", defaultValue: "Searching %@:"),

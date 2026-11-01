@@ -230859,6 +230859,65 @@
         }
       }
     },
+    "filePreview.waveform.fsm.countsNote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counts are entries into a state and transitions taken, not clock cycles."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回数は状態への遷移回数と通った遷移の回数で、クロックサイクル数ではありません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Zahlen sind Eintritte in einen Zustand und durchlaufene Übergänge, keine Taktzyklen."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les nombres comptent les entrées dans un état et les transitions prises, pas les cycles d’horloge."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الأعداد هي مرات الدخول إلى الحالة والانتقالات المأخوذة، وليست دورات الساعة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los recuentos son entradas en un estado y transiciones tomadas, no ciclos de reloj."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "計數為進入狀態的次數與經過的轉移次數，不是時脈週期數。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "计数为进入状态的次数与经过的转移次数，不是时钟周期数。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "횟수는 상태 진입 횟수와 거친 전이 횟수이며 클록 사이클 수가 아닙니다."
+          }
+        }
+      }
+    },
     "filePreview.waveform.command.displayAsEpochTimeNs": {
       "extractionState": "manual",
       "localizations": {
