@@ -592,6 +592,49 @@ that host's own Verdi installation, for the user who opens the file, and keeps
 it in `~/.cache/cmux/fsdb-helper/` there; the built reader never leaves that
 host.
 
+### Verdi (state machine analysis)
+
+- **License:** Proprietary (Synopsys end-user license)
+- **Copyright:** Copyright (c) Synopsys, Inc.
+- **Source:** Ships with Synopsys Verdi; not publicly available
+
+The waveform viewer's state machine view can use the Verdi installed on the
+dump's host: its Python NPI netlist model (FSM recognition) and nState's batch
+analysis (`fsmAnalyzeFSM`). cmux runs them at run time, under the user's own
+licence, through its own script (`Resources/vaporview/fsm/cmux-fsm-verdi.sh`,
+sent over SSH; nothing is installed). cmux ships no Verdi code, headers or
+documentation, and nothing built against Verdi.
+
+### Yosys
+
+- **License:** ISC License
+- **Copyright:** Copyright (C) 2012 - 2026 Claire Xenia Wolf
+- **Source:** https://github.com/YosysHQ/yosys
+
+When Yosys is installed, the state machine view runs its `fsm_detect` and
+`fsm_extract` passes on the state register's module and reads the extracted
+state machine from `write_json`. cmux runs Yosys as a separate program and does
+not bundle, link against, or redistribute it.
+
+### sv-elab (Yosys `read_slang`)
+
+- **License:** ISC License
+- **Copyright:** Copyright Martin Povišer
+- **Source:** https://github.com/povik/sv-elab
+
+The SystemVerilog frontend built into Yosys from 0.67 (formerly yosys-slang).
+cmux uses it when the installed Yosys has it, and Yosys's own `read_verilog -sv`
+otherwise.
+
+### OSS CAD Suite
+
+- **License:** Each tool under its own license (ISC for Yosys and sv-elab); see the suite's `share/licenses`
+- **Copyright:** Copyright YosysHQ GmbH and the respective tool authors
+- **Source:** https://github.com/YosysHQ/oss-cad-suite-build
+
+The recommended way to install a Yosys that includes `read_slang`. cmux looks
+for its `bin/yosys`; it does not bundle or download the suite.
+
 ---
 
 ## Diff Viewer Highlighting Assets
