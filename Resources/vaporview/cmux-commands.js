@@ -58,6 +58,7 @@
       {command: "vaporview.showInNetlistView", group: "2_variables@2", when: "webviewSection == 'signal'"},
       {command: "vaporview.copyName", group: "2_variables@3", when: "webviewSection == 'signal'"},
       {command: "vaporview.copyValueAtMarker", group: "2_variables@4", when: "webviewSection == 'signal'"},
+      {command: "vaporview.showStateMachine", group: "2_variables@5", when: "webviewSection == 'signal' && cmuxFsm == true"},
       {command: "vaporview.renameSignalGroup", group: "2_variables@5", when: "(webviewSection == 'signal-group' || webviewSection == 'signal-separator')"},
       {command: "vaporview.ungroupSignals", group: "2_variables@6", when: "webviewSection == 'signal-group'"},
       {command: "vaporview.deleteGroup", group: "2_variables@7", when: "webviewSection == 'signal-group'"},
@@ -1100,6 +1101,12 @@
       const format = e && window.cmuxWaveform.enums ? window.cmuxWaveform.enums.formatFor(rowPath(e)) : null;
       if (format) { displayFormat(e, { numberFormat: format }); }
     },
+    // cmux's state machine pane (cmux-fsm.js): cmux finds the row's machine and shows it.
+    'vaporview.showStateMachine': (e) => {
+      const v = e && e.netlistId !== undefined ? host().netlistItem(e.netlistId) : null;
+      const path = v && host().pathOf ? host().pathOf(v) : rowPath(e).split('.');
+      if (window.cmuxWaveform.fsm && path.length) { window.cmuxWaveform.fsm.request(path); }
+    },
     'vaporview.displayAsFixedPoint': (e) => askNumberFormat(e, 'fixedpoint_u_'),
     'vaporview.displayAsFixedPointSigned': (e) => askNumberFormat(e, 'fixedpoint_s_'),
     'vaporview.increaseVerticalScale': keypress('increaseVerticalScale'),
@@ -1202,6 +1209,8 @@
     const context = Object.assign({}, extra || {}, host().viewerContext.keys, args);
     const enums = window.cmuxWaveform.enums;
     context.cmuxEnum = !!(args && args.webviewSection === 'signal' && enums && enums.formatFor(rowPath(args)));
+    // A state register is a vector (a 1-bit one is a flag, and analog rows aren't registers).
+    context.cmuxFsm = !!(args && args.webviewSection === 'signal' && Number(args.width) > 1 && !context.isAnalog && window.cmuxWaveform.fsm);
     return context;
   }
 
