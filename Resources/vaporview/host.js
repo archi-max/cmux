@@ -104,8 +104,15 @@
   }
 
   function toWebview(msg) {
-    // A view applied over the rows replaces any add still on its way.
-    if (msg && msg.command === 'apply-state') { pendingAdds.clear(); }
+    if (msg && msg.command === 'apply-state') {
+      // A view applied over the rows replaces any add still on its way.
+      pendingAdds.clear();
+      // A viewer that has asked for its state shows this view once it handles
+      // it (and answers it): an add made until then is checked against it.
+      if (window.cmuxCommands && window.cmuxCommands.viewerAnswersViews()) {
+        postedView = { rows: (msg.state && msg.state.displayedSignals) || [], unanswered: (postedView ? postedView.unanswered : 0) + 1 };
+      }
+    }
     if (iframe.contentWindow) { iframe.contentWindow.postMessage(msg, '*'); }
   }
 
@@ -470,13 +477,23 @@
     // viewer's: the reloaded one asks again for what it shows.
     fetchDataFromFile: async (m) => { if (dataReady()) { await backend.fetch(m.requestList); } },
     contextUpdate: (m) => {
-      // Before init, or while a reload waits for the new viewer's restore, a
-      // context is the old viewer's (cmux-commands.js keeps it apart too):
-      // its rows aren't the shown ones.
-      if (initSent && !window.cmuxCommands.isReloading()) {
+      // Before init (an open or reload clears initSent before the frame
+      // unloads or navigates), a context is the old viewer's: its rows aren't
+      // the shown ones (cmux-commands.js keeps it apart too). One frame's
+      // messages arrive in order, so all the old viewer sent comes before
+      // anything after initViewport, which is the new viewer's own: it shows
+      // no rows until its restore's apply-state.
+      if (initSent) {
         viewerContext.webview = m;
-        // An add the viewer reports back (in Locals or not) is no longer on its way.
-        if (pendingAdds.size && m.displayedSignals) { shownIds(false).forEach((id) => pendingAdds.delete(id)); }
+        if (postedView && window.cmuxCommands.isViewAnswer(m) && --postedView.unanswered <= 0) { postedView = null; }
+        // An add this context shows where it was going (in Locals, or
+        // outside it) is no longer on its way. Shown only in the other place,
+        // the context may be from before the add reached the viewer.
+        if (pendingAdds.size && m.displayedSignals) {
+          const pinned = rowIds(m.displayedSignals, 'pinned');
+          const locals = rowIds(m.displayedSignals, 'locals');
+          pendingAdds.forEach((p, id) => { if ((p.intoLocals ? locals : pinned).has(id)) { pendingAdds.delete(id); } });
+        }
       }
       if (m.autoReload !== undefined) { autoReloadState = !!m.autoReload; }
       window.cmuxCommands.onContextUpdate(m);
@@ -484,7 +501,8 @@
     },
     // Only the viewer this load initialized asks for its state: one a newer
     // reload superseded (init not sent yet) would end that reload's gap early.
-    restoreState: (m) => (initSent ? window.cmuxCommands.restoreState(m) : undefined),
+    // A viewer asking for its state shows none of the views posted before.
+    restoreState: (m) => { if (!initSent) { return undefined; } postedView = null; return window.cmuxCommands.restoreState(m); },
     executeCommand: (m) => {
       const handler = commandHandlers[m.commandName];
       if (handler) { handler(m.args || []); } else { window.cmuxCommands.run(m.commandName, (m.args || [])[0]); }
@@ -526,21 +544,35 @@
     return item.childrenRequest;
   }
 
-  // The netlist ids of the rows shown (pinnedOnly: outside the debugger's Locals).
-  function shownIds(pinnedOnly) {
+  // The netlist ids of a row list: 'all', 'pinned' (outside the debugger's
+  // Locals) or 'locals' (inside it).
+  const isLocals = (d) => !!(hostApi.isTransientGroup && hostApi.isTransientGroup(d));
+  function rowIds(list, which) {
     const out = new Set();
-    const walk = (list) => (list || []).forEach((d) => {
-      if (pinnedOnly && hostApi.isTransientGroup && hostApi.isTransientGroup(d)) { return; }
-      if (d.netlistId !== undefined) { out.add(d.netlistId); }
-      walk(d.children);
+    const walk = (items, inLocals) => (items || []).forEach((d) => {
+      const locals = inLocals || isLocals(d);
+      if (which === 'pinned' && locals) { return; }
+      if (d.netlistId !== undefined && (which !== 'locals' || locals)) { out.add(d.netlistId); }
+      walk(d.children, locals);
     });
-    walk(viewerContext.webview && viewerContext.webview.displayedSignals);
+    walk(list, false);
     return out;
   }
 
-  // netlistId -> time of an add the viewer has not reported back yet.
+  // The views posted to the viewer and not answered yet ({ rows, unanswered }):
+  // the rows of the last are the ones shown once the viewer handles it.
+  let postedView = null;
+  function shownRows() {
+    if (postedView) { return postedView.rows; }
+    return viewerContext.webview && viewerContext.webview.displayedSignals;
+  }
+
+  // The netlist ids of the rows shown (pinnedOnly: outside the debugger's Locals).
+  function shownIds(pinnedOnly) { return rowIds(shownRows(), pinnedOnly ? 'pinned' : 'all'); }
+
+  // netlistId -> { t, intoLocals } of an add the viewer has not reported back yet.
   const pendingAdds = new Map();
-  const isPending = (id, now) => { const t = pendingAdds.get(id); return t !== undefined && now - t < 2000; };
+  const isPending = (id, now) => { const p = pendingAdds.get(id); return p !== undefined && now - p.t < 2000; };
 
   // Shown outside the debugger's Locals, or on its way there.
   function alreadyShown(netlistId, shown = shownIds(true), now = Date.now()) {
@@ -554,10 +586,13 @@
   // 'reveal' (a pick by name, the editor's Add to Waveform) selects a shown
   // signal's row instead, as VaporView's add with reveal does. Locals leaves
   // out what is shown outside it (cmux-debugger.js).
+  // Returns how many rows it added, or, while it waits for a view, a promise
+  // of that (0 when a reload or open drops it).
   function addVariables(vars, groupPath, index, mode) {
     // An Undo, Redo or session still looking up its rows would replace this
     // add's row when it lands: the add waits for it.
-    if (window.cmuxCommands.deferWhileApplying(() => addVariables(vars, groupPath, index, mode))) { return; }
+    const held = window.cmuxCommands.deferWhileApplying(() => addVariables(vars, groupPath, index, mode));
+    if (held) { return held; }
     const now = Date.now();
     const asked = vars.filter(Boolean);
     vars = asked;
@@ -572,9 +607,14 @@
     }
     if (!vars.length) {
       if (mode === 'reveal' && asked.length === 1) { toWebview({ command: 'setSelectedSignal', netlistId: asked[0].netlistId }); }
-      return;
+      return 0;
     }
-    vars.forEach((v) => pendingAdds.set(v.netlistId, now));
+    // Into the debugger's Locals (a drop there): a context shows it arrived
+    // once it shows it in Locals.
+    const top = Array.isArray(groupPath) && groupPath.length
+      ? (shownRows() || []).find((d) => d.dataType === 'signal-group' && d.groupName === groupPath[0]) : null;
+    const intoLocals = isLocals(top);
+    vars.forEach((v) => pendingAdds.set(v.netlistId, { t: now, intoLocals }));
     // Next to a selected row of the debugger's Locals, a new row would land in
     // Locals (and go with its next refill): it goes to the top level instead.
     if (groupPath === undefined && index === undefined && hostApi.topLevelIndexOutsideTransient) {
@@ -583,6 +623,7 @@
     toWebview({ command: 'add-variable', signalList: vars.map((v) => ({ signalId: v.signalId, signalWidth: v.width,
       signalName: v.name, scopePath: v.scopePath, netlistId: v.netlistId, type: v.type, encoding: v.encoding,
       enumType: v.enumType, msb: v.msb, lsb: v.lsb })), groupPath, index });
+    return vars.length;
   }
 
   function addVariable(v) { addVariables([v]); }
@@ -701,6 +742,7 @@
     frameLoaded = false;
     // The old file's rows: what addVariables counts as shown comes from the new viewer.
     viewerContext.webview = null;
+    postedView = null;
     pendingAdds.clear();
     doc.metadata = null;
     doc.netlist = [];
@@ -750,6 +792,7 @@
     window.cmuxCommands.willReload();
     // The old viewer's rows: the reloaded one reports its own.
     viewerContext.webview = null;
+    postedView = null;
     pendingAdds.clear();
     closeBackend();
     doc.metadata = null;
@@ -919,8 +962,10 @@
       const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId, now));
       const vars = all.slice(0, maxScopeAdds);
       if (vars.length > confirmAbove && !confirmed) { return { needsConfirm: true, count: vars.length, total: all.length }; }
-      if (vars.length) { addVariables(vars, undefined, undefined, 'bulk'); }
-      return { added: vars.length, total: all.length };
+      // An add held for a view (Undo, restore) is checked against it when it
+      // runs, and a reload drops it: the count is what was added.
+      const added = vars.length ? await addVariables(vars, undefined, undefined, 'bulk') : 0;
+      return { added, total: all.length };
     }
 
     // ---- values at a time, for the editor's inline values ----
