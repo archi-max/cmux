@@ -666,9 +666,16 @@ endmodule
     let swappedNew = "module s(input logic clk);\n  always_ff @(posedge clk) begin\n    z <= z + 1;\n    w <= 0;\n  end\n  always_ff @(posedge clk) begin\n    x <= x + 1;\n    y <= 0;\n  end\nendmodule\n"
     moved("always blocks swapped, the mark's line unchanged", swapped, mark: 2, swappedNew, .line(6))
     moved("swapped, the mark's line changed", swapped, mark: 3, swappedNew.replacingOccurrences(of: "y <= 0;", with: "y <= 1;"), .lineOrLost(7))
-    // (Not checked: swapped blocks where the mark's line changed and its old text is in the other
-    // block. The line diff pairs it with that copy, which stayed in place; telling that apart needs
-    // block-move detection.)
+    // verify-bp2 R4c: the line diff pairs the mark's line with the other block's copy, which stayed;
+    // its block moved (the nearest line once in each file above it moved), so it goes with it.
+    let swappedTwin = swapped.replacingOccurrences(of: "w <= 0;", with: "y <= 0;")
+    moved("swapped, the mark's line changed, its old text elsewhere", swappedTwin, mark: 3,
+          swappedNew.replacingOccurrences(of: "w <= 0;", with: "y <= 0;").replacingOccurrences(of: "    x <= x + 1;\n    y <= 0;", with: "    x <= x + 1;\n    y <= 2;"), .lineOrLost(7))
+    moved("the same, the mark's line unchanged", swappedTwin, mark: 3, swappedNew.replacingOccurrences(of: "w <= 0;", with: "y <= 0;"), .line(7))
+    // A mark in a block that stayed does not follow another line that moved.
+    let stayed = swappedTwin.replacingOccurrences(of: "endmodule\n", with: "  assign o = x;\nendmodule\n")
+    moved("a line once in each file moved away below a mark in a block that stayed", stayed, mark: 3,
+          stayed.replacingOccurrences(of: "  assign o = x;\n", with: "").replacingOccurrences(of: "module s(input logic clk);\n", with: "module s(input logic clk);\n  assign o = x;\n"), .line(4))
     let functions = "module f(input logic [7:0] a, output logic [7:0] o);\n  function automatic logic [7:0] inc(input logic [7:0] v);\n    return v + 1;\n  endfunction\n  assign o = inc(a);\n  function automatic logic [7:0] dec(input logic [7:0] v);\n    return v - 1;\n  endfunction\nendmodule\n"
     let functionsNew = "module f(input logic [7:0] a, output logic [7:0] o);\n  function automatic logic [7:0] dec(input logic [7:0] v);\n    return v - 1;\n  endfunction\n  assign o = inc(a);\n  function automatic logic [7:0] inc(input logic [7:0] v);\n    return v + 1;\n  endfunction\nendmodule\n"
     moved("functions swapped", functions, mark: 2, functionsNew, .line(6))
