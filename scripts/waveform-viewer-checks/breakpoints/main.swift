@@ -665,19 +665,26 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(ended == 995, "a disabled breakpoint does not stop play: \(String(describing: ended))")
     _ = await dbg("pause()")
     await removeAll()
-    // L5: a search while the file reloads says it is loading, and warns of nothing.
+    // L5: a search while the data is not read yet says so; a signal not found then is not warned about.
     _ = await add("mode")
+    _ = await dbg("restoreBreakpoints({ items: [{ path: ['top', 'mode'], kind: 'change', enabled: true }, { path: ['top', 'gone'], kind: 'change', enabled: true }] })")
+    await setMarker(0)
     await clearToasts()
-    let reopened = openedCount
     let loading = await call("""
-      \(wideReloadJS);
-      return await cmuxWaveform.debugger.continue({ dir: 1 });
+      const h = cmuxWaveform.host;
+      const real = h.dataReady;
+      h.dataReady = () => false;
+      try { return await cmuxWaveform.debugger.continue({ dir: 1 }); } finally { h.dataReady = real; }
     """) as? [String: Any]
-    for _ in 0..<100 where openedCount == reopened { await sleep(50) }
-    await sleep(300)
     let loadingToasts = await toasts()
-    expect(loading?["reason"] as? String != "end" && !loadingToasts.contains { $0.contains("not in this waveform") },
-           "while loading: not 'the end', no warnings: \(String(describing: loading?["reason"])) \(loadingToasts)")
+    expect(loading?["reason"] as? String == "loading" && loadingToasts.contains("The waveform is still loading; try again in a moment.")
+           && !loadingToasts.contains { $0.contains("not in this waveform") },
+           "while loading: says so, warns of nothing: \(String(describing: loading?["reason"])) \(loadingToasts)")
+    await clearToasts()
+    let loaded = await dbg("continue({ dir: 1 })")
+    let loadedToasts = await toasts()
+    expect(loaded?["reason"] as? String == "hit" && loadedToasts.contains("top.gone is not in this waveform."),
+           "once read, the real warning is still said: \(String(describing: loaded?["reason"])) \(loadedToasts)")
     await removeAll()
   }
 
@@ -964,7 +971,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerExprBadReplication:'A replication count must be at least 1', debuggerExprUnknownName:'%@ is not in this waveform',
    debuggerExprNoValue:'%@ has no value at the marker', debuggerExprNoMarker:'Put the marker on a cycle first.',
    debuggerBreakpointIf:'%1$@ if %2$@', debuggerEditCondition:'Edit Condition…', debuggerConditionPrompt:'Break only when this is true at the clock edge',
-   debuggerConditionError:'Condition of %1$@: %2$@', debuggerLinePathsCapped:'%1$@: watching the first %2$@ of %3$@ signals',
+   debuggerConditionError:'Condition of %1$@: %2$@', debuggerLinePathsCapped:'%1$@: watching the first %2$@ of %3$@ signals', debuggerLoading:'The waveform is still loading; try again in a moment.',
    debuggerLineNotPlaced:'%@: none of its signals are in the waveform (not placed in the design yet).'}
   """
 
