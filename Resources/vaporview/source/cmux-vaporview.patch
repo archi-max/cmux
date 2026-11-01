@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..d6a04cf
+index 0000000..ef902b2
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,185 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -172,6 +172,23 @@ index 0000000..d6a04cf
 +The windowed path (`toHostPattern` in `window_cache.ts`) already searched exact values; its
 +text-format fallback calls `checkSearchValue`, so it is exact now too.
 +`test/riscv/search.test.ts` (45 checks, run by `node test/riscv/run.cjs`) covers it.
++
++## Windowed-viewer review follow-ups (hybrid #5, #8; L1–L3)
++
++All in `src/webview/window_cache.ts`. The spike harness's `?ftest=1` (`followup-test.js`) checks each one.
++It was red before these changes.
++
++- **#5:** a bit slice added after its windowed source. The slice reads the source whole through the
++  v1 path, so a pending or running hybrid load of that source is dropped (`loadedWholeElsewhere`).
++  The source no longer crosses the wire twice.
++- **#8:** a navigation timeout's notice gives how long the user waited, not `longQueryMs`. A step
++  that joined a prefetch times out sooner.
++- **L1:** a user step that won't join an old prefetch now cancels it. Before, the step's new
++  `navAsk` entry left the old prefetch running until its own timeout.
++- **L2:** with no marker, a forward text-format search also tests record 0 (the value at time 0),
++  as upstream's search from index 0 does.
++- **L3:** if a signal is over the hybrid budget only because of loads still pending, it is decided
++  again later, not marked windowed for good.
 diff --git a/src/webview/control_bar.ts b/src/webview/control_bar.ts
 index 54acd7a..4bf8c32 100644
 --- a/src/webview/control_bar.ts
@@ -2232,10 +2249,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..56b4919
+index 0000000..e6509d2
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1785 @@
+@@ -0,0 +1,1819 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2360,6 +2377,7 @@ index 0000000..56b4919
 +  hybridEst     = 0; // estimated bytes, while counted in hybridPending
 +  scanKey: string | null = null; // latest exact chunk of a formatted value search
 +  hybridSolo    = false; // was in a probe batch that failed as a whole: probe it alone
++  loadQueryId: number | null = null; // the hybrid whole-signal load in flight
 +  constructor(public signalId: SignalId, public width: number) {}
 +}
 +
@@ -2607,7 +2625,14 @@ index 0000000..56b4919
 +    if (!this.enabled) {return entries;}
 +    const rest: SignalQueueEntry[] = [];
 +    entries.forEach((entry) => {
-+      if (entry.customSignalId !== undefined) {rest.push(entry); return;}
++      if (entry.customSignalId !== undefined) {
++        // A bit slice reads its source whole through the v1 path: a hybrid load of that
++        // source would transfer it a second time (review #5).
++        const s = this.signals.get(entry.signalId);
++        if (s) {this.loadedWholeElsewhere(s);}
++        rest.push(entry);
++        return;
++      }
 +      if (!this.signals.has(entry.signalId)) {
 +        const s = new SignalWindows(entry.signalId, entry.signalWidth);
 +        s.addedAt = performance.now();
@@ -2858,8 +2883,14 @@ index 0000000..56b4919
 +  private decideCount(s: SignalWindows, count: number) {
 +    if (s.hybrid !== 'unknown' && s.hybrid !== 'asking') {return;}
 +    const est = hybridBytesFor(count, s.width);
-+    if (count > this.hybridMaxChanges || est > this.hybridMaxBytes || this.hybridBytes + this.hybridPending + est > this.hybridBudget) {
++    if (count > this.hybridMaxChanges || est > this.hybridMaxBytes || this.hybridBytes + est > this.hybridBudget) {
 +      s.hybrid = 'windowed';
++      return;
++    }
++    // Over budget only with the loads still pending: those may fail and free it, so decide
++    // again later rather than for good (review L3).
++    if (this.hybridBytes + this.hybridPending + est > this.hybridBudget) {
++      this.hybridLater(s);
 +      return;
 +    }
 +    s.hybrid = 'known';
@@ -2877,6 +2908,16 @@ index 0000000..56b4919
 +    while (this.loadsBusy < HYBRID_LOADS && ready.length > 0) {this.loadWhole(ready.shift()!);}
 +  }
 +
++  // The signal is being loaded whole by the v1 path (a bit slice's source): no hybrid load.
++  // Its windows serve it until the whole data arrives (then isWindowed() is false).
++  private loadedWholeElsewhere(s: SignalWindows) {
++    if (s.hybrid === 'local') {return;} // already whole: nothing in flight
++    const loading = s.hybrid === 'loading';
++    if (s.hybrid === 'known' || loading) {this.unpend(s);}
++    s.hybrid = 'windowed'; // before the cancel, so the load's rejection is ignored
++    if (loading && s.loadQueryId !== null) {this.cancelQuery(s.loadQueryId, 'cancelled');}
++  }
++
 +  private unpend(s: SignalWindows) {
 +    this.hybridPending -= s.hybridEst;
 +    s.hybridEst = 0;
@@ -2889,7 +2930,8 @@ index 0000000..56b4919
 +    const gen = this.generation, t1 = viewport.timeStop + 1;
 +    const buckets = Math.min(MAX_HOST_BUCKETS, Math.ceil(s.hybridCount / 2) + 1);
 +    const final = () => {this.unpend(s); s.hybrid = 'windowed';};
-+    const {reply} = this.query('window', {signals: [{signalId: s.signalId, width: s.width}], t0: 0, t1, buckets}, this.longQueryMs);
++    const {id, reply} = this.query('window', {signals: [{signalId: s.signalId, width: s.width}], t0: 0, t1, buckets}, this.longQueryMs);
++    s.loadQueryId = id;
 +    reply.then(async ({result, bin}) => {
 +      if (gen !== this.generation) {return;}
 +      const [d] = await this.decodeSignals(result, bin || new Uint8Array(0), buckets);
@@ -2909,6 +2951,7 @@ index 0000000..56b4919
 +    }).catch(() => {
 +      if (gen === this.generation && s.hybrid === 'loading') {this.hybridLater(s, 'known');}
 +    }).finally(() => {
++      if (s.loadQueryId === id) {s.loadQueryId = null;}
 +      if (gen !== this.generation) {return;}
 +      this.loadsBusy--;
 +      this.scheduleEnsure(0);
@@ -3565,8 +3608,8 @@ index 0000000..56b4919
 +  }
 +
 +  // A failed host search must say so: a timeout, or any other error (not Escape or a reload).
-+  private noticeIfTimedOut(e: unknown, what: string) {
-+    if (e && (e as {timedOut?: boolean}).timedOut) {this.showNotice(what + ' timed out after ' + Math.round(this.longQueryMs / 1000) + ' s'); return;}
++  private noticeIfTimedOut(e: unknown, what: string, waitedMs = this.longQueryMs) {
++    if (e && (e as {timedOut?: boolean}).timedOut) {this.showNotice(what + ' timed out after ' + Math.max(1, Math.round(waitedMs / 1000)) + ' s'); return;}
 +    const msg = e instanceof Error ? e.message : String(e);
 +    if (msg !== 'cancelled' && msg !== 'reset') {this.showNotice(what + ' failed: ' + msg);}
 +  }
@@ -3670,8 +3713,10 @@ index 0000000..56b4919
 +    if (this.navBusy) {this.navQueued = () => this.runNav(fn, what); return;}
 +    this.navBusy = true;
 +    const gen = this.generation;
++    const startedAt = performance.now();
 +    fn(gen).catch((e) => {
-+      if (gen === this.generation) {vscodeWrapper.outputLog('navigation: ' + e.message); this.noticeIfTimedOut(e, what);}
++      // The wait the user saw (a joined prefetch times out sooner than longQueryMs; review #8).
++      if (gen === this.generation) {vscodeWrapper.outputLog('navigation: ' + e.message); this.noticeIfTimedOut(e, what, performance.now() - startedAt);}
 +    }).finally(() => {
 +      if (gen !== this.generation) {return;} // reset() already cleared navBusy/navQueued
 +      this.navBusy = false;
@@ -3713,7 +3758,8 @@ index 0000000..56b4919
 +    const askKey = key + '@' + start;
 +    const joined = this.navAsk.get(askKey);
 +    // Join a question already in flight, unless it is old enough that its timeout would cut
-+    // a user's wait short (then ask afresh; the old one is left to finish).
++    // a user's wait short (then ask afresh: an old prefetch is cancelled, an old user
++    // question is left to finish).
 +    if (joined && (prefetch || performance.now() - joined.sentAt < this.longQueryMs / 2)) {
 +      if (!prefetch) {
 +        joined.prefetch = false; // a user waits on it now: not cancelled by a marker move
@@ -3721,6 +3767,9 @@ index 0000000..56b4919
 +      }
 +      return joined.p;
 +    }
++    // Asking afresh past an old prefetch: drop it now. Once its navAsk entry is replaced,
++    // no marker move could cancel it any more (review L1).
++    if (joined && joined.prefetch) {this.navAsk.delete(askKey); this.cancelQuery(joined.id, 'cancelled');}
 +    const gen = this.generation;
 +    const args = q.cmd === 'edge' ? {kind: q.kind} : {value: q.value, wildcard: '?'};
 +    const {id, reply} = this.query(q.cmd, {signalId: s.signalId, t: start, dir, ...args}, this.longQueryMs, prefetch);
@@ -3896,7 +3945,9 @@ index 0000000..56b4919
 +      if (recs.length === 0 || recs[0][0] !== t0) {throw new Error('value search: window does not start at t0');}
 +      this.keepScanWindow(s, t0, t1, d.h, recs);
 +      if (dir > 0) {
-+        for (let i = 1; i < recs.length; i++) {if (recs[i][0] > start && ok(recs[i][1])) {return recs[i][0];}}
++        // No marker (start -1): record 0, the value at time 0, counts too, as upstream's
++        // search from index 0 (review L2).
++        for (let i = start < 0 && t0 === 0 ? 0 : 1; i < recs.length; i++) {if (recs[i][0] > start && ok(recs[i][1])) {return recs[i][0];}}
 +        a = t1 - 1; // the next window's record 0 is the value at t1 - 1, so a change at t1 is a record
 +        if (t1 >= end) {return null;}
 +      } else {
