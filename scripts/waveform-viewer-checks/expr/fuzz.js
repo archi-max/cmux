@@ -3,6 +3,7 @@
 //
 //   node fuzz.js gen <dir> <seed> <count>   writes <dir>/fuzz.sv and <dir>/cases.json
 //   node fuzz.js repro <dir> <i,j,...>      prints a .sv with only those cases
+//   node fuzz.js alone <dir> <out-dir>      after check: <out-dir>/case-<i>.sv for each mismatch
 //   node fuzz.js check <dir> <sim-output>   compares cmux-expr with the simulator's lines
 //                                           ("<index> <bits>"), prints the mismatches, and writes
 //                                           <dir>/mismatches.json (fixtures for run.sh expr)
@@ -12,9 +13,13 @@
 // leading too), selects, concatenation and replication. Each case is `$display("%0d %b", i, e)`,
 // so both sides print the expression at its self-determined width.
 //
-// Count a mismatch only after `repro` shows it alone: VCS W-2024.09 printed a different value for
-// a few cases in a 4000-case file than for the same case compiled by itself (Icarus and the case
-// alone agreed). VCS also gives 0 for some `a == b + c` with unknown bits in b, where the LRM,
+// Count a mismatch only after it also mismatches alone (`alone` writes one .sv per mismatch, to
+// compile each by itself): VCS W-2024.09 printed a different value for about 1 case in 3000 in a
+// 4000-case file than for the same case compiled by itself (Icarus and the case alone agreed).
+// It is not the generator: every case is a side-effect-free $display over the same 10 signals,
+// which nothing assigns, and the effect stays with cases split into initial blocks of 100, with
+// the signals assigned at time 0 instead of initialized, and at -O0; it needs a particular set of
+// unrelated other cases in the module (no pair or count of them alone). VCS also gives 0 for some `a == b + c` with unknown bits in b, where the LRM,
 // slang and Icarus give x (b + c is all x); cmux-expr keeps the LRM's x.
 'use strict';
 const fs = require('fs');
@@ -173,6 +178,12 @@ if (command === 'gen') {
   // Only the listed cases (comma-separated indices), to see one alone.
   const batch = JSON.parse(fs.readFileSync(path.join(dir, 'cases.json'), 'utf8'));
   process.stdout.write(svOf(batch, a.split(',').map(Number)));
+} else if (command === 'alone') {
+  const batch = JSON.parse(fs.readFileSync(path.join(dir, 'cases.json'), 'utf8'));
+  const mismatches = JSON.parse(fs.readFileSync(path.join(dir, 'mismatches.json'), 'utf8'));
+  fs.mkdirSync(a, { recursive: true });
+  for (const m of mismatches) { fs.writeFileSync(path.join(a, `case-${m.i}.sv`), svOf(batch, [m.i])); }
+  console.log(`${mismatches.length} files in ${a}; compile each alone, then check ${dir} <their output> with FUZZ_PRESENT_ONLY=1`);
 } else if (command === 'check') {
   const batch = JSON.parse(fs.readFileSync(path.join(dir, 'cases.json'), 'utf8'));
   const sim = new Map();
@@ -194,6 +205,6 @@ if (command === 'gen') {
   console.log(`seed ${batch.seed}: ${batch.cases.length} cases, ${sim.size} simulator lines, ${mismatches.length} mismatches`);
   for (const m of out.slice(0, Number(b) || 20)) { console.log(`#${m.i} ${m.text}\n   sim ${m.want}\n   got ${m.got}`); }
 } else {
-  console.log('usage: fuzz.js gen <dir> <seed> <count> | check <dir> <sim-output> [show]');
+  console.log('usage: fuzz.js gen <dir> <seed> <count> | repro <dir> <i,...> | check <dir> <sim-output> [show] | alone <dir> <out-dir>');
   process.exit(2);
 }
