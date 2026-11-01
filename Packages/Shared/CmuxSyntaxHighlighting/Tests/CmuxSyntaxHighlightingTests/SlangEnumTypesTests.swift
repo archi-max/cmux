@@ -91,40 +91,6 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         #expect(SlangEnumValues.literalBits("3'b1x", width: 3) == nil)
     }
 
-    @Test func membersAreReadFromTheTypedefWithTheirOffsets() {
-        let text = "typedef enum logic [W-1:0] { IDLE, FETCH, DECODE = 3'd4, EXEC, DONE = 3'b111 } state_t;"
-        let members = SlangEnumValues.declaredMembers(in: text)
-        #expect(members?.map(\.name) == ["IDLE", "FETCH", "DECODE", "EXEC", "DONE"])
-        #expect(members?.map(\.explicitValue) == [nil, nil, "3'd4", nil, "3'b111"])
-        let offset = members?[2].offset ?? -1
-        #expect((text as NSString).substring(with: NSRange(location: offset, length: 6)) == "DECODE")
-    }
-
-    @Test func membersSkipCommentsAndExpandRanges() {
-        let text = """
-        typedef enum logic [3:0] {
-            // comment, with a comma
-            A_ST,   /* block, comma */ B_ST = 4'h3,
-          C_ST = {2'b1, 2'b0},
-            D_ST[2],
-            E_ST[5:6] = 4'd9
-        } multi_t;
-        """
-        let members = SlangEnumValues.declaredMembers(in: text)
-        #expect(members?.map(\.name) == ["A_ST", "B_ST", "C_ST", "D_ST", "E_ST"])
-        #expect(members?[2].explicitValue == "{2'b1, 2'b0}")
-        #expect(members?[3].range == SlangEnumValues.MemberRange(first: 0, last: 1))
-        #expect(members?[4].range == SlangEnumValues.MemberRange(first: 5, last: 6))
-        #expect(members?[4].explicitValue == "4'd9")
-        #expect(SlangEnumValues.declaredMembers(in: "typedef struct packed { logic a; } s_t;") == nil)
-    }
-
-    @Test func membersOfAnEnumWithoutTypedefAndWithAPackageBase() {
-        let members = SlangEnumValues.declaredMembers(in: "enum bit [1:0] {A, B} e;")
-        #expect(members?.map(\.name) == ["A", "B"])
-        #expect(SlangEnumValues.declaredMembers(in: "typedef enum pkg::base_t {X = pkg::K, Y} t;")?.map(\.name) == ["X", "Y"])
-    }
-
     @Test func aMembersValuesComeFromItsHoverOnePerInstance() {
         let hover = """
         **EnumValue** `IDLE` in `fsm.state_t`  \nValue: `3'b0`  \n\n\n---\n\n````systemverilog\ntypedef enum logic [W-1:0] { IDLE } state_t;\n````\n\n---\n\n**EnumValue** `IDLE` in `fsm.state_t`  \nValue: `4'b0`  \n\n\n---\n\n````systemverilog\ntypedef enum logic [W-1:0] { IDLE } state_t;\n````
@@ -145,9 +111,30 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
         #expect(SlangEnumValues.enumTypeLink(inHover: "**Variable** `x`  \nType: `logic[3:0]`  \n") == nil)
     }
 
-    @Test func aHoversDeclarationIsItsFirstCodeBlock() {
-        let hover = "**TypeAlias** `t`  \n\n---\n\n````systemverilog\ntypedef enum {\n  A\n} t;\n````\n\n---\n\nmore\n````systemverilog\nother\n````"
-        #expect(SlangEnumValues.firstCodeBlock(inHover: hover) == "typedef enum {\n  A\n} t;")
+    @Test func anEnumsMembersAreItsDocumentSymbolsChildren() {
+        // slang-server's documentSymbol: the typedef (kind 10) spans the name the type link points at.
+        let symbols: JSONValue = .array([
+            .object(["name": .string("cpu_pkg"), "kind": .int(2),
+                     "range": Self.range(0, 0, 12, 10), "selectionRange": Self.range(0, 8, 0, 15),
+                     "children": .array([
+                        .object(["name": .string("op_t"), "kind": .int(10), "range": Self.range(1, 2, 1, 80), "selectionRange": Self.range(1, 2, 1, 9),
+                                 "children": .array([
+                                    .object(["name": .string("OP_ADD"), "kind": .int(22), "range": Self.range(1, 29, 1, 41), "selectionRange": Self.range(1, 29, 1, 35)]),
+                                    .object(["name": .string("OP_SUB"), "kind": .int(22), "range": Self.range(1, 44, 1, 56), "selectionRange": Self.range(1, 44, 1, 50)]),
+                                 ])]),
+                        .object(["name": .string("other_t"), "kind": .int(10), "range": Self.range(3, 2, 5, 12), "selectionRange": Self.range(3, 2, 3, 9),
+                                 "children": .array([.object(["name": .string("X"), "kind": .int(22), "range": Self.range(4, 4, 4, 5), "selectionRange": Self.range(4, 4, 4, 5)])])]),
+                     ])]),
+        ])
+        let op = SlangEnumValues.enumMembers(inSymbols: symbols, containing: LSPPosition(line: 1, character: 76))
+        #expect(op?.map(\.name) == ["OP_ADD", "OP_SUB"])
+        #expect(op?.first?.position == LSPPosition(line: 1, character: 29))
+        #expect(SlangEnumValues.enumMembers(inSymbols: symbols, containing: LSPPosition(line: 5, character: 6))?.map(\.name) == ["X"])
+        #expect(SlangEnumValues.enumMembers(inSymbols: symbols, containing: LSPPosition(line: 9, character: 0)) == nil)
+    }
+
+    static func range(_ l0: Int, _ c0: Int, _ l1: Int, _ c1: Int) -> JSONValue {
+        .object(["start": .object(["line": .int(l0), "character": .int(c0)]), "end": .object(["line": .int(l1), "character": .int(c1)])])
     }
 
     // MARK: Against slang-server
@@ -162,6 +149,12 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             D_ST[2],
             E_ST[5:6]
         } multi_t;
+        typedef enum logic [3:0] {
+            // comment
+            M_A,   /* block */ M_B = 4'h3,
+          M_C
+        } multi2_t;
+      typedef enum logic { LO, HI } lvl_t;
       localparam logic [2:0] K = 3'd6;
     endpackage
 
@@ -175,8 +168,10 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
       state_t state, next_state;
       op_t op_q;
       cpu_pkg::multi_t mm;
+      cpu_pkg::multi2_t mm2;
       param_t pp;
       state_t hist [2];
+      cpu_pkg::lvl_t lv [2];
       enum { RED, GREEN, BLUE } color;
       logic [2:0] plain;
       always_ff @(posedge clk) state <= rst ? IDLE : next_state;
@@ -215,7 +210,7 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
     func aScopesEnumSignalsComeWithTheirMembers() async throws {
         try await Self.withServer { session, cache in
             let signals = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
-            #expect(Set(signals.keys) == ["state", "next_state", "op_q", "mm", "pp", "hist", "color"])
+            #expect(Set(signals.keys) == ["state", "next_state", "op_q", "mm2", "pp", "hist", "lv", "color"])
             #expect(signals["state"]?.type == Self.state)
             #expect(signals["state"]?.isArray == false)
             #expect(signals["next_state"]?.type == Self.state)
@@ -225,20 +220,25 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
             #expect(signals["hist"]?.isArray == true)
             #expect(signals["hist"]?.type == Self.state)
             #expect(signals["color"]?.type.members.map(\.name) == ["RED", "GREEN", "BLUE"])
+            // An array of a type no scalar here has: found through workspace symbols.
+            #expect(signals["lv"]?.isArray == true)
+            #expect(signals["lv"]?.type.members == [.init(name: "LO", bits: "0"), .init(name: "HI", bits: "1")])
             #expect(signals["plain"] == nil)
         }
     }
 
     @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: slangServerPath), "needs slang-server"))
-    func multiLineTypedefsRangesAndParameterValues() async throws {
+    func multiLineTypedefsParameterValuesAndRanges() async throws {
         try await Self.withServer { session, cache in
             let signals = try await session.slangEnumSignals(inScope: "top.u_fsm", cache: cache)
-            let multi = signals["mm"]?.type
-            #expect(multi?.name == "cpu_pkg::multi_t")
-            #expect(multi?.members.map(\.name) == ["A_ST", "B_ST", "C_ST", "D_ST0", "D_ST1", "E_ST5", "E_ST6"])
-            #expect(multi?.members.map(\.bits) == ["0000", "0011", "0100", "0101", "0110", "0111", "1000"])
+            let multi = signals["mm2"]?.type
+            #expect(multi?.name == "cpu_pkg::multi2_t")
+            #expect(multi?.members.map(\.name) == ["M_A", "M_B", "M_C"])
+            #expect(multi?.members.map(\.bits) == ["0000", "0011", "0100"])
             // A value from a package parameter: slang's hover says what it is.
             #expect(signals["pp"]?.type.members.map(\.bits) == ["110", "111"])
+            // Range members (D_ST[2]) have no value slang-server reports: the type is left out, not guessed.
+            #expect(signals["mm"] == nil)
         }
     }
 
