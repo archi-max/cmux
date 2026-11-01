@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..ef902b2
+index 0000000..4275b83
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,189 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -189,6 +189,10 @@ index 0000000..ef902b2
 +  as upstream's search from index 0 does.
 +- **L3:** if a signal is over the hybrid budget only because of loads still pending, it is decided
 +  again later, not marked windowed for good.
++- **N1** (from the follow-ups' verify): a signal is also checked where a count or a hybrid load starts,
++  not only where it enters the cache (`settleIfV1`, `v1Whole`). If the v1 path holds the signal, or is
++  fetching it for a slice, it gets no count and no load. This covers a slice row restored before its
++  source row.
 diff --git a/src/webview/control_bar.ts b/src/webview/control_bar.ts
 index 54acd7a..4bf8c32 100644
 --- a/src/webview/control_bar.ts
@@ -2249,10 +2253,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..e6509d2
+index 0000000..0070938
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1819 @@
+@@ -0,0 +1,1845 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2637,7 +2641,9 @@ index 0000000..e6509d2
 +        const s = new SignalWindows(entry.signalId, entry.signalWidth);
 +        s.addedAt = performance.now();
 +        // Already loaded whole (v1 path for a bit slice's source): an ordinary local signal.
-+        s.hybrid = dataManager.valueChangeData[entry.signalId] !== undefined ? 'local' : this.hybrid ? 'unknown' : 'windowed';
++        // Being fetched whole by v1 (the slice row came first): windows until it arrives.
++        const v1 = this.v1Whole(entry.signalId);
++        s.hybrid = v1 === 'loaded' ? 'local' : v1 === 'pending' || !this.hybrid ? 'windowed' : 'unknown';
 +        this.signals.set(entry.signalId, s);
 +      }
 +    });
@@ -2823,7 +2829,7 @@ index 0000000..e6509d2
 +  private askCounts() {
 +    if (!this.countSupported || this.countBusy) {return;}
 +    const now = performance.now();
-+    const want = this.hybridOrder([...this.signals.values()].filter((s) => s.hybrid === 'unknown' && now >= s.hybridRetryAt));
++    const want = this.hybridOrder([...this.signals.values()].filter((s) => s.hybrid === 'unknown' && now >= s.hybridRetryAt && !this.settleIfV1(s)));
 +    if (want.length === 0) {return;}
 +    const solo = want.find((s) => s.hybridSolo);
 +    const group = solo ? [solo] : want.slice(0, COUNT_BATCH);
@@ -2904,8 +2910,31 @@ index 0000000..e6509d2
 +
 +  private startLoads() {
 +    const now = performance.now();
-+    const ready = this.hybridOrder([...this.signals.values()].filter((s) => s.hybrid === 'known' && now >= s.hybridRetryAt));
++    const ready = this.hybridOrder([...this.signals.values()].filter((s) => s.hybrid === 'known' && now >= s.hybridRetryAt && !this.settleIfV1(s)));
 +    while (this.loadsBusy < HYBRID_LOADS && ready.length > 0) {this.loadWhole(ready.shift()!);}
++  }
++
++  // Whether the v1 (whole-signal) path holds the signal or is fetching it: a bit slice reads
++  // its source that way, whatever order the rows were added in (session or undo restores).
++  private v1Whole(id: SignalId): 'loaded' | 'pending' | null {
++    if (dataManager.valueChangeData[id] !== undefined) {return 'loaded';}
++    const temp = dataManager.valueChangeDataTemp[id];
++    return temp && temp.customSignalIdList && temp.customSignalIdList.length > 0 ? 'pending' : null;
++  }
++
++  // Before a count or a hybrid load: a signal v1 has (or is fetching) needs neither (review
++  // verify N1: the guard at cache entry alone missed a source added after its slice's fetch).
++  private settleIfV1(s: SignalWindows): boolean {
++    const v1 = this.v1Whole(s.signalId);
++    if (v1 === null) {return false;}
++    if (v1 === 'loaded') {
++      if (s.hybrid === 'known' || s.hybrid === 'loading') {this.unpend(s);}
++      if (s.hybrid === 'loading' && s.loadQueryId !== null) {s.hybrid = 'local'; this.cancelQuery(s.loadQueryId, 'cancelled');}
++      s.hybrid = 'local';
++    } else {
++      this.loadedWholeElsewhere(s);
++    }
++    return true;
 +  }
 +
 +  // The signal is being loaded whole by the v1 path (a bit slice's source): no hybrid load.
@@ -2925,6 +2954,7 @@ index 0000000..e6509d2
 +
 +  // One exact window of the whole dump: the signal as v1 would hold it.
 +  private loadWhole(s: SignalWindows) {
++    if (this.settleIfV1(s)) {return;}
 +    s.hybrid = 'loading';
 +    this.loadsBusy++;
 +    const gen = this.generation, t1 = viewport.timeStop + 1;
