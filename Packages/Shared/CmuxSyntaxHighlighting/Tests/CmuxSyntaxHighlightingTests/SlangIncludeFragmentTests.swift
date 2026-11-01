@@ -44,6 +44,10 @@ struct SlangIncludeFragmentTests {
         assign inner = x4[0];
     endmodule
 
+    /// Instantiated as instance arrays by tb_wrapper.
+    module asub (input logic [3:0] a, input logic b);
+    endmodule
+
     """
 
     /// Included by tb_wrapper through a define, like a TB_FILE testbench body.
@@ -86,6 +90,16 @@ struct SlangIncludeFragmentTests {
         for (genvar i = 0; i < 1; i++) begin : g
             sub u (.clk (clk), .q (gq));
         end
+        // Instance arrays: a connection as wide as the port goes to every instance whole; one as
+        // wide as all instances' ports is sliced (no instance has the whole net); any other is an error.
+        logic [7:0] abus;
+        logic aen;
+        logic [3:0] awhole;
+        logic [4:0] abad;
+        asub ua [1:0] (.a (abus), .b (aen));
+        asub va [2:3] (.a (awhole), .b (aen));
+        asub wa [(1+5):5] (.a (awhole), .b (aen));
+        asub ba [1:0] (.a (abad), .b ());
     endmodule
 
     """
@@ -288,6 +302,10 @@ struct SlangIncludeFragmentTests {
         // A positional connection's member select is not a named port.
         #expect(S.portConnections(inInstanceText: "u (top.sig, s.f, q)").isEmpty)
         #expect(S.portConnections(inInstanceText: "u (.a (s.f), .b)").map(\.port) == ["a", "b"])
+        // An instance array's range comes before the connections, with or without parentheses.
+        let array = S.portConnections(inInstanceText: "wa [(1+5):$clog2(32)] (.a (x), .b)")
+        #expect(array.map(\.port) == ["a", "b"])
+        #expect(array.map(\.signal) == ["x", "b"])
     }
 
     @Test func aTaskCallsNamedArgumentIsNotAPortName() {
@@ -438,6 +456,30 @@ struct SlangIncludeFragmentTests {
             // logic [NUM_PORTS-1:0] dfp_wdone.
             #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.fp")) == ["tb_wrapper.fpu.clk", "tb_wrapper.fpu.q"])
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.fpu.q") == ["tb_wrapper.fp"])
+        }
+    }
+
+    @Test func anInstanceArraysWholeConnectionsAreAliasesOfEveryElement() async throws {
+        try await Self.withFixture { fixture async throws in
+            // Down: each element's port, for a connection as wide as the port (ascending, descending,
+            // a non-zero base and a range with parentheses).
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.aen")) == [
+                "tb_wrapper.ua[1].b", "tb_wrapper.ua[0].b", "tb_wrapper.va[2].b", "tb_wrapper.va[3].b",
+                "tb_wrapper.wa[6].b", "tb_wrapper.wa[5].b",
+            ])
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.awhole")) == [
+                "tb_wrapper.va[2].a", "tb_wrapper.va[3].a", "tb_wrapper.wa[6].a", "tb_wrapper.wa[5].a",
+            ])
+            // Up: what the array's instantiation connects an element's port to.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.va[3].b") == ["tb_wrapper.aen"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ua[0].b") == ["tb_wrapper.aen"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.wa[5].a") == ["tb_wrapper.awhole"])
+            // A sliced connection gives each element part of the net, and a width that fits neither
+            // rule is an error: no alias either way.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.abus").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ua[1].a").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.abad").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ba[0].a").isEmpty)
         }
     }
 
