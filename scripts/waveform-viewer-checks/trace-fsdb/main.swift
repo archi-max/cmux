@@ -7,7 +7,8 @@
 // TRACE_FSDB_VERDI=1 also runs the Verdi engine on the host as cmux does (verdi-trace/, a warm
 // `verdi -nogui` session found through the KDB next to the FSDB), answers the page's engine
 // requests from it, and counts how the two engines' answers compare. TRACE_FSDB_UNDRIVEN=a,b names
-// signals the design leaves undriven (no driver is the right answer for them).
+// signals the design leaves undriven (no driver is the right answer for them). TRACE_FSDB_PROFILE=1 prints
+// each step's whole-signal reads (count, signals, changes, summed time, most at once).
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
@@ -178,9 +179,29 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var knownUndriven: [String] = []
     var engines: [String: Int] = [:]
     var errors = 0
+    // TRACE_FSDB_PROFILE=1: per step, the whole-signal reads it made (count, signals, changes, time).
+    let profile = ProcessInfo.processInfo.environment["TRACE_FSDB_PROFILE"] == "1"
     while !queue.isEmpty, times.count < (Int(ProcessInfo.processInfo.environment["TRACE_FSDB_MAX_STEPS"] ?? "") ?? 400) {
       let (path, t, depth) = queue.removeFirst()
       guard seen.insert("\(path)@\(t)").inserted else { continue }
+      if profile {
+        // Wrap the backend's whole-signal reads (and the engine requests) once: count, time, changes.
+        _ = await call("""
+          const b = cmuxWaveform.host.currentBackend;
+          if (!b.__prof) {
+            const p = b.__prof = { calls: 0, signals: 0, changes: 0, ms: 0, most: 0, now: 0 };
+            window.__traceProf = p;
+            const own = b.changes.bind(b);
+            b.changes = async (vars, max) => {
+              const t = performance.now(); p.calls++; p.signals += vars.length; p.now++; p.most = Math.max(p.most, p.now);
+              try { const r = await own(vars, max); for (const c of r) { p.changes += c ? c.length : 0; } return r; }
+              finally { p.now--; p.ms += performance.now() - t; }
+            };
+          }
+          Object.assign(window.__traceProf, { calls: 0, signals: 0, changes: 0, ms: 0, most: 0 });
+          return null
+          """)
+      }
       let t0 = Date()
       let step = await call("return await cmuxWaveform.trace.driverOfDesign(argument)",
                             ["argument": ["designPath": path, "designPrefix": "", "dumpPrefix": "", "time": t]]) as? [String: Any]
@@ -203,6 +224,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           let theirs = e["verdiLoc"] as? [String: Any]
           print("[verdi differs] \(path) @\(t): cmux \((ours?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(ours?["line"] ?? "") verdi \((theirs?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(theirs?["line"] ?? "") since \(step["since"] ?? "")")
         }
+      }
+      if profile, let p = await call("return window.__traceProf || null") as? [String: Any] {
+        print(String(format: "[profile] %@: %d reads, %d signals, %d changes, %.0f ms in reads (summed), at most %d at once",
+                     path, p["calls"] as? Int ?? 0, p["signals"] as? Int ?? 0, p["changes"] as? Int ?? 0, p["ms"] as? Double ?? 0, p["most"] as? Int ?? 0))
       }
       if times.count <= 12 || ms > 2000 {
         let src = ((step["stmt"] as? [String: Any])?["src"] as? String ?? "").prefix(70)
