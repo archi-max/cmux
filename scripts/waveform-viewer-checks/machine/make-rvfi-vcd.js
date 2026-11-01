@@ -263,8 +263,13 @@
     walk(tree);
     lines.push('$enddefinitions $end');
     const byTime = new Map();
+    // As a simulator's $dumpvars: every signal has a value at the first time, x until it changes.
+    // (wellen 0.25.7 merges split bits valid [0], valid [1] into valid[1:0], and its merge starts each
+    // bit at its second value when no bit changes at the first time: transform_bv_signal's offsets.)
+    const t0 = Math.min(...run.signals.map((s) => (s.changes.length ? s.changes[0][0] : Infinity)));
     for (const s of run.signals) {
-      for (const [t, bits] of s.changes) {
+      const changes = s.changes.length && s.changes[0][0] > t0 ? [[t0, 'x'.repeat(s.width)]].concat(s.changes) : s.changes;
+      for (const [t, bits] of changes) {
         if (!byTime.has(t)) { byTime.set(t, []); }
         byTime.get(t).push(s.width === 1 ? bits + ids.get(s) : 'b' + bits + ' ' + ids.get(s));
       }

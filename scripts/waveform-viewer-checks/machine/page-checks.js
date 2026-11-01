@@ -13,8 +13,14 @@
   async function runMachinePageChecks(opts) {
     const lines = [];
     let failures = 0;
-    const expect = (ok, what) => { lines.push((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) { failures++; } };
-    const note = (what) => lines.push('     ' + what);
+    // Streamed as it happens (page.swift prints it), so a run that never ends shows how far it got.
+    const progress = (what) => {
+      const h = root.webkit && root.webkit.messageHandlers && root.webkit.messageHandlers.cmuxWaveform;
+      if (h) { h.postMessage({ type: 'progress', text: String(what) + ' (' + Math.round(performance.now()) + ' ms)' }); }
+    };
+    const live = opts.kind === 'fsdb';  // long runs stream every line
+    const expect = (ok, what) => { lines.push((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) { failures++; } if (live) { progress((ok ? 'ok   ' : 'FAIL ') + what); } };
+    const note = (what) => { lines.push('     ' + what); if (live) { progress(what); } };
     const W = root.cmuxWaveform;
     const M = W.machine;
     const D = W.debugger;
@@ -43,10 +49,22 @@
 
     // ---- the stream: found from wellen's netlist ----
     const t0 = performance.now();
+    if (live) { progress('building the commit index'); }
     let s = await M.build();
     const buildMs = performance.now() - t0;
     expect(s.error === null && s.count > 0, opts.name + ': a commit stream: ' + JSON.stringify([s.source, s.family, s.nret, s.count, s.error, s.problem]));
-    if (!s.count) { return { lines, failures }; }
+    if (!s.count) {
+      // What the reader named the vars in the scopes the generator wrote (how a miss reads).
+      const H = W.host;
+      const walk = async (items, path, depth) => {
+        for (const it of items) {
+          if (it.kind === 'scope' && depth < 3) { await walk(await H.getChildren(it), path.concat([it.name]), depth + 1); }
+          if (it.kind === 'var') { note('  ' + path.concat([it.name]).join('.') + ' w' + it.width + ' [' + it.msb + ':' + it.lsb + ']'); }
+        }
+      };
+      try { await walk(H.doc.netlist, [], 0); } catch (error) { note('netlist walk: ' + error); }
+      return { lines, failures };
+    }
     note(opts.name + ': ' + s.source + ' (' + s.family + ', NRET ' + s.nret + '), ' + s.count + ' commits, built in ' + buildMs.toFixed(0) + ' ms'
       + ' (page ' + s.buildMs + ' ms), masks ' + s.memMask + ', gated ' + JSON.stringify(s.gated));
 
@@ -54,6 +72,19 @@
       const run = root.makeRvfi(opts.name);
       const x = run.expect;
       expect(s.count === x.count && s.nret === x.nret, opts.name + ': count and NRET as generated: ' + [s.count, x.count, s.nret, x.nret].join(' '));
+      if (s.count !== x.count) {
+        // How a miscount reads: the page's clock edges and the reader's valid against the generator's.
+        const edges = await D.edges();
+        note('edges: page ' + edges.length + ' [' + Array.from(edges.slice(0, 4)).join(',') + ' … ' + edges[edges.length - 1] + '], generated ' + run.edges.length
+          + ' [' + run.edges.slice(0, 4).join(',') + ' … ' + run.edges[run.edges.length - 1] + ']');
+        const valids = run.signals.filter((g) => /(^|_)valid(\[\d+\])?$/.test(g.path[g.path.length - 1]));
+        note('generated valid: ' + valids.map((g) => g.path.join('.') + ' w' + g.width + ' ' + g.changes.length + ' changes, first ' + JSON.stringify(g.changes.slice(0, 4))).join('; '));
+        for (const path of [x.scope.concat(['valid'])]) {
+          const v = await W.host.findLinkItem(path, true);
+          const ch = v ? await W.host.signalChanges(v, 1e6) : null;
+          note('read ' + path.join('.') + ': ' + (v ? 'w' + v.width + ' ' + (ch ? ch.length + ' changes, first ' + JSON.stringify(Array.from(ch.slice(0, 4))) : 'no changes') : 'not found'));
+        }
+      }
       expect(s.memMask === x.mask, opts.name + ': ' + x.mask + '-relative masks detected: ' + s.memMask);
       expect(s.source === x.scope.join('.') + (opts.name === 'monitor' ? '.monitor_*' : ''), opts.name + ': found at ' + s.source);
       let checked = 0, bad = 0, firstBad = null;
@@ -115,12 +146,33 @@
     if (opts.kind === 'fsdb') {
       // A course run (VCS, FSDB through the helper) against its own Spike-format commit.log.
       const log = root.machineSpikeReplay(opts.spikeLog, 0);
-      expect(s.count === log.length, opts.name + ': ' + s.count + ' commits = commit.log\'s ' + log.length + ' lines');
+      // commit.log may stop before the halt loop the core then retires (a branch or jump to itself).
+      const extra = s.count > log.length ? M.commits({ from: log.length, count: Math.min(4, s.count - log.length) }) : [];
+      const selfLoop = (c) => c && ['63', '6f', 'a001'].includes(c.insn);
+      expect(s.count === log.length || (s.count - log.length <= 2 && extra.every((c) => selfLoop(c) && c.pc === extra[0].pc)),
+        opts.name + ': ' + s.count + ' commits = commit.log\'s ' + log.length + ' lines' + (extra.length ? ' and the halt loop: ' + JSON.stringify(extra) : '')
+        + '; held repeats dropped: ' + (s.diagnostics && s.diagnostics.heldRepeats));
       expect(s.diagnostics && s.diagnostics.orderContiguous !== false, opts.name + ': order contiguous: ' + JSON.stringify(s.diagnostics));
+      if (s.diagnostics && s.diagnostics.orderContiguous === false) {
+        // Where order skips or repeats, through the commit-index API.
+        const ix = await W.commits.index();
+        const gaps = [];
+        for (let k = 1; k < ix.count && gaps.length < 4; k++) {
+          if (ix.order[k] !== ix.order[k - 1] + 1) { gaps.push({ k, order: [ix.order[k - 1], ix.order[k]], pc: [ix.pc[k - 1].toString(16), ix.pc[k].toString(16)], time: [ix.time[k - 1], ix.time[k]] }); }
+        }
+        note(opts.name + ': order gaps at ' + JSON.stringify(gaps));
+      }
       let pcBad = 0, insnBad = 0, rdBad = 0, rdChecked = 0, first = null;
       const tRead = performance.now();
-      for (let from = 0; from < Math.min(s.count, log.length); from += 50000) {
-        const chunk = M.commits({ from, count: 50000 });
+      const both = Math.min(s.count, log.length);
+      if (s.count !== log.length) {
+        // Where the two first part: the commits around the end of the shorter one.
+        const at = Math.max(0, both - 3);
+        note(opts.name + ': page commits ' + at + '..: ' + JSON.stringify(M.commits({ from: at, count: 6 })) + '; commit.log: '
+          + JSON.stringify(log.slice(at, at + 6).map((c) => [c.pc.toString(16), c.insn.toString(16), c.rd])));
+      }
+      for (let from = 0; from < both; from += 50000) {
+        const chunk = M.commits({ from, count: Math.min(50000, both - from) });
         chunk.forEach((c, i) => {
           const want = log[from + i];
           if (c.pc === null || parseInt(c.pc, 16) !== want.pc) { pcBad++; first = first || 'pc at ' + (from + i) + ': ' + c.pc + ' != ' + want.pc.toString(16); }
@@ -137,7 +189,8 @@
       const regsAt = (k) => { const out = new Array(32).fill(null); out[0] = 0n; for (let j = 0; j < k; j++) { if (log[j].rd) { out[log[j].rd] = log[j].rdv; } } return out; };
       let bad = 0, known = 0;
       const times = [];
-      for (const k of [1000, 77777, 250000, 500001, s.count - 1]) {
+      for (const k of [1000, 77777, 250000, 500001, both - 1]) {
+        progress('go to commit ' + k);
         const t1 = performance.now();
         await M.goToCommit({ k });
         const r = M.registers();
@@ -165,6 +218,7 @@
       // Sequence search on the course run (§3A's estimate: tens of ms).
       for (const q of ['{lw} as L ##1 rs1 == L.rd || rs2 == L.rd', '/jal\\s+(ra|x1)/ ##[1:$] {ret}', '{branch} && taken ##1 {branch} && taken ##1 {branch} && taken',
         '(cls == STORE, a = mem_addr) ##[1:$] cls == LOAD && mem_addr == a']) {
+        progress('sequence ' + q);
         const t = performance.now();
         const r = await M.sequence({ query: q });
         note(opts.name + ': ' + q + ': ' + (r.error ? r.message : r.matches.length + ' matches' + (r.incomplete ? ' (incomplete)' : '') + ', ' + r.evaluated + ' steps') + ' in ' + (performance.now() - t).toFixed(0) + ' ms');
