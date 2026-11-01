@@ -183,8 +183,8 @@ case "${1:-}" in
   commit-page)
     swiftc -O "$HERE/commit-page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/commit-page"
-    python3 "$HERE/text-breakpoints/make-vcd.py" "$OUT"
-    "$OUT/commit-page" "$ASSETS" "$OUT/text-breakpoints.vcd" "$OUT/commit-page.png" | grep -v '^\[log\]' | tee "$OUT/commit-page.log"
+    python3 "$HERE/commit-page/make-vcd.py" "$OUT"
+    "$OUT/commit-page" "$ASSETS" "$OUT/commit-page.vcd" "$OUT/text-breakpoints.vcd" "$OUT/commit-page.png" | grep -v '^\[log\]' | tee "$OUT/commit-page.log"
     grep -q '^COMMIT PAGE CHECKS PASSED' "$OUT/commit-page.log"
     ;;
   fsdb-locals)

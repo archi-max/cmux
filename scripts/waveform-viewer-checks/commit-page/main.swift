@@ -1,18 +1,19 @@
 // Commit breakpoint checks in the viewer (run.sh commit-page): loads Resources/vaporview through the
-// real WaveformViewerSchemeHandler in an off-screen WKWebView, opens text-breakpoints.vcd (its clock),
-// gives the page a mock commit index (as cmux-machine.js's window.cmuxWaveform.commits would) and drives
-// window.cmuxWaveform.debugger's pc, commitText and write breakpoints as the menus would: continue both
-// ways, several commits in one cycle, conditions, the Machine section's commit after a hit, the list and
-// its menu, View > Waveform Debugger > Add Instruction Breakpoint…'s menu and prompts, saving and
-// restoring, caps, refusals, and a dump with no commit stream.
-// Usage: commit-page <assetRoot> <text-breakpoints.vcd> <out.png>
+// real WaveformViewerSchemeHandler in an off-screen WKWebView, opens commit-page.vcd (an RVFI commit
+// stream that cmux-machine.js indexes as window.cmuxWaveform.commits; see commit-page/make-vcd.py) and
+// drives window.cmuxWaveform.debugger's pc, commitText and write breakpoints as the menus would: continue
+// both ways, several commits in one cycle, conditions, the Machine section's commit after a hit, the list
+// and its menu, View > Waveform Debugger > Add Instruction Breakpoint…'s menu and prompts, saving and
+// restoring, caps, refusals, and then a dump with no commit stream (text-breakpoints.vcd, opened next).
+// Usage: commit-page <assetRoot> <commit-page.vcd> <text-breakpoints.vcd> <out.png>
 import AppKit
 import WebKit
 
 let args = CommandLine.arguments
 let assetRoot = URL(fileURLWithPath: args[1], isDirectory: true)
 let waveURL = URL(fileURLWithPath: args[2])
-let out = URL(fileURLWithPath: args[3])
+let plainURL = URL(fileURLWithPath: args[3])
+let out = URL(fileURLWithPath: args[4])
 var failures = 0
 
 @MainActor
@@ -128,29 +129,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   func runChecks() async {
-    // The mock index: commits on posedges (5, 15, ...); two share the cycle at 25 (channels 0 and 1).
-    // k: time pc insn channel. Writes: a0 by k0, [0x1000] by k5, mtvec by k2.
-    _ = await call("""
-      const rows = [[15, 0x80000000, 0x00000513, 0], [25, 0x80000004, 0x008002ef, 0], [25, 0x80000008, 0x30531073, 1],
-        [35, 0x80000004, 0x008002ef, 0], [45, 0x80000004, 0x008002ef, 0], [65, 0x80000010, 0x0005a683, 0], [85, 0x80000004, 0x008002ef, 0]];
-      const index = { backend: 1, count: rows.length, nret: 2, xlen: 32, sortedBy: 'time',
-        time: Float64Array.from(rows.map((r) => r[0])), edge: Int32Array.from(rows.map((r) => (r[0] - 5) / 10)),
-        channel: Uint8Array.from(rows.map((r) => r[3])), pc: Float64Array.from(rows.map((r) => r[1])),
-        insn: Uint32Array.from(rows.map((r) => r[2])), order: null };
-      const writes = { a0: [0], 'csr:mtvec': [2], 'mem:4096': [5] };
-      window.__commitIndex = index;
-      window.__wentTo = [];
-      window.__commitListeners = [];
-      Object.defineProperty(cmuxWaveform, 'commits', { configurable: true, value: {
-        index: async () => window.__commitIndex,
-        current: () => window.__commitIndex,
-        currentK: () => null,
-        onChange: (fn) => { window.__commitListeners.push(fn); return () => {}; },
-        writesOf: async (q) => (writes[typeof q.loc === 'string' ? q.loc : (q.loc.csr ? 'csr:' + q.loc.csr : 'mem:' + q.loc.addr)] || []).slice(),
-      } });
-      Object.defineProperty(cmuxWaveform, 'machine', { configurable: true, value: { goToCommit: (q) => { window.__wentTo.push(q.k); } } });
-      return null
-    """)
+    // The index cmux-machine.js builds from the dump's stream: commits on posedges (15, 25, ...); two
+    // share the cycle at 25 (channels 0 and 1). Writes: a0 by k0, mtvec by k2, [0x1000..0x1003] by k5.
+    let built = await call("""
+      const ix = await cmuxWaveform.commits.index();
+      return ix ? { count: ix.count, nret: ix.nret, scope: ix.scope, time: Array.from(ix.time), channel: Array.from(ix.channel),
+        pc: Array.from(ix.pc), insn: Array.from(ix.insn) } : null;
+    """) as? [String: Any]
+    expect(built?["count"] as? Int == 7 && built?["nret"] as? Int == 2 && built?["scope"] as? [String] == ["top"]
+           && built?["time"] as? [Int] == [15, 25, 25, 35, 45, 65, 85] && built?["channel"] as? [Int] == [0, 0, 1, 0, 0, 0, 0]
+           && (built?["pc"] as? [Int])?.first == 0x80000000 && (built?["insn"] as? [Int])?[5] == 0x00d5a023,
+           "cmux-machine.js indexes the dump's commit stream: \(String(describing: built))")
+    let currentK = "return cmuxWaveform.commits.currentK()"
 
     // PC: every commit there; one landing per cycle.
     let pc = await addCommit("kind: 'pc', pcs: ['0x80000004']")
@@ -164,15 +154,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await clearToasts()
     _ = await dbg("jump({ to: 'first' })")
     _ = await marker(5)
-    _ = await call("window.__wentTo.length = 0; return null")
     _ = await dbg("continue({ dir: 1 })")
     expect(await toasts().contains("Breakpoint: PC 0x80000004 at 25 ns (cycle 3)"), "the hit is said: \(await toasts())")
-    let went = await call("return window.__wentTo.slice()") as? [Int]
-    expect(went == [1], "the Machine section goes to the commit that hit: \(String(describing: went))")
+    let went = await call(currentK) as? Int
+    expect(went == 1, "the Machine section goes to the commit that hit: \(String(describing: went))")
 
     // A condition, tested at the landing posedge (flag is high only at 35), its names looked up in
     // the commit source's instance (the index's scope, here top), then from the top.
-    _ = await call("window.__commitIndex.scope = ['top']; return null")
     let cond = await addCommit("kind: 'pc', pcs: ['0x80000004'], condition: 'flag'")
     l = await landings(cond)
     expect(l.forward == [35] && l.back.isEmpty, "pc if flag: only 35: \(l)")
@@ -182,11 +170,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // Instruction text: the second commit of the shared cycle is the one gone to.
     let csrw = await addCommit("kind: 'commitText', pattern: 'csrw mtvec'")
-    _ = await call("window.__wentTo.length = 0; return null")
     l = await landings(csrw)
     expect(l.forward == [25] && l.back.isEmpty, "commitText csrw mtvec: \(l)")
-    let wentText = await call("return window.__wentTo.slice()") as? [Int]
-    expect(wentText == [2], "to the commit that matched, not the cycle's first: \(String(describing: wentText))")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    _ = await dbg("continue({ dir: 1 })")
+    let wentText = await call(currentK) as? Int
+    expect(wentText == 2, "to the commit that matched, not the cycle's first: \(String(describing: wentText))")
     let jal = await addCommit("kind: 'commitText', pattern: 'jal x5'")
     l = await landings(jal)
     expect(l.forward == [25, 35, 45, 85], "jal x5 matches jal t0 (either register name): \(l.forward)")
@@ -214,7 +204,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let showAddress = "Show Value as Address in Listing"
     expect(await rowItems("msg").map { !$0.contains(showAddress) } == true, "not offered with no listing")
     _ = await dbg("setPcBreakpoints({ items: [], listing: true })")
-    expect(await rowItems("msg")?.last == showAddress, "offered on a 32-bit row with one: \(String(describing: await rowItems("msg")))")
+    expect(await rowItems("msg")?.contains(showAddress) == true, "offered on a 32-bit row with one: \(String(describing: await rowItems("msg")))")
     expect(await rowItems("flag").map { !$0.contains(showAddress) } == true, "not on a 1-bit row")
     _ = await dbg("jump({ to: 'last' })")
     _ = await rowItems("msg", run: showAddress)
@@ -249,7 +239,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       window.cmuxUI.showMenu = real;
       const realPrompt = window.cmuxUI.prompt;
       const asked = [];
-      const answers = ['80000010', 'lw a3', '[0x1000]/1'];
+      const answers = ['80000010', 'sw a3', '[0x1000]/1'];
       window.cmuxUI.prompt = async (o) => { asked.push([o.title, o.placeholder]); return answers[asked.length - 1]; };
       for (const item of shown[0]) { await item.run(); }
       window.cmuxUI.prompt = realPrompt;
@@ -261,7 +251,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(asked?.map { $0[0] } == ["Break when an instruction at this address commits", "Break when a committed instruction's text matches",
                                      "Break when an instruction writes this register, CSR or memory"], "its prompts: \(String(describing: asked))")
     let made = (await list()).suffix(3)
-    expect(made.map { $0["label"] as? String ?? "" } == ["PC 0x80000010", "Next instruction ~ /lw a3/", "[0x1000]/1 written"],
+    expect(made.map { $0["label"] as? String ?? "" } == ["PC 0x80000010", "Next instruction ~ /sw a3/", "[0x1000]/1 written"],
            "what they made: \(made.map { $0["label"] ?? "" })")
     for (bp, want) in zip(made, [[65], [65], [65]]) {
       l = await landings(bp["id"] as? Int)
@@ -315,15 +305,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(await toasts().contains("At most 32 breakpoints of this kind can be enabled"), "said: \(await toasts())")
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (/nope/.test(b.pattern || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
 
-    // No commit stream: no hit, and why.
-    _ = await call("window.__savedIndex = window.__commitIndex; window.__commitIndex = null; return null")
-    await clearToasts()
-    l = await landings(restoredPc)
-    expect(l.forward.isEmpty, "no commit stream: no hit: \(l.forward)")
-    expect(await toasts().contains("PC 0x80000004: this dump has no commit stream (RVFI or similar) to search"), "and says so: \(await toasts())")
-
     // ---- listings (cmux owns their pc breakpoints, keyed by mark) ----
-    _ = await call("window.__commitIndex = window.__savedIndex || window.__commitIndex; return null")
     _ = await call("""
       return cmuxWaveform.debugger.setPcBreakpoints({ items: [
         { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
@@ -409,9 +391,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await clearToasts()
     _ = await call("cmuxWaveform.debugger.say({ text: 'prog.dis does not match', level: 'warning' }); return null")
     expect(await toasts().contains("prog.dis does not match"), "say shows cmux's text")
-    _ = await call("for (const fn of window.__commitListeners) { fn({ reason: 'ready', backend: 1, count: 7 }); } return null")
-    await sleep(100)
-    expect(readyEvents == 1, "cmux is told when the commit stream is ready: \(readyEvents)")
+    expect(readyEvents == 1, "cmux is told when the commit stream is ready (once: it was built once): \(readyEvents)")
+
+    // No commit stream: another dump opened in the same viewer (as a reload would). No hit, and why.
+    let plain = await addCommit("kind: 'pc', pcs: ['0x80000004']")
+    await open(plainURL)
+    for _ in 0..<100 where openedCount < 2 { await sleep(50) }
+    expect(openedCount == 2, "text-breakpoints.vcd is opened: \(openedCount)")
+    let noIndex = await call("return await cmuxWaveform.commits.index()")
+    expect(noIndex is NSNull || noIndex == nil, "it has no commit index: \(String(describing: noIndex))")
+    await clearToasts()
+    let kept = (await list()).first { $0["kind"] as? String == "pc" }?["id"] as? Int ?? plain
+    l = await landings(kept)
+    expect(l.forward.isEmpty, "no commit stream: no hit: \(l.forward)")
+    expect(await toasts().contains("PC 0x80000004: this dump has no commit stream (RVFI or similar) to search"), "and says so: \(await toasts())")
 
     print(failures == 0 ? "COMMIT PAGE CHECKS PASSED" : "COMMIT PAGE CHECKS FAILED: \(failures)")
     snap()
@@ -441,6 +434,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   var checksStarted = false
 
+  func open(_ url: URL) async {
+    let fileURL = scheme.serve(fileURL: url)
+    let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+    let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
+    _ = try? await web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(Harness.strings)}); null")
+  }
+
   func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
     guard m.name == "cmuxWaveform", let body = m.body as? [String: Any], let type = body["type"] as? String else {
       print("[\(m.name)]", m.body)
@@ -457,10 +457,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if ["debugger", "event", "sessionState", "log", "keyState", "context", "signalData"].contains(type) { return }
     print("[\(m.name)]", type)
     if type == "ready" {
-      let fileURL = scheme.serve(fileURL: waveURL)
-      let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
-      let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
-      web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(Harness.strings)})")
+      Task { @MainActor in await self.open(waveURL) }
     } else if type == "opened" {
       openedCount += 1
       guard !checksStarted else { return }
