@@ -48,6 +48,10 @@ struct SlangIncludeFragmentTests {
     module asub (input logic [3:0] a, input logic b);
     endmodule
 
+    /// Outputs and an inout of instance arrays: every element drives the whole net.
+    module osub (input logic a, output logic y, inout wire t);
+    endmodule
+
     """
 
     /// Included by tb_wrapper through a define, like a TB_FILE testbench body.
@@ -100,6 +104,16 @@ struct SlangIncludeFragmentTests {
         asub va [2:3] (.a (awhole), .b (aen));
         asub wa [(1+5):5] (.a (awhole), .b (aen));
         asub ba [1:0] (.a (abad), .b ());
+        logic oa;
+        wire oy, ot, oy1;
+        osub om [1:0] (.a (oa), .y (oy), .t (ot));
+        osub o1 [0:0] (.a (oa), .y (oy1), .t ());
+        logic nen;
+        asub na [0:-1] (.a (), .b (nen));
+        for (genvar i = 0; i < 2; i++) begin : ga
+            logic gb;
+            asub ug [1:0] (.a (), .b (gb));
+        end
     endmodule
 
     """
@@ -480,6 +494,26 @@ struct SlangIncludeFragmentTests {
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ua[1].a").isEmpty)
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.abad").isEmpty)
             #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ba[0].a").isEmpty)
+            // A negative index, and an array inside a generate block.
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.nen")) == ["tb_wrapper.na[0].b", "tb_wrapper.na[-1].b"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.na[-1].b") == ["tb_wrapper.nen"])
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.ga[0].gb")) == ["tb_wrapper.ga[0].ug[1].b", "tb_wrapper.ga[0].ug[0].b"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ga[1].ug[0].b") == ["tb_wrapper.ga[1].gb"])
+        }
+    }
+
+    @Test func anInstanceArraysOutputsAreNotAliasesOfTheNetsTheyAllDrive() async throws {
+        try await Self.withFixture { fixture async throws in
+            // Two elements drive oy and ot: neither element's value is the net's.
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.oy").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.om[0].y").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.ot").isEmpty)
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.om[1].t").isEmpty)
+            // Inputs still are, and a one-element array's output is like one instance's.
+            #expect(Set(try await fixture.session.slangPortAliases(of: "tb_wrapper.oa")) == ["tb_wrapper.om[1].a", "tb_wrapper.om[0].a", "tb_wrapper.o1[0].a"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.om[1].a") == ["tb_wrapper.oa"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.oy1") == ["tb_wrapper.o1[0].y"])
+            #expect(try await fixture.session.slangPortAliases(of: "tb_wrapper.o1[0].y") == ["tb_wrapper.oy1"])
         }
     }
 
