@@ -923,7 +923,9 @@
       const scope = Array.isArray(item.scope) ? item.scope.map(String) : null;
       const bp = { id: before ? before.id : nextBreakpointId++, kind: 'line', key, label: String(item.label || key), paths,
         enabled: item.enabled !== false, times: same ? before.times : null, timesFor: same ? before.timesFor : null,
-        condition: null, conditionError: null, scope, pathsTotal: allPaths.length, warned: before ? before.warned : undefined };
+        condition: null, conditionError: null, scope, pathsTotal: allPaths.length, warned: before ? before.warned : undefined,
+        // Why it has no paths, when cmux knows: the line watches nothing, or its file is too large to scan.
+        unwatched: item.unwatched === 'nothing' || item.unwatched === 'tooLarge' ? item.unwatched : null };
       conditionOf(bp, item.condition, bp.label);
       // Break in any instance with a condition: each instance's changes are tested in its own scope.
       const groups = (Array.isArray(item.groups) ? item.groups : []).filter((g) => g && Array.isArray(g.paths) && Array.isArray(g.scope));
@@ -1376,7 +1378,8 @@
       // A condition that does not parse: shown as an error, and why.
       if (bp.conditionError) { label.classList.add('condition-error'); label.style.color = 'var(--vscode-errorForeground, #f48771)'; }
       label.title = bp.conditionError ? format(S().debuggerConditionError, baseName(bp), bp.conditionError)
-        : bp.kind === 'line' && !bp.paths.length ? format(S().debuggerLineNotPlaced, bp.label)
+        : bp.kind === 'line' && !bp.paths.length ? format(bp.unwatched === 'nothing' ? S().debuggerLineNothingToWatch
+          : bp.unwatched === 'tooLarge' ? S().debuggerLineFileTooLarge : S().debuggerLineNotPlaced, bp.label)
         : (bp.kind === 'line' && bp.pathsTotal > bp.paths.length
           ? format(S().debuggerLinePathsCapped, label.textContent, number(bp.paths.length), number(bp.pathsTotal)) : label.textContent);
       const remove = document.createElement('span');

@@ -367,6 +367,14 @@ enum WaveformDebugger {
                 localized: "waveformDebugger.lineNotPlaced",
                 defaultValue: "%@: none of its signals are in the waveform (not placed in the design yet)."
             ),
+            "debuggerLineNothingToWatch": String(
+                localized: "waveformDebugger.lineNothingToWatch",
+                defaultValue: "%@: this line assigns no signal, so it has nothing to watch."
+            ),
+            "debuggerLineFileTooLarge": String(
+                localized: "waveformDebugger.lineFileTooLarge",
+                defaultValue: "%@: the file is too large to find the signals of this line."
+            ),
         ]
     }
 
