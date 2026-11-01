@@ -288,7 +288,11 @@
     return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
-  const V2_COMMANDS = new Set(['window', 'valueAt', 'edge', 'search', 'count', 'cancel']);
+  const V2_COMMANDS = new Set(['window', 'valueAt', 'edge', 'search', 'searchText', 'count', 'cancel']);
+
+  // signals {maxChanges}: helper v2's count first (a signal over it comes back as its count).
+  // Only a finite integer: JSON turns Infinity into null, which the helper refuses.
+  const capOf = (n) => (Number.isSafeInteger(n) && n >= 0 ? { maxChanges: n } : {});
 
   function fsdbBackend(config) {
     // Whether the helper answers valueAt (v2); unknown until the first ask.
@@ -378,16 +382,19 @@
       },
       // [[time, value], ...] per variable, for the source link's value lookups (not
       // drawn); null for one with more than maxChanges changes, which is not decoded.
-      // (Helper v1 reports the count only with the data, so it is still downloaded.)
+      // Helper v2 counts first and sends such a signal without its data ({count,
+      // overCap, bytes: 0}; its count is only a lower bound); helper v1 ignores
+      // maxChanges and still sends the data. Only this reader sends maxChanges: the
+      // others inflate every entry they get.
       async changes(vars, maxChanges) {
         const { result, bin } = await request({ cmd: 'signals',
-          signalIds: vars.map((v) => v.signalId), widths: vars.map((v) => v.width) });
+          signalIds: vars.map((v) => v.signalId), widths: vars.map((v) => v.width), ...capOf(maxChanges) });
         let offset = 0;
         const out = [];
         for (const d of result) {
           let changes = d.valueChanges || null;
           if (!changes) {
-            if (!(d.count > maxChanges)) {
+            if (!d.overCap && !(d.count > maxChanges)) {
               changes = decodeRecords(await inflateRaw(bin.subarray(offset, offset + d.bytes)), d.width);
             }
             offset += d.bytes;
