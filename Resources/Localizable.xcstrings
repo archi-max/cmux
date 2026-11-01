@@ -701926,6 +701926,65 @@
         }
       }
     },
+    "waveformDebugger.commit.addressTooLarge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "addresses from 0x20000000000000 (2^53) up are not supported yet"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adressen ab 0x20000000000000 (2^53) werden noch nicht unterstützt"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les adresses à partir de 0x20000000000000 (2^53) ne sont pas encore prises en charge"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "العناوين من 0x20000000000000 (2^53) فما فوق غير مدعومة بعد"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "las direcciones desde 0x20000000000000 (2^53) en adelante aún no se admiten"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚不支援 0x20000000000000（2^53）以上的位址"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚不支持 0x20000000000000（2^53）及以上的地址"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0x20000000000000(2^53) 이상의 주소는 아직 지원되지 않습니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "0x20000000000000（2^53）以上のアドレスはまだサポートされていません"
+          }
+        }
+      }
+    },
     "waveformDebugger.text.breakWhenMatches": {
       "extractionState": "manual",
       "localizations": {
