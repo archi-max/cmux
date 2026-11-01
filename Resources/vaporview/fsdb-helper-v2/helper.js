@@ -1577,7 +1577,10 @@ const handlers = {
     const res = await new Promise((resolve, reject) => {
       const groups = new Map();
       const byId = new Map(known);
-      for (const id of signalIds) { if (known.has(id)) { continue; } const w = workerFor(id); if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); }
+      // Each signal is read once, however often the request names it (two rows aliasing one
+      // FSDB signal): the worker unloads a signal after reading it, so a second copy would read
+      // nothing (verify D1). byId fans the one answer out to every copy.
+      for (const id of new Set(signalIds)) { if (known.has(id)) { continue; } const w = workerFor(id); if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); }
       let left = groups.size;
       if (!left) { resolve(signalIds.map((id) => byId.get(id))); return; }
       req.parts = [];
@@ -1673,9 +1676,9 @@ const handlers = {
       // background tasks and stoppable interactive ones (searchText) stop early on SIGUSR2
       if ((task.bg || task.stoppable) && !task.yieldSent && x.pid) {
         task.yieldSent = true;
+        // (searchText polls it between values; no SIGINT: with vm breakOnSigint it killed workers
+        // and cancelled later requests, verify R1. One value stuck in a regex ends at the budget.)
         try { process.kill(x.pid, 'SIGUSR2'); } catch (e) { /* gone */ }
-        // searchText: SIGINT ends its vm judging call even inside one slow regex call (text.js)
-        if (task.stoppable) { try { process.kill(x.pid, 'SIGINT'); } catch (e) { /* gone */ } }
       }
     }
     for (const sp of req.splits || []) {  // split walks no other request waits for are cancelled too

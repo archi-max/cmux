@@ -145,12 +145,14 @@ function check(p) {
   if (typeof p.pattern !== 'string' || !p.pattern.length || p.pattern.length > MAX_PATTERN) { throw new Error('searchText pattern must be a non-empty string (at most 4096 characters)'); }
 }
 
-// Each round's values are judged inside a vm call with the remaining budget as its timeout
-// and breakOnSigint, so a pattern that backtracks catastrophically (or a formatter that never
-// returns) ends at its budget, and a cancel (helper.js sends SIGINT to a stoppable task; node
-// terminates the running script and throws ERR_SCRIPT_EXECUTION_INTERRUPTED) ends it at once,
-// even inside one regex call. `stop()` (the addon's SIGUSR2 flag, also sent by a cancel, and
-// kept from a cancel that landed during the load) is polled between values.
+// Each round's values are judged inside a vm call with the remaining budget as its timeout, so a
+// pattern that backtracks catastrophically (or a formatter that never returns) ends at its
+// budget (default 5 s). A cancel is cooperative: `stop()` (the addon's SIGUSR2 flag, sent by a
+// cancel, and kept from a cancel that landed during the load) is polled between values, so a
+// cancel waits for the value being judged. No SIGINT / breakOnSigint: vm swaps out the process's
+// SIGINT listeners around each call, so a cancel's SIGINT could kill the worker or interrupt the
+// next, unrelated request (verify R1). An instant cancel needs a worker_thread or a tid-bound
+// addon watchdog (status/helper-v2.md, later).
 const vm = require('node:vm');
 const ctx = vm.createContext({});
 const runJob = new vm.Script('job()');
@@ -215,9 +217,8 @@ function search(addon, p, stop = () => false) {
         mask[d] = hit ? 1 : 2;
       }
     };
-    try { runJob.runInContext(ctx, { timeout: Math.max(1, deadline - Date.now()), breakOnSigint: true }); } catch (e) {
+    try { runJob.runInContext(ctx, { timeout: Math.max(1, deadline - Date.now()) }); } catch (e) {
       if (e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') { return end('timedOut'); }
-      if (e && e.code === 'ERR_SCRIPT_EXECUTION_INTERRUPTED') { return end('cancelled'); }
       throw e;
     } finally { ctx.job = null; }
     if (stopped) { return end('cancelled'); }
