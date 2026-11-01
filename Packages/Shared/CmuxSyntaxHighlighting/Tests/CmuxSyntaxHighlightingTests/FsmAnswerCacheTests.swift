@@ -7,9 +7,12 @@ import Testing
 @Suite struct FsmAnswerCacheTests {
     @Test func anAnswerIsKeptUntilItsWaveformIsOpenedAgain() throws {
         var cache = FsmAnswerCache<String>()
-        let ticket = try #require(cache.start("w1", "tb.state"))
-        #expect(cache.start("w1", "tb.state") == nil, "one run per path at a time")
-        #expect(cache.finish(ticket, "model", keep: true), "current: shown")
+        let first = cache.start("w1", "tb.state")
+        let ticket = try #require(first)
+        let second = cache.start("w1", "tb.state")
+        #expect(second == nil, "one run per path at a time")
+        let shown = cache.finish(ticket, "model", keep: true)
+        #expect(shown, "current: shown")
         #expect(cache.answer("w1", "tb.state") == "model")
         #expect(cache.answer("w2", "tb.state") == nil, "per waveform")
         cache.opened("w1")
@@ -18,26 +21,36 @@ import Testing
 
     @Test func anAnswerComputedAcrossAReloadIsNeitherKeptNorShown() throws {
         var cache = FsmAnswerCache<String>()
-        let old = try #require(cache.start("w1", "tb.state"))
+        let oldStarted = cache.start("w1", "tb.state")
+        let old = try #require(oldStarted)
         cache.opened("w1")
-        let new = try #require(cache.start("w1", "tb.state"), "a request after the reload runs the engines again")
-        #expect(!cache.finish(old, "old model", keep: true), "the old run's answer isn't shown")
+        let started = cache.start("w1", "tb.state")
+        let new = try #require(started, "a request after the reload runs the engines again")
+        let oldShown = cache.finish(old, "old model", keep: true)
+        #expect(!oldShown, "the old run's answer isn't shown")
         #expect(cache.answer("w1", "tb.state") == nil, "nor kept")
-        #expect(cache.start("w1", "tb.state") == nil, "the new run still counts as running")
-        #expect(cache.finish(new, "new model", keep: true))
+        let again = cache.start("w1", "tb.state")
+        #expect(again == nil, "the new run still counts as running")
+        let newShown = cache.finish(new, "new model", keep: true)
+        #expect(newShown)
         #expect(cache.answer("w1", "tb.state") == "new model")
         // Another waveform's reload doesn't touch this one's runs.
-        let other = try #require(cache.start("w1", "tb.other"))
+        let otherStarted = cache.start("w1", "tb.other")
+        let other = try #require(otherStarted)
         cache.opened("w2")
-        #expect(cache.finish(other, "other", keep: true))
+        let otherShown = cache.finish(other, "other", keep: true)
+        #expect(otherShown)
     }
 
     @Test func aTransientFailureIsShownButNotKept() throws {
         var cache = FsmAnswerCache<String>()
-        let ticket = try #require(cache.start("w1", "tb.state"))
-        #expect(cache.finish(ticket, "Verdi failed: ssh", keep: false))
+        let started = cache.start("w1", "tb.state")
+        let ticket = try #require(started)
+        let shown = cache.finish(ticket, "Verdi failed: ssh", keep: false)
+        #expect(shown)
         #expect(cache.answer("w1", "tb.state") == nil)
-        #expect(cache.start("w1", "tb.state") != nil, "asked again, the engines run again")
+        let again = cache.start("w1", "tb.state")
+        #expect(again != nil, "asked again, the engines run again")
     }
 
     @Test func transientNotesAreTheOnesARetryMayChange() {
