@@ -224,8 +224,11 @@ struct FilePreviewEditorTypingStabilityTests {
     }
 
     /// Zooming the font rewrites the font of every character; the character at
-    /// the viewport top must stay there and the clip view must not wander off.
-    @Test("zooming the font keeps the top line and does not wander")
+    /// the viewport top must stay there, and every zoom step must move the clip
+    /// view once, straight to where it ends. Repeated zooms leave estimated
+    /// lines above the viewport, and reading the anchor used to lay them out
+    /// and let AppKit overshoot (9226 -> 10868 -> 9229 at 18 pt).
+    @Test("zooming the font keeps the top line and moves the clip view once per step")
     func fontZoomKeepsTopLine() throws {
         let editor = Self.offscreenEditor(text: Self.systemVerilogText(lines: 3000))
         defer { editor.window.close() }
@@ -240,19 +243,18 @@ struct FilePreviewEditorTypingStabilityTests {
         editor.settle()
         try #require(abs(Self.viewportY(of: marker, in: textView)) <= 1)
 
-        let before = clipView.bounds.minY
-        let origins = ClipOriginLog(clipView: clipView)
-        #expect(textView.zoomPreviewFontIn())
-        editor.settle()
-        origins.stop()
-        let after = clipView.bounds.minY
+        for step in 1...4 {
+            let origins = ClipOriginLog(clipView: clipView)
+            #expect(textView.zoomPreviewFontIn())
+            editor.settle()
+            origins.stop()
+            let final = clipView.bounds.minY
 
-        let lineHeight = try #require(textView.layoutManager).defaultLineHeight(for: try #require(textView.font))
-        #expect(abs(Self.viewportY(of: marker, in: textView)) <= lineHeight)
-        let low = min(before, after) - lineHeight
-        let high = max(before, after) + lineHeight
-        let strays = origins.values.filter { $0 < low || $0 > high }
-        #expect(strays.isEmpty, "clip origin strayed to \(strays) between \(before) and \(after)")
+            let lineHeight = try #require(textView.layoutManager).defaultLineHeight(for: try #require(textView.font))
+            #expect(abs(Self.viewportY(of: marker, in: textView)) <= lineHeight, "zoom step \(step)")
+            let strays = origins.values.filter { abs($0 - final) > 1 }
+            #expect(strays.isEmpty, "zoom step \(step): clip origin went \(origins.values), ending at \(final)")
+        }
     }
 
     /// Word wrap captures an anchor on every live-resize tick; only reloads
