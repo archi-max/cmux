@@ -122,6 +122,14 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
                 localized: "waveformDebugger.commit.noInsn",
                 defaultValue: "%@: the commit stream has no instruction word"
             ),
+            "debuggerShowValueAsAddress": String(
+                localized: "waveformDebugger.asm.showValueAsAddress",
+                defaultValue: "Show Value as Address in Listing"
+            ),
+            "debuggerAddressUnknown": String(
+                localized: "waveformDebugger.asm.addressUnknown",
+                defaultValue: "%@ has no address value at the marker"
+            ),
             "debuggerCommitTooMany": String(
                 localized: "waveformDebugger.commit.tooMany",
                 defaultValue: "At most %@ breakpoints of this kind can be enabled"

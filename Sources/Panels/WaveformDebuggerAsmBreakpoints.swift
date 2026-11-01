@@ -91,6 +91,7 @@ enum WaveformDebuggerAsmBreakpoints {
         guard let state = listings.object(forKey: textView) else { return }
         clearHighlight(state)
         listings.removeObject(forKey: textView)
+        if state.listing != nil, let workspace = workspaceOf(textView) { scheduleSync(workspace) }
     }
 
     /// The parsed listing of a text view, if it shows one.
@@ -135,8 +136,10 @@ enum WaveformDebuggerAsmBreakpoints {
     }
 
     private static func parsedListing(_ state: Listing, _ parsed: (AsmListing, [Int])?) {
+        let wasListing = state.listing != nil
         state.listing = parsed?.0
         state.lineStarts = parsed?.1 ?? []
+        if wasListing != (state.listing != nil), let workspace = state.textView.flatMap(workspaceOf) { scheduleSync(workspace) }
         if let listing = state.listing, let workspace = state.textView.flatMap(workspaceOf) {
             resolveMarks(of: state.path, in: listing, workspace: workspace)
             for waveform in viewers(workspace) { checkMatch(state, waveform: waveform) }
@@ -404,13 +407,25 @@ enum WaveformDebuggerAsmBreakpoints {
     }
 
     /// Sends `waveform` the workspace's listing breakpoints when they differ from what it has.
+    /// Also tells it whether a listing is at hand (open, or beside the dump): its rows then offer Show
+    /// Value as Address in Listing.
     static func sync(_ waveform: FilePreviewPanel) async {
         let items = self.items(inWorkspace: waveform.workspaceId)
-        guard let data = try? JSONSerialization.data(withJSONObject: items, options: [.sortedKeys]),
+        let listing = hasListing(for: waveform)
+        let argument: [String: Any] = ["items": items, "listing": listing]
+        guard let data = try? JSONSerialization.data(withJSONObject: argument, options: [.sortedKeys]),
               let json = NSString(data: data, encoding: String.Encoding.utf8.rawValue) else { return }
         if sent.object(forKey: waveform) as String? == json as String { return }
         sent.setObject(json, forKey: waveform)
-        _ = await waveform.nativeViewSessions.waveform.callDebugger("setPcBreakpoints", argument: ["items": items])
+        _ = await waveform.nativeViewSessions.waveform.callDebugger("setPcBreakpoints", argument: argument)
+    }
+
+    private static func hasListing(for waveform: FilePreviewPanel) -> Bool {
+        let open = (listings.objectEnumerator()?.allObjects ?? []).contains { object in
+            guard let state = object as? Listing, state.listing != nil, let textView = state.textView else { return false }
+            return workspaceOf(textView) == waveform.workspaceId
+        }
+        return open || !listingsBeside(dumpPath: waveform.filePath).isEmpty
     }
 
     /// A new page has none: it gets them again, and each open listing is checked against its dump.
@@ -543,7 +558,71 @@ enum WaveformDebuggerAsmBreakpoints {
     static func revealCurrent(of waveform: FilePreviewPanel) async -> Bool {
         let answer = await waveform.nativeViewSessions.waveform.callDebugger("currentCommitPc")
         guard let pc = (answer as? String).flatMap(parseHex) else { return false }
-        return reveal(pc: pc, inWorkspace: waveform.workspaceId)
+        return await reveal(pc: pc, for: waveform)
+    }
+
+    /// Show Value as Address in Listing (a row's menu): `{ event: 'showAddress', pc, name }`.
+    static func showAddress(_ body: [String: Any], waveform: FilePreviewPanel) {
+        guard let pc = (body["pc"] as? String).flatMap(parseHex) else { return }
+        Task { @MainActor in
+            guard !(await reveal(pc: pc, for: waveform)) else { return }
+            let text = String(
+                format: String(
+                    localized: "waveformDebugger.asm.noListingForAddress",
+                    defaultValue: "No listing has %1$@ (the value of %2$@). Open the program's objdump listing (.dis), or put it beside the dump."
+                ),
+                hex(pc), body["name"] as? String ?? ""
+            )
+            _ = await waveform.nativeViewSessions.waveform.callDebugger("say", argument: ["text": text, "level": "info"])
+        }
+    }
+
+    /// `pc` in an open listing of the waveform's workspace; else in a listing beside its dump, which is opened.
+    static func reveal(pc: UInt64, for waveform: FilePreviewPanel) async -> Bool {
+        if reveal(pc: pc, inWorkspace: waveform.workspaceId) { return true }
+        let candidates = listingsBeside(dumpPath: waveform.filePath)
+        guard !candidates.isEmpty else { return false }
+        let found = await Task.detached(priority: .userInitiated) { () -> String? in
+            for path in candidates {
+                guard let text = try? String(contentsOfFile: path, encoding: .utf8), AsmListingDetector.isListing(text) else { continue }
+                if AsmListingParser.parse(text).line(forPC: pc) != nil { return path }
+            }
+            return nil
+        }.value
+        guard let found, openListing(waveform, found) else { return false }
+        // The opened file is attached and parsed by its editor (sync(_:filePath:)).
+        for _ in 0..<100 {
+            if reveal(pc: pc, inWorkspace: waveform.workspaceId) { return true }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+
+    /// Listings beside a dump: `*.dis`, `*.lst`, `*.dump`, `*.objdump` in its folder, newest first, at
+    /// most 8, each under the size cap (design §5).
+    nonisolated static func listingsBeside(dumpPath: String) -> [String] {
+        let folder = URL(fileURLWithPath: dumpPath).deletingLastPathComponent()
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
+                                                                         options: [.skipsHiddenFiles]) else { return [] }
+        let found: [(path: String, date: Date)] = entries.compactMap { url in
+            guard listingExtensions.contains(url.pathExtension.lowercased()),
+                  let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
+                  (values.fileSize ?? 0) <= maxListingBytes else { return nil }
+            return (url.path, values.contentModificationDate ?? .distantPast)
+        }
+        return found.sorted { $0.date != $1.date ? $0.date > $1.date : $0.path < $1.path }.prefix(8).map(\.path)
+    }
+
+    nonisolated static let listingExtensions: Set<String> = ["dis", "lst", "dump", "objdump"]
+
+    /// Opens a listing in the waveform's workspace, beside the waveform when there is another pane (the harness sets it).
+    static var openListing: @MainActor (FilePreviewPanel, String) -> Bool = { waveform, path in
+        guard let workspace = AppDelegate.shared?.workspaceFor(tabId: waveform.workspaceId) else { return false }
+        let own = workspace.paneId(forPanelId: waveform.id)
+        guard let pane = workspace.bonsplitController.allPaneIds.first(where: { $0 != own })
+                ?? own ?? workspace.bonsplitController.focusedPaneId else { return false }
+        return workspace.openOrFocusFilePreviewSurface(inPane: pane, filePath: path, focus: true) != nil
     }
 
     @discardableResult

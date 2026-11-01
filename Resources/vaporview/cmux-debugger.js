@@ -1022,7 +1022,12 @@
 
   // A listing's PC breakpoints (cmux, WaveformDebuggerAsmBreakpoints.swift): replace cmux's, keep the page's.
   // items: [{ key, listingLabel, pcs, channel?, enabled, condition? }]
+  // Whether cmux has a listing for this dump (an open one, or one beside the dump): rows then offer
+  // Show Value as Address in Listing.
+  let listingAvailable = false;
+
   function setPcBreakpoints(query) {
+    listingAvailable = !!(query || {}).listing;
     if (!CB) { return []; }
     const items = Array.isArray((query || {}).items) ? query.items : [];
     const old = new Map(breakpoints.filter((b) => b.kind === 'pc' && b.key).map((b) => [b.key, b]));
@@ -1771,7 +1776,25 @@
       }
     } }] : [], [
       { label: s.debuggerAddWatch || '', run: () => addWatch({ expr: pathExpression(path) }) },
-    ], window.cmuxMachine ? window.cmuxMachine.rowMenuItems(c) : []);
+    ], showAddressItems(v, path), window.cmuxMachine ? window.cmuxMachine.rowMenuItems(c) : []);
+  }
+
+  // Show Value as Address in Listing: an 8- to 64-bit row's value at the marker, as a PC, revealed in
+  // cmux's listing (`{ event: 'showAddress', pc, name }`; cmux says when no listing has it).
+  function showAddressItems(v, path) {
+    const width = Number(v.width) || 1;
+    if (!listingAvailable || width < 8 || width > 64) { return []; }
+    const s = S();
+    return [{ label: s.debuggerShowValueAsAddress || '', run: async () => {
+      const time = markerTime();
+      const bits = time === null ? undefined : (await bitsAt([v], time)).get(v.netlistId);
+      const name = path.join('.');
+      if (bits === undefined || !/^[01]+$/.test(bits)) {
+        window.cmuxUI.toast(format(s.debuggerAddressUnknown, name), 'warning');
+        return;
+      }
+      host.toNative({ type: 'debugger', event: 'showAddress', pc: '0x' + BigInt('0b' + bits).toString(16), name });
+    } }];
   }
 
   // A dump path as an expression: a segment that is not an identifier (or gen[3]) is escaped.
@@ -2313,6 +2336,8 @@
     commitSample: (query) => (CB ? CB.sample((query || {}).limit) : null),
     say: (query) => { const q = query || {}; if (q.text) { window.cmuxUI.toast(String(q.text), q.level === 'warning' ? 'warning' : 'info'); } return true; },
     breakpoints: () => breakpoints.map(publicBreakpoint),
+    // The kinds addBreakpoint takes (cmux-machine.js's row menus offer Break When Written when 'write' is one).
+    breakpointKinds: () => ['change', 'equals'].concat(TB ? ['text'] : [], CB ? ['pc', 'commitText', 'write'] : []),
     // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
     backendChanged: () => { if (window.cmuxMachine) { window.cmuxMachine.backendChanged(); } renderBreakpoints(); refreshWatches(); },
     // cmux-machine.js: the current commit moved inside the marker's cycle (cmux hears the new `current`).

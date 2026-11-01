@@ -705170,6 +705170,183 @@
           }
         }
       }
+    },
+    "waveformDebugger.asm.showValueAsAddress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Value as Address in Listing"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wert als Adresse im Listing zeigen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher la valeur comme adresse dans le listing"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إظهار القيمة كعنوان في القائمة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar el valor como dirección en el listado"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在清單中將值顯示為位址"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在清单中将值显示为地址"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "값을 목록의 주소로 표시"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "値をリストのアドレスとして表示"
+          }
+        }
+      }
+    },
+    "waveformDebugger.asm.addressUnknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ has no address value at the marker"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ hat an der Markierung keinen Adresswert"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’a pas de valeur d’adresse au marqueur"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد لـ %@ قيمة عنوان عند العلامة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no tiene un valor de dirección en el marcador"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在標記處沒有位址值"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在标记处没有地址值"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에는 마커 위치에 주소 값이 없습니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ にはマーカー位置にアドレス値がありません"
+          }
+        }
+      }
+    },
+    "waveformDebugger.asm.noListingForAddress": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No listing has %1$@ (the value of %2$@). Open the program's objdump listing (.dis), or put it beside the dump."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kein Listing enthält %1$@ (den Wert von %2$@). Öffnen Sie das objdump-Listing (.dis) des Programms oder legen Sie es neben die Aufzeichnung."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun listing ne contient %1$@ (la valeur de %2$@). Ouvrez le listing objdump (.dis) du programme, ou placez-le à côté du fichier de traces."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا توجد قائمة تحتوي على %1$@ (قيمة %2$@). افتح قائمة objdump الخاصة بالبرنامج (.dis)، أو ضعها بجانب ملف التفريغ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ningún listado tiene %1$@ (el valor de %2$@). Abra el listado objdump (.dis) del programa o colóquelo junto al volcado."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "沒有清單包含 %1$@（%2$@ 的值）。請開啟程式的 objdump 清單（.dis），或將其放在傾印檔旁。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有清单包含 %1$@（%2$@ 的值）。请打开程序的 objdump 清单（.dis），或将其放在转储旁。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@(%2$@의 값)이 있는 목록이 없습니다. 프로그램의 objdump 목록(.dis)을 열거나 덤프 옆에 두세요."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（%2$@ の値）を含むリストがありません。プログラムの objdump リスト（.dis）を開くか、ダンプの横に置いてください。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
