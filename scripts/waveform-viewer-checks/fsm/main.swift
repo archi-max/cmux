@@ -136,6 +136,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(visits == ["000": 4, "001": 11, "100": 11, "101": 10, "111": 3], "entries into each state: \(visits)")
     let counts = Dictionary(((s["edges"] as? [[String: Any]]) ?? []).map { (($0["from"] as? String ?? "") + ">" + ($0["to"] as? String ?? ""), ($0["count"] as? Int) ?? -1) }, uniquingKeysWith: { a, _ in a })
     expect(counts == ["*>000": 1, "000>001": 4, "001>100": 11, "100>101": 10, "101>001": 7, "101>111": 3, "111>000": 3], "each transition's count: \(counts)")
+    let countsSay = await call("return (document.querySelector('#fsm .fsm-counts-note') || {}).textContent || ''") as? String ?? ""
+    expect(countsSay == "Counts are entries into a state and transitions taken, not clock cycles.", "the pane says what the counts count: \(countsSay)")
     let countText = await call("return document.querySelector(\"#fsm .fsm-edge[data-from='101'][data-to='001']\").textContent") as? String ?? ""
     expect(countText.contains("7"), "an edge shows its count: \(countText)")
 
