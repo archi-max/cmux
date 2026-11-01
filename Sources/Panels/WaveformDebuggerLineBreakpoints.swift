@@ -735,18 +735,28 @@ enum WaveformDebuggerLineBreakpoints {
     }
 
     /// A new page has no breakpoints: it gets the lines, and its dump's signal breakpoints and watches.
+    /// Viewers whose new page has not had its saved signal breakpoints (or watches) back yet: what
+    /// such a page reports (its empty list, posted while it handles setLineBreakpoints) is not saved.
+    private static let restoringSignals = NSHashTable<FilePreviewPanel>.weakObjects()
+    private static let restoringWatches = NSHashTable<FilePreviewPanel>.weakObjects()
+
     static func pageLoaded(_ waveform: FilePreviewPanel) {
         sent.removeObject(forKey: waveform)
+        // Read before any await: the page reports its own (empty) lists while it loads.
+        let list = signals(for: waveform)
+        let expressions = watches(for: waveform)
+        if !list.isEmpty { restoringSignals.add(waveform) }
+        if !expressions.isEmpty { restoringWatches.add(waveform) }
         Task { @MainActor in
             await sync(waveform)
-            let list = signals(for: waveform)
             if !list.isEmpty {
+                restoringSignals.remove(waveform)
                 _ = await waveform.nativeViewSessions.waveform.callDebugger(
                     "restoreBreakpoints", argument: ["items": list.map(\.pageItem)]
                 )
             }
-            let expressions = watches(for: waveform)
             if !expressions.isEmpty {
+                restoringWatches.remove(waveform)
                 _ = await waveform.nativeViewSessions.waveform.callDebugger("restoreWatches", argument: ["items": expressions])
             }
         }
@@ -845,6 +855,8 @@ enum WaveformDebuggerLineBreakpoints {
     /// `{ event: 'breakpoints', items: [{ path, kind, value, enabled, condition }] }` from the page.
     static func signalsReported(_ body: [String: Any], waveform: FilePreviewPanel) {
         let items = body["items"] as? [[String: Any]] ?? []
+        // A new page's own list before it has the saved one back: not what the user has.
+        if restoringSignals.contains(waveform) { return }
         // A viewer that was given an older session's list makes it its own: the list is not
         // given again to it (after it cleared it) or to other viewers.
         if signals[waveform.workspaceId]?[waveform.filePath] == nil { signals[waveform.workspaceId]?[""] = nil }
@@ -863,6 +875,7 @@ enum WaveformDebuggerLineBreakpoints {
         let items = (body["items"] as? [String] ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0.count <= maxExpressionLength }
+        if restoringWatches.contains(waveform) { return }
         if watches[waveform.workspaceId]?[waveform.filePath] == nil { watches[waveform.workspaceId]?[""] = nil }
         watches[waveform.workspaceId, default: [:]][waveform.filePath] = items
     }
