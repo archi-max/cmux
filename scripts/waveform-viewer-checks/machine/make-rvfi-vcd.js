@@ -17,6 +17,9 @@
     packed2: { nret: 2, naming: 'prefixed', mask: 'word', seed: 23, n: 900, swap: true },
     // NRET 2 as per-channel array elements valid[0], valid[1] with `inst` for insn (field set, no prefix).
     array2: { nret: 2, naming: 'array', mask: 'byte', seed: 37, n: 900 },
+    // array2 as a writer that leaves signals out of the first time (no $dumpvars-style initial x): the
+    // reader's merge of split bits valid [0], valid [1] must still start each bit at its first value.
+    array2late: { nret: 2, naming: 'array', mask: 'byte', seed: 37, n: 900, lateStart: true },
     // A struct dumped as a scope (tb.core.rvfi.valid ...), NRET 1, word-relative.
     struct: { nret: 1, naming: 'struct', mask: 'word', seed: 41, n: 600 },
     // A common prefix (monitor_valid ...), no order: sorted by time.
@@ -235,7 +238,7 @@
       traps: cs.filter((c) => c.trap).length,
       swapped: program.filter((p, i) => i > 0 && program[i - 1].time === p.time && program[i - 1].channel > p.channel).length, rdZeroWrites: cs.filter((c) => !c.trap && c.rd === 0 && c.rdv !== 0).length,
       scope: scopeOf, image: { addr: IMAGE, bytes: image } };
-    return { signals, edges, image: [{ addr: IMAGE, bytes: image }], expect };
+    return { signals, edges, image: [{ addr: IMAGE, bytes: image }], expect, lateStart: !!v.lateStart };
   }
 
   // A VCD of the signals (1 ns units).
@@ -268,7 +271,7 @@
     // bit at its second value when no bit changes at the first time: transform_bv_signal's offsets.)
     const t0 = Math.min(...run.signals.map((s) => (s.changes.length ? s.changes[0][0] : Infinity)));
     for (const s of run.signals) {
-      const changes = s.changes.length && s.changes[0][0] > t0 ? [[t0, 'x'.repeat(s.width)]].concat(s.changes) : s.changes;
+      const changes = !run.lateStart && s.changes.length && s.changes[0][0] > t0 ? [[t0, 'x'.repeat(s.width)]].concat(s.changes) : s.changes;
       for (const [t, bits] of changes) {
         if (!byTime.has(t)) { byTime.set(t, []); }
         byTime.get(t).push(s.width === 1 ? bits + ids.get(s) : 'b' + bits + ' ' + ids.get(s));
