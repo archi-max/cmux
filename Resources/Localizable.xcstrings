@@ -239768,6 +239768,65 @@
         }
       }
     },
+    "filePreview.waveform.fsdbOpenTimedOut": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The FSDB reader on %@ did not open the file in time, even after a restart. Reload to try again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ の FSDB リーダーは、再起動後も時間内にファイルを開けませんでした。再読み込みしてもう一度お試しください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der FSDB-Leser auf %@ hat die Datei auch nach einem Neustart nicht rechtzeitig geöffnet. Laden Sie neu, um es erneut zu versuchen."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le lecteur FSDB sur %@ n’a pas ouvert le fichier à temps, même après un redémarrage. Rechargez pour réessayer."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يفتح قارئ FSDB على %@ الملف في الوقت المحدد، حتى بعد إعادة التشغيل. أعد التحميل للمحاولة مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El lector de FSDB en %@ no abrió el archivo a tiempo, ni siquiera tras reiniciarse. Recarga para intentarlo de nuevo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 FSDB 讀取器即使重新啟動後仍未及時開啟檔案。請重新載入以再試一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的 FSDB 读取器即使重新启动后仍未及时打开文件。请重新加载以重试。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 FSDB 리더가 다시 시작한 후에도 제시간에 파일을 열지 못했습니다. 다시 로드하여 다시 시도하세요."
+          }
+        }
+      }
+    },
     "filePreview.waveform.fsdbNotAllowed": {
       "extractionState": "manual",
       "localizations": {

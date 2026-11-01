@@ -97,6 +97,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         case refused(detail: String)
         /// The page sent a command the relay does not pass, or an `open` of another file.
         case notAllowed(String)
+        /// `open` got no reply within `openTimeout`, before and after one relaunch.
+        case openTimedOut
     }
 
     struct Reply: Sendable {
@@ -117,6 +119,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     static let installTimeout: TimeInterval = 10 * 60
     /// A reply that takes longer (Verdi stuck on an NFS read) fails its request.
     static let requestTimeout: TimeInterval = 5 * 60
+    /// `open` reads only the file's header and scope tree (a 164 MB dump opens in about
+    /// 1 s), so one that hasn't answered in this time is stuck: the helper is relaunched
+    /// once and the open sent again, then it is an error. (Writable for the tests.)
+    static let defaultOpenTimeout: TimeInterval = 120
+    nonisolated(unsafe) static var openTimeout: TimeInterval = defaultOpenTimeout
 
     private let sshArguments: SSHArguments
     private let installs: [Install]
@@ -277,18 +284,55 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         try await ensureRunning()
         if command == "open" {
             lock.withLock { lastOpen = object }
-            let reply = try await send(object)
-            lock.withLock { openGeneration = generation }
-            return reply
+            return try await sendOpen(object)
         }
         let reopen: [String: Any]? = lock.withLock {
             openGeneration == generation ? nil : lastOpen
         }
         if let reopen {
-            _ = try await send(reopen)
-            lock.withLock { openGeneration = generation }
+            _ = try await sendOpen(reopen)
         }
         return try await send(object, pageId: pageId)
+    }
+
+    /// Sends an `open` with its own, shorter timeout. An open still unanswered then is
+    /// stuck (the reader's NFS read, a host loading Verdi): the helper is relaunched once
+    /// and the open sent again, since a fresh helper usually opens the same file at once.
+    private func sendOpen(_ object: [String: Any]) async throws -> Reply {
+        for attempt in 0..<2 {
+            let launch = lock.withLock { generation }
+            do {
+                let reply = try await send(object, timeout: Self.openTimeout)
+                lock.withLock { openGeneration = launch }
+                return reply
+            } catch Failure.timedOut(_) {
+                guard attempt == 0 else { break }
+                relaunch(generation: launch)
+                try await ensureRunning()
+            }
+        }
+        throw Failure.openTimedOut
+    }
+
+    /// Ends launch `generation` (still running, but stuck) so the next request starts a
+    /// new helper. Its requests fail; its exit, which comes later, is ignored.
+    private func relaunch(generation launch: Int) {
+        let (process, input, waiting): (Process?, FileHandle?, [CheckedContinuation<Reply, Error>]) = lock.withLock {
+            guard launch == generation, !isStopped else { return (nil, nil, []) }
+            generation += 1  // helperDidExit of the old process no longer matches
+            let old = (self.process, self.input, Array(pending.values))
+            self.process = nil
+            self.input = nil
+            isReady = false
+            startTask = nil
+            pending.removeAll()
+            helperIdForPage.removeAll()
+            pageIdForHelper.removeAll()
+            return old
+        }
+        writeQueue.async { try? input?.close() }
+        if let process, process.isRunning { process.terminate() }
+        waiting.forEach { $0.resume(throwing: Failure.helperExited(detail: "")) }
     }
 
     /// The page's `cancel {id}`: cancels the helper's request for that page id.
@@ -328,7 +372,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         return pending.removeValue(forKey: id)
     }
 
-    private func send(_ request: [String: Any], pageId: Int? = nil) async throws -> Reply {
+    private func send(_ request: [String: Any], pageId: Int? = nil, timeout: TimeInterval = requestTimeout) async throws -> Reply {
         var object = request
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
@@ -363,7 +407,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             // Queued under the lock: a cancel that finds the mapping queues its line after this one.
             writeQueue.async { try? input.write(contentsOf: message) }
             lock.unlock()
-            DispatchQueue.global().asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
                 guard let self else { return }
                 let waiting = self.lock.withLock { self.takePendingLocked(id) }
                 guard let waiting else { return }
