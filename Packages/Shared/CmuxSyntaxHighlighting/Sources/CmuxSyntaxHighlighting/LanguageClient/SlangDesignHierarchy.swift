@@ -1,5 +1,18 @@
 import Foundation
 
+/// Bits `msb`..`lsb` (in the declared range's numbering) of the net at `path`.
+public struct SlangSliceAlias: Sendable, Equatable {
+    public var path: String
+    public var msb: Int
+    public var lsb: Int
+
+    public init(path: String, msb: Int, lsb: Int) {
+        self.path = path
+        self.msb = msb
+        self.lsb = lsb
+    }
+}
+
 /// One child of a scope in slang-server's elaborated design (`slang.getScope`).
 public struct SlangHierarchyItem: Sendable, Equatable {
     /// Instance, generate block or variable name within its parent scope.
@@ -224,6 +237,12 @@ extension LanguageServerSession {
         }
         var seen = Set<String>()
         return aliases.filter { $0 != path && seen.insert($0).inserted }
+    }
+
+    /// The bits of a net in the parent scope that an instance array's input port at `path`
+    /// (`top.u[1].a`) is connected to, when the connection is sliced among the elements.
+    public func slangPortSliceAlias(of path: String) async throws -> SlangSliceAlias? {
+        nil
     }
 
     /// A variable's or port's width (the item at `path`) as its declaration gives it, from
