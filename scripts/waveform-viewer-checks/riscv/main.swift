@@ -546,6 +546,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     await keyOnlyChecks(big: big, capped: capped)
     boundedReadChecks()
+    remotePathChecks()
   }
 
   // Key-only restore: cmux reads only what its registry recorded.
@@ -600,7 +601,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let keys = WaveformValueAliasFiles.keys(from: ["/a", ["key": "/b", "path": "/etc/hosts"], "/a", 7, ""] + (0..<20).map { "/k\($0)" })
     expect(keys.first == "/a" && !keys.contains("/b") && keys.count == 16 && Set(keys).count == 16,
            "request keys: strings only, no repeats, at most 16: \(keys.prefix(3))… \(keys.count)")
-    let other = await WaveformValueAliasFiles.answer(["hostB:/r/other.alias"], registry: r) { _ in "read" }
+    let other = await WaveformValueAliasFiles.answer(["ssh://other-host/r/other.alias"], registry: r) { _ in "read" }
     expect(other.count == 1 && other[0]["text"] == nil && other[0]["error"] != nil, "another host's file is an error, not a read: \(other)")
 
     // A page that posts readValueAliases itself: an unknown key with a real path
@@ -712,6 +713,72 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect((try? WaveformValueAliasFiles.readText(at: exact, maxBytes: max))?.utf8.count == max, "a file of exactly the limit is read")
     expect(refused(fifo) != nil, "a FIFO is refused without blocking")
     expect(refused(dir) != nil, "so is a folder")
+    fifoRaceChecks(dir: dir, max: max)
+  }
+
+  // A FIFO at the path read never blocks: not one a symlink points to, and not
+  // one swapped in between a check and the open (the read checks the file it
+  // opened, opened without blocking).
+  func fifoRaceChecks(dir: URL, max: Int) {
+    let fifoSrc = dir.appendingPathComponent("race-fifo"), regSrc = dir.appendingPathComponent("race-reg")
+    let race = dir.appendingPathComponent("race.alias"), tmp = dir.appendingPathComponent("race-tmp")
+    let fifoLink = dir.appendingPathComponent("fifo-link.alias")
+    mkfifo(fifoSrc.path, 0o600)
+    try? "alias t\nendalias\n".write(to: regSrc, atomically: true, encoding: .utf8)
+    try? FileManager.default.createSymbolicLink(at: fifoLink, withDestinationURL: fifoSrc)
+    link(regSrc.path, race.path)
+    // Unblocks a reader stuck opening the FIFO, so a failing run still ends.
+    func unblock() {
+      let fd = Darwin.open(fifoSrc.path, O_WRONLY | O_NONBLOCK)
+      if fd >= 0 { Darwin.close(fd) }
+    }
+    final class State: @unchecked Sendable {
+      let lock = NSLock()
+      var stop = false, read = 0, refused = 0
+      var stopped: Bool { lock.lock(); defer { lock.unlock() }; return stop }
+    }
+    let state = State()
+    func timed(_ seconds: Double, _ body: @escaping @Sendable () -> Void) -> Bool {
+      let done = DispatchSemaphore(value: 0)
+      Thread { body(); done.signal() }.start()
+      if done.wait(timeout: .now() + seconds) == .success { return true }
+      let deadline = Date().addingTimeInterval(5)
+      while Date() < deadline { unblock(); if done.wait(timeout: .now() + 0.05) == .success { break } }
+      return false
+    }
+    let linkFinished = timed(5) { _ = try? WaveformValueAliasFiles.readText(at: fifoLink, maxBytes: max) }
+    expect(linkFinished, "a symlink to a FIFO is refused without blocking")
+    // The swap: the path is the regular file, then the FIFO, over and over.
+    let swapper = Thread {
+      while !state.stopped {
+        link(fifoSrc.path, tmp.path); rename(tmp.path, race.path)
+        link(regSrc.path, tmp.path); rename(tmp.path, race.path)
+      }
+    }
+    swapper.start()
+    let raceFinished = timed(15) {
+      for _ in 0..<20_000 {
+        let ok = (try? WaveformValueAliasFiles.readText(at: race, maxBytes: max)) != nil
+        state.lock.lock(); if ok { state.read += 1 } else { state.refused += 1 }; state.lock.unlock()
+      }
+    }
+    state.lock.lock(); state.stop = true; let counts = (state.read, state.refused); state.lock.unlock()
+    expect(raceFinished, "a FIFO swapped in during the reads never blocks one (20000 reads within 15 s; read \(counts.0), refused \(counts.1))")
+  }
+
+  // Load from Host takes only a path from the root of the host: "~/x.alias" or
+  // "dir/x.alias" would make a key that names another host after a reload.
+  func remotePathChecks() {
+    func message(_ path: String) -> String? {
+      do { try WaveformValueAliasFiles.checkRemotePath(path); return nil } catch { return error.localizedDescription }
+    }
+    for path in ["~/x.alias", "dir/x.alias", "x.alias", "./x.alias", ""] {
+      expect(message(path) == "The path must be an absolute path on the SSH host", "Load from Host refuses \"\(path)\": \(message(path) ?? "accepted")")
+    }
+    expect(message("/r/x.alias") == nil, "Load from Host takes \"/r/x.alias\"")
+    let identity = "ssh:host-01|22||"
+    let key = WaveformValueAliasFiles.remoteKey(identity: identity, path: "/r/x.alias")
+    expect(WaveformValueAliasFiles.location(ofKey: key, remoteIdentity: identity) == .remote("/r/x.alias"), "its key comes back as the same host's file: \(key)")
   }
 
   /// cmux read the session file `text` (loadSession): it records the file's
