@@ -142,6 +142,15 @@ endmodule
     expect(styles()[conditionStart] == .lost, "a condition that does not parse: drawn as an error: \(styles())")
     LB.pageReported(["key": conditionKey, "conditionError": false], waveform: waveform)
     expect(styles()[conditionStart] == .conditional, "fixed: a conditional dot again: \(styles())")
+    // verify-bp2 R4: cmux's own change of the condition clears the error (the page says again if the
+    // new one is bad too), also with no page open to say so.
+    LB.pageReported(["key": conditionKey, "conditionError": true], waveform: waveform)
+    if let conditionId { LB.setCondition(conditionId, "limit != 1", in: workspace) }
+    expect(styles()[conditionStart] == .conditional, "a condition changed in cmux is not drawn as the old one's error: \(styles())")
+    LB.pageReported(["key": conditionKey, "conditionError": true], waveform: waveform)
+    if let conditionId { LB.setCondition(conditionId, nil, in: workspace) }
+    expect(styles()[conditionStart] == .enabled, "nor once it is removed: \(styles())")
+    if let conditionId { LB.setCondition(conditionId, "limit != 0", in: workspace) }
     LB.pageReported(["key": conditionKey, "enabled": true, "condition": NSNull()], waveform: waveform)
     expect(LB.marks[workspace]?.first { $0.id == conditionId }?.condition == nil && styles()[conditionStart] == .enabled,
            "and clears it: \(styles())")
