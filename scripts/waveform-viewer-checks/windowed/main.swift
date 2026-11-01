@@ -296,6 +296,7 @@ func fallbackChecks() async throws {
 
   // An install others can write is refused before its launcher runs (a changed launcher
   // can't skip the check): group-writable launcher, then a group-writable ~/.cache/cmux.
+  // v2's refusal falls back to v1, with the reason, not remembered (fixing it is enough).
   for (name, makeOpen) in [("launcher", { (dir: URL, home: URL) in try setMode(dir.appendingPathComponent("cmux-helper-v2.sh"), 0o775) }),
                            ("cache", { (dir: URL, home: URL) in try setMode(home.appendingPathComponent(".cache/cmux"), 0o775) })] {
     let ran = scratch.appendingPathComponent("tampered-\(name).txt")
@@ -304,8 +305,9 @@ func fallbackChecks() async throws {
     try makeOpen(installDir(home: pHome, v2Install), pHome)
     let tampered = makeHelper(home: pHome, loading: .auto, hostKey: "host-p-\(name)", log: pLog)
     let rp = await open(tampered); tampered.stop()
-    expect(proto(rp) == "none" && pLog.fellBack.isEmpty && lines(ran) == 0 && (header(rp)["error"] as? String ?? "").contains("refused"),
-           "a group-writable \(name) is refused before the launcher runs: ran \(lines(ran)), \(header(rp))")
+    expect(lines(ran) == 0 && proto(rp) == "1" && pLog.fellBack.count == 1 && pLog.fellBack[0].remembered == false
+           && pLog.fellBack[0].detail.contains("not private"),
+           "a group-writable \(name) is refused before the v2 launcher runs, and v1 runs with the reason: ran \(lines(ran)), protocol \(proto(rp)), \(pLog.fellBack)")
   }
 
   // ssh itself can't run here: an error, not a switch to v1 (which would fail the same way).
@@ -326,13 +328,28 @@ func fallbackChecks() async throws {
   expect(proto(r255) == "none" && sshLog.fellBack.isEmpty && (header(r255)["error"] as? String ?? "").contains("connectionFailed"),
          "an unreachable host is an error, not a fallback: \(header(r255))")
 
-  // A refused (not private) install: an error, v1 not run.
+  // v2's launcher refuses its install (exit 86): v1 runs, with the launcher's reason.
   let refLog = StatusLog()
   let refHome = try makeHome("exit86", installs: [v2Launching("echo 'cmux-helper-v2: refusing to run' >&2; exit 86"), v1Install])
   let refused = makeHelper(home: refHome, loading: .auto, hostKey: "host-g", log: refLog)
   let r86 = await open(refused); refused.stop()
-  expect(proto(r86) == "none" && refLog.fellBack.isEmpty && (header(r86)["error"] as? String ?? "").contains("refused"),
-         "a refused install is an error and v1 doesn't run: \(header(r86))")
+  expect(proto(r86) == "1" && refLog.fellBack.count == 1 && refLog.fellBack[0].detail.contains("refusing to run")
+         && refLog.fellBack[0].remembered == false,
+         "a refused v2 install falls back to v1 with the reason: protocol \(proto(r86)), \(refLog.fellBack), \(header(r86))")
+  // Remembered nothing: the next viewer of the host tries v2 again (here it runs).
+  let againHome = try makeHome("exit86-fixed", installs: [v2Launching("exec node \(shellQuoted(mock)) --latency 20 --jitter 10 \"$@\" 3>&1 1>&2"), v1Install])
+  let afterRefusal = makeHelper(home: againHome, loading: .auto, hostKey: "host-g", log: StatusLog())
+  let rAgain = await open(afterRefusal); afterRefusal.stop()
+  expect(proto(rAgain) == "2", "after a refusal the next viewer of the host tries v2: protocol \(proto(rAgain))")
+  // v1 refuses too: that is the error, as without v2.
+  let bothLog = StatusLog()
+  let v1Refusing = InstallSpec(cache: "fsdb-helper", root: v1Root, files: ["fsdb_reader.node"], launcher: "fsdb-helper.sh",
+                               script: "echo 'fsdb-helper: refusing to run' >&2; exit 86", asV1: true)
+  let bothHome = try makeHome("exit86-both", installs: [v2Launching("echo 'cmux-helper-v2: refusing to run' >&2; exit 86"), v1Refusing])
+  let both = makeHelper(home: bothHome, loading: .auto, hostKey: "host-g2", log: bothLog)
+  let rBoth = await open(both); both.stop()
+  expect(proto(rBoth) == "none" && (header(rBoth)["error"] as? String ?? "").contains("fsdb-helper: refusing") && bothLog.fellBack.count == 1,
+         "v1 refusing as well is an error (v1's own): \(header(rBoth)), \(bothLog.fellBack)")
 
   // v2 doesn't get ready in time: v1 once, remembered for the session.
   let tLog = StatusLog()
