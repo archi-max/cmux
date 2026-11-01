@@ -142,21 +142,41 @@ enum WaveformValueAliasFiles {
     }
 
     /// The text of the regular file at `url` (a symlink is followed), refused
-    /// when it is bigger than `maxBytes`: the size is checked on the file the
-    /// link points to, and the read itself stops after `maxBytes + 1` bytes, so
-    /// a file that grows (or a link swapped) after the check is still bounded.
-    /// Not a FIFO or device: those are refused before anything is opened.
+    /// when it is bigger than `maxBytes`. The resolved path is opened without
+    /// blocking and without following a link swapped in there, and every check
+    /// is made on the open file itself (fstat): a FIFO, device or folder put at
+    /// that path after any earlier look is refused, never waited on. The read
+    /// stops after `maxBytes + 1` bytes, so a file that grows is still bounded.
     nonisolated static func readText(at url: URL, maxBytes: Int) throws -> String {
         let target = url.resolvingSymlinksInPath()
-        let values = try target.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values.isRegularFile == true else { throw CocoaError(.fileReadNoSuchFile) }
-        guard (values.fileSize ?? 0) <= maxBytes else { throw CocoaError(.fileReadTooLarge) }
-        let handle = try FileHandle(forReadingFrom: target)
+        let fd = Darwin.open(target.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: target.path]) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: target.path])
+        }
+        guard info.st_size <= off_t(maxBytes) else { throw CocoaError(.fileReadTooLarge) }
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == 0 else { throw CocoaError(.fileReadUnknown) }
         let data = try handle.read(upToCount: maxBytes + 1) ?? Data()
         guard data.count <= maxBytes else { throw CocoaError(.fileReadTooLarge) }
         guard let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
         return text
+    }
+
+    /// Load from Host takes a path from the host's root only. "~/x.alias" or
+    /// "dir/x.alias" would be read relative to the login folder, and its key
+    /// (`ssh://<host>~/x.alias`) would name another host after a reload.
+    nonisolated struct RemotePathNotAbsolute: LocalizedError {
+        var errorDescription: String? {
+            String(localized: "socket.fileOpenRemote.invalidPath", defaultValue: "The path must be an absolute path on the SSH host")
+        }
+    }
+
+    nonisolated static func checkRemotePath(_ path: String) throws {
+        guard path.hasPrefix("/") else { throw RemotePathNotAbsolute() }
     }
 
     /// The keys in the page's `readValueAliases` request (strings only, at most
