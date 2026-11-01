@@ -516,11 +516,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       change(self)
       await open()
       let r = await call("""
-        const before = document.querySelectorAll('.cmux-toast').length;
+        // Toasts already shown (an earlier one may leave while this waits) aren't this load's.
+        document.querySelectorAll('.cmux-toast').forEach((t) => { t.dataset.seen = '1'; });
         C.applySessionFile({ text: \(jsString(cappedText)), path: '/work/sim/riscv.json' });
         await sleep(2000);
         await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
-        R.toasts = [...document.querySelectorAll('.cmux-toast')].slice(before).map((t) => t.textContent);
+        R.toasts = [...document.querySelectorAll('.cmux-toast:not([data-seen])')].map((t) => t.textContent);
         R.instr = text('instr'); R.byte = text('byte');
         R.tables = labels(sub(menuAt('byte'), FMT, \(ALIAS)));
         R.keys = ((C.sessionSnapshot().state || {}).cmuxValueAliases || []).map((f) => f.key);

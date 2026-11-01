@@ -137,6 +137,7 @@ enum WaveformViewerStrings {
             "messageSessionLoadFailed": String(localized: "filePreview.waveform.message.sessionLoadFailed", defaultValue: "The session could not be loaded: %@"),
             "messageValueAliasLoadFailed": String(localized: "filePreview.waveform.message.valueAliasLoadFailed", defaultValue: "The value alias file could not be loaded: %@"),
             "messageValueAliasNoTables": String(localized: "filePreview.waveform.message.valueAliasNoTables", defaultValue: "The file has no alias tables."),
+            "messageValueAliasRestoreFailed": String(localized: "filePreview.waveform.message.valueAliasRestoreFailed", defaultValue: "The session's value alias file %1$@ wasn't loaded: %2$@"),
             "messageValueAliasWarnings": String(localized: "filePreview.waveform.message.valueAliasWarnings", defaultValue: "%1$@ loaded with warnings: %2$@"),
             "messageFileChanged": String(localized: "filePreview.waveform.message.fileChanged", defaultValue: "The waveform file changed on disk."),
             "statusTime": String(localized: "filePreview.waveform.status.time", defaultValue: "Time: %@"),

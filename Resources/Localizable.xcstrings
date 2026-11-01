@@ -231331,6 +231331,183 @@
         }
       }
     },
+    "filePreview.waveform.message.valueAliasRestoreFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The session's value alias file %1$@ wasn't loaded: %2$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "セッションの値エイリアスファイル %1$@ を読み込めませんでした: %2$@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Wert-Alias-Datei %1$@ der Sitzung wurde nicht geladen: %2$@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le fichier d’alias de valeurs %1$@ de la session n’a pas été chargé : %2$@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يتم تحميل ملف الأسماء المستعارة للقيم %1$@ الخاص بالجلسة: %2$@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se cargó el archivo de alias de valores %1$@ de la sesión: %2$@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未載入工作階段的值別名檔案 %1$@：%2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未载入会话的值别名文件 %1$@：%2$@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "세션의 값 별칭 파일 %1$@을(를) 불러오지 못했습니다: %2$@"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.valueAlias.otherHost": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file is on another host."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このファイルは別のホストにあります。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Datei liegt auf einem anderen Host."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le fichier se trouve sur un autre hôte."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الملف موجود على مضيف آخر."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El archivo está en otro host."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此檔案位於另一部主機上。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件位于另一台主机上。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파일이 다른 호스트에 있습니다."
+          }
+        }
+      }
+    },
+    "filePreview.waveform.valueAlias.changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file changed after the session was saved. Load it again with Load Value Alias File..."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "セッションの保存後にファイルが変更されました。「値エイリアスファイルを読み込む...」でもう一度読み込んでください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Datei wurde nach dem Speichern der Sitzung geändert. Lade sie mit „Wert-Alias-Datei laden...“ erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le fichier a été modifié après l’enregistrement de la session. Rechargez-le avec « Charger un fichier d’alias de valeurs... »."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تغيّر الملف بعد حفظ الجلسة. حمّله مجددًا باستخدام \"تحميل ملف أسماء مستعارة للقيم...\"."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El archivo cambió después de guardar la sesión. Vuelve a cargarlo con «Cargar archivo de alias de valores...»."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "儲存工作階段後檔案已變更。請使用「載入值別名檔案...」重新載入。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存会话后文件已更改。请使用“载入值别名文件...”重新载入。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "세션을 저장한 후 파일이 변경되었습니다. '값 별칭 파일 불러오기...'로 다시 불러오세요."
+          }
+        }
+      }
+    },
     "filePreview.waveform.command.displayAsOctal": {
       "extractionState": "manual",
       "localizations": {
