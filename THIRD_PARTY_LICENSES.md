@@ -548,6 +548,19 @@ Xenia Wolf) and Ibex (https://github.com/lowRISC/ibex, Apache-2.0, Copyright
 lowRISC contributors) at pinned commits; each fixture directory carries the
 core's licence and a NOTICE.
 
+### Compiler Explorer (the assembly-listing parser)
+
+- **Version:** main, commit `4341ea30ac71a06cd97bd31c3c7483e5a8802901` (2026-11-01)
+- **License:** BSD 2-Clause License (text below, under "Shared License Texts"; also in the file header)
+- **Copyright:** Copyright (c) 2012-2022, Compiler Explorer Authors
+- **Source:** https://github.com/compiler-explorer/compiler-explorer/blob/4341ea30ac71a06cd97bd31c3c7483e5a8802901/lib/parsers/asm-parser.ts
+
+`Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/AsmListing/AsmListingParser.swift`
+(objdump listings for the waveform debugger's assembly breakpoints) is a Swift
+port of Compiler Explorer's objdump-output parser (`processBinaryAsm` and its
+`lineRe`, `labelRe`, `asmOpcodeRe`, `relocationRe` and `destRe` patterns),
+extended by cmux. No Compiler Explorer code is bundled as is.
+
 ### FSDB helper sources (`Resources/vaporview/fsdb-helper/`)
 
 cmux uploads these to an SSH host the first time an FSDB file is opened there
