@@ -239355,6 +239355,65 @@
         }
       }
     },
+    "filePreview.waveform.fsdbInstallNotPrivate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the windowed reader's install is not private to you"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウィンドウ表示用リーダーのインストールがあなた専用になっていません"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Installation des Fensterlesers ist nicht privat für dich"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "l’installation du lecteur fenêtré ne vous est pas privée"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تثبيت قارئ العرض بالنوافذ ليس خاصًا بك"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la instalación del lector por ventanas no es privada para ti"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "視窗化讀取器的安裝並非僅限你使用"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "窗口化读取器的安装并非仅限你使用"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "창 단위 리더의 설치가 본인 전용이 아닙니다"
+          }
+        }
+      }
+    },
     "filePreview.waveform.fsdbNeedsRemote": {
       "extractionState": "manual",
       "localizations": {

@@ -93,6 +93,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         /// This machine's v2 build failed before (remembered): v1 runs. Handled by `start()`.
         case rememberedBuildFailure(detail: String)
         /// The launcher refused an install others can write (exit 86); never run.
+        /// For v2, `start()` falls back to v1.
         case refused(detail: String)
         /// The page sent a command the relay does not pass, or an `open` of another file.
         case notAllowed(String)
@@ -441,9 +442,12 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     ///   can't run: remembered for this host and helper version;
     /// - it doesn't get ready in time: remembered too, so one wait per session;
     /// - it exits or reports an error before its ready line (perhaps passing:
-    ///   out of memory, /tmp full): not remembered, the next viewer tries v2.
+    ///   out of memory, /tmp full): not remembered, the next viewer tries v2;
+    /// - its install is refused as not private (86): v2's files are never run, v1
+    ///   (its own install, its own checks) runs instead; not remembered, so fixing
+    ///   the permissions is enough. If v1 refuses too, that is the error.
     /// Anything v1 would hit the same way (no Verdi, Node.js or compiler, a
-    /// failed install, an unreachable host) or a refused install is an error.
+    /// failed install, an unreachable host) is an error.
     private func start() async throws {
         var candidates = installs
         if let v2 = candidates.first, v2.protocolVersion >= 2, candidates.count > 1,
@@ -489,6 +493,12 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             return (detail.isEmpty ? String(
                 localized: "filePreview.waveform.fsdbStoppedStarting",
                 defaultValue: "the windowed reader stopped while starting"
+            ) : detail, false)
+        case .refused(let detail):
+            // The launcher's or the privacy check's own line names the folder.
+            return (detail.isEmpty ? String(
+                localized: "filePreview.waveform.fsdbInstallNotPrivate",
+                defaultValue: "the windowed reader's install is not private to you"
             ) : detail, false)
         default:
             return nil
