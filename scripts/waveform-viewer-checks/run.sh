@@ -34,6 +34,11 @@
 #   ./run.sh machine-core                machine state (cmux-machine-core.js): commit stream detection,
 #                                        the replay rules, gdb commands, $ names; the synthetic RVFI
 #                                        generator and NERV/PicoRV32/Ibex against Spike (machine/fixtures)
+#   ./run.sh machine [case...]           the machine state in the page (cmux-machine.js): the Machine section,
+#                                        F10 by commit, $ names, gdb commands, row actions, the ELF image
+#                                        (WaveformMachineState.swift's readelf) on the cores and synthetic streams
+#   ./run.sh machine-fsdb <ssh-host> <remote.fsdb> <commit.log> [prog.elf]
+#                                        the machine state on a remote FSDB against its commit.log
 #   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #                                        while the debugger's Locals shows,
@@ -89,8 +94,29 @@ case "${1:-}" in
   machine-core)
     swiftc -swift-version 6 -O "$HERE/machine/main.swift" -o "$OUT/machine-core"
     "$OUT/machine-core" "$HERE/machine/fixtures" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-machine-core.js" \
-      "$HERE/machine/make-rvfi-vcd.js" "$HERE/machine/core-cases.js" | tee "$OUT/machine-core.log"
+      "$ASSETS/cmux-riscv-disasm.js" "$ASSETS/cmux-sequence.js" "$HERE/machine/make-rvfi-vcd.js" "$HERE/machine/core-cases.js" \
+      "$HERE/machine/sequence-cases.js" | tee "$OUT/machine-core.log"
     grep -q '^MACHINE CORE CHECKS PASSED' "$OUT/machine-core.log"
+    ;;
+  machine)
+    # The page: each dump in its own off-screen WKWebView (cases: the three cores, six synthetic streams, none).
+    shift
+    swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
+    cases="${*:-nerv picorv32 ibex prefixed packed2 array2 struct monitor forward none}"
+    for c in $cases; do
+      "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" "$c" | tee "$OUT/machine-$c.log"
+      grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-$c.log"
+    done
+    ;;
+  machine-fsdb)
+    # A remote FSDB read in place (helper under nice) against its Spike-format commit.log (a local copy).
+    shift
+    if [ $# -lt 3 ]; then echo "machine-fsdb: needs <ssh-host> <remote.fsdb> <local commit.log> [local.elf]"; exit 2; fi
+    swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
+    "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" fsdb "$ASSETS/fsdb-helper" "$@" | tee "$OUT/machine-fsdb.log"
+    grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-fsdb.log"
     ;;
   machine-mutants)
     swiftc -swift-version 6 -O "$HERE/machine/main.swift" -o "$OUT/machine-core"
