@@ -401,6 +401,8 @@ struct SSHFileSearchTests {
             let inner = nested.appendingPathComponent(name)
             try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
             try Data("hello nested\n".utf8).write(to: inner.appendingPathComponent("n.sv"))
+            // An untracked file listed after the repository, so its entry is not the last one.
+            try Data("plain\n".utf8).write(to: nested.appendingPathComponent("zz.sv"))
             let innerInit = try Self.run("git init -q .", shell: "/bin/sh", path: "/usr/bin:/bin", directory: inner.path)
             #expect(innerInit.status == 0)
             for shell in Self.availableShells {
