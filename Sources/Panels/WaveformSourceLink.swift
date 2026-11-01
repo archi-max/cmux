@@ -192,14 +192,26 @@ enum WaveformSourceLink {
                 if let alias = await Self.dumpedAlias(of: designPath, session: session, waveform: waveform, key: key, progress: progress) {
                     dumpPaths = alias.dumpPaths
                     linkedPath = alias.path
-                    aliasNotes.append(String(
-                        format: String(
-                            localized: "waveformLink.showingAlias",
-                            defaultValue: "%1$@ isn’t dumped; showing %2$@, the same net through a port connection."
-                        ),
-                        designPath,
-                        alias.path
-                    ))
+                    if let bits = alias.bits {
+                        aliasNotes.append(String(
+                            format: String(
+                                localized: "waveformLink.showingSliceAlias",
+                                defaultValue: "%1$@ isn’t dumped; showing %2$@. Its bits %3$@ are what the instance array connects to that port."
+                            ),
+                            designPath,
+                            alias.path,
+                            bits
+                        ))
+                    } else {
+                        aliasNotes.append(String(
+                            format: String(
+                                localized: "waveformLink.showingAlias",
+                                defaultValue: "%1$@ isn’t dumped; showing %2$@, the same net through a port connection."
+                            ),
+                            designPath,
+                            alias.path
+                        ))
+                    }
                     break
                 }
                 notDumped.append(String(
@@ -524,23 +536,28 @@ enum WaveformSourceLink {
 
     /// For a design path the dump lacks: the first of its plain port-connection aliases
     /// (`slangPortAliases`) that is dumped, with its dump paths. Simulators often keep only one
-    /// name of a net, such as the instance port a testbench wire is connected to.
+    /// name of a net, such as the instance port a testbench wire is connected to. Else, for an
+    /// instance array element's input, the bus it is a slice of (`bits`: `[7:4]`), so a dump
+    /// that stops above the array still shows its value.
     private static func dumpedAlias(
         of designPath: String,
         session: LanguageServerSession,
         waveform: FilePreviewPanel,
         key: String,
         progress: @escaping @MainActor @Sendable (String) -> Void
-    ) async -> (path: String, dumpPaths: [String])? {
+    ) async -> (path: String, dumpPaths: [String], bits: String?)? {
         guard let aliases = try? await session.slangPortAliases(of: designPath) else { return nil }
         for alias in aliases.prefix(aliasLimit) {
             guard !Task.isCancelled else { return nil }
             if case .found(let dumpPaths) = await resolveDumpPaths(alias, session: session, waveform: waveform, key: key, progress: progress),
                !dumpPaths.isEmpty {
-                return (alias, dumpPaths)
+                return (alias, dumpPaths, nil)
             }
         }
-        return nil
+        guard !Task.isCancelled, let slice = try? await session.slangPortSliceAlias(of: designPath),
+              case .found(let dumpPaths) = await resolveDumpPaths(slice.path, session: session, waveform: waveform, key: key, progress: progress),
+              !dumpPaths.isEmpty else { return nil }
+        return (slice.path, dumpPaths, "[\(slice.msb):\(slice.lsb)]")
     }
 
     private enum DumpResolution {

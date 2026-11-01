@@ -241,8 +241,50 @@ extension LanguageServerSession {
 
     /// The bits of a net in the parent scope that an instance array's input port at `path`
     /// (`top.u[1].a`) is connected to, when the connection is sliced among the elements.
+    /// slang (like IEEE 1800 23.3.3.5) slices a packed connection of port width W x element
+    /// count C, the left element taking the MSB slice: the element p from the left gets bits
+    /// (C-1-p)*W ..< (C-p)*W counted from the net's LSB. Only inputs, with plain widths and a
+    /// one-range net (the bits are named in its declared range). Not the other way: the net is
+    /// no one element's.
     public func slangPortSliceAlias(of path: String) async throws -> SlangSliceAlias? {
-        nil
+        let element = Self.parentPath(of: path)
+        let name = String(path.dropFirst(element.count + 1))
+        let array = Self.parentPath(of: element)
+        let indexText = element.dropFirst(array.count)
+        guard !array.isEmpty, Self.isPlainIdentifier(name), indexText.hasPrefix("["), indexText.hasSuffix("]"),
+              let index = Int(indexText.dropFirst().dropLast()) else { return nil }
+        let scope = Self.parentPath(of: array)
+        let arrayName = String(array.dropFirst(scope.count).drop { $0 == "." })
+        guard !scope.isEmpty, Self.isPlainIdentifier(arrayName) else { return nil }
+        let siblings = try await scopeChildrenSkippingUnresolved(scope)
+        guard let instance = siblings.first(where: { $0.name == arrayName && $0.kind == "InstanceArray" }),
+              let range = instance.arrayRange else { return nil }
+        let count = abs(range.left - range.right) + 1
+        let position = abs(index - range.left)
+        guard count > 1, position < count else { return nil }
+        var texts: [URL: [UInt16]] = [:]
+        guard let port = try await scopeChildrenSkippingUnresolved(element).first(where: { $0.name == name && $0.isInputPort }),
+              let width = try await declaredWidth(of: port, at: path, texts: &texts),
+              let signal = instanceConnections(instance, texts: &texts)?.first(where: { $0.port == name })?.signal,
+              let net = siblings.first(where: { $0.name == signal && !$0.isScope }),
+              let bounds = net.type.flatMap(Self.packedRange(ofType:)),
+              abs(bounds.left - bounds.right) + 1 == width * count,
+              try await declaredWidth(of: net, at: scope + "." + signal, texts: &texts) == width * count else { return nil }
+        let low = (count - 1 - position) * width
+        let high = low + width - 1
+        // Bit k from the LSB is right + k in a descending range, right - k in an ascending one.
+        let step = bounds.left >= bounds.right ? 1 : -1
+        return SlangSliceAlias(path: scope + "." + signal, msb: bounds.right + step * high, lsb: bounds.right + step * low)
+    }
+
+    /// The one packed range of getScope's type (`logic[15:0]`, `logic signed[8:15]`); nil for
+    /// none, several, or an unpacked dimension (`$`).
+    static func packedRange(ofType type: String) -> (left: Int, right: Int)? {
+        guard type.hasSuffix("]"), !type.contains("$"), type.filter({ $0 == "[" }).count == 1,
+              let open = type.lastIndex(of: "[") else { return nil }
+        let bounds = type[type.index(after: open)..<type.index(before: type.endIndex)].split(separator: ":", omittingEmptySubsequences: false)
+        guard bounds.count == 2, let left = Int(bounds[0]), let right = Int(bounds[1]) else { return nil }
+        return (left, right)
     }
 
     /// A variable's or port's width (the item at `path`) as its declaration gives it, from
