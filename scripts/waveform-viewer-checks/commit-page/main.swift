@@ -293,8 +293,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let bad = await addCommit("kind: 'pc', pcs: ['main']")
     let badLoc = await addCommit("kind: 'write', loc: 'x99'")
     let noPattern = await addCommit("kind: 'commitText', pattern: ''")
-    expect(bad == nil && badLoc == nil && noPattern == nil, "bad ones are refused")
+    let high = await addCommit("kind: 'pc', pcs: ['ffffffff80000000']")
+    expect(bad == nil && badLoc == nil && noPattern == nil && high == nil, "bad ones are refused")
     let said = await toasts()
+    expect(said.contains("Breakpoint PC 0xffffffff80000000: addresses from 0x20000000000000 (2^53) up are not supported yet"),
+           "an address from 2^53 up is refused, and why: \(said)")
     expect(said.contains("Breakpoint PC main: an address is a hex number of up to 16 digits")
            && said.contains("Breakpoint x99 written: give a register (a0, x5), a CSR (mstatus) or memory ([0x80001000])")
            && said.contains("Breakpoint Next instruction ~ //: the pattern is empty"), "and say why: \(said)")
@@ -311,8 +314,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
         { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: false, condition: 'top.flag' },
         { key: '', listingLabel: 'no key', pcs: ['0x80000010'], enabled: true },
-        { key: 'K3', listingLabel: 'bad', pcs: ['main'], enabled: true }] }).map((b) => b.label);
+        { key: 'K3', listingLabel: 'bad', pcs: ['main'], enabled: true },
+        { key: 'K9', listingLabel: 'prog.dis: high', pcs: ['0xffffffff80000000'], enabled: true }] }).map((b) => b.label);
     """)
+    expect(await toasts().contains("Breakpoint prog.dis: high (0xffffffff80000000): addresses from 0x20000000000000 (2^53) up are not supported yet"),
+           "a listing's breakpoint from 2^53 up is not placed, and that is said: \(await toasts())")
     var listed = (await list()).filter { $0["key"] as? String != nil }
     expect(listed.map { $0["label"] as? String ?? "" } == ["prog.dis: _start+0x4 (0x80000004)", "prog.dis: sum (0x80000010) if top.flag"],
            "a listing's breakpoints in the list (no key or a bad address: none): \(listed.map { $0["label"] ?? "" })")
@@ -518,6 +524,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerCommitsNone:'%@: this dump has no commit stream (RVFI or similar) to search',
    debuggerCommitsNoInsn:'%@: the commit stream has no instruction word',
    debuggerCommitTooMany:'At most %@ breakpoints of this kind can be enabled',
+   debuggerCommitAddressTooLarge:'addresses from 0x20000000000000 (2^53) up are not supported yet',
+   debuggerCommitTextJalHint:'%@: no instruction matched, but jal instructions that link ra committed. They are shown as “jal <target>” (ra implied), so leave ra out of the pattern.',
    debuggerShowValueAsAddress:'Show Value as Address in Listing', debuggerAddressUnknown:'%@ has no address value at the marker'}
   """
 
