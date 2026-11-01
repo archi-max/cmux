@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..4275b83
+index 0000000..fb48310
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,202 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -193,6 +193,19 @@ index 0000000..4275b83
 +  not only where it enters the cache (`settleIfV1`, `v1Whole`). If the v1 path holds the signal, or is
 +  fetching it for a slice, it gets no count and no load. This covers a slice row restored before its
 +  source row.
++
++## Text searches on windowed rows stay text
++
++`WindowCache.searchValue` (`src/webview/window_cache.ts`) used to try `toHostPattern` on every
++format's parsed search first. A search in a text format made only of `0`, `1`, `x`, `z`, `?`
++or `.` characters (RISC-V `x1` or `0`, an alias or enum name, a fixed-point or epoch number)
++became a bit pattern for the helper and found nothing, where a whole-signal row matches the
++text. Now only formats whose search is a bit pattern over the whole value (`matchExact` and
++`matchExactSigned`: binary, hex, octal, decimal, signed, floats; `searchesBitPattern` in
++`value_format.ts`) go to the helper as a pattern. Every other format (RISC-V, aliases, ASCII,
++string, enum, fixed point, epoch time) takes the formatted path (`searchFormatted`), which
++calls the format's own `checkSearchValue` as non-windowed rows do. cmux's `run.sh windowed`
++checks `x1` and `0` in RISC-V on a windowed row; it was red before this change.
 diff --git a/src/webview/control_bar.ts b/src/webview/control_bar.ts
 index 54acd7a..4bf8c32 100644
 --- a/src/webview/control_bar.ts
@@ -1838,7 +1851,7 @@ index 0000000..37393bf
 +  return parsed;
 +}
 diff --git a/src/webview/value_format.ts b/src/webview/value_format.ts
-index b373541..1fade17 100644
+index b373541..c867add 100644
 --- a/src/webview/value_format.ts
 +++ b/src/webview/value_format.ts
 @@ -11,8 +11,10 @@
@@ -1853,7 +1866,7 @@ index b373541..1fade17 100644
  
  export function  valueIs9State(value: string): boolean {
    if (value.match(/[uxzwlh-]/)) {return true;}
-@@ -91,6 +93,16 @@ function regexMatchBinary(inputString: string, binaryString: string, formattedSt
+@@ -91,6 +93,25 @@ function regexMatchBinary(inputString: string, binaryString: string, formattedSt
    return binaryString.match(new RegExp(inputString, 'ig')) !== null;
  }
  
@@ -1867,10 +1880,19 @@ index b373541..1fade17 100644
 +  return matchBinaryExact(inputString, binaryString, true);
 +}
 +
++// cmux: whether a format's search is a bit pattern over the whole value (matchExact,
++// matchExactSigned: binary, hex, octal, decimal, signed, floats), which the windowed
++// viewer can hand to the helper as such. Every other format searches text or a regex
++// (ASCII, string, enum, fixed point, epoch time, RISC-V, aliases), even when the text is
++// made only of 0, 1, x and z, and must be matched as non-windowed rows match it.
++export function searchesBitPattern(format: ValueFormat): boolean {
++  return format.checkSearchValue === matchExact || format.checkSearchValue === matchExactSigned;
++}
++
  function regexMatchString(inputString: string, binaryString: string, formattedString: string): boolean {
    return formattedString.match(new RegExp(inputString, 'ig')) !== null;
  }
-@@ -125,6 +137,10 @@ export interface ValueFormat {
+@@ -125,6 +146,10 @@ export interface ValueFormat {
  
    // Function to check if the value format can be applied to a signal
    checkWidth: (width: number) => boolean;
@@ -1881,7 +1903,7 @@ index b373541..1fade17 100644
  }
  
  // #region Format Hexadecimal
-@@ -171,7 +187,7 @@ export const formatHex: ValueFormat = {
+@@ -171,7 +196,7 @@ export const formatHex: ValueFormat = {
      return result;
    },
  
@@ -1890,7 +1912,7 @@ index b373541..1fade17 100644
  
    is9State: valueIs9State,
  
-@@ -222,7 +238,7 @@ export const formatOctal: ValueFormat = {
+@@ -222,7 +247,7 @@ export const formatOctal: ValueFormat = {
      return result;
    },
  
@@ -1899,7 +1921,7 @@ index b373541..1fade17 100644
  
    is9State: valueIs9State,
  
-@@ -246,7 +262,7 @@ export const formatBinary: ValueFormat = {
+@@ -246,7 +271,7 @@ export const formatBinary: ValueFormat = {
      return searchString.replace(/_/g, '').replace(/[dD]/g, '.');
    },
  
@@ -1908,7 +1930,7 @@ index b373541..1fade17 100644
  
    is9State: valueIs9State,
  
-@@ -282,7 +298,7 @@ const formatDecimal: ValueFormat = {
+@@ -282,7 +307,7 @@ const formatDecimal: ValueFormat = {
      return BigInt(result).toString(2);
    },
  
@@ -1917,7 +1939,7 @@ index b373541..1fade17 100644
  
    is9State: valueIs9State,
  
-@@ -314,24 +330,10 @@ const formatSignedInt: ValueFormat = {
+@@ -314,24 +339,10 @@ const formatSignedInt: ValueFormat = {
      else {return false;}
    },
  
@@ -1945,7 +1967,7 @@ index b373541..1fade17 100644
  
    is9State: valueIs9State,
  
-@@ -353,7 +355,7 @@ export const formatFloat4: ValueFormat = {
+@@ -353,7 +364,7 @@ export const formatFloat4: ValueFormat = {
    },
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 4, 3);},
@@ -1954,7 +1976,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 4;},
  };
-@@ -366,7 +368,7 @@ export const formatFloat8: ValueFormat = {
+@@ -366,7 +377,7 @@ export const formatFloat8: ValueFormat = {
    formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 4, 3, is2State);},
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 4, 3);},
@@ -1963,7 +1985,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 8;},
  };
-@@ -379,7 +381,7 @@ export const formatFloat16: ValueFormat = {
+@@ -379,7 +390,7 @@ export const formatFloat16: ValueFormat = {
    formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 5, 10, is2State);},
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 5, 10);},
@@ -1972,7 +1994,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 16;},
  };
-@@ -392,7 +394,7 @@ export const formatBFloat16: ValueFormat = {
+@@ -392,7 +403,7 @@ export const formatBFloat16: ValueFormat = {
    formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 8, 7, is2State);},
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 8, 7);},
@@ -1981,7 +2003,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 16;},
  };
-@@ -405,7 +407,7 @@ export const formatTensorFloat32: ValueFormat = {
+@@ -405,7 +416,7 @@ export const formatTensorFloat32: ValueFormat = {
    formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 8, 10, is2State);},
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 8, 10);},
@@ -1990,7 +2012,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 19;},
  };
-@@ -418,7 +420,7 @@ export const formatFloat32: ValueFormat = {
+@@ -418,7 +429,7 @@ export const formatFloat32: ValueFormat = {
    formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 8, 23, is2State);},
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 8, 23);},
@@ -1999,7 +2021,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 32;},
  };
-@@ -431,7 +433,7 @@ export const formatFloat64: ValueFormat = {
+@@ -431,7 +442,7 @@ export const formatFloat64: ValueFormat = {
    formatString: (inputString: string, width: number, is2State: boolean) => {return formatFloat(inputString, 11, 52, is2State);},
    checkValidSearch: checkValidFloat,
    parseSearchValue: (searchString: string) => {return parseFloatForSearch(searchString, 11, 52);},
@@ -2008,7 +2030,7 @@ index b373541..1fade17 100644
    is9State: valueIs9State,
    checkWidth: (width: number) => {return width === 64;},
  };
-@@ -534,11 +536,13 @@ export class EnumValueFormat implements ValueFormat {
+@@ -534,11 +545,13 @@ export class EnumValueFormat implements ValueFormat {
  
    public formatString = (inputString: string, width: number, is2State: boolean) => {
      // This function is a placeholder and will be replaced in the NetlistVariable class
@@ -2025,7 +2047,7 @@ index b373541..1fade17 100644
    };
  
    public checkValidSearch = (searchString: string) => {return dataManager.enumTable[this.enumType].find((entry) => {return entry[0] === searchString;}) !== undefined;};
-@@ -631,6 +635,9 @@ export function getNumberFormatById(netlistData: NetlistVariable | CustomVariabl
+@@ -631,6 +644,9 @@ export function getNumberFormatById(netlistData: NetlistVariable | CustomVariabl
      const offset = parseInt(args[2]);
      return new FixedPointValueFormat(offset, signed, netlistData.signalWidth);
    }
@@ -2253,10 +2275,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..0070938
+index 0000000..05a5478
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1845 @@
+@@ -0,0 +1,1846 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2299,6 +2321,7 @@ index 0000000..0070938
 +import { NetlistVariable } from './signal_item';
 +import { viewport, viewerState, rowHandler, labelsPanel, vscodeWrapper, styles, events, dataManager } from './vaporview';
 +import { copyWaveDrom } from './wavedrom';
++import { searchesBitPattern } from './value_format';
 +import { ActionType } from './event_handler';
 +
 +const BUCKETS = 1024;      // per tile: a tile spans 512..1024 CSS px at its level
@@ -3901,12 +3924,12 @@ index 0000000..0070938
 +  searchValue(item: NetlistVariable, parsedSearchValue: string, direction: number, negative = false) {
 +    const s = this.signals.get(item.signalId!);
 +    if (!s) {return;}
-+    const pattern = toHostPattern(parsedSearchValue, s.width, negative);
-+    // Text formats (RISC-V, alias, ASCII, regexes): no host bit pattern; match the formatted
-+    // values the way upstream does, over loaded windows and then exact chunks from the host.
-+    // ASCII searches text (upstream matches its bytes anywhere in the value), so it goes the
-+    // formatted way too.
-+    if (pattern === null || item.valueFormat.id === 'ascii') {this.searchFormatted(s, item, parsedSearchValue, direction); return;}
++    // Only bit-pattern formats go to the helper as a pattern. Text formats (RISC-V, alias,
++    // ASCII, string, enum, fixed point, epoch) and regexes match the formatted values the way
++    // upstream does, over loaded windows and then exact chunks from the host. Their text is
++    // never read as bits, even "x1" or "0" (toHostPattern would take those for a pattern).
++    const pattern = searchesBitPattern(item.valueFormat) ? toHostPattern(parsedSearchValue, s.width, negative) : null;
++    if (pattern === null) {this.searchFormatted(s, item, parsedSearchValue, direction); return;}
 +    this.runNav(async (gen) => {
 +      const start = viewerState.markerTime === null ? -1 : viewerState.markerTime;
 +      let t = this.localEdge(s, start, direction, (v) => matchPattern(v, pattern));
