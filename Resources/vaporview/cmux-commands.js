@@ -662,28 +662,43 @@
   const ANSWER_TYPES = [StateChangeType.Restore, StateChangeType.File, StateChangeType.Undo, StateChangeType.Redo];
 
   // Adds made while a view looks up its rows run after its apply-state, in
-  // order, unless another file or reload came in between.
+  // order. Each answers a promise of its result (0 when dropped); null: not
+  // held. A reload or open drops them and stops counting the lookups of the
+  // load before (their views are stale): a lookup that never settles can't
+  // hold the next load's adds, or an Add All waiting on one.
   let resolving = 0;
+  let resolveEpoch = 0;
   let deferredAdds = [];
   function deferWhileApplying(add) {
-    if (!resolving) { return false; }
-    deferredAdds.push({ add, generation: host().loadGeneration });
-    return true;
+    if (!resolving) { return null; }
+    return new Promise((resolve) => { deferredAdds.push({ add, resolve }); });
   }
   function flushDeferredAdds() {
     if (resolving) { return; }
     const list = deferredAdds;
     deferredAdds = [];
-    list.forEach((d) => { if (d.generation === host().loadGeneration) { d.add(); } });
+    list.forEach((d) => {
+      try { d.resolve(d.add()); } catch (error) { host().log('held add: ' + error); d.resolve(0); }
+    });
+  }
+  function dropDeferredAdds() {
+    resolveEpoch++;
+    resolving = 0;
+    const list = deferredAdds;
+    deferredAdds = [];
+    list.forEach((d) => d.resolve(0));
   }
 
   async function postSession(session, stateChangeType) {
+    const epoch = resolveEpoch;
     resolving++;
     try {
       return await resolveAndPostSession(session, stateChangeType);
     } finally {
-      resolving--;
-      flushDeferredAdds();
+      if (epoch === resolveEpoch) {
+        resolving--;
+        flushDeferredAdds();
+      }
     }
   }
 
@@ -743,9 +758,12 @@
     frameGone = false;
     applying = 0;
     applyEpoch++;
-    // A failure on the way (a handler's error) didn't stop this reload, if
-    // its backend is open.
-    if (host().doc.metadata) { failedReload = false; }
+    // A failure on the way (a handler's error, a worker error after the
+    // open) didn't stop this reload: the viewer is only here (host.js calls
+    // restoreState only after init, which needs the file read), and it is
+    // live, so Undo applies to what it shows. An open that failed never
+    // gets here, and keeps failedReload.
+    failedReload = false;
     restoreAsked = true;
     restorePending = false;
     if (kept) {
@@ -1303,6 +1321,7 @@
     failedReload = false;
     historyPath = config.path || null;
     resetApplying();
+    dropDeferredAdds();
     pendingReload = false;
     setDirty(false);
     restoreAsked = false;
@@ -1347,6 +1366,7 @@
     webviewContext = null;
     // What was posted to the old viewer is answered (if at all) before its unload.
     resetApplying();
+    dropDeferredAdds();
     // An Undo queued for a reload this one overtakes doesn't carry over.
     waitingHistory = [];
     // A reload of another path: what was pressed for the old one doesn't carry.
@@ -1366,8 +1386,11 @@
     reloadFailed: () => { if (reloading) { waitingHistory = []; failedReload = true; } },
     // A reload or restore has not come back yet (Undo/Redo wait for it).
     isRestoring: () => reloading || restorePending,
-    isReloading: () => reloading,
     deferWhileApplying,
+    // Whether the viewer answers an apply-state (it has asked for its state),
+    // and whether a context is such an answer.
+    viewerAnswersViews: () => restoreAsked,
+    isViewAnswer: (m) => !!m && ANSWER_TYPES.includes(m.stateChangeType),
     init,
     setSessionFile: (file) => { host().config.sessionFile = file; return offerSessionFile(); },
     sessionSaved: () => { setDirty(false); scheduleSessionSnapshot(); },
