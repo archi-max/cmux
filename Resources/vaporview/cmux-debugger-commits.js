@@ -288,7 +288,7 @@
     });
   }
   // cmux-machine.js loads after this file.
-  setTimeout(subscribe, 0);
+  if (typeof setTimeout === 'function') { setTimeout(subscribe, 0); }
 
   function landed(bp, time) {
     const k = kAt(bp, time);
