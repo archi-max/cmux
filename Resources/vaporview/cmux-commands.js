@@ -463,7 +463,9 @@
   // cmux names it), the latest kept. The tables live in the viewer frame; cmux
   // keeps the files so a saved session, cmux's kept state and a restore bring
   // them back. Sessions embed at most ALIAS_EMBED_BYTES of their text; the rest
-  // are named by key, path and SHA-256, and cmux reads them again (readValueAliases).
+  // are named by key, path and SHA-256, and cmux reads them again: the page
+  // asks by key only (readValueAliases), and cmux reads the file its own record
+  // for that key names, so a page or session state can't point it at a path.
   let aliasFiles = [];
   // Loads posted and not answered yet: { key, path, fileName, text, sha256, user }.
   let aliasLoads = [];
@@ -567,10 +569,11 @@
     if (!toRead.length) { return; }
     const id = ++aliasReadId;
     aliasReads.set(id, { generation: host().loadGeneration, files: toRead });
-    host().toNative({ type: 'readValueAliases', id, files: toRead.map((f) => ({ key: f.key, path: f.path, sha256: f.sha256 })) });
+    host().toNative({ type: 'readValueAliases', id, keys: toRead.map((f) => f.key) });
   }
 
   // cmux's answer to readValueAliases: { id, files: [{ key, path, text } | { key, path, error }] }.
+  // A key cmux has no record of gets no answer, and so a toast.
   function valueAliasFilesRead({ id, files } = {}) {
     const read = aliasReads.get(id);
     aliasReads.delete(id);

@@ -34,7 +34,7 @@
 //   { type: 'settings', values } | { type: 'sessionState', state, dirty }
 //   { type: 'saveSession', text, suggestedName } | { type: 'loadSession' } | { type: 'reload' }
 //   { type: 'loadValueAliases' }   pick and read an alias file, answered with applyValueAliasFile
-//   { type: 'readValueAliases', id, files: [{ key, path, sha256 }] }   answered with valueAliasFilesRead
+//   { type: 'readValueAliases', id, keys: [key] }   answered with valueAliasFilesRead (keys cmux recorded only)
 //   { type: 'keyState', viewerFocused, blocked }   which of VaporView's keys the page will run
 //   { type: 'event', eventType, eventData }   VaporView's API events (markerSet, signalSelect, ...)
 
