@@ -43,6 +43,8 @@
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #   ./run.sh text                        text breakpoints' formats and match rules (cmux-textmatch.js) in JavaScriptCore
 #   ./run.sh text-breakpoints            text breakpoints in the page: hits, menus, conditions, caps, watchdog
+#   ./run.sh commit-breakpoints          pc, instruction-text and write breakpoints (cmux-debugger-commits.js) in JavaScriptCore
+#   ./run.sh commit-page                 those in the page, over a mock commit index: hits, menus, prompts, session, caps
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
 #                                        (helper stand-in, no host)
@@ -141,11 +143,16 @@ case "${1:-}" in
     swiftc -swift-version 6 -O "$HERE/text/main.swift" -o "$OUT/text"
     "$OUT/text" "$ASSETS/cmux-formats.js" "$ASSETS/cmux-textmatch.js" "$HERE/text/cases.js"
     ;;
+  commit-breakpoints)
+    swiftc -swift-version 6 -O "$HERE/commit-breakpoints/main.swift" -o "$OUT/commit-breakpoints"
+    "$OUT/commit-breakpoints" "$ASSETS/cmux-formats.js" "$ASSETS/cmux-textmatch.js" "$ASSETS/cmux-debugger-text.js" \
+      "$ASSETS/cmux-debugger-commits.js" "$HERE/commit-breakpoints/cases.js"
+    ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
     sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerLineBreakpoints.swift" > "$OUT/line-breakpoints-model.swift"
     swiftc -swift-version 6 -O "$HERE/line-breakpoints/main.swift" "$HERE/line-breakpoints/stubs.swift" "$OUT/line-breakpoints-model.swift" \
-      "$ROOT/Sources/Panels/WaveformDebuggerTextBreakpoints.swift" \
+      "$ROOT/Sources/Panels/WaveformDebuggerTextBreakpoints.swift" "$ROOT/Sources/Panels/WaveformDebuggerCommitBreakpoints.swift" \
       "$L/WaveformLineBreakpoint.swift" "$L/SystemVerilogInlineScan.swift" "$L/HierarchyPathMapping.swift" "$L/LSPTypes.swift" \
       -o "$OUT/line-breakpoints"
     "$OUT/line-breakpoints"
@@ -163,6 +170,13 @@ case "${1:-}" in
     python3 "$HERE/text-breakpoints/make-vcd.py" "$OUT"
     "$OUT/text-breakpoints" "$ASSETS" "$OUT/text-breakpoints.vcd" "$OUT/text-breakpoints.png" | grep -v '^\[log\]' | tee "$OUT/text-breakpoints.log"
     grep -q '^TEXT BREAKPOINT CHECKS PASSED' "$OUT/text-breakpoints.log"
+    ;;
+  commit-page)
+    swiftc -O "$HERE/commit-page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/commit-page"
+    python3 "$HERE/text-breakpoints/make-vcd.py" "$OUT"
+    "$OUT/commit-page" "$ASSETS" "$OUT/text-breakpoints.vcd" "$OUT/commit-page.png" | grep -v '^\[log\]' | tee "$OUT/commit-page.log"
+    grep -q '^COMMIT PAGE CHECKS PASSED' "$OUT/commit-page.log"
     ;;
   fsdb-locals)
     swiftc -O "$HERE/fsdb-locals/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \

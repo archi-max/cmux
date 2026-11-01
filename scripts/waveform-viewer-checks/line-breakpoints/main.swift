@@ -230,6 +230,36 @@ endmodule
         #"{"path":["a"],"kind":"text","enabled":true,"text":{"format":"ascii","pattern":"ok"}}"#.utf8))
     expect(textOlder?.text?.caseSensitive == nil && textOlder?.pageItem["caseSensitive"] == nil && textOlder?.pageItem["pattern"] as? String == "ok",
            "optional fields stay optional: \(String(describing: textOlder))")
+    // Commit breakpoints (Break at Address…, Break When Next Instruction Matches…, Break When Written…):
+    // no path; their fields are kept, saved and given back; one the page could not have made is dropped.
+    LB.signalsReported(["items": [
+      ["path": [String](), "kind": "pc", "pcs": ["0x80000004", "0x80000010"], "channel": 1, "enabled": true, "condition": "$a0 == 0"],
+      ["path": [String](), "kind": "commitText", "pattern": "csrw mtvec", "caseSensitive": true, "anyRegisterNames": false, "enabled": false],
+      ["path": [String](), "kind": "write", "loc": "mem:0x80001000/4", "enabled": true],
+      ["path": [String](), "kind": "write", "loc": "csr:mtvec", "enabled": true],
+      ["path": [String](), "kind": "pc", "pcs": [String](), "enabled": true],
+      ["path": [String](), "kind": "pc", "pcs": ["main"], "enabled": true],
+      ["path": [String](), "kind": "write", "loc": "", "enabled": true],
+      ["path": [String](), "kind": "commitText", "pattern": "", "enabled": true],
+      ["path": [String](), "kind": "commitText", "pattern": String(repeating: "a", count: 4097), "enabled": true],
+      ["path": [String](), "kind": "change", "enabled": true],
+    ]], waveform: textViewer)
+    let commitKept = LB.signals(for: textViewer)
+    expect(commitKept.map(\.kind) == ["pc", "commitText", "write", "write"]
+           && commitKept[0].commit == WaveformDebuggerCommitBreakpoint(pcs: ["0x80000004", "0x80000010"], channel: 1)
+           && commitKept[1].commit == WaveformDebuggerCommitBreakpoint(pattern: "csrw mtvec", caseSensitive: true, anyRegisterNames: false)
+           && commitKept[2].commit == WaveformDebuggerCommitBreakpoint(loc: "mem:0x80001000/4"),
+           "commit breakpoints' fields are kept, bad ones dropped: \(commitKept)")
+    let pcItem = commitKept.first?.pageItem
+    expect(pcItem?["kind"] as? String == "pc" && pcItem?["pcs"] as? [String] == ["0x80000004", "0x80000010"] && pcItem?["channel"] as? Int == 1
+           && pcItem?["condition"] as? String == "$a0 == 0" && (pcItem?["path"] as? [String])?.isEmpty == true
+           && commitKept[1].pageItem["enabled"] as? Bool == false && commitKept[1].pageItem["anyRegisterNames"] as? Bool == false
+           && commitKept[2].pageItem["loc"] as? String == "mem:0x80001000/4",
+           "and go back to the page as it sent them: \(String(describing: pcItem))")
+    let commitSaved = LB.snapshot(of: textWorkspace)
+    let commitDecoded = (try? JSONEncoder().encode(commitSaved)).flatMap { try? JSONDecoder().decode(SessionWaveformBreakpointsSnapshot.self, from: $0) }
+    expect(commitDecoded == commitSaved && commitDecoded?.signalsByDump?["/w/t.vcd"]?[3].commit?.loc == "csr:mtvec",
+           "a session keeps them: \(String(describing: commitDecoded))")
     LB.signalsReported(["items": []], waveform: textViewer)
     expect(decoded?.watchesByDump?["/w/a.vcd"] == ["count + 1", "limit"] && decoded?.watchesByDump?["/w/b.vcd"] == ["y + 1"],
            "the watches are in it, per dump: \(String(describing: decoded?.watchesByDump))")
