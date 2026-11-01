@@ -991,6 +991,7 @@ enum WaveformSourceLink {
     /// The viewer is closing: its editors' values go away with it.
     static func waveformClosed(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
+        WaveformTraceVerdi.stop(for: waveform)
         if lastWaveformPanel === waveform { lastWaveformPanel = nil }
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
@@ -998,6 +999,7 @@ enum WaveformSourceLink {
     /// The viewer is loading its file again (a reload or a new page): the old values and marker no longer hold.
     static func waveformReloading(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
+        WaveformTraceVerdi.stop(for: waveform)
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
 

@@ -4,6 +4,9 @@
 // cmux-sv-model `--once '*'` file. Traces every signal of one instance at a time, then follows each
 // step's fan-in two more steps, and prints steps by trust and driver kind, the reasons, and timings.
 // Fails when a trace throws, or a signal of the design gets no driver at all.
+// TRACE_FSDB_VERDI=1 also runs the Verdi engine on the host as cmux does (verdi-trace/, a warm
+// `verdi -nogui` session found through the KDB next to the FSDB), answers the page's engine
+// requests from it, and counts how the two engines' answers compare.
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
@@ -28,6 +31,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var web: WKWebView!
   var helper: WaveformFSDBHelper!
   var instances: [String: Any] = [:]
+  var verdi: SVModelSidecar?
+  var verdiReady = false
 
   func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if !ok { failures += 1 } }
 
@@ -64,6 +69,47 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
   }
 
+  /// What cmux answers the page's engine requests (WaveformTraceVerdi.answer).
+  func answerEngine(_ id: Int, _ body: [String: Any]) {
+    guard let verdi, verdiReady, let signal = body["signal"] as? String, let t = (body["time"] as? NSNumber)?.int64Value else {
+      answer(id, result: ["state": "none"])
+      return
+    }
+    Task { @MainActor in
+      do {
+        let r = try await verdi.request(["cmd": "active", "signal": signal, "time": t], timeout: 120)
+        self.answer(id, result: ["state": "ready", "scope": r["scope"] ?? "", "file": r["file"] ?? "", "line": r["line"] ?? 0])
+      } catch SVModelSidecar.Failure.request(code: "notFound", message: let message) {
+        self.answer(id, result: ["state": "ready", "notFound": true, "message": message])
+      } catch {
+        self.answer(id, result: ["state": "unavailable", "reason": "failed", "message": "\(error)"])
+      }
+    }
+  }
+
+  /// Starts the Verdi session and waits for it, as cmux does in the background.
+  func startVerdi() async {
+    guard ProcessInfo.processInfo.environment["TRACE_FSDB_VERDI"] == "1",
+          let scripts = VerdiTraceLaunch.scripts(in: assetRoot.appendingPathComponent("verdi-trace", isDirectory: true)) else { return }
+    let host = sshHost
+    let session = SVModelSidecar(
+      runner: { command in .init(executable: "/usr/bin/ssh", arguments: ["-o", "BatchMode=yes", "-T", "--", host, "sh -c '\(command)'"]) },
+      launchCommand: VerdiTraceLaunch.command(launcher: scripts.launcher, serve: scripts.serve, fsdbPath: remoteFile),
+      installCommand: nil
+    )
+    verdi = session
+    let t0 = Date()
+    do {
+      let info = try await session.request(["cmd": "info"], timeout: 300)
+      verdiReady = VerdiTraceLaunch.unitsMatch(info)
+      print(String(format: "[verdi] ready in %.1f s, units %@ / %@", Date().timeIntervalSince(t0), "\(info["fileUnit"] ?? "")", "\(info["windowUnit"] ?? "")"))
+      expect(verdiReady, "Verdi's window unit is the FSDB's")
+    } catch {
+      print("[verdi] unavailable:", error)
+      expect(false, "the Verdi engine starts")
+    }
+  }
+
   func answer(_ id: Int, result: Any) {
     Task { @MainActor in
       _ = await call("cmuxWaveform.trace.reply(argument); return null", ["argument": ["id": id, "ok": true, "result": result]])
@@ -73,11 +119,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
     guard m.name == "cmuxWaveform", let body = m.body as? [String: Any], let type = body["type"] as? String else { print("[\(m.name)]", m.body); return }
     if type != "trace" && type != "log" && type != "event" { print("[page]", type, (body["message"] as? String ?? "").prefix(200)) }
-    if type == "trace" {
+    if type == "trace", body["event"] as? String == "engine", let id = (body["id"] as? NSNumber)?.intValue {
+      answerEngine(id, body)
+    } else if type == "trace" {
       guard let id = (body["id"] as? NSNumber)?.intValue, body["event"] as? String == "model" else { return }
       let path = body["path"] as? String ?? ""
       if body["cmd"] as? String == "instance" {
         answer(id, result: instances[path] ?? NSNull())
+      } else if body["cmd"] as? String == "writers" {
+        answer(id, result: Self.writers(of: path, in: instances))
       } else {
         let best = instances.keys.filter { path == $0 || path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
         answer(id, result: best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull())
@@ -93,12 +143,21 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         """)
     } else if type == "opened" {
       print("[opened] top:", body["top"] ?? "")
-      Task { await self.run() }
+      Task { await self.startVerdi(); await self.run() }
     } else if type == "error" {
       print("ERROR", body["message"] ?? "")
       failures += 1
       finish()
     }
+  }
+
+  /// What cmux-sv-model's `writers` answers: the other instances with $abs: lvalues into `path`.
+  static func writers(of path: String, in instances: [String: Any]) -> [String] {
+    instances.compactMap { key, model -> String? in
+      guard key != path, let data = try? JSONSerialization.data(withJSONObject: model),
+            String(decoding: data, as: UTF8.self).contains("\"name\":\"$abs:\(path).") else { return nil }
+      return key
+    }.sorted()
   }
 
   func run() async {
@@ -113,6 +172,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var trust: [String: Int] = [:], kinds: [String: Int] = [:], reasons: [String: Int] = [:]
     var times: [Double] = []
     var noDriver: [String] = []
+    var engines: [String: Int] = [:]
     var errors = 0
     while !queue.isEmpty, times.count < (Int(ProcessInfo.processInfo.environment["TRACE_FSDB_MAX_STEPS"] ?? "") ?? 400) {
       let (path, t, depth) = queue.removeFirst()
@@ -129,6 +189,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       kinds[kind, default: 0] += 1
       if kind == "none" { noDriver.append(path) }
       for r in step["reasons"] as? [[String: Any]] ?? [] { reasons[r["code"] as? String ?? "?", default: 0] += 1 }
+      if let e = step["engine"] as? [String: Any] {
+        let name = e["name"] as? String ?? "?"
+        let how = e["verdiNotFound"] as? Bool == true ? "notFound" : e["verdiDiffers"] as? Bool == true ? "differs"
+          : (step["via"] as? [Any])?.isEmpty == false ? "throughPorts" : name == "verdi" ? "agrees" : (e["verdi"] as? String ?? "none")
+        engines[how, default: 0] += 1
+        if how == "differs", engines[how, default: 0] <= 12 {
+          let ours = (step["stmt"] as? [String: Any])?["loc"] as? [String: Any]
+          let theirs = e["verdiLoc"] as? [String: Any]
+          print("[verdi differs] \(path) @\(t): cmux \((ours?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(ours?["line"] ?? "") verdi \((theirs?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(theirs?["line"] ?? "") since \(step["since"] ?? "")")
+        }
+      }
       if times.count <= 12 || ms > 2000 {
         let src = ((step["stmt"] as? [String: Any])?["src"] as? String ?? "").prefix(70)
         print(String(format: "%7.1f ms  %@ @%d = %@  %@ [%@] %@", ms, path, t, step["value"] as? String ?? "?", kind, step["trust"] as? String ?? "?", String(src)))
@@ -143,6 +214,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let median = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
     print("steps: \(times.count), trust \(trust), drivers \(kinds)")
     print("reasons: \(reasons)")
+    print("engines: \(engines)")
     print(String(format: "time per step: median %.1f ms, p90 %.1f ms, max %.1f ms, total %.1f s", median,
                  sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, sorted.count * 9 / 10)], sorted.last ?? 0, times.reduce(0, +) / 1000))
     expect(errors == 0, "no trace threw (\(errors))")
@@ -154,6 +226,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   func finish() {
     print(failures == 0 ? "TRACE FSDB CHECKS PASSED" : "TRACE FSDB CHECKS FAILED: \(failures)")
     helper.stop()
+    verdi?.stop()
     web.takeSnapshot(with: nil) { img, _ in
       if let img, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
         try? png.write(to: out)
