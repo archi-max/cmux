@@ -1,15 +1,17 @@
 diff -ru a/src/signal/transform.rs b/src/signal/transform.rs
 --- a/src/signal/transform.rs
 +++ b/src/signal/transform.rs
-@@ -30,20 +30,32 @@
+@@ -30,20 +30,33 @@
          })
          .reduce(States::join)
          .unwrap();
 -    let mut out = BitVectorBuilder::new(max_states, out_width);
      // iteration - todo: split into its own function
++    // the first change of any input (one that never changes has no say: it stays X)
      let mut time = inputs
          .iter()
-         .map(|i| i.time_indices.first().cloned().unwrap_or(0))
+-        .map(|i| i.time_indices.first().cloned().unwrap_or(0))
++        .filter_map(|i| i.time_indices.first().cloned())
          .min()
          .unwrap_or(0);
 +    // An input without a value at the start reads as X until its first change, which a
@@ -36,7 +38,7 @@ diff -ru a/src/signal/transform.rs b/src/signal/transform.rs
                      } else {
                          None
                      };
-@@ -73,21 +85,23 @@
+@@ -73,21 +86,23 @@
          let maybe_next_time = inputs
              .iter()
              .zip(offsets.iter())
@@ -70,7 +72,7 @@ diff -ru a/src/signal/transform.rs b/src/signal/transform.rs
                  }
              }
              time = *next_time;
-@@ -218,6 +232,12 @@
+@@ -218,6 +233,12 @@
              .flat_map(|v| v.map(|v| v.states()))
              .reduce(States::join)
              .unwrap();
