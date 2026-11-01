@@ -1759,8 +1759,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         let caret = FilePreviewLSPLineIndex(current).position(at: textView.selectedRange().location)
         let full = NSRange(location: 0, length: storage.length)
         guard textView.shouldChangeText(in: full, replacementString: formatted) else { return }
-        let clipView = textView.enclosingScrollView?.contentView
-        let visibleOrigin = clipView?.bounds.origin
+        let viewportAnchor = FilePreviewViewportAnchor.capture(in: textView)
         storage.replaceCharacters(in: full, with: formatted)
         textView.didChangeText()
         textView.undoManager?.setActionName(
@@ -1768,11 +1767,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         )
         let location = FilePreviewLSPLineIndex(formatted).offset(for: caret)
         textView.setSelectedRange(NSRange(location: location, length: 0))
-        if let clipView, let visibleOrigin, let scrollView = textView.enclosingScrollView {
-            let constrained = clipView.constrainBoundsRect(NSRect(origin: visibleOrigin, size: clipView.bounds.size))
-            clipView.scroll(to: constrained.origin)
-            scrollView.reflectScrolledClipView(clipView)
-        }
+        viewportAnchor?.restore(in: textView)
     }
 
     // MARK: - Geometry
