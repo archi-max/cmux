@@ -250,11 +250,16 @@ func stderrChecks() async throws {
 
   // The handler and the exit's drain racing on a pipe a writer trickles into, 4000 times: no
   // abort, and the bytes reach the sink in pipe order, each once (a prefix of what was written).
+  // The sink sometimes takes a while, as a log append under contention can: a chunk read but
+  // not yet delivered must still arrive before the next one read.
   var disorder = 0
   for round in 0..<4000 {
     let pipe = Pipe()
     let got = Collected()
-    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading) { got.append($0) }
+    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading) { data in
+      if Int.random(in: 0..<3) == 0 { usleep(150) }
+      got.append(data)
+    }
     pipe.fileHandleForReading.readabilityHandler = { h in
       if !r.pump() { h.readabilityHandler = nil }
     }
