@@ -54,6 +54,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private var isPageReady = false
     private weak var panel: FilePreviewPanel?
     private var fsdbHelper: WaveformFSDBHelper?
+    private var fsdbHelperSSHSession: FSDBHelperSession?
     private var webContentProcessRecoveryAttempts = 0
     private let maxWebContentProcessRecoveryAttempts = 2
     /// The page's last `sessionState` (signal list, marker, zoom) for `fileURL`,
@@ -726,7 +727,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     struct RemoteFSDB {
         let remotePath: String
         let host: String
-        let sshArguments: WaveformFSDBHelper.SSHArguments
+        let configuration: WorkspaceRemoteConfiguration
 
         @MainActor
         static func resolve(panel: FilePreviewPanel) -> RemoteFSDB? {
@@ -736,11 +737,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                   let configuration = AppDelegate.shared?.workspaceFor(tabId: panel.workspaceId)?.remoteConfiguration,
                   configuration.transport == .ssh else { return nil }
             // The same batch route as the Files explorer and the remote language
-            // server. The helper runs while the viewer is open: a connection of its own.
-            let options = configuration.longLivedSSHOptions
-            return RemoteFSDB(remotePath: remotePath, host: configuration.destination) { command in
-                configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: options)
-            }
+            // server; the helper's session is taken when it first runs
+            // (``FSDBHelperSession``).
+            return RemoteFSDB(remotePath: remotePath, host: configuration.destination, configuration: configuration)
         }
     }
 
@@ -764,8 +763,12 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         let host = remote.host
         fsdbHelperGeneration += 1
         let generation = fsdbHelperGeneration
+        // The helper runs while the viewer is open: a long-lived run, on a
+        // connection of its own or a long-lived carrier session, held until it stops.
+        let sshSession = FSDBHelperSession(configuration: remote.configuration)
+        fsdbHelperSSHSession = sshSession
         let helper = WaveformFSDBHelper(
-            sshArguments: remote.sshArguments, installs: installs, hostKey: host, allowedFile: remote.remotePath
+            sshArguments: sshSession.arguments, installs: installs, hostKey: host, allowedFile: remote.remotePath
         ) { [weak self] status in
             Task { @MainActor [weak self] in
                 guard let self, self.fsdbHelperGeneration == generation else { return }
@@ -779,6 +782,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             guard !ManagedFileTransferPolicy.isDisabled else {
                 return WaveformSchemeResponse.fsdbError(ManagedFileTransferPolicy.refusalError().localizedDescription)
             }
+            do { try await sshSession.prepare() } catch {
+                return WaveformSchemeResponse.fsdbError(error.localizedDescription)
+            }
             return await helper.response(for: body) { error in Self.fsdbFailureMessage(error, host: host) }
         })
     }
@@ -786,6 +792,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     private func stopFSDBHelper() {
         fsdbHelper?.stop()
         fsdbHelper = nil
+        fsdbHelperSSHSession?.release()
+        fsdbHelperSSHSession = nil
     }
 
     private func showFSDBStatus(_ status: WaveformFSDBHelper.Status, host: String) {
@@ -1206,3 +1214,49 @@ enum WaveformSessionOverwriteCheck {
     }
 }
 // MARK: - end WaveformSessionOverwriteCheck
+
+/// An FSDB helper's SSH session: chosen before the helper's first request
+/// (``WorkspaceRemoteConfiguration/longLivedSession(pool:)``, which may wait
+/// for a carrier session) and held until the helper stops.
+final class FSDBHelperSession: @unchecked Sendable {
+    private let configuration: WorkspaceRemoteConfiguration
+    private let lock = NSLock()
+    private var session: LongLivedSSHSession?
+    private var released = false
+
+    init(configuration: WorkspaceRemoteConfiguration) {
+        self.configuration = configuration
+    }
+
+    deinit { session?.release() }
+
+    /// Takes the session once; later calls return at once.
+    func prepare() async throws {
+        if lock.withLock({ session != nil || released }) { return }
+        let taken = try await configuration.longLivedSession()
+        let keep: Bool = lock.withLock {
+            guard session == nil, !released else { return false }
+            session = taken
+            return true
+        }
+        if !keep { taken.release() }
+    }
+
+    func release() {
+        let held: LongLivedSSHSession? = lock.withLock {
+            released = true
+            defer { session = nil }
+            return session
+        }
+        held?.release()
+    }
+
+    /// The helper's ssh arguments for `command`, on the prepared session's
+    /// options (a connection of its own until one is prepared).
+    var arguments: WaveformFSDBHelper.SSHArguments {
+        { [self] command in
+            let options = lock.withLock { session?.sshOptions } ?? configuration.ownConnectionSSHOptions
+            return configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: options)
+        }
+    }
+}

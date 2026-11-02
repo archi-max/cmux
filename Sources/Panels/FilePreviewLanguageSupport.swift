@@ -171,7 +171,7 @@ struct FilePreviewLanguageDocumentContext {
                   providerIdentity.hasPrefix("ssh:"),
                   let configuration = workspace?.remoteConfiguration,
                   configuration.transport == .ssh,
-                  let launch = remoteServerLaunch(languageId: languageId, configuration: configuration) else {
+                  let launch = await remoteServerLaunch(languageId: languageId, configuration: configuration) else {
                 return nil
             }
             // The terminal directory is often the remote home, where the server
@@ -206,20 +206,24 @@ struct FilePreviewLanguageDocumentContext {
     }
 
     /// Runs the registry's remote command through the workspace's own batch
-    /// `ssh` arguments, the same route the Files explorer uses: it reuses the
-    /// `cmux ssh` ControlPath, so password-only hosts work too.
+    /// `ssh` arguments, on the Files explorer's route. The server runs for the
+    /// whole session: on a connection of its own, or, on a host that takes
+    /// only the terminal's sign-in, on one of the carrier's long-lived
+    /// sessions (``RemoteLanguageServerSessions``). Nil when it can't have one.
     private static func remoteServerLaunch(
         languageId: String,
         configuration: WorkspaceRemoteConfiguration
-    ) -> LanguageToolLaunch? {
+    ) async -> LanguageToolLaunch? {
         guard case .ssh(_, _, let remoteCommand)? = LanguageToolRegistry.languageServer(
             forLanguage: languageId,
             remoteDestination: configuration.destination
         ) else { return nil }
-        // The server runs for the whole session: a connection of its own.
+        guard let session = try? await RemoteLanguageServerSessions.shared.session(for: configuration) else {
+            return nil
+        }
         let arguments = configuration.batchSSHCommandArguments(
             command: remoteCommand,
-            effectiveSSHOptions: configuration.longLivedSSHOptions
+            effectiveSSHOptions: session.sshOptions
         )
         return .remote(executablePath: "/usr/bin/ssh", arguments: arguments)
     }
@@ -451,5 +455,27 @@ final class FilePreviewLanguageHoverViewController: NSViewController {
             }
         }
         return output
+    }
+}
+
+/// The carrier sessions remote language servers hold, one per host: the
+/// pooled server lives as long as the app, so its session does too. A host
+/// whose one-off masters work holds none (its server has its own connection).
+actor RemoteLanguageServerSessions {
+    static let shared = RemoteLanguageServerSessions()
+
+    private var held: [String: LongLivedSSHSession] = [:]
+    private var pending: [String: Task<LongLivedSSHSession, Error>] = [:]
+
+    func session(for configuration: WorkspaceRemoteConfiguration) async throws -> LongLivedSSHSession {
+        let key = configuration.destination + "|" + (configuration.port.map(String.init) ?? "")
+        if let session = held[key] { return session }
+        if let task = pending[key] { return try await task.value }
+        let task = Task { try await configuration.longLivedSession() }
+        pending[key] = task
+        defer { pending[key] = nil }
+        let session = try await task.value
+        if session.lease != nil { held[key] = session }
+        return session
     }
 }
