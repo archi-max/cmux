@@ -188,7 +188,8 @@
       if (!row.classList.contains('open')) { return; }
       row._children.textContent = '';
       const depth = (parseInt(row.style.paddingLeft, 10) - 6) / 12 + 1;
-      renderLevel(sortChildren(children), row._children, depth, false);
+      // cmux: an array's elements show under its node only (host.js lists them in its scope too).
+      renderLevel(sortChildren(children.filter((c) => !c.arrayParent || c.arrayParent === item)), row._children, depth, false);
     } catch (error) {
       host().fail(error);
     }
@@ -247,6 +248,10 @@
       items = await host().getChildren(scope);
     }
     const target = items.find((x) => x.netlistId === netlistId) || item;
+    // cmux: an array element: open its array nodes, outermost first.
+    const nodes = [];
+    for (let p = target.arrayParent; p; p = p.arrayParent) { nodes.unshift(p); }
+    for (const node of nodes) { await toggle(node, true); }
     const row = rowsByItem.get(target);
     if (!row) { return false; }
     select(target, {});

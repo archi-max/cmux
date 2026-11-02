@@ -762,7 +762,8 @@
 
   // VaporviewDocument.convertSignalListToSettings: resolve saved rows to the
   // netlist of the file that is open now, by instance path.
-  async function convertSignalList(list, missing) {
+  // inSlices: `list` is a row's slices (cmuxSlices), see below.
+  async function convertSignalList(list, missing, inSlices) {
     const out = [];
     for (const signal of Array.isArray(list) ? list : []) {
       try {
@@ -774,8 +775,11 @@
           const source = [];
           for (const s of signal.source || []) {
             const v = await host().findItem(s.name, s.msb, s.lsb, true);
-            if (!v || v.kind !== 'var' || s.lsb >= v.width) {
-              missing.push(s.name);
+            // cmux: a slice past the end of a signal that got narrower is missing, under its own
+            // name, not cut down to the bits left (upstream's clamp below) under its old name.
+            const past = inSlices && v && v.kind === 'var' && s.msb >= v.width;
+            if (!v || v.kind !== 'var' || s.lsb >= v.width || past) {
+              missing.push(inSlices ? sliceLabel(s.name, signal) : s.name);
               source.push({ name: s.name, netlistId: undefined, signalId: undefined, signalWidth: s.signalWidth, msb: s.msb, lsb: Math.max(s.lsb, 0) });
             } else {
               source.push({ name: window.cmuxNetlist.instancePath(v), netlistId: v.netlistId, signalId: v.signalId,
@@ -809,7 +813,14 @@
   async function convertSlices(signal, missing) {
     const slices = signal && signal.cmuxSlices;
     if (!slices || !Array.isArray(slices.children)) { return null; }
-    return { collapseState: slices.collapseState, children: await convertSignalList(slices.children, missing) };
+    return { collapseState: slices.collapseState, children: await convertSignalList(slices.children, missing, true) };
+  }
+  // A slice in the missing-signals message: its signal's scope and its own name (top.g[1]).
+  function sliceLabel(sourceName, slice) {
+    const own = slice && slice.nameType === 'custom' && slice.customName ? String(slice.customName) : '';
+    if (!own) { return sourceName; }
+    const dot = String(sourceName).lastIndexOf('.');
+    return (dot >= 0 ? String(sourceName).slice(0, dot + 1) : '') + own;
   }
   function withSlices(row, slices) {
     if (slices) { row.cmuxSlices = slices; } else { delete row.cmuxSlices; }
@@ -1231,12 +1242,16 @@
   async function addSignalByName(name, msb, lsb, quiet) {
     let path = String(name).trim().replace(/[:;]$/, '');
     const field = /\[(\d+:)?(\d+)\]$/.exec(path);
-    if (field && msb === undefined) {
+    // cmux: a signal named with an index (an array element, dfp_addr[1]) first, as named.
+    // So a var literally named `x[3]` (an escaped identifier dumped without its backslash)
+    // wins over bit 3 of a vector `x` in the same scope; `x[3:3]` still selects the bit.
+    let item = field && msb === undefined ? await host().findItem(path, undefined, undefined, true) : null;
+    if (field && msb === undefined && !item) {
       msb = field[1] ? parseInt(field[1], 10) : parseInt(field[2], 10);
       lsb = parseInt(field[2], 10);
       path = path.replace(/\[(\d+:)?(\d+)\]$/, '');
     }
-    const item = await host().findItem(path, msb, lsb, false);
+    if (!item) { item = await host().findItem(path, msb, lsb, false); }
     if (!item) {
       if (!quiet) { ui().toast(format(S().messageSignalNotFound, name), 'warning'); }
       return false;
@@ -1378,7 +1393,10 @@
   // (WaveformEnumLink.packedDimensionsRequested) and answers through split.declared. The row
   // splits by its outer dimension, each element by the next, down to the last (its bits), all
   // in one undo step; elements are listed as declared, left index first (at the top bits).
+  // A click that gets no answer (the language server is still loading, busy or gone) says so
+  // after DECLARED_TIMEOUT_MS; an answer after that is ignored.
   const pendingDeclared = new Map();
+  const DECLARED_TIMEOUT_MS = 5000;
   let nextDeclared = 1;
   function splitDeclared(e) {
     if (!e || e.rowId === undefined || !(e.width > 1) || e.netlistId === undefined) { return; }
@@ -1386,7 +1404,10 @@
     const path = v && host().pathOf ? host().pathOf(v) : null;
     if (!path || !path.length) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return; }
     const id = nextDeclared++;
-    pendingDeclared.set(id, e);
+    const timer = setTimeout(() => {
+      if (pendingDeclared.delete(id)) { ui().toast(S().messageDeclaredNoAnswer, 'warning'); }
+    }, DECLARED_TIMEOUT_MS);
+    pendingDeclared.set(id, { e, timer });
     host().toNative({ type: 'packedDims', id, path });
   }
   // dims [[left, right], ...] as nested parts of a block of their width, bits from 0.
@@ -1406,9 +1427,11 @@
   }
   const countParts = (parts) => parts.reduce((n, p) => n + 1 + countParts(p.parts || []), 0);
   function declared(answer) {
-    const e = answer && pendingDeclared.get(answer.id);
-    if (!e) { return false; }
+    const pending = answer && pendingDeclared.get(answer.id);
+    if (!pending) { return false; }
     pendingDeclared.delete(answer.id);
+    clearTimeout(pending.timer);
+    const e = pending.e;
     const dims = Array.isArray(answer.dims) ? answer.dims : null;
     const ok = dims && dims.length >= 2 && dims.every((d) => Array.isArray(d) && d.length === 2 && d.every(Number.isInteger));
     if (!ok) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return false; }
