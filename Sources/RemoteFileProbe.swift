@@ -35,6 +35,26 @@ enum RemoteFileProbe {
         case malformedOutput
     }
 
+    /// A capped probe refused the file; `header` still names it (host path,
+    /// stamp, size) though none of its bytes were sent. With a cap of 0 that
+    /// locates a file on the host without transferring it.
+    struct Oversize: Error, Equatable {
+        var header: Header
+    }
+
+    /// What a probe run's exit status and stdout (`raw`) mean: the header of
+    /// the file streamed to `destination`, or the failure. Nil for a status
+    /// that isn't the probe's own (ssh or the shell failed).
+    /// Placeholder until the fix: a refused file loses its header.
+    static func outcome(status: Int32, raw: URL, to destination: URL) throws -> Header? {
+        switch status {
+        case 0: return try extract(from: raw, to: destination)
+        case noFileStatus: throw Failure.noFile
+        case tooLargeStatus: throw Failure.tooLarge
+        default: return nil
+        }
+    }
+
     static let noFileStatus: Int32 = 3
     static let tooLargeStatus: Int32 = 4
     static let marker = "cmux-probe:"
@@ -121,6 +141,12 @@ enum RemoteFileProbe {
 /// What decides how a terminal link or `cmux open` download opens, kept
 /// free of app types so it can be tested on its own.
 enum RemotePreviewOpenRules {
+    /// A short reason for the debug log when a remote preview fails, with no
+    /// path or ssh output in it. Placeholder until the fix: no reason.
+    static func failureReason(_ error: Error) -> String {
+        ""
+    }
+
     /// The directory a click's relative links resolve against: the shell's
     /// live directory when the terminal can report it (`live`, a cmux-tui
     /// process query), else the last reported one. A cmux-tui terminal's

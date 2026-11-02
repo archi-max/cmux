@@ -136,6 +136,31 @@ import Testing
         #expect(relative.remotePath == "/live/b.sv")
     }
 
+    @Test func aClickedDumpIsLocatedOnTheHostWithoutDownloadingIt() async throws {
+        // A relative ⌘-click on a waveform dump opens the viewer that reads it
+        // on the host; only the host path is needed, never the bytes.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = PreviewDownloadTransport(files: ["/w/sim/dump.fsdb": Data(count: 4096)])
+        let header = try await makeLoader(transport: transport, cache: root).locate(tokens: ["sim/dump.fsdb"]) { "/w" }
+        #expect(header.path == "/w/sim/dump.fsdb")
+        #expect(await transport.requests.paths.isEmpty, "no bytes of the dump")
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.fsdb"]))
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.fsdb:3"]))
+        #expect(!RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["docs/CACHE.md"]))
+        #expect(!RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.vcd"]))
+    }
+
+    @Test func aClickOnAMissingFileFailsWithItsReason() async throws {
+        // The failure is logged by reason; "no such file" must not read as an ssh fault.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let loader = makeLoader(transport: PreviewDownloadTransport(files: [:]), cache: root)
+        await #expect(throws: RemoteFileProbe.Failure.noFile) {
+            _ = try await loader.load(tokens: ["docs/missing.md"], workingDirectory: "/w")
+        }
+    }
+
     // MARK: cmux open (exact path, size-capped)
 
     @Test func commandLineDownloadStopsAtTheCapEvenWhenTheHostUnderstatesTheSize() async throws {
