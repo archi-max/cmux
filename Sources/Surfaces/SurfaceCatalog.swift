@@ -45,6 +45,9 @@ final class SurfaceCatalog {
     /// part of the daemon document or its cursor.
     private(set) var cloudStates: [SurfaceMachineID: CloudVMState] = [:]
     private(set) var cloudStateObservations: [SurfaceMachineID: CloudVMStateObservation] = [:]
+    /// Live directory queries for terminals whose shell does not report its directory.
+    @ObservationIgnored var cloudDirectoryFallbacks: [SurfaceMachineID: CloudTerminalDirectoryFallback] = [:]
+    @ObservationIgnored var cloudDirectoryProbeTasks: [SurfaceResourceID: Task<Void, Never>] = [:]
     private var providers: [SurfaceMachineID: any SurfaceProvider] = [:]
     /// Admits one display creation per machine so repeated clicks cannot project the same guest twice.
     var activeDisplayCreations: Set<SurfaceMachineID> = []
@@ -189,6 +192,7 @@ final class SurfaceCatalog {
         cloudWorkspaceProjectionCoordinator.cancel(machine: machine)
         cloudStates[machine] = nil
         cloudStateObservations[machine] = nil
+        dropCloudDirectoryFallback(on: machine)
         projections = projections.filter { $0.resource.machine != machine }
         // Drop the workspace's device provenance only after removing the
         // projections that establish ownership. A transport disconnect keeps
@@ -484,6 +488,7 @@ final class SurfaceCatalog {
         cloudWorkspaceCreationCoordinator.reconcile(state)
         let restoredProjectionIDs = resolvePendingRestoredProjections(on: state.machine)
         syncCloudTerminalTabIcons(on: state.machine, affected: changed)
+        observeCloudTerminalDirectories(in: state, observation: observation)
         updateCloudDirectoryMetadata(on: state.machine, affectedResourceIDs: freshnessChanged ? nil : affectedResourceIDs)
         notifyChange(for: state.machine)
         if !restoredProjectionIDs.isEmpty { providers[state.machine]?.projectionsRestored(resources: restoredProjectionIDs) }
@@ -528,6 +533,7 @@ final class SurfaceCatalog {
         cloudWorkspaceCreationCoordinator.reconcile(state)
         let restoredProjectionIDs = resolvePendingRestoredProjections(on: state.machine)
         syncCloudTerminalTabIcons(on: state.machine, affected: changed)
+        observeCloudTerminalDirectories(in: state, observation: observation)
         updateCloudDirectoryMetadata(on: state.machine)
         notifyChange(for: state.machine)
         if !restoredProjectionIDs.isEmpty { providers[state.machine]?.projectionsRestored(resources: restoredProjectionIDs) }
@@ -537,6 +543,7 @@ final class SurfaceCatalog {
     func clearCloudState(on machine: SurfaceMachineID) {
         let removedState = cloudStates.removeValue(forKey: machine) != nil
         let removedObservation = cloudStateObservations.removeValue(forKey: machine) != nil
+        dropCloudDirectoryFallback(on: machine)
         guard removedState || removedObservation else { return }
         updateCloudDirectoryMetadata(on: machine)
         notifyChange(for: machine)

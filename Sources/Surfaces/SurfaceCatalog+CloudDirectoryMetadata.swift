@@ -122,8 +122,11 @@ extension SurfaceCatalog {
             if machine.deviceInstance != nil {
                 directory = resource?.kind == .terminal ? resource?.detail : nil
             } else if let resource, resource.kind == .terminal {
+                // A shell that never reports its directory leaves the graph at the
+                // spawn directory; the live answer wins until it does report.
                 directory = current
-                    ? cloudStates[machine]?.lookupIndex.terminal(id: projection.resource.key)?.cwd
+                    ? fallbackCloudDirectory(for: projection.resource)
+                        ?? cloudStates[machine]?.lookupIndex.terminal(id: projection.resource.key)?.cwd
                     : acceptedStaleCloudDirectory(for: resource)
             } else {
                 directory = nil
@@ -131,5 +134,84 @@ extension SurfaceCatalog {
             if let directory, workspace.reportedPanelDirectory(panelId: projection.panelID) == directory { continue }
             workspace.updateCloudPanelDirectory(panelId: projection.panelID, directory: directory)
         }
+    }
+}
+
+/// The Files panel follows a cmux-tui terminal's graph `cwd`, which moves only when the
+/// remote shell reports its directory. For a terminal whose shell never does (a configured
+/// command, tmux, fish), ask the daemon for the foreground process's directory instead:
+/// once when the terminal is shown and again when its title changes, one query per
+/// terminal at a time, each bounded to 3 s. No timer.
+extension SurfaceCatalog {
+    nonisolated static let cloudDirectoryProbeTimeout: Duration = .seconds(3)
+
+    /// Starts the queries a newly accepted, current graph calls for.
+    func observeCloudTerminalDirectories(in state: CloudVMState, observation: CloudVMStateObservation) {
+        let machine = state.machine
+        guard observation.freshness == .current, machine.tuiMachineID != nil else { return }
+        let environment = cloudWorkspaceRenameService.environment
+        let shown = Set(projections.lazy.filter {
+            $0.resource.machine == machine && $0.resource.kind == .terminal
+                && environment.workspace($0.workspaceID)?.usesSSHTui == true
+        }.map(\.resource.key))
+        guard !shown.isEmpty || cloudDirectoryFallbacks[machine] != nil else { return }
+        var fallback = cloudDirectoryFallbacks[machine] ?? CloudTerminalDirectoryFallback()
+        let probes = fallback.observe(state.terminals, projected: shown)
+        cloudDirectoryFallbacks[machine] = fallback
+        for probe in probes { startCloudDirectoryProbe(probe, on: machine) }
+    }
+
+    /// The live directory for a terminal that does not report its own, if one was found.
+    func fallbackCloudDirectory(for resource: SurfaceResourceID) -> String? {
+        cloudDirectoryFallbacks[resource.machine]?.directory(forTerminal: resource.key)
+    }
+
+    /// Forgets the machine's queries and answers when its graph goes away.
+    func dropCloudDirectoryFallback(on machine: SurfaceMachineID) {
+        cloudDirectoryFallbacks[machine] = nil
+        for (id, task) in cloudDirectoryProbeTasks where id.machine == machine {
+            task.cancel()
+            cloudDirectoryProbeTasks[id] = nil
+        }
+    }
+
+    private func startCloudDirectoryProbe(_ probe: CloudTerminalDirectoryFallback.Probe, on machine: SurfaceMachineID) {
+        let id = SurfaceResourceID(machine: machine, kind: .terminal, key: probe.terminalID)
+        guard let resource = resources[id], let provider = provider(for: machine) else {
+            finishCloudDirectoryProbe(probe, id: id, directory: nil)
+            return
+        }
+        cloudDirectoryProbeTasks[id]?.cancel()
+        let live: @MainActor @Sendable () async -> String? = { [weak provider] in
+            await provider?.currentWorkingDirectory(of: resource)
+        }
+        cloudDirectoryProbeTasks[id] = Task { [weak self] in
+            let directory = await withTaskGroup(of: String?.self) { group in
+                group.addTask { await live() }
+                group.addTask {
+                    try? await Task.sleep(for: SurfaceCatalog.cloudDirectoryProbeTimeout)
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.finishCloudDirectoryProbe(probe, id: id, directory: directory)
+        }
+    }
+
+    private func finishCloudDirectoryProbe(
+        _ probe: CloudTerminalDirectoryFallback.Probe,
+        id: SurfaceResourceID,
+        directory: String?
+    ) {
+        guard var fallback = cloudDirectoryFallbacks[id.machine] else { return }
+        let trimmed = directory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = fallback.finish(probe, directory: trimmed?.isEmpty == false ? trimmed : nil)
+        cloudDirectoryFallbacks[id.machine] = fallback
+        cloudDirectoryProbeTasks[id] = nil
+        if let next = result.next { startCloudDirectoryProbe(next, on: id.machine) }
+        if result.directoryChanged { updateCloudDirectoryMetadata(on: id.machine, affectedResourceIDs: [id]) }
     }
 }
