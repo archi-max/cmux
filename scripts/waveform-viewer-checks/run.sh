@@ -101,6 +101,11 @@
 #                                        and the value-alias items from the context
 #                                        menu: decoded text, selection, undo, session
 #                                        save/load, reload, restore
+#   ./run.sh split                       Split (Into N Parts, By Width, Bits, Add Slice)
+#                                        from the row menu: slices under their parent,
+#                                        names, values, own formats, marker, search,
+#                                        copy, nesting, collapse, undo, removal, and
+#                                        session save/load, reload, restore
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -399,6 +404,12 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformValueAliasFiles.swift" -o "$OUT/riscv"
     "$OUT/riscv" "$ASSETS" "$HERE/riscv/riscv.vcd" "$HERE/riscv/aliases.alias" "$OUT/riscv.png" | grep -v '^\[log\]' | tee "$OUT/riscv.log"
     grep -q '^RISCV CHECKS PASSED' "$OUT/riscv.log"
+    ;;
+  split)
+    swiftc -O "$HERE/split/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerStrings.swift" -o "$OUT/split"
+    "$OUT/split" "$ASSETS" "$HERE/split/split.vcd" "$OUT/split.png" | grep -v '^\[log\]' | tee "$OUT/split.log"
+    grep -q '^SPLIT CHECKS PASSED' "$OUT/split.log"
     ;;
   *) sed -n "2,$(( $(grep -n '^set -euo' "$0" | cut -d: -f1) - 1 ))p" "$0"; exit 2 ;;
 esac

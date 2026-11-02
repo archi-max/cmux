@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..4c32c7b
+index 0000000..5bb1829
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,248 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -230,6 +230,93 @@ index 0000000..4c32c7b
 +  any other error, and for the other text formats (string, enum, fixed point, epoch).
 +cmux's `run.sh windowed` checks t=0, far and no-match, resume, cancel, ASCII, alias, tooLarge
 +and the unknown-command fallback against a mock that runs the shipped helper's `text.js`.
++
++## Split a bus into slice rows
++
++A variable row (netlist or custom) can own slices: custom bit-range variables kept in a
++`SliceGroup` (`src/webview/signal_item.ts`), a `SignalGroup` with no row of its own whose
++`owner` is the variable's row. The variable keeps its own row and features; it shows a
++chevron, and its label and value cells nest the slices the way a group nests its children,
++so collapse, reorder within the group, removal and `getParentGroupId` are upstream's group
++code. `rowHandler.addSlices(rowId, parts)` adds slices of the variable's source signal
++(a slice of a slice is a narrower range of the same signal) through `addCustomVariable`;
++`removeSlices` drops them. Both are batched into one context update. Slices are computed in
++the webview from the source signal, like upstream's bit-range signals, with no extra
++document requests. The saved view keeps them as `cmuxSlices: {collapseState, children}` on
++the variable (`SavedSlices` in `packages/vaporview-api/types.ts`), and `addSignalList`
++restores them after the variable. The variable's context adds `cmuxSlices`, `cmuxSliceName`,
++`cmuxMsb` and `cmuxLsb` for the host's menus. cmux's `run.sh split` checks this.
++
++Slices can nest in one request: a part (`SlicePart` in `row_handler.ts`) may carry its own
++`parts`, bits of that slice from 0, so cmux's Split > By Declared Dimensions adds a 3-D
++signal's elements and their elements in one batch, one undo step. The context's
++`cmuxDeclared` is true on a netlist variable (a dump signal the design declares) and false on
++a slice.
+diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
+index 5db3ef6..bbd3275 100644
+--- a/packages/vaporview-api/types.ts
++++ b/packages/vaporview-api/types.ts
+@@ -34,8 +34,16 @@ export type SavedNetlistVariable = {
+   customName: string;
+   renderType: string;
+   valueLinkEnable: boolean;
++  cmuxSlices?: SavedSlices; // cmux: the row's slices (Split / Add Slice)
+ }
+ 
++// cmux: a row's slices, saved with it: custom variables shown under the row,
++// and whether the row's chevron has them collapsed.
++export type SavedSlices = {
++  collapseState: number;
++  children: SavedCustomVariable[];
++};
++
+ export type SavedCustomVariable = {
+   dataType: 'custom-variable';
+   numberFormat: string;
+@@ -47,6 +55,7 @@ export type SavedCustomVariable = {
+   renderType: string;
+   valueLinkEnable: boolean;
+   source: BitRangeSource[];
++  cmuxSlices?: SavedSlices; // cmux: a slice can have slices
+ };
+ 
+ export enum NameType {
+@@ -273,6 +282,11 @@ export type NetlistVariableContext = {
+   rowId: RowId;
+   isAnalog: boolean;
+   enum: boolean;
++  cmuxSlices: boolean;   // cmux: the row has slices
++  cmuxSliceName: string; // cmux: the name its slices are named after
++  cmuxMsb: number;       // cmux: the declared indices of its bits
++  cmuxLsb: number;
++  cmuxDeclared: boolean; // cmux: a dump signal (Split > By Declared Dimensions); false on a slice
+ }
+ 
+ export type CustomVariableContext = {
+@@ -284,6 +298,11 @@ export type CustomVariableContext = {
+   rowId: RowId;
+   netlistId: NetlistId;
+   isAnalog: boolean;
++  cmuxSlices: boolean;   // cmux: as NetlistVariableContext; a slice's bits count from 0
++  cmuxSliceName: string;
++  cmuxMsb: number;
++  cmuxLsb: number;
++  cmuxDeclared: boolean;
+ }
+ 
+ export type SignalGroupContext = {
+diff --git a/src/common/types.ts b/src/common/types.ts
+index d71723a..8f18f49 100644
+--- a/src/common/types.ts
++++ b/src/common/types.ts
+@@ -10,6 +10,7 @@ export type {
+   SavedCustomVariable,
+   SavedSignalGroup,
+   SavedSignalSeparator,
++  SavedSlices, // cmux
+   BitRangeSource,
+   MarkerSetEvent,
+   SignalEvent,
 diff --git a/src/webview/control_bar.ts b/src/webview/control_bar.ts
 index 54acd7a..e16d8fb 100644
 --- a/src/webview/control_bar.ts
@@ -603,10 +690,52 @@ index 0000000..3e86834
 +  listFormats: listExtraFormats,
 +};
 diff --git a/src/webview/labels.ts b/src/webview/labels.ts
-index 51613df..3b43a61 100644
+index 51613df..dacb442 100644
 --- a/src/webview/labels.ts
 +++ b/src/webview/labels.ts
-@@ -330,7 +330,7 @@ export class LabelsPanels {
+@@ -2,7 +2,7 @@ import { viewport, viewerState, dataManager, getIndexInGroup, handleClickSelecti
+ import { ActionType, type EventHandler } from './event_handler';
+ import { ValueFormat } from './value_format';
+ import { getParentGroupId } from './vaporview';
+-import { SignalGroup, NetlistVariable, SignalItem, RowItem, htmlSafe, CustomVariable, SignalSeparator } from './signal_item';
++import { SignalGroup, NetlistVariable, SignalItem, RowItem, htmlSafe, CustomVariable, SignalSeparator, SliceGroup, sliceGroupOf } from './signal_item'; // cmux: slices
+ import { NetlistId, SignalId, type RowId, EnumData, EnumEntry, StateChangeType, NetlistVariableContext } from '../common/types';
+ 
+ interface IdleGroupEntry {
+@@ -163,8 +163,11 @@ export class LabelsPanels {
+     const target = event.target as HTMLElement;
+     if (target.classList.contains('codicon-chevron-down') ||
+         target.classList.contains('codicon-chevron-right')) {
+-        if (rowHandler.rowItems[rowId] instanceof SignalGroup) {
+-          rowHandler.rowItems[rowId].toggleCollapse();
++        const item = rowHandler.rowItems[rowId];
++        // cmux: a row's chevron collapses or expands its slices
++        const slices = (item instanceof NetlistVariable || item instanceof CustomVariable) ? sliceGroupOf(item) : null;
++        if (item instanceof SignalGroup || slices) {
++          (slices || (item as SignalGroup)).toggleCollapse();
+           vscodeWrapper.sendWebviewContext(StateChangeType.User);
+         }
+     } else {
+@@ -230,7 +233,7 @@ export class LabelsPanels {
+         this.draggableRows.push(...children);
+       } else if (signalItem instanceof NetlistVariable || signalItem instanceof CustomVariable || signalItem instanceof SignalSeparator) {
+         draggableSignals.push(rowId);
+-        this.draggableRows.push(rowId);
++        this.draggableRows.push(...signalItem.getFlattenedRowIdList(false, -1)); // cmux: with its slices; was rowId
+       }
+     });
+ 
+@@ -283,6 +286,9 @@ export class LabelsPanels {
+     if (!this.draggableItem) {return;}
+     const rowId = parseInt(this.draggableItem.id.split('-')[1]);
+     if (isNaN(rowId)) {return;}
++    // cmux: slices move only with their row
++    const parentGroupId = getParentGroupId(rowId);
++    if (parentGroupId && rowHandler.rowItems[rowHandler.groupIdTable[parentGroupId]] instanceof SliceGroup) {return;}
+ 
+     let rowIdList = [rowId];
+     if (viewerState.selectedSignal.includes(rowId)) {
+@@ -330,7 +336,7 @@ export class LabelsPanels {
      this.dragCursorTag = this.labels.querySelector('#draggable-cursor-tag');
      if (this.dragCursorTag) {
        this.dragCursorTag.style.display = 'flex';
@@ -1071,10 +1200,169 @@ index 0000000..d9cd6bb
 +  return "0x" + ((word & 3) !== 3 ? word & 0xffff : word).toString(16).padStart(digits, "0");
 +}
 diff --git a/src/webview/row_handler.ts b/src/webview/row_handler.ts
-index b17e96e..4cbc9f2 100644
+index b17e96e..908f1b8 100644
 --- a/src/webview/row_handler.ts
 +++ b/src/webview/row_handler.ts
-@@ -727,7 +727,9 @@ export class RowHandler {
+@@ -2,7 +2,7 @@ import { type NetlistId, SignalId, type RowId, EnumData, EnumEntry, QueueEntry,
+ import { bitRangeString, createInstancePath } from '../common/functions';
+ import { ActionType, type EventHandler } from './event_handler';
+ import { dataManager, viewerState, getParentGroupId, labelsPanel, controlBar, getIndexInGroup, viewport, vscodeWrapper, styles } from './vaporview';
+-import { NetlistVariable, type RowItem, SignalGroup, SignalSeparator, CustomVariable, isAnalogSignal } from './signal_item';
++import { NetlistVariable, type RowItem, SignalGroup, SignalSeparator, CustomVariable, isAnalogSignal, SliceGroup, sliceGroupOf, type SlicedVariable } from './signal_item'; // cmux: slices
+ import { BinaryWaveformRenderer, MultiBitWaveformRenderer, LinearWaveformRenderer } from './renderer';
+ import type { WaveformData } from './data_manager';
+ import { type ValueFormat, getNumberFormatById } from './value_format';
+@@ -18,6 +18,9 @@ interface ApplyStateSettings {
+   defaultPixelTime?: number;
+ }
+ 
++// cmux: one slice (Split, Add Slice): bits msb..lsb of its row, counted from 0, and its own slices.
++export type SlicePart = {msb: number, lsb: number, name: string, parts?: SlicePart[]};
++
+ export class RowHandler {
+ 
+   rowItems: RowItem[]         = []; // rowId is the key/index, RowItem is the value
+@@ -512,6 +515,123 @@ export class RowHandler {
+     vscodeWrapper.sendWebviewContext(StateChangeType.User);
+   }
+ 
++  // cmux: slices (Split, Add Slice). The page (cmux-commands.js) checks the parts and
++  // names them; each is a custom variable of the row's bits, in the SliceGroup the row
++  // owns (signal_item.ts), placed after the row's other slices. `parts` count bits of
++  // the row from 0; a slice's slices are bits of the same source signal.
++  addSlices(rowId: RowId | undefined, parts: SlicePart[]) {
++    if (rowId === undefined) {return;}
++    const item = this.rowItems[rowId];
++    if (!(item instanceof NetlistVariable) && !(item instanceof CustomVariable)) {return;}
++    if (!Array.isArray(parts) || !parts.some((p) => this.validPart(p, item.signalWidth))) {return;}
++    this.events.enterBatchMode();
++    this.addSliceParts(item, parts);
++    item.setSignalContextAttribute();
++    this.updateDisplayedSignalsFlat();
++    this.events.signalSelect([rowId], rowId);
++    this.events.exitBatchMode();
++    vscodeWrapper.sendWebviewContext(StateChangeType.User);
++  }
++
++  private validPart(p: SlicePart, width: number): boolean {
++    return !!p && Number.isInteger(p.msb) && Number.isInteger(p.lsb) && p.lsb >= 0 && p.msb >= p.lsb && p.msb < width;
++  }
++
++  // `parts` of `item`'s bits, and each part's own `parts` of its bits (By Declared Dimensions).
++  private addSliceParts(item: SlicedVariable, parts: SlicePart[]) {
++    const base = this.sliceSource(item);
++    if (base === undefined) {return;}
++    const valid = parts.filter((p) => this.validPart(p, item.signalWidth));
++    if (valid.length === 0) {return;}
++    const group = this.sliceGroup(item);
++    valid.forEach((p) => {
++      const source: BitRangeSource = Object.assign({}, base, {msb: base.lsb + p.msb, lsb: base.lsb + p.lsb});
++      const sliceRowId = this.addCustomVariable(undefined, undefined, group.groupId, undefined, undefined, source.msb, source.lsb, source);
++      const slice = sliceRowId === undefined ? undefined : this.rowItems[sliceRowId];
++      if (!(slice instanceof CustomVariable)) {return;}
++      if (p.name) {
++        slice.customName = String(p.name);
++        slice.nameType = NameType.custom;
++        slice.setSignalContextAttribute();
++      }
++      if (Array.isArray(p.parts) && p.parts.length) {
++        this.addSliceParts(slice, p.parts);
++        slice.setSignalContextAttribute();
++      }
++    });
++    group.collapseState = CollapseState.Expanded;
++  }
++
++  removeSlices(rowId: RowId | undefined) {
++    if (rowId === undefined) {return;}
++    const item = this.rowItems[rowId];
++    if (!(item instanceof NetlistVariable) && !(item instanceof CustomVariable)) {return;}
++    const group = sliceGroupOf(item);
++    if (!group) {return;}
++    const slices = group.children.slice();
++    this.events.enterBatchMode();
++    if (slices.length) {this.events.removeVariable(slices, true);}
++    this.rowItems[group.rowId]?.dispose();
++    delete this.rowItems[group.rowId];
++    item.sliceGroupId = 0;
++    item.setSignalContextAttribute();
++    this.updateDisplayedSignalsFlat();
++    this.events.signalSelect([rowId], rowId);
++    this.events.exitBatchMode();
++    vscodeWrapper.sendWebviewContext(StateChangeType.User);
++  }
++
++  // The bits a row's slices are cut from: a variable's signal, or a slice's own range of it.
++  private sliceSource(item: SlicedVariable): BitRangeSource | undefined {
++    if (item instanceof NetlistVariable) {
++      if (item.signalId === undefined) {return undefined;}
++      return {name: createInstancePath(item.scopePath, item.signalName), netlistId: item.netlistId, signalId: item.signalId,
++        signalWidth: item.signalWidth, msb: item.signalWidth - 1, lsb: 0};
++    }
++    if (item.source.length !== 1 || item.source[0].signalId === undefined) {return undefined;}
++    return Object.assign({}, item.source[0]);
++  }
++
++  // The row's SliceGroup, made (with no row of its own) on its first slice.
++  private sliceGroup(item: SlicedVariable): SliceGroup {
++    const existing = sliceGroupOf(item);
++    if (existing) {return existing;}
++    const groupRowId = this.nextRowId++;
++    const groupId    = this.nextGroupId++;
++    const group      = new SliceGroup(groupRowId, '', groupId, item.rowId);
++    this.rowItems[groupRowId] = group;
++    this.groupIdTable[groupId] = groupRowId;
++    item.sliceGroupId = groupId;
++    return group;
++  }
++
++  // Every row a row's slices hold: the groups and the slices, nested ones too.
++  private sliceRows(item: RowItem): RowId[] {
++    if (!(item instanceof NetlistVariable) && !(item instanceof CustomVariable)) {return [];}
++    const group = sliceGroupOf(item);
++    if (!group) {return [];}
++    const result: RowId[] = [group.rowId];
++    group.children.forEach((id) => {
++      const child = this.rowItems[id];
++      result.push(id);
++      if (child) {result.push(...this.sliceRows(child));}
++    });
++    return result;
++  }
++
++  // A saved row's slices (SavedSlices) come back under it, collapsed if they were.
++  private restoreSlices(rowId: RowId, signal: SavedRowItem & Record<string, unknown>) {
++    const saved = (signal as {cmuxSlices?: {collapseState: number, children: (SavedRowItem & Record<string, unknown>)[]}}).cmuxSlices;
++    if (!saved || !Array.isArray(saved.children) || saved.children.length === 0) {return;}
++    const item = this.rowItems[rowId];
++    if (!(item instanceof NetlistVariable) && !(item instanceof CustomVariable)) {return;}
++    const group = this.sliceGroup(item);
++    this.addSignalList(saved.children.filter((c) => c && c.dataType === 'custom-variable'), group.groupId);
++    if (saved.collapseState === CollapseState.Collapsed) {group.collapseState = CollapseState.Collapsed;}
++    item.setSignalContextAttribute();
++    this.updateDisplayedSignalsFlat();
++  }
++
+   addSignalList(signalList: (SavedRowItem & Record<string, unknown>)[], parentGroupId: number | undefined) {
+     signalList.forEach((signal) => {
+       if (signal.dataType === 'signal-group') {
+@@ -536,6 +656,7 @@ export class RowHandler {
+         const rowId     = rowIdList[0];
+         const displayFormat = Object.assign({rowId: rowId}, signal) as unknown as SetDisplayFormatMessage;
+         this.setDisplayFormat(displayFormat, true);
++        this.restoreSlices(rowId, signal); // cmux: slices
+       } else if (signal.dataType === 'custom-variable') {
+         //console.log('addCustomVariable', signal);
+         const bitRange = signal.source[0];
+@@ -546,6 +667,7 @@ export class RowHandler {
+         if (rowId === undefined) {return;}
+         const displayFormat = Object.assign({rowId: rowId}, signal) as unknown as SetDisplayFormatMessage;
+         this.setDisplayFormat(displayFormat, true);
++        this.restoreSlices(rowId, signal); // cmux: slices
+       }
+     });
+   }
+@@ -727,9 +849,15 @@ export class RowHandler {
      const disposedRowIdList: RowId[] = [];
      rowIdList.forEach(rowId => {
        const signalItem = this.rowItems[rowId];
@@ -1084,19 +1372,49 @@ index b17e96e..4cbc9f2 100644
 +      if (!signalItem || disposedRowIdList.includes(rowId)) {return;}
        let children: number[] = [];
        disposedRowIdList.push(rowId);
++      // cmux: a row's slices (and their groups) go with it, removed or ungrouped.
++      this.sliceRows(signalItem).forEach((id) => {
++        if (!disposedRowIdList.includes(id)) {disposedRowIdList.push(id);}
++      });
        const parentGroupId = getParentGroupId(rowId);
+       const indexInGroup = getIndexInGroup(rowId, parentGroupId);
+ 
+@@ -749,6 +877,8 @@ export class RowHandler {
+         if (parentGroupItem instanceof SignalGroup) {
+           parentGroupItem.children.splice(indexInGroup, 1, ...children);
+         }
++        // cmux: a removed slice: its owner's chevron and menu follow
++        if (parentGroupItem instanceof SliceGroup) {this.rowItems[parentGroupItem.owner]?.setSignalContextAttribute();}
+       }
+     });
+ 
+@@ -864,7 +994,7 @@ export class RowHandler {
+     let groupChildren: number[] = [];
+     rowIdList.forEach((rowId) => {
+       const rowItem = this.rowItems[rowId];
+-      if (rowItem instanceof SignalGroup) {
++      if (rowItem) { // cmux: a row with slices has children too; was rowItem instanceof SignalGroup
+         const children = rowItem.getFlattenedRowIdList(false, -1);
+         children.shift(); // Remove the group itself from the list
+         groupChildren = groupChildren.concat(children);
 diff --git a/src/webview/signal_item.ts b/src/webview/signal_item.ts
-index e6c206c..35e1cfc 100644
+index e6c206c..7591072 100644
 --- a/src/webview/signal_item.ts
 +++ b/src/webview/signal_item.ts
-@@ -1,6 +1,6 @@
- import { type NetlistId, type RowId, type ValueChange, EnumData, EnumEntry, NameType, VariableEncoding, CollapseState, type BitRangeSource, type SignalSeparatorContext, type NetlistVariableContext, CustomVariableContext, SignalGroupContext, SavedRowItem, SavedSignalSeparator, SavedNetlistVariable, SavedCustomVariable, SavedSignalGroup } from '../common/types';
+@@ -1,10 +1,10 @@
+-import { type NetlistId, type RowId, type ValueChange, EnumData, EnumEntry, NameType, VariableEncoding, CollapseState, type BitRangeSource, type SignalSeparatorContext, type NetlistVariableContext, CustomVariableContext, SignalGroupContext, SavedRowItem, SavedSignalSeparator, SavedNetlistVariable, SavedCustomVariable, SavedSignalGroup } from '../common/types';
++import { type NetlistId, type RowId, type ValueChange, EnumData, EnumEntry, NameType, VariableEncoding, CollapseState, type BitRangeSource, type SignalSeparatorContext, type NetlistVariableContext, CustomVariableContext, SignalGroupContext, SavedRowItem, SavedSignalSeparator, SavedNetlistVariable, SavedCustomVariable, SavedSignalGroup, type SavedSlices } from '../common/types';
  import { ActionType, type EventHandler } from './event_handler';
 -import { dataManager, viewport, viewerState, events, rowHandler, vscodeWrapper, styles, config } from "./vaporview";
 +import { dataManager, viewport, viewerState, events, rowHandler, vscodeWrapper, styles, config, windowCache } from "./vaporview"; // cmux: windowed loading
  import { EnumValueFormat, formatBinary, formatHex, formatString, type ValueFormat } from "./value_format";
  import { type WaveformRenderer, setRenderBounds } from "./renderer";
  import type { WaveformData } from "./data_manager";
+-import { labelsPanel } from "./vaporview";
++import { labelsPanel, getParentGroupId } from "./vaporview"; // cmux: getParentGroupId for slices
+ import { bitRangeString, createInstancePath } from '../common/functions';
+ import { ValueLinkEvent } from '../../packages/vaporview-api/types';
+ 
 @@ -16,6 +16,12 @@ export function htmlAttributeSafe(string: string) {
    return string.replace(/"/g, '&quot;').replace(/'/g, '&apos;');
  }
@@ -1139,7 +1457,114 @@ index e6c206c..35e1cfc 100644
      return result;
    }
  
-@@ -279,14 +287,14 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -189,6 +197,89 @@ export class SignalSeparator extends SignalItem implements RowItem {
+   setLabelText(newLabel: string) {this.label = newLabel;}
+ }
+ 
++// cmux: slices (Split, Add Slice). A variable's slices are custom variables in a
++// SliceGroup the variable owns. The group has no row of its own: the variable's row
++// is its header, with a chevron, and the slices follow it in the flat row list, so
++// upstream's group code collapses, reorders and removes them. See row_handler.ts.
++export type SlicedVariable = NetlistVariable | CustomVariable;
++
++export function sliceGroupOf(item: SlicedVariable): SliceGroup | null {
++  if (!item.sliceGroupId) {return null;}
++  const group = rowHandler.rowItems[rowHandler.groupIdTable[item.sliceGroupId]];
++  return group instanceof SliceGroup ? group : null;
++}
++
++// The group, when it has slices to show.
++function shownSlices(item: SlicedVariable): SliceGroup | null {
++  const group = sliceGroupOf(item);
++  return group && group.children.length > 0 ? group : null;
++}
++
++function sliceChevron(item: SlicedVariable): string {
++  const group = shownSlices(item);
++  if (!group) {return '';}
++  const icon = group.collapseState === CollapseState.Expanded ? 'codicon-chevron-down' : 'codicon-chevron-right';
++  return `<div class='codicon ${icon}'></div>`;
++}
++
++// The slices' labels (or value cells), nested in the variable's label as a group's
++// children are; nothing when collapsed.
++function sliceElements(item: SlicedVariable, labels: boolean): string {
++  const group = shownSlices(item);
++  if (!group || group.collapseState !== CollapseState.Expanded) {return '';}
++  return group.children.map((id) => {
++    const child = rowHandler.rowItems[id];
++    if (!child) {return '';}
++    return labels ? child.createLabelElement() : child.createValueDisplayElement();
++  }).join('');
++}
++
++function sliceLabelWrap(item: SlicedVariable, label: string): string {
++  if (!shownSlices(item)) {return label;}
++  const children = `<div class="labels-group child-group">${sliceElements(item, true)}</div>`;
++  return label.replace(/<\/div>\s*$/, children + '</div>');
++}
++
++function sliceFlatten(item: SlicedVariable, ignoreCollapsed: boolean, ignoreRowId: number): number[] {
++  if (ignoreRowId === item.rowId) {return [];}
++  const result: number[] = [item.rowId];
++  const group = shownSlices(item);
++  if (group && (!ignoreCollapsed || group.collapseState === CollapseState.Expanded)) {
++    group.children.forEach((id) => {
++      if (id === ignoreRowId) {return;}
++      const child = rowHandler.rowItems[id];
++      if (child) {result.push(...child.getFlattenedRowIdList(ignoreCollapsed, ignoreRowId));}
++    });
++  }
++  return result;
++}
++
++function sliceParentGroupId(item: SlicedVariable, rowId: RowId): number | null {
++  const group = sliceGroupOf(item);
++  if (!group) {return null;}
++  // The group's own row: it sits where its owner sits.
++  if (rowId === group.rowId) {return getParentGroupId(item.rowId);}
++  return group.findParentGroupId(rowId);
++}
++
++function sliceSaveData(item: SlicedVariable): SavedSlices | undefined {
++  const group = shownSlices(item);
++  if (!group) {return undefined;}
++  const children: SavedCustomVariable[] = [];
++  group.children.forEach((id) => {
++    const child = rowHandler.rowItems[id];
++    if (child instanceof CustomVariable) {children.push(child.getSaveData());}
++  });
++  return {collapseState: group.collapseState, children: children};
++}
++
++// The slice context keys: whether it has slices, the name they're named after and the
++// declared indices of its bits (a slice's own bits count from 0).
++// `declared`: a signal of the dump (not a bit range), which the design declares a type for.
++function sliceContext(item: SlicedVariable, name: string, msb: number, lsb: number, declared: boolean) {
++  return {cmuxSlices: shownSlices(item) !== null, cmuxSliceName: name, cmuxMsb: msb, cmuxLsb: lsb, cmuxDeclared: declared};
++}
++
+ export class NetlistVariable extends SignalItem implements RowItem {
+ 
+   public valueFormat: ValueFormat;
+@@ -205,6 +296,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
+   public min: number = 0;
+   public max: number = 0;
+   public readonly missingSignal: boolean;
++  public sliceGroupId: number = 0; // cmux: the SliceGroup holding its slices, 0 for none
+ 
+   constructor(
+     public readonly rowId: RowId,
+@@ -260,7 +352,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
+   }
+ 
+   public createWaveformRowContent(): string {
+-    let result = "";
++    let result = sliceChevron(this); // cmux: slices
+     const signalName  = htmlSafe(this.signalName + bitRangeString(this.msb, this.lsb, true));
+     if (this.nameType === NameType.fullPath) {
+       const scopePath = htmlSafe(this.scopePath.join('.') + '.');
+@@ -279,16 +371,16 @@ export class NetlistVariable extends SignalItem implements RowItem {
      let missingSignalClass = "";
      if (this.missingSignal) {missingSignalClass = 'missing-signal';}
      const height        = getRowHeightCssClass(this.rowHeight);
@@ -1154,11 +1579,14 @@ index e6c206c..35e1cfc 100644
      const tooltip       = "Name: " + fullPath + "\nType: " + this.variableType + "\nWidth: " + this.signalWidth + "\nEncoding: " + this.encoding;
 -    return `<div class="waveform-label is-idle" id="label-${this.rowId}" title="${tooltip}" data-vscode-context=${this.vscodeContext}>
 +    // cmux: quoted and escaped attributes (htmlQuotedAttribute)
-+    return `<div class="waveform-label is-idle" id="label-${this.rowId}" title="${htmlQuotedAttribute(tooltip)}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">
++    return sliceLabelWrap(this, `<div class="waveform-label is-idle" id="label-${this.rowId}" title="${htmlQuotedAttribute(tooltip)}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">
                <div class='waveform-row ${selectorClass} ${height}'>${this.createWaveformRowContent()}</div>
-             </div>`;
+-            </div>`;
++            </div>`); // cmux: slices
      }
-@@ -304,11 +312,12 @@ export class NetlistVariable extends SignalItem implements RowItem {
+ 
+   public createValueDisplayElement() {
+@@ -304,11 +396,12 @@ export class NetlistVariable extends SignalItem implements RowItem {
      const pElement      = value.map((v: string) => {
        const is9State     = valueIs9State(v);
        const colorStyle   = is9State ? styles.xzColor : this.color;
@@ -1169,11 +1597,43 @@ index e6c206c..35e1cfc 100644
  
 -    return `<div class="value-display-item ${selectorClass} ${height}" id="value-${this.rowId}" data-vscode-context=${this.vscodeContext}>${pElement}</div>`;
 +    // cmux: quoted and escaped attributes (htmlQuotedAttribute)
-+    return `<div class="value-display-item ${selectorClass} ${height}" id="value-${this.rowId}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">${pElement}</div>`;
++    return `<div class="value-display-item ${selectorClass} ${height}" id="value-${this.rowId}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">${pElement}</div>` + sliceElements(this, false); // cmux: slices
    }
  
    public setSignalContextAttribute() {
-@@ -371,6 +380,8 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -326,6 +419,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
+       rowId: this.rowId,
+       isAnalog: isAnalog,
+       enum: this.enumType !== "",
++      ...sliceContext(this, this.signalName, this.msb, this.lsb, true), // cmux: slices
+     };
+     this.vscodeContext = `${JSON.stringify(context).replace(/\s/g, '%x20')}`;
+   }
+@@ -342,7 +436,8 @@ export class NetlistVariable extends SignalItem implements RowItem {
+       nameType:         this.nameType,
+       customName:       this.customName,
+       renderType:       this.renderType.id,
+-      valueLinkEnable:  this.valueLinkEnable
++      valueLinkEnable:  this.valueLinkEnable,
++      cmuxSlices:       sliceSaveData(this), // cmux: slices
+     };
+   }
+ 
+@@ -361,16 +456,20 @@ export class NetlistVariable extends SignalItem implements RowItem {
+     this.nameType = NameType.custom;
+   }
+ 
++  // cmux: a row with slices is followed by them, as a group by its children.
+   public getFlattenedRowIdList(ignoreCollapsed: boolean, ignoreRowId: number): number[] {
+-    if (ignoreRowId === this.rowId) {return [];}
+-    return [this.rowId];
++    return sliceFlatten(this, ignoreCollapsed, ignoreRowId);
+   }
++  public rowIdCount(ignoreCollapsed: boolean, stopIndex: number): number {return sliceFlatten(this, ignoreCollapsed, -1).length;}
++  public findParentGroupId(rowId: RowId): number | null {return sliceParentGroupId(this, rowId);}
+ 
+   public renderWaveform() {
+ 
      if (this.signalId === undefined) {return;}
      const data = dataManager.valueChangeData[this.signalId];
  
@@ -1182,7 +1642,7 @@ index e6c206c..35e1cfc 100644
      if (!data) {return;}
  
      const valueChangeChunk = setRenderBounds(this, data);
-@@ -380,12 +391,14 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -380,12 +479,14 @@ export class NetlistVariable extends SignalItem implements RowItem {
  
    public getValueAtTime(time: number | null) {
      if (this.signalId === undefined) {return [];}
@@ -1197,7 +1657,27 @@ index e6c206c..35e1cfc 100644
      const data = dataManager.valueChangeData[this.signalId];
      return dataManager.getNearestTransition(data, time);
    }
-@@ -513,12 +526,13 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -482,6 +583,7 @@ export class CustomVariable extends SignalItem implements RowItem {
+   public encoding: VariableEncoding = VariableEncoding.BitVector;
+   public enumType: string = "";
+   public readonly missingSignal: boolean;
++  public sliceGroupId: number = 0; // cmux: the SliceGroup holding its slices, 0 for none
+ 
+   constructor(
+     public readonly rowId: number,
+@@ -502,9 +604,9 @@ export class CustomVariable extends SignalItem implements RowItem {
+   public createWaveformRowContent(): string {
+ 
+     if (this.nameType === NameType.custom) {
+-      return `<p>${htmlSafe(this.customName)}</p>`;
++      return sliceChevron(this) + `<p>${htmlSafe(this.customName)}</p>`; // cmux: slices
+     } else {
+-      return `<p>${htmlSafe(this.signalName)}</p>`;
++      return sliceChevron(this) + `<p>${htmlSafe(this.signalName)}</p>`;
+     }
+   }
+ 
+@@ -513,14 +615,15 @@ export class CustomVariable extends SignalItem implements RowItem {
      let missingSignalClass = "";
      if (this.missingSignal) {missingSignalClass = 'missing-signal';}
      const height        = getRowHeightCssClass(this.rowHeight);
@@ -1209,11 +1689,14 @@ index e6c206c..35e1cfc 100644
      const tooltip       = "Name: " + signalName + "\nType: " + this.variableType + "\nWidth: " + this.signalWidth + "\nEncoding: " + this.encoding;
 -    return `<div class="waveform-label is-idle" id="label-${this.rowId}" title="${tooltip}" data-vscode-context=${this.vscodeContext}>
 +    // cmux: quoted and escaped attributes (htmlQuotedAttribute)
-+    return `<div class="waveform-label is-idle" id="label-${this.rowId}" title="${htmlQuotedAttribute(tooltip)}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">
++    return sliceLabelWrap(this, `<div class="waveform-label is-idle" id="label-${this.rowId}" title="${htmlQuotedAttribute(tooltip)}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">
                <div class='waveform-row ${selectorClass} ${height}'>${this.createWaveformRowContent()}</div>
-             </div>`;
+-            </div>`;
++            </div>`); // cmux: slices
      }
-@@ -537,11 +551,12 @@ export class CustomVariable extends SignalItem implements RowItem {
+ 
+     public createValueDisplayElement() {
+@@ -537,11 +640,12 @@ export class CustomVariable extends SignalItem implements RowItem {
        const pElement      = value.map((v: string) => {
          const is9State     = valueIs9State(v);
          const colorStyle   = is9State ? styles.xzColor : this.color;
@@ -1224,11 +1707,42 @@ index e6c206c..35e1cfc 100644
    
 -      return `<div class="value-display-item ${selectorClass} ${height}" id="value-${this.rowId}" data-vscode-context=${this.vscodeContext}>${pElement}</div>`;
 +      // cmux: quoted and escaped attributes (htmlQuotedAttribute)
-+      return `<div class="value-display-item ${selectorClass} ${height}" id="value-${this.rowId}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">${pElement}</div>`;
++      return `<div class="value-display-item ${selectorClass} ${height}" id="value-${this.rowId}" data-vscode-context="${htmlQuotedAttribute(this.vscodeContext)}">${pElement}</div>` + sliceElements(this, false); // cmux: slices
      }
  
    public setSignalContextAttribute() {
-@@ -675,7 +690,7 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -556,6 +660,7 @@ export class CustomVariable extends SignalItem implements RowItem {
+       rowId: this.rowId,
+       netlistId: this.source[0].netlistId || -1,
+       isAnalog: isAnalog,
++      ...sliceContext(this, this.nameType === NameType.custom ? this.customName : this.signalName, this.signalWidth - 1, 0, false), // cmux: slices
+     };
+     this.vscodeContext = `${JSON.stringify(context).replace(/\s/g, '%x20')}`;
+   }
+@@ -572,6 +677,7 @@ export class CustomVariable extends SignalItem implements RowItem {
+       customName:       this.customName,
+       renderType:       this.renderType.id,
+       valueLinkEnable:  this.valueLinkEnable,
++      cmuxSlices:       sliceSaveData(this), // cmux: slices
+     };
+   }
+ 
+@@ -590,10 +696,12 @@ export class CustomVariable extends SignalItem implements RowItem {
+     this.nameType = NameType.custom;
+   }
+ 
++  // cmux: a row with slices is followed by them, as a group by its children.
+   public getFlattenedRowIdList(ignoreCollapsed: boolean, ignoreRowId: number): number[] {
+-    if (ignoreRowId === this.rowId) {return [];}
+-    return [this.rowId];
++    return sliceFlatten(this, ignoreCollapsed, ignoreRowId);
+   }
++  public rowIdCount(ignoreCollapsed: boolean, stopIndex: number): number {return sliceFlatten(this, ignoreCollapsed, -1).length;}
++  public findParentGroupId(rowId: RowId): number | null {return sliceParentGroupId(this, rowId);}
+ 
+   public renderWaveform() {
+ 
+@@ -675,7 +783,7 @@ export class SignalGroup extends SignalItem implements RowItem {
    public createWaveformRowContent() {
      const icon = this.collapseState === CollapseState.Expanded ? 
        'codicon-chevron-down' : 'codicon-chevron-right';
@@ -1237,7 +1751,7 @@ index e6c206c..35e1cfc 100644
    }
  
    public createLabelElement() {
-@@ -695,7 +710,8 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -695,7 +803,8 @@ export class SignalGroup extends SignalItem implements RowItem {
      const lastSelectedClass = viewerState.lastSelectedSignal === this.rowId ? 'last-selected' : '';
      const selectorClass = isSelectedClass + ' ' + lastSelectedClass;
      //const tooltip       = "Name: " + fullPath + "\nType: " + this.variableType + "\nWidth: " + this.signalWidth + "\nEncoding: " + this.encoding;
@@ -1247,7 +1761,7 @@ index e6c206c..35e1cfc 100644
                <div class="waveform-row ${selectorClass} height1x">${this.createWaveformRowContent()}</div>
                <div class="labels-group child-group">${childElements}</div>
              </div>`;
-@@ -707,7 +723,8 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -707,7 +816,8 @@ export class SignalGroup extends SignalItem implements RowItem {
      const isSelectedClass   = this.isSelected ? 'is-selected' : '';
      const lastSelectedClass = viewerState.lastSelectedSignal === this.rowId ? 'last-selected' : '';
      const selectorClass = isSelectedClass + ' ' + lastSelectedClass;
@@ -1257,6 +1771,20 @@ index e6c206c..35e1cfc 100644
      if (value === undefined) {value = [];}
      if (this.collapseState === CollapseState.Expanded) {
        this.children.forEach((childRowId) => {
+@@ -845,4 +955,11 @@ export class SignalGroup extends SignalItem implements RowItem {
+     this.viewportElement = null;
+     this.label = "";
+   }
+-}
+\ No newline at end of file
++}
++// cmux: the group holding a variable's slices (see sliceGroupOf). It never has a row:
++// its owner's row shows its chevron, and its children follow its owner.
++export class SliceGroup extends SignalGroup {
++  constructor(rowId: number, label: string, groupId: number, public readonly owner: RowId) {
++    super(rowId, label, groupId);
++  }
++}
 diff --git a/src/webview/value_alias.ts b/src/webview/value_alias.ts
 new file mode 100644
 index 0000000..37393bf
@@ -2175,12 +2703,15 @@ index 0000000..dfc9b0a
 +  return bits === '0' ? '0' : '0' + bits;
 +}
 diff --git a/src/webview/vaporview.ts b/src/webview/vaporview.ts
-index c7771b9..fbb4c3c 100644
+index c7771b9..69640a0 100644
 --- a/src/webview/vaporview.ts
 +++ b/src/webview/vaporview.ts
-@@ -7,6 +7,7 @@ import { RowHandler } from './row_handler';
+@@ -5,8 +5,9 @@ import { LabelsPanels } from './labels';
+ import { ControlBar } from './control_bar';
+ import { RowHandler } from './row_handler';
  import { WaveformDataManager } from './data_manager';
- import { NetlistVariable, SignalGroup, type RowItem } from './signal_item';
+-import { NetlistVariable, SignalGroup, type RowItem } from './signal_item';
++import { NetlistVariable, SignalGroup, SliceGroup, type RowItem } from './signal_item'; // cmux: SliceGroup
  import { Configuration, OS, ThemeColors, VscodeWrapper } from './vscode_wrapper';
 +import { WindowCache } from './window_cache'; // cmux: windowed loading (protocol v2)
  
@@ -2197,7 +2728,16 @@ index c7771b9..fbb4c3c 100644
      }
      else if (e.key === 'Delete' || e.key === 'Backspace') {
        //viewerState.selectedSignal.forEach((rowId) => {
-@@ -458,6 +460,7 @@ export const styles        = new ThemeColors(events);
+@@ -386,6 +388,8 @@ class VaporviewWebview {
+ 
+     // First check to see if we're moving it outside the parent group
+     if (newIndex < 0 || newIndex >= parentList.length) {
++      // cmux: slices stay under their row
++      if (parentGroupId > 0 && rowHandler.rowItems[rowHandler.groupIdTable[parentGroupId]] instanceof SliceGroup) {return;}
+       const parentGroupRowId = rowHandler.groupIdTable[parentGroupId];
+       const grandparentGroupId = getParentGroupId(parentGroupRowId);
+       if (grandparentGroupId === null) {return;}
+@@ -458,6 +462,7 @@ export const styles        = new ThemeColors(events);
  export const config        = new Configuration();
  export const vscodeWrapper = new VscodeWrapper(events);
  export const dataManager   = new WaveformDataManager(events);
@@ -2236,7 +2776,7 @@ index 13ed9a8..cfc36da 100644
  
    async annotateWaveform(rowId: RowId, valueList: string[]) {
 diff --git a/src/webview/vscode_wrapper.ts b/src/webview/vscode_wrapper.ts
-index 47f8c75..b9cdfb8 100644
+index 47f8c75..41189c4 100644
 --- a/src/webview/vscode_wrapper.ts
 +++ b/src/webview/vscode_wrapper.ts
 @@ -5,10 +5,11 @@ import { createInstancePath } from "../common/functions";
@@ -2260,7 +2800,16 @@ index 47f8c75..b9cdfb8 100644
  
      switch (message.command) {
        case 'initViewport':          {init(message); break;}
-@@ -503,9 +505,12 @@ export class VscodeWrapper {
+@@ -486,6 +488,8 @@ export class VscodeWrapper {
+       case 'add-separator':         {rowHandler.addSeparator(message.name, message.groupPath, message.parentGroupId, message.eventRowId, message.moveSelected); break;}
+       case 'add-bit-slice':         {rowHandler.addCustomVariable(message.name, message.groupPath, message.parentGroupId, message.eventRowId, undefined, message.msb, message.lsb, undefined); break;}
+       case 'add-all-bit-slices':    {rowHandler.addAllBitSlices(message.name, message.groupPath, message.parentGroupId, message.eventRowId, message.bitWidth); break;}
++      case 'cmux-add-slices':       {rowHandler.addSlices(message.rowId, Array.isArray(message.parts) ? message.parts : []); break;} // cmux: slices
++      case 'cmux-remove-slices':    {rowHandler.removeSlices(message.rowId); break;}
+       case 'newSignalGroup':        {rowHandler.addSignalGroup(message.groupName, message.groupPath, message.parentGroupId, message.eventRowId, message.moveSelected, message.showRenameInput); break;}
+       case 'setDisplayFormat':      {rowHandler.setDisplayFormat(message, false); break;}
+       case 'renameSignalGroup':     {rowHandler.renameSignalGroup(message.rowId, message.groupName); break;}
+@@ -503,9 +507,12 @@ export class VscodeWrapper {
        case 'setViewportRange':      {viewport.setViewportRange(message.startTime, message.endTime); break;}
        case 'updateRulerSettings':   {this.handleUpdateRuler(message.units, message.pixelTime); break;}
        case 'setSelectedSignal':     {this.setSelectedSignal(message.netlistId); break;}
@@ -2274,7 +2823,7 @@ index 47f8c75..b9cdfb8 100644
        default:                      {this.outputLog('Unknown webview message type: ' + message.command); break;}
      }
    }
-@@ -670,6 +675,11 @@ export class VscodeWrapper {
+@@ -670,6 +677,11 @@ export class VscodeWrapper {
      });
    }
  

@@ -246,4 +246,25 @@ enum WaveformEnumLink {
     static func tableId(_ type: SlangEnumType) -> String {
         SlangEnumValues.tableId(type)
     }
+
+    // MARK: Declared dimensions
+
+    /// Split > By Declared Dimensions on a row: the page asks for the packed dimensions of one
+    /// dump path (`{ type: 'packedDims', id, path }`) and gets them, or null when slang can't
+    /// say (no linked design, a struct element, one dimension), through
+    /// `window.cmuxWaveform.split.declared({ id, dims: [[left, right], ...] })` (cmux-commands.js).
+    static func packedDimensionsRequested(_ body: [String: Any], waveform: FilePreviewPanel) {
+        let id = body["id"] as? NSNumber
+        let path = WaveformSourceLink.dumpPath(fromPage: body["path"])
+        Task { @MainActor in
+            var dims: [[Int]]?
+            if let path, path.count >= 2, let lookup = await WaveformSourceLink.designLookup(for: waveform) {
+                let designScope = lookup.mapping.designPath(forDumpPath: HierarchyPathMapping.join(Array(path.dropLast())))
+                let found = try? await lookup.session.slangPackedSignals(inScope: designScope)
+                dims = found?[path[path.count - 1]]?.map { [$0.left, $0.right] }
+            }
+            let answer: [String: Any] = ["id": id ?? NSNull(), "dims": dims.map { $0 as Any } ?? NSNull()]
+            _ = await waveform.nativeViewSessions.waveform.callSplit("declared", argument: answer)
+        }
+    }
 }
