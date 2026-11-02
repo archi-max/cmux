@@ -7,11 +7,29 @@ import Foundation
 /// keeps one live query per such terminal at a time, started by a graph event (the
 /// terminal appearing in a pane, or its title changing), never by a timer.
 public struct CloudTerminalDirectoryFallback: Sendable {
-    /// One query to run. Pass it back to `finish(_:directory:)`.
+    /// One query to run after `delay` seconds. Pass it back to `finish(_:answer:now:)`.
     public struct Probe: Hashable, Sendable {
         public let terminalID: String
+        public let delay: TimeInterval
         let token: UInt64
     }
+
+    /// What one query found.
+    public enum Answer: Equatable, Sendable {
+        /// The foreground process's directory.
+        case directory(String)
+        /// The query failed or timed out.
+        case failed
+        /// Not asked, or the answer cannot be the shell's directory.
+        case skipped
+
+        public init(foregroundDirectory: String?, foregroundExecutable: String?) {
+            if let foregroundDirectory { self = .directory(foregroundDirectory) } else { self = .failed }
+        }
+    }
+
+    /// Query starts for one terminal are at least this far apart.
+    public static let minimumProbeSpacing: TimeInterval = 1
 
     /// A terminal whose queries keep failing is not asked again.
     public static let maximumFailedProbes = 3
@@ -33,7 +51,7 @@ public struct CloudTerminalDirectoryFallback: Sendable {
     public init() {}
 
     /// Records the accepted graph's terminals. Returns the queries to start now.
-    public mutating func observe(_ terminals: [CloudVMTerminalState], projected: Set<String>) -> [Probe] {
+    public mutating func observe(_ terminals: [CloudVMTerminalState], projected: Set<String>, now: TimeInterval) -> [Probe] {
         let present = Set(terminals.map(\.id))
         entries = entries.filter { present.contains($0.key) && projected.contains($0.key) }
         var probes: [Probe] = []
@@ -66,7 +84,8 @@ public struct CloudTerminalDirectoryFallback: Sendable {
 
     /// Records a query's answer. `directoryChanged` says whether `directory(forTerminal:)`
     /// changed; `next` is the one query queued while this one ran.
-    public mutating func finish(_ probe: Probe, directory: String?) -> (directoryChanged: Bool, next: Probe?) {
+    public mutating func finish(_ probe: Probe, answer: Answer, now: TimeInterval) -> (directoryChanged: Bool, next: Probe?) {
+        let directory: String? = if case .directory(let found) = answer { found } else { nil }
         guard var entry = entries[probe.terminalID], entry.running == probe.token else { return (false, nil) }
         entry.running = nil
         var changed = false
@@ -95,6 +114,6 @@ public struct CloudTerminalDirectoryFallback: Sendable {
         nextToken &+= 1
         entry.running = nextToken
         entries[id] = entry
-        return Probe(terminalID: id, token: nextToken)
+        return Probe(terminalID: id, delay: 0, token: nextToken)
     }
 }

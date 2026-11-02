@@ -1,100 +1,197 @@
 import CmuxSurfaceCatalogModel
+import Foundation
 import Testing
 
 @Suite struct CloudTerminalDirectoryFallbackTests {
+    private typealias Fallback = CloudTerminalDirectoryFallback
+
     private func terminal(_ id: String, title: String, cwd: String? = "/home/u", cols: Int? = 80) -> CloudVMTerminalState {
         CloudVMTerminalState(id: id, tabIDs: ["tab-\(id)"], title: title, cwd: cwd, lifecycle: "running", cols: cols)
     }
 
+    /// Drives one terminal with events far enough apart that spacing never delays a query.
+    private final class Driver {
+        var fallback = Fallback()
+        var now: TimeInterval = 0
+        var shown: Set<String> = ["t1"]
+
+        func show(_ terminals: [CloudVMTerminalState]) -> [Fallback.Probe] {
+            now += 10
+            return fallback.observe(terminals, projected: shown, now: now)
+        }
+
+        func title(_ title: String, cwd: String? = "/home/u") -> Fallback.Probe? {
+            show([CloudVMTerminalState(id: "t1", tabIDs: ["tab-t1"], title: title, cwd: cwd, lifecycle: "running", cols: 80)]).first
+        }
+
+        func finish(_ probe: Fallback.Probe, _ answer: Fallback.Answer) -> (directoryChanged: Bool, next: Fallback.Probe?) {
+            now += 0.1
+            return fallback.finish(probe, answer: answer, now: now)
+        }
+    }
+
     @Test func probesWhenShownAndOnEachTitleChangeOnly() throws {
-        var fallback = CloudTerminalDirectoryFallback()
-        let first = fallback.observe([terminal("t1", title: "bash")], projected: ["t1"])
-        #expect(first.map(\.terminalID) == ["t1"])
-        _ = fallback.finish(try #require(first.first), directory: "/home/u")
+        let driver = Driver()
+        let first = try #require(driver.title("bash"))
+        #expect(first.terminalID == "t1" && first.delay == 0)
+        _ = driver.finish(first, .directory("/home/u"))
         // A resize is not a reason to ask again; a new title is.
-        #expect(fallback.observe([terminal("t1", title: "bash", cols: 120)], projected: ["t1"]).isEmpty)
-        #expect(fallback.observe([terminal("t1", title: "vim notes")], projected: ["t1"]).map(\.terminalID) == ["t1"])
+        #expect(driver.show([terminal("t1", title: "bash", cols: 120)]).isEmpty)
+        let renamed = try #require(driver.title("vim notes"))
+        _ = driver.finish(renamed, .directory("/home/u"))
+        // The same new title seen again (any later graph event) asks nothing.
+        #expect(driver.title("vim notes") == nil)
+        #expect(driver.show([terminal("t1", title: "vim notes", cols: 100)]).isEmpty)
     }
 
     @Test func titleChangesDuringAQueryQueueOneRerun() throws {
-        var fallback = CloudTerminalDirectoryFallback()
-        let probe = try #require(fallback.observe([terminal("t1", title: "a")], projected: ["t1"]).first)
-        #expect(fallback.observe([terminal("t1", title: "b")], projected: ["t1"]).isEmpty)
-        #expect(fallback.observe([terminal("t1", title: "c")], projected: ["t1"]).isEmpty)
-        let done = fallback.finish(probe, directory: "/home/u/a")
-        let rerun = try #require(done.next)
+        let driver = Driver()
+        let probe = try #require(driver.title("a"))
+        #expect(driver.title("b") == nil)
+        #expect(driver.title("c") == nil)
+        let rerun = try #require(driver.finish(probe, .directory("/home/u/a")).next)
         #expect(rerun.terminalID == "t1")
-        #expect(fallback.finish(rerun, directory: "/home/u/c").next == nil)
-        #expect(fallback.directory(forTerminal: "t1") == "/home/u/c")
+        #expect(driver.finish(rerun, .directory("/home/u/c")).next == nil)
+        #expect(driver.fallback.directory(forTerminal: "t1") == "/home/u/c")
+    }
+
+    @Test func queryStartsAreSpacedWithATrailingRun() throws {
+        // Titles every 50 ms for 5 s; each query takes 100 ms once started.
+        var fallback = Fallback()
+        let roundTrip: TimeInterval = 0.1
+        let burstEnd: TimeInterval = 5
+        var starts: [TimeInterval] = []
+        var running: (probe: Fallback.Probe, finishesAt: TimeInterval)?
+        func begin(_ probe: Fallback.Probe, at now: TimeInterval) {
+            starts.append(now + probe.delay)
+            running = (probe, now + probe.delay + roundTrip)
+        }
+        var lastTitle: TimeInterval = 0
+        for step in 0...800 {
+            let now = Double(step) / 100
+            if let current = running, now >= current.finishesAt {
+                running = nil
+                let next = fallback.finish(current.probe, answer: .directory("/d\(step)"), now: now).next
+                if let next { begin(next, at: now) }
+            }
+            if step % 5 == 0, now <= burstEnd {
+                lastTitle = now
+                for probe in fallback.observe([terminal("t1", title: "spin \(step)")], projected: ["t1"], now: now) {
+                    begin(probe, at: now)
+                }
+            }
+        }
+        let gaps = zip(starts.dropFirst(), starts).map { $0 - $1 }
+        #expect(gaps.allSatisfy { $0 >= Fallback.minimumProbeSpacing - 1e-9 }, "\(starts)")
+        #expect(starts.count <= Int(burstEnd / Fallback.minimumProbeSpacing) + 2, "\(starts)")
+        // The last title still gets asked about.
+        #expect((starts.last ?? 0) >= lastTitle, "\(starts)")
     }
 
     @Test func answerSetsTheDirectoryAndReportsChangesOnly() throws {
-        var fallback = CloudTerminalDirectoryFallback()
-        let probe = try #require(fallback.observe([terminal("t1", title: "a")], projected: ["t1"]).first)
-        #expect(fallback.finish(probe, directory: "/srv/proj").directoryChanged)
-        #expect(fallback.directory(forTerminal: "t1") == "/srv/proj")
-        let again = try #require(fallback.observe([terminal("t1", title: "b")], projected: ["t1"]).first)
-        #expect(!fallback.finish(again, directory: "/srv/proj").directoryChanged)
-        // A failed query keeps the last answer.
-        let failed = try #require(fallback.observe([terminal("t1", title: "c")], projected: ["t1"]).first)
-        #expect(!fallback.finish(failed, directory: nil).directoryChanged)
-        #expect(fallback.directory(forTerminal: "t1") == "/srv/proj")
+        let driver = Driver()
+        let probe = try #require(driver.title("a"))
+        #expect(driver.finish(probe, .directory("/srv/proj")).directoryChanged)
+        #expect(driver.fallback.directory(forTerminal: "t1") == "/srv/proj")
+        let again = try #require(driver.title("b"))
+        #expect(!driver.finish(again, .directory("/srv/proj")).directoryChanged)
+        // A failed or skipped query keeps the last answer.
+        let failed = try #require(driver.title("c"))
+        #expect(!driver.finish(failed, .failed).directoryChanged)
+        let skipped = try #require(driver.title("d"))
+        #expect(!driver.finish(skipped, .skipped).directoryChanged)
+        #expect(driver.fallback.directory(forTerminal: "t1") == "/srv/proj")
     }
 
     @Test func aTerminalThatReportsItsDirectoryIsNeverAskedAgain() throws {
-        var fallback = CloudTerminalDirectoryFallback()
-        let probe = try #require(fallback.observe([terminal("t1", title: "a", cwd: "/home/u")], projected: ["t1"]).first)
+        let driver = Driver()
+        let probe = try #require(driver.title("a", cwd: "/home/u"))
         // The shell reported a cd: the graph cwd moved off the spawn directory.
-        #expect(fallback.observe([terminal("t1", title: "b", cwd: "/home/u/src")], projected: ["t1"]).isEmpty)
-        let late = fallback.finish(probe, directory: "/somewhere/else")
+        #expect(driver.title("b", cwd: "/home/u/src") == nil)
+        let late = driver.finish(probe, .directory("/somewhere/else"))
         #expect(!late.directoryChanged && late.next == nil)
-        #expect(fallback.directory(forTerminal: "t1") == nil)
-        #expect(fallback.observe([terminal("t1", title: "c", cwd: "/home/u")], projected: ["t1"]).isEmpty)
+        #expect(driver.fallback.directory(forTerminal: "t1") == nil)
+        #expect(driver.title("c", cwd: "/home/u") == nil)
     }
 
     @Test func onlyShownTerminalsAreAskedAndGoneOnesAreForgotten() throws {
-        var fallback = CloudTerminalDirectoryFallback()
-        #expect(fallback.observe([terminal("t1", title: "a"), terminal("t2", title: "a")], projected: ["t2"]).map(\.terminalID) == ["t2"])
-        #expect(fallback.observe([terminal("t1", title: "b"), terminal("t2", title: "a")], projected: ["t2"]).isEmpty)
-        let shown = fallback.observe([terminal("t1", title: "b"), terminal("t2", title: "a")], projected: ["t1", "t2"])
+        let driver = Driver()
+        driver.shown = ["t2"]
+        #expect(driver.show([terminal("t1", title: "a"), terminal("t2", title: "a")]).map(\.terminalID) == ["t2"])
+        #expect(driver.show([terminal("t1", title: "b"), terminal("t2", title: "a")]).isEmpty)
+        driver.shown = ["t1", "t2"]
+        let shown = driver.show([terminal("t1", title: "b"), terminal("t2", title: "a")])
         #expect(shown.map(\.terminalID) == ["t1"])
         let shownProbe = try #require(shown.first)
         // t1 closes while its query runs: the answer is dropped, and a new t1 starts fresh.
-        #expect(fallback.observe([terminal("t2", title: "a")], projected: ["t2"]).isEmpty)
-        #expect(!fallback.finish(shownProbe, directory: "/x").directoryChanged)
-        #expect(fallback.directory(forTerminal: "t1") == nil)
-        let reopened = fallback.observe([terminal("t1", title: "b"), terminal("t2", title: "a")], projected: ["t1", "t2"])
+        #expect(driver.show([terminal("t2", title: "a")]).isEmpty)
+        #expect(!driver.finish(shownProbe, .directory("/x")).directoryChanged)
+        #expect(driver.fallback.directory(forTerminal: "t1") == nil)
+        let reopened = driver.show([terminal("t1", title: "b"), terminal("t2", title: "a")])
         #expect(reopened.map(\.terminalID) == ["t1"])
         let reopenedProbe = try #require(reopened.first)
-        #expect(!fallback.finish(shownProbe, directory: "/stale").directoryChanged)
-        #expect(fallback.finish(reopenedProbe, directory: "/fresh").directoryChanged)
-        #expect(fallback.directory(forTerminal: "t1") == "/fresh")
+        #expect(!driver.finish(shownProbe, .directory("/stale")).directoryChanged)
+        #expect(driver.finish(reopenedProbe, .directory("/fresh")).directoryChanged)
+        #expect(driver.fallback.directory(forTerminal: "t1") == "/fresh")
     }
 
     @Test func repeatedFailuresStopTheQueries() throws {
-        var fallback = CloudTerminalDirectoryFallback()
-        var probes = fallback.observe([terminal("t1", title: "0")], projected: ["t1"])
-        for round in 1...CloudTerminalDirectoryFallback.maximumFailedProbes {
-            #expect(probes.count == 1, "round \(round)")
-            guard let probe = probes.first else { return }
-            _ = fallback.finish(probe, directory: nil)
-            probes = fallback.observe([terminal("t1", title: "\(round)")], projected: ["t1"])
+        let driver = Driver()
+        var probe = driver.title("0")
+        for round in 1...Fallback.maximumFailedProbes {
+            let current = try #require(probe, "round \(round)")
+            _ = driver.finish(current, .failed)
+            probe = driver.title("\(round)")
         }
-        #expect(probes.isEmpty)
+        #expect(probe == nil)
     }
 
     @Test func aSuccessResetsTheFailureCount() throws {
-        var fallback = CloudTerminalDirectoryFallback()
+        let driver = Driver()
         var title = 0
-        func next() -> CloudTerminalDirectoryFallback.Probe? {
+        func fail(_ driver: Driver) throws {
             title += 1
-            return fallback.observe([terminal("t1", title: "\(title)")], projected: ["t1"]).first
+            _ = driver.finish(try #require(driver.title("\(title)")), .failed)
         }
-        let start = try #require(fallback.observe([terminal("t1", title: "0")], projected: ["t1"]).first)
-        _ = fallback.finish(start, directory: nil)
-        for _ in 1..<(CloudTerminalDirectoryFallback.maximumFailedProbes - 1) { if let p = next() { _ = fallback.finish(p, directory: nil) } }
-        // The last allowed query succeeds instead.
-        if let p = next() { _ = fallback.finish(p, directory: "/ok") }
-        #expect(next() != nil)
+        for _ in 1..<Fallback.maximumFailedProbes { try fail(driver) }
+        title += 1
+        _ = driver.finish(try #require(driver.title("\(title)")), .directory("/ok"))
+        // Without the reset, these would be failures 3 and 4.
+        for _ in 1..<Fallback.maximumFailedProbes { try fail(driver) }
+        title += 1
+        #expect(driver.title("\(title)") != nil)
+    }
+
+    @Test func skippedQueriesDoNotCountAsFailures() throws {
+        let driver = Driver()
+        for round in 0...(2 * Fallback.maximumFailedProbes) {
+            let probe = try #require(driver.title("\(round)"), "round \(round)")
+            _ = driver.finish(probe, .skipped)
+        }
+    }
+
+    @Test func aTerminalShownAgainStartsOverAfterFailures() throws {
+        let driver = Driver()
+        var probe = driver.title("0")
+        for round in 1...Fallback.maximumFailedProbes {
+            _ = driver.finish(try #require(probe), .failed)
+            probe = driver.title("\(round)")
+        }
+        #expect(probe == nil)
+        driver.shown = []
+        #expect(driver.show([terminal("t1", title: "x")]).isEmpty)
+        driver.shown = ["t1"]
+        #expect(driver.show([terminal("t1", title: "x")]).map(\.terminalID) == ["t1"])
+    }
+
+    @Test func tmuxAsTheForegroundProcessIsNotItsShellsDirectory() {
+        for executable in ["tmux", "/usr/bin/tmux", "tmux: client", "/opt/homebrew/bin/tmux"] {
+            #expect(Fallback.Answer(foregroundDirectory: "/home/u", foregroundExecutable: executable) == .skipped, "\(executable)")
+        }
+        for executable in [nil, "bash", "/usr/bin/fish", "-zsh", "vim", "tmuxinator-helper"] {
+            #expect(Fallback.Answer(foregroundDirectory: "/home/u", foregroundExecutable: executable) == .directory("/home/u"),
+                    "\(executable ?? "nil")")
+        }
+        #expect(Fallback.Answer(foregroundDirectory: nil, foregroundExecutable: "bash") == .failed)
     }
 }
