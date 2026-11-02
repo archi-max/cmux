@@ -235,6 +235,23 @@ import Testing
         #expect(placement(selected: false, sourceUnchanged: false, focused: false, key: false) == nil)
     }
 
+    @Test func onlyAFocusedPlacementTakesTheKeyboard() {
+        // Every open reads this: a download, an already-open file `cmux open`
+        // shows again, and a dump the waveform viewer reads in place.
+        #expect(RemotePreviewPlacement.focused.takesFocus)
+        #expect(!RemotePreviewPlacement.unfocused.takesFocus)
+        #expect(!RemotePreviewPlacement.unfocusedInAnotherWorkspace.takesFocus)
+        #expect(placement(focused: false, key: true)?.takesFocus == false, "the in-place viewer while the user types elsewhere")
+    }
+
+    @Test func onlyAnOpenInALeftWorkspaceIsAnnounced() {
+        // Including `cmux open` of a file already open there.
+        #expect(RemotePreviewPlacement.unfocusedInAnotherWorkspace.announcesOpen)
+        #expect(!RemotePreviewPlacement.unfocused.announcesOpen)
+        #expect(!RemotePreviewPlacement.focused.announcesOpen)
+        #expect(placement(selected: false, focused: true, key: true)?.announcesOpen == true)
+    }
+
     private final class Flag: @unchecked Sendable {
         var value: RemotePreviewPlacement?
         init(_ value: RemotePreviewPlacement?) { self.value = value }
