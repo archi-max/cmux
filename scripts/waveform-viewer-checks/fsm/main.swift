@@ -393,6 +393,32 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(refreshRequests.count == refreshes + 1 && refreshRequests.last == ["tb", "dut", "u_ctl", "state"], "F1: and the pane asks cmux for the model again, quietly: \(refreshRequests.suffix(1))")
     try? FileManager.default.removeItem(at: swappedURL)
 
+    // Verify G4 (a source check of the app's wiring): saving a dump-to-design mapping (the mapping
+    // alert's Save, inferred rules) changes which design instance a dump scope is, so it drops the
+    // state machine answers worked out before, but only when the mapping actually changed (an
+    // unchanged save mustn't rerun Verdi).
+    let repoRoot = assetRoot.deletingLastPathComponent().deletingLastPathComponent()
+    func body(of file: String, after marker: String) -> String {
+      guard let text = try? String(contentsOf: repoRoot.appendingPathComponent(file), encoding: .utf8),
+            let start = text.range(of: marker) else { return "" }
+      var depth = 0
+      var seenBrace = false
+      var end = start.upperBound
+      for index in text[start.lowerBound...].indices {
+        let ch = text[index]
+        if ch == "{" { depth += 1; seenBrace = true }
+        if ch == "}" { depth -= 1 }
+        if seenBrace && depth == 0 { end = index; break }
+      }
+      return String(text[start.lowerBound...end])
+    }
+    let save = body(of: "Sources/Panels/WaveformSourceLink.swift", after: "static func saveMapping(")
+    expect(!save.isEmpty, "G4: WaveformSourceLink.saveMapping is found")
+    expect(save.contains("WaveformFSMEngines.designChanged()"), "G4: saving a mapping drops the state machine answers")
+    expect(save.contains("!= mapping") || save.contains("== mapping"), "G4: only when the saved mapping changed")
+    let dropped = body(of: "Sources/Panels/WaveformFSMEngines.swift", after: "static func designChanged(")
+    expect(dropped.contains("cache.designChanged()"), "G4: and designChanged drops the cached answers (FsmAnswerCache.designChanged)")
+
     print(failures == 0 ? "FSM CHECKS PASSED" : "FSM CHECKS FAILED: \(failures)")
     // For the snapshot.
     _ = await call("cmuxWaveform.fsm.show({ path: \(ctlPath), model: \(ctlModel), note: 'From Verdi' }); return null")
