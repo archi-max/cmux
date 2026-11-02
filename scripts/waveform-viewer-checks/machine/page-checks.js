@@ -508,9 +508,25 @@
     const seqBps = () => D.breakpoints().filter((b) => b.kind === 'sequence').map((b) => [b.query, b.land]);
     const breakHere = () => box.querySelector('.seqbar .break');
     expect(breakHere() && breakHere().textContent === 'Break Here', opts.name + ': the Sequences tab offers Break Here: ' + (breakHere() && breakHere().textContent));
+    // What it did is said: added, already there, or enabled again, naming it (the debugger's label; its
+    // strings are cmux's, not loaded here: one given).
+    if (W.strings && !W.strings.debuggerBreakpointSequence) { W.strings.debuggerBreakpointSequence = 'Sequence %@'; }
+    const said = [];
+    const realToast = root.cmuxUI.toast;
+    root.cmuxUI.toast = (text, kind) => { said.push(text); return realToast(text, kind); };
     breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await sleep(30);
     expect(JSON.stringify(seqBps()) === JSON.stringify([[query, 'end']]), opts.name + ': Break Here makes a sequence breakpoint of the query: ' + JSON.stringify(seqBps()));
+    const made = D.breakpoints().find((b) => b.kind === 'sequence');
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    D.setBreakpointEnabled({ id: made.id, enabled: false });
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    root.cmuxUI.toast = realToast;
+    expect(JSON.stringify(said) === JSON.stringify(['Breakpoint added: ' + made.label, 'Already a breakpoint: ' + made.label, 'Breakpoint enabled again: ' + made.label])
+      && made.label.includes(query) && seqBps().length === 1 && D.breakpoints().find((b) => b.id === made.id).enabled,
+      opts.name + ': Break Here says what it did (added, already there, enabled again): ' + JSON.stringify(said));
     box.querySelector('.seqbar .land').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await sleep(30);
     box.querySelector('.seqbar .query').value = '{sw} ##1 {lw}';

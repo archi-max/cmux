@@ -85,6 +85,7 @@
       pc: (k) => (k >= 0 && k < n ? 0x80000000 + 4 * k : null), value: () => null, widthOf: () => 32 };
     const q = '{lw} as L ##[1:$] {sw} && rs2 == L.rd';
     const budgetMs = 400;
+    const sliceMs = 25;
     // The synchronous search takes budgetMs too (before the other, so the two don't share the clock).
     const t1 = Date.now();
     const sync = S.search(big, q, { budget: 1e12, budgetMs: 100 });
@@ -92,26 +93,38 @@
     ok(sync.reason === 'time' && sync.incomplete, 'search: budgetMs stops it too (' + syncMs + ' ms, ' + sync.evaluated + ' evaluations)');
     // Started once the cases' synchronous work is done (a job), so the stretches between its pauses are its own.
     // A stretch: from the search resuming to its next pause (or its end).
-    const gaps = [];
-    let resumed = 0;
-    const pause = () => { gaps.push(Date.now() - resumed); return Promise.resolve().then(() => { resumed = Date.now(); }); };
-    // Its results come after the cases return: in machineLateChecks, which the runner reads once the jobs ran.
-    const late = root.machineLateChecks = root.machineLateChecks || [];
-    const slot = late.push('FAIL searchAsync: the time-budget checks did not finish') - 1;
+    // Its results come after the cases return: a group of machineLateChecks, which the runner reads (and counts)
+    // once the jobs ran.
+    const group = ['FAIL searchAsync: the time-budget checks did not finish'];
+    (root.machineLateChecks = root.machineLateChecks || []).push(group);
     const results = [];
     const lateOk = (cond, what) => { results.push((cond ? 'ok   ' : 'FAIL ') + what); return cond; };
-    let t0 = 0;
-    Promise.resolve().then(() => { t0 = resumed = Date.now(); return S.searchAsync(big, q, { budget: 1e12, budgetMs, sliceMs: 10, pause }); }).then((r) => {
-      const ms = Date.now() - t0;
+    const timed = async (query) => {
+      const gaps = [];
+      let resumed = Date.now();
+      const pause = () => { gaps.push(Date.now() - resumed); return Promise.resolve().then(() => { resumed = Date.now(); }); };
+      const t0 = resumed;
+      const r = await S.searchAsync(big, query, { budget: 1e12, budgetMs, sliceMs, pause });
       gaps.push(Date.now() - resumed);
-      const slowest = Math.max(...gaps);
-      lateOk(!r.error && r.incomplete && r.reason === 'time' && r.next !== null,
-        'searchAsync: a worst-case capture query on ' + n + ' commits stops at its time budget: ' + JSON.stringify([r.error, r.reason, r.next, r.matches && r.matches.length]));
-      lateOk(r.yields >= 3 && slowest <= Math.max(budgetMs / 2, 4 * gaps.reduce((a, b) => a + b, 0) / gaps.length),
-        'searchAsync: it paused ' + r.yields + ' times, the longest stretch ' + slowest + ' ms');
-      lateOk(ms <= budgetMs + 3 * slowest, 'searchAsync: back in ' + ms + ' ms (budget ' + budgetMs + ' ms + 3x its longest stretch, ' + slowest + ' ms)');
-      late.splice(slot, 1, ...results);
-    }, (e) => { late.splice(slot, 1, 'FAIL searchAsync threw ' + e); });
+      return { r, ms: Date.now() - t0, slowest: Math.max(...gaps) };
+    };
+    // A stretch is about sliceMs (a clock read late, the scheduler): 4x is slack; work that doesn't pause is far past it.
+    const paused = (what, t) => lateOk(t.r.yields >= 3 && t.slowest <= 4 * sliceMs,
+      what + ': it paused ' + t.r.yields + ' times, the longest stretch ' + t.slowest + ' ms (at most 4 x ' + sliceMs + ' ms)');
+    Promise.resolve().then(async () => {
+      const t = await timed(q);
+      lateOk(!t.r.error && t.r.incomplete && t.r.reason === 'time' && t.r.next !== null,
+        'searchAsync: a worst-case capture query on ' + n + ' commits stops at its time budget: ' + JSON.stringify([t.r.error, t.r.reason, t.r.next, t.r.matches && t.r.matches.length]));
+      paused('searchAsync', t);
+      lateOk(t.ms <= budgetMs + 3 * t.slowest, 'searchAsync: back in ' + t.ms + ' ms (budget ' + budgetMs + ' ms + 3x its longest stretch, ' + t.slowest + ' ms)');
+      // Most of this one is the pass over every commit for its first step (a condition on pc, read per commit):
+      // that pass pauses too.
+      const p = await timed("(pc == 32'h7ffffffc || pc == 32'h7ffffff8 || pc == 32'h7ffffff4 || pc == 32'h7ffffff0) ##1 {sw}");
+      lateOk(!p.r.error && !p.r.matches.length && (p.r.reason === null || p.r.reason === 'time'),
+        'searchAsync: a first step read per commit: no matches, ' + JSON.stringify([p.r.error, p.r.reason, p.ms]));
+      paused('searchAsync, its first step\'s pass', p);
+      group.splice(0, group.length, ...results);
+    }).catch((e) => { group.splice(0, group.length, 'FAIL searchAsync threw ' + e); });
   }
 
   function runSequenceCases(fixtures, h) {

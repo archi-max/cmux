@@ -285,6 +285,29 @@ async function runCommitCases() {
       const total = spent.reduce((a, b) => a + b, 0);
       eq('16 slow sequences: each has a time budget, the first 2 s, the rest from a pool of 8 s (at least 250 ms each)',
         [spent.length, spent[0], spent.every((ms) => ms >= 250 && ms <= 2000), total <= 8000 + 16 * 250], [16, 2000, true, true]);
+      // Cut short by a low pool: searched again once the pool has refilled (it refills over 30 s), not before;
+      // then (its full 2 s) kept.
+      const realNow = Date.now;
+      let clock = realNow();
+      Date.now = () => clock;
+      const low = bp('sequence', { query: '{lw} ##50 {sw}' });
+      await hits(low);
+      const lowMs = spent[spent.length - 1];
+      await hits(low);
+      const whileLow = spent.length;
+      clock += 30000;
+      await hits(low);
+      const retried = spent.slice(whileLow);
+      eq('a search the pool cut short: kept while the pool is low, searched again with 2 s once it refilled',
+        [lowMs < 2000, whileLow === spent.length - retried.length, retried], [true, true, [2000]]);
+      await hits(low);
+      eq('and then kept', spent.length, whileLow + 1);
+      // Two at once for one breakpoint: one search.
+      const twice = bp('sequence', { query: '{lw} ##77 {sw}' });
+      const before2 = spent.length;
+      const both = await Promise.all([hits(twice), hits(twice)]);
+      eq('two times() at once for one breakpoint: searched once, both answered', [spent.length - before2, both], [1, [[], []]]);
+      Date.now = realNow;
       ix = makeIndex(rows);
       await hits(bp('sequence', { query: '{lw} ##99 {sw}' }));
       eq('a rebuilt index: a new pool', spent[spent.length - 1], 2000);
