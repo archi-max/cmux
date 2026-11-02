@@ -80,6 +80,12 @@ enum WaveformSourceLink {
         linkedEditor(for: waveform)?.linkSession?.session
     }
 
+    /// The server of the editor `waveform` last linked with, only (no most-recent fallback).
+    static func pairedSession(for waveform: FilePreviewPanel) -> LanguageServerSession? {
+        guard let paired = pairedEditors.object(forKey: waveform), paired.linkWorkspaceId == waveform.workspaceId else { return nil }
+        return paired.linkSession?.session
+    }
+
     private static func linkedEditor(for waveform: FilePreviewPanel) -> FilePreviewLanguageFeatures? {
         if let paired = pairedEditors.object(forKey: waveform), paired.linkSession != nil,
            paired.linkWorkspaceId == waveform.workspaceId {
@@ -751,16 +757,22 @@ enum WaveformSourceLink {
         waveform: FilePreviewPanel,
         progress: @escaping @MainActor @Sendable (String) -> Void
     ) async -> Bool {
-        let tops = (await Self.dumpChildren([], in: waveform) ?? []).filter(\.isScope).map(\.name)
+        let (tops, children) = await dumpScopes(of: waveform)
         guard !tops.isEmpty else { return false }
-        var children: [String: [String]] = [:]
-        for top in tops.prefix(8) {
-            children[top] = (await Self.dumpChildren([top], in: waveform) ?? []).filter(\.isScope).map(\.name)
-        }
         let picked = await SlangCompilationActions.autoPickProfile(session: session, dumpTops: tops, dumpChildren: children, progress: progress)
         // The waveform's profile from now on: focusing it builds this again.
         if picked { await SlangCompilationActions.recordWaveformDesign(waveform, session: session) }
         return picked
+    }
+
+    /// The dump's top scopes and the scopes just below the first few (a simulator wrapper).
+    private static func dumpScopes(of waveform: FilePreviewPanel) async -> (tops: [String], children: [String: [String]]) {
+        let tops = (await Self.dumpChildren([], in: waveform) ?? []).filter(\.isScope).map(\.name)
+        var children: [String: [String]] = [:]
+        for top in tops.prefix(8) {
+            children[top] = (await Self.dumpChildren([top], in: waveform) ?? []).filter(\.isScope).map(\.name)
+        }
+        return (tops, children)
     }
 
     /// When a waveform opens, its workspace's servers with no top level build from the matching profile.
@@ -771,9 +783,21 @@ enum WaveformSourceLink {
                   Self.topLevelState(for: session).elaboration == nil,
                   let tops = try? await session.slangScopeChildren("") else { continue }
             guard tops.allSatisfy({ $0.kind == "Package" }) else {
-                // The design is already built: the waveform opened against it, so that is its profile.
+                // The design is already built: the waveform's profile is the one matching its dump,
+                // else this design if it is the dump's, else none (verify L5).
                 if linkedSession(for: waveform) === session, !SlangCompilationActions.isBusy(session) {
-                    await SlangCompilationActions.recordWaveformDesign(waveform, session: session)
+                    let (dumpTops, children) = await dumpScopes(of: waveform)
+                    let profiles = await SlangCompilationActions.profiles(for: editor)
+                    let designTops = tops.filter { $0.kind != "Package" }.map(\.name)
+                    switch SlangProfileCatalog.waveformDesign(dumpTops: dumpTops, children: children, profiles: profiles, designTops: designTops) {
+                    case .profile(let path)?:
+                        let choice = SlangProfileChoice.buildFile(session.serverPath(for: URL(fileURLWithPath: path)))
+                        SlangCompilationActions.recordWaveformChoice(choice, waveform: waveform, session: session)
+                    case .current?:
+                        await SlangCompilationActions.recordWaveformDesign(waveform, session: session)
+                    case nil:
+                        break
+                    }
                 }
                 continue
             }

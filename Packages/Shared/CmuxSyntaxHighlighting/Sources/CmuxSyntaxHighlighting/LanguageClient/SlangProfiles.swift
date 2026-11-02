@@ -305,11 +305,17 @@ public enum SlangWaveformDesign: Equatable, Sendable {
 }
 
 extension SlangProfileCatalog {
-    /// Stub.
+    /// The design a waveform opened while `designTops` are built belongs to: the profile matching
+    /// its dump (as the auto-pick matches it), else the built design when its tops are the dump's
+    /// top scopes or the ones just below them, else nil (verify L5).
     public static func waveformDesign(
         dumpTops: [String], children: [String: [String]], profiles: [SlangProfile], designTops: [String]
     ) -> SlangWaveformDesign? {
-        nil
+        if let profile = profile(matchingDumpTops: dumpTops, children: children, in: profiles) {
+            return .profile(profile.path)
+        }
+        let names = Set(dumpTops + dumpTops.flatMap { children[$0] ?? [] })
+        return !designTops.isEmpty && !names.isDisjoint(with: designTops) ? .current : nil
     }
 }
 
