@@ -116,7 +116,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             return await provider.currentWorkingDirectory(of: resource)
         }
         let workingDirectory: @Sendable () async -> String? = {
-            let directory = await RemotePreviewOpenRules.workingDirectory(
+            let resolved = await RemotePreviewOpenRules.resolvedWorkingDirectory(
                 needsDirectory: true,
                 live: {
                     // Bounded: a link that stalls must not hold the click for the whole download deadline.
@@ -134,10 +134,9 @@ final class RemoteTerminalFilePreviewCoordinator {
                 snapshot: snapshotDirectory
             )
             #if DEBUG
-            let source = directory == nil ? "none" : directory == snapshotDirectory ? "snapshot" : "live"
-            cmuxDebugLog("remotePreview.cwd surface=\(sourcePanelID.uuidString) source=\(source)")
+            cmuxDebugLog("remotePreview.cwd surface=\(sourcePanelID.uuidString) source=\(resolved.source.rawValue)")
             #endif
-            return directory
+            return resolved.directory
         }
         let provider = SSHFileExplorerProvider(
             destination: configuration.destination,
@@ -183,6 +182,34 @@ final class RemoteTerminalFilePreviewCoordinator {
         #if DEBUG
         cmuxDebugLog("remotePreview.start request=\(requestID.uuidString) surface=\(sourcePanelID.uuidString)")
         #endif
+        let sourceSurface = panel.surface
+        let lifecycleID = sourceSurface.terminalLifecycleId
+        let attemptID = workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID]
+        let tuiAttemptID = workspace.sshTuiConnectionAttemptID
+        let projectionResource = SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: sourcePanelID)?.resource
+        // Whether and how a result may still open: read after every await before
+        // an open, for a download and for a located dump alike.
+        let currentPlacement: @MainActor () -> RemotePreviewPlacement? = { [weak workspace, weak panel, weak sourceSurface] in
+            guard let workspace, let panel, let sourceSurface,
+                  !ManagedFileTransferPolicy.isDisabled else { return nil }
+            let terminalIsTheSame = workspace.terminalPanel(for: sourcePanelID) === panel
+                && panel.surface === sourceSurface
+                && sourceSurface.terminalLifecycleId == lifecycleID
+                && sourceSurface.owningWorkspace() === workspace
+            let projectionIsTheSame = workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID] == attemptID
+                && SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: sourcePanelID)?.resource
+                    == projectionResource
+            let connectionIsTheSame = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration
+                && workspace.sshTuiConnectionAttemptID == tuiAttemptID
+            return RemotePreviewOpenRules.placement(
+                isSelected: workspace.owningTabManager?.selectedTabId == workspace.id,
+                isRetired: workspace.isRetiredFromOwningTabManager,
+                sourceUnchanged: terminalIsTheSame && projectionIsTheSame,
+                configurationUnchanged: connectionIsTheSame,
+                sourceIsFocused: workspace.focusedPanelId == sourcePanelID,
+                windowIsKey: panel.hostedView.window?.isKeyWindow == true
+            )
+        }
         if case .click(let tokens) = request, RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: tokens) {
             // A waveform dump: find it on the host (relative links against the
             // shell's live directory) and open the viewer that reads it there,
@@ -204,15 +231,29 @@ final class RemoteTerminalFilePreviewCoordinator {
                         defer { group.cancelAll() }
                         return try await group.next()!
                     }
-                    guard !Task.isCancelled, let self, let workspace, let panel,
-                          workspace.terminalPanel(for: sourcePanelID) === panel else { return }
-                    let outcome: CommandLineOpenOutcome = FilePreviewKindResolver.isReadInPlaceOnRemoteHost(header.path)
-                        ? self.openInPlaceOnHost(path: header.path, workspace: workspace, sourcePanelID: sourcePanelID)
-                        : .unavailable
-                    #if DEBUG
-                    cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) inPlace=\(outcome == .started)")
-                    #endif
-                    if outcome != .started, workspace.focusedPanelId == sourcePanelID { NSSound.beep() }
+                    guard !Task.isCancelled, let self, let workspace else { return }
+                    // The same source check as a finished download: a reconnect to
+                    // another host during the lookup must not open the old path there.
+                    switch RemotePreviewOpenRules.locatedAction(
+                        placement: currentPlacement(),
+                        readsInPlace: FilePreviewKindResolver.isReadInPlaceOnRemoteHost(header.path)
+                    ) {
+                    case .drop:
+                        #if DEBUG
+                        cmuxDebugLog("remotePreview.discarded request=\(requestID.uuidString)")
+                        #endif
+                    case .refuse(let beeps):
+                        #if DEBUG
+                        cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) inPlace=false")
+                        #endif
+                        if beeps { NSSound.beep() }
+                    case .openInPlace:
+                        let outcome = self.openInPlaceOnHost(path: header.path, workspace: workspace, sourcePanelID: sourcePanelID)
+                        #if DEBUG
+                        cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) inPlace=\(outcome == .started)")
+                        #endif
+                        if outcome != .started, currentPlacement()?.takesFocus == true { NSSound.beep() }
+                    }
                 } catch {
                     guard !Task.isCancelled else { return }
                     #if DEBUG
@@ -228,12 +269,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             tasks[sourcePanelID] = (requestID, task)
             return .started
         }
-        let sourceSurface = panel.surface
-        let lifecycleID = sourceSurface.terminalLifecycleId
-        let attemptID = workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID]
-        let tuiAttemptID = workspace.sshTuiConnectionAttemptID
-        let projectionResource = SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: sourcePanelID)?.resource
-        let task = Task { [weak self, weak workspace, weak panel, weak sourceSurface] in
+        let task = Task { [weak self, weak workspace, weak panel] in
             defer {
                 if self?.tasks[sourcePanelID]?.id == requestID {
                     self?.tasks.removeValue(forKey: sourcePanelID)
@@ -263,32 +299,10 @@ final class RemoteTerminalFilePreviewCoordinator {
                     Self.discardUnlessShown(download, cacheRoot: cacheRoot)
                     return
                 }
-                guard let self, let workspace, let panel, let sourceSurface,
+                guard let self, let workspace, let panel,
                       !ManagedFileTransferPolicy.isDisabled else {
                     Self.discardUnlessShown(download, cacheRoot: cacheRoot)
                     return
-                }
-                // Read now and again after any await before the open.
-                let currentPlacement: @MainActor () -> RemotePreviewPlacement? = { [weak workspace, weak panel, weak sourceSurface] in
-                    guard let workspace, let panel, let sourceSurface,
-                          !ManagedFileTransferPolicy.isDisabled else { return nil }
-                    let terminalIsTheSame = workspace.terminalPanel(for: sourcePanelID) === panel
-                        && panel.surface === sourceSurface
-                        && sourceSurface.terminalLifecycleId == lifecycleID
-                        && sourceSurface.owningWorkspace() === workspace
-                    let projectionIsTheSame = workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID] == attemptID
-                        && SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: sourcePanelID)?.resource
-                            == projectionResource
-                    let connectionIsTheSame = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration
-                        && workspace.sshTuiConnectionAttemptID == tuiAttemptID
-                    return RemotePreviewOpenRules.placement(
-                        isSelected: workspace.owningTabManager?.selectedTabId == workspace.id,
-                        isRetired: workspace.isRetiredFromOwningTabManager,
-                        sourceUnchanged: terminalIsTheSame && projectionIsTheSame,
-                        configurationUnchanged: connectionIsTheSame,
-                        sourceIsFocused: workspace.focusedPanelId == sourcePanelID,
-                        windowIsKey: panel.hostedView.window?.isKeyWindow == true
-                    )
                 }
                 guard let placement = currentPlacement() else {
                     #if DEBUG
