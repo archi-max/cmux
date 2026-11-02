@@ -171,6 +171,12 @@ extension ContentView {
             registry.register(commandId: command.paletteCommandId) {
                 let workspace = tabManager.selectedWorkspace
                 let panel = workspace?.focusedPanelId.flatMap { workspace?.panels[$0] } as? FilePreviewPanel
+#if DEBUG
+                let focusedPanel = workspace?.focusedPanelId.flatMap { workspace?.panels[$0] }
+                cmuxDebugLog("waveformDebugger.invoke command=\(command) source=palette workspace=\(workspace.map { String($0.id.uuidString.prefix(5)) } ?? "nil") "
+                    + "focusedPanelId=\(workspace?.focusedPanelId.map { String($0.uuidString.prefix(5)) } ?? "nil") "
+                    + "focusedPanelType=\(focusedPanel.map { String(describing: type(of: $0)) } ?? "nil")")
+#endif
                 if !WaveformDebugger.perform(command, for: panel) {
                     WaveformDebuggerNotice.showUnavailable()
                 }
