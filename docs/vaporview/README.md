@@ -85,7 +85,7 @@ Key decisions:
 - **Read in place, never download.** Dumps are often gigabytes and change with every run; only what's drawn moves.
 - **Built on the host.** cmux pipes the folder over SSH and builds it when the launcher exits 87 (missing or stale).
 - **Protocol v2:** JSON lines on stdin, replies on fd 3 (the reader prints to stdout), cancel by request id.
-- **Bounded replies:** 1024 buckets per tile, so a reply is sized to the screen, not the signal; 1 GB per worker.
+- **Bounded replies and memory:** 1024 buckets per tile, so a reply is sized to the screen; 1 GB per worker.
 - **Recovery:** ready within 90 s or the host is skipped for 10 minutes; a dead worker restarts and reopens.
 - *(coming)* An open timeout with one relaunch, a watchdog that kills only its own children, protocol pinning.
 
@@ -102,7 +102,7 @@ decisions are in **[Resources/vaporview/fsdb-helper-v2/README.md](../../Resource
 - In the viewer, ⌥⇧D (Show Waveform Signal in Source) or a double-click jumps to the declaration; ⌃- / ⌃⇧- go back
   and forward.
 - The editor shows **inline values** at the marker. Hover an enum to see its member name.
-- When the dump names the design differently, View > Waveform Path Mapping... holds the prefix rules.
+- When the dump names the design differently, View > Waveform Path Mapping… holds the prefix rules.
 
 *Files:* `Sources/Panels/WaveformSourceLink.swift`, `FilePreviewLanguageFeatures.swift`,
 `FilePreviewInlineValueOverlay.swift`; `host.js` (`cmuxWaveform.link`).
@@ -147,8 +147,8 @@ The dump is a recorded run, so cmux steps through it like gdb, in both direction
 - **Editor highlights:** each step tints the signals that changed and their driver lines. Rows the editor
   highlights light up in the viewer too.
 - **Breakpoints:** F5 continues to the next one, ⇧F5 to the previous one (F5 with none enabled plays). Kinds: Break
-  When Changes and Break When Equals... on a row; F9 on an editor line (stops when a signal it assigns changes);
-  Break When Text Matches... (a regex over the row's shown text, such as `^csrw`); and the instruction kinds below.
+  When Changes and Break When Equals… on a row; F9 on an editor line (stops when a signal it assigns changes);
+  Break When Text Matches… (a regex over the row's shown text, such as `^csrw`); and the instruction kinds below.
   Any of them can take a condition. While playing, F5 pauses.
 - Stop Debugging ends stepping and removes Locals. Every item of View > Waveform Debugger is in the command
   palette, and the keys can be rebound in cmux's keyboard settings.
@@ -165,19 +165,19 @@ Machine section, the cycle strip and Evaluate.*
 ### Machine state, listings and instruction breakpoints
 
 For a CPU that dumps its retired instructions in [RVFI](https://github.com/YosysHQ/riscv-formal/blob/main/docs/rvfi.md)
-form (or close to it; Use as Commit maps others), cmux replays every commit into registers and memory.
+form, cmux replays every commit into registers and memory. For other names, right-click a signal > Use as Commit.
 
 - **Machine section:** Registers, Memory, History, and CSRs when the dump has them, at the marker, like gdb's
   `info registers` and `x/`.
   Evaluate takes `$a0`, `$pc`, `$mem32(addr)` and gdb commands. A register's menu has Who Last Wrote This and
   Break When Written. F10 steps by instruction while the section has focus.
-- **Program image:** Load ELF for Machine State... fills memory the program never wrote and checks loads.
+- **Program image:** Load ELF for Machine State… fills memory the program never wrote and checks loads.
 - **Sequences:** search the instruction stream with SVA-like syntax, one commit per tick:
-  `{lw} as L ##1 rs1 == L.rd || rs2 == L.rd` finds load-use pairs. *(Coming: Break When Sequence Matches....)*
+  `{lw} as L ##1 rs1 == L.rd || rs2 == L.rd` finds load-use pairs. *(Coming: Break When Sequence Matches….)*
 - **Listings:** open the program's objdump output in the editor. F9 there sets a PC breakpoint, and stepping marks
   the current instruction. After a rebuild, breakpoints follow their code and moves are reported.
-- **More instruction breakpoints** (Add Instruction Breakpoint...): Break at Address..., Break When Next
-  Instruction Matches..., Break When Written....
+- **More instruction breakpoints** (Add Instruction Breakpoint…): Break at Address…, Break When Next
+  Instruction Matches…, Break When Written….
 
 <img src="images/machine-sequences.png" width="330" alt="The Sequences tab: a load-use query and its matches">
 
@@ -222,8 +222,8 @@ built.
 `scripts/waveform-viewer-checks/run.sh <suite>` loads the real page through the app's scheme handler in an
 off-screen `WKWebView`, or runs the page's scripts in JavaScriptCore. No window opens.
 
-Run it without a suite to list them. `fsdb`, `windowed-fsdb` and `windowed-launcher` need a host with Verdi;
-`windowed` runs the real Swift relay against a mock helper; the rest run on the Mac.
+Run it without a suite to list them. Suites that take an `<ssh-host>` (`fsdb`, `fsdb-values`, `debugger-fsdb`,
+`machine-fsdb`, `windowed-fsdb`, `windowed-launcher`) need a host with Verdi; the rest, `windowed` included, run on the Mac.
 
 Swift package tests cover the FSM model, listings, line breakpoints and path mapping. `docs-shots/make-shots.sh`
 regenerates the screenshots here from open fixtures.
