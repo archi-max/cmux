@@ -14,6 +14,9 @@ async function runCommitCases() {
     debuggerCommitError: 'Breakpoint %1$@: %2$@', debuggerCommitBadAddress: 'bad address', debuggerCommitBadLocation: 'bad location',
     debuggerTextError: 'Text breakpoint %1$@: %2$@', debuggerTextNoPattern: 'empty',
     debuggerCommitAddressTooLarge: 'too large', debuggerCommitTextJalHint: '%@: hint',
+    debuggerBreakpointSequence: 'Sequence %@', debuggerBreakpointSequenceStart: 'Sequence %@ (its start)',
+    debuggerSequenceNoQuery: 'no query', debuggerSequenceTooLong: 'longer than %@', debuggerSequenceBadSyntax: 'does not parse',
+    debuggerSequenceIncomplete: '%1$@: only %2$@',
   });
 
   // k: time, pc (NaN: x), insn, channel. Two commits share the cycle at 20 (channels 0 and 1).
@@ -224,6 +227,54 @@ async function runCommitCases() {
   waveform.commits = { index: async () => { throw new Error('broken'); } };
   eq('an index that throws: none', await hits(bp('write', { loc: 'a0' })), null);
   waveform.commits = api;
+
+  // ---- instruction sequences (the Machine section's search, cmux-sequence.js): a hit is a match's last
+  // instruction, or its first (land: 'start') ----
+  eq('kinds: sequence', C.isKind('sequence'), true);
+  eq('sequence fields', C.fields('sequence', { query: '  {lw} ##1 {add}  ' }), { query: '{lw} ##1 {add}', land: 'end' });
+  eq('sequence fields: land at the start', C.fields('sequence', { query: '{lw}', land: 'start' }).land, 'start');
+  eq('sequence fields: an unknown land is the end', C.fields('sequence', { query: '{lw}', land: 'middle' }).land, 'end');
+  eq('check sequence: empty', C.check('sequence', C.fields('sequence', { query: ' ' })), 'query');
+  eq('check sequence: too long', C.check('sequence', C.fields('sequence', { query: '{lw}' + ' '.repeat(5000) + '##1 {add}' })), 'queryTooLong');
+  eq('check sequence: does not parse', C.check('sequence', C.fields('sequence', { query: '{lw} ##' })), 'querySyntax');
+  eq('check sequence: ok', C.check('sequence', C.fields('sequence', { query: '{lw} as L ##1 rs1 == L.rd' })), null);
+  eq('sequence errors said', ['query', 'queryTooLong', 'querySyntax'].map(C.errorText), ['no query', 'longer than 4096', 'does not parse']);
+  eq('label sequence', C.label(bp('sequence', { query: '{lw} ##1 {add}' })), 'Sequence {lw} ##1 {add}');
+  eq('label sequence at its start', C.label(bp('sequence', { query: '{lw}', land: 'start' })), 'Sequence {lw} (its start)');
+  {
+    ix = makeIndex(rows);  // the times are the index's (the matches' commits)
+    const asked = [];
+    let answer = { matches: [{ start: 1, end: 3, ks: [1, 3], startTime: 20, endTime: 30 }, { start: 5, end: 7, ks: [5, 7], startTime: 50, endTime: 70 },
+      { start: 2, end: 3, ks: [2, 3], startTime: 20, endTime: 30 }], incomplete: false, next: null };
+    waveform.machine = { sequence: async (q) => { asked.push(q); return answer; } };
+    const seq = bp('sequence', { query: '{lw} ##1 {add}' });
+    eq('sequence: its matches\' last commits', await hits(seq), [30, 70]);
+    eq('sequence: the whole trace is asked, with a budget', [(asked[0] || {}).query, (asked[0] || {}).from, (asked[0] || {}).limit > 100000, (asked[0] || {}).budget > 2000000],
+      ['{lw} ##1 {add}', 0, true, true]);
+    eq('sequence: kAt is the match\'s last commit', [C.kAt(seq, 30), C.kAt(seq, 70), C.kAt(seq, 20)], [3, 7, null]);
+    const start = bp('sequence', { query: '{lw} ##1 {add}', land: 'start' });
+    eq('sequence at its start: the first commits', await hits(start), [20, 50]);
+    eq('sequence at its start: kAt (two starts in the cycle: the first)', [C.kAt(start, 20), C.kAt(start, 50)], [1, 5]);
+    const before = asked.length;
+    await hits(seq);
+    eq('sequence: kept while the index is the same', asked.length, before);
+    warnings.length = 0;
+    answer = { matches: [{ start: 1, end: 3, ks: [1, 3], startTime: 20, endTime: 30 }], incomplete: true, next: 4 };
+    eq('sequence stopped at its budget: the hits found', await hits(bp('sequence', { query: '{sw}' })), [30]);
+    eq('and that is said', warnings, ['Sequence {sw}: only 1']);
+    warnings.length = 0;
+    answer = { error: 'unknownName', message: 'no such name: foo' };
+    eq('sequence the search refuses: none', await hits(bp('sequence', { query: 'foo' })), null);
+    eq('and its reason said', warnings, ['Breakpoint Sequence foo: no such name: foo']);
+    warnings.length = 0;
+    answer = { error: 'noStream', message: 'no commit stream here' };
+    eq('sequence without a commit stream: none, said', [await hits(bp('sequence', { query: '{x}' })), warnings], [null, ['Sequence {x}: no commit stream']]);
+    warnings.length = 0;
+    eq('a bad sequence is not searched', [await hits(bp('sequence', { query: '{lw} ##' })), warnings], [null, ['Breakpoint Sequence {lw} ##: does not parse']]);
+    delete waveform.machine;
+    warnings.length = 0;
+    eq('sequence without a Machine section: none, said', [await hits(bp('sequence', { query: '{y}' })), warnings], [null, ['Sequence {y}: no commit stream']]);
+  }
 
   // ---- a PC from 2^53 up is not given to the listings (its double is rounded): no arrow, not sampled ----
   ix = makeIndex([[10, 0x80000000, 0x13, 0], [20, Number(0xffffffff80000004n), 0x13, 0], [30, 0x80000008, 0x13, 0]]);

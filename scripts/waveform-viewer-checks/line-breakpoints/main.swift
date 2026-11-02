@@ -237,6 +237,11 @@ endmodule
       ["path": [String](), "kind": "commitText", "pattern": "csrw mtvec", "caseSensitive": true, "anyRegisterNames": false, "enabled": false],
       ["path": [String](), "kind": "write", "loc": "mem:0x80001000/4", "enabled": true],
       ["path": [String](), "kind": "write", "loc": "csr:mtvec", "enabled": true],
+      ["path": [String](), "kind": "sequence", "query": "{lw} as L ##1 rs1 == L.rd", "land": "start", "enabled": true],
+      ["path": [String](), "kind": "sequence", "query": "{sw}", "land": "end", "enabled": true],
+      ["path": [String](), "kind": "sequence", "query": "", "enabled": true],
+      ["path": [String](), "kind": "sequence", "query": "{sw}", "land": "middle", "enabled": true],
+      ["path": [String](), "kind": "sequence", "query": String(repeating: "a", count: 4097), "enabled": true],
       ["path": [String](), "kind": "pc", "pcs": [String](), "enabled": true],
       ["path": [String](), "kind": "pc", "pcs": ["main"], "enabled": true],
       ["path": [String](), "kind": "write", "loc": "", "enabled": true],
@@ -245,7 +250,10 @@ endmodule
       ["path": [String](), "kind": "change", "enabled": true],
     ]], waveform: textViewer)
     let commitKept = LB.signals(for: textViewer)
-    expect(commitKept.map(\.kind) == ["pc", "commitText", "write", "write"]
+    expect(commitKept.map(\.kind) == ["pc", "commitText", "write", "write", "sequence", "sequence"]
+           && commitKept[4].commit == WaveformDebuggerCommitBreakpoint(query: "{lw} as L ##1 rs1 == L.rd", land: "start")
+           && commitKept[4].pageItem["query"] as? String == "{lw} as L ##1 rs1 == L.rd" && commitKept[4].pageItem["land"] as? String == "start"
+           && commitKept[5].commit == WaveformDebuggerCommitBreakpoint(query: "{sw}", land: "end")
            && commitKept[0].commit == WaveformDebuggerCommitBreakpoint(pcs: ["0x80000004", "0x80000010"], channel: 1)
            && commitKept[1].commit == WaveformDebuggerCommitBreakpoint(pattern: "csrw mtvec", caseSensitive: true, anyRegisterNames: false)
            && commitKept[2].commit == WaveformDebuggerCommitBreakpoint(loc: "mem:0x80001000/4"),
