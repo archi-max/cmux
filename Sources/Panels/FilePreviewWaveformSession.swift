@@ -127,6 +127,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         isFileOpen = false
     }
 
+#if DEBUG
+    /// The web view this session draws in (debug logs only): to compare with the window's first responder.
+    var debugWebViewDescription: String { webView.map { "\(type(of: $0)):\(Unmanaged.passUnretained($0).toOpaque())" } ?? "nil" }
+#endif
+
     /// Whether `responder` is this viewer's web view or one of its subviews.
     func holdsResponder(_ responder: NSResponder) -> Bool {
         guard let webView, let view = responder as? NSView else { return false }
