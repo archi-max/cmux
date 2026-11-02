@@ -26,6 +26,8 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
     init(connection: SSHTuiConnection, clientURL: URL, paths: CloudTuiClientPaths, isEnabled: @escaping @Sendable () -> Bool,
          agentHookProviders: @escaping @Sendable () -> [String] = { [] }) {
         self.connection = connection
+        // One-off runs of every workspace on this machine ride this carrier's master.
+        SSHTuiCarrierRoutes.shared.record(connection)
         self.clientURL = clientURL
         self.paths = paths
         self.isEnabled = isEnabled
@@ -115,6 +117,7 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
         // The check above suspends; a carrier started meanwhile keeps its options.
         guard current === observed, connecting == nil else { return }
         connection = replacement
+        SSHTuiCarrierRoutes.shared.record(replacement)
     }
 
     func link(machineID: String) -> CloudMachineLink? {

@@ -21,8 +21,10 @@ extension WorkspaceRemoteConfiguration {
     ///
     /// A `cmux ssh` workspace's carrier holds the authenticated master, so these
     /// reuse its route and ControlPath; a password-only host accepts their
-    /// batch-mode runs only through it.
+    /// batch-mode runs only through it. The machine's live carrier can predate
+    /// this workspace's open and use other control options, so its recorded
+    /// connection wins (``SSHTuiCarrierRoutes``).
     var fileOperationSSHOptions: [String] {
-        routesThroughSSHTui ? SSHTuiConnection(configuration: self).fileOperationSSHOptions : sshOptions
+        routesThroughSSHTui ? SSHTuiCarrierRoutes.shared.fileOperationSSHOptions(for: self) : sshOptions
     }
 }
