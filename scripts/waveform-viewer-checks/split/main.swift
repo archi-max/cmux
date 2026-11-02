@@ -156,13 +156,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let menu = await call("""
       R.split = labels(sub(menuAt('dfp_addr[63:0]'), SPLIT));
       R.flag = labels(sub(menuAt('flag'), SPLIT));
-      R.want = [T('splitIntoParts'), T('splitByWidth'), T('splitBits'), T('addSlice')];
+      R.want = [T('splitDeclared'), T('splitIntoParts'), T('splitByWidth'), T('splitBits'), T('addSlice')];
       R.keys = R.want.concat([SPLIT, T('removeSlices')]).filter((l) => !l || /^(command|submenu)\\./.test(l) || l === 'split');
       """)
     let want = menu["want"] as? [String] ?? []
-    expect(want == ["Into N Parts…", "By Width…", "Bits", "Add Slice…"], "the Split items come from the app's strings: \(want)")
+    expect(want == ["By Declared Dimensions", "Into N Parts…", "By Width…", "Bits", "Add Slice…"], "the Split items come from the app's strings: \(want)")
     expect((menu["keys"] as? [Any])?.isEmpty == true, "every Split title is localized: \(menu["keys"] ?? "nil")")
-    expect(menu["split"] as? [String] == want, "a 64-bit row has Split with its four items: \(menu["split"] ?? "nil")")
+    expect(menu["split"] as? [String] == want, "a 64-bit row has Split with its five items: \(menu["split"] ?? "nil")")
     expect(menu["flag"] == nil || menu["flag"] is NSNull, "a 1-bit row has no Split")
 
     // Into N Parts: dfp_addr[63:0] = {elem1, elem0}.
@@ -366,6 +366,77 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "removing a parent removes its slices: \(gone["shown"] ?? "nil")")
     expect(gone["left"] as? Int == 7 && gone["rows"] as? Int == 4, "no rows are left behind: \(gone["left"] ?? "nil") values, \(gone["rows"] ?? "nil") saved")
 
+    // By Declared Dimensions: cmux answers with the packed dimensions slang gives the signal
+    // (here, `packedDims` below), and the row splits along them, nested, in one undo step.
+    let declared = await call("""
+      R.sliceMenu = labels(sub(menuAt('dfp_addr[1]'), SPLIT));
+      sent.length = 0;
+      await C.run('waveformViewer.addVariable', { instancePath: 'top.cube', quiet: true });
+      await until(() => shown().includes('cube[23:0]'));
+      await marker(0);
+      await choose('cube[23:0]', null, SPLIT, T('splitDeclared'));
+      await until(() => shown().includes('cube[0][0]'), 5000);
+      R.asked = sent.filter((m) => m.type === 'packedDims').map((m) => m.path.join('.'));
+      R.shown = shown();
+      R.values = ['cube[1]', 'cube[1][2]', 'cube[1][1]', 'cube[1][0]', 'cube[0]', 'cube[0][2]', 'cube[0][0]'].map(value);
+      await C.run('cmux.undo'); await sleep(800);
+      R.undone = shown();
+      await C.run('cmux.redo'); await sleep(800);
+      R.redone = shown();
+      // Index order: [0:1] puts element 0 at the most significant end.
+      await choose('nib[7:4]', null, SPLIT, T('splitDeclared'));
+      await until(() => shown().includes('nib[0]'), 5000);
+      await marker(15);
+      R.nib = shown().filter((l) => /^nib\\[[01]\\]$/.test(l));
+      R.nibValues = [value('nib[0]'), value('nib[1]')];
+      // A declared type of another width, or none: refused, nothing added.
+      const toasts = [];
+      const toast = window.cmuxUI.toast;
+      window.cmuxUI.toast = (text, kind) => { toasts.push(String(text)); };
+      const before = shown().length;
+      await choose('odd[9:0]', null, SPLIT, T('splitDeclared'));
+      await sleep(600);
+      await choose('dfp_addr[63:0]', null, SPLIT, T('splitDeclared'));
+      await sleep(600);
+      window.cmuxUI.toast = toast;
+      R.toasts = toasts;
+      R.added = shown().length - before;
+      """)
+    expect(!((declared["sliceMenu"] as? [String]) ?? []).contains(strings["command.splitDeclared"] ?? "?"),
+           "a slice has no By Declared Dimensions (it isn't a declared signal): \(declared["sliceMenu"] ?? "nil")")
+    expect(declared["asked"] as? [String] == ["top.cube"], "cmux is asked for the row's dump path: \(declared["asked"] ?? "nil")")
+    let cubeRows = ["cube[23:0]", "cube[1]", "cube[1][2]", "cube[1][1]", "cube[1][0]", "cube[0]", "cube[0][2]", "cube[0][1]", "cube[0][0]"]
+    let cubeShown = (declared["shown"] as? [String])?.filter { $0.hasPrefix("cube") }
+    expect(cubeShown == cubeRows, "a 3-D signal splits by its outer dimension, then the next: \(cubeShown ?? [])")
+    expect(declared["values"] as? [String] == ["abc", "a", "b", "c", "123", "1", "3"], "each element shows its bits: \(declared["values"] ?? "nil")")
+    expect((declared["undone"] as? [String])?.filter { $0.hasPrefix("cube") } == ["cube[23:0]"], "one Undo removes the whole split: \(declared["undone"] ?? "nil")")
+    expect((declared["redone"] as? [String])?.filter { $0.hasPrefix("cube") } == cubeRows, "and Redo brings it back: \(declared["redone"] ?? "nil")")
+    expect(declared["nib"] as? [String] == ["nib[0]", "nib[1]"] && declared["nibValues"] as? [String] == ["1", "2"],
+           "[0:1] puts element 0 first, at the top bits: \(declared["nib"] ?? "nil") \(declared["nibValues"] ?? "nil")")
+    let toasts = declared["toasts"] as? [String] ?? []
+    expect(toasts.count == 2 && toasts.first?.contains("odd") == true && toasts.last == strings["messageNoDeclaredDimensions"],
+           "another width, or no declared type, is refused with a message: \(toasts)")
+    expect(declared["added"] as? Int == 0, "and adds nothing: \(declared["added"] ?? "nil")")
+
+    // Custom Length is offered above 256 bits; a split into too many slices is refused.
+    let wide = await call("""
+      await C.run('waveformViewer.addVariable', { instancePath: 'top.wide', quiet: true });
+      await until(() => shown().includes('wide[299:0]'));
+      R.custom = labels(sub(menuAt('wide[299:0]'), S['submenu.createSignals']));
+      const toasts = [];
+      const toast = window.cmuxUI.toast;
+      window.cmuxUI.toast = (text) => { toasts.push(String(text)); };
+      const before = shown().length;
+      await choose('wide[299:0]', '1', S['submenu.createSignals'], T('createSignalsForAllCustomLength'));
+      window.cmuxUI.toast = toast;
+      R.toasts = toasts;
+      R.added = shown().length - before;
+      """)
+    expect(((wide["custom"] as? [String]) ?? []).contains(strings["command.createSignalsForAllCustomLength"] ?? "?"),
+           "a 300-bit row has Custom Length: \(wide["custom"] ?? "nil")")
+    expect(wide["toasts"] as? [String] == [strings["messageTooManySlices"] ?? "?"] && wide["added"] as? Int == 0,
+           "300 one-bit slices are refused: \(wide["toasts"] ?? "nil") +\(wide["added"] ?? "nil")")
+
     print(failures == 0 ? "SPLIT CHECKS PASSED" : "SPLIT CHECKS FAILED: \(failures)")
     snap()
   }
@@ -409,6 +480,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let next = onOpened
       onOpened = nil
       next?()
+    case "packedDims":
+      // cmux's side: the packed dimensions slang would give each dump path.
+      let dims: [String: [[Int]]] = ["top.cube": [[1, 0], [2, 0], [3, 0]], "top.nib": [[0, 1], [1, 0]], "top.odd": [[1, 0], [3, 0]]]
+      let path = (body["path"] as? [String] ?? []).joined(separator: ".")
+      let answer: [String: Any] = ["id": body["id"] ?? NSNull(), "dims": dims[path].map { $0 as Any } ?? NSNull()]
+      let json = String(data: try! JSONSerialization.data(withJSONObject: answer), encoding: .utf8)!
+      web.evaluateJavaScript("window.cmuxWaveform.split.declared(\(json))")
     case "error":
       print("[error]", body["message"] ?? "")
     default:
