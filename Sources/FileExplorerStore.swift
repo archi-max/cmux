@@ -225,6 +225,9 @@ protocol FileExplorerProvider: AnyObject {
     func createDirectory(path: String) async throws
     func rename(path: String, to destinationPath: String) async throws
     func delete(path: String) async throws
+    /// Deletes every path permanently, in order, stopping at the first failure.
+    /// A failure after some were removed throws ``FileExplorerPartialRemovalError``.
+    func delete(paths: [String]) async throws
     func copy(path: String, to destinationPath: String) async throws
     func moveToTrash(path: String) async throws
     var homePath: String { get }
@@ -275,6 +278,23 @@ extension FileExplorerProvider {
     #else
     @Sendable
     #endif
+    func delete(paths: [String]) async throws {
+        var removed: [String] = []
+        for path in paths {
+            do {
+                try await delete(path: path)
+            } catch {
+                throw removed.isEmpty ? error : FileExplorerPartialRemovalError(removedPaths: removed, underlying: error)
+            }
+            removed.append(path)
+        }
+    }
+
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
     func copy(path: String, to destinationPath: String) async throws {
         throw FileExplorerError.mutationFailed
     }
@@ -289,6 +309,12 @@ extension FileExplorerProvider {
     }
 
     var supportsTrash: Bool { false }
+}
+
+/// A batch removal that failed after removing `removedPaths`.
+struct FileExplorerPartialRemovalError: Error {
+    let removedPaths: [String]
+    let underlying: Error
 }
 
 struct SSHFileExplorerConnection: Equatable, Sendable {
@@ -386,6 +412,17 @@ protocol SSHFileExplorerTransport: AnyObject {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws
+    /// Deletes every path in order, stopping at the first failure (see
+    /// ``FileExplorerProvider/delete(paths:)``).
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func delete(
+        paths: [String],
+        connection: SSHFileExplorerConnection
+    ) async throws
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -446,6 +483,21 @@ extension SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws {
         throw FileExplorerError.mutationFailed
+    }
+
+    nonisolated func delete(
+        paths: [String],
+        connection: SSHFileExplorerConnection
+    ) async throws {
+        var removed: [String] = []
+        for path in paths {
+            do {
+                try await delete(path: path, connection: connection)
+            } catch {
+                throw removed.isEmpty ? error : FileExplorerPartialRemovalError(removedPaths: removed, underlying: error)
+            }
+            removed.append(path)
+        }
     }
 
     nonisolated func copy(
@@ -840,6 +892,14 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         try await transport.delete(path: path, connection: connection)
     }
 
+    /// One ssh run for the whole selection instead of one per item.
+    func delete(paths: [String]) async throws {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        try await transport.delete(paths: paths, connection: connection)
+    }
+
     func copy(path: String, to destinationPath: String) async throws {
         guard isAvailable else {
             throw FileExplorerError.providerUnavailable
@@ -1033,6 +1093,36 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws {
         try await Self.runSSHMutationCommand(.delete(path: path), connection: connection)
+    }
+
+    /// Paths per ssh run, which keeps the command line far below `ARG_MAX`.
+    static let deleteBatchSize = 200
+
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func delete(
+        paths: [String],
+        connection: SSHFileExplorerConnection
+    ) async throws {
+        var removed: [String] = []
+        for start in stride(from: 0, to: paths.count, by: Self.deleteBatchSize) {
+            let batch = Array(paths[start..<min(start + Self.deleteBatchSize, paths.count)])
+            let result = try await Self.runSSHProcess(
+                connection: connection,
+                command: SSHFileExplorerMutationCommand.delete(paths: batch).command
+            )
+            let indices = SSHFileExplorerMutationCommand.removedIndices(in: result.stdout)
+            removed += indices.filter { batch.indices.contains($0) }.map { batch[$0] }
+            guard result.terminationStatus != 0 else { continue }
+            // 255: ssh itself failed (connection, auth); keep its diagnostics.
+            let error: Error = result.terminationStatus == 255
+                ? FileExplorerError.sshCommandFailed(result.stderr)
+                : FileExplorerError.mutationError(exitStatus: result.terminationStatus)
+            throw removed.isEmpty ? error : FileExplorerPartialRemovalError(removedPaths: removed, underlying: error)
+        }
     }
 
     #if compiler(>=6.2)
@@ -1831,13 +1921,21 @@ final class FileExplorerStore: ObservableObject {
         let context = resourceContextID
         var removedPaths: Set<String> = []
         do {
-            for path in topLevelPaths.sorted() {
-                if useTrash {
+            let ordered = topLevelPaths.sorted()
+            if useTrash {
+                for path in ordered {
                     try await provider.moveToTrash(path: path)
-                } else {
-                    try await provider.delete(path: path)
+                    removedPaths.insert(path)
                 }
-                removedPaths.insert(path)
+            } else {
+                // One request for the whole selection: an SSH host deletes it in one run.
+                do {
+                    try await provider.delete(paths: ordered)
+                } catch let partial as FileExplorerPartialRemovalError {
+                    removedPaths.formUnion(partial.removedPaths)
+                    throw partial.underlying
+                }
+                removedPaths.formUnion(ordered)
             }
         } catch {
             // Earlier items may already be gone; drop their state before
@@ -2073,6 +2171,9 @@ final class FileExplorerStore: ObservableObject {
 
     func prefetchChildren(for node: FileExplorerNode) {
         guard node.resourceContextID == nil || node.resourceContextID == resourceContextID, node.isDirectory, node.children == nil, !loadingPaths.contains(node.path) else { return }
+        // Each SSH listing is its own ssh run on the host, so hovering across a
+        // tree would start one per folder passed over. SSH folders list when opened.
+        guard !(provider is SSHFileExplorerProvider) else { return }
         // Debounce: only prefetch if hover persists for 200ms
         let path = node.path
         let scheduler = prefetchSchedulers[path] ?? MainActorDeferredActionScheduler()

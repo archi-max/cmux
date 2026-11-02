@@ -105,6 +105,53 @@ struct SSHFileExplorerMutationCommandTests {
         #expect(try String(contentsOfFile: destination, encoding: .utf8) == "content")
     }
 
+    /// One run removes the whole selection, in order, and reports each removal,
+    /// so a failure part way through still says which items are gone.
+    @Test
+    func testBatchDeleteRemovesInOrderAndStopsAtTheFirstFailure() throws {
+        for shell in Self.availableShells {
+            let directory = try Self.makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent(Self.hostileName).path
+            let folder = directory.appendingPathComponent("folder").path
+            try FileManager.default.createDirectory(atPath: folder + "/nested", withIntermediateDirectories: true)
+            #expect(FileManager.default.createFile(atPath: file, contents: Data("x".utf8)))
+            let missing = directory.appendingPathComponent("missing").path
+            let last = directory.appendingPathComponent("last").path
+            #expect(FileManager.default.createFile(atPath: last, contents: Data()))
+
+            let all = try Self.runCapturing(.delete(paths: [file, folder]), shell: shell)
+            #expect(all.status == 0)
+            #expect(SSHFileExplorerMutationCommand.removedIndices(in: all.output) == [0, 1])
+            #expect(!FileManager.default.fileExists(atPath: file))
+            #expect(!FileManager.default.fileExists(atPath: folder))
+
+            let partial = try Self.runCapturing(.delete(paths: [last, missing, last]), shell: shell)
+            #expect(partial.status == 74)
+            #expect(SSHFileExplorerMutationCommand.removedIndices(in: partial.output) == [0])
+            #expect(!FileManager.default.fileExists(atPath: last))
+        }
+        let command = SSHFileExplorerMutationCommand.delete(paths: ["/home/dev/\(Self.hostileName)"]).command
+        #expect(command.hasPrefix("sh -c '"))
+        #expect(!command.dropFirst("sh -c '".count).dropLast().contains("'"))
+        #expect(command.unicodeScalars.allSatisfy { $0.isASCII })
+    }
+
+    private static func runCapturing(
+        _ mutation: SSHFileExplorerMutationCommand,
+        shell: String
+    ) throws -> (status: Int32, output: String) {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = shell.hasSuffix("csh") ? ["-f", "-c", mutation.command] : ["-c", mutation.command]
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
     /// `/bin/sh` always, plus csh to show a non-POSIX login shell works.
     private static var availableShells: [String] {
         ["/bin/sh", "/bin/csh"].filter { FileManager.default.isExecutableFile(atPath: $0) }

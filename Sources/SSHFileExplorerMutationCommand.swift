@@ -112,6 +112,31 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
         ].joined(separator: "; "))
     }
 
+    /// Prefix of the line ``delete(paths:)`` prints after removing `paths[i]`: `cmux-removed:<i>`.
+    static let removedMarker = "cmux-removed:"
+
+    /// Permanently removes each item in order in one run, with the same checks
+    /// and exit statuses as ``delete(path:)``. It stops at the first failure,
+    /// and prints ``removedMarker`` with the index of every item it removed, so
+    /// a caller knows which are gone when a later one fails.
+    static func delete(paths: [String]) -> Self {
+        Self(script: ([decoder] + paths.enumerated().flatMap { index, path in [
+            assign("t", path),
+            assign("dir", parent(of: path)),
+            "if \(exists("t")); then :; else exit 74; fi",
+            requireWritable("dir"),
+            "rm -rf -- \"$t\" || exit 1",
+            "echo \(removedMarker)\(index)",
+        ] }).joined(separator: "; "))
+    }
+
+    /// The indices ``delete(paths:)`` reported removed in `output`.
+    static func removedIndices(in output: String) -> [Int] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            line.hasPrefix(removedMarker) ? Int(line.dropFirst(removedMarker.count)) : nil
+        }
+    }
+
     /// Copies a file or directory tree to a destination that must not exist.
     static func copy(path: String, to destinationPath: String) -> Self {
         Self(script: [
