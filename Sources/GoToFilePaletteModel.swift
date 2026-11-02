@@ -101,6 +101,8 @@ final class GoToFilePaletteModel: ObservableObject {
 
     /// Re-ranks the session snapshot for a new query.
     func update(query: String) {
+        // An Enter queued for the previous query must not open a match for this one.
+        if query != self.query { opensWhenRanked = false }
         self.query = query
         guard isActive else { return }
         let typed = GoToFileTypedPath.parse(query)
