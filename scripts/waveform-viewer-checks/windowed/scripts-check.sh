@@ -67,6 +67,8 @@ build >/dev/null 2>"$T/build.err" | cat
 rc=${PIPESTATUS[0]}
 t1=$(ms)
 check "$rc" 0 "build.sh builds and installs (stand-in toolchain)"
+check "$(cd "$D" && "$REAL_NODE" -e 'const t = require("./text.js"); process.stdout.write(String(t.FORMATS.has("riscv") && typeof require("./formats.js").formatRiscvBinaryString))' 2>&1)" "function" \
+  "the install has searchText's text.js and formats.js, and they load"
 build 2>&1 >/dev/null | cat >/dev/null
 t2=$(ms)
 check "$(( t2 - t1 < 3500 ))" 1 "the build's stderr closes when it ends ($(( t2 - t1 )) ms; a held heartbeat sleep keeps it ~5 s)"

@@ -97,6 +97,8 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         case refused(detail: String)
         /// The page sent a command the relay does not pass, or an `open` of another file.
         case notAllowed(String)
+        /// `open` got no reply within `openTimeout`, before and after one relaunch.
+        case openTimedOut
     }
 
     struct Reply: Sendable {
@@ -110,13 +112,21 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// Exit status of a launcher that refuses an install others can write.
     static let refusedStatus: Int32 = 86
     /// What the page sends: host.js (open, children, signals, valueAt) and the
-    /// windowed viewer (window, valueAt, edge, search, count, cancel).
-    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "count", "cancel"]
+    /// windowed viewer (window, valueAt, edge, search, searchText, count, cancel).
+    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "searchText", "count", "cancel"]
     /// Verdi's libraries load slowly from NFS on a busy host.
     static let defaultReadyTimeout: TimeInterval = 90
     static let installTimeout: TimeInterval = 10 * 60
     /// A reply that takes longer (Verdi stuck on an NFS read) fails its request.
     static let requestTimeout: TimeInterval = 5 * 60
+    /// `open` reads only the file's header and scope tree (a 164 MB dump opens in about
+    /// 1 s), so one that hasn't answered in this time is stuck: the helper is relaunched
+    /// once and the open sent again, then it is an error. (Writable for the tests.)
+    static let defaultOpenTimeout: TimeInterval = 120
+    nonisolated(unsafe) static var openTimeout: TimeInterval = defaultOpenTimeout
+    /// How long a helper whose stdin ended may take to exit on its own before the launch
+    /// command's watchdog kills it (see `supervised`).
+    static let stuckGrace = 3
 
     private let sshArguments: SSHArguments
     private let installs: [Install]
@@ -155,6 +165,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// (a retry after a timeout or a dropped connection) so that one has the file open too.
     private var lastOpen: [String: Any]?
     private var openGeneration = 0
+    /// The launch `relaunch` last ended: its waiting requests failed with `helperExited`,
+    /// and a reopen among them is sent again on the next launch.
+    private var relaunchedGeneration = 0
+    /// Set by `relaunch`: the protocol the page runs, which later starts keep (no v1 mid-page).
+    private var pinnedProtocol: Int?
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.waveform-fsdb.write")
 
     /// `executable` runs `sshArguments(command)`: `/usr/bin/ssh`, or a local shell in tests.
@@ -277,18 +292,102 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         try await ensureRunning()
         if command == "open" {
             lock.withLock { lastOpen = object }
-            let reply = try await send(object)
-            lock.withLock { openGeneration = generation }
-            return reply
+            return try await sendOpen(object)
         }
         let reopen: [String: Any]? = lock.withLock {
             openGeneration == generation ? nil : lastOpen
         }
         if let reopen {
-            _ = try await send(reopen)
-            lock.withLock { openGeneration = generation }
+            _ = try await sendOpen(reopen)
         }
         return try await send(object, pageId: pageId)
+    }
+
+    /// Sends an `open` with its own, shorter timeout. An open still unanswered then is
+    /// stuck (the reader's NFS read, a host loading Verdi): the helper is relaunched once,
+    /// with the same protocol, and the open sent again, since a fresh helper usually opens
+    /// the same file at once. The whole wait, relaunch included, is at most 2 x openTimeout.
+    ///
+    /// Requests can share a launch: a request that comes while the page's open is still
+    /// unanswered sends its own reopen first. When another caller relaunches that launch,
+    /// such a reopen fails with `helperExited` and is retried here like a timed-out one.
+    /// Other requests in flight on a relaunched launch fail with `helperExited` (the page
+    /// sends them only after its open answered, so that needs an open of a new file
+    /// sticking while they run); they are not retried.
+    private func sendOpen(_ object: [String: Any]) async throws -> Reply {
+        let deadline = Date().addingTimeInterval(2 * Self.openTimeout)
+        var relaunched = false
+        while true {
+            let launch = lock.withLock { generation }
+            let timeout = relaunched ? deadline.timeIntervalSinceNow : Self.openTimeout
+            guard timeout > 0 else { throw Failure.openTimedOut }
+            do {
+                let reply = try await send(object, timeout: timeout)
+                lock.withLock { openGeneration = launch }
+                return reply
+            } catch Failure.timedOut(_) {
+                guard !relaunched else { throw Failure.openTimedOut }
+                relaunch(generation: launch)
+            } catch Failure.helperExited(let detail) {
+                // Relaunched by another caller's timeout while this one waited on it (on the
+                // second launch, that open was stuck as well).
+                let byRelaunch = lock.withLock { relaunchedGeneration == launch }
+                guard byRelaunch, !relaunched else {
+                    throw byRelaunch ? Failure.openTimedOut : Failure.helperExited(detail: detail)
+                }
+            }
+            relaunched = true
+            do {
+                try await waitRunning(until: deadline)
+            } catch Failure.timedOut(_) {
+                // The relaunched helper missed its ready line: still the open that didn't happen.
+                throw Failure.openTimedOut
+            }
+        }
+    }
+
+    /// `ensureRunning`, given up (as `openTimedOut`) at `deadline`; the start itself goes on,
+    /// and the next request waits for it.
+    private func waitRunning(until deadline: Date) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let once = ResumeOnce(continuation)
+            Task {
+                do {
+                    try await self.ensureRunning()
+                    once.resume(with: nil)
+                } catch {
+                    once.resume(with: error)
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + max(0, deadline.timeIntervalSinceNow)) {
+                once.resume(with: Failure.openTimedOut)
+            }
+        }
+    }
+
+    /// Ends launch `generation` (still running, but stuck) so the next request starts a
+    /// new helper of the same protocol. Closing its input ends the ssh session, and the
+    /// launch command's watchdog then kills the stuck helper's processes on the host.
+    /// Its requests fail; its exit, which comes later, is ignored.
+    private func relaunch(generation launch: Int) {
+        let (process, input, waiting): (Process?, FileHandle?, [CheckedContinuation<Reply, Error>]) = lock.withLock {
+            guard launch == generation, !isStopped else { return (nil, nil, []) }
+            generation += 1  // helperDidExit of the old process no longer matches
+            relaunchedGeneration = launch
+            if pinnedProtocol == nil { pinnedProtocol = runningProtocol }
+            let old = (self.process, self.input, Array(pending.values))
+            self.process = nil
+            self.input = nil
+            isReady = false
+            startTask = nil
+            pending.removeAll()
+            helperIdForPage.removeAll()
+            pageIdForHelper.removeAll()
+            return old
+        }
+        writeQueue.async { try? input?.close() }
+        if let process, process.isRunning { process.terminate() }
+        waiting.forEach { $0.resume(throwing: Failure.helperExited(detail: "")) }
     }
 
     /// The page's `cancel {id}`: cancels the helper's request for that page id.
@@ -328,7 +427,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         return pending.removeValue(forKey: id)
     }
 
-    private func send(_ request: [String: Any], pageId: Int? = nil) async throws -> Reply {
+    private func send(_ request: [String: Any], pageId: Int? = nil, timeout: TimeInterval = requestTimeout) async throws -> Reply {
         var object = request
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
@@ -363,7 +462,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             // Queued under the lock: a cancel that finds the mapping queues its line after this one.
             writeQueue.async { try? input.write(contentsOf: message) }
             lock.unlock()
-            DispatchQueue.global().asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
                 guard let self else { return }
                 let waiting = self.lock.withLock { self.takePendingLocked(id) }
                 guard let waiting else { return }
@@ -376,8 +475,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         }
     }
 
-    /// Ends the helper (closing its stdin ends it on the host), any install in
-    /// progress, and fails waiting requests.
+    /// Ends the helper (closing its stdin ends it on the host; one stuck in a read is
+    /// killed there by the launch command's watchdog), any install in progress, and
+    /// fails waiting requests.
     func stop() {
         lock.lock()
         isStopped = true
@@ -449,6 +549,12 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// Anything v1 would hit the same way (no Verdi, Node.js or compiler, a
     /// failed install, an unreachable host) is an error.
     private func start() async throws {
+        if let pinned = lock.withLock({ pinnedProtocol }),
+           let install = installs.first(where: { $0.protocolVersion == pinned }) {
+            // After a relaunch: the page's own protocol or an error, never a fallback.
+            try await start(install, canFallBack: false)
+            return
+        }
         var candidates = installs
         if let v2 = candidates.first, v2.protocolVersion >= 2, candidates.count > 1,
            let detail = Self.rememberedFailure(Self.failureKey(host: hostKey, install: v2, machine: nil)) {
@@ -549,11 +655,38 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         + "&& P=$(find \"$D/..\" \"$D/../..\" -maxdepth 0 \\( ! -user \"$U\" -o -perm -g+w -o -perm -o+w \\) -print 2>&1) "
         + "&& [ -z \"$P\" ] || { echo \"cmux: refusing to run $D, it is not private to $(id -un)\" >&2; exit \(refusedStatus); };"
 
+    /// Runs `command` (the launcher) with a watchdog on its stdin, so a helper whose main
+    /// thread is stuck (a read blocked on NFS) can't outlive its session. A copy of the
+    /// session's stdin feeds `command` through a fifo. When that stdin ends (ssh closed:
+    /// `stop()`, a relaunch) and `command` hasn't exited `stuckGrace` s later:
+    /// - `command` is stopped, then its processes (the coordinator, its workers) are
+    ///   killed, each stopped before its own children are listed, so none is reaped (its
+    ///   pid reused) or respawned meanwhile;
+    /// - `command` is continued, so the launcher's exit trap (its run folder) still runs,
+    ///   and killed if it is still there 1 s later.
+    /// Only `command` and its descendants are touched, and only while `command` is still
+    /// this shell's child (`m`: a reused pid is never killed). This shell and the watchdog
+    /// trap SIGTERM and SIGHUP, so a signal to the session's process group can't leave a
+    /// stuck helper behind (`command` gets the default handlers back; a `cat` it ends
+    /// counts as the end of stdin). The shell waits for `command` and exits with its
+    /// status. No single quotes: it runs inside `sh -c '…'`.
+    static func supervised(_ command: String) -> String {
+        "T=$(mktemp -d \"${TMPDIR:-/tmp}/cmux-fsdb-in.XXXXXX\") && mkfifo \"$T/i\" || exit 1; "
+            + "k() { kill -STOP $1 2>/dev/null; for c in $(pgrep -P $1); do k $c; done; kill -KILL $1 2>/dev/null; }; "
+            + "m() { [ \"$(ps -o ppid= -p $1 2>/dev/null | tr -d \" \")\" = \"$2\" ]; }; "
+            + "trap : HUP TERM; exec 9<&0; { rm -rf \"$T\"; \(command); } <\"$T/i\" 9<&- & L=$!; "
+            + "{ trap : HUP TERM; cat <&9 >\"$T/i\" 2>/dev/null; exec 9<&-; n=0; "
+            + "while m $L $$ && [ $n -lt \(stuckGrace) ]; do sleep 1; n=$((n+1)); done; "
+            + "if m $L $$; then kill -STOP $L; for c in $(pgrep -P $L); do k $c; done; kill -CONT $L; sleep 1; m $L $$ && k $L; fi; } & W=$!; "
+            + "exec 9<&- 0</dev/null; while :; do wait $L; s=$?; m $L $$ || break; done; m $W $$ && k $W; exit $s"
+    }
+
     /// Starts the install's launcher and waits for its ready line.
     private func launch(_ install: Install, installDirectory: String) async throws {
         let checks = install.requiredFiles.map { "[ -f \"$D/\($0)\" ]" }.joined(separator: " && ")
         let script = "D=\"\(installDirectory)\"; \(checks) "
-            + "|| { echo \"\(Self.machinePrefix)$(uname -m)\" >&2; exit \(Self.notInstalledStatus); }; \(install.protocolVersion >= 2 ? Self.privacyCheck : "") exec bash \"$D/\(install.launcher)"
+            + "|| { echo \"\(Self.machinePrefix)$(uname -m)\" >&2; exit \(Self.notInstalledStatus); }; \(install.protocolVersion >= 2 ? Self.privacyCheck : "") "
+            + Self.supervised("exec bash \"$D/\(install.launcher)")  // launcher closes the quote (then its arguments)
         let process = Process()
         process.executableURL = executable
         process.arguments = sshArguments("sh -c '\(script)'")
@@ -566,13 +699,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             self.generation += 1
             return self.generation
         }
-        let stderrReader = PipeReader(stderr.fileHandleForReading)
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self, let data = stderrReader.read() else {
-                handle.readabilityHandler = nil
-                return
-            }
-            if !data.isEmpty { self.appendStderr(data) }
+        let stderrReader = PipeReader(stderr.fileHandleForReading) { [weak self] in self?.appendStderr($0) }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            if !stderrReader.pump() { handle.readabilityHandler = nil }
         }
         process.terminationHandler = { [weak self] process in
             // What stderr still holds (the exit-87 machine line) before the exit is handled.
@@ -637,57 +766,69 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// still on its way finds an empty pipe, not an exception.
     private func drainStderr(_ handle: FileHandle, _ reader: PipeReader) {
         handle.readabilityHandler = nil
-        let rest = reader.drain()
-        if !rest.isEmpty { appendStderr(rest) }
+        reader.drain()
     }
 
     /// Reads a child's pipe without Foundation's raising reads: `availableData` and
     /// `readDataToEndOfFile` throw an Objective-C exception, which aborts cmux, on EAGAIN or
     /// any read error, and a handler call can still be on its way after the handler is
     /// cleared. Each read polls first, so none blocks or fails on an empty pipe that a
-    /// lingering child keeps open, and the fd's flags are never changed. One lock orders
-    /// the handler's reads and the final drain, so the bytes stay in order.
+    /// lingering child keeps open, and the fd's flags are never changed. Bytes go to `sink`
+    /// inside the reader's one lock, so the handler's reads and the final drain deliver
+    /// them in pipe order (a read and its append are one step).
     final class PipeReader: @unchecked Sendable {
         private let handle: FileHandle  // keeps the fd open
+        private let sink: @Sendable (Data) -> Void
         private let lock = NSLock()
 
-        init(_ handle: FileHandle) { self.handle = handle }
+        init(_ handle: FileHandle, sink: @escaping @Sendable (Data) -> Void) {
+            self.handle = handle
+            self.sink = sink
+        }
 
-        /// What the pipe holds now: some bytes, empty (nothing yet), or nil at its end (or
-        /// on a read error). `waiting`: until there is something or the end.
-        func read(waiting: Bool = false) -> Data? {
+        /// Delivers what the pipe holds now (maybe nothing). False at its end, or on a read error.
+        @discardableResult
+        func pump() -> Bool {
             lock.withLock {
-                let fd = handle.fileDescriptor
-                var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                while true {
-                    let r = poll(&p, 1, waiting ? -1 : 0)
-                    if r > 0 { break }
-                    if r == 0 { return Data() }
-                    if errno != EINTR { return nil }
-                }
-                var buffer = [UInt8](repeating: 0, count: 16384)
-                while true {
-                    let n = Darwin.read(fd, &buffer, buffer.count)
-                    if n > 0 { return Data(buffer[0..<n]) }
-                    if n == 0 { return nil }
-                    if errno == EINTR { continue }
-                    return errno == EAGAIN ? Data() : nil
-                }
+                guard let data = readLocked(waiting: false) else { return false }
+                if !data.isEmpty { sink(data) }
+                return true
             }
         }
 
-        /// Everything readable now, until the pipe is empty or ends.
-        func drain() -> Data {
-            var all = Data()
-            while let d = read(), !d.isEmpty { all.append(d) }
-            return all
+        /// Delivers everything readable now, until the pipe is empty or ends.
+        func drain() {
+            lock.withLock {
+                while let data = readLocked(waiting: false), !data.isEmpty { sink(data) }
+            }
         }
 
-        /// Everything until the pipe ends (every writer has closed it).
-        func readToEnd() -> Data {
-            var all = Data()
-            while let d = read(waiting: true) { all.append(d) }
-            return all
+        /// Delivers everything until the pipe ends (every writer has closed it).
+        func readToEnd() {
+            lock.withLock {
+                while let data = readLocked(waiting: true) { sink(data) }
+            }
+        }
+
+        /// Some bytes, empty (nothing yet), or nil at the end (or on a read error).
+        /// `waiting`: until there is something or the end. Called with `lock` held.
+        private func readLocked(waiting: Bool) -> Data? {
+            let fd = handle.fileDescriptor
+            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            while true {
+                let r = poll(&p, 1, waiting ? -1 : 0)
+                if r > 0 { break }
+                if r == 0 { return Data() }
+                if errno != EINTR { return nil }
+            }
+            var buffer = [UInt8](repeating: 0, count: 16384)
+            while true {
+                let n = Darwin.read(fd, &buffer, buffer.count)
+                if n > 0 { return Data(buffer[0..<n]) }
+                if n == 0 { return nil }
+                if errno == EINTR { continue }
+                return errno == EAGAIN ? Data() : nil
+            }
         }
     }
 
@@ -733,13 +874,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         ssh.standardError = stderr
         // Drained as it arrives, so a chatty build never blocks on a full pipe.
         let log = InstallLog()
-        let stderrReader = PipeReader(stderr.fileHandleForReading)
+        let stderrReader = PipeReader(stderr.fileHandleForReading) { log.append($0) }
         stderr.fileHandleForReading.readabilityHandler = { handle in
-            guard let data = stderrReader.read() else {
-                handle.readabilityHandler = nil
-                return
-            }
-            if !data.isEmpty { log.append(data) }
+            if !stderrReader.pump() { handle.readabilityHandler = nil }
         }
 
         let status: Int32 = try await withCheckedThrowingContinuation { continuation in
@@ -774,7 +911,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         if tar.isRunning { tar.terminate() }
         // The handler may not have had the last lines yet; they are usually the useful ones.
         stderr.fileHandleForReading.readabilityHandler = nil
-        log.append(stderrReader.readToEnd())
+        stderrReader.readToEnd()
         if lock.withLock({ isStopped }) { throw Failure.stopped }
         let detail = Self.tail(of: log.data)
         if log.timedOut { throw Failure.timedOut(detail: detail) }
@@ -1041,5 +1178,23 @@ struct FrameParser {
         guard binLength >= 0, binLength <= Self.maxBinaryLength else { return .tooLarge }
         pendingHeader = (line, id, binLength, object["ready"] as? Bool == true, object["error"] as? String, object["partial"] as? Bool == true)
         return next()
+    }
+}
+
+/// A continuation resumed by whichever of several paths comes first (`waitRunning`).
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+
+    /// nil: success.
+    func resume(with error: Error?) {
+        let continuation: CheckedContinuation<Void, Error>? = lock.withLock {
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        guard let continuation else { return }
+        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
     }
 }

@@ -8,6 +8,12 @@
 //           v2 opens windowed (set-windowing), rows draw from windows, small signals load
 //           whole (hybrid), next edge, inline values and the debugger work on windowed rows;
 //           loading = whole runs the v1 helper with no windowing
+//   text    value search in text formats (RISC-V, ASCII, alias) on windowed rows asks the
+//           helper's searchText (the mock runs the shipped text.js): t=0 with no marker,
+//           far and no-match (timed against the page scan), resume after an incomplete
+//           reply, Escape cancels, ASCII sends the typed text, and the page scan answers
+//           when the helper has no searchText or reports tooLarge; host.js changes()
+//           sends maxChanges (only it, only a finite cap)
 // Usage: windowed <assetRoot> <v2HelperRoot> <v1HelperRoot> <mock.cjs> <scratch> <out.png>
 import AppKit
 import WebKit
@@ -19,7 +25,7 @@ let v1Root = URL(fileURLWithPath: args[3], isDirectory: true)
 let mock = args[4]
 let scratch = URL(fileURLWithPath: args[5], isDirectory: true)
 let out = URL(fileURLWithPath: args[6])
-let dump = "synth:ms=1,buses=2,wide=1"
+let dump = "synth:ms=1,buses=2,wide=1,insn=1"
 nonisolated(unsafe) var failures = 0
 
 func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if !ok { failures += 1 } }
@@ -86,7 +92,8 @@ final class StatusLog: @unchecked Sendable {
   }
 }
 
-let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats"])
+// Not searchText: the page's searchText must pass the relay's own list (pageCommands).
+let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats", "textControl", "textStats"])
 
 func makeHelper(home: URL, loading: WaveformFSDBHelper.Loading, v2Root: URL = v2Root, hostKey: String = "local",
                 allowedFile: String? = nil, readyTimeout: TimeInterval = 20, log: StatusLog? = nil, env: String = "") -> WaveformFSDBHelper {
@@ -231,25 +238,30 @@ func stderrChecks() async throws {
   let p = Pipe()
   let rfd = p.fileHandleForReading.fileDescriptor
   _ = fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL) | O_NONBLOCK)
-  let reader = WaveformFSDBHelper.PipeReader(p.fileHandleForReading)
-  let empty = reader.read()
+  let sunk = Collected()
+  let reader = WaveformFSDBHelper.PipeReader(p.fileHandleForReading) { sunk.append($0) }
+  let open1 = reader.pump(), empty = sunk.value
   try p.fileHandleForWriting.write(contentsOf: Data("abc".utf8))
-  let abc = reader.read()
+  let open2 = reader.pump(), abc = sunk.value
   try p.fileHandleForWriting.close()
-  let end = reader.read()
-  expect(empty == Data() && abc == Data("abc".utf8) && end == nil,
-         "a pipe read: nothing yet on an empty non-blocking pipe (no exception), then its bytes, then its end: \(String(describing: empty)), \(String(describing: abc)), \(String(describing: end))")
+  let open3 = reader.pump()
+  expect(open1 && empty.isEmpty && open2 && abc == Data("abc".utf8) && !open3,
+         "a pipe read: nothing yet on an empty non-blocking pipe (no exception), then its bytes, then its end: \(open1) \(empty.count), \(open2) \(abc.count), \(open3)")
 
-  // The handler and the exit's drain racing on a pipe a writer trickles into, 200 times: no
-  // abort, and what was read is in order, each byte once (a prefix of what was written).
+  // The handler and the exit's drain racing on a pipe a writer trickles into, 4000 times: no
+  // abort, and the bytes reach the sink in pipe order, each once (a prefix of what was written).
+  // The sink sometimes takes a while, as a log append under contention can: a chunk read but
+  // not yet delivered must still arrive before the next one read.
   var disorder = 0
-  for round in 0..<200 {
+  for round in 0..<4000 {
     let pipe = Pipe()
-    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading)
     let got = Collected()
+    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading) { data in
+      if Int.random(in: 0..<3) == 0 { usleep(150) }
+      got.append(data)
+    }
     pipe.fileHandleForReading.readabilityHandler = { h in
-      guard let d = r.read() else { h.readabilityHandler = nil; return }
-      got.append(d)
+      if !r.pump() { h.readabilityHandler = nil }
     }
     let w = pipe.fileHandleForWriting
     let lines = (0..<300).map { String(format: "%05d\n", $0) }
@@ -262,13 +274,46 @@ func stderrChecks() async throws {
     writer.start()
     try await Task.sleep(nanoseconds: UInt64(round % 20) * 150_000)
     pipe.fileHandleForReading.readabilityHandler = nil
-    got.append(r.drain())
+    r.drain()
     while !writer.isFinished { try await Task.sleep(nanoseconds: 1_000_000) }
     try? w.close()
     let all = Data(lines.joined().utf8)
     if !all.starts(with: got.value) { disorder += 1 }
   }
-  expect(disorder == 0, "the handler and the drain racing on a trickled pipe, 200 rounds: no abort, \(disorder) out of order")
+  expect(disorder == 0, "the handler and the drain racing on a trickled pipe, 4000 rounds: no abort, \(disorder) out of order")
+
+  // A helper that exits with a request pending while a grandchild keeps writing numbered
+  // lines to its stderr for ~0.7 s after it (a writer that outlives the exit): no abort, and
+  // the exit's detail (the stderr tail) lists the lines in order. 40 exits, 4 at a time.
+  let lingerHome = try makeHome("stderr-linger", installs: [v2Launching(
+    "perl -MTime::HiRes=time -e '$|=1; my $t = time; my $i = 0; while (time - $t < 2.0) { print STDERR \"line $i\\n\"; $i++; select(undef,undef,undef,0.0005) if $i % 8 == 0 }' & "
+      + "node \(shellQuoted(mock)) --latency 2 --jitter 1 \"$@\" 3>&1 1>&2 & M=$!; sleep 1.3; kill -9 $M; exit 3"), v1Install])
+  let lingerFail: @Sendable (Error) -> String = { "\($0)" }
+  var exited = 0, unordered: [String] = []
+  for round in 0..<10 {
+    let details = await withTaskGroup(of: String.self) { g in
+      for j in 0..<4 {
+        g.addTask {
+          let h = makeHelper(home: lingerHome, loading: .auto, hostKey: "host-linger-\(round)-\(j)")
+          _ = await h.response(for: json(["cmd": "open", "file": "synth:ms=0.02", "id": 1]), failureMessage: lingerFail)
+          let r = await h.response(for: json(["cmd": "sleep", "ms": 5000, "id": 2]), failureMessage: lingerFail)
+          h.stop()
+          return header(r)["error"] as? String ?? ""
+        }
+      }
+      var out: [String] = []
+      for await d in g { out.append(d) }
+      return out
+    }
+    for d in details where d.contains("helperExited") {
+      exited += 1
+      // The last line may be cut mid-number (the tail ends where the pipe was at the exit).
+      let numbers = d.components(separatedBy: "line ").dropFirst().dropLast().compactMap { Int($0.prefix { $0.isNumber }) }
+      if numbers.count < 2 || zip(numbers, numbers.dropFirst()).contains(where: { $0 >= $1 }) { unordered.append(String(d.prefix(300))) }
+    }
+  }
+  expect(exited == 40 && unordered.isEmpty,
+         "40 helpers exiting while a grandchild keeps writing their stderr: no abort, \(exited) exit details, in order (\(unordered.count) not: \(unordered.first ?? ""))")
 
   // End to end: 200 helper exits while a child the launcher left behind keeps writing to
   // stderr (4 at a time). Each opens, stops, and leaves the next free to start.
@@ -444,6 +489,96 @@ func fallbackChecks() async throws {
   let slow3 = makeHelper(home: tHome, loading: .auto, hostKey: "host-h", readyTimeout: 1)
   _ = await open(slow3); slow3.stop()
   expect(lines(tCount) == 2, "a remembered timeout expires: v2 is tried again later (\(lines(tCount)) launches, want 2)")
+
+  // An `open` that never answers (the reader stuck on the file, after its ready line) has its
+  // own, shorter bound than other requests: the helper is relaunched once and the open sent
+  // again; a second stall is an error that says the file did not open.
+  WaveformFSDBHelper.openTimeout = 2
+  defer { WaveformFSDBHelper.openTimeout = WaveformFSDBHelper.defaultOpenTimeout }
+  func stalling(_ name: String, opens: Int = 0, _ extra: String = "", readyTimeout: TimeInterval = 20, log: StatusLog? = nil) throws -> (WaveformFSDBHelper, URL) {
+    let launches = scratch.appendingPathComponent("stall-\(name).txt")
+    let home = try makeHome("stall-\(name)", installs: [v2Launching("exec node \(shellQuoted(mock)) --latency 20 --jitter 10 --stall-open-file \(shellQuoted(launches.path)) --stall-opens \(opens) \(extra) \"$@\" 3>&1 1>&2"), v1Install])
+    return (makeHelper(home: home, loading: .auto, hostKey: "host-stall-\(name)", readyTimeout: readyTimeout, log: log), launches)
+  }
+  // The pids of a stalling mock's launches (one line each), and whether they are gone: a stuck
+  // mock ignores the end of its stdin and SIGTERM, as a coordinator blocked in the reader does.
+  func launchPids(_ url: URL) -> [Int32] {
+    ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").compactMap { Int32($0) }
+  }
+  func alive(_ pids: [Int32]) -> [Int32] { pids.filter { kill($0, 0) == 0 } }
+  func gone(_ pids: [Int32], within seconds: Double) async -> [Int32] {
+    let end = Date().addingTimeInterval(seconds)
+    while !alive(pids).isEmpty, Date() < end { try? await Task.sleep(nanoseconds: 200_000_000) }
+    return alive(pids)
+  }
+  // So a red run leaves nothing behind.
+  func reap(_ url: URL) { launchPids(url).forEach { _ = kill($0, SIGKILL) } }
+  do {
+    let (once, launches) = try stalling("once", opens: 1)
+    let s0 = Date()
+    let r = await open(once)
+    let took = Date().timeIntervalSince(s0)
+    let kids = await once.response(for: json(["cmd": "children", "scopeOffsetIdx": 0, "id": 2]), failureMessage: fail)
+    let old = Array(launchPids(launches).prefix(1))
+    let left = await gone(old, within: 8)
+    once.stop()
+    reap(launches)
+    expect(proto(r) == "2" && header(r)["result"] != nil && lines(launches) == 2 && took >= 1.5 && took < 10 && header(kids)["result"] != nil,
+           "an open stuck once: the helper is relaunched and the file opens (v2, \(lines(launches)) launches, \(String(format: "%.1f", took)) s, then children \(header(kids).keys.sorted()))")
+    expect(old.count == 1 && left.isEmpty,
+           "the relaunch ends the stuck helper on the host, not only its connection (stuck pid \(old), still running \(left))")
+  }
+  do {
+    let (stuck, launches) = try stalling("always", opens: 99)
+    let s0 = Date()
+    let r = await open(stuck)
+    let took = Date().timeIntervalSince(s0)
+    stuck.stop()
+    let pids = launchPids(launches)
+    let left = await gone(pids, within: 8)
+    reap(launches)
+    expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && lines(launches) == 2 && took < 10,
+           "an open stuck twice is an error after one relaunch, not a 5-minute wait: \(header(r)), \(lines(launches)) launches, \(String(format: "%.1f", took)) s")
+    expect(pids.count == 2 && left.isEmpty, "stop() ends both stuck helpers on the host (pids \(pids), still running \(left))")
+  }
+  do {
+    // A request that comes while the page's open is stuck sends its own reopen, which sticks
+    // on the same launch. The open times out first and relaunches; the reopen waiting on that
+    // launch is retried on the new one instead of failing as "the connection ended".
+    let (re, launches) = try stalling("reopen", "--stall-launches 1")
+    let a = Task { await open(re) }
+    try await Task.sleep(nanoseconds: 1_000_000_000)
+    let b = Task { await re.response(for: json(["cmd": "children", "scopeOffsetIdx": 0, "id": 6]), failureMessage: fail) }
+    let ra = await a.value, rb = await b.value
+    re.stop()
+    reap(launches)
+    expect(proto(ra) == "2" && header(ra)["result"] != nil && header(rb)["result"] != nil && lines(launches) == 2,
+           "concurrent reopens stuck on one launch both succeed after its relaunch: \(header(ra).keys.sorted()), \(header(rb)), \(lines(launches)) launches")
+  }
+  do {
+    // The relaunched helper doesn't get ready: the page stays on v2 (no v1 mid-page, nothing
+    // remembered) and the open fails within its bound (2 x openTimeout), as openTimedOut.
+    // readyTimeout (1 s) ends inside the relaunch window (2 s), so a start that could fall
+    // back would reach v1 here.
+    let pinLog = StatusLog()
+    let (pin, launches) = try stalling("pinned", "--stall-launches 1 --hang-ready-launches 2", readyTimeout: 1, log: pinLog)
+    let s0 = Date()
+    let r = await open(pin)
+    let took = Date().timeIntervalSince(s0)
+    pin.stop()
+    reap(launches)
+    expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && proto(r) != "1" && pinLog.fellBack.isEmpty && lines(launches) == 2 && took < 7,
+           "a relaunch keeps the helper version and the total wait is bounded: \(header(r)), fell back \(pinLog.fellBack), \(lines(launches)) launches, \(String(format: "%.1f", took)) s")
+  }
+  do {
+    // Only open has the short bound: a slow reply to another request still arrives.
+    let (fine, _) = try stalling("other", opens: 0)
+    _ = await open(fine)
+    let slept = await fine.response(for: json(["cmd": "sleep", "ms": 3000, "id": 3]), failureMessage: fail)
+    fine.stop()
+    expect((header(slept)["result"] as? [String: Any])?["slept"] as? Int == 3000,
+           "the open timeout doesn't bound other requests: \(header(slept))")
+  }
 
   // loading = whole: the v1 helper only, even with v2 installed.
   let wHome = try makeHome("whole", installs: [v2Install, v1Install])
@@ -630,6 +765,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   /// Value search in a RISC-V format on a windowed row (bus0, 32 bits): the
   /// formatted-text path (window_cache.ts searchFormatted), not a bit pattern.
+  var bus0Target = "", bus0Found = -1
   func riscvSearchChecks() async {
     _ = await call("await cmuxCommands.run('vaporview.displayAsRiscvNumeric', { netlistId: 3 }); return null")
     await sleep(500)
@@ -672,6 +808,9 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         return null
         """)
       _ = await waitFor(20000) { await marker() != t0 }
+      // searchText jumps straight to the match, whose window may not be loaded yet
+      // (the viewer's own scan had loaded it): wait for the cell to show a value.
+      _ = await waitFor(5000) { !(await cellText()).isEmpty }
       return await marker()
     }
     let escaped = NSRegularExpression.escapedPattern(for: target)
@@ -685,6 +824,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let text = await cellText()
       expect(t > 0 && text.lowercased().contains(pattern), "searching \(pattern) in RISC-V matches the text, not bits: t \(t), \(text)")
     }
+    bus0Target = target; bus0Found = found
     _ = await call("""
       const d = document.getElementById('viewer').contentDocument;
       d.getElementById('search-bar').blur();
@@ -749,6 +889,201 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let asciiCmds = await call("return [...new Set(window.__relayCmds)]") as? [String] ?? []
     expect(!asciiCmds.contains("search"), "ASCII stays a text search (no helper search): \(asciiCmds)")
     _ = await call("await cmuxCommands.run('vaporview.displayAsHexadecimal', { netlistId: 3 }); return null")
+  }
+
+  /// A mock control request (textControl, textStats) straight to the helper.
+  func mock(_ object: [String: Any]) async -> [String: Any] {
+    guard let r = try? await helper.request(json(object)),
+          let h = (try? JSONSerialization.jsonObject(with: r.header)) as? [String: Any] else { return [:] }
+    return h["result"] as? [String: Any] ?? [:]
+  }
+  func textStats() async -> [String: Any] { await mock(["cmd": "textStats"]) }
+  func stat(_ s: [String: Any], _ k: String) -> Int { s[k] as? Int ?? 0 }
+  func markerNow() async -> Int? { await call("return cmuxWaveform.link.markerTime()") as? Int }
+  /// The page scan's chunks so far (window requests of the value search's size).
+  func pageQueries() async -> Int { stat(await textStats(), "scanWindows") }
+
+  /// Value search on `path` for `text` (the search bar, as typed), from the marker at `from`
+  /// (nil: leave it), next (dir 1) or previous: waits until the search ends. -> (marker, ms)
+  func valueSearch(_ path: [String], _ text: String, from: Int?, dir: Int = 1, waitMs: Int = 30000) async -> (t: Int?, ms: Double) {
+    if let from { _ = await call("cmuxWaveform.link.setMarker(\(from)); return null") }
+    _ = await call("return await cmuxWaveform.link.selectSignal([\(path.map { "'\($0)'" }.joined(separator: ","))])")
+    await sleep(300)
+    let started = Date()
+    _ = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      if (!d.getElementById('value-equals-button').classList.contains('selected-button')) { d.getElementById('value-equals-button').click(); }
+      const bar = d.getElementById('search-bar');
+      bar.focus(); bar.value = \(jsString(text));
+      bar.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+      d.getElementById(\(dir > 0 ? "'next-button'" : "'previous-button'")).click();
+      return null
+      """)
+    _ = await waitFor(waitMs) { await self.wc("!w.navBusy") as? Bool == true }
+    return (await markerNow(), Date().timeIntervalSince(started) * 1000)
+  }
+  /// (The viewer ignores format changes while the search bar has focus: blur it first.)
+  func setFormat(_ command: String, netlistId: Int, _ extra: String = "") async {
+    _ = await call("""
+      const bar = document.getElementById('viewer').contentDocument.getElementById('search-bar');
+      bar.blur(); bar.dispatchEvent(new FocusEvent('blur')); bar.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      return null
+      """)
+    _ = await call("await cmuxCommands.run('\(command)', { netlistId: \(netlistId)\(extra) }); return null")
+    await sleep(400)
+  }
+
+  // tb.dut.insn in the mock (signal 6, netlist 7): an instruction every 2000 ps from t=0.
+  let insnPath = ["tb", "dut", "insn"]
+  let insnId = 6, insnNetlist = 7
+  var insnCount: Int { 1_000_000_000 / 2000 + 1 }
+  var insnFar: Int { Int(Double(insnCount) * 0.93) * 2000 }   // the one `lui ra,0xdeadc`
+  var insnAscii: Int { Int(Double(insnCount) * 0.8) * 2000 }  // the one "cmux" word
+
+  /// Before any marker is set: a forward text search with no marker starts at t=0, inclusive.
+  func textSearchStartChecks() async {
+    _ = await call("return await cmuxWaveform.link.addSignal(['tb','dut','insn'])")
+    let windowed = await waitFor(15000) { await self.wc("w.isWindowed(\(self.insnId))") as? Bool == true }
+    expect(windowed, "insn (500k changes) is windowed")
+    await setFormat("vaporview.displayAsRiscv", netlistId: insnNetlist)
+    let before = await markerNow()
+    let s0 = await textStats()
+    let r = await valueSearch(insnPath, "lui a0", from: nil)
+    let s1 = await textStats()
+    let last = s1["last"] as? [String: Any] ?? [:]
+    expect(before == nil && r.t == 0 && stat(s1, "calls") > stat(s0, "calls") && last["inclusive"] as? Bool == true && last["t"] as? Int == 0,
+           "no marker: a RISC-V search finds the change at t=0 through searchText (t 0, inclusive): marker \(String(describing: before)) -> \(String(describing: r.t)), calls \(stat(s0, "calls"))->\(stat(s1, "calls")), last \(last)")
+    await setFormat("vaporview.displayAsHexadecimal", netlistId: insnNetlist)
+  }
+
+  /// searchText on windowed rows: far, no match, resume, cancel, ASCII, alias, fallbacks.
+  func textSearchChecks(bus0Target: String, bus0Found: Int) async {
+    expect(WaveformFSDBHelper.pageCommands.contains("searchText"), "the relay passes searchText (pageCommands)")
+    await setFormat("vaporview.displayAsRiscv", netlistId: insnNetlist)
+    // Far match and no match, through the helper.
+    var s0 = await textStats(); var q0 = await pageQueries()
+    let far = await valueSearch(insnPath, "lui ra", from: 1000)
+    var s1 = await textStats(); var q1 = await pageQueries()
+    expect(far.t == insnFar && stat(s1, "calls") - stat(s0, "calls") == 1 && q1 - q0 == 0,
+           "far RISC-V match through one searchText: t \(String(describing: far.t)) (want \(insnFar)), searchText calls \(stat(s1, "calls") - stat(s0, "calls")), scan chunks \(q1 - q0), \(Int(far.ms)) ms")
+    let again = await valueSearch(insnPath, "lui ra", from: nil)
+    let last = (await textStats())["last"] as? [String: Any] ?? [:]
+    expect(again.t == insnFar && last["t"] as? Int == insnFar && last["inclusive"] as? Bool == false,
+           "next from the hit asks from its time, not inclusive (no repeat): marker \(String(describing: again.t)), last \(last)")
+    s0 = await textStats(); q0 = await pageQueries()
+    let none = await valueSearch(insnPath, "^no such insn$", from: 1000)
+    s1 = await textStats(); q1 = await pageQueries()
+    expect(none.t == 1000 && stat(s1, "calls") - stat(s0, "calls") == 1 && q1 - q0 == 0,
+           "no RISC-V match: one searchText, the marker stays: \(String(describing: none.t)), calls \(stat(s1, "calls") - stat(s0, "calls")), scan chunks \(q1 - q0), \(Int(none.ms)) ms")
+    let back = await valueSearch(insnPath, "lui a0", from: insnFar, dir: -1)
+    expect(back.t == 0, "previous RISC-V match back to t=0: \(String(describing: back.t))")
+
+    // Resume: the helper stops each request at a tiny budget; the viewer resumes where it said.
+    await setFormat("vaporview.displayAsRiscvNumeric", netlistId: 3)
+    _ = await mock(["cmd": "textControl", "budgetMs": 15])
+    s0 = await textStats()
+    let pattern = "(?:)^" + NSRegularExpression.escapedPattern(for: bus0Target) + "$"
+    let resumed = await valueSearch(["tb", "dut", "bus0"], pattern, from: 0, waitMs: 60000)
+    s1 = await textStats()
+    _ = await mock(["cmd": "textControl", "budgetMs": 0])
+    expect(resumed.t == bus0Found && stat(s1, "resumed") - stat(s0, "resumed") > 0 && stat(s1, "resumed") - stat(s0, "resumed") == stat(s1, "incomplete") - stat(s0, "incomplete"),
+           "incomplete replies are resumed (inclusive, at the helper's resume time) to the same hit: t \(String(describing: resumed.t)) (want \(bus0Found)), incomplete \(stat(s1, "incomplete") - stat(s0, "incomplete")), resumed \(stat(s1, "resumed") - stat(s0, "resumed")), \(Int(resumed.ms)) ms")
+    await setFormat("vaporview.displayAsHexadecimal", netlistId: 3)
+
+    // Escape cancels a searchText in flight; nothing else (no page scan) runs instead.
+    _ = await mock(["cmd": "textControl", "delayMs": 4000])
+    s0 = await textStats(); q0 = await pageQueries()
+    _ = await call("cmuxWaveform.link.setMarker(1000); return null")
+    _ = await call("return await cmuxWaveform.link.selectSignal(['tb','dut','insn'])")
+    await sleep(300)
+    _ = await call("""
+      const d = document.getElementById('viewer').contentDocument;
+      const bar = d.getElementById('search-bar');
+      bar.focus(); bar.value = 'lui ra';
+      bar.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+      d.getElementById('next-button').click();
+      return null
+      """)
+    await sleep(600)
+    let started = Date()
+    _ = await call("""
+      const bar = document.getElementById('viewer').contentDocument.getElementById('search-bar');
+      bar.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return null
+      """)
+    let stopped = await waitFor(2000) { await self.wc("!w.navBusy") as? Bool == true }
+    let stopMs = Int(Date().timeIntervalSince(started) * 1000)
+    await sleep(4500)
+    s1 = await textStats(); q1 = await pageQueries()
+    _ = await mock(["cmd": "textControl", "delayMs": 0])
+    let markerAfter = await markerNow()
+    expect(stopped && markerAfter == 1000 && stat(s1, "cancelled") - stat(s0, "cancelled") == 1 && q1 - q0 == 0,
+           "Escape cancels the searchText (helper told, marker stays, no page scan): stopped \(stopped) in \(stopMs) ms, marker \(String(describing: markerAfter)), cancelled \(stat(s1, "cancelled") - stat(s0, "cancelled")), scan chunks \(q1 - q0)")
+
+    // ASCII: the helper gets the typed text, not the page's bit regex (it converts it itself).
+    await setFormat("vaporview.displayAsAscii", netlistId: insnNetlist)
+    let ascii = await valueSearch(insnPath, "cmux", from: 1000)
+    let al = (await textStats())["last"] as? [String: Any] ?? [:]
+    expect(ascii.t == insnAscii && al["format"] as? String == "ascii" && al["pattern"] as? String == "cmux",
+           "ASCII search through searchText with the typed text: t \(String(describing: ascii.t)) (want \(insnAscii)), last \(al)")
+
+    // Alias tables: the helper gets the table's own file.
+    let aliasText = "{\"tables\": {\"op\": {\"0xdeadc0b7\": \"FAR\", \"0x12345537\": \"START\"}}}"
+    _ = await call("cmuxCommands.applyValueAliasFile({ text: \(jsString(aliasText)), path: '/x/op.json' }); return null")
+    await sleep(500)
+    await setFormat("vaporview.displayAsAlias", netlistId: insnNetlist, ", aliasFormat: 'alias:op'")
+    let alias = await valueSearch(insnPath, "far", from: 1000)
+    let ll = (await textStats())["last"] as? [String: Any] ?? [:]
+    let la = ll["alias"] as? [String: Any] ?? [:]
+    expect(alias.t == insnFar && ll["format"] as? String == "alias" && la["table"] as? String == "op" && la["chars"] as? Int == aliasText.count,
+           "alias search through searchText with the table's file: t \(String(describing: alias.t)) (want \(insnFar)), last \(ll)")
+    await setFormat("vaporview.displayAsRiscv", netlistId: insnNetlist)
+
+    // tooLarge: the page scan answers instead.
+    _ = await mock(["cmd": "textControl", "tooLarge": true])
+    s0 = await textStats(); q0 = await pageQueries()
+    let big = await valueSearch(insnPath, "lui ra", from: 1000)
+    s1 = await textStats(); q1 = await pageQueries()
+    _ = await mock(["cmd": "textControl", "tooLarge": false])
+    expect(big.t == insnFar && stat(s1, "calls") - stat(s0, "calls") == 1 && q1 - q0 > 2,
+           "tooLarge: the page scan finds the same match: t \(String(describing: big.t)), calls \(stat(s1, "calls") - stat(s0, "calls")), scan chunks \(q1 - q0)")
+
+    // A helper without searchText (older helper-v2): the page scan, timed against searchText.
+    // The scan keeps its chunks as windows, so each comparison runs on a fresh stretch.
+    _ = await mock(["cmd": "textControl", "refuse": true])
+    s0 = await textStats(); q0 = await pageQueries()
+    let scanNone = await valueSearch(insnPath, "^no such insn either$", from: 1000)
+    s1 = await textStats(); q1 = await pageQueries()
+    expect(scanNone.t == 1000 && stat(s1, "refused") - stat(s0, "refused") == 1 && q1 - q0 > 2,
+           "no searchText (unknown command): the page scan answers no match: marker \(String(describing: scanNone.t)), scan chunks \(q1 - q0), \(Int(scanNone.ms)) ms")
+    s0 = s1
+    let scanFar = await valueSearch(insnPath, "lui ra", from: 1000)
+    s1 = await textStats()
+    expect(scanFar.t == insnFar && stat(s1, "refused") == stat(s0, "refused"),
+           "after an unknown-command reply the viewer stops asking: t \(String(describing: scanFar.t)), refused again \(stat(s1, "refused") - stat(s0, "refused"))")
+    _ = await mock(["cmd": "textControl", "refuse": false])
+    print(String(format: "[timing] searchText far %.0f ms, no match %.0f ms; page scan no match %.0f ms (500k changes, 19 distinct values, mock)", far.ms, none.ms, scanNone.ms))
+  }
+
+  /// The debugger's whole-signal reads through host.js changes() send their cap, so an over-cap
+  /// signal comes back as a count, not its data (helper-v2 signals maxChanges); only changes().
+  func capChecks() async {
+    let changes = await call("return JSON.stringify(await cmuxWaveform.host.signalChanges({ signalId: 0, width: 1 }, 1000))") as? String
+    let c = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
+    expect(changes == "null" && c["maxChanges"] as? Int == 1000 && c["bytes"] as? Int == 0 && c["overCap"] as? Int == 1,
+           "signalChanges past its cap asks signals with maxChanges and gets no data: \(changes ?? "?"), request \(c)")
+    // signalPosedges inflates every entry it gets, so it never asks with a cap (no overCap entry).
+    let edges = await call("try { await cmuxWaveform.host.signalPosedges({ signalId: 0, width: 1 }, 100); return 'ok' } catch (e) { return String(e.message) }") as? String
+    let p = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
+    expect(edges == "too many clock edges" && p["maxChanges"] is NSNull && p["overCap"] as? Int == 0,
+           "signalPosedges sends no maxChanges and still refuses too many edges: \(edges ?? "?"), request \(p)")
+    // No cap given (or not a finite integer): no maxChanges (JSON would turn Infinity into null).
+    let uncapped = await call("const c = await cmuxWaveform.host.signalChanges({ signalId: 1, width: 1 }, Infinity); return c ? c.length : -1") as? Int
+    let u = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
+    expect(uncapped == 2 && u["maxChanges"] is NSNull, "signalChanges with an infinite cap sends no maxChanges: \(uncapped ?? -1), request \(u)")
+    let small = await call("const c = await cmuxWaveform.host.signalChanges({ signalId: 1, width: 1 }, 1000); return c ? c.length : -1") as? Int
+    let sl = (await textStats())["signalsLast"] as? [String: Any] ?? [:]
+    expect(small == 2 && (sl["bytes"] as? Int ?? 0) > 0, "a signal under the cap still comes back whole: rst \(small ?? -1) changes, request \(sl)")
   }
 
   func jsString(_ s: String) -> String {
@@ -841,7 +1176,10 @@ func run() async {
     let page = Page(loading: .auto)
     let ok = await page.open(home: home)
     expect(ok, "v2 page opened the synthetic dump")
-    if ok { await page.windowedChecks(); await page.riscvSearchChecks(); await page.hostChecks() }
+    if ok {
+      await page.textSearchStartChecks(); await page.windowedChecks(); await page.riscvSearchChecks()
+      await page.textSearchChecks(bus0Target: page.bus0Target, bus0Found: page.bus0Found); await page.capChecks(); await page.hostChecks()
+    }
     await page.snapshot()
     page.close()
     let whole = Page(loading: .whole)
@@ -865,5 +1203,5 @@ func run() async {
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in await run() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 300) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 600) { print("timeout"); exit(1) }
 app.run()

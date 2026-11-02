@@ -4,12 +4,21 @@
 // (`synth:`, see makeSynth); it never reads a real file. Besides the protocol it answers
 //   sleep {ms}            a reply after ms (cancellable while it waits): relay cancel checks
 //   searchAll {...}       two {partial: true} lines, then the final one: relay partial checks
+//   textControl {...}     searchText test knobs: refuse (answer it as an unknown command, as
+//                         a helper without it), delayMs (wait first, cancellable), budgetMs
+//                         (override the viewer's budget, to force incomplete + resume),
+//                         tooLarge (answer {incomplete: {tooLarge}}); textStats counts them
+// searchText is the shipped helper's own text.js (and formats.js, the viewer's formatters)
+// over this mock's change stream, through a JS stand-in for the addon's cacheTextScan.
 // With --v1 it stands in for the v1 helper: open, children and signals only.
 // Usage: node mock-helper-v2.cjs [--latency 40] [--jitter 60] [--v1] 3>replies
 'use strict';
 const fs = require('node:fs');
 const readline = require('node:readline');
 const zlib = require('node:zlib');
+const path = require('node:path');
+let textSearch = null;
+try { textSearch = require(path.join(__dirname, '../../../Resources/vaporview/fsdb-helper-v2/text.js')); } catch (e) { textSearch = null; }
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => { const i = argv.indexOf('--' + name); return i >= 0 ? argv[i + 1] : dflt; };
@@ -17,6 +26,24 @@ let LATENCY = Number(opt('latency', 40));
 let JITTER = Number(opt('jitter', 60));
 const OUT = 3;
 const V1 = argv.includes('--v1');
+// --stall-open-file F --stall-opens N: each launch appends its pid as a line to F; the first
+// N launches never answer `open` (a reader stuck opening the file), later ones answer
+// normally. --stall-launches 2,4 stalls those launches (1-based) instead, and
+// --hang-ready-launches 2 never sends the ready line on those. A stalled open stands in for
+// the coordinator's main thread blocked in the reader: from then on it ignores the end of
+// stdin and SIGTERM, so only a SIGKILL ends it.
+const STALL_FILE = opt('stall-open-file', '');
+const listOpt = (name) => String(opt(name, '')).split(',').filter(Boolean).map(Number);
+let stallOpen = false;
+let hangReady = false;
+let stuck = false;
+if (STALL_FILE) {
+  fs.appendFileSync(STALL_FILE, process.pid + '\n');
+  const launch = fs.readFileSync(STALL_FILE, 'utf8').split('\n').filter(Boolean).length;
+  const list = listOpt('stall-launches');
+  stallOpen = list.length ? list.includes(launch) : launch <= Number(opt('stall-opens', 1));
+  hangReady = listOpt('hang-ready-launches').includes(launch);
+}
 const V1_COMMANDS = new Set(['open', 'children', 'signals']);
 
 function send(obj, bin) {
@@ -75,10 +102,13 @@ const bin32 = (v, w) => (v >>> 0).toString(2).padStart(32, '0').slice(32 - w);
 //   bus<k> (32-bit): changes every busEvery ps unless skipped (prob `skip`), 'x' for the first 4
 //   state (4-bit): changes every 50..550 cycles (sparse, resolves to exact windows when zoomed out)
 //   wide (480-bit): changes every cycle
+//   insn (32-bit, insn=1): an instruction every cycle from t=0, few distinct values: a
+//     unique `lui a0,0x12345` at t=0, a unique `lui ra,0xdeadc` at INSN_FAR of the
+//     changes, the ASCII word "cmux" at INSN_ASCII, otherwise one of 16 common words
 function makeSynth(spec) {
   const p = Object.fromEntries(spec.replace(/^synth:?/, '').split(',').filter(Boolean).map((kv) => kv.split('=')));
   const ms = Number(p.ms || 1), buses = Number(p.buses ?? 4), busEvery = Number(p.busEvery || 2000);
-  const skip = Number(p.skip ?? 0.15), wides = Number(p.wide ?? 1);
+  const skip = Number(p.skip ?? 0.15), wides = Number(p.wide ?? 1), insn = Number(p.insn ?? 0);
   const timeEnd = Math.round(ms * 1e9);
   const sigs = [];
   const vars = [];
@@ -122,6 +152,12 @@ function makeSynth(spec) {
       return s;
     }));
   }
+  if (insn) {
+    const t = periodic(2000);
+    const far = Math.floor(t.length * INSN_FAR), asc = Math.floor(t.length * INSN_ASCII);
+    const word = (i) => (i === 0 ? 0x12345537 : i === far ? 0xdeadc0b7 : i === asc ? 0x636d7578 : INSN_WORDS[hash32(11, i) & 15]);
+    addVar('insn', 32, new Sig(32, t, (i) => bin32(word(i), 32), { num: word }));
+  }
   const metadata = { timeTableLoaded: true, scopeCount: 2, netlistIdCount: vars.length, signalIdCount: vars.length,
     timeTableCount: 0, timeEnd, minTimeStep: 1000, timeScale: 1, timeUnit: 'ps' };
   const scopes = { 1: { name: 'tb', scopes: [{ name: 'dut', scopeOffsetIdx: 2, type: 'module' }], vars: vars.slice(0, 2) },
@@ -132,6 +168,13 @@ function makeSynth(spec) {
     getSig: (signalId) => sigs[signalId],
   };
 }
+
+// insn's common words: addi aK,aK,j / add aK,aK,aJ / lw aK,4j(sp) (never lui, never ra).
+const INSN_FAR = 0.93, INSN_ASCII = 0.8;
+const INSN_WORDS = [];
+for (let k = 0; k < 6; k++) { INSN_WORDS.push(((k + 1) << 20) | ((10 + k) << 15) | ((10 + k) << 7) | 0x13); }
+for (let k = 0; k < 5; k++) { INSN_WORDS.push(((11 + k) << 20) | ((10 + k) << 15) | ((10 + k) << 7) | 0x33); }
+for (let k = 0; k < 5; k++) { INSN_WORDS.push(((4 * (k + 1)) << 20) | (2 << 15) | (2 << 12) | ((10 + k) << 7) | 0x03); }
 
 async function openDump(file) {
   if (file.startsWith('synth')) { return makeSynth(file); }
@@ -158,6 +201,7 @@ function packRecords(recs, width) {
 // its store-cache file); only their whole-dump count is known without a walk.
 const stored = new Set();
 function windowQuery({ signals, t0, t1, buckets }) {
+  if (buckets === 32768) { textStats.scanWindows++; } // the viewer's value-search chunks (SCAN_BUCKETS)
   const out = [], parts = [];
   for (const { signalId, width } of signals) {
     const s = sig(signalId, width);
@@ -221,9 +265,86 @@ function matches(s, i, cp) {
   return true;
 }
 
+// The addon's cacheTextScan (helper-v2 addon/window.cpp.inc) over the mock's stream: each
+// change's distinct-value index, then the same scan, so text.js runs unchanged.
+const distinct = new Map(); // signalId -> {vidx, dfirst}
+function distinctOf(id) {
+  let d = distinct.get(id);
+  if (d) { return d; }
+  const s = sig(id), ids = new Map(), vidx = new Uint32Array(s.n), dfirst = [];
+  for (let i = 0; i < s.n; i++) {
+    const v = s.value(i);
+    let k = ids.get(v);
+    if (k === undefined) { k = dfirst.length; ids.set(v, k); dfirst.push(i); }
+    vidx[i] = k;
+  }
+  d = { vidx, dfirst };
+  distinct.set(id, d);
+  return d;
+}
+const textAddon = {
+  cacheTextScan(id, t, dir, mask, maxNew, fromK = -1, bound, inclusive = false) {
+    const s = sig(id), { vidx, dfirst } = distinctOf(id), n = s.n;
+    dir = dir < 0 ? -1 : 1;
+    const lim = typeof bound === 'number' ? bound : dir > 0 ? Infinity : 0;
+    const mlen = mask ? mask.length : 0;
+    let k;
+    if (fromK >= 0) { k = Math.min(fromK, n - (dir > 0 ? 0 : 1)); }
+    else if (dir > 0) { k = inclusive ? s.lower(t) : s.upper(t); }
+    else { k = (inclusive ? s.upper(t) : s.lower(t)) - 1; }
+    const o = { gen: 1, n: dfirst.length };
+    const need = [], seen = new Set();
+    let needK = -1;
+    for (; k >= 0 && k < n; k += dir) {
+      const tk = s.times[k];
+      if (dir > 0 ? tk > lim : tk < lim) { break; }
+      const d = vidx[k], m = d < mlen ? mask[d] : 0;
+      if (m === 1 && needK < 0) { return Object.assign(o, { t: tk, k, d, v: s.value(k) }); }
+      if (m === 0 && !seen.has(d)) {
+        seen.add(d);
+        if (needK < 0) { needK = k; }
+        need.push({ d, v: s.value(dfirst[d]) });
+        if (seen.size >= maxNew) { break; }
+      }
+    }
+    if (needK >= 0) { return Object.assign(o, { need, k: needK, kt: s.times[needK] }); }
+    return Object.assign(o, { t: null });
+  },
+};
+const textCtl = { refuse: false, delayMs: 0, budgetMs: 0, tooLarge: false };
+let signalsLast = null; // the last v1 signals request: its maxChanges, bytes sent, signals over it
+const textResume = new Map(); // signalId -> resume.t of its last incomplete reply
+const textStats = { scanWindows: 0, refused: 0, calls: 0, resumed: 0, inclusive: 0, cancelled: 0, incomplete: 0, last: null };
+
 const handlers = {
+  async searchText(req) {
+    if (!textSearch || textCtl.refuse) { textStats.refused++; throw new Error('unknown command searchText'); }
+    textSearch.check(req);
+    textStats.calls++;
+    if (req.inclusive === true) { textStats.inclusive++; }
+    // A resume: the request starts, inclusive, where the last incomplete reply said to.
+    if (req.inclusive === true && textResume.get(req.signalId) === req.t) { textStats.resumed++; }
+    textResume.delete(req.signalId);
+    textStats.last = { t: req.t, dir: req.dir, inclusive: req.inclusive === true, format: req.format, pattern: req.pattern,
+      alias: req.alias ? { table: req.alias.table, fileName: req.alias.fileName, chars: req.alias.text.length } : null, budgetMs: req.budgetMs };
+    if (textCtl.delayMs) { await new Promise((r) => setTimeout(r, textCtl.delayMs)); }
+    const p = { ...req, inclusive: req.inclusive === true, caseSensitive: req.caseSensitive === true };
+    if (textCtl.budgetMs) { p.budgetMs = textCtl.budgetMs; }
+    if (textCtl.tooLarge) { textStats.incomplete++; return { t: null, incomplete: { tooLarge: true, reason: 'mock: value table over the signal cap' } }; }
+    const r = textSearch.search(textAddon, p);
+    if (r.incomplete) { textStats.incomplete++; if (r.incomplete.resume) { textResume.set(req.signalId, r.incomplete.resume.t); } }
+    return r;
+  },
+  textControl(c) { Object.assign(textCtl, c); return { ...textCtl }; },
+  textStats() { return { ...textStats, signalsLast }; },
   async open({ file }) {
-    dump = await openDump(file); stored.clear();
+    if (stallOpen) {
+      stuck = true;
+      process.on('SIGTERM', () => {});
+      setInterval(() => {}, 1 << 30);
+      await new Promise(() => {});
+    }
+    dump = await openDump(file); stored.clear(); distinct.clear();
     const r = { metadata: dump.metadata, top: dump.top };
     if (dump.topVars) { r.topVars = dump.topVars; }
     return r;
@@ -256,14 +377,22 @@ const handlers = {
     return { t: null };
   },
   // v1 whole-signal fetch, kept for bit slices / fallbacks.
-  signals({ signalIds, widths }) {
+  // maxChanges (helper-v2 count first): a signal with more changes is {count, overCap}, no data.
+  signals({ signalIds, widths, maxChanges }) {
     const out = [], parts = [];
+    signalsLast = { maxChanges: maxChanges ?? null, bytes: 0, overCap: 0 };
     signalIds.forEach((id, k) => {
       const s = sig(id, widths && widths[k]);
+      if (maxChanges !== undefined && s.n > maxChanges) {
+        signalsLast.overCap++;
+        out.push({ signalId: id, width: s.width, count: s.n, overCap: true, bytes: 0 });
+        return;
+      }
       const recs = []; for (let i = 0; i < s.n; i++) { recs.push([s.times[i], s.value(i)]); }
       const packed = packRecords(recs, s.width);
       out.push({ signalId: id, width: s.width, count: s.n, bytes: packed.length, min: s.min, max: s.max });
       parts.push(packed);
+      signalsLast.bytes += packed.length;
     });
     return { result: out, bin: Buffer.concat(parts) };
   },
@@ -282,7 +411,7 @@ let requestsAfterCancel = 0;
 function schedule(req) {
   if (cancelledUnseen.has(req.id)) { requestsAfterCancel++; cancelledUnseen.delete(req.id); }
   const rtt = LATENCY + Math.random() * JITTER;
-  const entry = { timer: null, cancelled: false };
+  const entry = { timer: null, cancelled: false, cmd: req.cmd };
   live.set(req.id, entry);
   const reply = (obj, bin) => { if (!entry.cancelled) { live.delete(req.id); send(obj, bin); } };
   entry.timer = setTimeout(async () => {
@@ -308,7 +437,8 @@ function schedule(req) {
   }, rtt / 2);
 }
 
-send(V1 ? { id: 0, ready: true } : { id: 0, ready: true, pid: process.pid, protocol: 2 });
+if (hangReady) { setInterval(() => {}, 1 << 30); }
+else { send(V1 ? { id: 0, ready: true } : { id: 0, ready: true, pid: process.pid, protocol: 2 }); }
 
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) { return; }
@@ -320,10 +450,11 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const target = req.target ?? req.id;
     const entry = live.get(target);
     if (!entry && cancelledUnseen.size < 100000) { cancelledUnseen.add(target); }
+    if (entry && entry.cmd === 'searchText') { textStats.cancelled++; }
     if (entry) { entry.cancelled = true; clearTimeout(entry.timer); live.delete(target); send({ id: target, cancelled: true }); }
     if (req.target !== undefined) { send({ id: req.id, result: { cancelled: !!entry, dropped: entry ? 1 : 0, running: 0 } }); }
     else if (!entry) { send({ id: req.id, cancelled: false }); }
     return;
   }
   schedule(req);
-}).on('close', () => process.exit(0));
+}).on('close', () => { if (!stuck) { process.exit(0); } });
