@@ -120,6 +120,9 @@ enum WaveformSourceLink {
     }
 
     static func saveMapping(_ mapping: HierarchyPathMapping, forKey key: String) {
+        // Another mapping puts a dump scope on another design instance: the state machine answers
+        // (names, Yosys's module and parameters) were worked out for the old one (verify G4).
+        if Self.mapping(forKey: key) != mapping { WaveformFSMEngines.designChanged() }
         if mapping.rules.isEmpty {
             UserDefaults.standard.removeObject(forKey: mappingDefaultsPrefix + key)
         } else if let data = try? JSONEncoder().encode(mapping) {
