@@ -890,6 +890,7 @@
 		F1B3A871EE6D2EB7BEFB9566 /* CloudFileExplorerTargetIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D9C29302A2C3C40E58D68C9 /* CloudFileExplorerTargetIdentity.swift */; };
 		BCDE68E325D57019C97020A9 /* CloudFilePreviewCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F77A3BC50BBFAB2127492E /* CloudFilePreviewCache.swift */; };
 		8057A5361378502071A49E66 /* CloudFilePreviewLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = E552C26ABB353CE0A826C1C7 /* CloudFilePreviewLease.swift */; };
+		873B470EED00E8928359EF9F /* CloudFilePreviewRecentCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B844157B8BD4417AD3A42065 /* CloudFilePreviewRecentCopyTests.swift */; };
 		0A42EBEFBFD8771DC2D5C061 /* CloudFileRootOwnershipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C859FBBF795C3F290CEE905 /* CloudFileRootOwnershipTests.swift */; };
 		F7925DA2C43A12723611F26E /* CloudGuestURLRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 935A3D4E1C9FB4A5E94E2770 /* CloudGuestURLRoutingTests.swift */; };
 		902ED2709F9B61E9E4B59A24 /* CloudGuestURLService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EAC5EBE3FB2C24E1F29B55C /* CloudGuestURLService.swift */; };
@@ -5779,6 +5780,7 @@
 		6D9C29302A2C3C40E58D68C9 /* CloudFileExplorerTargetIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudFileExplorerTargetIdentity.swift"; sourceTree = "<group>"; };
 		42F77A3BC50BBFAB2127492E /* CloudFilePreviewCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudFilePreviewCache.swift"; sourceTree = "<group>"; };
 		E552C26ABB353CE0A826C1C7 /* CloudFilePreviewLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudFilePreviewLease.swift"; sourceTree = "<group>"; };
+		B844157B8BD4417AD3A42065 /* CloudFilePreviewRecentCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudFilePreviewRecentCopyTests.swift"; sourceTree = "<group>"; };
 		2C859FBBF795C3F290CEE905 /* CloudFileRootOwnershipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudFileRootOwnershipTests.swift"; sourceTree = "<group>"; };
 		935A3D4E1C9FB4A5E94E2770 /* CloudGuestURLRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudGuestURLRoutingTests.swift"; sourceTree = "<group>"; };
 		8EAC5EBE3FB2C24E1F29B55C /* CloudGuestURLService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CloudGuestURLService.swift"; sourceTree = "<group>"; };
@@ -14446,6 +14448,7 @@
 				1ED8B4A50F0C526B6C084ED3 /* RemoteFileProbeTests.swift */,
 				3F04E4C84CC2531B5868C1C3 /* FilePreviewPathPresentationTests.swift */,
 				D8025E50139AE51B420DB335 /* SSHFileChannelTests.swift */,
+				B844157B8BD4417AD3A42065 /* CloudFilePreviewRecentCopyTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -18812,6 +18815,7 @@
 				71FE9F238B1717D43FC01E63 /* CloudEqualCursorConflictRecoveryTests.swift in Sources */,
 				C3CD2FF9F6F1489C8EDD0C7B /* CloudFeatureFlagTests.swift in Sources */,
 				CFSF00000000000000000011 /* CloudFileExplorerBehaviorTests.swift in Sources */,
+				873B470EED00E8928359EF9F /* CloudFilePreviewRecentCopyTests.swift in Sources */,
 				0A42EBEFBFD8771DC2D5C061 /* CloudFileRootOwnershipTests.swift in Sources */,
 				F7925DA2C43A12723611F26E /* CloudGuestURLRoutingTests.swift in Sources */,
 				C5616E96DCEC5AD0263BB9A4 /* CloudGuestURLTestContainer.swift in Sources */,
