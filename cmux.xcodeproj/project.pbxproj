@@ -3048,6 +3048,8 @@
 		9666F3019666F3019666F301 /* RecoverableMainWindowRoutePayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9666F3029666F3029666F302 /* RecoverableMainWindowRoutePayload.swift */; };
 		A6D1F0000000000000000002 /* ReleasingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6D1F0000000000000000001 /* ReleasingWindowController.swift */; };
 		A6D1F0400000000000000002 /* ReleasingWindowControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6D1F0400000000000000001 /* ReleasingWindowControllerTests.swift */; };
+		A80CD115B9F2085F6C87455D /* RemoteCappedDownloadCallSiteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77CE04B80A47CAD98D931FE9 /* RemoteCappedDownloadCallSiteTests.swift */; };
+		31F3FF39D676A90F05549F21 /* RemoteCappedDownloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3A6A247025BAA0B617BEDF /* RemoteCappedDownloadTests.swift */; };
 		63A6792ED28244D28F5E9A83 /* RemoteClaudeTeamsRespawnRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95FA2E4CBC042628EE67957 /* RemoteClaudeTeamsRespawnRoutingTests.swift */; };
 		EE30D5000000000000000002 /* RemoteDaemonStrings+App.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE30D5000000000000000001 /* RemoteDaemonStrings+App.swift */; };
 		791100030000000000000001 /* RemoteDisconnectLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 791100040000000000000001 /* RemoteDisconnectLifecycleTests.swift */; };
@@ -3761,6 +3763,7 @@
 		19F2B27E1D232034AE95667C /* SSHFileExplorerListingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A5FFFD70CEFC28069D619BD /* SSHFileExplorerListingTests.swift */; };
 		FEAC00000000000000000001 /* SSHFileExplorerMutationCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAC00000000000000000002 /* SSHFileExplorerMutationCommand.swift */; };
 		FEAC00000000000000000005 /* SSHFileExplorerMutationCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAC00000000000000000006 /* SSHFileExplorerMutationCommandTests.swift */; };
+		1398DEF891FA5C0F6C16CDE7 /* SSHFileExplorerProvider+CappedDownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AA58681A60A6081398DEF8 /* SSHFileExplorerProvider+CappedDownload.swift */; };
 		D458923DF733893F135A8968 /* SSHFileSearchCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43BEE6BFA7E4C4634347345D /* SSHFileSearchCommand.swift */; };
 		80A2EF607480B2B41D8EFD59 /* SSHFileSearchOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */; };
 		6B2A61D6577E14A98C26C0A9 /* SSHFileSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */; };
@@ -7778,6 +7781,8 @@
 		9666F3029666F3029666F302 /* RecoverableMainWindowRoutePayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverableMainWindowRoutePayload.swift; sourceTree = "<group>"; };
 		A6D1F0000000000000000001 /* ReleasingWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/ReleasingWindowController.swift; sourceTree = "<group>"; };
 		A6D1F0400000000000000001 /* ReleasingWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleasingWindowControllerTests.swift; sourceTree = "<group>"; };
+		77CE04B80A47CAD98D931FE9 /* RemoteCappedDownloadCallSiteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteCappedDownloadCallSiteTests.swift"; sourceTree = "<group>"; };
+		1D3A6A247025BAA0B617BEDF /* RemoteCappedDownloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteCappedDownloadTests.swift"; sourceTree = "<group>"; };
 		C95FA2E4CBC042628EE67957 /* RemoteClaudeTeamsRespawnRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteClaudeTeamsRespawnRoutingTests.swift; sourceTree = "<group>"; };
 		EE30D5000000000000000001 /* RemoteDaemonStrings+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteDaemonStrings+App.swift"; sourceTree = "<group>"; };
 		791100040000000000000001 /* RemoteDisconnectLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteDisconnectLifecycleTests.swift; sourceTree = "<group>"; };
@@ -8483,6 +8488,7 @@
 		2A5FFFD70CEFC28069D619BD /* SSHFileExplorerListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileExplorerListingTests.swift"; sourceTree = "<group>"; };
 		FEAC00000000000000000002 /* SSHFileExplorerMutationCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileExplorerMutationCommand.swift; sourceTree = "<group>"; };
 		FEAC00000000000000000006 /* SSHFileExplorerMutationCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileExplorerMutationCommandTests.swift; sourceTree = "<group>"; };
+		B8AA58681A60A6081398DEF8 /* SSHFileExplorerProvider+CappedDownload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileExplorerProvider+CappedDownload.swift"; sourceTree = "<group>"; };
 		43BEE6BFA7E4C4634347345D /* SSHFileSearchCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileSearchCommand.swift; sourceTree = "<group>"; };
 		38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileSearchOutput.swift; sourceTree = "<group>"; };
 		A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileSearchTests.swift"; sourceTree = "<group>"; };
@@ -12808,6 +12814,7 @@
 				187F7D47F187EC9F853AB403 /* FilePreviewKindResolver+CommandLine.swift */,
 				EFCF589D6752E864288B73BA /* RemotePreviewCacheBudget.swift */,
 				9FE755034645659B4CB57989 /* RemoteFileProbe.swift */,
+				B8AA58681A60A6081398DEF8 /* SSHFileExplorerProvider+CappedDownload.swift */,
 				EF42857B7D2D8ADC96A00FB2 /* SSHFileChannel.swift */,
 				0D14864A24956D94145AB544 /* RemotePreviewInPlaceGate.swift */,
 				8F868B1288822F264BA11766 /* RemotePreviewCacheBudget+Panels.swift */,
@@ -14464,6 +14471,8 @@
 				D8025E50139AE51B420DB335 /* SSHFileChannelTests.swift */,
 				B844157B8BD4417AD3A42065 /* CloudFilePreviewRecentCopyTests.swift */,
 				1EEE52EB3393FFE44CAC4C3E /* FileExplorerRefreshTests.swift */,
+				1D3A6A247025BAA0B617BEDF /* RemoteCappedDownloadTests.swift */,
+				77CE04B80A47CAD98D931FE9 /* RemoteCappedDownloadCallSiteTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -17360,6 +17369,7 @@
 				A13387000000000000000005 /* SplitPaneGeometryProjection.swift in Sources */,
 				96A00FB2D46CBBD9B1AE1C9E /* SSHFileChannel.swift in Sources */,
 				FEAC00000000000000000001 /* SSHFileExplorerMutationCommand.swift in Sources */,
+				1398DEF891FA5C0F6C16CDE7 /* SSHFileExplorerProvider+CappedDownload.swift in Sources */,
 				D458923DF733893F135A8968 /* SSHFileSearchCommand.swift in Sources */,
 				80A2EF607480B2B41D8EFD59 /* SSHFileSearchOutput.swift in Sources */,
 					E30780000000000000000012 /* SSHPTYAttachStartupCommandBuilder.swift in Sources */,
@@ -19432,6 +19442,8 @@
 				5C0C4A1E0000000000000005 /* RCChannelSuiteTests.swift in Sources */,
 				966600019666000196660001 /* RecoverableMainWindowLifecycleTests.swift in Sources */,
 				A6D1F0400000000000000002 /* ReleasingWindowControllerTests.swift in Sources */,
+				A80CD115B9F2085F6C87455D /* RemoteCappedDownloadCallSiteTests.swift in Sources */,
+				31F3FF39D676A90F05549F21 /* RemoteCappedDownloadTests.swift in Sources */,
 				63A6792ED28244D28F5E9A83 /* RemoteClaudeTeamsRespawnRoutingTests.swift in Sources */,
 				791100030000000000000001 /* RemoteDisconnectLifecycleTests.swift in Sources */,
 				B5E6B889C486433BEB225766 /* RemoteFileProbeTests.swift in Sources */,
