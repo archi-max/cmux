@@ -857,6 +857,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         await callPage(api: "link", function, argument: argument)
     }
 
+    /// Like `callLink`, on `window.cmuxWaveform.enums` (cmux-enum.js).
+    func callEnums(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "enums", function, argument: argument)
+    }
+
     /// Like `callLink`, on `window.cmuxWaveform.debugger` (cmux-debugger.js).
     func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
         await callPage(api: "debugger", function, argument: argument)
@@ -964,6 +969,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if body["eventType"] as? String == "signalSelect", let panel { WaveformDebugger.rowSelected(in: panel) }
         case "debugger":
             if let panel { WaveformDebugger.pageReported(body, waveform: panel) }
+        case "enumTypes":
+            // Shown rows the page doesn't know the types of: slang-server says which are enums.
+            if let panel { WaveformEnumLink.typesRequested(body["paths"], waveform: panel) }
         case "settings":
             if let values = body["values"] as? [String: Any] {
                 let loading = Self.fsdbLoading()

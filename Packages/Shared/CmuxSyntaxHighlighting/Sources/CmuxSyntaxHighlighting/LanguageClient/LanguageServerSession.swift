@@ -88,6 +88,9 @@ public actor LanguageServerSession {
     private var pending: [Int: PendingRequest] = [:]
     private var framer = LSPMessageFramer()
     private var documents: [URL: OpenDocument] = [:]
+    /// Documents with a didChange since their didOpen or didSave: slang-server elaborates them
+    /// without source locations until a didSave, even after a didClose (verify N5).
+    private var editedSinceSave: Set<URL> = []
     /// Server-side URI string -> URL the editor used.
     private var editorURLByServerURI: [String: URL] = [:]
     private var latestDiagnostics: [URL: [LSPDiagnostic]] = [:]
@@ -308,6 +311,7 @@ public actor LanguageServerSession {
     /// Sends `textDocument/didOpen` and remembers the document for restarts.
     public func open(uri: URL, text: String, version: Int) async {
         documents[uri] = OpenDocument(text: text, version: version)
+        editedSinceSave.remove(uri)
         idleShutdownTask?.cancel()
         idleShutdownTask = nil
         if state == .running {
@@ -318,6 +322,7 @@ public actor LanguageServerSession {
     /// Sends a full-text `textDocument/didChange`.
     public func change(uri: URL, text: String, version: Int) async {
         documents[uri] = OpenDocument(text: text, version: version)
+        editedSinceSave.insert(uri)
         guard state == .running else { return }
         notify("textDocument/didChange", params: .object([
             "textDocument": .object(["uri": .string(serverURI(for: uri)), "version": .int(version)]),
@@ -331,6 +336,7 @@ public actor LanguageServerSession {
             document.text = text
             documents[uri] = document
         }
+        editedSinceSave.remove(uri)
         guard state == .running else { return }
         var params: [String: JSONValue] = ["textDocument": .object(["uri": .string(serverURI(for: uri))])]
         if let text {
@@ -339,17 +345,35 @@ public actor LanguageServerSession {
         notify("textDocument/didSave", params: .object(params))
     }
 
+    /// A clean buffer reloaded from its file (changed by git, an agent, another editor): the new
+    /// text, then a save of it. The buffer is the saved file, and slang-server elaborates a document
+    /// changed since its last save without source locations until a save (verify X1).
+    public func reloadedFromDisk(uri: URL, text: String, version: Int) async {
+        await change(uri: uri, text: text, version: version)
+        await save(uri: uri, text: text)
+    }
+
     /// The text of an open document, as last sent.
     func documentText(_ uri: URL) -> String? {
         documents[uri]?.text
     }
 
-    /// Sends `textDocument/didClose` and forgets the document.
+    /// Sends `textDocument/didClose` and forgets the document. A local SystemVerilog document
+    /// closed with unsaved edits is first saved for the server as it is on disk (didSave with the file's
+    /// text; the file isn't written): slang-server otherwise elaborates it without source
+    /// locations until some save (verify N5).
     public func close(uri: URL) async {
         documents[uri] = nil
         latestDiagnostics[uri] = nil
+        let edited = editedSinceSave.remove(uri) != nil
         if documents.isEmpty { scheduleIdleShutdown() }
         guard state == .running else { return }
+        if edited, languageId == "verilog", uri.isFileURL, !launch.isRemote, let disk = try? String(contentsOf: uri, encoding: .utf8) {
+            notify("textDocument/didSave", params: .object([
+                "textDocument": .object(["uri": .string(serverURI(for: uri))]),
+                "text": .string(disk),
+            ]))
+        }
         notify("textDocument/didClose", params: .object([
             "textDocument": .object(["uri": .string(serverURI(for: uri))]),
         ]))
@@ -361,6 +385,13 @@ public actor LanguageServerSession {
     public func hover(uri: URL, position: LSPPosition) async throws -> String? {
         let result = try await request("textDocument/hover", params: positionParams(uri: uri, position: position))
         return LSPResponseDecoding.hoverText(result)
+    }
+
+    /// The document's symbols (`textDocument/documentSymbol`), as the server answers.
+    func documentSymbols(uri: URL) async throws -> JSONValue {
+        try await request("textDocument/documentSymbol", params: .object([
+            "textDocument": .object(["uri": .string(serverURI(for: uri))]),
+        ]))
     }
 
     /// Definition locations for the symbol at `position`.

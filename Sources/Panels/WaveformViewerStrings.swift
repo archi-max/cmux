@@ -46,6 +46,7 @@ enum WaveformViewerStrings {
             "command.displayAsDecimal": String(localized: "filePreview.waveform.command.displayAsDecimal", defaultValue: "Decimal (Unsigned)"),
             "command.displayAsDecimalSigned": String(localized: "filePreview.waveform.command.displayAsDecimalSigned", defaultValue: "Decimal (Signed)"),
             "command.displayAsEnum": String(localized: "filePreview.waveform.command.displayAsEnum", defaultValue: "Enum"),
+            "command.displayAsEnumNames": String(localized: "filePreview.waveform.command.displayAsEnumNames", defaultValue: "Enum Names"),
             "command.displayAsEpochTimeNs": String(localized: "filePreview.waveform.command.displayAsEpochTimeNs", defaultValue: "Epoch Time (ns)"),
             "command.displayAsFixedPoint": String(localized: "filePreview.waveform.command.displayAsFixedPoint", defaultValue: "Fixed Point..."),
             "command.displayAsFixedPointSigned": String(localized: "filePreview.waveform.command.displayAsFixedPointSigned", defaultValue: "Signed Fixed Point..."),

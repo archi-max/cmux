@@ -90,6 +90,8 @@
     ],
     "vaporview.valueFormat": [
       {command: "vaporview.displayAsEnum", group: "0_default@1", when: "webviewSection == 'signal' && enum == true"},
+      // cmux: the SystemVerilog enum's names from slang (cmux-enum.js), when the dump has none of its own.
+      {command: "vaporview.displayAsEnumNames", group: "0_default@1", when: "webviewSection == 'signal' && cmuxEnum == true && enum != true"},
       {command: "vaporview.displayAsBinary", group: "0_default@2", when: "webviewSection == 'signal' && width > '1'"},
       {command: "vaporview.displayAsHexadecimal", group: "0_default@3", when: "webviewSection == 'signal' && width > '1'"},
       {command: "vaporview.displayAsOctal", group: "0_default@4", when: "webviewSection == 'signal' && width > '1'"},
@@ -1195,6 +1197,10 @@
 
     // Value format, render type, edges, color, row height, name
     'vaporview.displayAsFloat': (e) => displayFormat(e, { numberFormat: [4, 8, 16, 32, 64].includes(e && e.width) ? 'float' + e.width : 'binary' }),
+    'vaporview.displayAsEnumNames': (e) => {
+      const format = e && window.cmuxWaveform.enums ? window.cmuxWaveform.enums.formatFor(rowPath(e)) : null;
+      if (format) { displayFormat(e, { numberFormat: format }); }
+    },
     'vaporview.displayAsFixedPoint': (e) => askNumberFormat(e, 'fixedpoint_u_'),
     'vaporview.displayAsFixedPointSigned': (e) => askNumberFormat(e, 'fixedpoint_s_'),
     'vaporview.increaseVerticalScale': keypress('increaseVerticalScale'),
@@ -1297,6 +1303,21 @@
   // VS Code merges every data-vscode-context from the clicked element up to
   // the root, the closest one winning, and passes the result as the command
   // argument.
+  // A signal row's dotted dump path, from its context menu argument.
+  function rowPath(e) {
+    const v = e && e.netlistId !== undefined ? host().netlistItem(e.netlistId) : null;
+    if (v && host().pathOf) { return host().pathOf(v).join('.'); }
+    return [e && e.scopePath, e && e.signalName].filter((x) => x !== undefined && x !== '').join('.');
+  }
+
+  // The `when` context for a menu on a row with argument `args` (cmux keys added).
+  function menuContext(args, extra) {
+    const context = Object.assign({}, extra || {}, host().viewerContext.keys, args);
+    const enums = window.cmuxWaveform.enums;
+    context.cmuxEnum = !!(args && args.webviewSection === 'signal' && enums && enums.formatFor(rowPath(args)));
+    return context;
+  }
+
   function webviewContextAt(target) {
     const chain = [];
     for (let el = target; el && el.nodeType === 1; el = el.parentElement) {
@@ -1338,7 +1359,7 @@
     frameDocument.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const args = webviewContextAt(e.target);
-      const context = Object.assign({ inputFocus: isTextInput(e.target) }, host().viewerContext.keys, args);
+      const context = menuContext(args, { inputFocus: isTextInput(e.target) });
       const items = ui().buildMenu(MENUS['webview/context'], context, resolveEntry(args));
       // cmux addition: VS Code shows Reload File in the editor title bar.
       items.push({ separator: true }, { label: title('vaporview.reloadFile'), run: () => run('vaporview.reloadFile') });
@@ -1468,6 +1489,7 @@
     sessionSnapshot: () => ({ state: plainJSON(withAliasFiles(contextSession(webviewContext))), dirty }),
     undoDepth: () => undoStack.length,
     commandIds: () => Object.keys(COMMANDS),
+    menuContext,
     menus: MENUS,
   };
 })();

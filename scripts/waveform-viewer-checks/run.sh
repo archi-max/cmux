@@ -9,6 +9,13 @@
 #                                        range/router/FrameParser unit checks
 #   ./run.sh link                        the SystemVerilog editor's source link
 #                                        API (link.* in host.js) on link.vcd
+#   ./run.sh enum                        enum member names (cmux-enum.js): rows
+#                                        get their enum's alias table as a default,
+#                                        undo, user formats, raw valuesAt
+#   ./run.sh enum-link                   the app's enum type wiring (the real
+#                                        WaveformEnumLink.swift on a scripted
+#                                        session): saves, slang's reports, reloads,
+#                                        refused reads; and its call sites
 #   ./run.sh debugger                    the waveform debugger (cmux-debugger.js):
 #                                        clock, stepping, play, Locals, highlights
 #   ./run.sh debugger-fsdb <ssh-host> <remote.fsdb> <scope.path>
@@ -84,11 +91,28 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/xss"
     "$OUT/xss" "$ASSETS" "$HERE/xss-signal-names.vcd" "$OUT/xss.png"
     ;;
+  enum)
+    swiftc -O "$HERE/enum/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/enum"
+    "$OUT/enum" "$ASSETS" "$HERE/enum/fsm.vcd" "$OUT/enum.png" | tee "$OUT/enum.log"
+    grep -q '^ENUM CHECKS PASSED' "$OUT/enum.log"
+    ;;
   link)
     swiftc -O "$HERE/link/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/link"
     "$OUT/link" "$ASSETS" "$HERE/link/link.vcd" "$OUT/link.png" | tee "$OUT/link.log"
     grep -q '^LINK CHECKS PASSED' "$OUT/link.log"
+    ;;
+  enum-link)
+    L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    # One module here: the package import goes, and SlangEnumTypes.swift's session extension
+    # (slang requests) is replaced by the scripted session in stubs.swift.
+    sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformEnumLink.swift" > "$OUT/enum-link.swift"
+    awk '/^extension LanguageServerSession \{/ { skip = 1 } !skip { print } skip && /^}$/ { skip = 0 }' "$L/SlangEnumTypes.swift" > "$OUT/enum-types.swift"
+    swiftc -swift-version 6 -O "$HERE/enum-link/main.swift" "$HERE/enum-link/stubs.swift" "$OUT/enum-link.swift" "$OUT/enum-types.swift" \
+      "$L/JSONValue.swift" "$L/LSPTypes.swift" "$L/LSPResponseDecoding.swift" "$L/HierarchyPathMapping.swift" -o "$OUT/enum-link"
+    "$OUT/enum-link" "$ROOT" | tee "$OUT/enum-link.log"
+    grep -q '^ENUM LINK CHECKS PASSED' "$OUT/enum-link.log"
     ;;
   debugger-editor)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"

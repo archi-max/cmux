@@ -67,6 +67,9 @@ final class FilePreviewLanguageFeatures: NSObject {
     /// Waveform values drawn after the visible lines, at the waveform's marker.
     private var inlineValueTask: Task<Void, Never>?
     private var inlineValueOverlay: FilePreviewInlineValueOverlay?
+    /// The values drawn last, by module and name, and (enums) the raw values their names stand for: for hover.
+    private var inlineShownValues: [String: [String: String]] = [:]
+    private var inlineRawValues: [String: [String: String]] = [:]
     /// Keeps marker-driven refreshes from starving while the waveform debugger plays.
     private var inlineRefreshThrottle = WaveformRefreshThrottle()
     /// Per module of this file: slang's design instances of it, and when to ask again while it has none.
@@ -211,10 +214,13 @@ final class FilePreviewLanguageFeatures: NSObject {
             scheduleInlineValues(after: .milliseconds(600))
         }
         changeTask?.cancel()
+        // A reload of the clean buffer from its file (changed by an agent, git, another editor)
+        // is sent at once, as a save: a keystroke right after it is then an edit of the saved text.
+        let reloadedClean = !isUserEdit && linkPanel?.isDirty == false
         changeTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.changeDebounce)
+            if !reloadedClean { try? await Task.sleep(for: Self.changeDebounce) }
             guard !Task.isCancelled else { return }
-            await self?.sendCurrentText()
+            await self?.sendCurrentText(reloadedFromDisk: reloadedClean)
         }
         if isUserEdit, grewByOneCharacter {
             scheduleAutomaticCompletion()
@@ -224,6 +230,7 @@ final class FilePreviewLanguageFeatures: NSObject {
     func documentDidSave(_ text: String) {
         guard let session, let documentURI else { return }
         Task { await session.save(uri: documentURI, text: text) }
+        WaveformEnumLink.documentSaved(session)
     }
 
     private func startSession() async {
@@ -260,18 +267,19 @@ final class FilePreviewLanguageFeatures: NSObject {
         // Subscribe before opening so the first publish is not missed.
         let updates = await session.diagnosticsUpdates()
         let documentPath = context.documentURI.standardizedFileURL.path
-        diagnosticsTask = Task { [weak self] in
+        diagnosticsTask = Task { [weak self, weak session] in
             for await update in updates {
                 guard !Task.isCancelled else { return }
                 guard update.uri.standardizedFileURL.path == documentPath else { continue }
                 self?.applyDiagnostics(update.diagnostics)
+                if let session { WaveformEnumLink.serverReported(session) }
             }
         }
         documentVersion = 1
         lastSentText = text
         await session.open(uri: context.documentURI, text: text, version: documentVersion)
-        // Edits made while the server was starting.
-        await sendCurrentText()
+        // Edits made while the server was starting (or a reload of the clean buffer).
+        await sendCurrentText(reloadedFromDisk: linkPanel?.isDirty == false)
         updateSlangHeader()
         SlangCompilationActions.refreshListing(for: self)
         SlangCompilationActions.compilationDidChange(session: session)
@@ -305,13 +313,18 @@ final class FilePreviewLanguageFeatures: NSObject {
         completionMirror = mirror
     }
 
-    func sendCurrentText() async {
+    /// - reloadedFromDisk: the buffer is clean, just loaded from its file (verify X1).
+    func sendCurrentText(reloadedFromDisk: Bool = false) async {
         guard let text = textView?.string else { return }
         await completionMirror?.change(text: text)
         guard let session, let documentURI, text != lastSentText else { return }
         documentVersion += 1
         lastSentText = text
-        await session.change(uri: documentURI, text: text, version: documentVersion)
+        if reloadedFromDisk {
+            await WaveformEnumLink.documentReloadedFromDisk(session, uri: documentURI, text: text, version: documentVersion)
+        } else {
+            await session.change(uri: documentURI, text: text, version: documentVersion)
+        }
     }
 
     /// The pool restarts a dead server in place and re-opens its documents.
@@ -461,6 +474,9 @@ final class FilePreviewLanguageFeatures: NSObject {
         guard !Task.isCancelled, let textView = self.textView,
               textView.textStorage?.string == snapshot else { return }
         var sections = messages
+        if let wordRange, let waveformValue = inlineValueHover(at: wordRange, in: text) {
+            sections.append(waveformValue)
+        }
         if let hoverText = hoverText?.trimmingCharacters(in: .whitespacesAndNewlines), !hoverText.isEmpty {
             sections.append(hoverText)
         }
@@ -899,6 +915,7 @@ final class FilePreviewLanguageFeatures: NSObject {
             editor.inlineModuleInstances = [:]
             editor.scheduleInlineValues(after: .milliseconds(120))
         }
+        WaveformEnumLink.designChanged(session)
         SlangCompilationActions.compilationDidChange(session: session)
     }
 
@@ -918,6 +935,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         inlineValueTask?.cancel()
         inlineRefreshThrottle.cleared()
         inlineValueOverlay?.clear()
+        inlineShownValues = [:]
+        inlineRawValues = [:]
         WaveformDebuggerEditorHighlights.clear(in: textView)
     }
 
@@ -935,6 +954,13 @@ final class FilePreviewLanguageFeatures: NSObject {
     private func textChangedForInlineValues(from location: Int) {
         inlineScanEditedFrom = min(inlineScanEditedFrom ?? location, location)
         inlineTextGeneration += 1
+    }
+
+    /// slang may have new enum types for `session`: editors show the values again.
+    static func enumTypesMayHaveChanged(session: LanguageServerSession) {
+        for editor in liveInstances.allObjects where editor.session === session && editor.inlineValueOverlay?.hasAnnotations == true {
+            editor.scheduleInlineValues(after: .milliseconds(50))
+        }
     }
 
     /// The scanner, caught up with the text view's current text.
@@ -1027,6 +1053,8 @@ final class FilePreviewLanguageFeatures: NSObject {
               let waveform = WaveformSourceLink.waveformPanel(near: linkPanel),
               let time = WaveformSourceLink.markerTime(of: waveform) else {
             inlineValueOverlay?.clear()
+            inlineShownValues = [:]
+            inlineRawValues = [:]
             WaveformDebuggerEditorHighlights.clear(in: textView)
             return
         }
@@ -1046,6 +1074,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         inlineValueOverlay?.isStale = true
         let rootKey = linkRootKey
         var valueByModule: [String: [String: String]] = [:]
+        var rawValueByModule: [String: [String: String]] = [:]
         var hints: [String: String] = [:]
         var reasons: [String: WaveformDebuggerRTLStatus.Reason] = [:]
         for module in modules.prefix(4) {
@@ -1103,13 +1132,23 @@ final class FilePreviewLanguageFeatures: NSObject {
                 )
                 continue
             }
-            let values = await WaveformSourceLink.inlineValues(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time)
+            // Enum signals show their member's name (the type from slang, the bits from the dump).
+            // Never waits: a type not read yet (or stale after an edit) is read in the background,
+            // and the values are drawn again when it arrives.
+            let enums = WaveformEnumLink.enumSignalsNow(designInstance: designOfDump[dumpInstance] ?? "", session: session)
+            WaveformEnumLink.setInlineEnums(enums, dumpInstance: dumpInstance, waveform: waveform)
+            let values = await WaveformSourceLink.inlineValuesWithRaw(names: names, dumpInstance: dumpInstance, waveform: waveform, time: time)
             guard !Task.isCancelled else { return }
             var byName: [String: String] = [:]
+            var rawByName: [String: String] = [:]
             for (name, value) in zip(names, values) {
-                if let value { byName[name] = value }
+                if let value {
+                    byName[name] = value.shown
+                    if let raw = value.raw { rawByName[name] = raw }
+                }
             }
             valueByModule[module] = byName
+            rawValueByModule[module] = rawByName
             inlineShownInstances[module] = .init(design: designOfDump[dumpInstance] ?? "", dump: dumpInstance)
             if byName.isEmpty {
                 reasons[module] = WaveformSourceLink.showsUnshownValues(in: waveform) ? .noneDumped(instance: dumpInstance) : .onlyShownValues
@@ -1165,11 +1204,33 @@ final class FilePreviewLanguageFeatures: NSObject {
         let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         let font = NSFont.monospacedSystemFont(ofSize: max(9, baseFont.pointSize - 1), weight: .regular)
         overlay.show(annotations, font: font, in: textView)
+        inlineShownValues = valueByModule
+        inlineRawValues = rawValueByModule
         WaveformDebuggerEditorHighlights.valuesShown(.init(
             editor: self, textView: textView, lines: lines, waveform: waveform, time: time,
             values: valueByModule, instances: inlineShownInstances.filter { valueByModule[$0.key] != nil },
             reasons: reasons
         ))
+    }
+
+    /// The waveform value drawn for the signal at `range`: an enum's member with its raw value.
+    private func inlineValueHover(at range: NSRange, in text: NSString) -> String? {
+        guard !isDetached, let textView else { return nil }
+        let name = text.substring(with: range)
+        var scan = syncedInlineScan(of: textView)
+        let module = scan.lines(in: NSRange(location: range.location, length: 0)).first?.module
+        inlineScan = scan
+        guard let module, let shown = inlineShownValues[module]?[name] else { return nil }
+        if let raw = inlineRawValues[module]?[name] {
+            return String(
+                format: String(localized: "filePreview.inlineValues.enumHover", defaultValue: "Waveform: %1$@ = %2$@ (%3$@)"),
+                name, shown, raw
+            )
+        }
+        return String(
+            format: String(localized: "filePreview.inlineValues.valueHover", defaultValue: "Waveform: %1$@ = %2$@"),
+            name, shown
+        )
     }
 
     /// The instance the caret's module showed values of, for the waveform debugger's Locals.
