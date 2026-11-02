@@ -43,6 +43,32 @@ extension CmuxTuiSurfaceProvider {
         }
     }
 
+    /// The Files fallback's query (`CloudTerminalDirectoryFallback`). It uses only a link
+    /// that is already connected: `links.connected` can wait minutes for a reconnect,
+    /// past the probe's 3 s bound, or start one, and a probe must do neither. No
+    /// connected link answers `.skipped`, so the next graph event asks again.
+    func foregroundDirectoryAnswer(of resource: SurfaceResource) async -> CloudTerminalDirectoryFallback.Answer {
+        guard resource.kind == .terminal,
+              let link = await links.link(machineID: machineID),
+              await link.isConnected,
+              let connected = await link.connected else { return .skipped }
+        do {
+            let data = try await link.run(
+                arguments: CloudTuiRequests.processInfoArguments(
+                    socketPath: connected.socketPath,
+                    terminalID: resource.id.key
+                )
+            )
+            guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .failed }
+            return CloudTerminalDirectoryFallback.Answer(
+                foregroundDirectory: CloudTuiCommandLine.foregroundWorkingDirectory(fromProcessInfo: result),
+                foregroundExecutable: CloudTuiCommandLine.foregroundExecutable(fromProcessInfo: result)
+            )
+        } catch {
+            return Task.isCancelled ? .skipped : .failed
+        }
+    }
+
     /// Block until the remote terminal's process exits or `timeoutMs` elapses (the same
     /// clamp as `waitForScreen`: nil/non-positive → 30 s, at most an hour). The daemon's
     /// answer: `{state: "exited", terminal_id, lifecycle, outcome: {kind: exit, code} |
