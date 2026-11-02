@@ -309,6 +309,12 @@ enum WaveformMachineState {
                 defaultValue: "Where clicking a match puts the marker. Click to change."
             ),
             "machineSeqBreakHere": String(localized: "waveformMachine.seq.breakHere", defaultValue: "Break Here"),
+            "machineSeqBreakAdded": String(localized: "waveformMachine.seq.breakAdded", defaultValue: "Breakpoint added: %@"),
+            "machineSeqBreakExists": String(localized: "waveformMachine.seq.breakExists", defaultValue: "Already a breakpoint: %@"),
+            "machineSeqBreakEnabled": String(
+                localized: "waveformMachine.seq.breakEnabled",
+                defaultValue: "Breakpoint enabled again: %@"
+            ),
             "machineSeqBreakHereTooltip": String(
                 localized: "waveformMachine.seq.breakHereTooltip",
                 defaultValue: "Add a breakpoint that stops where the committed instructions match this sequence (at its last or first step, as Go to says)."
