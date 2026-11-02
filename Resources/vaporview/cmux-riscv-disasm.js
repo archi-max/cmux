@@ -22,7 +22,7 @@ var cmuxRiscvDisasm = (() => {
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-  // ansht2-disasm/riscv_disasm.ts
+  // riscv_disasm.ts
   var riscv_disasm_exports = {};
   __export(riscv_disasm_exports, {
     disassembleRiscv: () => disassembleRiscv,

@@ -2,15 +2,17 @@
 # Machine-state fixtures (phase 0): builds prog/ for each core, simulates it, and writes the dump,
 # the ELF, and Spike's --log-commits of the same ELF (the oracle) to fixtures/<core>/.
 #   build-fixtures.sh [core...]      cores: nerv picorv32 ibex (default: all)
-# Needs: Homebrew llvm (clang, lld, llvm-readelf, llvm-objcopy), iverilog, verilator; Spike on
-# $SPIKE_HOST (default ews-01, /class/ece411/riscv/bin). Upstream cores are read from $THIRD_PARTY
+# Needs: Homebrew llvm (clang, lld, llvm-readelf, llvm-objcopy), iverilog, verilator; Spike on an
+# SSH host: SPIKE_HOST (required), SPIKE_DIR (the folder holding spike, if it isn't on that host's
+# PATH), SPIKE_WORK (scratch folder there, default /tmp/cmux-machine-fixtures). Upstream cores are read from $THIRD_PARTY
 # (pinned commits in fixtures/<core>/NOTICE); they are never copied into the repo.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 THIRD_PARTY="${THIRD_PARTY:-$HERE/../../../../third-party-ref/machine}"
-WORK="${WORK:-/tmp/ansht2-vv/machine}"
-SPIKE_HOST="${SPIKE_HOST:-ews-01}"
-SPIKE_DIR="${SPIKE_DIR:-/class/ece411/riscv/bin}"
+WORK="${WORK:-${TMPDIR:-/tmp}/cmux-machine-fixtures}"
+SPIKE_HOST="${SPIKE_HOST:?set SPIKE_HOST to an SSH host with Spike}"
+SPIKE_DIR="${SPIKE_DIR:-}"
+SPIKE_WORK="${SPIKE_WORK:-/tmp/cmux-machine-fixtures}"
 LLVM="${LLVM:-/opt/homebrew/opt/llvm/bin}"
 mkdir -p "$WORK"
 cores=("$@"); [ ${#cores[@]} -gt 0 ] || cores=(nerv picorv32 ibex)
@@ -22,9 +24,9 @@ elf() {  # elf <out> <march> <defines...>
 }
 tohost() { "$LLVM/llvm-nm" "$1" | awk '/ [Dd] tohost$/{print $1}'; }
 spike() {  # spike <elf> <isa> <log>
-  ssh "$SPIKE_HOST" "mkdir -p /tmp/ansht2-vv/machine" 2>/dev/null
-  scp -q "$1" "$SPIKE_HOST:/tmp/ansht2-vv/machine/$(basename "$1")"
-  ssh "$SPIKE_HOST" "cd /tmp/ansht2-vv/machine && PATH=$SPIKE_DIR:\$PATH nice spike --isa=$2 -m0x80000000:0x10000 --log-commits $(basename "$1") 2>&1 >/dev/null" 2>/dev/null |
+  ssh "$SPIKE_HOST" "mkdir -p $SPIKE_WORK" 2>/dev/null
+  scp -q "$1" "$SPIKE_HOST:$SPIKE_WORK/$(basename "$1")"
+  ssh "$SPIKE_HOST" "cd $SPIKE_WORK && PATH=${SPIKE_DIR:+$SPIKE_DIR:}\$PATH nice spike --isa=$2 -m0x80000000:0x10000 --log-commits $(basename "$1") 2>&1 >/dev/null" 2>/dev/null |
     # Spike notices tohost only every few thousand steps: keep 64 turns of the final self-loop.
     awk '{ if ($4 == last) { if (++rep > 63) next } else { rep = 0 }; last = $4; print }' > "$3"
 }

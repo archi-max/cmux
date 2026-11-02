@@ -293,13 +293,13 @@ struct GoToFileTests {
 
     @Test
     func testSSHInvocationRunsTheListScriptThroughSSH() {
-        let connection = SSHFileExplorerConnection(destination: "ews-01", port: nil, identityFile: nil, sshOptions: [])
+        let connection = SSHFileExplorerConnection(destination: "remote-host", port: nil, identityFile: nil, sshOptions: [])
         let invocation = GoToFileSnapshotLoader.invocation(
             for: .ssh(connection: connection, rootPath: "/home/u/repo"),
             sshArguments: { connection, command in ["-o", "BatchMode=yes", connection.destination, command] }
         )
         #expect(invocation.executable == "/usr/bin/ssh")
-        #expect(invocation.arguments.prefix(3) == ["-o", "BatchMode=yes", "ews-01"])
+        #expect(invocation.arguments.prefix(3) == ["-o", "BatchMode=yes", "remote-host"])
         #expect(invocation.arguments.last
             == SSHFileSearchCommand.fileList(rootPath: "/home/u/repo", maxDepth: 8, remoteTimeoutSeconds: 18, watchdog: true).command)
         #expect(invocation.keepsStdinOpen)
