@@ -284,6 +284,18 @@ final class FilePreviewLanguageFeatures: NSObject {
         updateSlangHeader()
         SlangCompilationActions.refreshListing(for: self)
         SlangCompilationActions.compilationDidChange(session: session)
+        // Opened into focus (or restored as the focused editor): the server builds its file's profile.
+        if let textView = self.textView, textView.window?.firstResponder === textView {
+            editorDidBecomeActive()
+        }
+    }
+
+    /// The editor took focus (or was clicked): it is the active file its server follows.
+    func editorDidBecomeActive() {
+        guard !isDetached else { return }
+        lastActivity = Date()
+        guard linkSession != nil else { return }
+        SlangCompilationActions.editorBecameActive(self)
     }
 
     /// Remote slang-server builds can hang on completion, so a remote document
@@ -505,7 +517,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// Cmd-click on an identifier goes to its definition.
     func handleMouseDown(_ event: NSEvent) -> Bool {
-        lastActivity = Date()
+        editorDidBecomeActive()
         linkMessageMayClose()
         guard !isDetached, event.clickCount == 1,
               event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,

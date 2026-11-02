@@ -726,6 +726,7 @@ enum WaveformSourceLink {
                 waveformSourceLinkLogger.info("set slang top level to \(candidate.module, privacy: .public)")
                 state.setByLink = true
                 SlangCompilationActions.recordTarget(.topLevel(candidate.file), for: session)
+                SlangCompilationActions.recordLastSet(.topLevel(candidate.file), session: session)
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 return true
             }

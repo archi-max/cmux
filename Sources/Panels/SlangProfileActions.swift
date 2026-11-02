@@ -54,8 +54,14 @@ extension SlangCompilationActions {
                 : String(localized: "slangProfile.header.config", defaultValue: "server.json")
         }
         let tops = entry.tops ?? []
-        let label: String
-        if let first = tops.first {
+        var label: String
+        if let following = entry.following {
+            // A focus switch is building this file's profile.
+            label = String(
+                format: String(localized: "slangProfile.progress.switch", defaultValue: "Building the design from profile %@…"),
+                profileName(of: following)
+            )
+        } else if let first = tops.first {
             let names = tops.count > 1 ? "\(first) +\(tops.count - 1)" : first
             label = String(
                 format: String(localized: "slangProfile.header.withTop", defaultValue: "slang: %1$@ · top %2$@"),
@@ -64,6 +70,16 @@ extension SlangCompilationActions {
             )
         } else {
             label = String(format: String(localized: "slangProfile.header.noTop", defaultValue: "slang: %@"), profile)
+        }
+        // The file's own (or the last-set) profile isn't what the server compiles: an editor that
+        // isn't the active one, or a profile that couldn't be built.
+        if entry.following == nil, let mine = profileChoice(for: editor),
+           mine != SlangProfileChoice(CompilationState(target: entry.target, isExplore: entry.isExplore)) {
+            label = String(
+                format: String(localized: "slangProfile.header.fileProfile", defaultValue: "%1$@ · this file: %2$@"),
+                label,
+                profileName(of: mine)
+            )
         }
         let warning = cachedListing(for: editor)?.configs.contains { $0.health == .empty || $0.health == .invalid } ?? false
         var notice: String?
@@ -106,7 +122,9 @@ extension SlangCompilationActions {
         let menu = NSMenu(title: "slang")
         menu.autoenablesItems = false
         menu.addItem(.sectionHeader(title: String(localized: "slangProfile.menu.profiles", defaultValue: "Profiles")))
-        let target = target(of: session)
+        // The file's profile (its own, else the last-set one), else what the server compiles.
+        let entry = entry(for: session)
+        let shown = profileChoice(for: editor) ?? SlangProfileChoice(CompilationState(target: entry.target, isExplore: entry.isExplore))
         if let listing = cachedListing(for: editor) {
             if listing.profiles.isEmpty {
                 menu.addItem(disabledItem(String(localized: "slangProfile.menu.none", defaultValue: "No profiles (.f files) found")))
@@ -126,7 +144,7 @@ extension SlangCompilationActions {
                         item.title = profile.name + " · " + tops
                     }
                 }
-                if case .buildFile(let path)? = target, path == session.serverPath(for: URL(fileURLWithPath: profile.path)) {
+                if shown == .buildFile(session.serverPath(for: URL(fileURLWithPath: profile.path))) {
                     item.state = .on
                 }
                 menu.addItem(item)
@@ -140,15 +158,27 @@ extension SlangCompilationActions {
             setCurrentFileAsTop(editor: editor)
         }
         fileTop.isEnabled = !SystemVerilogModuleLocator.declarations(in: editor.documentText ?? "").isEmpty
-        if case .topLevel(let path)? = target, let uri = editor.linkSession?.documentURI, path == session.serverPath(for: uri) {
+        if let uri = editor.linkSession?.documentURI, shown == .topLevel(session.serverPath(for: uri)) {
             fileTop.state = .on
         }
         menu.addItem(fileTop)
         let explore = SlangMenuAction.item(String(localized: "slangProfile.menu.explore", defaultValue: "Explore Mode (No Top)")) {
             exploreMode(editor: editor)
         }
-        if target == nil, entry(for: session).isExplore || (entry(for: session).tops ?? []).isEmpty { explore.state = .on }
+        if shown == .explore || (shown == .configured && (entry.tops ?? []).isEmpty) { explore.state = .on }
         menu.addItem(explore)
+        let followLast = SlangMenuAction.item(String(
+            localized: "slangProfile.menu.followLastSet",
+            defaultValue: "Use the Last-Set Profile for This File"
+        )) {
+            followLastSetProfile(editor: editor)
+        }
+        followLast.isEnabled = fileKey(of: editor).map { assignments(rootKey: editor.linkRootKey).ownChoice(forFile: $0) != nil } ?? false
+        followLast.toolTip = String(
+            localized: "slangProfile.menu.followLastSet.help",
+            defaultValue: "Each file keeps the profile chosen while it was active. Files with none use the profile set last."
+        )
+        menu.addItem(followLast)
         menu.addItem(.separator())
         for config in cachedListing(for: editor)?.configs ?? [] where config.health == .empty || config.health == .invalid {
             let name = displayName(ofConfig: config.path, editor: editor)
@@ -284,6 +314,7 @@ extension SlangCompilationActions {
                 )
                 return
             }
+            recordChoice(.buildFile(session.serverPath(for: URL(fileURLWithPath: profile.path))), session: session, editor: editor)
             var lines = [
                 String(
                     format: String(localized: "slangProfile.switched", defaultValue: "slang-server now builds the design from profile %@."),
@@ -368,6 +399,7 @@ extension SlangCompilationActions {
                 entry.target = nil
                 entry.isExplore = true
                 WaveformSourceLink.topLevelWasChosen(session: session)
+                recordChoice(.explore, session: session, editor: editor)
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 editor.showLinkMessage(String(
                     localized: "slangProfile.explore.done",
@@ -774,6 +806,7 @@ extension SlangCompilationActions {
             // What the server compiles now, also when the restore failed.
             entry.target = await session.slangCompilationTarget
             entry.isExplore = await session.isInChosenExploreMode
+            recordLastSet(autoPick.previous == CompilationState(target: nil, isExplore: false) ? nil : SlangProfileChoice(autoPick.previous), session: session)
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         }
     }
@@ -828,6 +861,7 @@ extension SlangCompilationActions {
         let outcome = await applyProfile(profile, to: session, editor: editor)
         slangProfileLogger.info("auto-picked slang profile \(profile.path, privacy: .public): \(outcome.tops.count) tops")
         guard !outcome.tops.isEmpty else { return false }
+        recordLastSet(.buildFile(session.serverPath(for: URL(fileURLWithPath: profile.path))), session: session)
         // Never silently: the header says what changed, with Undo, for a while.
         entry.autoPick = AutoPick(profile: profile.name, picked: entry.target, previous: previous, at: Date())
         updateHeaders(of: session)
@@ -859,5 +893,223 @@ final class SlangMenuAction: NSObject {
 
     @objc private func run(_ sender: Any?) {
         action()
+    }
+}
+
+// MARK: - Per-file profiles
+
+/// Each file keeps the profile (build file, top level, explore mode) chosen while it was the
+/// active file; a file with none follows the root's last-set profile. When a file becomes active
+/// the server switches to its profile (`SlangProfileFollower`: debounced, never for the profile
+/// it already compiles). One server per root is switched rather than one kept per profile: a
+/// switch measured 0.04–0.46 s on designs of 500–3,300 instances (1.6–4 s on a 30,000-instance
+/// one), while every extra server costs its own memory (1.4–2.8 GB on that design).
+/// The choices persist in user defaults per root (`SlangProfileAssignmentStore`), keyed by
+/// server paths: the remote path for an SSH file.
+extension SlangCompilationActions {
+    private static let assignmentStore = SlangProfileAssignmentStore()
+    /// Every root's choices, read from the store on first use.
+    private static var loadedAssignments: [String: SlangProfileAssignments]?
+
+    private static func assignments(rootKey: String) -> SlangProfileAssignments {
+        if loadedAssignments == nil { loadedAssignments = assignmentStore.load() }
+        return loadedAssignments?[rootKey] ?? SlangProfileAssignments()
+    }
+
+    private static func updateAssignments(rootKey: String, _ change: (inout SlangProfileAssignments) -> Void) {
+        var assignments = assignments(rootKey: rootKey)
+        let before = assignments
+        change(&assignments)
+        guard assignments != before else { return }
+        loadedAssignments?[rootKey] = assignments
+        assignmentStore.save(assignments, root: rootKey)
+    }
+
+    /// The editor's file as the server names it (the remote path for an SSH file).
+    private static func fileKey(of editor: FilePreviewLanguageFeatures) -> String? {
+        guard let (session, documentURI) = editor.linkSession else { return nil }
+        return session.serverPath(for: documentURI)
+    }
+
+    /// The profile `editor`'s file builds from: its own, else the root's last-set one.
+    static func profileChoice(for editor: FilePreviewLanguageFeatures) -> SlangProfileChoice? {
+        guard let file = fileKey(of: editor) else { return nil }
+        return assignments(rootKey: editor.linkRootKey).choice(forFile: file)
+    }
+
+    /// The editor whose file a choice made on `session` belongs to: the given one, else the one
+    /// made active last, else the one used last.
+    private static func choosingEditor(_ editor: FilePreviewLanguageFeatures?, session: LanguageServerSession) -> FilePreviewLanguageFeatures? {
+        if let editor, editor.linkSession?.session === session { return editor }
+        if let active = entry(for: session).activeEditor, active.linkSession?.session === session { return active }
+        return FilePreviewLanguageFeatures.allLinkables
+            .filter { $0.linkSession?.session === session }
+            .max { $0.lastActivity < $1.lastActivity }
+    }
+
+    /// The user made `session` compile `choice` with `editor`'s file active (nil: from the Files
+    /// panel or the View menu, for the file active then): the file's profile and the last-set one.
+    static func recordChoice(_ choice: SlangProfileChoice, session: LanguageServerSession, editor: FilePreviewLanguageFeatures?) {
+        guard let owner = choosingEditor(editor, session: session) else { return }
+        let file = fileKey(of: owner)
+        updateAssignments(rootKey: owner.linkRootKey) { $0.choose(choice, file: file) }
+        entry(for: session).reportedFollowFailure = nil
+        updateHeaders(of: session)
+    }
+
+    /// The waveform link chose what `session` compiles (or its Undo put it back): only the
+    /// last-set profile, no file's own.
+    static func recordLastSet(_ choice: SlangProfileChoice?, session: LanguageServerSession) {
+        guard let owner = choosingEditor(nil, session: session) else { return }
+        updateAssignments(rootKey: owner.linkRootKey) { $0.setLastSet(choice) }
+        updateHeaders(of: session)
+    }
+
+    /// `editor`'s file follows the last-set profile again, and the server follows it.
+    static func followLastSetProfile(editor: FilePreviewLanguageFeatures) {
+        guard let file = fileKey(of: editor) else { return }
+        updateAssignments(rootKey: editor.linkRootKey) { $0.forgetFile(file) }
+        editorBecameActive(editor)
+        editor.updateSlangHeader()
+    }
+
+    /// `editor` became the active one (focus, a click, a tab switch or an open): once focus
+    /// settles its server compiles the file's profile.
+    static func editorBecameActive(_ editor: FilePreviewLanguageFeatures) {
+        guard let session = editor.linkSession?.session else { return }
+        let entry = entry(for: session)
+        entry.activeEditor = editor
+        follower(for: session, entry: entry).activeFileChanged()
+    }
+
+    private static func follower(for session: LanguageServerSession, entry: Entry) -> SlangProfileFollower {
+        if let follower = entry.follower { return follower }
+        let follower = SlangProfileFollower(hooks: .init(
+            wanted: { [weak entry] in
+                guard let editor = entry?.activeEditor else { return nil }
+                return profileChoice(for: editor)
+            },
+            current: { [weak session] in
+                guard let session else { return CompilationState(target: nil, isExplore: false) }
+                return await currentState(of: session)
+            },
+            isBusy: { [weak session] in session.map { Self.isBusy($0) } ?? true },
+            apply: { [weak session, weak entry] choice in
+                guard let session, let entry else { return .failed }
+                return await follow(choice, session: session, entry: entry)
+            },
+            missing: { [weak entry] choice in
+                guard let path = choice.path, let editor = entry?.activeEditor else { return }
+                updateAssignments(rootKey: editor.linkRootKey) { $0.profileWasRemoved(path) }
+            }
+        ))
+        entry.follower = follower
+        return follower
+    }
+
+    /// Switches `session` to `choice` for the active file. Nothing is asked or shown on success
+    /// (the header changes); a profile that elaborates nothing is put back and reported once.
+    private static func follow(_ choice: SlangProfileChoice, session: LanguageServerSession, entry: Entry) async -> SlangProfileFollower.ApplyResult {
+        if case .buildFile = choice, await session.supportsCommand("slang.setBuildFile") != true { return .failed }
+        guard claim([session]) else { return .failed }
+        defer { release([session]) }
+        let editor = entry.activeEditor
+        entry.following = choice
+        updateHeaders(of: session)
+        defer {
+            entry.following = nil
+            updateHeaders(of: session)
+        }
+        await editor?.sendCurrentText()
+        let previous = await currentState(of: session)
+        _ = await session.takeRecentErrorMessages()
+        var failure: (any Error)?
+        do {
+            switch choice {
+            case .buildFile(let path): try await session.slangSetBuildFile(path)
+            case .topLevel(let path): try await session.slangSetTopLevel(path)
+            case .explore: try await session.slangExplore()
+            case .configured: await restore(CompilationState(target: nil, isExplore: false), on: session)
+            }
+        } catch {
+            failure = error
+        }
+        let tops = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }.map(\.name)
+        if let path = choice.path, failure != nil || tops.isEmpty {
+            // What went wrong, read before the restore replaces the compilation.
+            let detail: String
+            if let failure {
+                detail = userMessage(for: failure)
+            } else {
+                let summary = await session.diagnosticsSummary()
+                let errors = await session.takeRecentErrorMessages()
+                detail = Outcome(tops: [], instanceCount: 0, summary: summary, serverErrors: errors).failureDetail
+            }
+            await restore(previous, on: session)
+            FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
+            if await !fileExists(path, editor: editor) {
+                slangProfileLogger.info("profile \(path, privacy: .public) is gone; its files follow the last-set profile")
+                return .missing
+            }
+            if entry.reportedFollowFailure != choice, let editor, entry.activeEditor === editor {
+                entry.reportedFollowFailure = choice
+                editor.showLinkMessage([
+                    String(
+                        format: String(localized: "slangProfile.switchFailed.detail", defaultValue: "slang-server elaborated nothing from profile %@."),
+                        profileName(of: choice)
+                    ),
+                    detail,
+                ].filter { !$0.isEmpty }.joined(separator: "\n"))
+            }
+            return .failed
+        }
+        if let failure {
+            slangProfileLogger.error("following the active file's profile failed: \(String(describing: failure), privacy: .public)")
+            return .failed
+        }
+        entry.target = choice.state.target
+        entry.isExplore = choice == .explore
+        entry.reportedFollowFailure = nil
+        WaveformSourceLink.topLevelWasChosen(session: session)
+        FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
+        return .applied
+    }
+
+    /// Whether `path` is still there (on the editor's SSH host for a remote file). An unanswered
+    /// ssh counts as there, so a dropped connection never forgets anyone's profile.
+    private static func fileExists(_ path: String, editor: FilePreviewLanguageFeatures?) async -> Bool {
+        guard let remote = editor?.linkContext?.remote else { return FileManager.default.fileExists(atPath: path) }
+        let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let answer = await FilePreviewLanguageDocumentContext.runRemoteShell(
+            "if [ -e \(quoted) ]; then printf yes; else printf no; fi",
+            configuration: remote.configuration
+        )
+        return answer?.trimmingCharacters(in: .whitespacesAndNewlines) != "no"
+    }
+
+    /// A Files panel rename or move: profiles and files below it keep their choices under the new path.
+    /// `hostIdentity`: `local`, or the SSH route.
+    static func pathWasMoved(from old: String, to new: String, hostIdentity: String) {
+        if loadedAssignments == nil { loadedAssignments = assignmentStore.load() }
+        // Local server paths are real paths; the old one no longer exists, so resolve its folder.
+        let (from, to) = hostIdentity == "local"
+            ? (LanguageServerSession.realPath(old), LanguageServerSession.realPath(new))
+            : (old, new)
+        for rootKey in (loadedAssignments ?? [:]).keys where rootKey.hasPrefix(hostIdentity + "|") {
+            updateAssignments(rootKey: rootKey) { $0.pathWasMoved(from: from, to: to) }
+        }
+        for editor in FilePreviewLanguageFeatures.allLinkables where editor.linkHostIdentity == hostIdentity {
+            editor.updateSlangHeader()
+        }
+    }
+
+    /// A profile's short name for the header and messages.
+    static func profileName(of choice: SlangProfileChoice) -> String {
+        switch choice {
+        case .buildFile(let path): return ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        case .topLevel(let path): return (path as NSString).lastPathComponent
+        case .explore: return String(localized: "slangProfile.header.explore", defaultValue: "explore")
+        case .configured: return String(localized: "slangProfile.header.config", defaultValue: "server.json")
+        }
     }
 }
