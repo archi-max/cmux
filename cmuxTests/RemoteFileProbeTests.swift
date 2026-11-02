@@ -301,6 +301,7 @@ import Testing
         let header = RemoteFileProbe.Header(index: 0, path: "/home/u/secret.fsdb", modificationTime: 1, size: 2)
         #expect(RemotePreviewOpenRules.failureReason(RemoteFileProbe.Oversize(header: header)) == "tooLarge")
         #expect(RemotePreviewOpenRules.failureReason(URLError(.timedOut)) == "timeout")
+        #expect(RemotePreviewOpenRules.failureReason(URLError(.cannotConnectToHost)) == "URLError", "only a timeout is a timeout")
         struct SSHFailed: Error, CustomStringConvertible { var description: String { "/home/u/x: denied" } }
         let other = RemotePreviewOpenRules.failureReason(SSHFailed())
         #expect(other == "SSHFailed", "the type, never the message")
@@ -313,6 +314,35 @@ import Testing
         #expect(RemotePreviewOpenRules.inPlaceConnection(terminal: "u@host:22", filesRoot: "u@host:22") == "u@host:22")
         #expect(RemotePreviewOpenRules.inPlaceConnection(terminal: nil as String?, filesRoot: "u@host:22") == nil,
                 "a terminal that isn't on the host never opens there")
+    }
+
+    @Test func theLogSaysLiveWheneverTheLiveDirectoryWasUsed() async {
+        let same: @Sendable () async -> String? = { "/home/u" }
+        let unchanged = await RemotePreviewOpenRules.resolvedWorkingDirectory(needsDirectory: true, live: same, snapshot: "/home/u")
+        #expect(unchanged.directory == "/home/u")
+        #expect(unchanged.source == .live, "the shell is still where it was spawned")
+        let none: @Sendable () async -> String? = { nil }
+        let fallback = await RemotePreviewOpenRules.resolvedWorkingDirectory(needsDirectory: true, live: none, snapshot: "/home/u")
+        #expect(fallback.source == .snapshot)
+        let nothing = await RemotePreviewOpenRules.resolvedWorkingDirectory(needsDirectory: true, live: none, snapshot: nil)
+        #expect(nothing.source == .none)
+        let absolute = await RemotePreviewOpenRules.resolvedWorkingDirectory(needsDirectory: false, live: same, snapshot: "/s")
+        #expect(absolute.source == .snapshot, "not asked: the snapshot is passed through")
+    }
+
+    @Test func aLocatedFileOpensOnlyWhileItsSourceIsTheSame() {
+        // A reconnect to another host during the lookup must not open the old path there.
+        #expect(RemotePreviewOpenRules.locatedAction(placement: nil, readsInPlace: true) == .drop)
+        #expect(RemotePreviewOpenRules.locatedAction(placement: nil, readsInPlace: false) == .drop)
+        #expect(RemotePreviewOpenRules.locatedAction(placement: .unfocused, readsInPlace: true) == .openInPlace)
+    }
+
+    @Test func aLocatedFileNoViewerTakesBeepsOnlyAtTheUser() {
+        #expect(RemotePreviewOpenRules.locatedAction(placement: .focused, readsInPlace: false) == .refuse(beeps: true))
+        #expect(RemotePreviewOpenRules.locatedAction(placement: .unfocused, readsInPlace: false) == .refuse(beeps: false),
+                "another window is key, or another panel has focus")
+        #expect(RemotePreviewOpenRules.locatedAction(placement: .unfocusedInAnotherWorkspace, readsInPlace: false)
+                == .refuse(beeps: false))
     }
 
     private final class Flag: @unchecked Sendable {

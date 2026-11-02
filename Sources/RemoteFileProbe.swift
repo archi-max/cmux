@@ -186,6 +186,24 @@ enum RemotePreviewOpenRules {
         return snapshot
     }
 
+    /// ``workingDirectory(needsDirectory:live:snapshot:)`` and where the
+    /// directory came from, for the debug log.
+    /// Placeholder until the fix: told apart by comparing with the snapshot.
+    static func resolvedWorkingDirectory(
+        needsDirectory: Bool,
+        live: @Sendable () async -> String?,
+        snapshot: String?
+    ) async -> (directory: String?, source: RemoteWorkingDirectorySource) {
+        let directory = await workingDirectory(needsDirectory: needsDirectory, live: live, snapshot: snapshot)
+        return (directory, directory == nil ? .none : directory == snapshot ? .snapshot : .live)
+    }
+
+    /// What a click on a file located on the host does once it is found.
+    /// Placeholder until the fix: the source isn't re-checked, and a refusal always beeps.
+    static func locatedAction(placement: RemotePreviewPlacement?, readsInPlace: Bool) -> RemoteLocatedAction {
+        readsInPlace ? .openInPlace : .refuse(beeps: true)
+    }
+
     /// How a finished download opens, or nil when it is dropped. It is
     /// dropped only when its source is gone: the workspace was closed, or
     /// the terminal or its connection changed. Focus moves to the preview
@@ -260,4 +278,24 @@ enum RemoteClickViewer: Equatable, Sendable {
     case source
     /// The native file preview on its rendered Markdown view.
     case renderedMarkdown
+}
+
+/// Where a click's working directory came from.
+enum RemoteWorkingDirectorySource: String, Equatable, Sendable {
+    /// The shell's live directory (cmux-tui process query).
+    case live
+    /// The terminal's last reported directory.
+    case snapshot
+    /// Neither: relative links can't resolve.
+    case none
+}
+
+/// What a click on a file located on the host does.
+enum RemoteLocatedAction: Equatable, Sendable {
+    /// Open the viewer that reads it on the host.
+    case openInPlace
+    /// No viewer takes it; beep only if the user is still on the terminal in the key window.
+    case refuse(beeps: Bool)
+    /// The terminal, its projection or its connection changed meanwhile: open nothing.
+    case drop
 }
