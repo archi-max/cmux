@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 /// Where a Go to File palette session lists files.
-enum GoToFileSnapshotSource: Equatable, Sendable {
+enum GoToFileSnapshotSource: Hashable, Sendable {
     case local(rootPath: String)
     case ssh(connection: SSHFileExplorerConnection, rootPath: String)
 
@@ -81,6 +81,17 @@ enum GoToFileSnapshotLoader {
 
     static func load(_ source: GoToFileSnapshotSource) async throws -> GoToFileSnapshot {
         try await load(invocation(for: source))
+    }
+
+    /// How long a root's listing is reused by later palette sessions.
+    static let cacheLifetime: Duration = .seconds(45)
+    /// Listings per root, so reopening Go to File doesn't list the whole
+    /// root again; a Files refresh drops them (``FileExplorerStore/reload()``).
+    @MainActor static let cache = ExpiringValueCache<GoToFileSnapshotSource, GoToFileSnapshot>(lifetime: cacheLifetime)
+
+    /// ``load(_:)`` through ``cache``.
+    static func cachedLoad(_ source: GoToFileSnapshotSource) async throws -> GoToFileSnapshot {
+        try await cache.value(for: source) { try await load(source) }
     }
 
     static func load(
