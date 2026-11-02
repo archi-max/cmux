@@ -533,7 +533,8 @@ enum WaveformDebuggerLineBreakpoints {
     /// onto another statement. A large paste over a marked line merges it (as typing over it does).
     /// Each line's keys are computed once and each gap is indexed by them once, so a reload costs
     /// O(lines + marks × copies of a mark's text); a joined line or a similar one is looked for only
-    /// among the `nearbyLimit` gap lines nearest where the mark would be.
+    /// among the `nearbyLimit` gap lines nearest where the mark would be (counted from the gap's top
+    /// and from its end).
     private static func matchLines(_ tracker: Tracker, old: NSString, oldTable: (starts: [Int], texts: [String]),
                                    newTable: (starts: [Int], texts: [String]), edited: (start: Int, oldEnd: Int)?,
                                    taken: inout [Int: UUID], lost: inout Set<UUID>, dropped: inout [UUID],
@@ -634,14 +635,24 @@ enum WaveformDebuggerLineBreakpoints {
                 let index = gapIndex(oldGap, newGap)
                 found = byOrder(index.oldSpaced[wanted], index.newSpaced[wanted]) ?? byOrder(index.oldBare[bare], index.newBare[bare])
             }
-            // The gap's lines nearest where it would be (nearest first, the earlier on a tie).
+            // The gap's lines nearest where it would be, counted from the gap's top (`target`) and
+            // from its end (`fromEnd`: lines added right above it move it away from the top). Nearest
+            // first, from the top first and the earlier line on a tie.
             var nearby: [Int] = []
             if found == nil, !bare.isEmpty, !newGap.isEmpty {
+                let fromEnd = max(newGap.lowerBound, min(newGap.upperBound - 1, newGap.upperBound - (oldGap.upperBound - line)))
+                let origins = fromEnd == target ? [target] : [target, fromEnd]
                 nearby.reserveCapacity(min(newGap.count, nearbyLimit))
+                var seen = Set<Int>(minimumCapacity: min(newGap.count, nearbyLimit))
                 var distance = 0
-                while nearby.count < nearbyLimit, target - distance >= newGap.lowerBound || target + distance < newGap.upperBound {
-                    if newGap.contains(target - distance) { nearby.append(target - distance) }
-                    if distance > 0, nearby.count < nearbyLimit, newGap.contains(target + distance) { nearby.append(target + distance) }
+                while nearby.count < nearbyLimit,
+                      origins.contains(where: { $0 - distance >= newGap.lowerBound || $0 + distance < newGap.upperBound }) {
+                    for origin in origins {
+                        for candidate in distance == 0 ? [origin] : [origin - distance, origin + distance]
+                        where nearby.count < nearbyLimit && newGap.contains(candidate) && seen.insert(candidate).inserted {
+                            nearby.append(candidate)
+                        }
+                    }
                     distance += 1
                 }
             }
@@ -674,7 +685,7 @@ enum WaveformDebuggerLineBreakpoints {
         }
     }
 
-    /// How many of a gap's lines (nearest where a mark would be) are searched for a line it was
+    /// How many of a gap's lines (nearest where a mark would be, from the gap's top and its end) are searched for a line it was
     /// joined into or one like it: past them it is lost rather than searched for in a whole file.
     private static let nearbyLimit = 256
 
