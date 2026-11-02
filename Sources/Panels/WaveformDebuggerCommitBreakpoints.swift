@@ -2,7 +2,9 @@ import Foundation
 
 /// A commit breakpoint's fields (cmux-debugger-commits.js): stop where the dump's commit stream commits
 /// an instruction at one of `pcs` (kind `pc`, on `channel` when pinned), one whose text matches `pattern`
-/// (`commitText`), or one that writes `loc` (`write`: `a0`, `csr:mtvec`, `mem:0x80001000/4`). Saved in the
+/// (`commitText`), one that writes `loc` (`write`: `a0`, `csr:mtvec`, `mem:0x80001000/4`), or where the
+/// committed instructions match the sequence `query` (`sequence`, landing on a match's last or first
+/// instruction: `land` `end` or `start`; cmux-sequence.js). Saved in the
 /// session with its signal breakpoint (whose path is empty); every field is optional in the encoding.
 struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
     var pcs: [String]?
@@ -11,20 +13,26 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
     var caseSensitive: Bool?
     var anyRegisterNames: Bool?
     var loc: String?
+    var query: String?
+    var land: String?
 
-    static let kinds: Set<String> = ["pc", "commitText", "write"]
+    static let kinds: Set<String> = ["pc", "commitText", "write", "sequence"]
     /// The page's limits (cmux-debugger-commits.js MAX_PCS, cmux-textmatch.js MAX_PATTERN).
     static let maxAddresses = 64
     static let maxPatternLength = WaveformDebuggerTextBreakpoint.maxPatternLength
+    /// cmux-debugger-commits.js MAX_QUERY.
+    static let maxQueryLength = 4096
 
     init(pcs: [String]? = nil, channel: Int? = nil, pattern: String? = nil, caseSensitive: Bool? = nil,
-         anyRegisterNames: Bool? = nil, loc: String? = nil) {
+         anyRegisterNames: Bool? = nil, loc: String? = nil, query: String? = nil, land: String? = nil) {
         self.pcs = pcs
         self.channel = channel
         self.pattern = pattern
         self.caseSensitive = caseSensitive
         self.anyRegisterNames = anyRegisterNames
         self.loc = loc
+        self.query = query
+        self.land = land
     }
 
     private static func isAddress(_ text: String) -> Bool {
@@ -54,6 +62,11 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
         case "write":
             guard let loc = item["loc"] as? String, Self.isLocation(loc) else { return nil }
             self.init(loc: loc)
+        case "sequence":
+            guard let query = item["query"] as? String, !query.isEmpty, query.count <= Self.maxQueryLength else { return nil }
+            let land = item["land"] as? String
+            guard land == nil || land == "end" || land == "start" else { return nil }
+            self.init(query: query, land: land)
         default:
             return nil
         }
@@ -67,6 +80,8 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
         if let caseSensitive { fields["caseSensitive"] = caseSensitive }
         if let anyRegisterNames { fields["anyRegisterNames"] = anyRegisterNames }
         if let loc { fields["loc"] = loc }
+        if let query { fields["query"] = query }
+        if let land { fields["land"] = land }
         return fields
     }
 
@@ -109,6 +124,41 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
             "debuggerCommitBadAddress": String(
                 localized: "waveformDebugger.commit.badAddress",
                 defaultValue: "an address is a hex number of up to 16 digits"
+            ),
+            "debuggerBreakOnSequence": String(
+                localized: "waveformDebugger.sequence.breakOnSequence",
+                defaultValue: "Break When Sequence Matches…"
+            ),
+            "debuggerSequencePrompt": String(
+                localized: "waveformDebugger.sequence.prompt",
+                defaultValue: "Break when the committed instructions match this sequence"
+            ),
+            "debuggerSequencePlaceholder": String(
+                localized: "waveformDebugger.sequence.placeholder",
+                defaultValue: "{lw} as L ##1 rs1 == L.rd (one commit per ##1; ##[1:$] for any later one)"
+            ),
+            "debuggerBreakpointSequence": String(localized: "waveformDebugger.sequence.label", defaultValue: "Sequence %@"),
+            "debuggerBreakpointSequenceStart": String(
+                localized: "waveformDebugger.sequence.startLabel",
+                defaultValue: "Sequence %@, stopping at its first instruction"
+            ),
+            "debuggerSequenceNoQuery": String(localized: "waveformDebugger.sequence.empty", defaultValue: "the sequence is empty"),
+            "debuggerSequenceTooLong": String(
+                localized: "waveformDebugger.sequence.tooLong",
+                defaultValue: "the sequence is longer than %@ characters"
+            ),
+            "debuggerSequenceBadSyntax": String(
+                localized: "waveformDebugger.sequence.badSyntax",
+                defaultValue: "the sequence doesn't parse (the Machine section's Sequences tab shows why)"
+            ),
+            "debuggerSequenceIncomplete": String(
+                localized: "waveformDebugger.sequence.incomplete",
+                defaultValue: "%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits"
+            ),
+            "debuggerEditSequence": String(localized: "waveformDebugger.sequence.edit", defaultValue: "Edit Sequence…"),
+            "debuggerSequenceLandStart": String(
+                localized: "waveformDebugger.sequence.landStart",
+                defaultValue: "Stop at Its First Instruction"
             ),
             "debuggerCommitAddressTooLarge": String(
                 localized: "waveformDebugger.commit.addressTooLarge",

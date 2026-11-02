@@ -182,14 +182,61 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(l.forward == [25, 35, 45, 85], "jal x5 matches jal t0 (either register name): \(l.forward)")
     let jalMenu = await rowMenu("jal x5", run: "✓ Match Either Register Name (a0 or x10)")
     expect(jalMenu == ["Edit Pattern…", "Match Case", "✓ Match Either Register Name (a0 or x10)", "Break at Address…",
-                       "Break When Next Instruction Matches…", "Break When Written…", "Edit Condition…", "Remove"],
+                       "Break When Next Instruction Matches…", "Break When Written…", "Break When Sequence Matches…", "Edit Condition…", "Remove"],
            "the list row's menu: \(String(describing: jalMenu))")
     l = await landings(jal)
     expect(l.forward.isEmpty, "and its register-name item turned it off: \(l.forward)")
 
+    // Instruction sequences (the Machine section's search): a hit is the match's last instruction, or
+    // its first. In program order: li, jal, csrw, jal, jal, sw, jal.
+    let seqEnd = await addCommit("kind: 'sequence', query: '{jal} ##1 {jal}'")
+    l = await landings(seqEnd)
+    expect(l.forward == [45] && l.back.isEmpty, "{jal} ##1 {jal}: its last jal (45): \(l)")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    _ = await dbg("continue({ dir: 1 })")
+    expect(await call(currentK) as? Int == 4, "the Machine section goes to the match's last commit: \(String(describing: await call(currentK)))")
+    let seqStart = await addCommit("kind: 'sequence', query: '{jal} ##1 {jal}', land: 'start'")
+    l = await landings(seqStart)
+    expect(l.forward == [35], "at its start: the first jal (35): \(l.forward)")
+    _ = await dbg("jump({ to: 'first' })")
+    _ = await marker(5)
+    _ = await dbg("continue({ dir: 1 })")
+    expect(await call(currentK) as? Int == 3, "and the Machine section goes to that commit: \(String(describing: await call(currentK)))")
+    let gap = await addCommit("kind: 'sequence', query: '{li} ##[1:$] {sw}', condition: 'flag == 0'")
+    l = await landings(gap)
+    expect(l.forward == [65], "an unbounded gap, with a condition at the landing: \(l.forward)")
+    let seqLabels = (await list()).filter { $0["kind"] as? String == "sequence" }.map { [$0["label"] as? String ?? "", $0["query"] as? String ?? "", $0["land"] as? String ?? ""] }
+    expect(seqLabels == [["Sequence {jal} ##1 {jal}", "{jal} ##1 {jal}", "end"], ["Sequence {jal} ##1 {jal}, stopping at its first instruction", "{jal} ##1 {jal}", "start"],
+                         ["Sequence {li} ##[1:$] {sw} if flag == 0", "{li} ##[1:$] {sw}", "end"]], "their labels and fields: \(seqLabels)")
+    let seqMenu = await rowMenu("Sequence {jal} ##1 {jal}", run: "Stop at Its First Instruction")
+    expect(seqMenu == ["Edit Sequence…", "Stop at Its First Instruction", "Break at Address…", "Break When Next Instruction Matches…",
+                       "Break When Written…", "Break When Sequence Matches…", "Edit Condition…", "Remove"], "a sequence row's menu: \(String(describing: seqMenu))")
+    l = await landings(seqEnd)
+    expect(l.forward == [35], "Stop at Its First Instruction moves its hits: \(l.forward)")
+    _ = await call("window.__realPrompt = window.cmuxUI.prompt; window.cmuxUI.prompt = async (o) => { window.__asked = o; return '{csrw} ##1 {jal}'; }; return null")
+    _ = await rowMenu("Sequence {jal} ##1 {jal}, stopping", run: "Edit Sequence…")
+    let editAsked = await call("window.cmuxUI.prompt = window.__realPrompt; return window.__asked") as? [String: Any]
+    l = await landings(seqEnd)
+    expect(editAsked?["value"] as? String == "{jal} ##1 {jal}" && l.forward == [25], "Edit Sequence… (shown the old one): \(l.forward)")
+    await clearToasts()
+    let badSeq = await addCommit("kind: 'sequence', query: '{lw} ##'")
+    let emptySeq = await addCommit("kind: 'sequence', query: ''")
+    expect(badSeq == nil && emptySeq == nil, "a sequence that doesn't parse, or none, is refused")
+    let seqSaid = await toasts()
+    expect(seqSaid.contains("Breakpoint Sequence {lw} ##: the sequence doesn't parse (the Machine section's Sequences tab shows why)")
+           && seqSaid.contains("Breakpoint Sequence : the sequence is empty"), "and why: \(seqSaid)")
+    await clearToasts()
+    let unknown = await addCommit("kind: 'sequence', query: 'nosuchname == 1 ##1 {jal}'")
+    l = await landings(unknown)
+    let unknownSaid = await toasts()
+    expect(unknown != nil && l.forward.isEmpty && unknownSaid.contains { $0.hasPrefix("Breakpoint Sequence nosuchname == 1 ##1 {jal}: ") && $0.contains("nosuchname") },
+           "one the search refuses: no hit, and its reason said: \(unknownSaid)")
+    for id in [seqEnd, seqStart, gap, unknown] { _ = await call("cmuxWaveform.debugger.removeBreakpoint({ id: \(id ?? -1) }); return null") }
+
     // The Machine section's row menus offer Break When Written when the debugger has the kind.
     let kinds = await call("return cmuxWaveform.debugger.breakpointKinds()") as? [String]
-    expect(kinds == ["change", "equals", "text", "pc", "commitText", "write"], "the kinds it takes: \(String(describing: kinds))")
+    expect(kinds == ["change", "equals", "text", "pc", "commitText", "write", "sequence"], "the kinds it takes: \(String(describing: kinds))")
 
     // Show Value as Address in Listing: on an 8- to 64-bit row, while cmux has a listing for the dump.
     func rowItems(_ signal: String, run: String? = nil) async -> [String]? {
@@ -239,21 +286,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       window.cmuxUI.showMenu = real;
       const realPrompt = window.cmuxUI.prompt;
       const asked = [];
-      const answers = ['80000010', 'sw a3', '[0x1000]/1'];
+      const answers = ['80000010', 'sw a3', '[0x1000]/1', '{sw}'];
       window.cmuxUI.prompt = async (o) => { asked.push([o.title, o.placeholder]); return answers[asked.length - 1]; };
       for (const item of shown[0]) { await item.run(); }
       window.cmuxUI.prompt = realPrompt;
       return { ok, labels: shown[0].map((i) => i.label), asked };
     """) as? [String: Any]
-    expect(chooser?["ok"] as? Bool == true && chooser?["labels"] as? [String] == ["Break at Address…", "Break When Next Instruction Matches…", "Break When Written…"],
+    expect(chooser?["ok"] as? Bool == true && chooser?["labels"] as? [String] == ["Break at Address…", "Break When Next Instruction Matches…", "Break When Written…",
+                                                                                  "Break When Sequence Matches…"],
            "the menu: \(String(describing: chooser))")
     let asked = chooser?["asked"] as? [[String]]
     expect(asked?.map { $0[0] } == ["Break when an instruction at this address commits", "Break when a committed instruction's text matches",
-                                     "Break when an instruction writes this register, CSR or memory"], "its prompts: \(String(describing: asked))")
-    let made = (await list()).suffix(3)
-    expect(made.map { $0["label"] as? String ?? "" } == ["PC 0x80000010", "Next instruction ~ /sw a3/", "[0x1000]/1 written"],
+                                     "Break when an instruction writes this register, CSR or memory",
+                                     "Break when the committed instructions match this sequence"], "its prompts: \(String(describing: asked))")
+    let made = (await list()).suffix(4)
+    expect(made.map { $0["label"] as? String ?? "" } == ["PC 0x80000010", "Next instruction ~ /sw a3/", "[0x1000]/1 written", "Sequence {sw}"],
            "what they made: \(made.map { $0["label"] ?? "" })")
-    for (bp, want) in zip(made, [[65], [65], [65]]) {
+    for (bp, want) in zip(made, [[65], [65], [65], [65]]) {
       l = await landings(bp["id"] as? Int)
       expect(l.forward == want, "\(bp["label"] ?? "") hits: \(l.forward)")
     }
@@ -272,6 +321,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let toldPc = told.first { $0["kind"] as? String == "pc" && $0["channel"] as? Int == 1 }
     let toldW = told.first { $0["kind"] as? String == "write" && $0["loc"] as? String == "mem:0x1000/4" }
     let toldT = told.first { $0["kind"] as? String == "commitText" && $0["pattern"] as? String == "jal x5" }
+    let toldS = told.first { $0["kind"] as? String == "sequence" }
+    expect(toldS?["query"] as? String == "{sw}" && toldS?["land"] as? String == "end" && (toldS?["path"] as? [String])?.isEmpty == true,
+           "cmux is told a sequence's query and landing: \(String(describing: toldS))")
     expect(toldPc?["pcs"] as? [String] == ["0x80000008"] && (toldPc?["path"] as? [String])?.isEmpty == true && toldW != nil
            && toldT?["anyRegisterNames"] as? Bool == false, "cmux is told their fields: \(told.filter { $0["kind"] as? String != "text" })")
     let restored = await call("""
@@ -279,10 +331,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         { path: [], kind: 'pc', pcs: ['0x80000004'], enabled: true, condition: 'top.flag' },
         { path: [], kind: 'commitText', pattern: 'csrw', enabled: false },
         { path: [], kind: 'write', loc: 'csr:mtvec', enabled: true },
+        { path: [], kind: 'sequence', query: '{li} ##1 {jal}', land: 'start', enabled: true },
+        { path: [], kind: 'sequence', query: '{li} ##', enabled: true },
         { path: [], kind: 'pc', pcs: ['main'], enabled: true },
         { path: ['top', 'inst'], kind: 'change', enabled: false }] }).map((b) => b.label);
     """) as? [String]
-    expect(restored == ["PC 0x80000004 if top.flag", "Next instruction ~ /csrw/", "mtvec written", "top.inst changes"],
+    expect(restored == ["PC 0x80000004 if top.flag", "Next instruction ~ /csrw/", "mtvec written", "Sequence {li} ##1 {jal}, stopping at its first instruction",
+                        "top.inst changes"],
            "restored (a bad one dropped): \(String(describing: restored))")
     let restoredPc = (await list()).first { $0["kind"] as? String == "pc" }?["id"] as? Int
     l = await landings(restoredPc)
@@ -581,6 +636,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerCommitsNoInsn:'%@: the commit stream has no instruction word',
    debuggerCommitTooMany:'At most %@ breakpoints of this kind can be enabled',
    debuggerCommitAddressTooLarge:'addresses from 0x20000000000000 (2^53) up are not supported yet',
+   debuggerBreakOnSequence:'Break When Sequence Matches…', debuggerSequencePrompt:'Break when the committed instructions match this sequence',
+   debuggerSequencePlaceholder:'{lw} as L ##1 rs1 == L.rd (one commit per ##1; ##[1:$] for any later one)',
+   debuggerBreakpointSequence:'Sequence %@', debuggerBreakpointSequenceStart:'Sequence %@, stopping at its first instruction',
+   debuggerSequenceNoQuery:'the sequence is empty', debuggerSequenceTooLong:'the sequence is longer than %@ characters',
+   debuggerSequenceBadSyntax:"the sequence doesn't parse (the Machine section's Sequences tab shows why)",
+   debuggerSequenceIncomplete:'%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits',
+   debuggerEditSequence:'Edit Sequence…', debuggerSequenceLandStart:'Stop at Its First Instruction',
    debuggerCommitTextJalHint:'%@: no instruction matched, but jal instructions that link ra committed. They are shown as “jal <target>” (ra implied), so leave ra out of the pattern.',
    debuggerShowValueAsAddress:'Show Value as Address in Listing', debuggerAddressUnknown:'%@ has no address value at the marker'}
   """

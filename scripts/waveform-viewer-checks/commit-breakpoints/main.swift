@@ -3,12 +3,13 @@
 // cmux-machine.js's commit index (window.cmuxWaveform.commits): PC, instruction-text and write hits,
 // channels, x pcs, several commits in one cycle, program order vs time order, the caches, the
 // address and location syntax, and what is said when there is no commit stream.
-// Usage: commit-breakpoints <cmux-formats.js> <cmux-textmatch.js> <cmux-debugger-text.js> <cmux-debugger-commits.js> <cases.js>
+// Usage: commit-breakpoints <page script>... <cases.js> (cmux-formats.js, cmux-textmatch.js, cmux-debugger-text.js,
+// cmux-debugger-commits.js, and for sequence breakpoints cmux-expr.js and cmux-sequence.js)
 import Foundation
 import JavaScriptCore
 
 let args = CommandLine.arguments
-guard args.count == 6, let context = JSContext() else { print("usage: commit-breakpoints <5 scripts>"); exit(2) }
+guard args.count >= 3, let context = JSContext() else { print("usage: commit-breakpoints <scripts>... <cases.js>"); exit(2) }
 var thrown: String?
 context.exceptionHandler = { _, error in thrown = error?.toString() }
 // The page globals the modules read; no Worker here, so judging runs on this thread.
