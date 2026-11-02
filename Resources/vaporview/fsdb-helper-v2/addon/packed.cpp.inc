@@ -32,13 +32,21 @@ Napi::Value getValueChangesPacked(const Napi::CallbackInfo &info) {
   if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) { h->ffrFree(); return env.Undefined(); }
   const uint_T bits = h->ffrGetBitSize();
   const size_t rec = 8 + bits;
+  // maxRecords (optional, count first): past it the records are dropped and the walk only
+  // counts, and the reply is that count (a Number) instead of the buffer.
+  const double maxRecords = info.Length() > 1 && info[1].IsNumber() ? info[1].As<Napi::Number>().DoubleValue() : -1;
   std::vector<uint8_t> out;
-  out.reserve(rec * 65536);
+  out.reserve(rec * (maxRecords >= 0 ? (size_t)std::min(maxRecords + 1, 65536.0) : 65536));
   fsdbTag64 time;
   h->ffrGetMinXTag((void *)&time);
   h->ffrGotoXTag((void *)&time);
   uint64_t prev = 0;
+  double count = 0;
+  bool over = false;
   do {
+    count++;
+    if (over) continue;
+    if (maxRecords >= 0 && count > maxRecords) { over = true; std::vector<uint8_t>().swap(out); continue; }
     byte_T *vc;
     h->ffrGetXTag(&time);
     h->ffrGetVC(&vc);
@@ -51,6 +59,7 @@ Napi::Value getValueChangesPacked(const Napi::CallbackInfo &info) {
     for (uint_T i = 0; i < bits; i++) out[o + 8 + i] = fsdbBitChar(vc[i]);
   } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
   h->ffrFree();
+  if (over) return Napi::Number::New(env, count);
   return Napi::Buffer<uint8_t>::Copy(env, out.data(), out.size());
 }
 

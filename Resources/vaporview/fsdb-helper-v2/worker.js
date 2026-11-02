@@ -17,6 +17,7 @@ const zlib = require('node:zlib');
 
 const DERIVED_BASE = 1e9;  // as helper.js
 const TEMP_ID = 2e9;       // scratch derived store for searchAll expr
+const text = require('./text.js');
 const addon = require(process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Release/fsdb_reader.node'));
 // Install the SIGUSR2 (yield) handler now: the coordinator may signal a worker
 // whose first background task hasn't started yet, and the default action kills.
@@ -31,9 +32,14 @@ let cacheLimit = 0;
 // idle) and, at twice the cap, work that would load more fails.
 const RSS_CAP = Number(process.env.FSDB_WORKER_RSS_MB || 0) * 1e6;
 let recycle = false;
-const rssCap = () => RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6);
+// Floor: never below this worker's own RSS right after open + RSS_HEADROOM. A cap under what an
+// idle worker needs would recycle every fresh worker at once, forever (a fork storm). A raised
+// cap is reported (state.capRaised) so the coordinator can warn once.
+const RSS_HEADROOM = Number(process.env.FSDB_RSS_HEADROOM_MB ?? 16) * 1e6;  // (tests set it negative to defeat the floor)
+let rssFloor = 0, capRaised = null;
+const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6), rssFloor);
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
-const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'edge', 'search', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
+const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
 // the RSS cap is undone before it is walked (the soft guard above recycles first).
@@ -143,8 +149,11 @@ const ops = {
     addon.openFsdb(file);
     openFile = file;
     if (cacheBytes) { cacheLimit = cacheBytes; addon.cacheSetLimit(cacheBytes); }
+    const varTree = readVarTree();
+    rssFloor = process.memoryUsage.rss() + RSS_HEADROOM;
+    capRaised = RSS_CAP && RSS_CAP < rssFloor ? { configuredMB: Math.round(RSS_CAP / 1e6), usedMB: Math.round(rssFloor / 1e6) } : null;
     setBounds();
-    return { varTree: readVarTree() };
+    return { varTree };
   },
 
   // -> [{signalId, exact, count, records (deflated), counts?, cached, loadMs, walkMs} | {signalId, error}]
@@ -213,18 +222,40 @@ const ops = {
     return { t: addon.cacheSearch(signalId, t, dir, String(value)) };
   },
 
+  // searchText: the first change from t (as search) whose value, formatted the way the
+  // viewer formats it, matches the pattern. Texts and verdicts are memoized per distinct
+  // value (text.js); the addon maps changes to distinct values and scans.
+  searchText(p) {
+    // Stoppable: a cancel sends SIGUSR2 (helper.js `stoppable` tasks) and the judging loop
+    // polls the flag. bgEnd() clears a stale flag now; a cancel landing during the load below
+    // is kept (bgBegin keepYield). Background mode only for the scan, so the load is a normal
+    // interactive one (16-signal batches, never yields).
+    addon.bgEnd();
+    const l = ensure([p.signalId]).get(p.signalId);
+    if (l.error) { throw new Error(l.error); }
+    addon.bgBegin(0, true);
+    try { return text.search(addon, p, () => addon.bgPoll()); } finally { addon.bgEnd(); }
+  },
+
   // v1 `signals`: whole signals through the reader's own traversal
   // (getValueChangesPacked), independent of the store. Deflated records.
-  signals({ signalIds, widths }) {
+  // maxChanges (count first): a signal with more raw changes comes back as {count, overCap}
+  // without its records, and the walk stops copying past the cap (bounded memory).
+  signals({ signalIds, widths, maxChanges }) {
     addon.loadSignals(signalIds);
+    const capped = typeof maxChanges === 'number';
     const out = signalIds.map((signalId, k) => {
-      const raw = widths ? addon.getValueChangesPacked(signalId) : undefined;
+      const raw = widths ? (capped ? addon.getValueChangesPacked(signalId, maxChanges) : addon.getValueChangesPacked(signalId)) : undefined;
       let r;
-      if (raw && raw.length % (8 + widths[k]) === 0) {
+      if (typeof raw === 'number') {
+        r = { signalId, width: widths[k], count: raw, overCap: true };
+      } else if (raw && raw.length % (8 + widths[k]) === 0) {
         r = { signalId, width: widths[k], count: raw.length / (8 + widths[k]), records: zlib.deflateRawSync(raw, { level: 1 }) };
       } else {
         const d = addon.getValueChanges(signalId);
-        r = { signalId, valueChanges: d.valueChanges, min: d.min, max: d.max };
+        r = capped && d.valueChanges && d.valueChanges.length > maxChanges
+          ? { signalId, count: d.valueChanges.length, overCap: true }
+          : { signalId, valueChanges: d.valueChanges, min: d.min, max: d.max };
       }
       addon.unloadSignal(signalId);
       return r;
@@ -240,6 +271,13 @@ const ops = {
   // Derived signals: operands are loaded here ('load') or loaded and written to
   // files for the worker that builds the result ('export'), then 'derive' merges.
   load({ signalIds }) { return [...ensure(signalIds).values()]; },
+  // A searchAll's fixed operand: loaded without evicting anything (freed when the search ends),
+  // with its store bytes so the coordinator can tell where a copy fits.
+  loadTemp({ signalIds }) {
+    const info = load(signalIds, false);
+    const bytes = new Map(addon.cacheStats().signals.map((e) => [e.signalId, e.bytes]));
+    return signalIds.map((id, k) => ({ signalId: id, error: info[k] && info[k].error, bytes: bytes.get(id) || 0 }));
+  },
   export({ signalIds, paths }) {
     const info = [...ensure(signalIds).values()];
     signalIds.forEach((id, k) => addon.cacheExport(id, paths[k]));
@@ -279,7 +317,9 @@ const ops = {
   // free both. One failing candidate fails only itself. `fixed` (the
   // expression's other signals) were put on this worker by the coordinator.
   searchExpr({ signalIds, t, dir, programs, fixed, deadlineMs }) {
-    ensure(fixed);
+    // fixed operands are already here (loadTemp / adopt): never evict the viewer's signals for them
+    load(fixed.filter((id) => id < DERIVED_BASE), false);
+    ensure(fixed.filter((id) => id >= DERIVED_BASE));
     const started = Date.now();
     return background(deadlineMs, () => signalIds.map((id, k) => {
       if (deadlineMs > 0 && Date.now() - started > deadlineMs) { return { signalId: id, yielded: true }; }
@@ -344,7 +384,7 @@ function state() {
   const key = `${s.bytes}:${cached.join(',')}`;
   const sizes = key === sizesKey ? undefined : s.signals.map((e) => [e.signalId, e.count, e.bits, e.xz ? 1 : 0]);
   sizesKey = key;
-  return { bytes: s.bytes, limit: s.limit, cached, ...(sizes ? { sizes } : {}), rss, ...(recycle ? { recycle: true } : {}) };
+  return { bytes: s.bytes, limit: s.limit, cached, ...(sizes ? { sizes } : {}), rss, ...(recycle ? { recycle: true } : {}), ...(capRaised ? { capRaised } : {}) };
 }
 
 process.on('message', (task) => {
