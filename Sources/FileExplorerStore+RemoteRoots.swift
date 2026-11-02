@@ -12,6 +12,7 @@ extension FileExplorerStore {
         sshTransport: SSHFileExplorerTransport
     ) {
         setWorkspaceRootIdentity(workspaceId)
+        holdsFileChannel = true
 
         let existingProvider = provider as? SSHFileExplorerProvider
         let sshProvider: SSHFileExplorerProvider
