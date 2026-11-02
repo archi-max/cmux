@@ -127,7 +127,12 @@ import Testing
         try Data(repeating: 0, count: 5000).write(to: big)
         let c = channel(home: root)
         defer { c.close() }
-        await #expect(throws: SSHFileChannel.Failure.tooLarge) { _ = try await c.read(big.path, maxBytes: 4999) }
+        do {
+            _ = try await c.read(big.path, maxBytes: 4999)
+            Issue.record("a file over the cap was sent")
+        } catch let SSHFileChannel.Failure.tooLarge(refused) {
+            #expect(refused.size == 5000 && refused.path == big.path && refused.data.isEmpty, "\(refused)")
+        }
         let exact = try await c.read(big.path, maxBytes: 5000)
         #expect(exact.data.count == 5000)
         await #expect(throws: SSHFileChannel.Failure.noFile) { _ = try await c.stat(root.appendingPathComponent("gone").path) }
@@ -179,5 +184,172 @@ import Testing
         await #expect(throws: SSHFileChannel.Failure.unavailable) { _ = try await c.stat(root.path) }
         #expect(Date().timeIntervalSince(t0) < 3)
         c.close()
+    }
+
+    // MARK: Review follow-ups
+
+    /// The real server's ready line for `command` (the nonce taken from it), then `then`.
+    private static func readyThen(_ then: String) -> SSHFileChannel.Launch {
+        { command in
+            let b64 = command.components(separatedBy: "printf %s ")[1].components(separatedBy: " ")[0]
+            let inner = String(decoding: Data(base64Encoded: b64)!, as: UTF8.self)
+            let r = inner.range(of: SSHFileChannel.readyPrefix)!
+            let nonce = String(inner[r.upperBound...].prefix(32))
+            return (URL(fileURLWithPath: "/bin/sh"), ["-c", "echo '\(SSHFileChannel.readyPrefix)\(nonce)'; \(then)"])
+        }
+    }
+
+    @Test func aZeroCapProbeNamesTheRefusedFile() async throws {
+        // A ⌘-clicked dump is located with a cap-0 probe: refused, but named.
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dump = root.appendingPathComponent("sim/dump.fsdb")
+        try FileManager.default.createDirectory(at: dump.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 4096).write(to: dump)
+        let c = channel(home: root)
+        defer { c.close() }
+        do {
+            _ = try await c.probe(["/nonexistent/dump.fsdb", "~/sim/dump.fsdb"], maxBytes: 0)
+            Issue.record("cap 0 sent the file")
+        } catch let SSHFileChannel.Failure.tooLarge(refused) {
+            #expect(refused.index == 1 && refused.path == dump.path && refused.size == 4096 && refused.modificationTime > 0,
+                    "\(refused)")
+        }
+    }
+
+    @Test func aReplyOverItsCapOrShortOfItsSizeIsNotTakenAsTheFile() async throws {
+        // A file that grew (or shrank) between its stat and its read: never a silently cut copy.
+        let over = SSHFileChannel(launch: Self.readyThen("read l; printf 'R 1 0 9 3 5 0 -\\nabcde'; sleep 5"), readyTimeout: 5)
+        defer { over.close() }
+        do {
+            let r = try await over.read("/x", maxBytes: 4)
+            Issue.record("took \(r.data.count) bytes over a cap of 4")
+        } catch let SSHFileChannel.Failure.tooLarge(refused) {
+            #expect(refused.data.isEmpty)
+        }
+        let short = SSHFileChannel(launch: Self.readyThen("read l; printf 'R 1 0 9 8 5 0 -\\nabcde'; sleep 5"), readyTimeout: 5)
+        defer { short.close() }
+        await #expect(throws: SSHFileChannel.Failure.changed) { _ = try await short.read("/x", maxBytes: nil) }
+    }
+
+    @Test func aTrailingNewlineInANameIsKept() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("plain\n".utf8).write(to: root.appendingPathComponent("trail"))
+        try Data("newline\n".utf8).write(to: root.appendingPathComponent("trail\n"))
+        let c = channel(home: root)
+        defer { c.close() }
+        let r = try await c.read(root.appendingPathComponent("trail\n").path, maxBytes: 100)
+        #expect(r.data == Data("newline\n".utf8), "got \(String(decoding: r.data, as: UTF8.self))")
+        let p = try await c.probe([root.appendingPathComponent("trail\n").path], maxBytes: 100)
+        #expect(p.data == Data("newline\n".utf8))
+        let s = try await c.stat(root.appendingPathComponent("trail\n").path)
+        #expect(s.size == 8)
+    }
+
+    @Test func tildeUserIsNeverExpanded() async throws {
+        // Only `~` and `~/…` name the home folder; `~user` is a literal name, never looked up or eval'd.
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let c = channel(home: root)
+        defer { c.close() }
+        await #expect(throws: SSHFileChannel.Failure.noFile) {
+            _ = try await c.probe(["~root/../../etc/hosts", "~nobody/../../etc/hosts", "~$(id -un)/x"], maxBytes: 100_000)
+        }
+    }
+
+    @Test func concurrentRequestsGetTheirOwnAnswers() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for i in 0..<24 {
+            try (Data("body \(i) ".utf8) + Data(repeating: UInt8(65 + i), count: i * 997)).write(to: root.appendingPathComponent("f\(i)"))
+        }
+        let c = channel(home: root)
+        defer { c.close() }
+        let bad = await withTaskGroup(of: Int.self) { group in
+            for i in 0..<24 {
+                group.addTask {
+                    let url = root.appendingPathComponent("f\(i)")
+                    guard let r = try? await c.read(url.path, maxBytes: 1 << 20) else { return 1 }
+                    return r.data == (try? Data(contentsOf: url)) && r.path == url.path ? 0 : 1
+                }
+            }
+            var n = 0
+            for await b in group { n += b }
+            return n
+        }
+        #expect(bad == 0, "\(bad) of 24 concurrent reads got another request's answer")
+        #expect(c.launchCount == 1)
+    }
+
+    @Test func aStuckServerAfterReadyTimesOutThePendingRequest() async throws {
+        let c = SSHFileChannel(launch: Self.readyThen("sleep 30"), readyTimeout: 1, requestTimeout: 2)
+        defer { c.close() }
+        let t0 = Date()
+        await #expect(throws: SSHFileChannel.Failure.unavailable) { _ = try await c.stat("/") }
+        let dt = Date().timeIntervalSince(t0)
+        #expect(dt > 1.5 && dt < 4, "a silent server held the request \(dt) s")
+    }
+
+    @Test func aSpoofedReadyLineWithoutTheNonceIsIgnored() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("s.txt")
+        try Data("real\n".utf8).write(to: file)
+        let homePath = root.path
+        let c = SSHFileChannel(launch: { command in
+            (URL(fileURLWithPath: "/bin/sh"),
+             ["-c", "HOME='\(homePath)'; echo 'cmux-files-ready 1 deadbeef'; echo 'R 1 0 9 9 5 0 -'; echo 'fake!'; \(command)"])
+        })
+        defer { c.close() }
+        let r = try await c.read(file.path, maxBytes: nil)
+        #expect(r.data == Data("real\n".utf8), "got \(String(decoding: r.data, as: UTF8.self))")
+    }
+
+    /// A pool whose channels run the real server under a local `sh` with its own TMPDIR.
+    private func pool(home: URL, tmp: URL) -> (SSHFileChannelPool, @Sendable (String) -> SSHFileChannel.Launch) {
+        let homePath = home.path, tmpPath = tmp.path
+        let launch: @Sendable (String) -> SSHFileChannel.Launch = { _ in
+            { command in
+                (URL(fileURLWithPath: "/bin/sh"), ["-c", "HOME='\(homePath)'; TMPDIR='\(tmpPath)'; export TMPDIR; \(command)"])
+            }
+        }
+        return (SSHFileChannelPool(), launch)
+    }
+
+    @Test func aConnectedHostsFirstOpenMakesNoSpawnAndADisconnectLeavesNothing() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tmp = root.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("x.sv")
+        try Data("x\n".utf8).write(to: file)
+        let (pool, launch) = pool(home: root, tmp: tmp)
+        // Connect: the channel starts before any open.
+        var lease: SSHFileChannelPool.Lease? = pool.retain(key: "host-a", launch: launch("host-a"))
+        let warm = pool.channel(key: "host-a", launch: launch("host-a"))
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        #expect(warm.launchCount == 1 && warm.isReady, "pre-warmed: \(warm.launchCount) runs, ready \(warm.isReady)")
+        let t0 = Date()
+        _ = try await warm.read(file.path, maxBytes: 100)
+        #expect(warm.launchCount == 1, "the first open after connect spawned: \(warm.launchCount)")
+        print("    first open after connect: \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+        #expect(((try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []).count == 1)
+        // A second workspace on the same connection shares it; the channel stays until both go.
+        var second: SSHFileChannelPool.Lease? = pool.retain(key: "host-a", launch: launch("host-a"))
+        lease = nil
+        _ = try await warm.stat(file.path)
+        #expect(warm.launchCount == 1)
+        second = nil
+        _ = (lease, second)
+        // Disconnect: the server and its temp dir are gone from the host.
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []
+        #expect(left.isEmpty, "host temp dir left after the disconnect: \(left)")
+        #expect(pool.channelCount == 0)
+        // A host nobody connected to starts nothing until it is asked.
+        let cold = pool.channel(key: "host-b", launch: launch("host-b"))
+        #expect(cold.launchCount == 0)
+        cold.close()
     }
 }
