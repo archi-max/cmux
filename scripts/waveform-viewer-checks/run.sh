@@ -53,7 +53,7 @@
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #   ./run.sh text                        text breakpoints' formats and match rules (cmux-textmatch.js) in JavaScriptCore
 #   ./run.sh text-breakpoints            text breakpoints in the page: hits, menus, conditions, caps, watchdog
-#   ./run.sh commit-breakpoints          pc, instruction-text and write breakpoints (cmux-debugger-commits.js) in JavaScriptCore
+#   ./run.sh commit-breakpoints          pc, instruction-text, write and sequence breakpoints (cmux-debugger-commits.js) in JavaScriptCore
 #   ./run.sh commit-page                 those in the page, over a mock commit index: hits, menus, prompts, session, caps
 #   ./run.sh asm-listing                 listing breakpoints: gutter, F9, marks that follow their code, current commit, match check
 #                                        while the debugger's Locals shows,
@@ -204,7 +204,7 @@ case "${1:-}" in
   commit-breakpoints)
     swiftc -swift-version 6 -O "$HERE/commit-breakpoints/main.swift" -o "$OUT/commit-breakpoints"
     "$OUT/commit-breakpoints" "$ASSETS/cmux-formats.js" "$ASSETS/cmux-textmatch.js" "$ASSETS/cmux-debugger-text.js" \
-      "$ASSETS/cmux-debugger-commits.js" "$HERE/commit-breakpoints/cases.js"
+      "$ASSETS/cmux-debugger-commits.js" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-sequence.js" "$HERE/commit-breakpoints/cases.js"
     ;;
   asm-listing)
     A="$ROOT/Packages/Shared/CmuxSyntaxHighlighting"

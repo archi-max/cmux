@@ -789,16 +789,17 @@
   const textFields = (q) => ({ format: String(q.format || 'hexadecimal'), pattern: String(q.pattern || ''),
     caseSensitive: !!q.caseSensitive, anyRegisterNames: q.anyRegisterNames !== false });
   const enabledTexts = () => breakpoints.filter((b) => b.kind === 'text' && b.enabled).length;
-  // Commit breakpoints (cmux-debugger-commits.js): { id, kind: 'pc' | 'commitText' | 'write', pcs, channel,
-  // key (a listing's, which cmux owns), pattern, caseSensitive, anyRegisterNames, loc, enabled, condition }; no path.
+  // Commit breakpoints (cmux-debugger-commits.js): { id, kind: 'pc' | 'commitText' | 'write' | 'sequence', pcs, channel,
+  // key (a listing's, which cmux owns), pattern, caseSensitive, anyRegisterNames, loc, query, land, enabled, condition }; no path.
   const CB = waveform.debuggerCommits;
   const isCommit = (b) => !!(CB && CB.isKind(b.kind));
-  const MAX_COMMIT_BREAKPOINTS = { pc: 1024, commitText: 32, write: 256 };
+  const MAX_COMMIT_BREAKPOINTS = { pc: 1024, commitText: 32, write: 256, sequence: 16 };
   const enabledOfKind = (kind) => breakpoints.filter((b) => b.kind === kind && b.enabled).length;
   const commitFields = (kind, q) => {
     const f = CB.fields(kind, q);
     return kind === 'pc' ? { pcs: f.pcs, channel: f.channel } : kind === 'write' ? { loc: f.loc }
-      : { pattern: f.pattern, caseSensitive: f.caseSensitive, anyRegisterNames: f.anyRegisterNames };
+      : kind === 'sequence' ? { query: f.query, land: f.land }
+        : { pattern: f.pattern, caseSensitive: f.caseSensitive, anyRegisterNames: f.anyRegisterNames };
   };
   const pathsOf = (b) => (b.kind === 'line' ? b.paths : b.path ? [b.path] : []);
   let lastHitId = null;
@@ -884,6 +885,7 @@
     caseSensitive: bp.kind === 'text' || bp.kind === 'commitText' ? bp.caseSensitive : null,
     anyRegisterNames: bp.kind === 'text' || bp.kind === 'commitText' ? bp.anyRegisterNames : null,
     pcs: bp.kind === 'pc' ? bp.pcs.slice() : null, channel: bp.kind === 'pc' ? bp.channel : null, loc: bp.kind === 'write' ? bp.loc : null,
+    query: bp.kind === 'sequence' ? bp.query : null, land: bp.kind === 'sequence' ? bp.land : null,
     key: bp.kind === 'line' || bp.kind === 'pc' ? bp.key || null : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
     condition: bp.condition || null, conditionError: bp.conditionError || null,
     // The paths a line's search reads (its units' with a condition).
@@ -1202,6 +1204,7 @@
       pc: { title: s.debuggerAddressPrompt, placeholder: s.debuggerAddressPlaceholder },
       commitText: { title: s.debuggerCommitTextPrompt, placeholder: s.debuggerTextPlaceholder },
       write: { title: s.debuggerWrittenPrompt, placeholder: s.debuggerWrittenPlaceholder },
+      sequence: { title: s.debuggerSequencePrompt, placeholder: s.debuggerSequencePlaceholder },
     };
     if (!CB || !prompts[kind]) { return null; }
     try {
@@ -1213,6 +1216,7 @@
         return addBreakpoint({ kind, pcs: pcs.map((p) => CB.parseAddress(p) || p) });
       }
       if (kind === 'write') { return addBreakpoint({ kind, loc: CB.parseLocation(value) || value }); }
+      if (kind === 'sequence') { return addBreakpoint({ kind, query: value }); }
       return addBreakpoint({ kind, pattern: value });
     } catch (error) {
       host.log(error);
@@ -1226,6 +1230,7 @@
       { label: s.debuggerBreakAtAddress || '', run: () => promptCommitBreakpoint({ kind: 'pc' }) },
       { label: s.debuggerBreakOnCommitText || '', run: () => promptCommitBreakpoint({ kind: 'commitText' }) },
       { label: s.debuggerBreakWhenWritten || '', run: () => promptCommitBreakpoint({ kind: 'write' }) },
+      { label: s.debuggerBreakOnSequence || '', run: () => promptCommitBreakpoint({ kind: 'sequence' }) },
     ];
   };
   // View > Waveform Debugger > Add Instruction Breakpoint…: the three, as a menu in the viewer.
@@ -1715,7 +1720,7 @@
     }
   }
 
-  // A commit breakpoint's own list items: its address, pattern or location; then the three adds.
+  // A commit breakpoint's own list items: its address, pattern, location or sequence; then the four adds.
   function commitListItems(bp) {
     if (!isCommit(bp)) { return []; }
     const s = S();
@@ -1730,6 +1735,10 @@
     const own = bp.key ? [] : bp.kind === 'pc'
       ? [{ label: s.debuggerEditAddress || '', run: edit(s.debuggerAddressPrompt, bp.pcs.join(', '),
         (t) => setCommitBreakpoint({ id: bp.id, pcs: t.split(/[\s,]+/).filter(Boolean) })) }]
+      : bp.kind === 'sequence'
+        ? [{ label: s.debuggerEditSequence || '', run: edit(s.debuggerSequencePrompt, bp.query, (t) => setCommitBreakpoint({ id: bp.id, query: t })) },
+          { label: (bp.land === 'start' ? '\u2713 ' : '') + (s.debuggerSequenceLandStart || ''),
+            run: () => setCommitBreakpoint({ id: bp.id, land: bp.land === 'start' ? 'end' : 'start' }) }]
       : bp.kind === 'write'
         ? [{ label: s.debuggerEditLocation || '', run: edit(s.debuggerWrittenPrompt, CB.locationText(bp.loc),
           (t) => setCommitBreakpoint({ id: bp.id, loc: CB.parseLocation(t) || t })) }]
@@ -2358,7 +2367,7 @@
     say: (query) => { const q = query || {}; if (q.text) { window.cmuxUI.toast(String(q.text), q.level === 'warning' ? 'warning' : 'info'); } return true; },
     breakpoints: () => breakpoints.map(publicBreakpoint),
     // The kinds addBreakpoint takes (cmux-machine.js's row menus offer Break When Written when 'write' is one).
-    breakpointKinds: () => ['change', 'equals'].concat(TB ? ['text'] : [], CB ? ['pc', 'commitText', 'write'] : []),
+    breakpointKinds: () => ['change', 'equals'].concat(TB ? ['text'] : [], CB ? ['pc', 'commitText', 'write', 'sequence'] : []),
     // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
     backendChanged: () => { if (window.cmuxMachine) { window.cmuxMachine.backendChanged(); } renderBreakpoints(); refreshWatches(); },
     // cmux-machine.js: the current commit moved inside the marker's cycle (cmux hears the new `current`).
