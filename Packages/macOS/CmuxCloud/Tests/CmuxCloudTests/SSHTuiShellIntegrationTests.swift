@@ -113,6 +113,159 @@ struct SSHTuiShellIntegrationTests {
     }
     #endif
 
+    // MARK: Review cases
+
+    @Test("bash: a PROMPT_COMMAND ending in & or a comment keeps working and the hook still runs",
+          .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashPromptCommandSeparators() throws {
+        for userHook in ["echo user-hook-ran &", "echo user-hook-ran # a note"] {
+            let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
+            try sandbox.append("PROMPT_COMMAND='\(userHook)'", to: sandbox.home + "/.bash_profile")
+            let target = try sandbox.makeDirectory("t")
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\nsleep 0.2\necho marker-done\n")
+            #expect(!result.stderr.contains("syntax error"), "\(userHook): \(result.stderr)")
+            #expect(result.stdout.contains("user-hook-ran"), "\(userHook)")
+            #expect(result.reportedDirectories.last == target, "\(userHook): \(result.stdout.debugDescription)")
+        }
+    }
+
+    @Test("bash: an array PROMPT_COMMAND keeps its entries", .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashArrayPromptCommand() throws {
+        let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
+        try sandbox.append("PROMPT_COMMAND=('echo array-hook-ran')", to: sandbox.home + "/.bash_profile")
+        let target = try sandbox.makeDirectory("t")
+        let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n")
+        #expect(result.stdout.contains("array-hook-ran"))
+        #expect(result.reportedDirectories.last == target, "\(result.stdout.debugDescription)")
+    }
+
+    @Test("bash: the shell state matches the plain login launch", .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashStateMatchesPlainLaunch() throws {
+        let probe = "shopt -p; set +o; echo \"path=[$PATH] histfile=[$HISTFILE]\"; env | grep -E '^(ENV|CMUX_SSH_[A-Z_]*)=' | sort\n"
+        var outputs: [[String]] = []
+        for plain in [true, false] {
+            let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
+            try sandbox.writeStartupFiles([".bash_profile", ".bash_login", ".profile"], in: sandbox.home)
+            let result = try sandbox.runLoginShell(input: probe, launch: plain ? ShellSandbox.plainLaunch : nil)
+            let lines = result.stdout.components(separatedBy: "\n").map { line in
+                // The OSC 7 report shares a line with the next output.
+                line.replacingOccurrences(of: #"\u001b\]7;[^\u0007]*\u0007"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: sandbox.root, with: "<root>")
+            }
+            outputs.append(lines + ["log=\(try sandbox.startupLog())"])
+        }
+        #expect(outputs[0] == outputs[1], "\(Set(outputs[0]).symmetricDifference(Set(outputs[1])))")
+        #expect(outputs[1].last == #"log=[".bash_profile"]"#)
+    }
+
+    @Test("bash: each directory is reported once, with this host's name", .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashReportsEachDirectoryOnce() throws {
+        let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
+        let target = try sandbox.makeDirectory("t")
+        let result = try sandbox.runLoginShell(input: "true\ncd '\(target)'\ntrue\ncd .\ntrue\n")
+        #expect(result.reportedDirectories == [sandbox.work, target], "\(result.stdout.debugDescription)")
+        #expect(Set(result.reportedHosts) == [ShellSandbox.hostName], "\(result.reportedHosts)")
+    }
+
+    @Test("zsh: each directory is reported once, with this host's name, and nothing leaks")
+    func zshReportsEachDirectoryOnce() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let target = try sandbox.makeDirectory("t")
+        let result = try sandbox.runLoginShell(input: "true\ncd '\(target)'\ntrue\nprint -r -- \"leaks=[$(env | grep -c '^CMUX_SSH_')]\"\n")
+        #expect(result.reportedDirectories == [sandbox.work, target], "\(result.stdout.debugDescription)")
+        #expect(Set(result.reportedHosts) == [ShellSandbox.hostName], "\(result.reportedHosts)")
+        #expect(result.stdout.contains("leaks=[0]"), "\(result.stdout)")
+    }
+
+    @Test("bash: a HOME that bash would expand in ENV keeps the plain login launch", .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashExpandingHomeFallsBack() throws {
+        let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash", homeName: "ho$me")
+        try sandbox.writeStartupFiles([".bash_profile"], in: sandbox.home)
+        let result = try sandbox.runLoginShell(input: "echo \"env=[${ENV-unset}]\"\n")
+        #expect(try sandbox.startupLog() == [".bash_profile"], "\(result.stderr)")
+        #expect(result.stdout.contains("env=[unset]"), "\(result.stdout)")
+    }
+
+    @Test("bash: a failed install keeps the plain login launch", .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashFailedInstallFallsBack() throws {
+        let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
+        try sandbox.writeStartupFiles([".bash_profile"], in: sandbox.home)
+        try sandbox.makeHomeReadOnly()
+        defer { sandbox.makeHomeWritable() }
+        let result = try sandbox.runLoginShell(input: "echo \"env=[${ENV-unset}]\"\n")
+        #expect(try sandbox.startupLog() == [".bash_profile"])
+        #expect(result.stdout.contains("env=[unset]"), "\(result.stdout)")
+        #expect(result.stderr.isEmpty || !result.stderr.contains("cmux"), "\(result.stderr)")
+    }
+
+    @Test("zsh: a failed install keeps the plain login launch")
+    func zshFailedInstallFallsBack() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        try sandbox.writeStartupFiles([".zshenv", ".zshrc"], in: sandbox.home)
+        try sandbox.makeHomeReadOnly()
+        defer { sandbox.makeHomeWritable() }
+        let result = try sandbox.runLoginShell(input: "print -r -- \"zdotdir=[${ZDOTDIR-unset}]\"\n")
+        #expect(try sandbox.startupLog() == [".zshenv", ".zshrc"])
+        #expect(result.stdout.contains("zdotdir=[unset]"), "\(result.stdout)")
+    }
+
+    @Test("The sourced files are installed private under a permissive umask, and a writable one is refused",
+          .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func installIsPrivateAndCheckedBeforeUse() throws {
+        let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
+        let target = try sandbox.makeDirectory("t")
+        _ = try sandbox.runLoginShell(input: "true\n", umask: "000")
+        let install = sandbox.installDirectory
+        for file in ["shell/bash-env", "shell/zsh/.zshenv"] {
+            #expect(try sandbox.mode(install + "/" + file) == 0o644, "\(file)")
+        }
+        for dir in ["", "/shell", "/shell/zsh"] {
+            #expect(try sandbox.mode(install + dir) == 0o700, "\(install + dir)")
+        }
+        // A file someone else could have rewritten is not sourced.
+        try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: install + "/shell/bash-env")
+        let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}]\"\n")
+        #expect(result.reportedDirectories.isEmpty, "\(result.stdout.debugDescription)")
+        #expect(result.stdout.contains("env=[unset]"))
+    }
+
+    @Test("zsh: the hook survives a .zshrc that reassigns precmd_functions, and needs no autoload")
+    func zshHookSurvivesReassignedHooks() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        try sandbox.append("fpath=()", to: sandbox.home + "/.zshenv")
+        try sandbox.append("precmd_functions=()", to: sandbox.home + "/.zshrc")
+        let target = try sandbox.makeDirectory("t")
+        let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n")
+        #expect(!result.stderr.contains("add-zsh-hook"), "\(result.stderr)")
+        #expect(result.reportedDirectories.last == target, "\(result.stdout.debugDescription)")
+    }
+
+    @Test("A directory name with control characters is not reported")
+    func controlCharactersAreNotReported() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            _ = try sandbox.makeDirectory("evil\u{1b}]0;PWNED\u{07}x")
+            _ = try sandbox.makeDirectory("nl\nPWNED")
+            let result = try sandbox.runLoginShell(input: "cd \"$(printf 'evil\\033]0;PWNED\\007x')\"\ncd ..\ncd nl?PWNED\necho marker-done\n")
+            #expect(result.stdout.contains("marker-done"), "\(name): \(result.stderr)")
+            #expect(result.reportedDirectories == [sandbox.work], "\(name): \(result.stdout.debugDescription)")
+            #expect(!result.stdout.contains("\u{1b}]0;"), "\(name): \(result.stdout.debugDescription)")
+        }
+    }
+
+    @Test("bash: a child shell that inherits PROMPT_COMMAND does not look the hook up", .enabled(if: gnuBash != nil, "needs a bash that honors ENV in POSIX mode (CMUX_TEST_GNU_BASH)"))
+    func bashChildShellSkipsMissingHook() throws {
+        let bash = try #require(Self.gnuBash)
+        let sandbox = try ShellSandbox(shell: bash, name: "bash")
+        try sandbox.append("export PROMPT_COMMAND='true'", to: sandbox.home + "/.bash_profile")
+        let child = "printf '%s\\n' 'command_not_found_handle() { echo \"lookup:$1\"; return 127; }' 'true' 'true' | \(bash) --norc -i 2>/dev/null\n"
+        let result = try sandbox.runLoginShell(input: child + "echo marker-done\n")
+        #expect(result.stdout.contains("marker-done"), "\(result.stderr)")
+        #expect(!result.stdout.contains("lookup:"), "\(result.stdout)")
+    }
+
     @Test("The configured-command launch is not changed")
     func configuredCommandUnchanged() throws {
         let argv = ShellSandbox.connection().commandArguments("echo hi")
@@ -123,16 +276,18 @@ struct SSHTuiShellIntegrationTests {
 /// A temporary HOME and work directory, and a login shell wrapper.
 private final class ShellSandbox {
     let root: String
-    var home: String { root + "/home" }
+    private let homeName: String
+    var home: String { root + "/" + homeName }
     var work: String { root + "/work" }
     var logPath: String { root + "/startup.log" }
     private let wrapper: String?
 
     /// `shell` is the real shell; the wrapper at `bin/<name>` adds `-i` last
     /// (bash needs its long options first).
-    init(shell: String?, name: String?) throws {
+    init(shell: String?, name: String?, homeName: String = "home") throws {
         let root = ShellSandbox.canonical(NSTemporaryDirectory()) + "/cmux-sh-\(UUID().uuidString.prefix(8))"
         self.root = root
+        self.homeName = homeName
         wrapper = name.map { root + "/bin/" + $0 }
         for dir in [home, work, root + "/bin"] {
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -159,11 +314,42 @@ private final class ShellSandbox {
          "CMUX_TEST_STARTUP_LOG": logPath]
     }
 
-    func runLoginShell(input: String, extraEnvironment: [String: String] = [:]) throws -> ShellResult {
+    /// The launch before shell integration: the host `cmux` install, then `exec "$SHELL" -l`.
+    static var plainLaunch: [String] {
+        ["/bin/sh", "-c", connection().hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -l"]
+    }
+
+    func runLoginShell(input: String, extraEnvironment: [String: String] = [:], umask: String? = nil,
+                       launch: [String]? = nil) throws -> ShellResult {
         let shell = try #require(wrapper)
         let environment = environment(shell: shell).merging(extraEnvironment) { _, new in new }
-        let result = try run(launchCommand, environment: environment, input: input + "exit\n")
-        return result
+        var argv = launch ?? launchCommand
+        if let umask { argv = ["/bin/sh", "-c", "umask \(umask); exec \"$@\"", "sh"] + argv }
+        return try run(argv, environment: environment, input: input + "exit\n")
+    }
+
+    /// The host `cmux` install directory under this HOME.
+    var installDirectory: String {
+        home + "/" + Self.connection().hostOpenCommand.installDirectory.replacingOccurrences(of: "$HOME/", with: "")
+    }
+
+    func mode(_ path: String) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    }
+
+    func makeHomeReadOnly() throws {
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: home)
+    }
+
+    func makeHomeWritable() {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home)
+    }
+
+    static var hostName: String {
+        var buffer = [CChar](repeating: 0, count: 256)
+        gethostname(&buffer, buffer.count)
+        return String(cString: buffer)
     }
 
     func makeDirectory(_ relative: String) throws -> String {
@@ -231,14 +417,17 @@ private struct ShellResult {
     let stdout: String
     let stderr: String
 
-    /// The paths of the OSC 7 reports, in order (`ESC ] 7 ; kitty-shell-cwd://host/path BEL`).
-    var reportedDirectories: [String] {
+    /// The OSC 7 reports, in order (`ESC ] 7 ; kitty-shell-cwd://host/path BEL`).
+    private var reports: [(host: String, path: String)] {
         let prefix = "\u{1b}]7;kitty-shell-cwd://"
         return stdout.components(separatedBy: prefix).dropFirst().compactMap { chunk in
             guard let end = chunk.firstIndex(of: "\u{07}") else { return nil }
             let url = chunk[..<end]
             guard let slash = url.firstIndex(of: "/") else { return nil }
-            return String(url[slash...])
+            return (String(url[..<slash]), String(url[slash...]))
         }
     }
+
+    var reportedDirectories: [String] { reports.map(\.path) }
+    var reportedHosts: [String] { reports.map(\.host) }
 }
