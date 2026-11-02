@@ -240,8 +240,10 @@ endmodule
       ["path": [String](), "kind": "sequence", "query": "{lw} as L ##1 rs1 == L.rd", "land": "start", "enabled": true],
       ["path": [String](), "kind": "sequence", "query": "{sw}", "land": "end", "enabled": true],
       ["path": [String](), "kind": "sequence", "query": "", "enabled": true],
-      ["path": [String](), "kind": "sequence", "query": "{sw}", "land": "middle", "enabled": true],
+      ["path": [String](), "kind": "sequence", "query": "{lw}", "land": "middle", "enabled": true],
       ["path": [String](), "kind": "sequence", "query": String(repeating: "a", count: 4097), "enabled": true],
+      // 2049 characters, 4098 UTF-16 units (the page's length): too long.
+      ["path": [String](), "kind": "sequence", "query": String(repeating: "\u{1F600}", count: 2049), "enabled": true],
       ["path": [String](), "kind": "pc", "pcs": [String](), "enabled": true],
       ["path": [String](), "kind": "pc", "pcs": ["main"], "enabled": true],
       ["path": [String](), "kind": "write", "loc": "", "enabled": true],
@@ -250,14 +252,15 @@ endmodule
       ["path": [String](), "kind": "change", "enabled": true],
     ]], waveform: textViewer)
     let commitKept = LB.signals(for: textViewer)
-    expect(commitKept.map(\.kind) == ["pc", "commitText", "write", "write", "sequence", "sequence"]
+    expect(commitKept.map(\.kind) == ["pc", "commitText", "write", "write", "sequence", "sequence", "sequence"]
            && commitKept[4].commit == WaveformDebuggerCommitBreakpoint(query: "{lw} as L ##1 rs1 == L.rd", land: "start")
            && commitKept[4].pageItem["query"] as? String == "{lw} as L ##1 rs1 == L.rd" && commitKept[4].pageItem["land"] as? String == "start"
            && commitKept[5].commit == WaveformDebuggerCommitBreakpoint(query: "{sw}", land: "end")
+           && commitKept[6].commit == WaveformDebuggerCommitBreakpoint(query: "{lw}", land: "end")
            && commitKept[0].commit == WaveformDebuggerCommitBreakpoint(pcs: ["0x80000004", "0x80000010"], channel: 1)
            && commitKept[1].commit == WaveformDebuggerCommitBreakpoint(pattern: "csrw mtvec", caseSensitive: true, anyRegisterNames: false)
            && commitKept[2].commit == WaveformDebuggerCommitBreakpoint(loc: "mem:0x80001000/4"),
-           "commit breakpoints' fields are kept, bad ones dropped: \(commitKept)")
+           "commit breakpoints' fields are kept (an unknown landing is the end, as on the page), bad ones dropped: \(commitKept)")
     let pcItem = commitKept.first?.pageItem
     expect(pcItem?["kind"] as? String == "pc" && pcItem?["pcs"] as? [String] == ["0x80000004", "0x80000010"] && pcItem?["channel"] as? Int == 1
            && pcItem?["condition"] as? String == "$a0 == 0" && (pcItem?["path"] as? [String])?.isEmpty == true

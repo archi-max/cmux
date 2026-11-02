@@ -42,7 +42,14 @@
   const MEMORY_BYTES = 4;      // a memory location without a size: one word
   const MAX_QUERY = 4096;      // a sequence's characters
   const SEQUENCE_LIMIT = 1000000;   // matches a sequence breakpoint takes
-  const SEQUENCE_BUDGET = 20000000; // step evaluations per search (the Sequences tab's default is 2M)
+  const SEQUENCE_BUDGET = 2000000;  // step evaluations per search (§3A: 2M steps or 2 s)
+  const SEQUENCE_MS = 2000;         // a search's time budget
+  // The sequence breakpoints searched on one index share a time pool, each taking at least SEQUENCE_MIN_MS:
+  // 16 slow ones take seconds, not minutes. It refills over SEQUENCE_REFILL_MS (a rolling window); a search it
+  // cut short is searched again once it can give the full SEQUENCE_MS.
+  const SEQUENCE_POOL_MS = 8000;
+  const SEQUENCE_MIN_MS = 250;
+  const SEQUENCE_REFILL_MS = 30000;
   const ABI = ['zero', 'ra', 'sp', 'gp', 'tp', 't0', 't1', 't2', 's0', 's1', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7',
     's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 't3', 't4', 't5', 't6'];
   function format(template, ...args) {
@@ -183,16 +190,40 @@
     return ix;
   }
 
+  // What the index's sequence time pool can give now (refilled since its last use).
+  function poolLeft(ix) {
+    const t = tablesOf(ix);
+    const now = Date.now();
+    if (!t.sequencePool) { t.sequencePool = { left: SEQUENCE_POOL_MS, at: now }; }
+    const pool = t.sequencePool;
+    return Math.min(SEQUENCE_POOL_MS, pool.left + Math.max(0, now - pool.at) * SEQUENCE_POOL_MS / SEQUENCE_REFILL_MS);
+  }
+
   async function commitsOf(bp, ix, warn) {
     if (bp.kind === 'sequence') {
       const machine = waveform.machine;
       if (!machine || typeof machine.sequence !== 'function') { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
       let r = null;
-      try { r = await machine.sequence({ query: bp.query, from: 0, limit: SEQUENCE_LIMIT, budget: SEQUENCE_BUDGET }); } catch (error) { r = null; }
+      const budgetMs = Math.max(SEQUENCE_MIN_MS, Math.min(SEQUENCE_MS, poolLeft(ix)));
+      try {
+        r = await machine.sequence({ query: bp.query, from: 0, limit: SEQUENCE_LIMIT, budget: SEQUENCE_BUDGET, budgetMs });
+      } catch (error) { r = null; }
+      const pool = tablesOf(ix).sequencePool;
+      pool.left = poolLeft(ix) - (r && r.ms > 0 ? r.ms : 0);
+      pool.at = Date.now();
       if (!r || r.error === 'noStream') { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
       if (r.error) { warn(format(S().debuggerCommitError, label(bp), r.message || r.error)); return null; }
-      if (r.incomplete) { warn(format(S().debuggerSequenceIncomplete, label(bp), r.matches.length.toLocaleString())); }
-      return r.matches.map((m) => (bp.land === 'start' ? m.start : m.end));
+      // Only the first matches (its limit); or it stopped part way (its step or time budget), the later ones not
+      // searched. The thread cap drops some partial matches but searches on: nothing to say.
+      if (r.incomplete && r.reason === 'limit') {
+        warn(format(S().debuggerSequenceLimit, label(bp), r.matches.length.toLocaleString()));
+      } else if (r.incomplete && r.reason !== 'threads') {
+        const at = r.next === null || r.next === undefined ? ix.count : r.next + 1;
+        warn(format(S().debuggerSequenceStopped, label(bp), at.toLocaleString(), ix.count.toLocaleString()));
+      }
+      const ks = r.matches.map((m) => (bp.land === 'start' ? m.start : m.end));
+      ks.cutByPool = r.incomplete && r.reason === 'time' && budgetMs < SEQUENCE_MS;
+      return ks;
     }
     if (bp.kind === 'pc') {
       const table = byPc(ix);
@@ -244,7 +275,18 @@
     const ix = await indexOf(bp, warn);
     if (!ix) { return null; }
     const key = JSON.stringify([bp.kind, bp.pcs, bp.channel, bp.pattern, bp.caseSensitive, bp.anyRegisterNames, bp.loc, bp.query, bp.land]);
-    if (bp.commitHits && bp.commitHits.ix === ix && bp.commitHits.key === key) { return bp.commitHits.times; }
+    const kept = bp.commitHits && bp.commitHits.ix === ix && bp.commitHits.key === key ? bp.commitHits : null;
+    // Cut short by the time pool: kept until the pool can give it its full time.
+    if (kept && !(kept.cutByPool && poolLeft(ix) >= SEQUENCE_MS)) { return kept.times; }
+    // One search at a time for a breakpoint: a second ask meanwhile shares it.
+    if (bp.commitPending && bp.commitPending.ix === ix && bp.commitPending.key === key) { return bp.commitPending.promise; }
+    const pending = { ix, key, promise: null };
+    pending.promise = hitsOf(bp, ix, key, warn).finally(() => { if (bp.commitPending === pending) { bp.commitPending = null; } });
+    bp.commitPending = pending;
+    return pending.promise;
+  }
+
+  async function hitsOf(bp, ix, key, warn) {
     const ks = await commitsOf(bp, ix, warn);
     if (!ks) { return null; }
     if (!ks.length && bp.kind === 'commitText' && linksRa(ix) && /\bjal\s+(ra|x1)\b/i.test(bp.pattern.replace(/\\s[+*]?/g, ' '))) {
@@ -253,7 +295,7 @@
     const at = Array.from(new Set(ks)).map((k) => [ix.time[k], k]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     const out = [];
     for (const [time] of at) { if (!out.length || out[out.length - 1] !== time) { out.push(time); } }
-    bp.commitHits = { ix, key, times: Float64Array.from(out), at };
+    bp.commitHits = { ix, key, times: Float64Array.from(out), at, cutByPool: !!ks.cutByPool };
     return bp.commitHits.times;
   }
 
