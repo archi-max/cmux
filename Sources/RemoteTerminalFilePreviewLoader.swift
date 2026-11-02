@@ -53,6 +53,21 @@ actor RemoteTerminalFilePreviewLoader {
         try await load(tokens: tokens, workingDirectory: { workingDirectory })
     }
 
+    /// Whether a click names a file the waveform viewer reads in place on
+    /// the host (FSDB). Placeholder until the fix: none does.
+    static func readsInPlaceOnHost(tokens: [String]) -> Bool {
+        false
+    }
+
+    /// The host file a click names, found without downloading it.
+    /// Placeholder until the fix: never found.
+    func locate(
+        tokens: [String],
+        workingDirectory: @escaping @Sendable () async -> String?
+    ) async throws -> RemoteFileProbe.Header {
+        throw RemoteFileProbe.Failure.noFile
+    }
+
     /// Downloads exactly `path` (no spelling variants), at most `maxBytes`.
     /// For `cmux open`, where the remote CLI has already resolved the one
     /// path it means. The host checks the size before it sends anything, in

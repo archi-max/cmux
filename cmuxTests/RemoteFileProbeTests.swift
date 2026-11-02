@@ -122,6 +122,48 @@ import Testing
         }
     }
 
+    @Test func aZeroCapProbeLocatesAFileOnTheHostWithoutSendingIt() throws {
+        // A clicked waveform dump is read in place on the host: only its host
+        // path is needed, from a relative link, in one run.
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("build/sim", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(count: 4096).write(to: dir.appendingPathComponent("dump.fsdb"))
+        for shell in Self.shells {
+            let result = try run(
+                RemoteFileProbe.command(candidates: [dir.path + "/dump.fsdb:3", dir.path + "/dump.fsdb"], maxBytes: 0),
+                shell: shell, home: root, in: root
+            )
+            let sent = root.appendingPathComponent("o-" + UUID().uuidString)
+            do {
+                _ = try RemoteFileProbe.outcome(status: result.status, raw: result.raw, to: sent)
+                Issue.record("\(shell): a refused file must not count as sent")
+            } catch let oversize as RemoteFileProbe.Oversize {
+                #expect(oversize.header.index == 1, "\(shell)")
+                #expect(oversize.header.path == dir.path + "/dump.fsdb", "\(shell)")
+                #expect(oversize.header.size == 4096, "\(shell)")
+            } catch {
+                Issue.record("\(shell): \(error)")
+            }
+            #expect(((try? Data(contentsOf: sent)) ?? Data()).isEmpty, "\(shell): no bytes of the dump")
+        }
+    }
+
+    @Test func theProbesOwnStatusesMapToTheirOutcomes() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("raw")
+        try Data("ssh: connect failed\n".utf8).write(to: raw)
+        #expect(throws: RemoteFileProbe.Failure.noFile) {
+            _ = try RemoteFileProbe.outcome(status: RemoteFileProbe.noFileStatus, raw: raw, to: root.appendingPathComponent("o"))
+        }
+        #expect(throws: RemoteFileProbe.Failure.tooLarge) {
+            _ = try RemoteFileProbe.outcome(status: RemoteFileProbe.tooLargeStatus, raw: raw, to: root.appendingPathComponent("o"))
+        }
+        #expect(try RemoteFileProbe.outcome(status: 255, raw: raw, to: root.appendingPathComponent("o")) == nil)
+    }
+
     @Test func loginShellBannersBeforeTheHeaderAreSkipped() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -250,6 +292,18 @@ import Testing
         #expect(!RemotePreviewPlacement.unfocused.announcesOpen)
         #expect(!RemotePreviewPlacement.focused.announcesOpen)
         #expect(placement(selected: false, focused: true, key: true)?.announcesOpen == true)
+    }
+
+    @Test func aFailedPreviewLogsWhyWithoutPathsOrSSHOutput() {
+        #expect(RemotePreviewOpenRules.failureReason(RemoteFileProbe.Failure.noFile) == "noFile")
+        #expect(RemotePreviewOpenRules.failureReason(RemoteFileProbe.Failure.malformedOutput) == "malformedOutput")
+        #expect(RemotePreviewOpenRules.failureReason(RemoteFileProbe.Failure.tooLarge) == "tooLarge")
+        let header = RemoteFileProbe.Header(index: 0, path: "/home/u/secret.fsdb", modificationTime: 1, size: 2)
+        #expect(RemotePreviewOpenRules.failureReason(RemoteFileProbe.Oversize(header: header)) == "tooLarge")
+        #expect(RemotePreviewOpenRules.failureReason(URLError(.timedOut)) == "timeout")
+        struct SSHFailed: Error, CustomStringConvertible { var description: String { "/home/u/x: denied" } }
+        let other = RemotePreviewOpenRules.failureReason(SSHFailed())
+        #expect(other == "SSHFailed", "the type, never the message")
     }
 
     private final class Flag: @unchecked Sendable {
