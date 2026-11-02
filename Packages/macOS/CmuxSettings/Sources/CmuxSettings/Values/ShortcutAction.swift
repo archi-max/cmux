@@ -198,8 +198,13 @@ public enum ShortcutAction: String, CaseIterable, Sendable, Hashable, SettingCod
     case stepWaveformCycleForward
     /// Moves the waveform marker to the stepping clock's previous rising edge.
     case stepWaveformCycleBack
-    /// Plays the waveform cycle by cycle, or pauses it.
+    /// Continues to the next breakpoint hit when one is enabled; else plays the waveform cycle
+    /// by cycle, or pauses it.
     case toggleWaveformPlayback
+    /// Goes back to the previous breakpoint hit.
+    case reverseContinueWaveform
+    /// Puts a waveform debugger breakpoint on the SystemVerilog editor's caret line, or removes it.
+    case toggleWaveformBreakpoint
     case openBrowser
     case focusBrowserAddressBar
     case browserBack
@@ -310,11 +315,13 @@ extension ShortcutAction {
              .diffViewerToggleViewed,
              .fileExplorerOpenSelection,
              .fileExplorerOpenSelectionFinderAlias,
-             // F10, Shift-F10 and F5: the app's keyDown router only runs them with a waveform
+             // F10, Shift-F10, F5, Shift-F5 and F9: the app's keyDown router only runs them with a waveform
              // viewer or a SystemVerilog editor next to one focused, else the key goes on.
              .stepWaveformCycleForward,
              .stepWaveformCycleBack,
-             .toggleWaveformPlayback:
+             .toggleWaveformPlayback,
+             .reverseContinueWaveform,
+             .toggleWaveformBreakpoint:
             return true
         default:
             return false
@@ -367,7 +374,8 @@ extension ShortcutAction {
             return .or(.atom(.browserFocus), .atom(.filePreviewTextEditorFocus))
         case .toggleFileEditorWordWrap, .addSignalToWaveform, .navigateSourceBack, .navigateSourceForward:
             return .atom(.filePreviewTextEditorFocus)
-        case .revealWaveformSignalInSource, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback:
+        case .revealWaveformSignalInSource, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
+             .reverseContinueWaveform, .toggleWaveformBreakpoint:
             return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))
         case .markdownZoomIn, .markdownZoomOut, .markdownZoomReset:
             return .atom(.markdownFocus)

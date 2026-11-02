@@ -207,7 +207,7 @@ enum KeyboardShortcutSettings {
         case saveFilePreview, toggleFileEditorWordWrap
         case addSignalToWaveform, revealWaveformSignalInSource
         case navigateSourceBack, navigateSourceForward
-        case stepWaveformCycleForward, stepWaveformCycleBack, toggleWaveformPlayback
+        case stepWaveformCycleForward, stepWaveformCycleBack, toggleWaveformPlayback, reverseContinueWaveform, toggleWaveformBreakpoint
         case openBrowser
         case focusBrowserAddressBar
         case browserBack, browserForward, browserReload
@@ -393,7 +393,9 @@ enum KeyboardShortcutSettings {
             case .navigateSourceForward: return String(localized: "shortcut.navigateSourceForward.label", defaultValue: "Go Forward in Editor")
             case .stepWaveformCycleForward: return String(localized: "shortcut.stepWaveformCycleForward.label", defaultValue: "Step Forward One Cycle")
             case .stepWaveformCycleBack: return String(localized: "shortcut.stepWaveformCycleBack.label", defaultValue: "Step Back One Cycle")
-            case .toggleWaveformPlayback: return String(localized: "shortcut.toggleWaveformPlayback.label", defaultValue: "Play or Pause Waveform")
+            case .toggleWaveformPlayback: return String(localized: "shortcut.toggleWaveformPlayback.continueLabel", defaultValue: "Continue, or Play or Pause Waveform")
+            case .reverseContinueWaveform: return String(localized: "shortcut.reverseContinueWaveform.label", defaultValue: "Reverse Continue to Breakpoint")
+            case .toggleWaveformBreakpoint: return String(localized: "shortcut.toggleWaveformBreakpoint.label", defaultValue: "Toggle Breakpoint")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .focusBrowserAddressBar: return String(localized: "command.browserFocusAddressBar.title", defaultValue: "Focus Address Bar")
             case .browserBack: return String(localized: "menu.view.back", defaultValue: "Back")
@@ -717,6 +719,8 @@ enum KeyboardShortcutSettings {
             case .stepWaveformCycleForward: return StoredShortcut(key: "f10", command: false, shift: false, option: false, control: false)
             case .stepWaveformCycleBack: return StoredShortcut(key: "f10", command: false, shift: true, option: false, control: false)
             case .toggleWaveformPlayback: return StoredShortcut(key: "f5", command: false, shift: false, option: false, control: false)
+            case .reverseContinueWaveform: return StoredShortcut(key: "f5", command: false, shift: true, option: false, control: false)
+            case .toggleWaveformBreakpoint: return StoredShortcut(key: "f9", command: false, shift: false, option: false, control: false)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .focusBrowserAddressBar:

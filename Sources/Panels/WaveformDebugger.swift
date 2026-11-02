@@ -17,17 +17,32 @@ enum WaveformDebugger {
         case first
         case last
         case togglePlay
+        /// Continue (1) or reverse continue (-1) to the nearest breakpoint hit.
+        case continueToBreakpoint(Int)
+        /// F5: continue when a breakpoint is enabled, else play or pause.
+        case continueOrTogglePlay
+        /// F9: a line breakpoint on the SystemVerilog editor's caret line, or none.
+        case toggleLineBreakpoint
         case faster
         case slower
         case useSelectedAsClock
         case defaultClock
         case stop
+        /// Evaluate Expression… / Add Watch…: the viewer page asks for the expression.
+        case evaluateExpression
+        case addWatch
+        /// The Machine section (registers, memory, CSRs, history from the dump's commit stream).
+        case toggleMachineState
+        /// Load ELF…: the program image memory starts from.
+        case loadELF
     }
 
     static let shortcutCommands: [(KeyboardShortcutSettings.Action, Command)] = [
         (.stepWaveformCycleForward, .step(1)),
         (.stepWaveformCycleBack, .step(-1)),
-        (.toggleWaveformPlayback, .togglePlay),
+        (.toggleWaveformPlayback, .continueOrTogglePlay),
+        (.reverseContinueWaveform, .continueToBreakpoint(-1)),
+        (.toggleWaveformBreakpoint, .toggleLineBreakpoint),
     ]
 
     /// What the page last reported for a viewer.
@@ -80,9 +95,11 @@ enum WaveformDebugger {
         return WaveformSourceLink.waveformPanel(near: panel)
     }
 
-    /// F10, Shift-F10 and F5. False (the key goes on) unless a waveform viewer,
+    /// F10, Shift-F10, F5 and Shift-F5. False (the key goes on) unless a waveform viewer,
     /// or a SystemVerilog editor with a viewer in its workspace, has focus.
     static func performFromShortcut(_ command: Command, window: NSWindow?) -> Bool {
+        // In the editor, with or without a viewer.
+        if command == .toggleLineBreakpoint { return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) }
         if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
             // Typing in the viewer's search or value field.
             guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
@@ -98,6 +115,9 @@ enum WaveformDebugger {
     /// Runs `command` on the viewer for `panel` (see `target(for:)`). False when there is none.
     @discardableResult
     static func perform(_ command: Command, for panel: FilePreviewPanel?) -> Bool {
+        if command == .toggleLineBreakpoint {
+            return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: NSApp.keyWindow ?? NSApp.mainWindow)
+        }
         guard let waveform = target(for: panel) else { return false }
         perform(command, on: waveform)
         return true
@@ -115,6 +135,14 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("jump", argument: ["to": "last"])
             case .togglePlay:
                 _ = await page.callDebugger("togglePlay")
+            case .continueToBreakpoint(let direction):
+                await WaveformDebuggerLineBreakpoints.sync(waveform)
+                _ = await page.callDebugger("continue", argument: ["dir": direction])
+            case .continueOrTogglePlay:
+                await WaveformDebuggerLineBreakpoints.sync(waveform)
+                _ = await page.callDebugger("continue", argument: ["dir": 1, "orTogglePlay": true])
+            case .toggleLineBreakpoint:
+                break
             case .faster:
                 _ = await page.callDebugger("changeRate", argument: ["by": 1])
             case .slower:
@@ -126,6 +154,16 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("setClock", argument: ["path": NSNull()])
             case .stop:
                 _ = await page.callDebugger("stop")
+            case .evaluateExpression:
+                _ = await page.callDebugger("promptEvaluate")
+            case .addWatch:
+                _ = await page.callDebugger("promptAddWatch")
+            case .toggleMachineState:
+                if (await page.callMachine("toggle") as? [String: Any])?["shown"] as? Bool == true {
+                    WaveformMachineStateLoader.loadImageBeside(waveform)
+                }
+            case .loadELF:
+                WaveformMachineStateLoader.chooseELF(for: waveform)
             }
         }
     }
@@ -134,6 +172,30 @@ enum WaveformDebugger {
 
     /// `{ type: 'debugger', event: 'cycle' | 'state', ...state }` from the viewer page.
     static func pageReported(_ body: [String: Any], waveform: FilePreviewPanel) {
+        // The page's breakpoint list toggled or removed a line breakpoint.
+        if body["event"] as? String == "lineBreakpoint" {
+            WaveformDebuggerLineBreakpoints.pageReported(body, waveform: waveform)
+            return
+        }
+        // Its signal breakpoints changed: kept for the workspace's session.
+        if body["event"] as? String == "breakpoints" {
+            WaveformDebuggerLineBreakpoints.signalsReported(body, waveform: waveform)
+            return
+        }
+        // The Machine section asked for an ELF, or its commit stream is ready (the ELF next to the dump is loaded).
+        if body["event"] as? String == "machineLoadELF" {
+            WaveformMachineStateLoader.chooseELF(for: waveform)
+            return
+        }
+        if body["event"] as? String == "machine" {
+            if body["status"] as? String == "ready" { WaveformMachineStateLoader.loadImageBeside(waveform) }
+            return
+        }
+        // Its watch expressions changed: kept for the workspace's session.
+        if body["event"] as? String == "watches" {
+            WaveformDebuggerLineBreakpoints.watchesReported(body, waveform: waveform)
+            return
+        }
         // A played move, posted by the page as it moves (before the viewer's markerSet).
         if body["event"] as? String == "moved" {
             if isStepping(waveform), let time = (body["movedTo"] as? NSNumber)?.int64Value {
@@ -172,6 +234,7 @@ enum WaveformDebugger {
 
     /// A new page (a reload or a web content crash) starts without stepping, and doesn't say so.
     static func pageLoaded(_ waveform: FilePreviewPanel) {
+        WaveformDebuggerLineBreakpoints.pageLoaded(waveform)
         guard isStepping(waveform) else { return }
         box(waveform).state = PageState()
         stoppedStepping(waveform, editors: FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId))
@@ -229,6 +292,108 @@ enum WaveformDebugger {
             "debuggerClockNotBit": String(
                 localized: "waveformDebugger.clockNotBit",
                 defaultValue: "Select a 1-bit signal in the waveform to use as the clock."
+            ),
+        ].merging(breakpointPageStrings()) { first, _ in first }.merging(expressionPageStrings()) { first, _ in first }
+            .merging(WaveformMachineState.pageStrings()) { first, _ in first }
+    }
+
+    /// Strings of the page's Evaluate and watches (cmux-debugger.js, cmux-expr.js).
+    private static func expressionPageStrings() -> [String: String] {
+        [
+            "debuggerEvaluate": String(localized: "waveformDebugger.evaluate", defaultValue: "Evaluate"),
+            "debuggerEvaluateTooltip": String(
+                localized: "waveformDebugger.evaluateTooltip",
+                defaultValue: "An expression at the marker, in the shown instance (Up and Down: earlier ones)"
+            ),
+            "debuggerEvalResult": String(localized: "waveformDebugger.evalResult", defaultValue: "= %1$@ (width %2$@)"),
+            "debuggerEvalTooltip": String(localized: "waveformDebugger.evalTooltip", defaultValue: "Binary %1$@, decimal %2$@"),
+            "debuggerAddWatch": String(localized: "waveformDebugger.addWatch", defaultValue: "Add Watch"),
+            "debuggerWatch": String(localized: "waveformDebugger.watch", defaultValue: "Watch"),
+            "debuggerRemoveWatch": String(localized: "waveformDebugger.removeWatch", defaultValue: "Remove Watch"),
+            "debuggerEditWatch": String(localized: "waveformDebugger.editWatch", defaultValue: "Edit Watch"),
+            "debuggerExprError": String(localized: "waveformDebugger.exprError", defaultValue: "%1$@ (column %2$@)"),
+            "debuggerExprSyntax": String(localized: "waveformDebugger.exprSyntax", defaultValue: "Unexpected text"),
+            "debuggerExprUnsupported": String(localized: "waveformDebugger.exprUnsupported", defaultValue: "Not supported here"),
+            "debuggerExprEmpty": String(localized: "waveformDebugger.exprEmpty", defaultValue: "Nothing to evaluate"),
+            "debuggerExprTooLong": String(localized: "waveformDebugger.exprTooLong", defaultValue: "Longer than %@ characters"),
+            "debuggerExprTooManySignals": String(localized: "waveformDebugger.exprTooManySignals", defaultValue: "More than %@ signals"),
+            "debuggerExprTooWide": String(localized: "waveformDebugger.exprTooWide", defaultValue: "Wider than %@ bits"),
+            "debuggerExprBadLiteral": String(localized: "waveformDebugger.exprBadLiteral", defaultValue: "Not a valid literal"),
+            "debuggerExprUnsizedInConcat": String(
+                localized: "waveformDebugger.exprUnsizedInConcat",
+                defaultValue: "An unsized number can't be in a concatenation (give it a width, as in 8'd1)"
+            ),
+            "debuggerExprNotConstant": String(localized: "waveformDebugger.exprNotConstant", defaultValue: "Must be a constant"),
+            "debuggerExprBadReplication": String(localized: "waveformDebugger.exprBadReplication", defaultValue: "A replication count must be at least 1"),
+            "debuggerExprUnknownName": String(localized: "waveformDebugger.exprUnknownName", defaultValue: "%@ is not in this waveform"),
+            "debuggerExprNoValue": String(localized: "waveformDebugger.exprNoValue", defaultValue: "%@ has no value at the marker"),
+            "debuggerExprNoMarker": String(localized: "waveformDebugger.exprNoMarker", defaultValue: "Put the marker on a cycle first."),
+            "debuggerBreakpointIf": String(localized: "waveformDebugger.breakpointIf", defaultValue: "%1$@ if %2$@"),
+            "debuggerEditCondition": String(localized: "waveformDebugger.editCondition", defaultValue: "Edit Condition…"),
+            "debuggerConditionPrompt": String(
+                localized: "waveformDebugger.conditionPrompt",
+                defaultValue: "Break only when this is true at the clock edge"
+            ),
+            "debuggerConditionError": String(localized: "waveformDebugger.conditionError", defaultValue: "Condition of %1$@: %2$@"),
+            "debuggerLoading": String(
+                localized: "waveformDebugger.loading",
+                defaultValue: "The waveform is still loading; try again in a moment."
+            ),
+            "debuggerLinePathsCapped": String(
+                localized: "waveformDebugger.linePathsCapped",
+                defaultValue: "%1$@: watching the first %2$@ of %3$@ signals"
+            ),
+        ]
+    }
+
+    /// Strings of the page's breakpoints: the list, the row menu, the hit messages.
+    private static func breakpointPageStrings() -> [String: String] {
+        [
+            "debuggerBreakpoints": String(localized: "waveformDebugger.breakpoints", defaultValue: "Breakpoints"),
+            "debuggerBreakWhenChanges": String(localized: "waveformDebugger.breakWhenChanges", defaultValue: "Break When Changes"),
+            "debuggerBreakWhenEquals": String(localized: "waveformDebugger.breakWhenEquals", defaultValue: "Break When Equals…"),
+            "debuggerBreakEqualsPrompt": String(localized: "waveformDebugger.breakEqualsPrompt", defaultValue: "Break when %@ equals"),
+            "debuggerBreakEqualsPlaceholder": String(
+                localized: "waveformDebugger.breakEqualsPlaceholder",
+                defaultValue: "For example 'h3f, 8'b1010_??01, 12 or x"
+            ),
+            "debuggerBreakpointChanges": String(localized: "waveformDebugger.breakpointChanges", defaultValue: "%@ changes"),
+            "debuggerBreakpointEquals": String(localized: "waveformDebugger.breakpointEquals", defaultValue: "%1$@ == %2$@"),
+            "debuggerRemoveBreakpoint": String(localized: "waveformDebugger.removeBreakpoint", defaultValue: "Remove Breakpoint"),
+            "debuggerBreakpointHit": String(
+                localized: "waveformDebugger.breakpointHit",
+                defaultValue: "Breakpoint: %1$@ at %2$@ (cycle %3$@)"
+            ),
+            "debuggerNoHitForward": String(localized: "waveformDebugger.noHitForward", defaultValue: "No breakpoint hit before the end."),
+            "debuggerHitAfterLastEdge": String(
+                localized: "waveformDebugger.hitAfterLastEdge",
+                defaultValue: "Breakpoint: %1$@ at %2$@, after the last clock edge."
+            ),
+            "debuggerNoHitBack": String(localized: "waveformDebugger.noHitBack", defaultValue: "No breakpoint hit before the start."),
+            "debuggerNoBreakpoints": String(localized: "waveformDebugger.noBreakpoints", defaultValue: "No breakpoints are enabled."),
+            "debuggerBadValue": String(
+                localized: "waveformDebugger.badValue",
+                defaultValue: "“%1$@” is not a value for a %2$@-bit signal."
+            ),
+            "debuggerTooManyChanges": String(
+                localized: "waveformDebugger.tooManyChanges",
+                defaultValue: "%@ changes too often to search here."
+            ),
+            "debuggerBreakpointSignalGone": String(
+                localized: "waveformDebugger.breakpointSignalGone",
+                defaultValue: "%@ is not in this waveform."
+            ),
+            "debuggerLineNotPlaced": String(
+                localized: "waveformDebugger.lineNotPlaced",
+                defaultValue: "%@: none of its signals are in the waveform (not placed in the design yet)."
+            ),
+            "debuggerLineNothingToWatch": String(
+                localized: "waveformDebugger.lineNothingToWatch",
+                defaultValue: "%@: this line assigns no signal, so it has nothing to watch."
+            ),
+            "debuggerLineFileTooLarge": String(
+                localized: "waveformDebugger.lineFileTooLarge",
+                defaultValue: "%@: the file is too large to find the signals of this line."
             ),
         ]
     }

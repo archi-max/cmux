@@ -78,6 +78,8 @@ struct ShortcutActionNumberedDigitTests {
             .stepWaveformCycleForward,
             .stepWaveformCycleBack,
             .toggleWaveformPlayback,
+            .reverseContinueWaveform,
+            .toggleWaveformBreakpoint,
         ]
 
         for action in ShortcutAction.allCases {

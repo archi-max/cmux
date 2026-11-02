@@ -1342,6 +1342,9 @@
       const items = ui().buildMenu(MENUS['webview/context'], context, resolveEntry(args));
       // cmux addition: VS Code shows Reload File in the editor title bar.
       items.push({ separator: true }, { label: title('vaporview.reloadFile'), run: () => run('vaporview.reloadFile') });
+      // cmux addition: the debugger's breakpoints on a signal row (cmux-debugger.js).
+      const breakItems = window.cmuxDebugger ? window.cmuxDebugger.rowMenuItems(args) : [];
+      if (breakItems.length) { items.push({ separator: true }, ...breakItems); }
       const rect = document.getElementById('viewer').getBoundingClientRect();
       ui().showMenu(items, rect.left + e.clientX, rect.top + e.clientY);
     });

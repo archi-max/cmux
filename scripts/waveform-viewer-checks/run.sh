@@ -29,6 +29,18 @@
 #                                        (built on the host on first use) and
 #                                        print per-signal timings and memory
 #   ./run.sh fsdb-locals                 FSDB inline values of pinned signals
+#   ./run.sh breakpoints                 debugger breakpoints: continue, reverse, landing, play stops, list
+#   ./run.sh line-breakpoints            line breakpoints: F9, gutter, edits, instances, session
+#   ./run.sh machine-core                machine state (cmux-machine-core.js): commit stream detection,
+#                                        the replay rules, gdb commands, $ names; the synthetic RVFI
+#                                        generator and NERV/PicoRV32/Ibex against Spike (machine/fixtures)
+#   ./run.sh machine [case...]           the machine state in the page (cmux-machine.js): the Machine section,
+#                                        F10 by commit, $ names, gdb commands, row actions, the ELF image
+#                                        (WaveformMachineState.swift's readelf) on the cores and synthetic streams
+#   ./run.sh machine-fsdb <ssh-host> <remote.fsdb> <commit.log> [prog.elf]
+#                                        the machine state on a remote FSDB against its commit.log
+#   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
+#   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
 #                                        (helper stand-in, no host)
@@ -80,6 +92,12 @@ case "${1:-}" in
     ;;
   debugger-editor)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    # A sparse worktree may leave the package out (the default cone has no Packages/Shared).
+    if [ ! -d "$L" ]; then
+      echo "line-breakpoints needs Packages/Shared/CmuxSyntaxHighlighting in this checkout:" >&2
+      echo "  git -C \"$ROOT\" sparse-checkout add Packages/Shared/CmuxSyntaxHighlighting" >&2
+      exit 2
+    fi
     # One module here: the package import goes, and SlangDriverCone.swift's session extension is stubbed.
     sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerEditorHighlights.swift" > "$OUT/highlights.swift"
     sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerRTLStatus.swift" > "$OUT/rtl-status.swift"
@@ -96,6 +114,65 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/debugger-fsdb"
     "$OUT/debugger-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$1" "$2" "$3" "$OUT/debugger-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/debugger-fsdb.log"
     grep -q '^DEBUGGER FSDB CHECKS PASSED' "$OUT/debugger-fsdb.log"
+    ;;
+  machine-core)
+    swiftc -swift-version 6 -O "$HERE/machine/main.swift" -o "$OUT/machine-core"
+    "$OUT/machine-core" "$HERE/machine/fixtures" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-machine-core.js" \
+      "$ASSETS/cmux-riscv-disasm.js" "$ASSETS/cmux-sequence.js" "$HERE/machine/make-rvfi-vcd.js" "$HERE/machine/core-cases.js" \
+      "$HERE/machine/sequence-cases.js" | tee "$OUT/machine-core.log"
+    grep -q '^MACHINE CORE CHECKS PASSED' "$OUT/machine-core.log"
+    ;;
+  machine)
+    # The page: each dump in its own off-screen WKWebView (cases: the three cores, six synthetic streams, none).
+    shift
+    swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
+    cases="${*:-nerv picorv32 ibex prefixed packed2 array2 array2late array2single struct monitor forward none}"
+    for c in $cases; do
+      "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" "$c" | tee "$OUT/machine-$c.log"
+      grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-$c.log"
+    done
+    ;;
+  machine-fsdb)
+    # A remote FSDB read in place (helper under nice) against its Spike-format commit.log (a local copy).
+    shift
+    if [ $# -lt 3 ]; then echo "machine-fsdb: needs <ssh-host> <remote.fsdb> <local commit.log> [local.elf]"; exit 2; fi
+    swiftc -O "$HERE/machine/page/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformMachineState.swift" -o "$OUT/machine-page"
+    # Exit 75: the dump never opened (a stuck connection); one retry with a fresh helper. Each attempt
+    # keeps its own log (machine-fsdb.attemptN.log); machine-fsdb.log is the last one.
+    rm -f "$OUT"/machine-fsdb.attempt*.log
+    for attempt in 1 2; do
+      set +e; "$OUT/machine-page" "$ASSETS" "$HERE/machine" "$OUT" fsdb "$ASSETS/fsdb-helper" "$@" | tee "$OUT/machine-fsdb.attempt$attempt.log"; status=${PIPESTATUS[0]}; set -e
+      cp "$OUT/machine-fsdb.attempt$attempt.log" "$OUT/machine-fsdb.log"
+      [ "$status" -eq 75 ] && [ "$attempt" -eq 1 ] && { echo "machine-fsdb: retrying once (attempt 1's log: $OUT/machine-fsdb.attempt1.log)"; continue; }
+      break
+    done
+    grep -q '^MACHINE PAGE CHECKS PASSED' "$OUT/machine-fsdb.log"
+    ;;
+  machine-mutants)
+    swiftc -swift-version 6 -O "$HERE/machine/main.swift" -o "$OUT/machine-core"
+    "$HERE/machine/mutants.sh" "$OUT/machine-core" "$ASSETS" "$HERE/machine" "$OUT" | tee "$OUT/mutants.log"
+    grep -q '0 survived' "$OUT/mutants.log"
+    ;;
+  expr)
+    swiftc -swift-version 6 -O "$HERE/expr/main.swift" -o "$OUT/expr"
+    "$OUT/expr" "$ASSETS/cmux-expr.js" "$HERE/expr/cases.js" "$HERE/expr/fuzz-regressions.js"
+    ;;
+  line-breakpoints)
+    L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    sed '/^import CmuxSyntaxHighlighting$/d' "$ROOT/Sources/Panels/WaveformDebuggerLineBreakpoints.swift" > "$OUT/line-breakpoints-model.swift"
+    swiftc -swift-version 6 -O "$HERE/line-breakpoints/main.swift" "$HERE/line-breakpoints/stubs.swift" "$OUT/line-breakpoints-model.swift" \
+      "$L/WaveformLineBreakpoint.swift" "$L/SystemVerilogInlineScan.swift" "$L/HierarchyPathMapping.swift" "$L/LSPTypes.swift" \
+      -o "$OUT/line-breakpoints"
+    "$OUT/line-breakpoints"
+    ;;
+  breakpoints)
+    swiftc -O "$HERE/breakpoints/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/breakpoints"
+    python3 "$HERE/breakpoints/make-vcd.py" "$OUT"
+    "$OUT/breakpoints" "$ASSETS" "$OUT/breakpoints.vcd" "$OUT/breakpoints.png" | grep -v '^\[log\]' | tee "$OUT/breakpoints.log"
+    grep -q '^BREAKPOINT CHECKS PASSED' "$OUT/breakpoints.log"
     ;;
   fsdb-locals)
     swiftc -O "$HERE/fsdb-locals/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \

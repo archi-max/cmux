@@ -195,8 +195,8 @@
       },
       search(query, scope) { return call('searchnetlist', { query, scopeId: scope ? scope.id : 0xFFFFFFFF }); },
       valuesAtTime(time, paths) { return call('getvaluesattime', { time, paths: paths.join(' ') }); },
-      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js).
-      signalChanges(v) { return call('getsignalchanges', { signalId: v.signalId }); },
+      // [[time, value], ...] of one variable, kept in the page (cmux-debugger.js); null past maxChanges.
+      signalChanges(v, maxChanges) { return call('getsignalchanges', { signalId: v.signalId, maxChanges }); },
       // A 1-bit variable's rising-edge times (Float64Array), found in the worker.
       signalPosedges(v, maxEdges) { return call('getsignalposedges', { signalId: v.signalId, maxEdges }); },
       // Ends the worker and settles every call still waiting on it.
@@ -329,7 +329,9 @@
       return { result: reply.result, helperMs: reply.ms || 0, bin, wireBytes: all.length };
     }
 
-    return {
+    const self = {
+      // The dump as the helper found it ({ path, size, mtimeMs, helper }), or null (an older helper).
+      identity: null,
       close() { closed = true; aborter.abort(); },
       // Protocol 2: the viewer windows signals itself and sends its own queries (v2).
       windowed: () => protocolVersion >= 2,
@@ -354,6 +356,7 @@
       },
       async open(showTop) {
         const { result } = await request({ cmd: 'open', file: config.fsdb.path });
+        self.identity = result.identity && typeof result.identity === 'object' ? result.identity : null;
         showTop(result.top.map((t) => ({ kind: 'scope', name: t.name, id: t.scopeOffsetIdx, type: t.type })));
         return result.metadata;
       },
@@ -458,6 +461,7 @@
         try { await fetchSignals(signals); } finally { if (!closed) { toNative({ type: 'signalData' }); } }
       },
     };
+    return self;
 
     async function fetchSignals(signals) {
       const t0 = performance.now();
@@ -752,6 +756,9 @@
     if (generation !== loadGeneration) { return false; }
     doc.metadata = metadata;
     showMessage('', '');
+    // cmux-debugger.js redraws what depended on the old backend (the breakpoint list's hit mark).
+    const debuggerApi = window.cmuxWaveform && window.cmuxWaveform.debugger;
+    if (debuggerApi && debuggerApi.backendChanged) { debuggerApi.backendChanged(); }
     return true;
   }
 
@@ -841,10 +848,14 @@
     alreadyShown: (netlistId) => alreadyShown(netlistId),
     // cmux-debugger.js: a variable's changes, VaporView events as they pass,
     // and its Locals group, which the link does not count as shown.
-    signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(null)),
+    // Undefined while the data is not read yet (null: past maxChanges).
+    signalChanges: (v, maxChanges) => (dataReady() && backend.signalChanges ? backend.signalChanges(v, maxChanges) : Promise.resolve(undefined)),
     // Null when the backend has no faster way than signalChanges.
     signalPosedges: (v, maxEdges) => (dataReady() && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
     get currentBackend() { return backend; },
+    // The open dump's identity for caches keyed by it, or null (VCD/FST in the page: not needed, fast).
+    dumpIdentity: () => (dataReady() && backend.identity) || null,
+    dataReady: () => dataReady(),
     viewerEventListeners: [],
     contextListeners: [],
     quietEvents: 0,
@@ -1186,6 +1197,10 @@
     iframe.addEventListener('load', attachToFrame);
     hostApi.findLinkItem = findLinkItem;
     hostApi.pathOf = pathOf;
+    // cmux-debugger.js (Evaluate, watches): the bits in effect at `time` (netlistId -> bits), signals
+    // not shown too; and the shown rows' number formats (netlistId -> numberFormat).
+    hostApi.rawValuesAt = (time, vars) => (backend && backend.changes ? fsdbValues(Number(time), vars, true) : wellenValues(Number(time), vars));
+    hostApi.shownFormats = shownFormats;
 
     return Object.freeze({
       scopeChildren,

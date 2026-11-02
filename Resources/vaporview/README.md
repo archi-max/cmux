@@ -32,7 +32,7 @@ bundled `webview.js` byte for byte.
 | --- | --- |
 | `webview.js` | `dist/webview.js` (unmodified build output of `src/webview/` with `source/cmux-vaporview.patch` applied; see below) |
 | `source/cmux-vaporview.patch` | `git diff 59107c6 cmux-viewer` (see above) |
-| `filehandler.wasm` | `target/wasm32-unknown-unknown/release/filehandler.wasm` (unmodified build output of `src/wellen_parser/`, wellen 0.25.7) |
+| `filehandler.wasm` | `target/wasm32-unknown-unknown/release/filehandler.wasm`: the build output of `src/wellen_parser/` (unmodified), with wellen 0.25.7 patched by `wellen-0.25.7-split-bit-start.patch` (see below) |
 | `style.css` | `media/style.css` (unmodified) |
 | `codicons/codicon.css`, `codicons/codicon.ttf` | `node_modules/@vscode/codicons/dist/` 0.0.35 (unmodified; `codicons/LICENSE` CC-BY-4.0, `codicons/LICENSE-CODE` MIT) |
 | `viewer.html` | `media/webview.html`, modified (see below) |
@@ -74,6 +74,23 @@ keybindings, netlist view, settings, sessions and terminal links).
     `set-windowing`), with small signals loaded whole, prefetch, and marker
     values, next/previous edge, value search and WaveDrom answered by the
     helper. Without `set-windowing` the viewer behaves as upstream.
+- `filehandler.wasm`: wellen 0.25.7 (BSD 3-Clause, Kevin Laeufer; https://github.com/ekiwi/wellen)
+  merges a VCD's split bits (`valid [0]`, `valid [1]`, as Questa and other writers bit-blast vectors)
+  into one vector in `transform_bv_signal` (`src/signal/transform.rs`), which had four mistakes
+  (upstream bugs, to be reported):
+  - it started each bit at the time-table index instead of the position, so with no bit at the first
+    time each bit started at a wrong (usually its second) value;
+  - a bit whose first change came after the others' never advanced, so its values were lost;
+  - the X of a bit without a value yet was dropped (written as 0) when the bits were 2-state;
+  - a bit that is declared but never written emptied the whole vector (its "first time" counted as 0).
+  `wellen-0.25.7-split-bit-start.patch` fixes all four. To rebuild, run
+  `scripts/waveform-viewer-checks/wellen/build-wasm.sh <VaporView checkout> <work dir>` (Rust 1.93.1 with
+  wasm32-unknown-unknown). It vendors every crate, patches wellen in the vendored copy (so it keeps its
+  crates.io identity) and remaps the work dir and CARGO_HOME, so the output is the same byte for byte from
+  any directory: SHA-1 5375b64ce3ef089af7bd3a85554824343ba28467. With `--unpatched` the same recipe gives
+  811a1762fb2d (the old, unremapped plain `cargo build` gave a324478279a2). `wellen/check.sh` runs the
+  merge cases on the crate itself (red unpatched, green patched), and `run.sh machine array2late
+  array2single` reads them back through the page.
 - `index.html`, `viewer.html`: a Content-Security-Policy `<meta>` tag (the
   scheme handler also sends it as a header): only bundled scripts, styles,
   fonts and the wasm, no inline script, no other origin.
