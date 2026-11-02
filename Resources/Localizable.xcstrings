@@ -702693,6 +702693,124 @@
         }
       }
     },
+    "waveformMachine.seq.breakHere": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Break Here"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hier anhalten"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter ici"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التوقف هنا"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener aquí"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此中斷"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此中断"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "여기서 중단"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここで停止"
+          }
+        }
+      }
+    },
+    "waveformMachine.seq.breakHereTooltip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a breakpoint that stops where the committed instructions match this sequence (at its last or first step, as Go to says)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einen Haltepunkt hinzufügen, der anhält, wo die ausgeführten Anweisungen dieser Sequenz entsprechen (bei ihrem letzten oder ersten Schritt, wie „Gehe zu“ angibt)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter un point d’arrêt qui s’arrête là où les instructions validées correspondent à cette séquence (à sa dernière ou première étape, selon « Aller à »)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة نقطة توقف تتوقف حيث تطابق التعليمات المنفذة هذا التسلسل (عند خطوته الأخيرة أو الأولى، حسب «الانتقال إلى»)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir un punto de interrupción que se detiene donde las instrucciones confirmadas coinciden con esta secuencia (en su último o primer paso, según «Ir a»)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增中斷點，在提交的指令符合此序列處停止（依「前往」設定，停在最後或第一步）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加断点，在提交的指令匹配此序列处停止（按“转到”设置，停在最后或第一步）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "커밋된 명령어가 이 시퀀스와 일치하는 곳에서 멈추는 중단점을 추가합니다(이동 설정에 따라 마지막 또는 첫 단계에서)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コミットされた命令がこのシーケンスに一致する場所で停止するブレークポイントを追加します（「移動先」に従い、最後または最初のステップで）。"
+          }
+        }
+      }
+    },
     "waveformDebugger.text.breakWhenMatches": {
       "extractionState": "manual",
       "localizations": {
