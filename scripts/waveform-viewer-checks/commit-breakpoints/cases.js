@@ -150,6 +150,14 @@ async function runCommitCases() {
   eq('jal x1: the same', [await hits(bp('commitText', { pattern: '^jal\\s+x1\\b' })), warnings], [[], ['Next instruction ~ /^jal\\s+x1\\b/: hint']]);
   warnings.length = 0;
   eq('jal t0: no hint (it hits)', [await hits(bp('commitText', { pattern: 'jal t0' })), warnings], [[20, 50], []]);
+  // c.jal (RV32 only; the same bits are c.addiw on RV64) links ra too.
+  const cjal = rows.concat([[80, 0x80000020, 0x2005, 0]]);  // c.jal pc+0
+  ix = Object.assign(makeIndex(cjal), { xlen: 32 });
+  warnings.length = 0;
+  eq('c.jal on RV32: jal ra, the hint', [await hits(bp('commitText', { pattern: 'jal ra' })), warnings], [[], ['Next instruction ~ /jal ra/: hint']]);
+  ix = makeIndex(cjal);
+  warnings.length = 0;
+  eq('the same bits on RV64 (c.addiw): no hint', [await hits(bp('commitText', { pattern: 'jal ra' })), warnings], [[], []]);
   ix = makeIndex(rows);
 
   // ---- writes ----
