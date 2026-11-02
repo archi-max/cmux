@@ -20,10 +20,6 @@ enum GoToFileTypedPath {
         typed.hasPrefix("~/")
     }
 
-    /// The absolute path `typed` names: `~/` against `home` (the host's
-    /// `$HOME`, never expanded by a shell here), `./` and `../` against
-    /// `root`; `.` and `..` components folded. Nil when it needs a home or
-    /// a root that isn't an absolute path.
     /// How Go to File opens for a workspace: listing its Files root, or,
     /// with no Files root but a terminal on an SSH host, typed paths only.
     /// Nil: nothing to open against.
@@ -39,6 +35,10 @@ enum GoToFileTypedPath {
         return fallback
     }
 
+    /// The absolute path `typed` names: `~/` against `home` (the host's
+    /// `$HOME`, never expanded by a shell here), `./` and `../` against
+    /// `root`; `.` and `..` components folded. Nil when it needs a home or
+    /// a root that isn't an absolute path.
     static func resolve(_ typed: String, root: String, home: String?) -> String? {
         let joined: String
         if needsHome(typed) {
@@ -70,6 +70,8 @@ final class ExpiringValueCache<Key: Hashable, Value> {
     private let lifetime: Duration
     private let now: () -> ContinuousClock.Instant
     private var entries: [Key: (value: Value, storedAt: ContinuousClock.Instant)] = [:]
+    /// Bumped by ``invalidateAll()``: a load that started before it isn't kept.
+    private var generation: UInt64 = 0
 
     init(lifetime: Duration, now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.lifetime = lifetime
@@ -80,13 +82,16 @@ final class ExpiringValueCache<Key: Hashable, Value> {
     /// `load()`'s, which is kept when it succeeds.
     func value(for key: Key, load: () async throws -> Value) async throws -> Value {
         if let entry = entries[key], entry.storedAt.advanced(by: lifetime) > now() { return entry.value }
+        let startedIn = generation
         let value = try await load()
-        entries[key] = (value, now())
+        // A refresh landed during the load: hand the value back, but don't keep it.
+        if generation == startedIn { entries[key] = (value, now()) }
         return value
     }
 
     /// Drops every kept value (a Files refresh).
     func invalidateAll() {
+        generation &+= 1
         entries.removeAll()
     }
 }
