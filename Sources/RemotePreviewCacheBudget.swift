@@ -10,6 +10,13 @@ struct RemotePreviewDownload: Equatable, Sendable {
     /// The file number (inode) this download published, so a later discard
     /// leaves a file a newer download of the same host file put in its place.
     var fileNumber: UInt64? = nil
+    /// The host path that was downloaded (the spelling that named a file, `~` expanded).
+    var remotePath: String? = nil
+    /// The host file's stamp when it was read, for the save-time conflict check.
+    var remoteStamp: SSHRemoteFileStamp? = nil
+    /// The editor location a `path:line[:column]` link carried.
+    var line: Int? = nil
+    var column: Int? = nil
 
     static func fileNumber(of url: URL) -> UInt64? {
         var info = stat()
