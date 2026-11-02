@@ -117,7 +117,7 @@ extension WaveformDebugger {
 
 /// View > Waveform Debugger. Like the menu's other waveform items it has no key
 /// equivalents and no `.disabled` (SwiftUI can't observe the focused panel):
-/// a command beeps when neither a waveform viewer nor a SystemVerilog editor next to one has focus.
+/// with neither a waveform viewer nor a SystemVerilog editor next to one focused, a notice says why.
 struct WaveformDebuggerMenu: View {
     @AppStorage(WaveformDebuggerRTLStatus.waitForEditorKey) private var waitsForEditor = true
 
@@ -126,9 +126,7 @@ struct WaveformDebuggerMenu: View {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
                 if index == 4 || index == 7 || index == 10 || index == 12 || index == 13 || index == 15 { Divider() }
                 Button(command.title) {
-                    if !WaveformDebugger.performFromShortcut(command, window: NSApp.keyWindow ?? NSApp.mainWindow) {
-                        NSSound.beep()
-                    }
+                    WaveformDebugger.performFromMenu(command, window: NSApp.keyWindow ?? NSApp.mainWindow)
                 }
             }
             Divider()
@@ -173,8 +171,14 @@ extension ContentView {
             registry.register(commandId: command.paletteCommandId) {
                 let workspace = tabManager.selectedWorkspace
                 let panel = workspace?.focusedPanelId.flatMap { workspace?.panels[$0] } as? FilePreviewPanel
+#if DEBUG
+                let focusedPanel = workspace?.focusedPanelId.flatMap { workspace?.panels[$0] }
+                cmuxDebugLog("waveformDebugger.invoke command=\(command) source=palette workspace=\(workspace.map { String($0.id.uuidString.prefix(5)) } ?? "nil") "
+                    + "focusedPanelId=\(workspace?.focusedPanelId.map { String($0.uuidString.prefix(5)) } ?? "nil") "
+                    + "focusedPanelType=\(focusedPanel.map { String(describing: type(of: $0)) } ?? "nil")")
+#endif
                 if !WaveformDebugger.perform(command, for: panel) {
-                    NSSound.beep()
+                    WaveformDebuggerNotice.showUnavailable()
                 }
             }
         }

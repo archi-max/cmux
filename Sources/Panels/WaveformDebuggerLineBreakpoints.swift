@@ -531,12 +531,16 @@ enum WaveformDebuggerLineBreakpoints {
     /// same place when the gap is one for one, else the most similar line there. Else, when its text
     /// is once in each file, there (a moved block). Else it is lost (said, disabled), never moved
     /// onto another statement. A large paste over a marked line merges it (as typing over it does).
+    /// Each line's keys are computed once and each gap is indexed by them once, so a reload costs
+    /// O(lines + marks × copies of a mark's text); a joined line or a similar one is looked for only
+    /// among the `nearbyLimit` gap lines nearest where the mark would be.
     private static func matchLines(_ tracker: Tracker, old: NSString, oldTable: (starts: [Int], texts: [String]),
                                    newTable: (starts: [Int], texts: [String]), edited: (start: Int, oldEnd: Int)?,
                                    taken: inout [Int: UUID], lost: inout Set<UUID>, dropped: inout [UUID],
                                    inside: inout [(id: UUID, line: Int, text: String)]) {
         let oldTexts = oldTable.texts, newTexts = newTable.texts
-        let match = lineMatching(old: oldTexts, new: newTexts)
+        let oldKeys = oldTexts.map(squeezed), newKeys = newTexts.map(squeezed)
+        let match = lineMatching(oldKeys: oldKeys, newKeys: newKeys)
         let matchedNew = Set(match.values)
         // How often each text (ignoring spacing) is in each file, and where the new file's once-only
         // texts are: counted on first need.
@@ -544,9 +548,9 @@ enum WaveformDebuggerLineBreakpoints {
         func count() {
             guard !counted else { return }
             counted = true
-            for text in oldTexts { oldCount[squeezed(text), default: 0] += 1 }
-            for text in newTexts { newCount[squeezed(text), default: 0] += 1 }
-            for (index, text) in newTexts.enumerated() { let key = squeezed(text); if newCount[key] == 1 { newOnce[key] = index } }
+            for key in oldKeys { oldCount[key, default: 0] += 1 }
+            for key in newKeys { newCount[key, default: 0] += 1 }
+            for (index, key) in newKeys.enumerated() where newCount[key] == 1 { newOnce[key] = index }
         }
         // A line whose text is not once in each file is paired by where it stands, so it can be paired
         // with a copy in a block that another was swapped past. Its block: the nearest line above it
@@ -555,20 +559,20 @@ enum WaveformDebuggerLineBreakpoints {
         // with it: where it is in the moved block, and whether it is still its text there.
         func movedWithBlock(_ line: Int) -> (line: Int, same: Bool)? {
             count()
-            let bare = squeezed(oldTexts[line])
+            let bare = oldKeys[line]
             guard oldCount[bare] != 1 || newCount[bare] != 1 else { return nil }
             for step in [-1, 1] {
                 var index = line + step
                 while index >= 0, index < oldTexts.count, abs(index - line) <= 8 {
-                    let key = squeezed(oldTexts[index])
+                    let key = oldKeys[index]
                     guard key.isEmpty || oldCount[key] != 1 || newOnce[key] == nil else {
                         // A block that stayed keeps the mark where the diff put it.
                         guard match[index] == nil, let at = newOnce[key] else { return nil }
                         let target = at + (line - index)
                         guard target >= 0, target < newTexts.count else { return nil }
                         let between = step < 0 ? (index + 1)..<line : (line + 1)..<index
-                        guard between.allSatisfy({ squeezed(oldTexts[$0]) == squeezed(newTexts[at + ($0 - index)]) }) else { return nil }
-                        return (target, squeezed(newTexts[target]) == bare)
+                        guard between.allSatisfy({ oldKeys[$0] == newKeys[at + ($0 - index)] }) else { return nil }
+                        return (target, newKeys[target] == bare)
                     }
                     index += step
                 }
@@ -586,7 +590,7 @@ enum WaveformDebuggerLineBreakpoints {
             if match[line] != nil, let moved = movedWithBlock(line) {
                 // Its text there (or a changed statement like it) is its line; else it is lost there.
                 let free = taken[moved.line] == nil
-                if free, moved.same || similarity(squeezed(oldTexts[line]), squeezed(newTexts[moved.line])) >= 0.6 { taken[moved.line] = id; continue }
+                if free, moved.same || similarity(oldKeys[line], newKeys[moved.line]) >= 0.6 { taken[moved.line] = id; continue }
                 guard let place = free ? moved.line : nearestFree(to: moved.line, count: newTable.starts.count, taken: Set(taken.keys)) else { dropped.append(id); continue }
                 taken[place] = id
                 lost.insert(id)
@@ -597,6 +601,17 @@ enum WaveformDebuggerLineBreakpoints {
         guard !pending.isEmpty else { return }
         let matchedOld = match.keys.sorted()
         count()
+        // A gap's lines by text (spaced alike, and ignoring spacing), in order: built once per gap.
+        struct GapIndex { var oldSpaced: [String: [Int]] = [:], newSpaced: [String: [Int]] = [:], oldBare: [String: [Int]] = [:], newBare: [String: [Int]] = [:] }
+        var gapIndexes: [Int: GapIndex] = [:]
+        func gapIndex(_ oldGap: Range<Int>, _ newGap: Range<Int>) -> GapIndex {
+            if let index = gapIndexes[oldGap.lowerBound] { return index }
+            var index = GapIndex()
+            for line in oldGap { index.oldSpaced[WaveformLineBreakpoint.lineText(oldTexts[line]), default: []].append(line); index.oldBare[oldKeys[line], default: []].append(line) }
+            for line in newGap { index.newSpaced[WaveformLineBreakpoint.lineText(newTexts[line]), default: []].append(line); index.newBare[newKeys[line], default: []].append(line) }
+            gapIndexes[oldGap.lowerBound] = index
+            return index
+        }
         for (id, line) in pending {
             // Its gap: the unmatched lines between the matched ones around it, in both texts.
             var lo = 0, hi = matchedOld.count
@@ -606,24 +621,35 @@ enum WaveformDebuggerLineBreakpoints {
             let oldGap = (above + 1)..<below
             let newGap = (above >= 0 ? match[above]! + 1 : 0)..<(below < oldTexts.count ? match[below]! : newTexts.count)
             func free(_ candidate: Int) -> Bool { taken[candidate] == nil && !matchedNew.contains(candidate) }
-            let text = oldTexts[line], wanted = WaveformLineBreakpoint.lineText(text), bare = squeezed(text)
+            let text = oldTexts[line], wanted = WaveformLineBreakpoint.lineText(text), bare = oldKeys[line]
             let target = newGap.isEmpty ? min(newGap.lowerBound, newTexts.count - 1) : min(newGap.upperBound - 1, newGap.lowerBound + (line - oldGap.lowerBound))
+            func nearer(_ a: Int, _ b: Int) -> Bool { (abs(a - target), a) < (abs(b - target), b) }
             // The k-th line of its text in the old gap goes to the k-th in the new one.
-            func byOrder(_ same: (String) -> Bool) -> Int? {
-                guard same(text) else { return nil }
-                let olds = oldGap.filter { same(oldTexts[$0]) }
-                let news = newGap.filter { same(newTexts[$0]) && free($0) }
-                guard !news.isEmpty, let k = olds.firstIndex(of: line) else { return nil }
-                return olds.count == news.count ? news[k] : news.min { (abs($0 - target), $0) < (abs($1 - target), $1) }
+            func byOrder(_ olds: [Int]?, _ news: [Int]?) -> Int? {
+                guard let olds, let news = news?.filter(free), !news.isEmpty, let k = olds.firstIndex(of: line) else { return nil }
+                return olds.count == news.count ? news[k] : news.min(by: nearer)
             }
-            var found = bare.isEmpty ? nil : byOrder { WaveformLineBreakpoint.lineText($0) == wanted } ?? byOrder { squeezed($0) == bare }
+            var found: Int?
+            if !bare.isEmpty {
+                let index = gapIndex(oldGap, newGap)
+                found = byOrder(index.oldSpaced[wanted], index.newSpaced[wanted]) ?? byOrder(index.oldBare[bare], index.newBare[bare])
+            }
+            // The gap's lines nearest where it would be (nearest first, the earlier on a tie).
+            var nearby: [Int] = []
+            if found == nil, !bare.isEmpty, !newGap.isEmpty {
+                nearby.reserveCapacity(min(newGap.count, nearbyLimit))
+                var distance = 0
+                while nearby.count < nearbyLimit, target - distance >= newGap.lowerBound || target + distance < newGap.upperBound {
+                    if newGap.contains(target - distance) { nearby.append(target - distance) }
+                    if distance > 0, nearby.count < nearbyLimit, newGap.contains(target + distance) { nearby.append(target + distance) }
+                    distance += 1
+                }
+            }
             if found == nil, !bare.isEmpty {
                 // Joined into a line (a format putting `begin` on it) or split from one.
-                found = newGap.filter { free($0) && { (new: String) in !new.isEmpty && (new.hasPrefix(bare) || bare.hasPrefix(new)) }(squeezed(newTexts[$0])) }
-                    .min { (abs($0 - target), $0) < (abs($1 - target), $1) }
+                found = nearby.first { free($0) && { (new: String) in !new.isEmpty && (new.hasPrefix(bare) || bare.hasPrefix(new)) }(newKeys[$0]) }
             }
-            if found == nil, !bare.isEmpty, oldCount[bare] == 1, newCount[bare] == 1,
-               let moved = newTexts.indices.first(where: { squeezed(newTexts[$0]) == bare }), free(moved) {
+            if found == nil, !bare.isEmpty, oldCount[bare] == 1, newCount[bare] == 1, let moved = newOnce[bare], free(moved) {
                 found = moved
             }
             if found == nil, oldGap.count == newGap.count, !newGap.isEmpty, free(target) {
@@ -632,9 +658,10 @@ enum WaveformDebuggerLineBreakpoints {
             }
             if found == nil, !bare.isEmpty {
                 // The gap's line most like it (a changed statement among added or removed lines).
+                let pairs = Bigrams(bare)
                 var best: (line: Int, score: Double)?, tie = false
-                for candidate in newGap where free(candidate) {
-                    let score = similarity(bare, squeezed(newTexts[candidate]))
+                for candidate in nearby where free(candidate) {
+                    let score = pairs.similarity(to: newKeys[candidate])
                     if best == nil || score > best!.score { best = (candidate, score); tie = false } else if score == best!.score { tie = true }
                 }
                 if let best, best.score >= 0.6, !tie { found = best.line }
@@ -647,21 +674,23 @@ enum WaveformDebuggerLineBreakpoints {
         }
     }
 
+    /// How many of a gap's lines (nearest where a mark would be) are searched for a line it was
+    /// joined into or one like it: past them it is lost rather than searched for in a whole file.
+    private static let nearbyLimit = 256
+
     /// Old line → new line for the lines that are the same (ignoring spacing), as patience diff pairs
     /// them: equal lines at a range's ends, then lines once in each side, in order, and so on inside.
-    private static func lineMatching(old: [String], new: [String]) -> [Int: Int] {
+    /// Takes each line's text ignoring spacing (`squeezed`).
+    private static func lineMatching(oldKeys: [String], newKeys: [String]) -> [Int: Int] {
         var map: [Int: Int] = [:]
-        var oldKeys: [String?] = Array(repeating: nil, count: old.count), newKeys: [String?] = Array(repeating: nil, count: new.count)
-        func oldKey(_ i: Int) -> String { if let k = oldKeys[i] { return k }; let k = squeezed(old[i]); oldKeys[i] = k; return k }
-        func newKey(_ i: Int) -> String { if let k = newKeys[i] { return k }; let k = squeezed(new[i]); newKeys[i] = k; return k }
-        func same(_ o: Int, _ n: Int) -> Bool { old[o] == new[n] || oldKey(o) == newKey(n) }
-        var work: [(Int, Int, Int, Int)] = [(0, old.count, 0, new.count)]
+        func same(_ o: Int, _ n: Int) -> Bool { oldKeys[o] == newKeys[n] }
+        var work: [(Int, Int, Int, Int)] = [(0, oldKeys.count, 0, newKeys.count)]
         while let (oStart, oEnd, nStart, nEnd) = work.popLast() {
             var oLo = oStart, nLo = nStart, oHi = oEnd, nHi = nEnd
             while oLo < oHi && nLo < nHi && same(oLo, nLo) { map[oLo] = nLo; oLo += 1; nLo += 1 }
             while oLo < oHi && nLo < nHi && same(oHi - 1, nHi - 1) { map[oHi - 1] = nHi - 1; oHi -= 1; nHi -= 1 }
             guard oLo < oHi && nLo < nHi else { continue }
-            let anchors = alignment(old: Array(old[oLo..<oHi]), new: Array(new[nLo..<nHi]))
+            let anchors = alignment(oldKeys: oldKeys[oLo..<oHi], newKeys: newKeys[nLo..<nHi])
             guard !anchors.isEmpty else { continue }
             var po = oLo, pn = nLo
             for anchor in anchors {
@@ -688,6 +717,31 @@ enum WaveformDebuggerLineBreakpoints {
             if let n = pairs[key], n > 0 { pairs[key] = n - 1; common += 1 }
         }
         return Double(2 * common) / Double(x.count + y.count - 2)
+    }
+
+    /// One line's character pairs, for `similarity` to many others.
+    private struct Bigrams {
+        let text: String, count: Int, pairs: [UInt32: Int]
+        init(_ text: String) {
+            let x = Array(text.utf16)
+            var pairs: [UInt32: Int] = [:]
+            if x.count > 1 { for i in 0..<(x.count - 1) { pairs[UInt32(x[i]) << 16 | UInt32(x[i + 1]), default: 0] += 1 } }
+            self.text = text
+            self.count = x.count
+            self.pairs = pairs
+        }
+
+        /// `similarity(text, other)`.
+        func similarity(to other: String) -> Double {
+            let y = Array(other.utf16)
+            guard count > 1, y.count > 1 else { return text == other ? 1 : 0 }
+            var left = pairs, common = 0
+            for i in 0..<(y.count - 1) {
+                let key = UInt32(y[i]) << 16 | UInt32(y[i + 1])
+                if let n = left[key], n > 0 { left[key] = n - 1; common += 1 }
+            }
+            return Double(2 * common) / Double(count + y.count - 2)
+        }
     }
 
     /// A line `old` split in two (its head stays at `head`, the rest starts at `tail`): where its
@@ -727,9 +781,14 @@ enum WaveformDebuggerLineBreakpoints {
     /// Pairs (old index, new index) of lines that are the same (ignoring whitespace) and appear
     /// once in each, kept in order in both (the longest such run, as patience diff does).
     private static func alignment(old: [String], new: [String]) -> [(old: Int, new: Int)] {
+        alignment(oldKeys: old.map(squeezed)[...], newKeys: new.map(squeezed)[...])
+    }
+
+    /// `alignment` of lines already `squeezed` (indices from each slice's start).
+    private static func alignment(oldKeys old: ArraySlice<String>, newKeys new: ArraySlice<String>) -> [(old: Int, new: Int)] {
         var oldCount: [String: (count: Int, index: Int)] = [:], newCount: [String: (count: Int, index: Int)] = [:]
-        for (index, line) in old.enumerated() { let key = squeezed(line); guard !key.isEmpty else { continue }; oldCount[key] = ((oldCount[key]?.count ?? 0) + 1, index) }
-        for (index, line) in new.enumerated() { let key = squeezed(line); guard !key.isEmpty else { continue }; newCount[key] = ((newCount[key]?.count ?? 0) + 1, index) }
+        for (index, key) in old.enumerated() { guard !key.isEmpty else { continue }; oldCount[key] = ((oldCount[key]?.count ?? 0) + 1, index) }
+        for (index, key) in new.enumerated() { guard !key.isEmpty else { continue }; newCount[key] = ((newCount[key]?.count ?? 0) + 1, index) }
         let pairs = oldCount.compactMap { key, value -> (old: Int, new: Int)? in
             guard value.count == 1, let other = newCount[key], other.count == 1 else { return nil }
             return (value.index, other.index)
@@ -762,7 +821,13 @@ enum WaveformDebuggerLineBreakpoints {
 
     /// A line's text with no whitespace at all (Format Document may re-space inside a line).
     private static func squeezed(_ line: String) -> String {
-        String(line.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(Character.init))
+        var kept = String.UnicodeScalarView()
+        for scalar in line.unicodeScalars {
+            // ASCII whitespace without a CharacterSet lookup (tab, \n, \v, \f, \r, space).
+            if scalar.value < 0x80 ? scalar.value == 0x20 || (0x09...0x0D).contains(scalar.value) : CharacterSet.whitespacesAndNewlines.contains(scalar) { continue }
+            kept.append(scalar)
+        }
+        return String(kept)
     }
 
     /// The span an edit really changed: `start` (the common prefix's end) and the old text's end of

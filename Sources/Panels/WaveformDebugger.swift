@@ -91,6 +91,20 @@ enum WaveformDebugger {
 
     // MARK: Targets and commands
 
+#if DEBUG
+    /// Each check `target(for:)` makes, for the DEBUG invoke log.
+    static func targetDiagnosis(_ panel: FilePreviewPanel?) -> String {
+        guard let panel else { return "panel=nil" }
+        var text = "panel=\(panel.id.uuidString.prefix(5)) mode=\(panel.previewMode) closed=\(panel.isClosed ? 1 : 0)"
+        if panel.previewMode == .text {
+            let supported = FilePreviewLanguageFeatures.isSupported(filePath: panel.filePath)
+            text += " svSource=\(supported ? 1 : 0)"
+            if supported { text += " nearViewer=\(WaveformSourceLink.waveformPanel(near: panel).map { String($0.id.uuidString.prefix(5)) } ?? "nil")" }
+        }
+        return text + " target=\(target(for: panel).map { String($0.id.uuidString.prefix(5)) } ?? "nil")"
+    }
+#endif
+
     /// The viewer the commands act on for a focused panel: a waveform viewer
     /// itself, or the workspace's viewer next to a SystemVerilog editor.
     static func target(for panel: FilePreviewPanel?) -> FilePreviewPanel? {
@@ -102,28 +116,65 @@ enum WaveformDebugger {
     }
 
     /// F10, Shift-F10, F5 and Shift-F5. False (the key goes on) unless a waveform viewer,
-    /// or a SystemVerilog editor with a viewer in its workspace, has focus.
-    static func performFromShortcut(_ command: Command, window: NSWindow?) -> Bool {
+    /// or a SystemVerilog editor with a viewer in its workspace, has focus. In a viewer
+    /// text field the key goes to the field when the field uses it (`characters`, the
+    /// event's charactersIgnoringModifiers, and its modifier flags): F1–F35 and
+    /// Command/Control chords still run.
+    static func performFromShortcut(
+        _ command: Command, window: NSWindow?, characters: String?, modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        let fieldUsesKey = WaveformDebuggerInvocation.fieldUsesKey(characters, modifierFlags: modifierFlags)
+        return run(command, source: .key(fieldUsesKey: fieldUsesKey), window: window)
+    }
+
+    /// The View menu: runs on the focused viewer whatever has focus inside it; with no
+    /// viewer to act on, a notice says why.
+    static func performFromMenu(_ command: Command, window: NSWindow?) {
+        if !run(command, source: .menu, window: window) { WaveformDebuggerNotice.showUnavailable(in: window) }
+    }
+
+    private static func run(_ command: Command, source: WaveformDebuggerInvocation.Source, window: NSWindow?) -> Bool {
         // In the editor, with or without a viewer.
         if command == .toggleLineBreakpoint {
             return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) || WaveformDebuggerAsmBreakpoints.toggleAtCaret(window: window)
         }
-        if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
-            // Typing in the viewer's search or value field.
-            guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
+        let focused = WaveformSourceLink.focusedWaveformPanel(in: window)
+        // The viewer next to the focused editor, or for a disassembly listing, the workspace's viewer.
+        let nearEditor: FilePreviewPanel? = focused != nil ? nil : AppDelegate.shared?.shortcutFocusedSavingTextView(in: window)
+            .flatMap { textView in
+                if let features = textView.languageFeatures { return WaveformSourceLink.waveformPanel(near: features.linkPanel) }
+                guard WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil else { return nil }
+                return WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel)
+            }
+        // A menu item acts on the workspace's focused viewer (or the viewer next to its focused
+        // editor) even when the viewer's web view doesn't hold the first responder.
+        var workspaceViewer: FilePreviewPanel?
+        if case .key = source {} else if focused == nil, nearEditor == nil {
+            workspaceViewer = target(for: AppDelegate.shared?.shortcutWorkspaceFocusedFilePreviewPanel(in: window))
+        }
+        let decision = WaveformDebuggerInvocation.decide(
+            source: source, focusedViewer: focused,
+            viewerFieldFocused: focused?.nativeViewSessions.waveform.isEditableElementFocused ?? false, editorViewer: nearEditor,
+            workspaceViewer: workspaceViewer
+        )
+#if DEBUG
+        let outcome: String
+        switch decision {
+        case .perform(let waveform): outcome = "perform panel=\(waveform.id.uuidString.prefix(5))"
+        case .passKey: outcome = "passKey"
+        case .unavailable: outcome = "unavailable"
+        }
+        cmuxDebugLog("waveformDebugger.invoke command=\(command) source=\(source) focusedViewer=\(focused != nil ? 1 : 0) "
+            + "nearEditor=\(nearEditor != nil ? 1 : 0) workspaceViewer=\(workspaceViewer != nil ? 1 : 0) -> \(outcome) | "
+            + (AppDelegate.shared?.shortcutFocusedWaveformPanelDiagnosis(in: window ?? NSApp.keyWindow) ?? "noAppDelegate"))
+#endif
+        switch decision {
+        case .perform(let waveform):
             perform(command, on: waveform)
             return true
+        case .passKey, .unavailable:
+            return false
         }
-        // In a listing: the workspace's viewer.
-        if let textView = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window), textView.languageFeatures == nil,
-           WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil, let waveform = WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel) {
-            perform(command, on: waveform)
-            return true
-        }
-        guard let features = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window)?.languageFeatures,
-              let waveform = WaveformSourceLink.waveformPanel(near: features.linkPanel) else { return false }
-        perform(command, on: waveform)
-        return true
     }
 
     /// Runs `command` on the viewer for `panel` (see `target(for:)`). False when there is none.
@@ -133,7 +184,13 @@ enum WaveformDebugger {
             let window = NSApp.keyWindow ?? NSApp.mainWindow
             return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) || WaveformDebuggerAsmBreakpoints.toggleAtCaret(window: window)
         }
-        guard let waveform = target(for: panel) else { return false }
+        guard let waveform = target(for: panel) else {
+#if DEBUG
+            cmuxDebugLog("waveformDebugger.invoke command=\(command) source=palette \(targetDiagnosis(panel)) -> unavailable | "
+                + (AppDelegate.shared?.shortcutFocusedWaveformPanelDiagnosis(in: NSApp.keyWindow) ?? "noAppDelegate"))
+#endif
+            return false
+        }
         perform(command, on: waveform)
         return true
     }
@@ -551,5 +608,23 @@ extension WaveformDebugger {
             )
             return WaveformSourceLink.instances(holding: probe.name, paths: paths)
         }
+    }
+}
+
+extension WaveformDebuggerNotice {
+    /// The no-viewer notice in the key (else main) window, over its terminal and browser
+    /// portals; a beep when there is no window.
+    static func showUnavailable(in window: NSWindow? = NSApp.keyWindow ?? NSApp.mainWindow) {
+        let message = WaveformDebuggerInvocation.unavailableMessage
+        guard let window else { NSSound.beep(); return }
+        let shown: NSTextField?
+        if let target = AppWindowChromeComposition().contentOverlayTargetResolver.installationTarget(for: window) {
+            shown = show(message, in: target.container, reference: target.reference) {
+                $0 is WindowTerminalHostView || $0 is WindowBrowserHostView
+            }
+        } else {
+            shown = show(message, in: window.contentView)
+        }
+        if shown == nil { NSSound.beep() }
     }
 }
