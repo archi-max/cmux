@@ -444,16 +444,17 @@ func fallbackChecks() async throws {
   }
   do {
     // The relaunched helper doesn't get ready: the page stays on v2 (no v1 mid-page, nothing
-    // remembered) and the open fails within its bound (2 x openTimeout), not after a full
-    // ready timeout and a v1 start.
+    // remembered) and the open fails within its bound (2 x openTimeout), as openTimedOut.
+    // readyTimeout (1 s) ends inside the relaunch window (2 s), so a start that could fall
+    // back would reach v1 here.
     let pinLog = StatusLog()
-    let (pin, launches) = try stalling("pinned", "--stall-launches 1 --hang-ready-launches 2", readyTimeout: 20, log: pinLog)
+    let (pin, launches) = try stalling("pinned", "--stall-launches 1 --hang-ready-launches 2", readyTimeout: 1, log: pinLog)
     let s0 = Date()
     let r = await open(pin)
     let took = Date().timeIntervalSince(s0)
     pin.stop()
     reap(launches)
-    expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && pinLog.fellBack.isEmpty && lines(launches) == 2 && took < 7,
+    expect((header(r)["error"] as? String ?? "").contains("openTimedOut") && proto(r) != "1" && pinLog.fellBack.isEmpty && lines(launches) == 2 && took < 7,
            "a relaunch keeps the helper version and the total wait is bounded: \(header(r)), fell back \(pinLog.fellBack), \(lines(launches)) launches, \(String(format: "%.1f", took)) s")
   }
   do {
