@@ -705,25 +705,45 @@
     settleWaiters = [];
     waiters.forEach((resolve) => resolve(false));
   }
-  // Waits until no view is looking up its rows; false when a reload or open
-  // dropped the wait. Run synchronously after it, a read of the shown rows is
-  // the view that is (or is about to be) shown.
-  async function untilViewsSettled() {
+  // How long an Add All waits for the views to settle before it reads the rows
+  // as they are: a lookup that never answers (an FSDB fetch that hangs) can't
+  // hold it until the next reload (verify-debugger-fix W1).
+  let settleTimeoutMs = 10000;
+  // Waits until no view is looking up its rows, or until `deadline` (then
+  // 'timeout'); false when a reload or open dropped the wait. Run synchronously
+  // after it, a read of the shown rows is the view that is (or is about to be)
+  // shown.
+  async function untilViewsSettled(deadline) {
     let wait;
-    while ((wait = viewsSettled())) { if (!(await wait)) { return false; } }
+    while ((wait = viewsSettled())) {
+      const left = deadline - Date.now();
+      if (left <= 0) { return 'timeout'; }
+      let timer;
+      const settled = await Promise.race([wait, new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), left); })]);
+      clearTimeout(timer);
+      if (settled === 'timeout') { return 'timeout'; }
+      if (!settled) { return false; }
+    }
     return true;
   }
   // `read` after the views settle, again when a view came while it ran (it
   // awaits): its result is checked against the rows that view leaves. Null when
-  // a reload or open dropped the wait.
+  // a reload or open dropped the wait. Past settleTimeoutMs it reads the rows
+  // as they are.
   async function withSettledViews(read) {
+    const deadline = Date.now() + settleTimeoutMs;
     for (let tries = 0; ; tries++) {
-      if (!(await untilViewsSettled())) { return null; }
+      const settled = await untilViewsSettled(deadline);
+      if (settled === false) { return null; }
+      if (settled === 'timeout') {
+        host().log('views still looking up their rows after ' + settleTimeoutMs + ' ms: reading the rows as they are');
+        return await read();
+      }
       // A view that came in the microtasks since: wait for it too.
       if (resolving && tries < 8) { continue; }
       const generation = viewGeneration;
       const result = await read();
-      if (tries >= 8 || (!resolving && generation === viewGeneration)) { return result; }
+      if (tries >= 8 || Date.now() >= deadline || (!resolving && generation === viewGeneration)) { return result; }
     }
   }
 
@@ -1433,6 +1453,8 @@
     isRestoring: () => reloading || restorePending,
     deferWhileApplying,
     withSettledViews,
+    get settleTimeoutMs() { return settleTimeoutMs; },
+    set settleTimeoutMs(ms) { settleTimeoutMs = ms; },
     // Whether the viewer answers an apply-state (it has asked for its state),
     // and whether a context is such an answer.
     viewerAnswersViews: () => restoreAsked,
