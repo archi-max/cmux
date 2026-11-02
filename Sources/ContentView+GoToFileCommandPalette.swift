@@ -59,6 +59,36 @@ enum GoToFilePaletteRouting {
         }
     }
 
+    /// A typed-paths-only session for a workspace with no Files root: over
+    /// the SSH connection of a terminal on the host (the focused one, else
+    /// any), `./` and `../` against that terminal's live directory.
+    static func typedPathsOnlySource(
+        for workspace: Workspace,
+        focusedPanelId: UUID?
+    ) -> (source: GoToFileSnapshotSource, root: FileExplorerWorkspaceRoot, liveRoot: @MainActor () async -> String?)? {
+        let candidates = [focusedPanelId].compactMap { $0 } + workspace.panels.keys.sorted { $0.uuidString < $1.uuidString }
+        guard let terminalID = candidates.first(where: {
+            workspace.terminalPanel(for: $0) != nil && workspace.remoteTerminalFilePreviewConfiguration(for: $0) != nil
+        }), let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: terminalID) else { return nil }
+        let connection = SSHFileExplorerConnection(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: configuration.fileOperationSSHOptions
+        )
+        let snapshot = workspace.effectivePanelDirectory(panelId: terminalID)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let root = FileExplorerWorkspaceRoot.remoteSSH(
+            workspaceId: workspace.id, connection: connection, displayTarget: configuration.displayTarget,
+            rootPath: snapshot, isAvailable: true, unavailableDetail: nil
+        )
+        let liveRoot: @MainActor () async -> String? = { [weak workspace] in
+            guard let workspace, workspace.usesSSHTui,
+                  let resource = SurfaceCatalog.shared.resource(forPanel: terminalID),
+                  let provider = SurfaceCatalog.shared.provider(for: resource.machine) else { return nil }
+            return await provider.currentWorkingDirectory(of: resource)
+        }
+        return (.ssh(connection: connection, rootPath: snapshot), root, liveRoot)
+    }
+
     /// Opens a Go to File result in `pane`: local files directly, SSH files
     /// through the Files panel's remote preview path.
     static func open(
@@ -120,6 +150,19 @@ enum GoToFilePaletteRouting {
                 guard let workspace, isCurrent() else { return }
                 FileExplorerPreviewCoordinator(store: store).open(path: path, workspace: workspace, pane: pane, isCurrent: isCurrent)
             }
+            let isRelative = !typedPath.hasPrefix("/") && !GoToFileTypedPath.needsHome(typedPath)
+            if isRelative, let liveRoot = model.liveRoot {
+                // Typed paths only: the terminal's live directory, as for its links.
+                Task { @MainActor in
+                    let base = GoToFileTypedPath.relativeRoot(live: await liveRoot(), fallback: root) ?? ""
+                    guard let path = GoToFileTypedPath.resolve(typedPath, root: base, home: nil) else {
+                        if isCurrent() { NSSound.beep() }
+                        return
+                    }
+                    open(path)
+                }
+                return true
+            }
             guard GoToFileTypedPath.needsHome(typedPath) else {
                 guard let path = GoToFileTypedPath.resolve(typedPath, root: root, home: nil) else { return false }
                 open(path)
@@ -147,6 +190,17 @@ enum GoToFilePaletteRouting {
         workspace: Workspace,
         sidebarStore: FileExplorerStore
     ) -> FileExplorerStore? {
+        if !model.listsFiles {
+            // Typed paths only: bound for previews, no folder listing on the host.
+            guard case .remoteSSH(_, _, let displayTarget, _, _, _) = model.workspaceRoot else { return nil }
+            let store = model.remotePreviewStore
+            store.bindSSHPreviewProvider(
+                workspaceId: workspace.id, connection: connection, displayTarget: displayTarget,
+                sshTransport: ProcessSSHFileExplorerTransport.shared
+            )
+            model.remotePreviewRoot = nil
+            return store
+        }
         if sidebarStore.workspaceRootIdentity == workspace.id,
            let provider = sidebarStore.provider as? SSHFileExplorerProvider,
            provider.connection == connection, provider.isAvailable {
@@ -219,6 +273,12 @@ struct GoToFileResultsView: View {
     }
 
     private var emptyText: String {
+        if !model.listsFiles {
+            return String(
+                localized: "commandPalette.goToFile.typedPathsOnly",
+                defaultValue: "No Files folder here; type a path such as ~/.bashrc or ./notes.md"
+            )
+        }
         if let message = model.errorMessage {
             return String(
                 format: String(localized: "commandPalette.goToFile.failed", defaultValue: "Could not list files: %@"),

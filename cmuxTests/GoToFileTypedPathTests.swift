@@ -46,6 +46,21 @@ import Testing
         #expect(GoToFileTypedPath.resolve("./a", root: "/", home: nil) == "/a")
     }
 
+    @Test func withoutAFilesRootATerminalOnTheHostStillOpensTypedPaths() {
+        #expect(GoToFileTypedPath.paletteMode(hasFilesRoot: true, hasTerminalOnHost: true) == .listing)
+        #expect(GoToFileTypedPath.paletteMode(hasFilesRoot: true, hasTerminalOnHost: false) == .listing)
+        #expect(GoToFileTypedPath.paletteMode(hasFilesRoot: false, hasTerminalOnHost: true) == .typedPathsOnly)
+        #expect(GoToFileTypedPath.paletteMode(hasFilesRoot: false, hasTerminalOnHost: false) == nil)
+    }
+
+    @Test func relativePathsUseTheTerminalsLiveDirectory() {
+        #expect(GoToFileTypedPath.relativeRoot(live: "/home/u/proj/tb", fallback: "/home/u") == "/home/u/proj/tb")
+        #expect(GoToFileTypedPath.relativeRoot(live: nil, fallback: "/home/u") == "/home/u")
+        #expect(GoToFileTypedPath.relativeRoot(live: "proj", fallback: "/home/u") == "/home/u", "not absolute")
+        #expect(GoToFileTypedPath.resolve("./a.sv", root: "", home: nil) == nil, "no directory to resolve against")
+        #expect(GoToFileTypedPath.resolve("/etc/hosts", root: "", home: nil) == "/etc/hosts")
+    }
+
     private final class Clock: @unchecked Sendable {
         var now = ContinuousClock.now
     }

@@ -413,6 +413,34 @@ struct GoToFileTests {
 
     @MainActor
     @Test
+    func testATypedPathsOnlySessionListsNothingAndNeverQueuesEnter() async throws {
+        let calls = CallCounter()
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in
+            calls.increment()
+            return GoToFileSnapshot(paths: Self.tree, isTruncated: false)
+        })
+        model.begin(
+            source: .ssh(
+                connection: SSHFileExplorerConnection(destination: "u@remote-host", port: nil, identityFile: nil, sshOptions: []),
+                rootPath: "/home/u"
+            ),
+            workspaceId: UUID(),
+            listsFiles: false,
+            liveRoot: { "/home/u/proj" }
+        )
+        #expect(!model.isLoading)
+        #expect(model.openSelectionOrQueue() == nil)
+        #expect(!model.opensWhenRanked, "nothing will be ranked")
+        model.update(query: "./notes.md")
+        #expect(model.selectedTypedPath == "./notes.md")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(calls.value == 0, "no listing on the host")
+        #expect(model.results.isEmpty)
+        #expect(await model.liveRoot?() == "/home/u/proj")
+    }
+
+    @MainActor
+    @Test
     func testSessionReportsListingFailures() async throws {
         let model = GoToFilePaletteModel(loadSnapshot: { _ in throw GoToFileSnapshotError.folderNotFound })
         model.begin(source: .local(rootPath: "/w"), workspaceId: UUID())
