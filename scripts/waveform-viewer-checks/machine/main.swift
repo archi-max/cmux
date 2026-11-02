@@ -28,8 +28,11 @@ for path in args[2...] {
 }
 let only = ProcessInfo.processInfo.environment["MACHINE_ONLY"] ?? ""
 let sync = context.evaluateScript("runMachineCases(\(String(reflecting: args[1])), \(String(reflecting: only)))")?.toArray() as? [String] ?? ["FAIL no results"]
-// Checks that finish in promise jobs (run once the call above returned): sequence-cases.js's searchAsync.
-let lines = sync + (context.evaluateScript("globalThis.machineLateChecks || []")?.toArray() as? [String] ?? [])
+// Checks that finish in promise jobs (run once the call above returned): sequence-cases.js's searchAsync,
+// each group its own list. Counted, so one that is lost (never pushed) fails too.
+let late = context.evaluateScript("(globalThis.machineLateChecks || []).flat()")?.toArray() as? [String] ?? []
+let expectedLate = only.isEmpty || only.split(separator: ",").contains("sequence") ? 5 : 0
+let lines = sync + late + (late.count == expectedLate ? [] : ["FAIL late checks: \(late.count), want \(expectedLate)"])
 if let error = thrown { print("FAIL", error) }
 lines.forEach { print($0) }
 let failures = lines.filter { $0.hasPrefix("FAIL") }.count + (thrown == nil ? 0 : 1)
