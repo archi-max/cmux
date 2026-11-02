@@ -240,6 +240,50 @@ struct SSHTuiShellIntegrationTests {
         #expect(result.reportedDirectories.last == target, "\(result.stdout.debugDescription)")
     }
 
+    @Test("A cd in a subshell or command substitution prints nothing and is not reported")
+    func subshellDirectoryChangesAreSilent() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("sub")
+            if name == "zsh" { try sandbox.append("X=$(cd sub && pwd)", to: sandbox.home + "/.zshrc") }
+            let input = """
+                true
+                echo "[$(cd sub && pwd)]"
+                (cd /usr && true)
+                true
+                echo "x=[${X-none}]"
+
+                """
+            let result = try sandbox.runLoginShell(input: input)
+            #expect(result.stdout.contains("[\(target)]"), "\(name): \(result.stdout.debugDescription)")
+            if name == "zsh" {
+                #expect(result.stdout.contains("x=[\(target)]"), "\(name): \(result.stdout.debugDescription)")
+            }
+            #expect(result.reportedDirectories == [sandbox.work], "\(name): \(result.stdout.debugDescription)")
+        }
+    }
+
+    @Test("A group- or other-writable parent of the install keeps the plain login launch")
+    func writableInstallParentFallsBack() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            for (levels, mode) in [(1, 0o775), (2, 0o757), (4, 0o775)] {
+                let sandbox = try ShellSandbox(shell: shell, name: name)
+                let target = try sandbox.makeDirectory("t")
+                _ = try sandbox.runLoginShell(input: "true\n")
+                var parent = sandbox.installDirectory
+                for _ in 0..<levels { parent = (parent as NSString).deletingLastPathComponent }
+                try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: parent)
+                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n")
+                #expect(result.reportedDirectories.isEmpty, "\(name) \(parent): \(result.stdout.debugDescription)")
+                #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name) \(parent): \(result.stdout)")
+            }
+        }
+    }
+
     @Test("A directory name with control characters is not reported")
     func controlCharactersAreNotReported() throws {
         var shells: [(String, String)] = [("/bin/zsh", "zsh")]
