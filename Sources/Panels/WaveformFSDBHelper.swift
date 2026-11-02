@@ -19,7 +19,7 @@ import Foundation
 /// has that field.
 ///
 /// Two helpers exist. v1 (`fsdb-helper`) sends whole signals. v2
-/// (`fsdb-helper-v2`, WINDOWING.md's protocol 2) also answers windows, point
+/// (`fsdb-helper-v2`, protocol 2) also answers windows, point
 /// and navigation queries, which the page's windowed viewer uses. The helper
 /// tries its installs in order (v2, then v1). It falls back to v1 only when v2
 /// is unavailable (see `start()`), and always says so (`Status.fellBack`, which

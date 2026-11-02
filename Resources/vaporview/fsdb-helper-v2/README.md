@@ -36,16 +36,11 @@ build against that host's copy.
                                                           │  Verdi FsdbReader (libnffr.so), from the host's install
 ```
 
-1. **The page asks.** The windowed viewer (`window_cache.ts` in the VaporView patch) sends `{command: 'v2', req}`
-   for what it needs: a window of a signal over a time range, a value at a time, the next edge, a search.
-2. **The Mac relays.** `host.js` POSTs each request to the dump's URL. `WaveformFSDBHelper.swift` gives it a helper
-   id, writes it as one JSON line to the helper's stdin, and returns the reply. It relays only the commands the page
-   uses, and `open` only of the panel's own file.
-3. **The host answers.** `helper.js` answers hierarchy requests itself, so the netlist stays responsive. It routes
-   signal work to a pool of four `worker.js` processes. Each worker keeps its signals' changes in a compact C++
-   store and answers from there without walking the file again.
-4. **Replies** are one JSON line, optionally followed by `binLength` raw bytes, on fd 3. fd 3 is used because the
-   FSDB reader prints to stdout, and stdout output would corrupt the protocol.
+1. **The page asks** (`window_cache.ts` in the VaporView patch) only for what it draws: windows, values, edges, searches.
+2. **The Mac relays** only the commands the page uses, and `open` only of the panel's own file.
+3. **The host answers.** `helper.js` answers the netlist itself and routes signal work to four `worker.js`
+   processes, each keeping its signals' changes in a compact C++ store, so the file is walked once.
+4. **Replies** are one JSON line, optionally followed by `binLength` raw bytes, on fd 3.
 
 ## Launch and build
 
@@ -76,9 +71,11 @@ Times are integers in the dump's unit. The full list, with every field, is the h
 | `window {signals, t0, t1, buckets}` | A signal's changes in `[t0, t1)`. Exact when there are at most 2 × `buckets` changes; otherwise each bucket's first and last change plus a count per bucket. Sent as deflated `[u64 delta][value]` records |
 | `valueAt`, `edge`, `search` | The value at a time; the next or previous change, rise or fall; the next match of a value pattern |
 | `count` | A signal's total change count, when known without a walk (the viewer uses it to load small signals whole) |
-| `derive`, `searchAll` | A derived signal from a SystemVerilog expression; a search over many signals that streams `partial` results |
 | `cancel {id}` | Stops a request. Its reply becomes `{cancelled: true}` |
 | `signals` | The v1 whole-signal reply, for compatibility |
+
+The helper also has `derive` (a signal from a SystemVerilog expression) and `searchAll` (a search over many
+signals, streaming `partial` results); the Mac relay doesn't forward them yet.
 
 What is streamed, and when:
 - The viewer tiles time in powers of two, 1024 buckets per tile, and requests the tiles on screen plus one screen
@@ -87,19 +84,19 @@ What is streamed, and when:
   signal. Only big or dense signals stay windowed.
 - A signal not yet in a worker's store is read "cold": a small time range is read directly from the file, and the
   full walk continues in the background.
-- Each viewer request has a timeout (8 s for a value, 10 s for a window, 120 s for a search). A stale request is
-  cancelled, then retried with backoff.
 - *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
   the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
 
 ## Timeouts and recovery
 
 In this tree:
-- The helper must print its ready line within 90 s. The build may take 10 minutes. A request times out after
-  5 minutes.
+- The helper must print its ready line within 90 s. The build is cut off after 10 minutes. A request times out
+  after 5 minutes on the Mac.
+- The viewer gives each request its own timeout: 8 s for a value, 120 s for a search, and for a window 10 s,
+  adapted to the round-trip time up to 180 s. A stale request is cancelled, then retried with backoff.
 - A v2 that missed its ready timeout is skipped for that host for 10 minutes, so each new viewer doesn't wait again.
 - A worker that dies is restarted and reopens the file. Its queued and running parts fail with an error, so no
-  request waits forever.
+  request waits forever. After more than 5 restarts in 30 s the helper gives up and reports the error.
 
 *(coming in stack-10, helper commits `4984aea`, `39f9ebc`, `94d2e8b`)*:
 - **Open timeout.** An `open` that doesn't answer in 120 s relaunches the helper once and resends the open. A second
@@ -122,7 +119,8 @@ In this tree:
 | Private install, private run directory | The helper runs code and loads libraries from its install. An install others can write is refused. The reader's log directory goes to a private folder on node-local `/tmp`, not a shared home. |
 | Memory bounds | Each worker has an RSS cap (1 GB by default). Over it, the store shrinks first, then the worker is replaced when idle. A load that would pass twice the cap is undone. |
 | Store cache on disk | Walked signals are saved under `/tmp/<user>-cmux-helper/` (keyed by path, size, mtime and inode, LRU-bounded), so a reopened dump draws about 20× faster. Not on an NFS home. |
-| Cancel and yield by SIGUSR2, checked between values | A SIGINT-based cancel, tried during development, killed workers and cancelled unrelated requests. Background work polls for SIGUSR2 instead, and yields to interactive requests. |
+| Background work yields on SIGUSR2 | Background walks poll for SIGUSR2 every 4096 changes and between signals, and yield to interactive requests. A `cancel` drops queued parts; running ones finish and are discarded. *(coming, `07e4a1a`)* searchText is cancelled by SIGUSR2 too, because a SIGINT-based cancel killed workers and cancelled unrelated requests. |
+| Node.js on the host | It reuses VaporView's Node-API reader addon and worker code unmodified. The cost is Node.js 18 or later on the host (found on `PATH` and in common places, or set with `CMUX_FSDB_NODE`; build exit 11 if missing). |
 | Watchdog kills only its own children *(coming)* | A pid can be reused once a process exits. The watchdog signals only processes that are still children of the launch shell, so it never touches another user's process. |
 
 ## Files

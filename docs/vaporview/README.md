@@ -39,7 +39,7 @@ cmux keeps the webview, nearly unchanged, and replaces the extension host:
  WaveformFSDBHelper ── ssh ──▶ remote host: fsdb-helper-v2 (coordinator + 4 workers + Verdi's reader)
 ```
 
-- **Swift → page:** `callAsyncJavaScript` on `window.cmuxWaveform` (`open`, `link.*`, `debugger.*`, `machine.*`, ...).
+- **Swift → page:** `callAsyncJavaScript` on `window.cmuxWaveform`.
 - **Page → Swift:** `webkit.messageHandlers.cmuxWaveform.postMessage({type, ...})`.
 - **Page → VaporView frame:** the messages VS Code would send (`add-variable`, `setMarker`, `setDisplayFormat`).
 - **Dump bytes** come through the private `cmux-waveform:` scheme, which serves only the bundle and the open file;
@@ -52,22 +52,16 @@ screenshots, because those need the full app rather than the off-screen viewer h
 
 ### VaporView parity
 
-VaporView's VS Code features work in the panel, with the same command IDs:
-- its context menus (rows, ruler, netlist) and their `when` rules;
-- its keys: ⌘R show in netlist, ⌘F search netlist, F2 rename, ⌘0 zoom to fit, ⌥= / ⌥- row scale, G group, 1 to 8
-  color, ⌘Z / ⇧⌘Z undo and redo;
-- the netlist tree, with search and drag into the viewer;
-- sessions: Save Vaporview Session... (⌘S) and Load Vaporview Session..., in VaporView's JSON format, and
-  auto-load of `<dump>.json`. For a dump on an SSH host, save asks where to write;
-- settings (right-click the ruler > More Settings...), the status strip, and Auto Reload.
+VaporView's menus, keys, netlist, sessions, settings and Auto Reload work in the panel as in VS Code, with the same
+command IDs. The differences:
+- A session `<name>.json` beside `<name>.vcd` loads automatically. For a dump on an SSH host, Save Vaporview
+  Session... (⌘S) asks where to write.
+- A signal already shown is never added twice, and there is no WCP server.
+- ⌘-click a time (`@ 50000`, `50,000 ns`) or an instance path in a cmux terminal to move the marker or add the signal.
 
-⌘-click a time (`@ 50000`, `50,000 ns`) or an instance path in a cmux terminal to move the marker or add the signal.
+<img src="images/context-menu.png" width="400" alt="A row's context menu: VaporView's items, plus Show State Machine and the debugger's items">
 
-By design, a signal already shown is never added twice, and there is no WCP server.
-
-<img src="images/context-menu.png" width="400" alt="A row's context menu: VaporView's items, then Show State Machine and the debugger's items">
-
-*A row's menu. The items through Reload File are VaporView's; Show State Machine and the items below are cmux's.*
+*A row's menu: VaporView's items, plus cmux's Show State Machine and everything below Reload File.*
 
 *Files:* `Resources/vaporview/` `cmux-commands.js`, `cmux-ui.js`, `cmux-netlist.js`, `host.js`;
 `Sources/Panels/` `FilePreviewWaveformSession.swift`, `WaveformViewerSchemeHandler.swift`,
@@ -218,12 +212,8 @@ built.
 `scripts/waveform-viewer-checks/run.sh <suite>` loads the real page through the app's scheme handler in an
 off-screen `WKWebView`, or runs the page's scripts in JavaScriptCore. No window opens.
 
-| Area | Suites |
-| --- | --- |
-| Parity, security, editor link, enums, FSM, RISC-V | `parity`, `xss`, `link`, `enum`, `enum-link`, `fsm`, `riscv` |
-| FSDB | `windowed` (mock helper, real relay); `fsdb`, `windowed-fsdb`, `windowed-launcher` need a host with Verdi |
-| Debugger | `debugger`, `debugger-editor`, `breakpoints`, `line-breakpoints`, `expr`, `text`, `text-breakpoints` |
-| CPU traces | `machine-core`, `machine`, `machine-mutants`, `commit-breakpoints`, `commit-page`, `asm-listing` |
+Run it without a suite to list them. `fsdb`, `windowed-fsdb` and `windowed-launcher` need a host with Verdi;
+`windowed` runs the real Swift relay against a mock helper; the rest run on the Mac.
 
 Swift package tests cover the FSM model, listings, line breakpoints and path mapping. `docs-shots/make-shots.sh`
 regenerates the screenshots here from open fixtures.

@@ -3,7 +3,7 @@
 // FSDB helper v2: runs next to the dump (on the remote host) and answers the viewer over a
 // single ssh stdio channel. Requests are newline-delimited JSON on stdin;
 // replies go to fd 3 as a JSON line plus `binLength` raw bytes (v1 framing),
-// because Verdi's FsdbReader prints to stdout. Start it through helper-v2.sh.
+// because Verdi's FsdbReader prints to stdout. Start it through cmux-helper-v2.sh.
 //
 // v2: a pool of worker processes (worker.js), each with the file open. A
 // signal sticks to one worker, which keeps its walked changes in the addon's
@@ -12,10 +12,10 @@
 // open/children are answered here (this process has the hierarchy), so the
 // netlist stays responsive while workers walk signals.
 //
-// Protocol (WINDOWING.md "Protocol v2", as built). Times are integers in the
+// Protocol v2 (see README.md). Times are integers in the
 // file's unit. Every reply is {id, result, ms, workerMs?} or {id, error};
 // `ms` is time in the helper, `workerMs` the slowest worker part.
-// Changes are normalized (WINDOWING.md "Change normalization") in everything below
+// Changes are normalized in everything below
 // except v1 `signals`: changes at one time collapse to the last, a change to the value
 // already in effect is dropped, and before the first change the value is all x.
 //   open {file, workers?, warm?, reload?} -> {metadata, top, workers, index, reused?} (warm: start
@@ -484,7 +484,7 @@ function prep(req, ids) {
   return a || b ? Promise.all([a, b]) : null;
 }
 
-// ---- cold reads (reader view windows; WINDOWING.md "Cold reads") ----
+// ---- cold reads (reader view windows) ----
 // valueAt of a signal that isn't stored reads one value through a [t, t] view
 // window (~2 ms) instead of walking and caching the whole signal. A window over
 // a short range (<= COLD_RANGE of the file) of signals that aren't stored loads
@@ -925,7 +925,7 @@ function pumpWarm() {
     };
   }
 }
-// ---- persistent store cache (WINDOWING.md "Persistent store cache") ----
+// ---- persistent store cache ----
 // Every signal walked into a store is written to the dump's index dir in the
 // background (same .vvz files and key as the search index: format, real path,
 // device, inode, size, mtime), and later loads in this or any later helper read
