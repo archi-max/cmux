@@ -43,6 +43,13 @@ private final class CountingHostTransport: SSHFileExplorerTransport, @unchecked 
         try data.write(to: localURL)
     }
 
+    /// One host request: the stamp, read first, and the bytes.
+    func downloadFileWithStamp(path: String, connection: SSHFileExplorerConnection, to localURL: URL) async throws -> SSHRemoteFileStamp? {
+        let (data, current): (Data, SSHRemoteFileStamp) = lock.withLock { downloads += 1; return (contents, stamp) }
+        try data.write(to: localURL)
+        return current
+    }
+
     func downloadFile(path: String, connection: SSHFileExplorerConnection, to localURL: URL, maxBytes: Int64) async throws {
         try await downloadFile(path: path, connection: connection, to: localURL)
     }
@@ -91,18 +98,18 @@ private final class CountingHostTransport: SSHFileExplorerTransport, @unchecked 
         let (cache, provider, host, directory) = fixture("module top; endmodule\n")
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = try await cache.materialize(path: path, provider: provider, allowRecentCopy: true)
-        #expect(!first.isUnverified && host.counts == [1, 1])
+        #expect(!first.isUnverified && host.counts == [0, 1], "a first open is one host request: \(host.counts)")
         await cache.release(first.url)
 
         let reopened = try await cache.materialize(path: path, provider: provider, allowRecentCopy: true)
         let shown = try text(reopened)
         #expect(shown == "module top; endmodule\n")
         #expect(reopened.isUnverified && reopened.remoteStamp == first.remoteStamp)
-        #expect(host.counts == [1, 1], "the reopen itself asks the host nothing: \(host.counts)")
+        #expect(host.counts == [0, 1], "the reopen itself asks the host nothing: \(host.counts)")
 
         // Unchanged on the host: the check is one stat and no download.
         let replaced = try await reopened.refresh(using: provider)
-        #expect(!replaced && !reopened.isUnverified && host.counts == [2, 1], "\(host.counts)")
+        #expect(!replaced && !reopened.isUnverified && host.counts == [1, 1], "\(host.counts)")
     }
 
     @Test func aStaleCopyIsReplacedAndNeverSavedOverTheNewerHostFile() async throws {
