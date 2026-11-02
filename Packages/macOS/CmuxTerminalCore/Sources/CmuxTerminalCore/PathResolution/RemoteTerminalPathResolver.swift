@@ -1,5 +1,21 @@
 public import Foundation
 
+/// A host path a terminal link may name, with the editor location it carried.
+public struct RemoteFileReference: Equatable, Sendable {
+    /// An absolute host path, or `~`/`~/…` for the host to expand.
+    public var path: String
+    /// The 1-based line of a `path:line[:column]` link.
+    public var line: Int?
+    /// The 1-based column of a `path:line:column` link.
+    public var column: Int?
+
+    public init(path: String, line: Int? = nil, column: Int? = nil) {
+        self.path = path
+        self.line = line
+        self.column = column
+    }
+}
+
 /// Builds remote path candidates without consulting the local filesystem or home directory.
 public struct RemoteTerminalPathResolver: Sendable {
     /// Creates a remote terminal path resolver.
@@ -73,5 +89,21 @@ public struct RemoteTerminalPathResolver: Sendable {
             }
         }
         return paths
+    }
+
+    // PLACEHOLDER (red commit): the real implementations follow in the fix.
+    public func isClickedFileCandidate(_ token: String) -> Bool { isFileReference(token) }
+
+    public func needsWorkingDirectory(tokens: [String]) -> Bool { true }
+
+    public func references(
+        tokens: [String],
+        workingDirectory: String?,
+        homeDirectory: String?,
+        remoteHost: String,
+        expandsHomeOnHost: Bool = false
+    ) -> [RemoteFileReference] {
+        candidates(tokens: tokens, workingDirectory: workingDirectory, homeDirectory: homeDirectory, remoteHost: remoteHost)
+            .map { RemoteFileReference(path: $0) }
     }
 }

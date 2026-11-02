@@ -26,6 +26,14 @@ actor RemoteTerminalFilePreviewLoader {
         self.shownPaths = shownPaths
     }
 
+    /// PLACEHOLDER (red commit).
+    func load(
+        tokens: [String],
+        workingDirectory: @escaping @Sendable () async -> String?
+    ) async throws -> RemotePreviewDownload {
+        try await load(tokens: tokens, workingDirectory: await workingDirectory())
+    }
+
     func load(tokens: [String], workingDirectory: String?) async throws -> RemotePreviewDownload {
         try Task.checkCancellation()
         let resolver = RemoteTerminalPathResolver()
