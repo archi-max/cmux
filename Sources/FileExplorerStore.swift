@@ -2015,6 +2015,9 @@ final class FileExplorerStore: ObservableObject {
         loadTasks[rootPath] = task
     }
 
+    /// Placeholder (red): right-click Refresh.
+    func refresh(directoryAt path: String) {}
+
     func expand(node: FileExplorerNode) {
         guard node.resourceContextID == nil || node.resourceContextID == resourceContextID, node.isDirectory else { return }
         expandedPaths.insert(node.path)

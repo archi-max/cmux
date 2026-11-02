@@ -2397,3 +2397,8 @@ private extension FileExplorerContainerView {
         outlineView.activeNativeDragOwnership = nil
     }
 }
+
+/// Placeholder (red): the folder a context-menu Refresh re-lists.
+enum FileExplorerRefreshMenuTarget {
+    static func path(clickedNode: FileExplorerNode?, rootPath: String) -> String? { nil }
+}
