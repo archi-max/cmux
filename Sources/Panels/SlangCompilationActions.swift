@@ -462,7 +462,7 @@ enum SlangCompilationActions {
     /// Sets (or with nil removes) `"build"` in the config file, creating its folders, locally or
     /// over SSH. Returns the `"build"` the file had. A file that cannot be read is never overwritten.
     @discardableResult
-    private static func writeBuild(_ buildPath: String?, to location: ConfigFileLocation) async throws -> String? {
+    static func writeBuild(_ buildPath: String?, to location: ConfigFileLocation) async throws -> String? {
         let directory = (location.path as NSString).deletingLastPathComponent
         if let provider = location.sshProvider {
             var existing: Data?
