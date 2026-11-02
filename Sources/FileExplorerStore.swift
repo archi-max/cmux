@@ -447,6 +447,13 @@ protocol SSHFileExplorerTransport: AnyObject {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp
+    /// Downloads `path` and returns its stamp as read before the bytes (nil if
+    /// it couldn't be read), in one host request where the transport can.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp?
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -518,6 +525,17 @@ extension SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         throw FileExplorerError.mutationFailed
+    }
+
+    /// A stamp, then a download: a write in between shows up as a conflict.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp? {
+        let stamp = try? await fileStamp(path: path, connection: connection)
+        try await downloadFile(path: path, connection: connection, to: localURL)
+        return stamp
     }
 
     /// One request per spelling, for transports without the one-run probe
@@ -922,6 +940,14 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         return try await transport.fileStamp(path: path, connection: connection)
     }
 
+    /// Downloads `path` with its stamp (read before the bytes), in one request where possible.
+    func downloadFileWithStamp(path: String, to localURL: URL) async throws -> SSHRemoteFileStamp? {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.downloadFileWithStamp(path: path, connection: connection, to: localURL)
+    }
+
     /// Atomically replaces the remote file with `contents` and returns its new stamp.
     /// Throws ``FileExplorerError/remoteFileChanged`` when `expectedStamp` no longer matches.
     func writeFile(path: String, contents: Data, expectedStamp: SSHRemoteFileStamp?) async throws -> SSHRemoteFileStamp {
@@ -971,6 +997,23 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
             return
         }
         try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+    }
+
+    /// On the channel the read's reply carries its stamp (stat'd before the
+    /// bytes), so an open is one request; otherwise a stamp, then a download.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp? {
+        if let read = try? await SSHFileChannelRegistry.shared.channel(for: connection)
+            .read(path, maxBytes: SSHFileChannel.maximumReadBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return SSHRemoteFileStamp(modificationTime: read.modificationTime, size: read.size)
+        }
+        let stamp = try? await fileStamp(path: path, connection: connection)
+        try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+        return stamp
     }
 
     /// The remote command for a whole-file download, as a POSIX script any
@@ -1687,6 +1730,10 @@ final class FileExplorerStore: ObservableObject {
     /// open pays for it) and ends it on disconnect or a change of connection.
     private var fileChannelLease: SSHFileChannelPool.Lease?
     private var fileChannelConnection: SSHFileExplorerConnection?
+    /// Only a Files panel's store (an SSH workspace root) holds its host's
+    /// channel; a preview-only store (a terminal's in-place opens, Go to File)
+    /// uses it unpinned, so it idles out instead of outliving the workspace.
+    var holdsFileChannel = false
 
     /// Whether hidden files are shown. Set from FileExplorerState externally.
     var showHiddenFiles: Bool = false
@@ -2185,7 +2232,7 @@ final class FileExplorerStore: ObservableObject {
     /// Holds the file channel of the provider's host while it is an available SSH host.
     func updateFileChannelLease() {
         let ssh = provider as? SSHFileExplorerProvider
-        let wanted = ssh.flatMap { $0.isAvailable && $0.usesFileChannel ? $0.connection : nil }
+        let wanted = holdsFileChannel ? ssh.flatMap { $0.isAvailable && $0.usesFileChannel ? $0.connection : nil } : nil
         guard wanted != fileChannelConnection else { return }
         fileChannelConnection = wanted
         fileChannelLease = wanted.map { SSHFileChannelRegistry.shared.lease(for: $0) }

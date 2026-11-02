@@ -82,6 +82,7 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
     private var pending: [Int: Pending] = [:]
     private var isReadyNow = false
     private var pinCount = 0
+    private var respawnWork: DispatchWorkItem?
 
     private struct Pending {
         let continuation: CheckedContinuation<Reply, Error>
@@ -128,8 +129,30 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
     func unpin() {
         lock.withLock {
             pinCount = max(0, pinCount - 1)
-            if pinCount == 0, input != nil { scheduleIdleLocked() }
+            if pinCount == 0 {
+                respawnWork?.cancel()
+                respawnWork = nil
+                if input != nil { scheduleIdleLocked() }
+            }
         }
+    }
+
+    /// While pinned, a run that ended is started again once its backoff is over.
+    /// Called with `lock` held.
+    private func scheduleRespawnLocked() {
+        guard pinCount > 0 else { return }
+        respawnWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.withLock {
+                self.respawnWork = nil
+                guard self.pinCount > 0, self.input == nil else { return }
+                if self.startLocked() == nil { self.scheduleRespawnLocked() } else { self.scheduleIdleLocked() }
+            }
+        }
+        respawnWork = work
+        let delay = max(0, downUntil?.timeIntervalSinceNow ?? 0) + 0.05
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: Requests
@@ -268,7 +291,12 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
             pending.removeAll()
             idleWork?.cancel()
             idleWork = nil
-            if backoff { markDownLocked() }
+            respawnWork?.cancel()
+            respawnWork = nil
+            if backoff {
+                markDownLocked()
+                scheduleRespawnLocked()
+            }
             return old
         }
         writeQueue.async { try? input?.close() }
@@ -481,25 +509,30 @@ final class SSHFileChannelPool: @unchecked Sendable {
     var channelCount: Int { lock.withLock { channels.count } }
 
     func channel(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> SSHFileChannel {
-        lock.withLock {
-            if let channel = channels[key] { return channel }
-            let channel = SSHFileChannel(launch: launch())
-            channels[key] = channel
-            return channel
-        }
+        lock.withLock { channelLocked(key: key, launch: launch()) }
+    }
+
+    /// Called with `lock` held.
+    private func channelLocked(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> SSHFileChannel {
+        if let channel = channels[key] { return channel }
+        let channel = SSHFileChannel(launch: launch())
+        channels[key] = channel
+        return channel
     }
 
     /// Holds `key`'s channel up, starting it now.
     func retain(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> Lease {
-        let channel = self.channel(key: key, launch: launch())
-        let first: Bool = lock.withLock {
+        // The channel is looked up under the lock that counts leases, so a grace
+        // close can't take it out of the pool between the two.
+        let (channel, first): (SSHFileChannel, Bool) = lock.withLock {
+            let channel = channelLocked(key: key, launch: launch())
             leases[key, default: 0] += 1
             if let pending = closing.removeValue(forKey: key) {
                 // Taken again within the grace: the channel is still pinned.
                 pending.cancel()
-                return false
+                return (channel, false)
             }
-            return leases[key] == 1
+            return (channel, leases[key] == 1)
         }
         if first { channel.pin() }
         channel.prewarm()
