@@ -83,6 +83,10 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
     private var isReadyNow = false
     private var pinCount = 0
     private var respawnWork: DispatchWorkItem?
+    /// Runs in a row that ended before their ready line; restarts stop at ``maximumFailedRestarts``.
+    private var failedLaunches = 0
+    private var runReachedReady = false
+    static let maximumFailedRestarts = 3
 
     private struct Pending {
         let continuation: CheckedContinuation<Reply, Error>
@@ -140,7 +144,9 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
     /// While pinned, a run that ended is started again once its backoff is over.
     /// Called with `lock` held.
     private func scheduleRespawnLocked() {
-        guard pinCount > 0 else { return }
+        // A host that keeps failing before its server starts (unreachable, auth
+        // refused) is left alone until a request asks, so it isn't hammered with logins.
+        guard pinCount > 0, failedLaunches < Self.maximumFailedRestarts else { return }
         respawnWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -239,6 +245,7 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
         do {
             try process.run()
         } catch {
+            failedLaunches += 1
             markDownLocked()
             return nil
         }
@@ -294,9 +301,11 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
             respawnWork?.cancel()
             respawnWork = nil
             if backoff {
+                if !runReachedReady { failedLaunches += 1 }
                 markDownLocked()
                 scheduleRespawnLocked()
             }
+            runReachedReady = false
             return old
         }
         writeQueue.async { try? input?.close() }
@@ -314,7 +323,7 @@ final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
         switch event {
         case .ready:
             lock.withLock {
-                if gen == generation { backoff = 1; downUntil = nil; isReadyNow = true }
+                if gen == generation { backoff = 1; downUntil = nil; isReadyNow = true; runReachedReady = true; failedLaunches = 0 }
             }
             return true
         case let .reply(id, status, reply):
@@ -528,9 +537,8 @@ final class SSHFileChannelPool: @unchecked Sendable {
             let channel = channelLocked(key: key, launch: launch())
             leases[key, default: 0] += 1
             if let pending = closing.removeValue(forKey: key) {
-                // Taken again within the grace: the channel is still pinned.
+                // Taken again within the grace: the same run, pinned again.
                 pending.cancel()
-                return (channel, false)
             }
             return (channel, leases[key] == 1)
         }
@@ -550,6 +558,9 @@ final class SSHFileChannelPool: @unchecked Sendable {
             let work = DispatchWorkItem { [weak self] in self?.close(key) }
             closing[key] = work
             DispatchQueue.global().asyncAfter(deadline: .now() + releaseGrace, execute: work)
+            // Unpinned at once: during the grace the run stays up, but one that ends
+            // isn't restarted for a workspace that is no longer connected.
+            channels[key]?.unpin()
         }
     }
 
@@ -559,7 +570,6 @@ final class SSHFileChannelPool: @unchecked Sendable {
             leases[key] = nil
             return channels.removeValue(forKey: key)
         }
-        channel?.unpin()
         channel?.close()
     }
 }

@@ -455,4 +455,37 @@ import Testing
         let left = (try? FileManager.default.contentsOfDirectory(atPath: tmpPath)) ?? []
         #expect(pool.channelCount == 0 && left.isEmpty, "\(pool.channelCount) channels, host temp dirs left: \(left)")
     }
+
+    @Test func aConnectedHostThatKeepsFailingIsRetriedOnItsBackoffAndThenLeftAlone() async throws {
+        // A host whose ssh fails before the server starts (unreachable, auth refused): restarts
+        // wait out the backoff (1 s, then 2 s), and after 3 failed runs in a row nothing more is
+        // tried until a request asks, so a dead host isn't hammered with logins.
+        let failing = SSHFileChannel(launch: { _ in (URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 255"]) }, readyTimeout: 2)
+        failing.pin()
+        defer { failing.unpin(); failing.close() }
+        failing.prewarm()
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        #expect(failing.launchCount == 2, "restarts must wait out the backoff: \(failing.launchCount) runs in 2.5 s")
+        try await Task.sleep(nanoseconds: 6_500_000_000)
+        #expect(failing.launchCount == 3, "after 3 failed runs it must stop: \(failing.launchCount) runs in 9 s")
+        // A real request still tries again, once its backoff is over.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        _ = try? await failing.stat("/")
+        #expect(failing.launchCount == 4, "a request after the stop tries again: \(failing.launchCount)")
+    }
+
+    @Test func aDisconnectedHostIsNeverRestarted() async throws {
+        // The last lease gone (the workspace disconnected): the channel is unpinned at once, so a
+        // run that ends during the release grace isn't restarted.
+        let pool = SSHFileChannelPool(releaseGrace: 5)
+        let launch = Self.readyThen("sleep 0.5")
+        var lease: SSHFileChannelPool.Lease? = pool.retain(key: "h", launch: launch)
+        let channel = pool.channel(key: "h", launch: launch)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        lease = nil
+        _ = lease
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        #expect(channel.launchCount == 1, "restarted after the disconnect: \(channel.launchCount) runs")
+        channel.close()
+    }
 }
