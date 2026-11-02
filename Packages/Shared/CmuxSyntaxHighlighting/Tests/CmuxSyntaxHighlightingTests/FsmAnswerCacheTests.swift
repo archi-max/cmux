@@ -89,4 +89,29 @@ import Testing
         #expect(!result([.yosys(.notFound)]).hasTransientFailure)
         #expect(!result([.yosys(.failed(""))]).hasTransientFailure, "no Yosys installed: not a retry's business")
     }
+
+    @Test func aDesignChangeOfSomeWaveformsLeavesTheOthersAnswers() throws {
+        var cache = FsmAnswerCache<String>()
+        for waveform in ["w1", "w2"] {
+            let started = cache.start(waveform, "tb.state")
+            let run = try #require(started)
+            let shown = cache.finish(run, "model", keep: true)
+            #expect(shown)
+        }
+        let w1Started = cache.start("w1", "tb.other")
+        let w1Run = try #require(w1Started)
+        let w2Started = cache.start("w2", "tb.other")
+        let w2Run = try #require(w2Started)
+        // Only w1's server switched profiles.
+        cache.designChanged(waveforms: ["w1"])
+        #expect(cache.answer("w1", "tb.state") == nil)
+        #expect(cache.answer("w2", "tb.state") == "model")
+        // w1's run started before the switch is shown but not kept; w2's is kept.
+        let w1Shown = cache.finish(w1Run, "old", keep: true)
+        #expect(w1Shown)
+        #expect(cache.answer("w1", "tb.other") == nil)
+        let w2Shown = cache.finish(w2Run, "new", keep: true)
+        #expect(w2Shown)
+        #expect(cache.answer("w2", "tb.other") == "new")
+    }
 }

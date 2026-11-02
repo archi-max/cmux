@@ -108,6 +108,54 @@ import Testing
         #expect(store.load().keys.sorted() == ["ssh:remote-host|||/home/u/mp"])
     }
 
+    @Test func theConfigsBuildIsTheLocalOverrideMadeAbsolute() {
+        typealias Found = SlangServerConfigFile.Found
+        let repo = Found(path: "/w/.slang/server.json", health: .valid, build: ".slang/tb_a.f")
+        let local = Found(path: "/w/.slang/local/server.json", health: .valid, build: "/abs/tb_b.f")
+        #expect(SlangServerConfigFile.configuredBuild(in: [repo, local], root: "/w") == "/abs/tb_b.f")
+        #expect(SlangServerConfigFile.configuredBuild(in: [local, repo], root: "/w") == "/abs/tb_b.f")
+        #expect(SlangServerConfigFile.configuredBuild(in: [repo], root: "/w") == "/w/.slang/tb_a.f")
+        // An unreadable config is ignored by slang-server, and so is its build here.
+        let broken = Found(path: "/w/.slang/local/server.json", health: .invalid, build: "/abs/x.f")
+        #expect(SlangServerConfigFile.configuredBuild(in: [repo, broken], root: "/w") == "/w/.slang/tb_a.f")
+        #expect(SlangServerConfigFile.configuredBuild(in: [], root: "/w") == nil)
+        let listing = SlangProfileCatalog.parseListing("@@cmux-slang-config /w/.slang/server.json\n{\"build\": \"tb.f\"}\n")
+        #expect(listing.configs.first?.build == "tb.f")
+        #expect(SlangProfileChoice.configured.resolved(configuredBuild: "/w/tb.f") == .buildFile("/w/tb.f"))
+        #expect(SlangProfileChoice.configured.resolved(configuredBuild: nil) == .configured)
+        #expect(Self.tbA.resolved(configuredBuild: "/w/tb.f") == Self.tbA)
+    }
+
+    @Test func aFocusedWaveformWantsItsOwnProfile() {
+        var assignments = SlangProfileAssignments()
+        assignments.choose(Self.tbB, file: "/w/b_tb.sv")
+        #expect(SlangProfileFocus.file("/w/b_tb.sv").wanted(in: assignments) == Self.tbB)
+        #expect(SlangProfileFocus.file("/w/rtl.sv").wanted(in: assignments) == Self.tbB)
+        // A waveform of testbench A keeps A even though B was set last.
+        #expect(SlangProfileFocus.waveform(Self.tbA).wanted(in: assignments) == Self.tbA)
+        // One with no known profile leaves the server as it is.
+        #expect(SlangProfileFocus.waveform(nil).wanted(in: assignments) == nil)
+    }
+
+    @Test func theStoreWritesEveryRootAtOnceOffTheMainThread() async throws {
+        let suite = "cmux-slangprof-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = SlangProfileAssignmentStore(defaults: defaults)
+        var roots: [String: SlangProfileAssignments] = [:]
+        for index in 0...SlangProfileAssignmentStore.maxRoots {
+            var assignments = SlangProfileAssignments()
+            assignments.choose(Self.tbA, file: "/r\(index)/a.sv", at: Date(timeIntervalSince1970: Double(1_000 + index)))
+            roots["local|/r\(index)"] = assignments
+        }
+        roots["local|/empty"] = SlangProfileAssignments()
+        let written = await Task.detached { store.saveAll(roots) }.value
+        #expect(written.count == SlangProfileAssignmentStore.maxRoots)
+        #expect(written["local|/r0"] == nil)
+        #expect(written["local|/empty"] == nil)
+        #expect(store.load() == written)
+    }
+
     @Test func theStoreDropsTheRootsUnusedLongest() throws {
         let suite = "cmux-slangprof-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -139,9 +187,13 @@ import Testing
         /// Apply answers `.busy` this many times first (another change claimed the server meanwhile).
         var busyAnswers = 0
         var fallback: SlangProfileChoice?
+        var configuredBuild: String?
+        /// How long apply takes.
+        var applyTime: Duration = .zero
+        var maxBusyWait: Duration = .seconds(5)
 
         func follower(debounce: Duration = .milliseconds(40)) -> SlangProfileFollower {
-            SlangProfileFollower(debounce: debounce, busyRetry: .milliseconds(20), maxBusyWait: .seconds(5), hooks: .init(
+            SlangProfileFollower(debounce: debounce, busyRetry: .milliseconds(20), maxBusyWait: maxBusyWait, hooks: .init(
                 wanted: { self.wanted },
                 current: { self.current },
                 isBusy: { self.busy },
@@ -151,12 +203,14 @@ import Testing
                         return .busy
                     }
                     self.applied.append(choice)
+                    if self.applyTime > .zero { try? await Task.sleep(for: self.applyTime) }
                     if let path = choice.path, self.missingPaths.contains(path) { return .missing }
                     if let path = choice.path, self.failingPaths.contains(path) { return .failed }
                     self.current = choice.state
                     return .applied
                 },
-                missing: { _ in self.wanted = self.fallback }
+                missing: { _ in self.wanted = self.fallback },
+                resolve: { $0.resolved(configuredBuild: self.configuredBuild) }
             ))
         }
     }
@@ -164,10 +218,10 @@ import Testing
     @Test func quickFocusChangesCompileOnlyTheFileFocusSettlesOn() async {
         let fake = Fake()
         let follower = fake.follower()
+        // Three focus changes with no suspension between them: no debounce can end in between.
         for choice in [SlangProfileAssignmentsTests.tbA, SlangProfileAssignmentsTests.tbB, SlangProfileAssignmentsTests.tbA] {
             fake.wanted = choice
             follower.activeFileChanged()
-            try? await Task.sleep(for: .milliseconds(5))
         }
         await follower.waitUntilIdle()
         #expect(fake.applied == [SlangProfileAssignmentsTests.tbA])
@@ -256,6 +310,64 @@ import Testing
         await follower.waitUntilIdle()
         #expect(fake.applied == [SlangProfileAssignmentsTests.tbB])
         #expect(SlangProfileChoice(fake.current) == SlangProfileAssignmentsTests.tbB)
+    }
+
+    @Test func theConfigsBuildIsFollowedAtRuntimeAndCountsAsConfigured() async {
+        let fake = Fake()
+        fake.configuredBuild = "/w/.slang/cfg.f"
+        let follower = fake.follower(debounce: .milliseconds(10))
+        // The server compiles its config's build by itself: the same compilation, nothing sent.
+        fake.wanted = .configured
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        fake.current = SlangProfileChoice.buildFile("/w/.slang/cfg.f").state
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied.isEmpty)
+        // From another profile: back to the config's build as a build-file switch (no restart).
+        fake.current = SlangProfileAssignmentsTests.tbB.state
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [.buildFile("/w/.slang/cfg.f")])
+        // No build in the config: `.configured` as it is.
+        fake.configuredBuild = nil
+        fake.current = SlangProfileAssignmentsTests.tbB.state
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [.buildFile("/w/.slang/cfg.f"), .configured])
+    }
+
+    @Test func aFollowThatGaveUpOnABusyServerRunsOnceItIsFree() async {
+        let fake = Fake()
+        fake.busy = true
+        fake.maxBusyWait = .milliseconds(60)
+        fake.wanted = SlangProfileAssignmentsTests.tbA
+        let follower = fake.follower(debounce: .milliseconds(10))
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied.isEmpty)
+        fake.busy = false
+        follower.serverBecameFree()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [SlangProfileAssignmentsTests.tbA])
+        // Freed again with nothing given up: no switch.
+        follower.serverBecameFree()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [SlangProfileAssignmentsTests.tbA])
+    }
+
+    @Test func aUsersChoiceCanWaitForTheSwitchRunningNow() async {
+        let fake = Fake()
+        fake.applyTime = .milliseconds(200)
+        fake.wanted = SlangProfileAssignmentsTests.tbA
+        let follower = fake.follower(debounce: .milliseconds(10))
+        follower.activeFileChanged()
+        let deadline = ContinuousClock.now + .seconds(10)
+        while fake.applied.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(SlangProfileChoice(fake.current) != SlangProfileAssignmentsTests.tbA)
+        await follower.waitForRunningSwitch()
+        // Returned only once the switch was over.
+        #expect(SlangProfileChoice(fake.current) == SlangProfileAssignmentsTests.tbA)
     }
 
     @Test func eachSettledFocusIsFollowed() async {
@@ -368,6 +480,85 @@ import Testing
         #expect(assignments.lastSet == nil)
         #expect(assignments.choice(forFile: root + "/tb_a.sv") == .buildFile(root + "/.slang/tb_a.f"))
         print("slang profile switch: \(switches) switches, slowest \(String(format: "%.3f", slowest)) s")
+    }
+
+    /// Two testbench profiles of one design under `.slang/`, and `.slang/server.json` building tb_a.
+    static func twoTestbenchRoot() throws -> (url: URL, root: String) {
+        let rootURL = URL(fileURLWithPath: "/tmp").appendingPathComponent("cmux-slangprof-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: rootURL.appendingPathComponent(".slang"), withIntermediateDirectories: true)
+        let root = LanguageServerSession.realPath(rootURL.path)
+        try "module dut #(parameter W = 8) (input logic [W-1:0] a, output logic [W-1:0] y);\n  assign y = ~a;\nendmodule\n"
+            .write(toFile: root + "/dut.sv", atomically: true, encoding: .utf8)
+        for (tb, width) in [("tb_a", 8), ("tb_b", 16)] {
+            try "module \(tb);\n  logic [\(width - 1):0] a, y;\n  dut #(.W(\(width))) u (.a, .y);\nendmodule\n"
+                .write(toFile: "\(root)/\(tb).sv", atomically: true, encoding: .utf8)
+            try "--top \(tb)\n\(root)/dut.sv\n\(root)/\(tb).sv\n".write(toFile: "\(root)/.slang/\(tb).f", atomically: true, encoding: .utf8)
+        }
+        try "{\"build\": \"\(root)/.slang/tb_a.f\"}\n".write(toFile: root + "/.slang/server.json", atomically: true, encoding: .utf8)
+        return (rootURL, root)
+    }
+
+    @Test func aConfiguredProfileIsBuiltAtRuntimeWithoutARestart() async throws {
+        let slangServer = SlangCompilationSessionTests.slangServer
+        guard FileManager.default.isExecutableFile(atPath: slangServer) else { return }
+        let (rootURL, root) = try Self.twoTestbenchRoot()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let session = LanguageServerSession(launch: .local(executablePath: slangServer, arguments: []), rootURI: rootURL, languageId: "verilog")
+        try await session.start()
+        defer { Task { await session.shutdown() } }
+        func tops() async throws -> [String] {
+            try await session.slangScopeChildren("").filter { $0.kind != "Package" }.map(\.name)
+        }
+        let configured = SlangServerConfigFile.configuredBuild(in: SlangProfileCatalog.localListing(root: root).configs, root: root)
+        #expect(configured == root + "/.slang/tb_a.f")
+        #expect(try await tops() == ["tb_a"])
+        let launches = await session.launchGeneration
+        // A file with tb_b's profile, then one that follows the config again, several times.
+        for _ in 0..<3 {
+            try await session.slangSwitch(to: .buildFile(root + "/.slang/tb_b.f"), configuredBuild: configured)
+            #expect(try await tops() == ["tb_b"])
+            try await session.slangSwitch(to: .configured, configuredBuild: configured)
+            #expect(try await tops() == ["tb_a"])
+        }
+        // No build in the config: no top level, still no restart.
+        try await session.slangSwitch(to: .configured, configuredBuild: nil)
+        #expect(try await tops().isEmpty)
+        #expect(await session.launchGeneration == launches, "following .configured must not relaunch slang-server")
+    }
+
+    @Test func aFocusedWaveformKeepsItsTestbenchsDesign() async throws {
+        let slangServer = SlangCompilationSessionTests.slangServer
+        guard FileManager.default.isExecutableFile(atPath: slangServer) else { return }
+        let (rootURL, root) = try Self.twoTestbenchRoot()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let session = LanguageServerSession(launch: .local(executablePath: slangServer, arguments: []), rootURI: rootURL, languageId: "verilog")
+        try await session.start()
+        defer { Task { await session.shutdown() } }
+        var assignments = SlangProfileAssignments()
+        assignments.choose(.buildFile(root + "/.slang/tb_b.f"), file: root + "/tb_b.sv")
+        var focus = SlangProfileFocus.file(root + "/tb_b.sv")
+        let follower = SlangProfileFollower(debounce: .milliseconds(10), hooks: .init(
+            wanted: { focus.wanted(in: assignments) },
+            current: { await session.slangCompilationState },
+            isBusy: { false },
+            apply: { choice in
+                (try? await session.slangSwitch(to: choice, configuredBuild: nil)) == nil ? .failed : .applied
+            },
+            missing: { _ in }
+        ))
+        func focusOn(_ next: SlangProfileFocus) async throws -> [String] {
+            focus = next
+            follower.activeFileChanged()
+            await follower.waitUntilIdle()
+            return try await session.slangScopeChildren("").filter { $0.kind != "Package" }.map(\.name)
+        }
+        #expect(try await focusOn(.file(root + "/tb_b.sv")) == ["tb_b"])
+        // tb_a's waveform takes focus: its design, although tb_b was set last.
+        #expect(try await focusOn(.waveform(.buildFile(root + "/.slang/tb_a.f"))) == ["tb_a"])
+        // Shared RTL (no choice of its own) follows the last-set profile again.
+        #expect(try await focusOn(.file(root + "/dut.sv")) == ["tb_b"])
+        // A waveform with no known profile leaves the server alone.
+        #expect(try await focusOn(.waveform(nil)) == ["tb_b"])
     }
 }
 #endif

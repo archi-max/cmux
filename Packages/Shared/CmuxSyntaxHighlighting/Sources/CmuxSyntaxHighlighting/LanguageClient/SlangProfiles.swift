@@ -216,7 +216,7 @@ public enum SlangProfileCatalog {
             let path = String(header[header.index(after: space)...])
             switch header[..<space] {
             case "profile": listing.profiles.append(SlangProfile(path: path, buildFile: SlangBuildFile.parse(body)))
-            case "config": listing.configs.append(.init(path: path, health: SlangServerConfigFile.health(of: Data(body.utf8))))
+            case "config": listing.configs.append(.init(path: path, data: Data(body.utf8)))
             default: break
             }
         }
@@ -227,7 +227,7 @@ public enum SlangProfileCatalog {
     public static func localListing(root: String, home: String = NSHomeDirectory()) -> Listing {
         let configs = [SlangServerConfigFile.path(inWorkspace: root, relativePath: ".slang/server.json"), SlangServerConfigFile.path(inWorkspace: root)]
             .filter { FileManager.default.fileExists(atPath: $0) }
-            .map { SlangServerConfigFile.Found(path: $0, health: SlangServerConfigFile.health(of: FileManager.default.contents(atPath: $0))) }
+            .map { SlangServerConfigFile.Found(path: $0, data: FileManager.default.contents(atPath: $0)) }
         return Listing(profiles: localProfiles(root: root, home: home), configs: configs)
     }
 
@@ -296,11 +296,25 @@ extension SlangServerConfigFile {
     public struct Found: Equatable, Sendable {
         public var path: String
         public var health: Health
+        /// The `"build"` the file names, as written.
+        public var build: String?
 
-        public init(path: String, health: Health) {
+        public init(path: String, health: Health, build: String? = nil) {
             self.path = path
             self.health = health
+            self.build = build
         }
+
+        init(path: String, data: Data?) {
+            self.init(path: path, health: SlangServerConfigFile.health(of: data))
+        }
+    }
+
+    /// The build file the root's configs make slang-server compile when nothing else is set:
+    /// `.slang/local/server.json`'s `"build"` over `.slang/server.json`'s, made absolute against
+    /// the root. Nil when neither readable config names one.
+    public static func configuredBuild(in configs: [Found], root: String) -> String? {
+        nil // stub
     }
 
     /// slang-server reads its configs with comments and trailing commas allowed; JSON5 covers both.
