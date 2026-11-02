@@ -693428,6 +693428,65 @@
         }
       }
     },
+    "commandPalette.goToFile.typedPathsOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Files folder here; type a path such as ~/.bashrc or ./notes.md"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここには Files フォルダがありません。~/.bashrc や ./notes.md のようにパスを入力してください"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此处没有 Files 文件夹；请输入路径，例如 ~/.bashrc 或 ./notes.md"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hier gibt es keinen Files-Ordner; gib einen Pfad ein, etwa ~/.bashrc oder ./notes.md"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucun dossier Files ici ; saisissez un chemin, par exemple ~/.bashrc ou ./notes.md"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يوجد مجلد Files هنا؛ اكتب مسارًا مثل ~/.bashrc أو ./notes.md"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aquí no hay carpeta de Files; escribe una ruta como ~/.bashrc o ./notes.md"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此處沒有 Files 資料夾；請輸入路徑，例如 ~/.bashrc 或 ./notes.md"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "여기에는 Files 폴더가 없습니다. ~/.bashrc 또는 ./notes.md 같은 경로를 입력하세요"
+          }
+        }
+      }
+    },
     "commandPalette.goToFile.empty": {
       "extractionState": "manual",
       "localizations": {

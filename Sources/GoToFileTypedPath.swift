@@ -24,6 +24,21 @@ enum GoToFileTypedPath {
     /// `$HOME`, never expanded by a shell here), `./` and `../` against
     /// `root`; `.` and `..` components folded. Nil when it needs a home
     /// that isn't an absolute path.
+    /// How Go to File opens for a workspace: listing its Files root, or,
+    /// with no Files root but a terminal on an SSH host, typed paths only.
+    /// Nil: nothing to open against.
+    /// Placeholder until the fix: without a Files root there is nothing.
+    static func paletteMode(hasFilesRoot: Bool, hasTerminalOnHost: Bool) -> GoToFilePaletteMode? {
+        hasFilesRoot ? .listing : nil
+    }
+
+    /// The directory `./` and `../` resolve against: the terminal's live
+    /// directory when it reported an absolute one, else `fallback`.
+    /// Placeholder until the fix: always the fallback.
+    static func relativeRoot(live: String?, fallback: String?) -> String? {
+        fallback
+    }
+
     static func resolve(_ typed: String, root: String, home: String?) -> String? {
         let joined: String
         if needsHome(typed) {
@@ -72,4 +87,12 @@ final class ExpiringValueCache<Key: Hashable, Value> {
     func invalidateAll() {
         entries.removeAll()
     }
+}
+
+/// How a Go to File session opens.
+enum GoToFilePaletteMode: Equatable, Sendable {
+    /// Lists the Files root and ranks it; typed paths too.
+    case listing
+    /// No Files root: typed paths only, against a terminal on the host.
+    case typedPathsOnly
 }

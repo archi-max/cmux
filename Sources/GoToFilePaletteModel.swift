@@ -56,12 +56,28 @@ final class GoToFilePaletteModel: ObservableObject {
 
     var isActive: Bool { source != nil }
 
-    /// Starts a session and lists the root once.
-    func begin(source: GoToFileSnapshotSource, workspaceId: UUID, workspaceRoot: FileExplorerWorkspaceRoot? = nil) {
+    /// False for a typed-paths-only session (no Files root): nothing is listed.
+    private(set) var listsFiles = true
+    /// The source terminal's live directory, for `./` and `../` in a
+    /// typed-paths-only session; nil when typed paths use the root.
+    private(set) var liveRoot: (@MainActor () async -> String?)?
+
+    /// Starts a session and lists the root once, unless `listsFiles` is
+    /// false (typed paths only, `liveRoot` for relative ones).
+    func begin(
+        source: GoToFileSnapshotSource,
+        workspaceId: UUID,
+        workspaceRoot: FileExplorerWorkspaceRoot? = nil,
+        listsFiles: Bool = true,
+        liveRoot: (@MainActor () async -> String?)? = nil
+    ) {
         end()
         self.source = source
         self.workspaceId = workspaceId
         self.workspaceRoot = workspaceRoot
+        self.listsFiles = listsFiles
+        self.liveRoot = liveRoot
+        guard listsFiles else { return }
         isLoading = true
         generation &+= 1
         let sessionGeneration = generation
@@ -105,6 +121,8 @@ final class GoToFilePaletteModel: ObservableObject {
         source = nil
         workspaceId = nil
         workspaceRoot = nil
+        listsFiles = true
+        liveRoot = nil
         snapshot = nil
         index = nil
         lastRanking = nil
@@ -155,7 +173,7 @@ final class GoToFilePaletteModel: ObservableObject {
         if selectedTypedPath != nil { return nil }
         if let selectedRelativePath { return selectedRelativePath }
         // Only while this query's ranking is still coming; an empty result stays empty.
-        if isActive, errorMessage == nil, resultsQuery != query { opensWhenRanked = true }
+        if isActive, listsFiles, errorMessage == nil, resultsQuery != query { opensWhenRanked = true }
         return nil
     }
 

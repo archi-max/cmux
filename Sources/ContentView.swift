@@ -10305,8 +10305,15 @@ struct ContentView: View {
     }
 
     private func openGoToFilePalette() {
-        guard let target = goToFileFocusTarget,
-              let resolved = GoToFilePaletteRouting.source(for: target.workspace, sidebarStore: fileExplorerStore) else {
+        guard let target = goToFileFocusTarget else {
+            NSSound.beep()
+            return
+        }
+        let resolved = GoToFilePaletteRouting.source(for: target.workspace, sidebarStore: fileExplorerStore)
+        let typedOnly = resolved == nil
+            ? GoToFilePaletteRouting.typedPathsOnlySource(for: target.workspace, focusedPanelId: commandPaletteRestoreFocusTarget?.panelId)
+            : nil
+        guard let mode = GoToFileTypedPath.paletteMode(hasFilesRoot: resolved != nil, hasTerminalOnHost: typedOnly != nil) else {
             NSSound.beep()
             return
         }
@@ -10315,7 +10322,17 @@ struct ContentView: View {
         commandPaletteSelectedResultIndex = 0
         // Enter pressed while a ranking is still running opens its top result when it lands.
         goToFileModel.onDeferredOpen = { relativePath in openGoToFile(relativePath: relativePath) }
-        goToFileModel.begin(source: resolved.source, workspaceId: target.workspace.id, workspaceRoot: resolved.root)
+        switch mode {
+        case .listing:
+            guard let resolved else { return }
+            goToFileModel.begin(source: resolved.source, workspaceId: target.workspace.id, workspaceRoot: resolved.root)
+        case .typedPathsOnly:
+            guard let typedOnly else { return }
+            goToFileModel.begin(
+                source: typedOnly.source, workspaceId: target.workspace.id, workspaceRoot: typedOnly.root,
+                listsFiles: false, liveRoot: typedOnly.liveRoot
+            )
+        }
         goToFileModel.update(query: "")
         resetCommandPaletteSearchFocus()
         syncCommandPaletteDebugStateForObservedWindow()
