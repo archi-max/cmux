@@ -43,7 +43,7 @@ struct SSHTuiCarrierRoutesTests {
         routes.record(carrier)
         let options = routes.fileOperationSSHOptions(for: laterOpen)
 
-        #expect(controlPaths(options) == [carrierPath + "-ops"])
+        #expect(controlPaths(options) == [carrierPath + carrier.operationsControlPathSuffix])
     }
 
     /// The machine's carrier master is shared by every app's carrier for the
@@ -62,8 +62,8 @@ struct SSHTuiCarrierRoutesTests {
         let longLived = routes.longLivedSSHOptions(for: workspace)
         #expect(!oneOff.contains(carrierPath))
         #expect(!longLived.contains(carrierPath))
-        #expect(controlPaths(oneOff) == [carrierPath + "-ops"])
-        #expect(oneOff.contains("ControlMaster=auto") && oneOff.contains("ControlPersist=600"))
+        #expect(controlPaths(oneOff) == [carrierPath + carrier.operationsControlPathSuffix])
+        #expect(!oneOff.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
         #expect(controlPaths(longLived) == ["ControlPath=none"])
         #expect(longLived.contains("ControlMaster=no"))
     }

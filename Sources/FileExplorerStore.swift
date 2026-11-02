@@ -324,6 +324,26 @@ struct SSHFileExplorerConnection: Equatable, Sendable {
     let sshOptions: [String]
 }
 
+extension SSHMasterPool {
+    /// Runs `body` with `connection` on a lent session of its one-off master
+    /// (or its own connection), as ``withSession(destination:port:identityFile:sshOptions:isolation:_:)``.
+    func withSession<T>(
+        _ connection: SSHFileExplorerConnection,
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: (SSHFileExplorerConnection) async throws -> T
+    ) async throws -> T {
+        try await withSession(
+            destination: connection.destination, port: connection.port,
+            identityFile: connection.identityFile, sshOptions: connection.sshOptions
+        ) { options in
+            try await body(SSHFileExplorerConnection(
+                destination: connection.destination, port: connection.port,
+                identityFile: connection.identityFile, sshOptions: options
+            ))
+        }
+    }
+}
+
 /// A remote file's modification time and size, recorded when a preview is
 /// downloaded so a save can tell whether someone else changed the file since.
 struct SSHRemoteFileStamp: Equatable, Sendable {
@@ -997,13 +1017,13 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         let raw = localURL.deletingLastPathComponent()
             .appendingPathComponent(".probe-" + UUID().uuidString, isDirectory: false)
         defer { try? FileManager.default.removeItem(at: raw) }
-        let commandProcess = SSHDownloadCommandProcess(
-            connection: connection,
-            command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
-            outputURL: raw
-        )
-        let result = try await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: connection.sshOptions)) {
-            try await withTaskCancellationHandler {
+        let result = try await SSHMasterPool.shared.withSession(connection) { leased in
+            let commandProcess = SSHDownloadCommandProcess(
+                connection: leased,
+                command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
+                outputURL: raw
+            )
+            return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
                     DispatchQueue.global(qos: .userInitiated).async {
                         continuation.resume(with: Result { try commandProcess.run() })
@@ -1025,13 +1045,13 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL
     ) async throws {
         let outputURL = localURL
-        let commandProcess = SSHDownloadCommandProcess(
-            connection: connection,
-            command: command,
-            outputURL: outputURL
-        )
-        let result = try await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: connection.sshOptions)) {
-            try await withTaskCancellationHandler {
+        let result = try await SSHMasterPool.shared.withSession(connection) { leased in
+            let commandProcess = SSHDownloadCommandProcess(
+                connection: leased,
+                command: command,
+                outputURL: outputURL
+            )
+            return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
                     DispatchQueue.global(qos: .userInitiated).async {
                         continuation.resume(with: Result { try commandProcess.run() })
@@ -1417,9 +1437,9 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         command: String,
         input: Data? = nil
     ) async throws -> SSHCommandResult {
-        let commandProcess = SSHCommandProcess(connection: connection, command: command, input: input)
-        let result = try await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: connection.sshOptions)) {
-            try await withTaskCancellationHandler {
+        let result = try await SSHMasterPool.shared.withSession(connection) { leased in
+            let commandProcess = SSHCommandProcess(connection: leased, command: command, input: input)
+            return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
                     DispatchQueue.global(qos: .userInitiated).async {
                         continuation.resume(with: Result { try commandProcess.run() })
