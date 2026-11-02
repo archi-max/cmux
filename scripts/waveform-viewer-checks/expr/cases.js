@@ -165,6 +165,19 @@ function runExprCases() {
   // names(): each signal once, in order, as written (resolution is the caller's).
   const names = E.names(E.parse('a + u_core.count + a + gen[0].q + \\a.b ').ast);
   check(JSON.stringify(names) === JSON.stringify([['a'], ['u_core', 'count'], ['gen[0]', 'q'], ['a.b']]), 'names: ' + JSON.stringify(names));
+  // parse(text, { maxText, maxSignals }): internal callers (the trace engine's lowered RTL) lift the
+  // user-facing caps; each on its own; anything but a number >= 0 keeps the default.
+  const many = Array.from({ length: 40 }, (_, i) => 's' + i).join(' + ');
+  const long = Array.from({ length: 300 }, () => 'a').join(' + ');
+  const err = (p) => (p.error ? p.error : 'ok');
+  const caps = [err(E.parse(many)), err(E.parse(many, { maxSignals: Infinity })), err(E.parse(long)), err(E.parse(long, { maxText: Infinity })),
+    err(E.parse(long, { maxSignals: Infinity })), err(E.parse(many, { maxText: Infinity })), err(E.parse(many, { maxSignals: 40 })), err(E.parse(many, { maxSignals: 39 })),
+    err(E.parse(long, { maxText: 'big' })), err(E.parse(many, { maxSignals: NaN })), err(E.parse(many, null))];
+  check(JSON.stringify(caps) === JSON.stringify(['tooManySignals', 'ok', 'tooLong', 'ok', 'tooLong', 'tooManySignals', 'ok', 'tooManySignals', 'tooLong', 'tooManySignals', 'tooManySignals']),
+    'parse caps lifted by options: ' + JSON.stringify(caps));
+  const longParsed = E.parse(long, { maxText: Infinity });
+  const longValue = longParsed.ast ? E.format(E.evaluate(longParsed.ast, env).value, 'hex') : 'error:' + longParsed.error;
+  check(longValue === "8'h50", 'a 1,199-character sum evaluates: ' + longValue);
   // truthy(): some known bit is 1 (as an SV if takes it); x, z and 0 are not.
   const truth = ["4'b0x10", "4'b0x00", "4'b0000", "1'bz"].map((t) => E.truthy(E.evaluate(E.parse(t).ast, env).value));
   check(JSON.stringify(truth) === '[true,false,false,false]', 'truthy: ' + JSON.stringify(truth));

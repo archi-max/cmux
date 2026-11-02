@@ -373,10 +373,15 @@
     return Number(v.a);
   }
 
-  function parse(text) {
+  // `options` ({ maxText, maxSignals }) lifts the user-facing caps for internal callers (the trace
+  // engine's lowered RTL); anything but a number >= 0 keeps the default.
+  const capOf = (value, fallback) => (typeof value === 'number' && value >= 0 ? value : fallback);
+
+  function parse(text, options) {
     const s = String(text === undefined || text === null ? '' : text);
+    const maxText = capOf((options || {}).maxText, MAX_TEXT), maxSignals = capOf((options || {}).maxSignals, MAX_SIGNALS);
     try {
-      if (s.length > MAX_TEXT) { fail('tooLong', 0); }
+      if (s.length > maxText) { fail('tooLong', 0); }
       if (!s.trim()) { fail('empty', s.length); }
       const tokens = tokenize(s);
       const p = parser(tokens);
@@ -391,7 +396,7 @@
         const key = JSON.stringify(node.path);
         if (seen.has(key)) { return; }
         seen.add(key);
-        if (seen.size > MAX_SIGNALS) { fail('tooManySignals', node.at); }
+        if (seen.size > maxSignals) { fail('tooManySignals', node.at); }
       });
       return { ast };
     } catch (error) {
