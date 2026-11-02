@@ -914,6 +914,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         await callPage(api: "enums", function, argument: argument)
     }
 
+    /// Like `callLink`, on `window.cmuxWaveform.split` (cmux-commands.js).
+    func callSplit(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "split", function, argument: argument)
+    }
+
     /// Like `callLink`, on `window.cmuxWaveform.fsm` (cmux-fsm.js).
     func callFsm(_ function: String, argument: Any? = nil) async -> Any? {
         await callPage(api: "fsm", function, argument: argument)
@@ -1035,6 +1040,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         case "enumTypes":
             // Shown rows the page doesn't know the types of: slang-server says which are enums.
             if let panel { WaveformEnumLink.typesRequested(body["paths"], waveform: panel) }
+        case "packedDims":
+            // Split > By Declared Dimensions: slang-server's packed dimensions for one row.
+            if let panel { WaveformEnumLink.packedDimensionsRequested(body, waveform: panel) }
         case "settings":
             if let values = body["values"] as? [String: Any] {
                 let loading = Self.fsdbLoading()

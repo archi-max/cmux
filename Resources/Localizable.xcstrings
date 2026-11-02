@@ -709536,6 +709536,183 @@
           }
         }
       }
+    },
+    "filePreview.waveform.command.splitDeclared": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Declared Dimensions"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "حسب الأبعاد المعلنة"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach deklarierten Dimensionen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Por dimensiones declaradas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selon les dimensions déclarées"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宣言された次元ごと"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선언된 차원별"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按声明的维度"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "依宣告的維度"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.message.declaredWidth": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design declares “%@” with another width than this row's."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‏يعلن التصميم «%@» بعرض مختلف عن عرض هذا الصف."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Design deklariert „%@“ mit einer anderen Breite als diese Zeile."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño declara «%@» con un ancho distinto al de esta fila."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le design déclare « %@ » avec une autre largeur que celle de cette ligne."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計では「%@」がこの行とは異なる幅で宣言されています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설계에서 “%@”의 너비가 이 행과 다르게 선언되어 있습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设计声明的“%@”宽度与此行不同。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計宣告的「%@」寬度與此列不同。"
+          }
+        }
+      }
+    },
+    "filePreview.waveform.message.noDeclaredDimensions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design gives this signal no packed dimensions to split by. Open its source in the editor, or split it by width."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحدد التصميم لهذه الإشارة أبعادًا مضغوطة للتقسيم بحسبها. افتح مصدرها في المحرر، أو قسّمها حسب العرض."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Design gibt für dieses Signal keine gepackten Dimensionen zum Aufteilen an. Öffne seine Quelle im Editor oder teile es nach Breite auf."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño no da a esta señal dimensiones empaquetadas por las que dividirla. Abre su código en el editor o divídela por ancho."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le design ne donne à ce signal aucune dimension compacte selon laquelle le diviser. Ouvrez sa source dans l’éditeur, ou divisez-le par largeur."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計にはこの信号を分割できるパック次元がありません。エディタでソースを開くか、幅ごとに分割してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설계에 이 신호를 나눌 packed 차원이 없습니다. 편집기에서 소스를 열거나 너비별로 분할하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设计未给出此信号可用于拆分的打包维度。请在编辑器中打开其源代码，或按宽度拆分。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計未提供此訊號可用於拆分的打包維度。請在編輯器中開啟其原始碼，或依寬度拆分。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

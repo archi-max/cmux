@@ -146,6 +146,7 @@
       {command: "vaporview.renameSignalGroup", group: "1_default@4", when: "webviewSection == 'signal'"},
     ],
     "vaporview.split": [
+      {command: "vaporview.splitDeclared", group: "1_default@0", when: "cmuxDeclared == true"},
       {command: "vaporview.splitIntoParts", group: "1_default@1"},
       {command: "vaporview.splitByWidth", group: "1_default@2"},
       {command: "vaporview.splitBits", group: "1_default@3"},
@@ -159,7 +160,7 @@
       {command: "vaporview.createSignalsForAllWords", group: "1_default@4", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 16 && width <= 512"},
       {command: "vaporview.createSignalsForAllDoubleWords", group: "1_default@5", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 32 && width <= 1024"},
       {command: "vaporview.createSignalsForAllQuadWords", group: "1_default@6", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 64 && width <= 2048"},
-      {command: "vaporview.createSignalsForAllCustomLength", group: "1_default@7", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 2 && width <= 256"},
+      {command: "vaporview.createSignalsForAllCustomLength", group: "1_default@7", when: "(webviewSection == 'waveform-labels' || webviewSection == 'signal') && !inputFocus && width > 2"},
     ],
     "vaporview.timeUnit": [
       {command: "vaporview.setTimeUnitsSeconds", group: "1_default@1", when: "s == true"},
@@ -1328,6 +1329,53 @@
     sendSlices(e, [{ msb, lsb, name: sliceName(e, msb, lsb) }]);
   }
 
+  // Split > By Declared Dimensions: cmux asks slang-server for the signal's packed dimensions
+  // (WaveformEnumLink.packedDimensionsRequested) and answers through split.declared. The row
+  // splits by its outer dimension, each element by the next, down to the last (its bits), all
+  // in one undo step; elements are listed as declared, left index first (at the top bits).
+  const pendingDeclared = new Map();
+  let nextDeclared = 1;
+  function splitDeclared(e) {
+    if (!e || e.rowId === undefined || !(e.width > 1) || e.netlistId === undefined) { return; }
+    const v = host().netlistItem(e.netlistId);
+    const path = v && host().pathOf ? host().pathOf(v) : null;
+    if (!path || !path.length) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return; }
+    const id = nextDeclared++;
+    pendingDeclared.set(id, e);
+    host().toNative({ type: 'packedDims', id, path });
+  }
+  // dims [[left, right], ...] as nested parts of a block of their width, bits from 0.
+  function declaredParts(dims, name) {
+    if (dims.length < 2) { return []; }
+    const [left, right] = dims[0];
+    const inner = dims.slice(1).reduce((w, [l, r]) => w * (Math.abs(l - r) + 1), 1);
+    const parts = [];
+    const step = left >= right ? -1 : 1;
+    for (let k = left; step < 0 ? k >= right : k <= right; k += step) {
+      const lsb = Math.abs(k - right) * inner;
+      const part = { msb: lsb + inner - 1, lsb, name: name + '[' + k + ']' };
+      if (dims.length > 2) { part.parts = declaredParts(dims.slice(1), part.name); }
+      parts.push(part);
+    }
+    return parts;
+  }
+  const countParts = (parts) => parts.reduce((n, p) => n + 1 + countParts(p.parts || []), 0);
+  function declared(answer) {
+    const e = answer && pendingDeclared.get(answer.id);
+    if (!e) { return false; }
+    pendingDeclared.delete(answer.id);
+    const dims = Array.isArray(answer.dims) ? answer.dims : null;
+    const ok = dims && dims.length >= 2 && dims.every((d) => Array.isArray(d) && d.length === 2 && d.every(Number.isInteger));
+    if (!ok) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return false; }
+    const width = dims.reduce((w, [l, r]) => w * (Math.abs(l - r) + 1), 1);
+    const name = e.cmuxSliceName || e.signalName || '';
+    if (width !== e.width) { ui().toast(format(S().messageDeclaredWidth, name), 'warning'); return false; }
+    const parts = declaredParts(dims, name);
+    if (countParts(parts) > MAX_SLICES) { ui().toast(S().messageTooManySlices, 'warning'); return false; }
+    host().toWebview({ command: 'cmux-add-slices', rowId: e.rowId, parts });
+    return true;
+  }
+
   function groupArgs(e) {
     e = e || {};
     return { groupPath: e.groupPath, parentGroupId: e.parentGroupId, eventRowId: e.rowId };
@@ -1398,6 +1446,7 @@
     'vaporview.splitIntoParts': splitIntoParts,
     'vaporview.splitByWidth': splitByWidth,
     'vaporview.splitBits': splitBits,
+    'vaporview.splitDeclared': splitDeclared,
     'vaporview.addSlice': addSlice,
     'vaporview.removeSlices': (e) => { if (e && e.rowId !== undefined) { host().toWebview({ command: 'cmux-remove-slices', rowId: e.rowId }); } },
     'vaporview.createSignalsForAllCustomLength': async (e) => {
@@ -1405,6 +1454,8 @@
       if (!text) { return; }
       const length = parseInt(text, 10);
       if (Number.isNaN(length) || length <= 0) { ui().toast(S().messageInvalidCustomLength, 'warning'); return; }
+      // cmux: any width (upstream stops at 256 bits), but not more slices than a split makes.
+      if (e && e.width > 0 && Math.ceil(e.width / length) > MAX_SLICES) { ui().toast(S().messageTooManySlices, 'warning'); return; }
       host().toWebview(Object.assign({ command: 'add-all-bit-slices', name: e && e.name, bitWidth: length }, groupArgs(e)));
     },
 
@@ -1697,6 +1748,8 @@
   window.cmuxCommands = {
     run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
     addSignalByName, fileChanged, willReload, updateSetting,
+    // cmux's answers for Split > By Declared Dimensions (host.js makes it window.cmuxWaveform.split).
+    split: Object.freeze({ declared }),
     frameUnloaded: () => { if (reloading) { frameGone = true; } },
     // The reload's file didn't open: an Undo pressed for it would apply to
     // whatever a later reload shows.

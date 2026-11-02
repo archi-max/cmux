@@ -1301,6 +1301,7 @@
     applyValueAliasFile: (m) => window.cmuxCommands.applyValueAliasFile(m),
     valueAliasFilesRead: (m) => window.cmuxCommands.valueAliasFilesRead(m),
     setSessionFile: (m) => window.cmuxCommands.setSessionFile(m) };
+  Object.defineProperty(window.cmuxWaveform, 'split', { value: window.cmuxCommands.split, writable: false, configurable: false, enumerable: true });
   // Fixed before the viewer frame loads, so a script in it can't swap the link cmux trusts.
   Object.defineProperty(window.cmuxWaveform, 'link', { value: link, writable: false, configurable: false, enumerable: true });
   Object.defineProperty(window, 'cmuxWaveform', { value: window.cmuxWaveform, writable: false, configurable: false });
