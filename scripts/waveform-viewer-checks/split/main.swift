@@ -16,7 +16,9 @@
 //   - undo takes a split back and redo brings it again; removing a slice keeps the
 //     others; Remove Slices and removing the parent leave no rows behind;
 //   - the slices, their names, formats and the collapsed state are in the saved
-//     session, and come back from a session file, a reload and a restore.
+//     session, and come back from a session file, a reload and a restore;
+//   - the netlist pane resizes by its edge, collapses to a rail and opens again (drag,
+//     double-click, click, Show or Hide Netlist), and its width and state are kept the same way.
 // Prints SPLIT CHECKS PASSED, or the failures and SPLIT CHECKS FAILED: n.
 // Usage: split <assetRoot> <split.vcd> <out.png>
 import AppKit
@@ -506,6 +508,105 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let narrowToasts = narrow["toasts"] as? [String] ?? []
     expect(narrowToasts.count == 1 && narrowToasts[0].contains("top.dfp_addr[1]") && !narrowToasts[0].contains("top.dfp_addr,") && !narrowToasts[0].hasSuffix("top.dfp_addr"),
            "the missing-signals message names the slice: \(narrowToasts)")
+
+    // The netlist pane: a drag edge on its right (no CSS corner grip); dragged under about
+    // 60 px or double-clicked it collapses to a rail, which a click opens again at the last
+    // width. Show or Hide Netlist does the same from the viewer's menu. The width and whether
+    // it is collapsed are kept in the session: cmux's copy (a reload, a restore) and the file.
+    let paneJS = """
+      const N = document.getElementById('netlist');
+      const grip = () => N.querySelector('.netlist-grip');
+      const W = () => Math.round(N.getBoundingClientRect().width);
+      const shut = () => N.classList.contains('collapsed');
+      const mouse = (type, x, detail) => grip().dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true,
+        clientX: x, clientY: 120, button: 0, buttons: type === 'mouseup' ? 0 : 1, detail: detail || 1 }));
+      const edge = () => N.getBoundingClientRect().right - 2;
+      const drag = async (dx) => { const x = edge(); mouse('mousedown', x); mouse('mousemove', x + dx / 2); mouse('mousemove', x + dx); mouse('mouseup', x + dx); await sleep(150); };
+      const click = async (detail) => { const x = edge(); mouse('mousedown', x, detail); mouse('mouseup', x, detail); await sleep(150); };
+      const pane = () => [shut(), W()];
+      """
+    let pane = await call(paneJS + """
+      R.grip = !!grip();
+      R.cursor = grip() ? getComputedStyle(grip()).cursor : null;
+      R.cssResize = getComputedStyle(N).resize;
+      R.separator = grip() ? grip().getAttribute('role') : null;
+      R.start = pane();
+      await drag(80); R.dragged = pane();
+      await drag(-(W() - 40)); R.dragShut = pane();
+      await click(1); R.clickOpen = pane();
+      await click(1); await click(2); R.doubleShut = pane();
+      await click(1); R.railOpen = pane();
+      await drag(90 - W()); R.narrow = pane();
+      await drag(140 - W()); R.min = pane();
+      R.menu = menuAt(shown()[0]).filter((i) => i && !i.separator).map((i) => i.label);
+      const item = menuAt(shown()[0]).find((i) => i && i.label === T('toggleNetlist'));
+      if (item && item.run) { await item.run(); await sleep(150); }
+      R.menuShut = pane();
+      await C.run('cmux.toggleNetlist'); await sleep(150); R.toggleOpen = pane();
+      await C.run('cmux.toggleNetlist'); await sleep(150);
+      window.cmuxNetlist.focusSearch(); await sleep(150); R.searchOpens = pane();
+      // Kept: 260 px, collapsed.
+      await drag(260 - W());
+      await C.run('cmux.toggleNetlist'); await sleep(600);
+      R.snapshot = C.sessionSnapshot().state.cmuxNetlist;
+      const kept = sent.filter((m) => m.type === 'sessionState').pop();
+      R.native = kept && kept.state ? kept.state.cmuxNetlist : null;
+      await C.run('vaporview.saveViewerSession');
+      const save = sent.filter((m) => m.type === 'saveSession').pop();
+      R.file = save ? JSON.parse(save.text).cmuxNetlist : null;
+      R.fileText = save ? save.text : null;
+      window.cmuxWaveform.reload({});
+      await reloaded();
+      R.afterReload = pane();
+      R.state = C.sessionSnapshot().state;
+      """)
+    expect(pane["grip"] as? Bool == true && pane["cursor"] as? String == "col-resize" && pane["separator"] as? String == "separator",
+           "the netlist has a drag edge: \(pane["grip"] ?? "nil") \(pane["cursor"] ?? "nil") \(pane["separator"] ?? "nil")")
+    expect(pane["cssResize"] as? String == "none", "and no CSS corner grip: \(pane["cssResize"] ?? "nil")")
+    func at(_ key: String) -> (Bool, Int)? {
+      guard let a = pane[key] as? [Any], a.count == 2, let s = a[0] as? Bool, let w = a[1] as? Int else { return nil }
+      return (s, w)
+    }
+    let start = at("start")?.1 ?? 0
+    expect(at("start")?.0 == false && start == 220, "it starts open at 220 px: \(pane["start"] ?? "nil")")
+    expect(at("dragged")?.0 == false && at("dragged")?.1 == start + 80, "dragging its edge resizes it: \(pane["dragged"] ?? "nil")")
+    expect(at("dragShut")?.0 == true && (at("dragShut")?.1 ?? 99) <= 8, "dragged under 60 px it collapses to a rail: \(pane["dragShut"] ?? "nil")")
+    expect(at("clickOpen")?.0 == false && at("clickOpen")?.1 == start + 80, "a click on the rail opens it at its last width: \(pane["clickOpen"] ?? "nil")")
+    expect(at("doubleShut")?.0 == true, "a double-click on the edge collapses it: \(pane["doubleShut"] ?? "nil")")
+    expect(at("railOpen")?.0 == false && at("railOpen")?.1 == start + 80, "and a click opens it again: \(pane["railOpen"] ?? "nil")")
+    expect(at("narrow")?.0 == false && at("narrow")?.1 == 120, "between 60 and 120 px it stops at 120: \(pane["narrow"] ?? "nil")")
+    expect(at("min")?.1 == 140, "and goes on from there: \(pane["min"] ?? "nil")")
+    expect((pane["menu"] as? [String] ?? []).contains(strings["command.toggleNetlist"] ?? "?"),
+           "the viewer's menu has Show or Hide Netlist: \(pane["menu"] ?? "nil")")
+    expect(at("menuShut")?.0 == true, "which collapses it: \(pane["menuShut"] ?? "nil")")
+    expect(at("toggleOpen")?.0 == false && at("toggleOpen")?.1 == 140, "and opens it again at its width: \(pane["toggleOpen"] ?? "nil")")
+    expect(at("searchOpens")?.0 == false, "searching the netlist opens it: \(pane["searchOpens"] ?? "nil")")
+    let keptPane: [String: AnyHashable] = ["width": 260, "collapsed": true]
+    func paneOf(_ v: Any?) -> [String: AnyHashable]? { v as? [String: AnyHashable] }
+    expect(paneOf(pane["snapshot"]) == keptPane && paneOf(pane["native"]) == keptPane,
+           "cmux's copy of the session keeps its width and state: \(pane["snapshot"] ?? "nil") \(pane["native"] ?? "nil")")
+    expect(paneOf(pane["file"]) == keptPane, "and so does the session file: \(pane["file"] ?? "nil")")
+    expect(at("afterReload")?.0 == true && paneOf((pane["state"] as? [String: Any])?["cmuxNetlist"]) == keptPane,
+           "a reload keeps it: \(pane["afterReload"] ?? "nil")")
+    if let state = pane["state"] as? [String: Any] {
+      _ = await call(paneJS + "await C.run('cmux.toggleNetlist'); await sleep(150); await drag(300 - W());")
+      await open(restore: ["state": state, "dirty": false])
+      let restored = await call(paneJS + "R.restored = pane(); await click(1); R.opened = pane();")
+      expect((restored["restored"] as? [Any])?.first as? Bool == true && (restored["opened"] as? [Any])?.last as? Int == 260,
+             "a restore (new panel) brings it back collapsed, at 260 px: \(restored["restored"] ?? "nil") \(restored["opened"] ?? "nil")")
+    } else {
+      expect(false, "a state to restore")
+    }
+    let fileText = pane["fileText"] as? String ?? ""
+    let loaded = await call(paneJS + """
+      await drag(300 - W());
+      C.applySessionFile({ text: \(jsString(fileText)), path: '/work/sim/split.json' });
+      await sleep(1500);
+      R.loaded = pane();
+      await click(1); R.opened = pane();
+      """)
+    expect((loaded["loaded"] as? [Any])?.first as? Bool == true && (loaded["opened"] as? [Any])?.last as? Int == 260,
+           "loading the session file sets it: \(loaded["loaded"] ?? "nil") \(loaded["opened"] ?? "nil")")
 
     print(failures == 0 ? "SPLIT CHECKS PASSED" : "SPLIT CHECKS FAILED: \(failures)")
     snap()
