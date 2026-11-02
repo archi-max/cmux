@@ -44,13 +44,16 @@ enum RemoteFileProbe {
 
     /// What a probe run's exit status and stdout (`raw`) mean: the header of
     /// the file streamed to `destination`, or the failure. Nil for a status
-    /// that isn't the probe's own (ssh or the shell failed).
-    /// Placeholder until the fix: a refused file loses its header.
+    /// that isn't the probe's own (ssh or the shell failed). A refused file
+    /// throws ``Oversize`` with its header (``Failure/tooLarge`` only if the
+    /// header can't be read).
     static func outcome(status: Int32, raw: URL, to destination: URL) throws -> Header? {
         switch status {
         case 0: return try extract(from: raw, to: destination)
         case noFileStatus: throw Failure.noFile
-        case tooLargeStatus: throw Failure.tooLarge
+        case tooLargeStatus:
+            guard let header = try? extract(from: raw, to: destination) else { throw Failure.tooLarge }
+            throw Oversize(header: header)
         default: return nil
         }
     }
@@ -142,9 +145,21 @@ enum RemoteFileProbe {
 /// free of app types so it can be tested on its own.
 enum RemotePreviewOpenRules {
     /// A short reason for the debug log when a remote preview fails, with no
-    /// path or ssh output in it. Placeholder until the fix: no reason.
+    /// path or ssh output in it: the probe's own failure, a timeout or
+    /// cancellation, else only the error's type.
     static func failureReason(_ error: Error) -> String {
-        ""
+        switch error {
+        case let failure as RemoteFileProbe.Failure:
+            switch failure {
+            case .noFile: return "noFile"
+            case .tooLarge: return "tooLarge"
+            case .malformedOutput: return "malformedOutput"
+            }
+        case is RemoteFileProbe.Oversize: return "tooLarge"
+        case let error as URLError where error.code == .timedOut: return "timeout"
+        case is CancellationError: return "cancelled"
+        default: return String(describing: type(of: error))
+        }
     }
 
     /// The directory a click's relative links resolve against: the shell's

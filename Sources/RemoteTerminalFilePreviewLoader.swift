@@ -34,19 +34,28 @@ actor RemoteTerminalFilePreviewLoader {
         tokens: [String],
         workingDirectory: @escaping @Sendable () async -> String?
     ) async throws -> RemotePreviewDownload {
+        let references = try await references(tokens: tokens, workingDirectory: workingDirectory)
+        return try await download(references: references, maxBytes: nil)
+    }
+
+    /// The spellings a click may mean, resolved against the terminal's
+    /// directory only when a token is relative.
+    private func references(
+        tokens: [String],
+        workingDirectory: @escaping @Sendable () async -> String?
+    ) async throws -> [RemoteFileReference] {
         try Task.checkCancellation()
         let resolver = RemoteTerminalPathResolver()
         let directory = resolver.needsWorkingDirectory(tokens: tokens) ? await workingDirectory() : nil
         try Task.checkCancellation()
         let host = String(provider.destination.split(separator: "@").last ?? "")
-        let references = resolver.references(
+        return resolver.references(
             tokens: tokens,
             workingDirectory: directory,
             homeDirectory: nil,
             remoteHost: host,
             expandsHomeOnHost: true
         )
-        return try await download(references: references, maxBytes: nil)
     }
 
     func load(tokens: [String], workingDirectory: String?) async throws -> RemotePreviewDownload {
@@ -54,18 +63,33 @@ actor RemoteTerminalFilePreviewLoader {
     }
 
     /// Whether a click names a file the waveform viewer reads in place on
-    /// the host (FSDB). Placeholder until the fix: none does.
+    /// the host (FSDB), by any spelling, `:line` stripped or not. Such a
+    /// click is never downloaded: dumps run to hundreds of MB.
     static func readsInPlaceOnHost(tokens: [String]) -> Bool {
-        false
+        RemoteTerminalPathResolver().references(
+            tokens: tokens, workingDirectory: "/", homeDirectory: nil, remoteHost: "", expandsHomeOnHost: true
+        ).contains { FilePreviewKindResolver.isReadInPlaceOnRemoteHost($0.path) }
     }
 
-    /// The host file a click names, found without downloading it.
-    /// Placeholder until the fix: never found.
+    /// The host file a click names, found in one run without sending any
+    /// of it: the probe with a cap of 0 refuses every non-empty file but
+    /// still names it.
     func locate(
         tokens: [String],
         workingDirectory: @escaping @Sendable () async -> String?
     ) async throws -> RemoteFileProbe.Header {
-        throw RemoteFileProbe.Failure.noFile
+        let references = try await references(tokens: tokens, workingDirectory: workingDirectory)
+        guard !references.isEmpty else { throw FileExplorerError.providerUnavailable }
+        try fileManager.createDirectory(
+            at: cacheDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+        )
+        let staging = cacheDirectory.appendingPathComponent(".locate-" + UUID().uuidString)
+        defer { try? fileManager.removeItem(at: staging) }
+        do {
+            return try await provider.probeDownload(candidates: references.map(\.path), maxBytes: 0, to: staging)
+        } catch let oversize as RemoteFileProbe.Oversize {
+            return oversize.header
+        }
     }
 
     /// Downloads exactly `path` (no spelling variants), at most `maxBytes`.
@@ -98,9 +122,12 @@ actor RemoteTerminalFilePreviewLoader {
             )
         } catch RemoteFileProbe.Failure.tooLarge {
             throw RemoteTerminalFilePreviewError.fileTooLarge
-        } catch is RemoteFileProbe.Failure {
+        } catch is RemoteFileProbe.Oversize {
+            throw RemoteTerminalFilePreviewError.fileTooLarge
+        } catch let failure as RemoteFileProbe.Failure {
+            // Kept, not folded into a provider error: the failure log names it.
             try Task.checkCancellation()
-            throw FileExplorerError.providerUnavailable
+            throw failure
         }
         try Task.checkCancellation()
         if let maxBytes {
