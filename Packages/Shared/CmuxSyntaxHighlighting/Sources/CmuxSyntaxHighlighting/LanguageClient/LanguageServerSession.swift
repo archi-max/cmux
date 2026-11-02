@@ -742,7 +742,7 @@ public actor LanguageServerSession {
     ///
     /// Unlike `URL.resolvingSymlinksInPath()`, this keeps the `/private` prefix,
     /// which is what slang-server reports.
-    static func realPath(_ path: String) -> String {
+    public static func realPath(_ path: String) -> String {
         if let resolved = realpath(path, nil) {
             defer { free(resolved) }
             return String(cString: resolved)

@@ -36,6 +36,14 @@ enum SlangCompilationActions {
         var autoPick: AutoPick?
         /// The user undid an auto-pick: the link doesn't pick for this server again.
         var autoPickDeclined = false
+        /// The editor last made active (focus, tab or open): the server follows its file's profile.
+        weak var activeEditor: FilePreviewLanguageFeatures?
+        /// Switches the server to the active file's profile once focus settles.
+        var follower: SlangProfileFollower?
+        /// The profile a focus switch is building now (the header says so meanwhile).
+        var following: SlangProfileChoice?
+        /// The profile whose failed focus switch was last reported, so it isn't reported on every focus.
+        var reportedFollowFailure: SlangProfileChoice?
 
         init(session: LanguageServerSession) {
             self.session = session
@@ -176,6 +184,7 @@ enum SlangCompilationActions {
                 return
             }
             recordTarget(.topLevel(session.serverPath(for: documentURI)), for: session)
+            recordChoice(.topLevel(session.serverPath(for: documentURI)), session: session, editor: editor)
             WaveformSourceLink.topLevelWasChosen(session: session)
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
             var lines = [outcome.successLine]
@@ -210,6 +219,7 @@ enum SlangCompilationActions {
             recordTarget(nil, for: session)
         }
         await restore(CompilationState(target: nil, isExplore: false), on: session)
+        recordChoice(.configured, session: session, editor: nil)
     }
 
     // MARK: Build file
@@ -318,6 +328,7 @@ enum SlangCompilationActions {
                 let entry = entry(for: session)
                 entry.target = .buildFile(serverPath)
                 entry.workspaceIds.insert(file.workspaceId)
+                recordChoice(.buildFile(serverPath), session: session, editor: nil)
                 WaveformSourceLink.topLevelWasChosen(session: session)
             }
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
@@ -349,6 +360,7 @@ enum SlangCompilationActions {
                         try await session.slangSetBuildFile("")
                     }
                     entry.target = nil
+                    recordChoice(.configured, session: session, editor: nil)
                 } catch {
                     showAlert(
                         title: String(localized: "slangTop.build.clearFailed.title", defaultValue: "Couldn’t Clear the Build File"),
