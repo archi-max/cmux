@@ -21,10 +21,14 @@ extension WorkspaceRemoteConfiguration {
     ///
     /// A `cmux ssh` workspace's carrier holds the authenticated master, so these
     /// reuse its route and ControlPath; a password-only host accepts their
-    /// batch-mode runs only through it. The machine's live carrier can predate
-    /// this workspace's open and use other control options, so its recorded
-    /// connection wins (``SSHTuiCarrierRoutes``).
+    /// batch-mode runs only through it.
+    ///
+    /// These use the workspace's own options, not the machine's live carrier
+    /// (``SSHTuiCarrierRoutes``): every app's carrier for a host shares one
+    /// master, and sshd caps one connection's sessions (10 by default), so
+    /// one-off runs and long-lived helpers riding it can refuse the carriers'
+    /// own sessions.
     var fileOperationSSHOptions: [String] {
-        routesThroughSSHTui ? SSHTuiCarrierRoutes.shared.fileOperationSSHOptions(for: self) : sshOptions
+        routesThroughSSHTui ? SSHTuiConnection(configuration: self).fileOperationSSHOptions : sshOptions
     }
 }
