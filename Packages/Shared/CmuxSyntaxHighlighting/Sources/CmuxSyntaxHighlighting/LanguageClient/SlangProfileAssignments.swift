@@ -220,6 +220,9 @@ public final class SlangProfileFollower {
         case missing
         /// Another change took the server first: try again.
         case busy
+        /// The switch broke (an ssh timeout, a restart, a lost connection): not the profile's
+        /// fault, so not remembered.
+        case error
     }
 
     public struct Hooks {
@@ -294,6 +297,12 @@ public final class SlangProfileFollower {
         failed.removeAll()
     }
 
+    /// A file was saved or reloaded. Stub.
+    @discardableResult
+    public func designFileSaved(involves: (SlangProfileChoice) -> Bool) -> Bool {
+        false
+    }
+
     /// The user chose `choice` themselves: tried again on the next focus even if it failed.
     public func userChose(_ choice: SlangProfileChoice) {
         failed.remove(choice)
@@ -361,7 +370,7 @@ public final class SlangProfileFollower {
             switch await hooks.apply(wanted) {
             case .applied:
                 return
-            case .failed:
+            case .failed, .error:
                 failed.insert(wanted)
                 return
             case .busy:
