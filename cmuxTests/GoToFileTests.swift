@@ -364,6 +364,105 @@ struct GoToFileTests {
         #expect(opened == ["hdl/cpu.sv"])
     }
 
+    @Test
+    func testDotfilesInTheListingMatchADotQuery() {
+        // The listing keeps dotfiles (git ls-files -co --exclude-standard, or
+        // find); only ignored files and the pruned directories are left out.
+        let ranked = GoToFileRanker.rank(paths: [".gitignore", ".bashrc", "hdl/alu.sv"], query: ".git", limit: 10)
+        #expect(ranked.first == ".gitignore")
+        #expect(GoToFileRanker.rank(paths: [".gitignore", ".bashrc"], query: ".bash", limit: 10) == [".bashrc"])
+    }
+
+    @MainActor
+    @Test
+    func testATypedPathIsTheTopRowAndOpensWithoutTheListing() async throws {
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in GoToFileSnapshot(paths: Self.tree, isTruncated: false) })
+        model.begin(source: .ssh(
+            connection: SSHFileExplorerConnection(destination: "u@remote-host", port: nil, identityFile: nil, sshOptions: []),
+            rootPath: "/home/u/proj"
+        ), workspaceId: UUID())
+        model.update(query: "~/.bashrc")
+        #expect(model.typedPath == "~/.bashrc")
+        #expect(model.selectedTypedPath == "~/.bashrc", "selected before any ranking lands")
+        #expect(model.openSelectionOrQueue() == nil)
+        #expect(!model.opensWhenRanked, "Enter opens the typed path, it isn't queued")
+        try await Self.waitUntil { !model.isLoading }
+        #expect(model.selectedTypedPath == "~/.bashrc")
+        model.update(query: "alu")
+        #expect(model.typedPath == nil)
+        try await Self.waitUntil { model.results.first == "hdl/alu.sv" }
+        #expect(model.selectedRelativePath == "hdl/alu.sv")
+    }
+
+    @MainActor
+    @Test
+    func testRowsUnderATypedPathAreReachedByMovingDown() async throws {
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in GoToFileSnapshot(paths: ["tb/alu_tb.sv"], isTruncated: false) })
+        model.begin(source: .local(rootPath: "/w"), workspaceId: UUID())
+        model.update(query: "./tb/alu_tb.sv")
+        try await Self.waitUntil { !model.isLoading }
+        #expect(model.selectedTypedPath == "./tb/alu_tb.sv")
+        if !model.results.isEmpty {
+            #expect(model.moveSelection(by: 1))
+            #expect(model.selectedTypedPath == nil)
+            #expect(model.selectedRelativePath == model.results.first)
+        }
+        model.end()
+        #expect(model.typedPath == nil)
+    }
+
+    @MainActor
+    @Test
+    func testAQueuedEnterDoesNotOpenAFuzzyMatchForALaterTypedPath() async throws {
+        let gate = AsyncGate()
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in
+            await gate.wait()
+            return GoToFileSnapshot(paths: ["etc/hosts.sv", "hdl/foo.sv"], isTruncated: false)
+        })
+        var opened: [String] = []
+        model.onDeferredOpen = { opened.append($0) }
+        model.begin(source: .local(rootPath: "/w"), workspaceId: UUID())
+        model.update(query: "foo")
+        #expect(model.openSelectionOrQueue() == nil)
+        #expect(model.opensWhenRanked)
+        // The user goes on typing a path before the listing lands.
+        model.update(query: "/etc/hosts")
+        #expect(!model.opensWhenRanked, "Enter was for the old query")
+        await gate.open()
+        try await Self.waitUntil { !model.isLoading }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(opened.isEmpty, "row 0 is the typed path; no fuzzy result opens on its own")
+        #expect(model.selectedTypedPath == "/etc/hosts")
+    }
+
+    @MainActor
+    @Test
+    func testATypedPathsOnlySessionListsNothingAndNeverQueuesEnter() async throws {
+        let calls = CallCounter()
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in
+            calls.increment()
+            return GoToFileSnapshot(paths: Self.tree, isTruncated: false)
+        })
+        model.begin(
+            source: .ssh(
+                connection: SSHFileExplorerConnection(destination: "u@remote-host", port: nil, identityFile: nil, sshOptions: []),
+                rootPath: "/home/u"
+            ),
+            workspaceId: UUID(),
+            listsFiles: false,
+            liveRoot: { "/home/u/proj" }
+        )
+        #expect(!model.isLoading)
+        #expect(model.openSelectionOrQueue() == nil)
+        #expect(!model.opensWhenRanked, "nothing will be ranked")
+        model.update(query: "./notes.md")
+        #expect(model.selectedTypedPath == "./notes.md")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(calls.value == 0, "no listing on the host")
+        #expect(model.results.isEmpty)
+        #expect(await model.liveRoot?() == "/home/u/proj")
+    }
+
     @MainActor
     @Test
     func testSessionReportsListingFailures() async throws {

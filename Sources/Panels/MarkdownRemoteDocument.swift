@@ -106,14 +106,12 @@ struct MarkdownRemoteImageLoader: Sendable {
     /// file, larger than ``maximumImageBytes``, or the download fails.
     func load(remotePath: String) async -> Data? {
         guard !ManagedFileTransferPolicy.isDisabled else { return nil }
-        // The stamp check also rejects directories and missing files before downloading.
-        guard let stamp = try? await provider.fileStamp(path: remotePath),
-              stamp.size <= Self.maximumImageBytes else { return nil }
         let temporary = cacheDirectory
             .appendingPathComponent(".cmux-image-" + UUID().uuidString, isDirectory: false)
         defer { try? FileManager.default.removeItem(at: temporary) }
+        // One request: a directory, a missing file or one over the cap sends nothing.
         do {
-            try await provider.downloadFile(path: remotePath, to: temporary)
+            _ = try await provider.downloadFileWithStamp(path: remotePath, to: temporary, maxBytes: Self.maximumImageBytes)
         } catch {
             return nil
         }

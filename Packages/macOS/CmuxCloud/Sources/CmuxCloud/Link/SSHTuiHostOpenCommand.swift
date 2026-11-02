@@ -244,17 +244,21 @@ public struct SSHTuiHostOpenCommand: Sendable {
     /// host never share it, and keyed by content so an update installs beside
     /// the old copy instead of rewriting a file another shell may be running.
     public var installDirectory: String {
-        let digest = SHA256.hash(data: Data(script.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        let contents = script + "\u{0}" + SSHTuiShellIntegration.bashEnvironmentFile + "\u{0}" + SSHTuiShellIntegration.zshEnvironmentFile
+        let digest = SHA256.hash(data: Data(contents.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
         return "$HOME/.local/share/cmux/ssh-cli/\(session)/\(digest)"
     }
 
-    /// Shell code run before the login shell: installs ``script`` once and
-    /// prepends its directory to PATH. Any failure leaves PATH unchanged and
-    /// the shell still starts.
+    /// Shell code run before the login shell: installs ``script`` and the
+    /// ``SSHTuiShellIntegration`` files once and prepends their directory to
+    /// PATH. Any failure leaves PATH unchanged and the shell still starts.
     public var shellPrelude: String {
         let delimiter = "CMUX_SSH_CLI_EOF"
         return """
         cmux_cli_dir="\(installDirectory)"
+        # Private directories: the shell runs and sources what is installed here.
+        (
+        umask 077
         if [ ! -x "$cmux_cli_dir/cmux" ]; then
           mkdir -p "$cmux_cli_dir" 2>/dev/null &&
           cat > "$cmux_cli_dir/.cmux.$$" 2>/dev/null <<'\(delimiter)' &&
@@ -262,10 +266,17 @@ public struct SSHTuiHostOpenCommand: Sendable {
           chmod 755 "$cmux_cli_dir/.cmux.$$" && mv -f "$cmux_cli_dir/.cmux.$$" "$cmux_cli_dir/cmux" 2>/dev/null
           rm -f "$cmux_cli_dir/.cmux.$$" 2>/dev/null
         fi
+        \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_cli_dir")))
         if [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ]; then PATH="$cmux_cli_dir:$PATH"; export PATH; fi
         unset cmux_cli_dir
 
         """
+    }
+
+    /// Shell code that starts the interactive login shell so it reports its
+    /// directory (``SSHTuiShellIntegration``); it falls through when it cannot.
+    public var loginShellLaunch: String {
+        SSHTuiShellIntegration.launchCode(installDirectory: installDirectory)
     }
 }
 

@@ -40,6 +40,9 @@ protocol SurfaceProvider: AnyObject {
     /// providers use this when a shortcut creates a sibling terminal; providers that
     /// cannot inspect a process return nil and preserve their normal daemon fallback.
     func currentWorkingDirectory(of resource: SurfaceResource) async -> String?
+    /// The Files panel's query for a terminal whose shell does not report its directory.
+    /// It must not wait for or start a connection; without one it answers `.skipped`.
+    func foregroundDirectoryAnswer(of resource: SurfaceResource) async -> CloudTerminalDirectoryFallback.Answer
     /// Called when a pane projecting one of this provider's resources goes away. Remote
     /// providers do nothing (the resource lives on); the local provider drops the resource.
     func projectionDidEnd(_ projection: SurfaceProjection)
@@ -111,6 +114,10 @@ extension SurfaceProvider {
 
     func currentWorkingDirectory(of resource: SurfaceResource) async -> String? {
         nil
+    }
+
+    func foregroundDirectoryAnswer(of resource: SurfaceResource) async -> CloudTerminalDirectoryFallback.Answer {
+        .skipped
     }
 
     func projectionsRestored() {}
