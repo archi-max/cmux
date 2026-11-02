@@ -48,11 +48,11 @@ module h_mix (
       default: cx = 8'hd4;
     endcase
   end
-  // A write through an x index writes no element.
+  // A write through an x index writes no element (mem[0] keeps the write before it).
   always_ff @(posedge clk) begin
     tmp = din ^ 8'h0f;
     if (!rst_n) begin mem[0] <= 8'h00; mem[1] <= 8'h00; mem[2] <= 8'h00; mem[3] <= 8'h00; end
-    else mem[widx] <= tmp;
+    else begin mem[0] <= din; mem[widx] <= tmp; end  // an x widx leaves mem[0] = din
   end
   assign rd0 = mem[0];
   assign rd1 = mem[1];
