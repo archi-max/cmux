@@ -833,6 +833,7 @@
   }
 
   // ---- instruction-sequence search (cmux-sequence.js, §3A) ----
+  const SEQUENCE_MS = 2000;  // a search's time budget
   function seqMessage(r) {
     const s = S();
     const code = r.error;
@@ -844,23 +845,30 @@
     return (reason ? format(reason, '') : code) + (r.step ? ' (' + r.step + ')' : '');
   }
 
-  // sequence({ query, from, limit, budget }) -> { matches: [{ start, end, ks, startTime, endTime, order }], incomplete, next, ms } | { error, message }.
+  // sequence({ query, from, limit, budget, budgetMs }) -> { matches: [{ start, end, ks, startTime, endTime, order }], incomplete,
+  //   reason ('limit' | 'budget' | 'time' | 'threads' | null), next, evaluated, ms } | { error, message }.
+  // The search pauses as it goes (the page stays responsive) and stops after budgetMs (default 2 s, §3A).
   async function sequence(query) {
     const q = query || {};
     const ix = await ensureIndex();
     if (!ix) { return { error: 'noStream', message: problemText() || S().machineNoStream || '' }; }
     const Q = window.cmuxSequence;
     const t0 = performance.now();
-    const r = Q.search(Q.streamOf(ix), String(q.query || ''), { from: q.from, limit: q.limit, budget: q.budget });
+    const r = await Q.searchAsync(Q.streamOf(ix), String(q.query || ''), { from: q.from, limit: q.limit, budget: q.budget,
+      budgetMs: q.budgetMs > 0 ? q.budgetMs : SEQUENCE_MS });
     if (r.error) { return { error: r.error, message: seqMessage(r) }; }
     const matches = r.matches.map((m) => ({ start: m.start, end: m.end, ks: m.ks, startTime: ix.timeOf(m.start), endTime: ix.timeOf(m.end),
       order: orderText(ix, m.start) }));
-    return { matches, incomplete: r.incomplete, next: r.next, evaluated: r.evaluated, ms: Math.round(performance.now() - t0) };
+    return { matches, incomplete: r.incomplete, reason: r.reason, next: r.next, evaluated: r.evaluated, ms: Math.round(performance.now() - t0) };
   }
 
+  let seqRun = 0;
   async function runSequence(more) {
     const prev = more ? st.seq.result : null;
+    const run = ++seqRun;
     const r = await sequence({ query: st.seq.query, from: prev ? prev.next : 0 });
+    // A newer search (Enter again while this one paused) shows its own.
+    if (run !== seqRun) { return; }
     st.seq.result = prev && !r.error ? Object.assign({}, r, { matches: prev.matches.concat(r.matches) }) : r;
     render();
   }
@@ -1050,10 +1058,10 @@
     // A sequence breakpoint's hits: the match commits' times (land 'end' or 'start'), ascending; or { error, message }.
     sequenceTimes: async (query) => {
       const q = query || {};
-      const r = await sequence({ query: q.query, limit: q.limit || 1000000, budget: q.budget });
+      const r = await sequence({ query: q.query, limit: q.limit || 1000000, budget: q.budget, budgetMs: q.budgetMs });
       if (r.error) { return r; }
       const times = r.matches.map((m) => (q.land === 'start' ? m.startTime : m.endTime));
-      return { times: Float64Array.from(times).sort(), incomplete: r.incomplete, count: r.matches.length };
+      return { times: Float64Array.from(times).sort(), incomplete: r.incomplete, reason: r.reason, count: r.matches.length };
     },
     // fn({ reason: 'ready' | 'cleared', backend, count }) on each rebuild or clear (reload, source change, picks).
     onChange: (fn) => { listeners.push(fn); return () => { const i = listeners.indexOf(fn); if (i >= 0) { listeners.splice(i, 1); } }; },
