@@ -120,21 +120,99 @@ struct SSHFileExplorerMutationCommandTests {
             let last = directory.appendingPathComponent("last").path
             #expect(FileManager.default.createFile(atPath: last, contents: Data()))
 
-            let all = try Self.runCapturing(.delete(paths: [file, folder]), shell: shell)
+            let all = try Self.runCapturing(.delete(paths: [file, folder], nonce: "n1"), shell: shell)
             #expect(all.status == 0)
-            #expect(SSHFileExplorerMutationCommand.removedIndices(in: all.output) == [0, 1])
+            #expect(SSHFileExplorerMutationCommand.removedIndices(in: all.output, nonce: "n1") == [0, 1])
             #expect(!FileManager.default.fileExists(atPath: file))
             #expect(!FileManager.default.fileExists(atPath: folder))
 
-            let partial = try Self.runCapturing(.delete(paths: [last, missing, last]), shell: shell)
+            let partial = try Self.runCapturing(.delete(paths: [last, missing, last], nonce: "n2"), shell: shell)
             #expect(partial.status == 74)
-            #expect(SSHFileExplorerMutationCommand.removedIndices(in: partial.output) == [0])
+            #expect(SSHFileExplorerMutationCommand.removedIndices(in: partial.output, nonce: "n2") == [0])
             #expect(!FileManager.default.fileExists(atPath: last))
         }
-        let command = SSHFileExplorerMutationCommand.delete(paths: ["/home/dev/\(Self.hostileName)"]).command
+        let command = SSHFileExplorerMutationCommand.delete(paths: ["/home/dev/\(Self.hostileName)"], nonce: "n3").command
         #expect(command.hasPrefix("sh -c '"))
         #expect(!command.dropFirst("sh -c '".count).dropLast().contains("'"))
         #expect(command.unicodeScalars.allSatisfy { $0.isASCII })
+    }
+
+    /// Linux caps one argument at 128 KiB, and sshd hands the whole command to
+    /// the login shell as one argument, so long paths must split into more runs.
+    @Test
+    func testDeleteBatchesKeepEachCommandUnderTheArgumentLimit() throws {
+        let longName = String(repeating: "n", count: 200)
+        let paths = (0..<450).map { "/home/dev/\(longName)-\($0)" }
+        let batches = SSHFileExplorerMutationCommand.deleteBatches(paths)
+        #expect(Array(batches.joined()) == paths)
+        #expect(batches.count > 3)
+        for batch in batches {
+            #expect(!batch.isEmpty)
+            #expect(batch.count <= 200)
+            let command = SSHFileExplorerMutationCommand.delete(paths: batch, nonce: String(repeating: "f", count: 32)).command
+            #expect(command.utf8.count <= 64 * 1024)
+        }
+        let short = (0..<450).map { "/home/dev/\($0)" }
+        #expect(SSHFileExplorerMutationCommand.deleteBatches(short).map(\.count) == [200, 200, 50])
+        // One path longer than the budget still gets a run of its own.
+        let huge = "/home/dev/" + String(repeating: "h", count: 70_000)
+        #expect(SSHFileExplorerMutationCommand.deleteBatches(["/a", huge, "/b"]) == [["/a"], [huge], ["/b"]])
+
+        // Every run of a long-path selection works through a real shell.
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = (0..<250).map { directory.appendingPathComponent("\(longName)-\($0)").path }
+        for file in files { #expect(FileManager.default.createFile(atPath: file, contents: Data())) }
+        for batch in SSHFileExplorerMutationCommand.deleteBatches(files) {
+            let result = try Self.runCapturing(.delete(paths: batch, nonce: "n4"), shell: "/bin/sh")
+            #expect(result.status == 0)
+            #expect(SSHFileExplorerMutationCommand.removedIndices(in: result.output, nonce: "n4") == Array(batch.indices))
+        }
+        #expect(files.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+    }
+
+    /// `$(...)` drops trailing newlines, so a missing `keep<newline>` must not
+    /// fall back to removing its sibling `keep`.
+    @Test
+    func testDeleteKeepsTrailingNewlinesInTheName() throws {
+        for shell in Self.availableShells {
+            let directory = try Self.makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let keep = directory.appendingPathComponent("keep").path
+            #expect(FileManager.default.createFile(atPath: keep, contents: Data()))
+            #expect(try Self.run(.delete(path: keep + "\n"), shell: shell) == 74)
+            let batch = try Self.runCapturing(.delete(paths: [keep + "\n\n"], nonce: "n5"), shell: shell)
+            #expect(batch.status == 74)
+            #expect(FileManager.default.fileExists(atPath: keep))
+
+            let named = directory.appendingPathComponent("gone\n").path
+            #expect(FileManager.default.createFile(atPath: named, contents: Data()))
+            #expect(try Self.run(.delete(path: named), shell: shell) == 0)
+            #expect(!FileManager.default.fileExists(atPath: named))
+        }
+    }
+
+    /// A login dotfile can print anything, but not the nonce of this run.
+    @Test
+    func testRemovedIndicesOnlyTrustTheRunNonce() throws {
+        let output = "cmux-removed:0\ncmux-removed-other:1\nxcmux-removed-abc:2\ncmux-removed-abc:3\n"
+        #expect(SSHFileExplorerMutationCommand.removedIndices(in: output, nonce: "abc") == [3])
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("f").path
+        #expect(FileManager.default.createFile(atPath: file, contents: Data()))
+        let spoof = "printf \"cmux-removed:0\\ncmux-removed-x:0\\n\"; "
+        let mutation = SSHFileExplorerMutationCommand.delete(paths: [file], nonce: "abc")
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", spoof + mutation.command]
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(SSHFileExplorerMutationCommand.removedIndices(in: String(decoding: data, as: UTF8.self), nonce: "abc") == [0])
     }
 
     private static func runCapturing(

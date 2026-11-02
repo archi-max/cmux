@@ -1095,9 +1095,6 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         try await Self.runSSHMutationCommand(.delete(path: path), connection: connection)
     }
 
-    /// Paths per ssh run, which keeps the command line far below `ARG_MAX`.
-    static let deleteBatchSize = 200
-
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -1108,13 +1105,14 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws {
         var removed: [String] = []
-        for start in stride(from: 0, to: paths.count, by: Self.deleteBatchSize) {
-            let batch = Array(paths[start..<min(start + Self.deleteBatchSize, paths.count)])
+        for batch in SSHFileExplorerMutationCommand.deleteBatches(paths) {
+            // Only this run knows the nonce, so a login dotfile's output can't fake a removal.
+            let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
             let result = try await Self.runSSHProcess(
                 connection: connection,
-                command: SSHFileExplorerMutationCommand.delete(paths: batch).command
+                command: SSHFileExplorerMutationCommand.delete(paths: batch, nonce: nonce).command
             )
-            let indices = SSHFileExplorerMutationCommand.removedIndices(in: result.stdout)
+            let indices = SSHFileExplorerMutationCommand.removedIndices(in: result.stdout, nonce: nonce)
             removed += indices.filter { batch.indices.contains($0) }.map { batch[$0] }
             guard result.terminationStatus != 0 else { continue }
             // 255: ssh itself failed (connection, auth); keep its diagnostics.

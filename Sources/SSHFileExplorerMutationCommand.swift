@@ -112,14 +112,14 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
         ].joined(separator: "; "))
     }
 
-    /// Prefix of the line ``delete(paths:)`` prints after removing `paths[i]`: `cmux-removed:<i>`.
+    /// Prefix of the line ``delete(paths:nonce:)`` prints after removing `paths[i]`.
     static let removedMarker = "cmux-removed:"
 
     /// Permanently removes each item in order in one run, with the same checks
     /// and exit statuses as ``delete(path:)``. It stops at the first failure,
     /// and prints ``removedMarker`` with the index of every item it removed, so
     /// a caller knows which are gone when a later one fails.
-    static func delete(paths: [String]) -> Self {
+    static func delete(paths: [String], nonce: String) -> Self {
         Self(script: ([decoder] + paths.enumerated().flatMap { index, path in [
             assign("t", path),
             assign("dir", parent(of: path)),
@@ -130,11 +130,16 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
         ] }).joined(separator: "; "))
     }
 
-    /// The indices ``delete(paths:)`` reported removed in `output`.
-    static func removedIndices(in output: String) -> [Int] {
+    /// The indices ``delete(paths:nonce:)`` reported removed in `output`.
+    static func removedIndices(in output: String, nonce: String) -> [Int] {
         output.split(whereSeparator: \.isNewline).compactMap { line in
             line.hasPrefix(removedMarker) ? Int(line.dropFirst(removedMarker.count)) : nil
         }
+    }
+
+    /// `paths` in order, split into runs of at most `maxCount` items.
+    static func deleteBatches(_ paths: [String], maxCount: Int = 200, maxCommandBytes: Int = 64 * 1024) -> [[String]] {
+        stride(from: 0, to: paths.count, by: maxCount).map { Array(paths[$0..<min($0 + maxCount, paths.count)]) }
     }
 
     /// Copies a file or directory tree to a destination that must not exist.
