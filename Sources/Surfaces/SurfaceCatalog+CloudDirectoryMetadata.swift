@@ -156,7 +156,7 @@ extension SurfaceCatalog {
         }.map(\.resource.key))
         guard !shown.isEmpty || cloudDirectoryFallbacks[machine] != nil else { return }
         var fallback = cloudDirectoryFallbacks[machine] ?? CloudTerminalDirectoryFallback()
-        let probes = fallback.observe(state.terminals, projected: shown)
+        let probes = fallback.observe(state.terminals, projected: shown, now: ProcessInfo.processInfo.systemUptime)
         cloudDirectoryFallbacks[machine] = fallback
         for probe in probes { startCloudDirectoryProbe(probe, on: machine) }
     }
@@ -208,7 +208,9 @@ extension SurfaceCatalog {
     ) {
         guard var fallback = cloudDirectoryFallbacks[id.machine] else { return }
         let trimmed = directory?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = fallback.finish(probe, directory: trimmed?.isEmpty == false ? trimmed : nil)
+        let found = trimmed?.isEmpty == false ? trimmed : nil
+        let result = fallback.finish(probe, answer: found.map { .directory($0) } ?? .failed,
+                                     now: ProcessInfo.processInfo.systemUptime)
         cloudDirectoryFallbacks[id.machine] = fallback
         cloudDirectoryProbeTasks[id] = nil
         if let next = result.next { startCloudDirectoryProbe(next, on: id.machine) }
