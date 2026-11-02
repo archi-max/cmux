@@ -3701,6 +3701,8 @@
 		5A7EF000000000000000A1B9 /* SlangCommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1BA /* SlangCommandPalette.swift */; };
 		5A7EF000000000000000A1B5 /* SlangCompilationActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */; };
 		5A7EF000000000000000A1B7 /* SlangProfileActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B8 /* SlangProfileActions.swift */; };
+		399EB32A791F172861D608C1 /* SlangStartupSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E21289CC5E7A9A9399EB32A /* SlangStartupSchedule.swift */; };
+		4C93E928BED8307B6242B764 /* SlangStartupScheduleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5146B11A2B3AF83FD172D039 /* SlangStartupScheduleTests.swift */; };
 		C7B0000000000000000000F2 /* SleepyAgentCensus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0000000000000000000F1 /* SleepyAgentCensus.swift */; };
 		C7B0FACE0000000000000004 /* SleepyAgentCensusing.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0FACE0000000000000005 /* SleepyAgentCensusing.swift */; };
 		C7B0FACE0000000000000002 /* SleepyAgentCounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B0FACE0000000000000003 /* SleepyAgentCounts.swift */; };
@@ -8416,6 +8418,8 @@
 		5A7EF000000000000000A1BA /* SlangCommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangCommandPalette.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000A1B6 /* SlangCompilationActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangCompilationActions.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000A1B8 /* SlangProfileActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangProfileActions.swift; sourceTree = "<group>"; };
+		3E21289CC5E7A9A9399EB32A /* SlangStartupSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/SlangStartupSchedule.swift; sourceTree = "<group>"; };
+		5146B11A2B3AF83FD172D039 /* SlangStartupScheduleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SlangStartupScheduleTests.swift"; sourceTree = "<group>"; };
 		C7B0000000000000000000F1 /* SleepyAgentCensus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepyAgentCensus.swift; sourceTree = "<group>"; };
 		C7B0FACE0000000000000005 /* SleepyAgentCensusing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepyAgentCensusing.swift; sourceTree = "<group>"; };
 		C7B0FACE0000000000000003 /* SleepyAgentCounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepyAgentCounts.swift; sourceTree = "<group>"; };
@@ -12031,6 +12035,7 @@
 				C01E00040000000000000002 /* FilePreviewSyntaxStyler.swift */,
 				C01E00B10000000000000002 /* FilePreviewLanguageFeatures.swift */,
 				C01E00B20000000000000002 /* FilePreviewLanguageSupport.swift */,
+				3E21289CC5E7A9A9399EB32A /* SlangStartupSchedule.swift */,
 				C01E00050000000000000002 /* FilePreviewLineNumberGutterView.swift */,
 				C01E00060000000000000002 /* FilePreviewEditorChromeOverlay.swift */,
 				F5168A060000000000000002 /* MarkdownTypographyDefaults.swift */,
@@ -14440,6 +14445,7 @@
 				00557CE53F2945845FFF7D0D /* FilePreviewEditorTypingStabilityTests.swift */,
 				1ED8B4A50F0C526B6C084ED3 /* RemoteFileProbeTests.swift */,
 				3F04E4C84CC2531B5868C1C3 /* FilePreviewPathPresentationTests.swift */,
+				5146B11A2B3AF83FD172D039 /* SlangStartupScheduleTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -17302,6 +17308,7 @@
 				5A7EF000000000000000A1B9 /* SlangCommandPalette.swift in Sources */,
 				5A7EF000000000000000A1B5 /* SlangCompilationActions.swift in Sources */,
 				5A7EF000000000000000A1B7 /* SlangProfileActions.swift in Sources */,
+				399EB32A791F172861D608C1 /* SlangStartupSchedule.swift in Sources */,
 				C7B0000000000000000000F2 /* SleepyAgentCensus.swift in Sources */,
 				C7B0FACE0000000000000004 /* SleepyAgentCensusing.swift in Sources */,
 				C7B0FACE0000000000000002 /* SleepyAgentCounts.swift in Sources */,
@@ -19601,6 +19608,7 @@
 				B804C0010000000000000001 /* SidebarWorkspaceTableTests.swift in Sources */,
 				C51A720000000000000000B1 /* SimulatorPanelIntegrationTests.swift in Sources */,
 				C51A760000000000000000D1 /* SimulatorPanelThemeTests.swift in Sources */,
+				4C93E928BED8307B6242B764 /* SlangStartupScheduleTests.swift in Sources */,
 				A7984AE10000000000000001 /* SocketACLReloadRegressionTests+Connections.swift in Sources */,
 				A79840010000000000000001 /* SocketACLReloadRegressionTests.swift in Sources */,
 				5830CA11BAC0000000000002 /* SocketCallbackAwaiterMainThreadTests.swift in Sources */,
