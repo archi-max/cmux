@@ -4,10 +4,15 @@ import Foundation
 /// `./tb/top.sv`, `../notes.md`) instead of searching the listed root, so a
 /// file outside the Files root, or one the listing leaves out, still opens.
 enum GoToFileTypedPath {
-    /// The path a query names, trimmed, or nil when it isn't one.
-    /// Placeholder until the fix: no query names a path.
+    /// The path a query names, trimmed, or nil when it isn't one: it starts
+    /// with `~/`, `/`, `./` or `../` and doesn't end in `/`. A bare dotfile
+    /// name (`.gitignore`) stays a search; `~user` is never looked up.
     static func parse(_ query: String) -> String? {
-        nil
+        let typed = query.trimmingCharacters(in: .whitespaces)
+        guard !typed.contains(where: { $0.isNewline || $0 == "\0" }),
+              ["~/", "/", "./", "../"].contains(where: { typed.hasPrefix($0) }),
+              !typed.hasSuffix("/") else { return nil }
+        return typed
     }
 
     /// Whether `typed` needs the host's home directory to resolve.
@@ -19,9 +24,25 @@ enum GoToFileTypedPath {
     /// `$HOME`, never expanded by a shell here), `./` and `../` against
     /// `root`; `.` and `..` components folded. Nil when it needs a home
     /// that isn't an absolute path.
-    /// Placeholder until the fix: never resolves.
     static func resolve(_ typed: String, root: String, home: String?) -> String? {
-        nil
+        let joined: String
+        if needsHome(typed) {
+            guard let home, home.hasPrefix("/") else { return nil }
+            joined = home + "/" + typed.dropFirst(2)
+        } else if typed.hasPrefix("/") {
+            joined = typed
+        } else {
+            joined = root + "/" + typed
+        }
+        var components: [Substring] = []
+        for component in joined.split(separator: "/", omittingEmptySubsequences: true) {
+            switch component {
+            case ".": continue
+            case "..": _ = components.popLast()
+            default: components.append(component)
+            }
+        }
+        return "/" + components.joined(separator: "/")
     }
 }
 
@@ -38,10 +59,13 @@ final class ExpiringValueCache<Key: Hashable, Value> {
         self.now = now
     }
 
-    /// The kept value for `key`, else `load()`'s.
-    /// Placeholder until the fix: always loads.
+    /// The kept value for `key` while it is younger than the lifetime, else
+    /// `load()`'s, which is kept when it succeeds.
     func value(for key: Key, load: () async throws -> Value) async throws -> Value {
-        try await load()
+        if let entry = entries[key], entry.storedAt.advanced(by: lifetime) > now() { return entry.value }
+        let value = try await load()
+        entries[key] = (value, now())
+        return value
     }
 
     /// Drops every kept value (a Files refresh).

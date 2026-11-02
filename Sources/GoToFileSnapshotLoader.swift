@@ -90,6 +90,7 @@ enum GoToFileSnapshotLoader {
     @MainActor static let cache = ExpiringValueCache<GoToFileSnapshotSource, GoToFileSnapshot>(lifetime: cacheLifetime)
 
     /// ``load(_:)`` through ``cache``.
+    @MainActor
     static func cachedLoad(_ source: GoToFileSnapshotSource) async throws -> GoToFileSnapshot {
         try await cache.value(for: source) { try await load(source) }
     }
