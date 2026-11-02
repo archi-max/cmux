@@ -1,0 +1,148 @@
+# FSDB helper v2
+
+cmux's waveform viewer reads FSDB dumps through this helper. It runs on the remote host that holds the dump, next to
+the dump, and answers the viewer over one SSH connection. The viewer asks only for the data it is about to draw, so
+a multi-gigabyte dump opens in seconds and never crosses the network whole.
+
+This folder is uploaded to the host and compiled there. For the viewer side, see
+[docs/vaporview/README.md](../../../docs/vaporview/README.md).
+
+## Why it exists
+
+FSDB can only be read with Verdi's FSDB reader, a set of proprietary Linux libraries. They don't run on macOS, and
+they may not be redistributed. So the reader has to run on a Linux host that already has Verdi, and cmux has to
+build against that host's copy.
+
+## The flow
+
+```
+ Mac                                                     remote host
+ ──────────────────────────────────────────              ─────────────────────────────────────────────────────────
+ viewer frame (webview.js, window_cache.ts)
+    │ {command: 'v2', req}  ▲ v2-reply + bytes
+    ▼                       │
+ host.js ── POST to the served FSDB URL ──┐
+                                          ▼
+ WaveformFSDBHelper.swift ── ssh, one per viewer ──▶  cmux-helper-v2.sh   (privacy check, nice, private run dir)
+   request ids, allowlist,   JSON lines on stdin          │
+   timeouts, fallback        ◀── JSON + bytes on fd 3 ─   helper.js        coordinator: hierarchy, routing,
+                                                          │                cancel, caches, derived signals
+                                                          ├─ worker.js ×4  each has the dump open and a store
+                                                          │     │
+                                                          │     ▼
+                                                          │  fsdb_reader.node  (VaporView's addon + cmux's
+                                                          │     │               window, derive and packed code)
+                                                          │     ▼
+                                                          │  Verdi FsdbReader (libnffr.so), from the host's install
+```
+
+1. **The page asks.** The windowed viewer (`window_cache.ts` in the VaporView patch) sends `{command: 'v2', req}`
+   for what it needs: a window of a signal over a time range, a value at a time, the next edge, a search.
+2. **The Mac relays.** `host.js` POSTs each request to the dump's URL. `WaveformFSDBHelper.swift` gives it a helper
+   id, writes it as one JSON line to the helper's stdin, and returns the reply. It relays only the commands the page
+   uses, and `open` only of the panel's own file.
+3. **The host answers.** `helper.js` answers hierarchy requests itself, so the netlist stays responsive. It routes
+   signal work to a pool of four `worker.js` processes. Each worker keeps its signals' changes in a compact C++
+   store and answers from there without walking the file again.
+4. **Replies** are one JSON line, optionally followed by `binLength` raw bytes, on fd 3. fd 3 is used because the
+   FSDB reader prints to stdout, and stdout output would corrupt the protocol.
+
+## Launch and build
+
+On the first open of an FSDB on a host:
+
+1. cmux runs the launcher from `~/.cache/cmux/fsdb-helper-v2/<version>-<machine>` on the host. `<version>` hashes
+   every file in this folder, so a cmux update that changes the helper rebuilds it once.
+2. Exit 87 means "not installed, or built for a Node.js or Verdi that is gone". cmux then pipes a tar of this folder
+   over SSH and runs `build.sh` on the host. It finds Verdi (`$VERDI_HOME`, `verdi` on `PATH`, environment modules,
+   common install roots) and Node.js 18 or later, compiles the addon with the host's C++ compiler, checks that it
+   loads, and installs it under a lock. A working install is never replaced half-way.
+3. `cmux-helper-v2.sh` refuses to run (exit 86) an install that anyone but the user can write, since it would run
+   that code. It starts `helper.js` under `nice`, in a private run directory on node-local `/tmp`.
+4. The helper prints a ready line, and the viewer sends `open`.
+
+If v2 can't be built or doesn't get ready, cmux falls back to the whole-signal helper in `../fsdb-helper/`, and the
+status strip says so, with a Retry button. The "FSDB signal loading" setting can force whole signals.
+
+## Protocol
+
+Requests are `{id, cmd, ...}`. Replies are `{id, result, ms}` or `{id, error}`, and may come back out of order.
+Times are integers in the dump's unit. The full list, with every field, is the header of
+[`helper.js`](helper.js).
+
+| Command | Answers |
+| --- | --- |
+| `open`, `children` | Metadata and top scopes; one scope's children |
+| `window {signals, t0, t1, buckets}` | A signal's changes in `[t0, t1)`. Exact when there are at most 2 × `buckets` changes; otherwise each bucket's first and last change plus a count per bucket. Sent as deflated `[u64 delta][value]` records |
+| `valueAt`, `edge`, `search` | The value at a time; the next or previous change, rise or fall; the next match of a value pattern |
+| `count` | A signal's total change count, when known without a walk (the viewer uses it to load small signals whole) |
+| `derive`, `searchAll` | A derived signal from a SystemVerilog expression; a search over many signals that streams `partial` results |
+| `cancel {id}` | Stops a request. Its reply becomes `{cancelled: true}` |
+| `signals` | The v1 whole-signal reply, for compatibility |
+
+What is streamed, and when:
+- The viewer tiles time in powers of two, 1024 buckets per tile, and requests the tiles on screen plus one screen
+  either side and one zoom level out. Panning back hits the same tiles.
+- A signal with at most 350,000 changes is loaded whole once its count is known, and is then an ordinary local
+  signal. Only big or dense signals stay windowed.
+- A signal not yet in a worker's store is read "cold": a small time range is read directly from the file, and the
+  full walk continues in the background.
+- Each viewer request has a timeout (8 s for a value, 10 s for a window, 120 s for a search). A stale request is
+  cancelled, then retried with backoff.
+- *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
+  the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
+
+## Timeouts and recovery
+
+In this tree:
+- The helper must print its ready line within 90 s. The build may take 10 minutes. A request times out after
+  5 minutes.
+- A v2 that missed its ready timeout is skipped for that host for 10 minutes, so each new viewer doesn't wait again.
+- A worker that dies is restarted and reopens the file. Its queued and running parts fail with an error, so no
+  request waits forever.
+
+*(coming in stack-10, helper commits `4984aea`, `39f9ebc`, `94d2e8b`)*:
+- **Open timeout.** An `open` that doesn't answer in 120 s relaunches the helper once and resends the open. A second
+  timeout reports "did not open the file in time". The whole open, relaunch included, is bounded at 240 s.
+- **Stdin watchdog.** The launcher runs under a watchdog. When the SSH session's stdin closes (the viewer closed, or
+  a relaunch) and the helper hasn't exited 3 s later, the watchdog stops the launcher, then kills the coordinator and
+  workers, children first. A stuck reader no longer leaves processes behind on the host.
+- **Protocol pinning.** A relaunch keeps the protocol the page already uses. It never falls back to v1 in the middle
+  of a page.
+
+## Decisions
+
+| Decision | Why |
+| --- | --- |
+| Read the dump in place, on its host | Dumps are often gigabytes. Downloading or converting one (to VCD or FST) takes minutes and disk on both sides, and must be redone after each simulation. Reading in place sends only what's drawn. |
+| Compile on the host, never ship binaries | The reader links Verdi's proprietary libraries. Building against the host's own install means no Synopsys code is ever redistributed, and the addon always matches that host's Verdi and Node.js. See [NOTICE](NOTICE). |
+| Windows with caps, not whole signals | A busy signal can have hundreds of millions of changes. Decimated windows keep each reply proportional to the screen. Caps bound every reply: buckets per request, store budget per worker, hybrid whole-load limits. |
+| A pool of four workers | One reader process walks one signal at a time. Four processes, each with the file open, walk signals in parallel, and one big signal can be split across them by time. The coordinator never walks, so it always answers the netlist and cancels at once. |
+| Replies on fd 3 | The FSDB reader prints to stdout. A separate descriptor keeps the protocol clean. |
+| Private install, private run directory | The helper runs code and loads libraries from its install. An install others can write is refused. The reader's log directory goes to a private folder on node-local `/tmp`, not a shared home. |
+| Memory bounds | Each worker has an RSS cap (1 GB by default). Over it, the store shrinks first, then the worker is replaced when idle. A load that would pass twice the cap is undone. |
+| Store cache on disk | Walked signals are saved under `/tmp/<user>-cmux-helper/` (keyed by path, size, mtime and inode, LRU-bounded), so a reopened dump draws about 20× faster. Not on an NFS home. |
+| Cancel and yield by SIGUSR2, checked between values | A SIGINT-based cancel, tried during development, killed workers and cancelled unrelated requests. Background work polls for SIGUSR2 instead, and yields to interactive requests. |
+| Watchdog kills only its own children *(coming)* | A pid can be reused once a process exits. The watchdog signals only processes that are still children of the launch shell, so it never touches another user's process. |
+
+## Files
+
+| File | Role |
+| --- | --- |
+| [`helper.js`](helper.js) | Coordinator: protocol, routing, splitting, cancel, store cache, `derive`, `searchAll` |
+| [`worker.js`](worker.js) | A worker: the file open, its store, background work that yields |
+| [`expr.js`](expr.js) | `derive` expressions, with SystemVerilog sizing |
+| [`addon/fsdb_reader.cpp`](addon/fsdb_reader.cpp) | VaporView's reader addon, unmodified apart from a license header |
+| [`addon/window.cpp.inc`](addon/window.cpp.inc), [`derive.cpp.inc`](addon/derive.cpp.inc), [`deval.h`](addon/deval.h), [`packed.cpp.inc`](addon/packed.cpp.inc) | cmux's additions: the store, windows, cold reads, derived signals, packed replies |
+| [`build.sh`](build.sh) | Finds Verdi, Node.js and a compiler; builds and installs privately |
+| [`cmux-helper-v2.sh`](cmux-helper-v2.sh) | The launcher: privacy check, exit 86 or 87, `nice`, run directory, fd 3 |
+| [`../../../Sources/Panels/WaveformFSDBHelper.swift`](../../../Sources/Panels/WaveformFSDBHelper.swift) | The Mac side: install, launch, relay, timeouts, fallback |
+
+Tests: `scripts/waveform-viewer-checks/run.sh windowed` runs the real Swift relay and `build.sh` against a mock helper
+on the Mac. `windowed-launcher` and `windowed-fsdb` run the real helper on a host with Verdi.
+
+## License
+
+GPL-3.0, as VaporView, which the reader addon and the original helper come from. The Node-API headers in
+`third_party/` are MIT. Verdi's FSDB reader is not included; it is linked on the host from the host's own install.
+See [NOTICE](NOTICE).
