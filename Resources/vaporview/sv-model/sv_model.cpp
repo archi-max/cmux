@@ -1236,7 +1236,8 @@ private:
             writeLval(w, as.left());
             w.writeProperty("rhs");
             writeExpr(w, as.right());
-            if (as.timingControl) {
+            // `assign #d y = ...` keeps its delay on the symbol, not on the assignment.
+            if (as.timingControl || ca.getDelay()) {
                 w.writeProperty("delay");
                 w.writeValue(true);
             }
