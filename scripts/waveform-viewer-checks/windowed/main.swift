@@ -238,25 +238,25 @@ func stderrChecks() async throws {
   let p = Pipe()
   let rfd = p.fileHandleForReading.fileDescriptor
   _ = fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL) | O_NONBLOCK)
-  let reader = WaveformFSDBHelper.PipeReader(p.fileHandleForReading)
-  let empty = reader.read()
+  let sunk = Collected()
+  let reader = WaveformFSDBHelper.PipeReader(p.fileHandleForReading) { sunk.append($0) }
+  let open1 = reader.pump(), empty = sunk.value
   try p.fileHandleForWriting.write(contentsOf: Data("abc".utf8))
-  let abc = reader.read()
+  let open2 = reader.pump(), abc = sunk.value
   try p.fileHandleForWriting.close()
-  let end = reader.read()
-  expect(empty == Data() && abc == Data("abc".utf8) && end == nil,
-         "a pipe read: nothing yet on an empty non-blocking pipe (no exception), then its bytes, then its end: \(String(describing: empty)), \(String(describing: abc)), \(String(describing: end))")
+  let open3 = reader.pump()
+  expect(open1 && empty.isEmpty && open2 && abc == Data("abc".utf8) && !open3,
+         "a pipe read: nothing yet on an empty non-blocking pipe (no exception), then its bytes, then its end: \(open1) \(empty.count), \(open2) \(abc.count), \(open3)")
 
-  // The handler and the exit's drain racing on a pipe a writer trickles into, 200 times: no
-  // abort, and what was read is in order, each byte once (a prefix of what was written).
+  // The handler and the exit's drain racing on a pipe a writer trickles into, 4000 times: no
+  // abort, and the bytes reach the sink in pipe order, each once (a prefix of what was written).
   var disorder = 0
-  for round in 0..<200 {
+  for round in 0..<4000 {
     let pipe = Pipe()
-    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading)
     let got = Collected()
+    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading) { got.append($0) }
     pipe.fileHandleForReading.readabilityHandler = { h in
-      guard let d = r.read() else { h.readabilityHandler = nil; return }
-      got.append(d)
+      if !r.pump() { h.readabilityHandler = nil }
     }
     let w = pipe.fileHandleForWriting
     let lines = (0..<300).map { String(format: "%05d\n", $0) }
@@ -269,13 +269,46 @@ func stderrChecks() async throws {
     writer.start()
     try await Task.sleep(nanoseconds: UInt64(round % 20) * 150_000)
     pipe.fileHandleForReading.readabilityHandler = nil
-    got.append(r.drain())
+    r.drain()
     while !writer.isFinished { try await Task.sleep(nanoseconds: 1_000_000) }
     try? w.close()
     let all = Data(lines.joined().utf8)
     if !all.starts(with: got.value) { disorder += 1 }
   }
-  expect(disorder == 0, "the handler and the drain racing on a trickled pipe, 200 rounds: no abort, \(disorder) out of order")
+  expect(disorder == 0, "the handler and the drain racing on a trickled pipe, 4000 rounds: no abort, \(disorder) out of order")
+
+  // A helper that exits with a request pending while a grandchild keeps writing numbered
+  // lines to its stderr for ~0.7 s after it (a writer that outlives the exit): no abort, and
+  // the exit's detail (the stderr tail) lists the lines in order. 40 exits, 4 at a time.
+  let lingerHome = try makeHome("stderr-linger", installs: [v2Launching(
+    "perl -MTime::HiRes=time -e '$|=1; my $t = time; my $i = 0; while (time - $t < 2.0) { print STDERR \"line $i\\n\"; $i++; select(undef,undef,undef,0.0005) if $i % 8 == 0 }' & "
+      + "node \(shellQuoted(mock)) --latency 2 --jitter 1 \"$@\" 3>&1 1>&2 & M=$!; sleep 1.3; kill -9 $M; exit 3"), v1Install])
+  let lingerFail: @Sendable (Error) -> String = { "\($0)" }
+  var exited = 0, unordered: [String] = []
+  for round in 0..<10 {
+    let details = await withTaskGroup(of: String.self) { g in
+      for j in 0..<4 {
+        g.addTask {
+          let h = makeHelper(home: lingerHome, loading: .auto, hostKey: "host-linger-\(round)-\(j)")
+          _ = await h.response(for: json(["cmd": "open", "file": "synth:ms=0.02", "id": 1]), failureMessage: lingerFail)
+          let r = await h.response(for: json(["cmd": "sleep", "ms": 5000, "id": 2]), failureMessage: lingerFail)
+          h.stop()
+          return header(r)["error"] as? String ?? ""
+        }
+      }
+      var out: [String] = []
+      for await d in g { out.append(d) }
+      return out
+    }
+    for d in details where d.contains("helperExited") {
+      exited += 1
+      // The last line may be cut mid-number (the tail ends where the pipe was at the exit).
+      let numbers = d.components(separatedBy: "line ").dropFirst().dropLast().compactMap { Int($0.prefix { $0.isNumber }) }
+      if numbers.count < 2 || zip(numbers, numbers.dropFirst()).contains(where: { $0 >= $1 }) { unordered.append(String(d.prefix(300))) }
+    }
+  }
+  expect(exited == 40 && unordered.isEmpty,
+         "40 helpers exiting while a grandchild keeps writing their stderr: no abort, \(exited) exit details, in order (\(unordered.count) not: \(unordered.first ?? ""))")
 
   // End to end: 200 helper exits while a child the launcher left behind keeps writing to
   // stderr (4 at a time). Each opens, stops, and leaves the next free to start.
