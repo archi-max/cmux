@@ -124,10 +124,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
   }
 
-  func open(restore: [String: Any]? = nil) async {
-    let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
+  func open(restore: [String: Any]? = nil, file: URL = waveURL) async {
+    let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
     var argument: [String: Any] = [
-      "url": scheme.serve(fileURL: waveURL).absoluteString, "size": size, "format": "vcd",
+      "url": scheme.serve(fileURL: file).absoluteString, "size": size, "format": "vcd",
       "path": "/work/sim/split.vcd", "strings": strings, "settings": ["defaultNameType": "signalName"],
     ]
     argument["restore"] = restore
@@ -436,6 +436,30 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "a 300-bit row has Custom Length: \(wide["custom"] ?? "nil")")
     expect(wide["toasts"] as? [String] == [strings["messageTooManySlices"] ?? "?"] && wide["added"] as? Int == 0,
            "300 one-bit slices are refused: \(wide["toasts"] ?? "nil") +\(wide["added"] ?? "nil")")
+
+    // A session's slice past the end of a signal that got narrower (a parameter changed) is
+    // missing, by its own name, rather than cut down to the bits left under its old name.
+    await open(file: waveURL.deletingLastPathComponent().appendingPathComponent("narrow.vcd"))
+    let narrow = await call("""
+      const toasts = [];
+      const toast = window.cmuxUI.toast;
+      window.cmuxUI.toast = (text) => { toasts.push(String(text)); };
+      C.applySessionFile({ text: \(jsString(sessionText)), path: '/work/sim/split.json' });
+      await sleep(1500);
+      await until(() => shown().includes('dfp_addr[39:32]'), 10000);
+      window.cmuxUI.toast = toast;
+      await marker(0);
+      R.toasts = toasts;
+      const addr = snapshotRows().find((r) => r.name === 'top.dfp_addr');
+      R.slices = ((addr && addr.cmuxSlices && addr.cmuxSlices.children) || []).map((c) => [c.customName, c.source[0].msb, c.source[0].lsb, c.source[0].netlistId === undefined || c.source[0].netlistId === null]);
+      R.values = [value('dfp_addr[0]'), value('dfp_addr[39:32]')];
+      """)
+    expect(narrow["slices"] as? [[AnyHashable]] == [["dfp_addr[1]", 63, 32, true], ["dfp_addr[0]", 31, 0, false], ["dfp_addr[39:32]", 39, 32, false]],
+           "a slice past the narrower signal's end stays missing with its bits; the others resolve: \(narrow["slices"] ?? "nil")")
+    expect(narrow["values"] as? [String] == ["572662306", "11"], "the slices that fit keep their values: \(narrow["values"] ?? "nil")")
+    let narrowToasts = narrow["toasts"] as? [String] ?? []
+    expect(narrowToasts.count == 1 && narrowToasts[0].contains("top.dfp_addr[1]") && !narrowToasts[0].contains("top.dfp_addr,") && !narrowToasts[0].hasSuffix("top.dfp_addr"),
+           "the missing-signals message names the slice: \(narrowToasts)")
 
     print(failures == 0 ? "SPLIT CHECKS PASSED" : "SPLIT CHECKS FAILED: \(failures)")
     snap()

@@ -87,11 +87,12 @@
 #                                        and the value-alias items from the context
 #                                        menu: decoded text, selection, undo, session
 #                                        save/load, reload, restore
-#   ./run.sh split                       Split (Into N Parts, By Width, Bits, Add Slice)
+#   ./run.sh split                       Split (Into N Parts, By Width, Bits, Add Slice, Declared Dimensions)
 #                                        from the row menu: slices under their parent,
 #                                        names, values, own formats, marker, search,
 #                                        copy, nesting, collapse, undo, removal, and
 #                                        session save/load, reload, restore
+#   ./run.sh fsdb-array                  the FSDB helper nests the reader's arrays (a stand-in addon, no FSDB)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -324,6 +325,11 @@ case "${1:-}" in
       "$ROOT/Sources/Panels/WaveformValueAliasFiles.swift" -o "$OUT/riscv"
     "$OUT/riscv" "$ASSETS" "$HERE/riscv/riscv.vcd" "$HERE/riscv/aliases.alias" "$OUT/riscv.png" | grep -v '^\[log\]' | tee "$OUT/riscv.log"
     grep -q '^RISCV CHECKS PASSED' "$OUT/riscv.log"
+    ;;
+  fsdb-array)
+    # fsdb-helper-v2's tree.js against the reader's callbacks for a dump with packed arrays (no FSDB needed).
+    node "$HERE/fsdb-array/check.js" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-array.log"
+    grep -q '^FSDB ARRAY CHECKS PASSED' "$OUT/fsdb-array.log"
     ;;
   split)
     swiftc -O "$HERE/split/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
