@@ -337,7 +337,12 @@ final class WaveformFSDBHelper: @unchecked Sendable {
                 }
             }
             relaunched = true
-            try await waitRunning(until: deadline)
+            do {
+                try await waitRunning(until: deadline)
+            } catch Failure.timedOut(_) {
+                // The relaunched helper missed its ready line: still the open that didn't happen.
+                throw Failure.openTimedOut
+            }
         }
     }
 
@@ -652,14 +657,19 @@ final class WaveformFSDBHelper: @unchecked Sendable {
 
     /// Runs `command` (the launcher) with a watchdog on its stdin, so a helper whose main
     /// thread is stuck (a read blocked on NFS) can't outlive its session. A copy of the
-    /// session's stdin feeds `command` through a fifo; when the stdin ends (ssh closed:
-    /// `stop()`, a relaunch) and `command` hasn't exited `stuckGrace` s later, its
-    /// processes (the coordinator, its workers) are killed, then itself. It stops each
-    /// process before killing its children, so nothing is respawned. Only processes
-    /// still children of this shell are touched (`m`: a reused pid is never killed), so
-    /// this shell and the watchdog outlive a SIGTERM or SIGHUP to the session's process
-    /// group (their trap; `command` gets the default handlers back; a `cat` it ends counts
-    /// as the end of stdin). The shell waits for `command`, whose status it exits with. No single quotes: it runs inside `sh -c '…'`.
+    /// session's stdin feeds `command` through a fifo. When that stdin ends (ssh closed:
+    /// `stop()`, a relaunch) and `command` hasn't exited `stuckGrace` s later:
+    /// - `command` is stopped, then its processes (the coordinator, its workers) are
+    ///   killed, each stopped before its own children are listed, so none is reaped (its
+    ///   pid reused) or respawned meanwhile;
+    /// - `command` is continued, so the launcher's exit trap (its run folder) still runs,
+    ///   and killed if it is still there 1 s later.
+    /// Only `command` and its descendants are touched, and only while `command` is still
+    /// this shell's child (`m`: a reused pid is never killed). This shell and the watchdog
+    /// trap SIGTERM and SIGHUP, so a signal to the session's process group can't leave a
+    /// stuck helper behind (`command` gets the default handlers back; a `cat` it ends
+    /// counts as the end of stdin). The shell waits for `command` and exits with its
+    /// status. No single quotes: it runs inside `sh -c '…'`.
     static func supervised(_ command: String) -> String {
         "T=$(mktemp -d \"${TMPDIR:-/tmp}/cmux-fsdb-in.XXXXXX\") && mkfifo \"$T/i\" || exit 1; "
             + "k() { kill -STOP $1 2>/dev/null; for c in $(pgrep -P $1); do k $c; done; kill -KILL $1 2>/dev/null; }; "
@@ -667,7 +677,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             + "trap : HUP TERM; exec 9<&0; { rm -rf \"$T\"; \(command); } <\"$T/i\" 9<&- & L=$!; "
             + "{ trap : HUP TERM; cat <&9 >\"$T/i\" 2>/dev/null; exec 9<&-; n=0; "
             + "while m $L $$ && [ $n -lt \(stuckGrace) ]; do sleep 1; n=$((n+1)); done; "
-            + "if m $L $$; then for c in $(pgrep -P $L); do k $c; done; sleep 1; m $L $$ && k $L; fi; } & W=$!; "
+            + "if m $L $$; then kill -STOP $L; for c in $(pgrep -P $L); do k $c; done; kill -CONT $L; sleep 1; m $L $$ && k $L; fi; } & W=$!; "
             + "exec 9<&- 0</dev/null; while :; do wait $L; s=$?; m $L $$ || break; done; m $W $$ && k $W; exit $s"
     }
 
