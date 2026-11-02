@@ -369,6 +369,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            && capped.first { $0["pattern"] as? String == "cap32" }?["enabled"] as? Bool == false,
            "a restore of 33 instruction-text breakpoints: 33 kept, 32 enabled, the last off: \(capped.filter { $0["enabled"] as? Bool == false }.map { $0["pattern"] ?? "" })")
     _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (/^cap/.test(b.pattern || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
+    // Sequence breakpoints: at most 16 enabled (each is a search of the whole trace), the 17th refused and said.
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (b.kind === 'sequence') { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
+    await clearToasts()
+    for n in 0..<17 { _ = await addCommit("kind: 'sequence', query: '{lw} ##\(n + 1) {sw}'") }
+    let seqs = (await list()).filter { $0["kind"] as? String == "sequence" && ($0["query"] as? String)?.hasSuffix("{sw}") == true }
+    expect(seqs.count == 16 && seqs.allSatisfy { $0["enabled"] as? Bool == true }, "at most 16 enabled sequence breakpoints, the 17th refused: \(seqs.count)")
+    expect(await toasts().contains("At most 16 breakpoints of this kind can be enabled"), "said: \(await toasts())")
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (b.kind === 'sequence' && /\\{sw\\}$/.test(b.query || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
+    _ = await call("cmuxWaveform.debugger.restoreBreakpoints({ items: Array.from({ length: 17 }, (_, i) => ({ path: [], kind: 'sequence', query: '{lw} ##' + (i + 1) + ' {sb}', enabled: true })) }); return null")
+    let restoredSeqs = (await list()).filter { ($0["query"] as? String)?.hasSuffix("{sb}") == true }
+    expect(restoredSeqs.count == 17 && restoredSeqs.filter { $0["enabled"] as? Bool == true }.count == 16
+           && restoredSeqs.first { $0["query"] as? String == "{lw} ##17 {sb}" }?["enabled"] as? Bool == false,
+           "a restore of 17 sequence breakpoints: 17 kept, 16 enabled, the last off: \(restoredSeqs.filter { $0["enabled"] as? Bool == false }.map { $0["query"] ?? "" })")
+    _ = await call("for (const b of cmuxWaveform.debugger.breakpoints()) { if (b.kind === 'sequence' && /\\{sb\\}$/.test(b.query || '')) { cmuxWaveform.debugger.removeBreakpoint({ id: b.id }); } } return null")
 
     // ---- listings (cmux owns their pc breakpoints, keyed by mark) ----
     _ = await call("""
@@ -641,7 +655,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
    debuggerBreakpointSequence:'Sequence %@', debuggerBreakpointSequenceStart:'Sequence %@, stopping at its first instruction',
    debuggerSequenceNoQuery:'the sequence is empty', debuggerSequenceTooLong:'the sequence is longer than %@ characters',
    debuggerSequenceBadSyntax:"the sequence doesn't parse (the Machine section's Sequences tab shows why)",
-   debuggerSequenceIncomplete:'%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits',
+   debuggerSequenceLimit:'%1$@: only its first %2$@ matches are breakpoint hits',
+   debuggerSequenceStopped:'%1$@: the search stopped at its budget at commit %2$@ of %3$@, so later matches are not breakpoint hits',
    debuggerEditSequence:'Edit Sequence…', debuggerSequenceLandStart:'Stop at Its First Instruction',
    debuggerCommitTextJalHint:'%@: no instruction matched, but jal instructions that link ra committed. They are shown as “jal <target>” (ra implied), so leave ra out of the pattern.',
    debuggerShowValueAsAddress:'Show Value as Address in Listing', debuggerAddressUnknown:'%@ has no address value at the marker'}

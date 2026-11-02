@@ -27,7 +27,9 @@ for path in args[2...] {
   if let error = thrown { print("FAIL loading", path, error); print("MACHINE CORE CHECKS FAILED: 1"); exit(1) }
 }
 let only = ProcessInfo.processInfo.environment["MACHINE_ONLY"] ?? ""
-let lines = context.evaluateScript("runMachineCases(\(String(reflecting: args[1])), \(String(reflecting: only)))")?.toArray() as? [String] ?? ["FAIL no results"]
+let sync = context.evaluateScript("runMachineCases(\(String(reflecting: args[1])), \(String(reflecting: only)))")?.toArray() as? [String] ?? ["FAIL no results"]
+// Checks that finish in promise jobs (run once the call above returned): sequence-cases.js's searchAsync.
+let lines = sync + (context.evaluateScript("globalThis.machineLateChecks || []")?.toArray() as? [String] ?? [])
 if let error = thrown { print("FAIL", error) }
 lines.forEach { print($0) }
 let failures = lines.filter { $0.hasPrefix("FAIL") }.count + (thrown == nil ? 0 : 1)

@@ -530,6 +530,11 @@
       opts.name + ': commits.sequenceTimes: ' + times.times.length + ' times');
     const badq = await M.sequence({ query: '{lw} ##[3:1] {add}' });
     expect(badq.error === 'badDelay' && /delay must be/.test(badq.message), opts.name + ': a bad delay says why: ' + badq.message);
+    // Why a search stopped, given (the messages differ by reason): its step budget, or none when it finished.
+    const cut = await M.sequence({ query: '{lw} ##[1:$] {sw}', budget: 1 });
+    const whole = await M.sequence({ query: '{lw} ##[1:$] {sw}', budgetMs: 60000 });
+    expect(!cut.error && cut.incomplete && cut.reason === 'budget' && cut.next !== null && !whole.error && !whole.incomplete && whole.reason === null,
+      opts.name + ': a search says why it stopped: ' + JSON.stringify([cut.reason, cut.next, whole.reason]));
     const t5 = performance.now();
     const call = await M.sequence({ query: '/jal\\s+ra/ ##[1:$] {ret}' });
     note(opts.name + ': call ##[1:$] ret: ' + call.matches.length + ' matches in ' + (performance.now() - t5).toFixed(1) + ' ms');

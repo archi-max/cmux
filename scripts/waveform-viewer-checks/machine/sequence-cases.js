@@ -61,6 +61,59 @@
     return out;
   }
 
+  // A long synthetic stream (20% lw, 10% sw, 70% add; 3000 distinct words, registers from an LCG) and a capture query that is the
+  // matcher's worst case (a loaded register never stored again hops through every later sw): the search must stop
+  // at its time budget, pausing all along, however loaded the machine (the bound is relative to its own pauses).
+  // The results are pushed as the promise settles (in JavaScriptCore, before the cases return).
+  function budgetCases(S, ok) {
+    if (typeof S.searchAsync !== 'function') { return; }
+    const n = 300000;
+    const words = new Uint32Array(n);
+    let seed = 12345;
+    const rnd = (m) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) % m; };
+    // 3000 distinct words, as a real program has thousands (each is decoded once).
+    const pool = new Uint32Array(3000);
+    for (let i = 0; i < pool.length; i++) {
+      const r = i % 10;
+      const rd = 1 + rnd(31), rs1 = rnd(32), rs2 = rnd(32);
+      pool[i] = r < 2 ? ((rnd(64) << 22) | (rs1 << 15) | (2 << 12) | (rd << 7) | 0x03) >>> 0           // lw rd, imm(rs1)
+        : r < 3 ? (((rnd(2)) << 25) | (rs2 << 20) | (rs1 << 15) | (2 << 12) | (rnd(16) << 8) | 0x23) >>> 0 // sw rs2, imm(rs1)
+          : ((rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33) >>> 0;                                         // add rd, rs1, rs2
+    }
+    for (let k = 0; k < n; k++) { words[k] = pool[rnd(pool.length)]; }
+    const big = { count: n, xlen: 32, roles: ['insn', 'pc_rdata'], insn: (k) => (k >= 0 && k < n ? words[k] : null),
+      pc: (k) => (k >= 0 && k < n ? 0x80000000 + 4 * k : null), value: () => null, widthOf: () => 32 };
+    const q = '{lw} as L ##[1:$] {sw} && rs2 == L.rd';
+    const budgetMs = 400;
+    // The synchronous search takes budgetMs too (before the other, so the two don't share the clock).
+    const t1 = Date.now();
+    const sync = S.search(big, q, { budget: 1e12, budgetMs: 100 });
+    const syncMs = Date.now() - t1;
+    ok(sync.reason === 'time' && sync.incomplete, 'search: budgetMs stops it too (' + syncMs + ' ms, ' + sync.evaluated + ' evaluations)');
+    // Started once the cases' synchronous work is done (a job), so the stretches between its pauses are its own.
+    // A stretch: from the search resuming to its next pause (or its end).
+    const gaps = [];
+    let resumed = 0;
+    const pause = () => { gaps.push(Date.now() - resumed); return Promise.resolve().then(() => { resumed = Date.now(); }); };
+    // Its results come after the cases return: in machineLateChecks, which the runner reads once the jobs ran.
+    const late = root.machineLateChecks = root.machineLateChecks || [];
+    const slot = late.push('FAIL searchAsync: the time-budget checks did not finish') - 1;
+    const results = [];
+    const lateOk = (cond, what) => { results.push((cond ? 'ok   ' : 'FAIL ') + what); return cond; };
+    let t0 = 0;
+    Promise.resolve().then(() => { t0 = resumed = Date.now(); return S.searchAsync(big, q, { budget: 1e12, budgetMs, sliceMs: 10, pause }); }).then((r) => {
+      const ms = Date.now() - t0;
+      gaps.push(Date.now() - resumed);
+      const slowest = Math.max(...gaps);
+      lateOk(!r.error && r.incomplete && r.reason === 'time' && r.next !== null,
+        'searchAsync: a worst-case capture query on ' + n + ' commits stops at its time budget: ' + JSON.stringify([r.error, r.reason, r.next, r.matches && r.matches.length]));
+      lateOk(r.yields >= 3 && slowest <= Math.max(budgetMs / 2, 4 * gaps.reduce((a, b) => a + b, 0) / gaps.length),
+        'searchAsync: it paused ' + r.yields + ' times, the longest stretch ' + slowest + ' ms');
+      lateOk(ms <= budgetMs + 3 * slowest, 'searchAsync: back in ' + ms + ' ms (budget ' + budgetMs + ' ms + 3x its longest stretch, ' + slowest + ' ms)');
+      late.splice(slot, 1, ...results);
+    }, (e) => { late.splice(slot, 1, 'FAIL searchAsync threw ' + e); });
+  }
+
   function runSequenceCases(fixtures, h) {
     const out = [];
     const ok = (cond, what) => { out.push((cond ? 'ok   ' : 'FAIL ') + what); return cond; };
@@ -136,6 +189,13 @@
     ok(se(from.matches) === '6 15', 'from: starts at or after 4: ' + se(from.matches));
     const bad = S.search(st, 'nosuch == 1');
     ok(bad.error === 'unknownName', 'an unknown name is an error: ' + JSON.stringify(bad));
+    ok(lim.reason === 'limit', 'limit: the reason says so: ' + lim.reason);
+    ok(S.search(st, '{lw}').reason === null, 'complete: no reason');
+    const few = S.search(st, '{lw} ##[1:$] {sw}', { budget: 3 });
+    ok(few.incomplete && few.reason === 'budget' && few.next !== null && few.matches.every((m) => m.start < few.next),
+      'budget: stopped, the reason, and only starts before next reported: ' + JSON.stringify([few.reason, few.next, se(few.matches)]));
+    ok(typeof S.searchAsync === 'function', 'searchAsync exists');
+    budgetCases(S, ok);
 
     // ---- against brute force on random streams ----
     const pool = Object.values(W);
