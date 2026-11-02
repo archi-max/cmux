@@ -880,7 +880,8 @@
   //   selectSignal(path) -> bool
   //   setMarker(time)
   //   selectedSignal() -> path | null   (null once the selected row is gone)
-  //   valuesAt({ time, paths, unshown }) -> [value | null]   formatted like the signal's row
+  //   valuesAt({ time, paths, unshown, raw }) -> [value | {bits} | null]   formatted like the signal's row
+  //                                     (raw[i]: {bits} when the row shows its enum's names or isn't shown)
   //   markerTime() -> time | null
   // and posts { type: 'revealInSource', path } when a signal's name is double-clicked.
   const link = (() => {
@@ -1149,11 +1150,14 @@
       return out;
     }
 
-    // valuesAt({ time, paths, unshown }) -> [value | null], one per path: the
+    // valuesAt({ time, paths, unshown, raw }) -> [value | null], one per path: the
     // value in effect at `time`, in the radix of the signal's row (hexadecimal
-    // if not shown). FSDB answers signals not shown only with `unshown`.
+    // if not shown). FSDB answers signals not shown only with `unshown`. raw[i]
+    // true (an enum signal): { bits } as the dump has them, for cmux to name, when
+    // the row is in its enum's own format (cmux-enum.js) or isn't shown; a row the
+    // user set to another format reads as that row does, like any other.
     async function valuesAt(query) {
-      const { time, paths, unshown } = query || {};
+      const { time, paths, unshown, raw } = query || {};
       if (!backend || !initSent || !Array.isArray(paths)) { return []; }
       const list = paths.slice(0, 500);
       // One after another: siblings then find their scope's children cached.
@@ -1161,11 +1165,20 @@
       for (const p of list) { vars.push(await findLinkItem(p, true)); }
       const found = Array.from(new Set(vars.filter(Boolean)));
       const t = Number(time);
-      const raw = backend.changes ? await fsdbValues(t, found, !!unshown) : await wellenValues(t, found);
+      const values = backend.changes ? await fsdbValues(t, found, !!unshown) : await wellenValues(t, found);
       const formats = shownFormats();
-      return vars.map((v) => {
-        const bits = v ? raw.get(v.netlistId) : undefined;
-        return bits === undefined ? null : formatValue(bits, formats.get(v.netlistId));
+      const asIs = Array.isArray(raw) ? raw : [];
+      return vars.map((v, i) => {
+        const bits = v ? values.get(v.netlistId) : undefined;
+        if (bits === undefined) { return null; }
+        const format = formats.get(v.netlistId);
+        const enums = window.cmuxWaveform.enums;
+        const own = enums ? enums.formatFor(pathOf(v)) : null;
+        // Not for a dump with its own enum type (VaporView names those itself).
+        const dumpEnum = typeof v.enumType === 'string' && v.enumType !== '';
+        if (asIs[i] === true && !dumpEnum && (format === undefined || (own !== null && format === own))) { return { bits: String(bits) }; }
+        // A row in its enum's own format reads as the row does (names; a non-member as hex and ?).
+        return own !== null && format === own ? enums.format(pathOf(v), String(bits)) : formatValue(bits, format);
       });
     }
 
