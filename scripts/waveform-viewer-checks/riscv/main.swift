@@ -62,6 +62,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   // Page helpers every check uses.
   static let prelude = """
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Polls an (async) condition until it holds or the deadline passes, rather than a
+    // fixed sleep that a loaded Mac can outrun; the caller's checks then say what's missing.
+    const until = async (f, ms = 20000) => { const t = Date.now(); let ok; while (!(ok = await f()) && Date.now() - t < ms) { await sleep(100); } return ok; };
+    const unseenToasts = () => [...document.querySelectorAll('.cmux-toast:not([data-seen])')];
+    const markerAt0 = async () => { await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(100); };
     const C = window.cmuxCommands, H = window.cmuxWaveform.host, S = window.cmuxWaveform.strings;
     const frameDoc = () => document.getElementById('viewer').contentDocument;
     const rows = () => (H.viewerContext.webview && H.viewerContext.webview.displayedSignals) || [];
@@ -504,7 +509,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await open()
     let reread = await call("""
       \(sessionFileJS(cappedText));
-      await sleep(2000);
+      await until(async () => { await markerAt0(); return text('instr') === 'BIG_13' && text('byte') === 'BYTE_A'; });
       await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
       R.instr = text('instr'); R.byte = text('byte');
       """)
@@ -530,7 +535,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         // Toasts already shown (an earlier one may leave while this waits) aren't this load's.
         document.querySelectorAll('.cmux-toast').forEach((t) => { t.dataset.seen = '1'; });
         \(sessionFileJS(cappedText));
-        await sleep(2000);
+        await until(async () => { await markerAt0(); return unseenToasts().length > 0 && text('byte') === 'BYTE_A'; });
         await C.run('waveformViewer.setMarker', { time: 0, markerType: 0 }); await sleep(400);
         R.toasts = [...document.querySelectorAll('.cmux-toast:not([data-seen])')].map((t) => t.textContent);
         R.instr = text('instr'); R.byte = text('byte');
@@ -678,7 +683,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let otherHost = await call("""
       document.querySelectorAll('.cmux-toast').forEach((t) => { t.dataset.seen = '1'; });
       \(sessionFileJS(otherText));
-      await sleep(2000);
+      await until(() => unseenToasts().length > 0 && text('instr') === 'BIG_13');
+      await sleep(400); // a second toast would come right after the first
       R.toasts = [...document.querySelectorAll('.cmux-toast:not([data-seen])')].map((t) => t.textContent);
       R.instr = text('instr');
       """)
@@ -711,7 +717,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(refused(huge) != nil, "so is the 20 MiB file itself")
     expect((try? WaveformValueAliasFiles.readText(at: smallLink, maxBytes: max)) == "alias t\nendalias\n", "a symlink to a small file is read")
     expect((try? WaveformValueAliasFiles.readText(at: exact, maxBytes: max))?.utf8.count == max, "a file of exactly the limit is read")
-    expect(refused(fifo) != nil, "a FIFO is refused without blocking")
+    // Off the main thread under a watchdog: a read that blocks on the FIFO fails this
+    // check (and is unblocked) instead of freezing the harness while it holds the lock.
+    let fifoResult = Watchdog.run(seconds: 5, unblock: fifo) { [fifo, max] in (try? WaveformValueAliasFiles.readText(at: fifo, maxBytes: max)) == nil }
+    expect(fifoResult == true, "a FIFO is refused without blocking: \(fifoResult.map { $0 ? "refused" : "read" } ?? "blocked over 5 s")")
     expect(refused(dir) != nil, "so is a folder")
     fifoRaceChecks(dir: dir, max: max)
   }
@@ -862,6 +871,25 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 }
 
+/// Runs `body` on its own thread and waits at most `seconds` for it. Nil when it took
+/// longer: the FIFO at `unblock` is then opened for writing, which frees a reader stuck
+/// opening it, so a failing check still ends.
+enum Watchdog {
+  final class Box: @unchecked Sendable { var value: Bool? }
+  static func run(seconds: Double, unblock fifo: URL, _ body: @escaping @Sendable () -> Bool) -> Bool? {
+    let done = DispatchSemaphore(value: 0), box = Box()
+    Thread { box.value = body(); done.signal() }.start()
+    if done.wait(timeout: .now() + seconds) == .success { return box.value }
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      let fd = Darwin.open(fifo.path, O_WRONLY | O_NONBLOCK)
+      if fd >= 0 { Darwin.close(fd) }
+      if done.wait(timeout: .now() + 0.05) == .success { break }
+    }
+    return nil
+  }
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
@@ -873,5 +901,11 @@ var loads = [Double](repeating: 0, count: 3)
 let load = getloadavg(&loads, 3) > 0 ? loads[0] : 0
 let limit = min(840.0, 240.0 + 4.0 * load)
 print("timeout limit \(Int(limit)) s at load \(Int(load))")
-DispatchQueue.main.asyncAfter(deadline: .now() + limit) { print("timeout after \(Int(limit)) s"); exit(1) }
+// On its own thread, not the main queue: it still fires when a check blocks the main thread.
+Thread {
+  Thread.sleep(forTimeInterval: limit)
+  print("timeout after \(Int(limit)) s")
+  fflush(stdout)
+  exit(1)
+}.start()
 app.run()
