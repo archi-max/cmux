@@ -2,7 +2,7 @@
 # Simulates the trace fixtures with VCS (FSDB +all and VCD), plain and with X-propagation:
 # -xprop=flowctrl alone, -xprop=tmerge, and "course" (an xprop.config of merge=tmerge,
 # xindex_select_method=resolution, xpropOn for the dut instance, plus -xprop=flowctrl, the way
-# the reference flows build), for the checks in this folder. Run it on a host with VCS,
+# typical course flows build), for the checks in this folder. Run it on a host with VCS,
 # in a scratch folder holding designs/:   bash sim-vcs.sh <scratch dir> (DESIGNS="f" for some only)
 # Outputs <scratch>/out/<design>.<variant>.{fsdb,vcd}.
 set -eu

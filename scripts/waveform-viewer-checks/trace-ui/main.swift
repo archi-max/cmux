@@ -232,7 +232,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // Timing on a whole-signal (v1) FSDB helper where each signal read takes 150 ms and Verdi
     // answers in 600 ms: a step reads its leaves concurrently, each signal once, and asks Verdi
-    // while it runs, not after it (cpu: 20 serial whole-history reads made one step minutes long).
+    // while it runs, not after it (a CPU design: 20 serial whole-history reads made one step minutes long).
     engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
     engineDelay = 0.6
     let timing = await call("""
