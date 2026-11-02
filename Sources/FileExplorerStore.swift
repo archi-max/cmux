@@ -1002,14 +1002,16 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
             command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
             outputURL: raw
         )
-        let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    continuation.resume(with: Result { try commandProcess.run() })
+        let result = try await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: connection.sshOptions)) {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(with: Result { try commandProcess.run() })
+                    }
                 }
+            } onCancel: {
+                commandProcess.terminate()
             }
-        } onCancel: {
-            commandProcess.terminate()
         }
         guard let header = try RemoteFileProbe.outcome(status: result.terminationStatus, raw: raw, to: localURL) else {
             throw FileExplorerError.sshCommandFailed(result.stderr)
@@ -1028,14 +1030,16 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
             command: command,
             outputURL: outputURL
         )
-        let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    continuation.resume(with: Result { try commandProcess.run() })
+        let result = try await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: connection.sshOptions)) {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(with: Result { try commandProcess.run() })
+                    }
                 }
+            } onCancel: {
+                commandProcess.terminate()
             }
-        } onCancel: {
-            commandProcess.terminate()
         }
         guard result.terminationStatus == 0 else {
             try? FileManager.default.removeItem(at: outputURL)
@@ -1414,14 +1418,16 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         input: Data? = nil
     ) async throws -> SSHCommandResult {
         let commandProcess = SSHCommandProcess(connection: connection, command: command, input: input)
-        let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    continuation.resume(with: Result { try commandProcess.run() })
+        let result = try await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: connection.sshOptions)) {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(with: Result { try commandProcess.run() })
+                    }
                 }
+            } onCancel: {
+                commandProcess.terminate()
             }
-        } onCancel: {
-            commandProcess.terminate()
         }
         return result
     }

@@ -64,8 +64,7 @@ final class SSHSessionGate: @unchecked Sendable {
                 enum Outcome { case run, cancelled, queued }
                 let outcome: Outcome = lock.withLock {
                     if Task.isCancelled { return .cancelled }
-                    if true { // stub (red): no limit
-
+                    if active[key, default: 0] < limit {
                         active[key, default: 0] += 1
                         return .run
                     }

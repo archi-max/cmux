@@ -27,4 +27,12 @@ extension WorkspaceRemoteConfiguration {
     var fileOperationSSHOptions: [String] {
         routesThroughSSHTui ? SSHTuiCarrierRoutes.shared.fileOperationSSHOptions(for: self) : sshOptions
     }
+
+    /// The SSH options for a long-lived run to this workspace, such as the
+    /// language server or a waveform helper: the same route on a connection of
+    /// its own, so it holds no session on a master that others share
+    /// (``SSHTuiConnection/longLivedSSHOptions``).
+    var longLivedSSHOptions: [String] {
+        routesThroughSSHTui ? SSHTuiCarrierRoutes.shared.longLivedSSHOptions(for: self) : sshOptions
+    }
 }

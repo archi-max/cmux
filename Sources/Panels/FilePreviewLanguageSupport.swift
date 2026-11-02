@@ -216,9 +216,10 @@ struct FilePreviewLanguageDocumentContext {
             forLanguage: languageId,
             remoteDestination: configuration.destination
         ) else { return nil }
+        // The server runs for the whole session: a connection of its own.
         let arguments = configuration.batchSSHCommandArguments(
             command: remoteCommand,
-            effectiveSSHOptions: configuration.fileOperationSSHOptions
+            effectiveSSHOptions: configuration.longLivedSSHOptions
         )
         return .remote(executablePath: "/usr/bin/ssh", arguments: arguments)
     }
@@ -287,11 +288,15 @@ struct FilePreviewLanguageDocumentContext {
         input: Data? = nil,
         timeout: TimeInterval = remoteProbeTimeout
     ) async -> FilePreviewRemoteShellResult? {
+        let options = configuration.fileOperationSSHOptions
         let arguments = configuration.batchSSHCommandArguments(
             command: SlangWorkspaceRoot.posixShellCommand(script),
-            effectiveSSHOptions: configuration.fileOperationSSHOptions
+            effectiveSSHOptions: options
         )
-        return await runProbe(arguments: arguments, input: input, timeout: timeout)
+        // A short run on the shared one-off master: it waits for a session there.
+        return try? await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: options)) {
+            await runProbe(arguments: arguments, input: input, timeout: timeout)
+        }
     }
 
     /// Runs `/usr/bin/ssh arguments`; its exit status and stdout, or nil when it can't start or after

@@ -147,7 +147,8 @@ enum WaveformFSMEngines {
     private static func sshRoute(waveform: FilePreviewPanel) -> WaveformFSDBHelper.SSHArguments? {
         guard let configuration = AppDelegate.shared?.workspaceFor(tabId: waveform.workspaceId)?.remoteConfiguration,
               configuration.transport == .ssh else { return nil }
-        let options = configuration.fileOperationSSHOptions
+        // A helper runs for the viewer's life: a connection of its own.
+        let options = configuration.longLivedSSHOptions
         return { command in configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: options) }
     }
 
