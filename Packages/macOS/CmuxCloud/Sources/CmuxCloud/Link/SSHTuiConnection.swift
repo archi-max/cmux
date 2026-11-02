@@ -206,6 +206,8 @@ public struct SSHTuiConnection: Sendable {
     }
 
     /// The daemon owns the login shell and therefore keeps it alive when SSH disconnects.
+    /// The daemon's own shell integration skips an explicit command, so the
+    /// launch makes the shell report its directory itself (``SSHTuiShellIntegration``).
     public var shellCommand: [String] {
         if let restored = configuration.restoredSSHSession,
            restored.sshSessionOwner == nil,
@@ -218,7 +220,7 @@ public struct SSHTuiConnection: Sendable {
         if let command = configuration.configuredRemoteCommand, !command.isEmpty {
             return commandArguments(command)
         }
-        return ["/bin/sh", "-c", hostOpenCommand.shellPrelude + "exec \"${SHELL:-/bin/sh}\" -l"]
+        return ["/bin/sh", "-c", hostOpenCommand.shellPrelude + hostOpenCommand.loginShellLaunch + "exec \"${SHELL:-/bin/sh}\" -l"]
     }
 
     /// Both login-shell launches first install the host `cmux` (`cmux open`)
