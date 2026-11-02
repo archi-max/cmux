@@ -22,21 +22,21 @@ enum GoToFileTypedPath {
 
     /// The absolute path `typed` names: `~/` against `home` (the host's
     /// `$HOME`, never expanded by a shell here), `./` and `../` against
-    /// `root`; `.` and `..` components folded. Nil when it needs a home
-    /// that isn't an absolute path.
+    /// `root`; `.` and `..` components folded. Nil when it needs a home or
+    /// a root that isn't an absolute path.
     /// How Go to File opens for a workspace: listing its Files root, or,
     /// with no Files root but a terminal on an SSH host, typed paths only.
     /// Nil: nothing to open against.
-    /// Placeholder until the fix: without a Files root there is nothing.
     static func paletteMode(hasFilesRoot: Bool, hasTerminalOnHost: Bool) -> GoToFilePaletteMode? {
-        hasFilesRoot ? .listing : nil
+        if hasFilesRoot { return .listing }
+        return hasTerminalOnHost ? .typedPathsOnly : nil
     }
 
     /// The directory `./` and `../` resolve against: the terminal's live
     /// directory when it reported an absolute one, else `fallback`.
-    /// Placeholder until the fix: always the fallback.
     static func relativeRoot(live: String?, fallback: String?) -> String? {
-        fallback
+        if let live, live.hasPrefix("/") { return live }
+        return fallback
     }
 
     static func resolve(_ typed: String, root: String, home: String?) -> String? {
@@ -47,6 +47,8 @@ enum GoToFileTypedPath {
         } else if typed.hasPrefix("/") {
             joined = typed
         } else {
+            // `./` and `../` need a directory to resolve against.
+            guard root.hasPrefix("/") else { return nil }
             joined = root + "/" + typed
         }
         var components: [Substring] = []
