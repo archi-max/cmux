@@ -145,10 +145,12 @@ enum RemoteFileProbe {
 /// free of app types so it can be tested on its own.
 enum RemotePreviewOpenRules {
     /// The SSH connection a dump read in place on the host is opened with,
-    /// for a terminal's link or `cmux open`. Placeholder until the fix: the
-    /// Files root's, which exists only while Files is connected over SSH.
+    /// for a terminal's link or `cmux open`: the terminal's own, the one a
+    /// download of the same link uses. The Files root needn't be connected
+    /// or rooted on the host; it is built from the same workspace
+    /// configuration, so when it is connected it is the same connection.
     static func inPlaceConnection<Connection: Equatable>(terminal: Connection?, filesRoot: Connection?) -> Connection? {
-        terminal == nil ? nil : filesRoot
+        terminal
     }
 
     /// A short reason for the debug log when a remote preview fails, with no

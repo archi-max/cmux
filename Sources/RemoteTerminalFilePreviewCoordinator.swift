@@ -485,12 +485,22 @@ final class RemoteTerminalFilePreviewCoordinator {
     /// terminal's right or a new split beside it, and a failure shows as a
     /// notice on the terminal.
     private func openInPlaceOnHost(path: String, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
-        var sshRoot: (workspaceId: UUID, connection: SSHFileExplorerConnection, displayTarget: String)?
-        if case .remoteSSH(let workspaceId, let connection, let displayTarget, _, true, _) =
-            FileExplorerWorkspaceRootResolver().resolve(workspace) {
-            sshRoot = (workspaceId, connection, displayTarget)
-        }
         let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID)
+        var filesRoot: SSHFileExplorerConnection?
+        if case .remoteSSH(_, let connection, _, _, true, _) = FileExplorerWorkspaceRootResolver().resolve(workspace) {
+            filesRoot = connection
+        }
+        // The terminal's own SSH connection, as a download of the same link
+        // uses: the Files panel needn't be connected to the host.
+        let sshConnection = RemotePreviewOpenRules.inPlaceConnection(
+            terminal: configuration.map {
+                SSHFileExplorerConnection(
+                    destination: $0.destination, port: $0.port,
+                    identityFile: $0.identityFile, sshOptions: $0.fileOperationSSHOptions
+                )
+            },
+            filesRoot: filesRoot
+        )
         let terminal = workspace.terminalPanel(for: sourcePanelID)
         let pane = workspace.paneId(forPanelId: sourcePanelID)
         let notice: @MainActor () -> Void = { [weak terminal] in
@@ -498,7 +508,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             view.showTerminalNotice(RemotePreviewNotice.couldNotOpen)
         }
         switch RemotePreviewInPlaceGate.route(
-            sshRootAvailable: sshRoot != nil,
+            sshRootAvailable: sshConnection != nil,
             terminalIsRemote: configuration != nil && terminal != nil,
             hasWorkspacePane: pane != nil
         ) {
@@ -511,12 +521,12 @@ final class RemoteTerminalFilePreviewCoordinator {
         case .open:
             break
         }
-        guard let sshRoot, let configuration, let pane else { return .unavailable }
+        guard let sshConnection, let configuration, let pane else { return .unavailable }
         // Bound for previews only: no folder listing or git status on the host.
         inPlaceStore.bindSSHPreviewProvider(
-            workspaceId: sshRoot.workspaceId,
-            connection: sshRoot.connection,
-            displayTarget: sshRoot.displayTarget,
+            workspaceId: workspace.id,
+            connection: sshConnection,
+            displayTarget: configuration.displayTarget,
             sshTransport: transport
         )
         let workspaceID = workspace.id

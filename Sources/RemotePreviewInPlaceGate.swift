@@ -9,7 +9,7 @@ enum RemotePreviewInPlaceGate {
         case open
         /// The terminal has no workspace pane (it is in a Dock): say so on it.
         case noticeNoPane
-        /// No connected SSH Files root, or the terminal isn't remote.
+        /// No SSH connection for the terminal, or the terminal isn't remote.
         case unavailable
     }
 
