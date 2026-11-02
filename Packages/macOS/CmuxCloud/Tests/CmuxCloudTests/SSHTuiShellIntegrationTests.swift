@@ -247,10 +247,11 @@ struct SSHTuiShellIntegrationTests {
         for (shell, name) in shells {
             let sandbox = try ShellSandbox(shell: shell, name: name)
             _ = try sandbox.makeDirectory("evil\u{1b}]0;PWNED\u{07}x")
-            let result = try sandbox.runLoginShell(input: "cd \"$(printf 'evil\\033]0;PWNED\\007x')\"\necho marker-done\n")
+            _ = try sandbox.makeDirectory("nl\nPWNED")
+            let result = try sandbox.runLoginShell(input: "cd \"$(printf 'evil\\033]0;PWNED\\007x')\"\ncd ..\ncd nl?PWNED\necho marker-done\n")
             #expect(result.stdout.contains("marker-done"), "\(name): \(result.stderr)")
-            #expect(!result.stdout.contains("PWNED"), "\(name): \(result.stdout.debugDescription)")
             #expect(result.reportedDirectories == [sandbox.work], "\(name): \(result.stdout.debugDescription)")
+            #expect(!result.stdout.contains("\u{1b}]0;"), "\(name): \(result.stdout.debugDescription)")
         }
     }
 
