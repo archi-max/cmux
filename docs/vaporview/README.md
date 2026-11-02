@@ -10,8 +10,7 @@ cmux's changes only; [docs/sv-editor.md](../sv-editor.md) is the overview of the
 
 ![The viewer in cmux: netlist, rows with enum names, the marker and the status strip](images/viewer-overview.png)
 
-*The viewer on the FSM test fixture (`scripts/waveform-viewer-checks/fsm/`, whose dump uses a 1 s timescale).
-`state` and `next_state` show their enum member names.*
+*The viewer on the FSM test fixture (`scripts/waveform-viewer-checks/fsm/`); `state` and `next_state` show enum names.*
 
 ## Background
 
@@ -59,9 +58,10 @@ command IDs. The differences:
 - A signal already shown is never added twice, and there is no WCP server.
 - ⌘-click a time (`@ 50000`, `50,000 ns`) or an instance path in a cmux terminal to move the marker or add the signal.
 
-<img src="images/context-menu.png" width="400" alt="A row's context menu: VaporView's items, plus Show State Machine and the debugger's items">
+<img src="images/context-menu.png" width="400" alt="A row's context menu: VaporView's items, plus Show State Machine, Reload File and the debugger's items">
 
-*A row's menu: VaporView's items, plus cmux's Show State Machine and everything below Reload File.*
+*A row's menu. cmux adds Show State Machine (under Copy Value at Marker), Reload File, and Break When Changes and
+everything below it; the rest is VaporView's.*
 
 *Files:* `Resources/vaporview/` `cmux-commands.js`, `cmux-ui.js`, `cmux-netlist.js`, `host.js`;
 `Sources/Panels/` `FilePreviewWaveformSession.swift`, `WaveformViewerSchemeHandler.swift`,
@@ -80,6 +80,14 @@ The viewer and the helper then work as one:
   and value search from their in-memory stores.
 - Signals with at most 350,000 changes are loaded whole and then behave like local ones.
 - If the windowed helper can't start, cmux falls back to whole signals and says so in the status strip.
+
+Key decisions:
+- **Read in place, never download.** Dumps are often gigabytes and change with every run; only what's drawn moves.
+- **Built on the host.** cmux pipes the folder over SSH and builds it when the launcher exits 87 (missing or stale).
+- **Protocol v2:** JSON lines on stdin, replies on fd 3 (the reader prints to stdout), cancel by request id.
+- **Bounded replies:** 1024 buckets per tile, so a reply is sized to the screen, not the signal; 1 GB per worker.
+- **Recovery:** ready within 90 s or the host is skipped for 10 minutes; a dead worker restarts and reopens.
+- *(coming)* An open timeout with one relaunch, a watchdog that kills only its own children, protocol pinning.
 
 VCD, FST and GHW are parsed in the page by wellen, local or remote. The helper's design, protocol, timeouts and
 decisions are in **[Resources/vaporview/fsdb-helper-v2/README.md](../../Resources/vaporview/fsdb-helper-v2/README.md)**.
@@ -173,6 +181,8 @@ form (or close to it; Use as Commit maps others), cmux replays every commit into
 
 <img src="images/machine-sequences.png" width="330" alt="The Sequences tab: a load-use query and its matches">
 
+*The Sequences tab on the PicoRV32 fixture: 50 load-use pairs found in 10 ms.*
+
 *Files:* `cmux-machine-core.js`, `cmux-machine.js`, `cmux-sequence.js`, `cmux-debugger-commits.js`;
 `Sources/Panels/WaveformMachineState.swift`, `WaveformDebuggerAsmBreakpoints.swift`; the package's `AsmListing/`.
 
@@ -183,8 +193,8 @@ remote host when present, otherwise slang and cmux's own evaluator.
 
 All edits to VaporView's sources are one file,
 [`source/cmux-vaporview.patch`](../../Resources/vaporview/source/cmux-vaporview.patch), against upstream `59107c6`
-(tag `1.6.1-beta`). It is the GPL corresponding source of the bundled `webview.js`; its `CHANGES.md` explains each
-change, and every edit to an upstream file carries a `// cmux:` comment.
+(tag `1.6.1-beta`). It is the GPL corresponding source of the bundled `webview.js`; its `CHANGES.md` explains the
+larger changes, and every edit to an upstream file carries a `// cmux:` comment.
 
 Rebuild byte for byte from a clean checkout of `59107c6`:
 
