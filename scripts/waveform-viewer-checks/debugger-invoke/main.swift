@@ -22,9 +22,11 @@ func describe(_ decision: I.Decision<Viewer>, _ viewers: [String: Viewer]) -> St
 
 @MainActor func run() {
     let focused = Viewer(), nearEditor = Viewer()
-    let names = ["focused": focused, "nearEditor": nearEditor]
-    func decide(_ source: I.Source, focused viewer: Viewer?, field: Bool, editor: Viewer? = nil) -> String {
-        describe(I.decide(source: source, focusedViewer: viewer, viewerFieldFocused: field, editorViewer: editor), names)
+    var names = ["focused": focused, "nearEditor": nearEditor]
+    let inWorkspace = Viewer()
+    names["inWorkspace"] = inWorkspace
+    func decide(_ source: I.Source, focused viewer: Viewer?, field: Bool, editor: Viewer? = nil, workspace: Viewer? = nil) -> String {
+        describe(I.decide(source: source, focusedViewer: viewer, viewerFieldFocused: field, editorViewer: editor, workspaceViewer: workspace), names)
     }
     // The user's report: the Sequences search had focus, View > Waveform Debugger > Continue beeped.
     expect(decide(.menu, focused: focused, field: true) == "perform focused", "the menu runs on the viewer while its search field has focus")
@@ -42,6 +44,18 @@ func describe(_ decision: I.Decision<Viewer>, _ viewers: [String: Viewer]) -> St
     expect(decide(.key(typesText: false), focused: nil, field: false) == "passKey", "a key with no viewer goes on to the focused view")
     expect(decide(.menu, focused: nil, field: false) == "unavailable", "the menu with no viewer is unavailable")
     expect(decide(.palette, focused: nil, field: false) == "unavailable", "the palette too")
+    // verify Q2: the menu and palette act on the workspace's focused viewer (focusedPanelId) even when
+    // its web view doesn't hold the window's first responder; a key still needs the responder there.
+    expect(decide(.menu, focused: nil, field: false, workspace: inWorkspace) == "perform inWorkspace",
+           "the menu acts on the workspace's focused viewer without the responder")
+    expect(decide(.palette, focused: nil, field: true, workspace: inWorkspace) == "perform inWorkspace",
+           "the palette too, with a field focused")
+    expect(decide(.key(typesText: false), focused: nil, field: false, workspace: inWorkspace) == "passKey",
+           "a key without the responder in a viewer goes on (a terminal keeps its F5)")
+    expect(decide(.menu, focused: focused, field: false, workspace: inWorkspace) == "perform focused",
+           "the viewer holding the responder comes first")
+    expect(decide(.menu, focused: nil, field: false, editor: nearEditor, workspace: inWorkspace) == "perform nearEditor",
+           "then the viewer next to a focused editor")
 
     // Which key characters type text.
     let f5 = String(UnicodeScalar(UInt16(NSF5FunctionKey))!), f10 = String(UnicodeScalar(UInt16(NSF10FunctionKey))!)
