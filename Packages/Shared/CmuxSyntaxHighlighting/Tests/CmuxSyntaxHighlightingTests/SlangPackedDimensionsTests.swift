@@ -30,6 +30,8 @@ struct SlangPackedDimensionsTests {
         #expect(dims("input logic") == nil)
         // An element type slang doesn't spell out (a struct, an enum): its width isn't in the text.
         #expect(dims("pair_t[1:0]") == nil)
+        #expect(dims("pair_t[1:0][1:0]") == nil)
+        #expect(dims("st_t[3:0][1:0]") == nil)
         #expect(dims("Enum state_t (logic[2:0])") == nil)
         #expect(dims("PackedStruct uop_t (logic[5:0])") == nil)
         // An unpacked array: the dump has its elements as separate signals.
