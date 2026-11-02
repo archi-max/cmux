@@ -50,6 +50,8 @@
 #   ./run.sh machine-fsdb <ssh-host> <remote.fsdb> <commit.log> [prog.elf]
 #                                        the machine state on a remote FSDB against its commit.log
 #   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
+#   ./run.sh debugger-invoke             debugger commands from keys, menu, palette with a
+#                                        viewer field focused; the no-viewer notice
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #   ./run.sh text                        text breakpoints' formats and match rules (cmux-textmatch.js) in JavaScriptCore
 #   ./run.sh text-breakpoints            text breakpoints in the page: hits, menus, conditions, caps, watchdog
@@ -212,6 +214,10 @@ case "${1:-}" in
     swiftc -swift-version 6 -O "$HERE/asm-listing/main.swift" "$HERE/asm-listing/stubs.swift" "$OUT/asm-listing-model.swift" \
       "$A"/Sources/CmuxSyntaxHighlighting/AsmListing/*.swift -o "$OUT/asm-listing"
     "$OUT/asm-listing" "$A/Tests/Fixtures/AsmListing/gnu-rv32-code.dis"
+    ;;
+  debugger-invoke)
+    swiftc -swift-version 6 -O "$HERE/debugger-invoke/main.swift" "$ROOT/Sources/Panels/WaveformDebuggerInvocation.swift" -o "$OUT/debugger-invoke"
+    "$OUT/debugger-invoke"
     ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
