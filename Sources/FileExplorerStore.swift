@@ -225,6 +225,9 @@ protocol FileExplorerProvider: AnyObject {
     func createDirectory(path: String) async throws
     func rename(path: String, to destinationPath: String) async throws
     func delete(path: String) async throws
+    /// Deletes every path permanently, in order, stopping at the first failure.
+    /// A failure after some were removed throws ``FileExplorerPartialRemovalError``.
+    func delete(paths: [String]) async throws
     func copy(path: String, to destinationPath: String) async throws
     func moveToTrash(path: String) async throws
     var homePath: String { get }
@@ -275,6 +278,23 @@ extension FileExplorerProvider {
     #else
     @Sendable
     #endif
+    func delete(paths: [String]) async throws {
+        var removed: [String] = []
+        for path in paths {
+            do {
+                try await delete(path: path)
+            } catch {
+                throw removed.isEmpty ? error : FileExplorerPartialRemovalError(removedPaths: removed, underlying: error)
+            }
+            removed.append(path)
+        }
+    }
+
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
     func copy(path: String, to destinationPath: String) async throws {
         throw FileExplorerError.mutationFailed
     }
@@ -291,7 +311,13 @@ extension FileExplorerProvider {
     var supportsTrash: Bool { false }
 }
 
-struct SSHFileExplorerConnection: Equatable, Sendable {
+/// A batch removal that failed after removing `removedPaths`.
+struct FileExplorerPartialRemovalError: Error {
+    let removedPaths: [String]
+    let underlying: Error
+}
+
+struct SSHFileExplorerConnection: Hashable, Sendable {
     let destination: String
     let port: Int?
     let identityFile: String?
@@ -316,6 +342,11 @@ struct SSHRemoteFileStamp: Equatable, Sendable {
     }
 
     var statOutput: String { "\(modificationTime) \(size)" }
+
+    init(modificationTime: Int64, size: Int64) {
+        self.modificationTime = modificationTime
+        self.size = size
+    }
 }
 
 protocol SSHFileExplorerTransport: AnyObject {
@@ -338,6 +369,17 @@ protocol SSHFileExplorerTransport: AnyObject {
         to localURL: URL,
         maxBytes: Int64
     ) async throws
+    /// Downloads the first of `candidates` (host paths, `~` allowed) that is
+    /// a regular readable file, to `localURL`, and names it. With `maxBytes`,
+    /// a larger file is refused (``RemoteFileProbe/Oversize``, naming it) and at
+    /// most `maxBytes + 1` bytes are read. Throws
+    /// ``RemoteFileProbe/Failure/noFile`` when none is.
+    nonisolated func probeDownload(
+        candidates: [String],
+        maxBytes: Int64?,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> RemoteFileProbe.Header
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -375,6 +417,17 @@ protocol SSHFileExplorerTransport: AnyObject {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws
+    /// Deletes every path in order, stopping at the first failure (see
+    /// ``FileExplorerProvider/delete(paths:)``).
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
+    nonisolated func delete(
+        paths: [String],
+        connection: SSHFileExplorerConnection
+    ) async throws
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -394,6 +447,13 @@ protocol SSHFileExplorerTransport: AnyObject {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp
+    /// Downloads `path` and returns its stamp as read before the bytes (nil if
+    /// it couldn't be read), in one host request where the transport can.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp?
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -437,6 +497,21 @@ extension SSHFileExplorerTransport {
         throw FileExplorerError.mutationFailed
     }
 
+    nonisolated func delete(
+        paths: [String],
+        connection: SSHFileExplorerConnection
+    ) async throws {
+        var removed: [String] = []
+        for path in paths {
+            do {
+                try await delete(path: path, connection: connection)
+            } catch {
+                throw removed.isEmpty ? error : FileExplorerPartialRemovalError(removedPaths: removed, underlying: error)
+            }
+            removed.append(path)
+        }
+    }
+
     nonisolated func copy(
         path: String,
         to destinationPath: String,
@@ -450,6 +525,66 @@ extension SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         throw FileExplorerError.mutationFailed
+    }
+
+    /// A stamp, then a download: a write in between shows up as a conflict.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp? {
+        let stamp = try? await fileStamp(path: path, connection: connection)
+        try await downloadFile(path: path, connection: connection, to: localURL)
+        return stamp
+    }
+
+    /// One request per spelling, for transports without the one-run probe
+    /// (test transports): `$HOME` looked up once, then for each candidate a
+    /// stamp and a download.
+    nonisolated func probeDownload(
+        candidates: [String],
+        maxBytes: Int64?,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> RemoteFileProbe.Header {
+        var home: String?
+        for (index, candidate) in candidates.enumerated() {
+            try Task.checkCancellation()
+            var path = candidate
+            if candidate == "~" || candidate.hasPrefix("~/") {
+                if home == nil { home = try await resolveHomePath(connection: connection) }
+                guard let home, home.hasPrefix("/") else { continue }
+                path = candidate == "~" ? home : home + (home.hasSuffix("/") ? "" : "/") + String(candidate.dropFirst(2))
+            }
+            do {
+                if let maxBytes {
+                    let stamp = try await fileStamp(path: path, connection: connection)
+                    guard stamp.size <= maxBytes else {
+                        throw RemoteFileProbe.Oversize(header: RemoteFileProbe.Header(
+                            index: index, path: path, modificationTime: stamp.modificationTime, size: stamp.size
+                        ))
+                    }
+                    try await downloadFile(path: path, connection: connection, to: localURL, maxBytes: maxBytes)
+                    return RemoteFileProbe.Header(
+                        index: index, path: path, modificationTime: stamp.modificationTime, size: stamp.size
+                    )
+                }
+                try await downloadFile(path: path, connection: connection, to: localURL)
+                let size = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?
+                    .int64Value ?? 0
+                let stamp = try? await fileStamp(path: path, connection: connection)
+                return RemoteFileProbe.Header(
+                    index: index, path: path, modificationTime: stamp?.modificationTime ?? 0, size: stamp?.size ?? size
+                )
+            } catch let failure as RemoteFileProbe.Failure {
+                throw failure
+            } catch let oversize as RemoteFileProbe.Oversize {
+                throw oversize
+            } catch {
+                try Task.checkCancellation()
+            }
+        }
+        throw RemoteFileProbe.Failure.noFile
     }
 
     /// Transports without a bounded read download everything; callers still
@@ -699,6 +834,9 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         self.state = State(homePath: homePath, isAvailable: isAvailable)
     }
 
+    /// Whether reads go over the host's ``SSHFileChannel`` (the real ssh transport).
+    var usesFileChannel: Bool { transport is ProcessSSHFileExplorerTransport }
+
     func updateAvailability(_ available: Bool, homePath: String?) {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -731,6 +869,17 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
             throw FileExplorerError.providerUnavailable
         }
         try await transport.downloadFile(path: path, connection: connection, to: localURL)
+    }
+
+    /// Downloads the first of `candidates` that is a file, in one round trip
+    /// where the transport can (``SSHFileExplorerTransport/probeDownload``).
+    func probeDownload(candidates: [String], maxBytes: Int64?, to localURL: URL) async throws -> RemoteFileProbe.Header {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.probeDownload(
+            candidates: candidates, maxBytes: maxBytes, connection: connection, to: localURL
+        )
     }
 
     /// Downloads at most `maxBytes + 1` bytes of `path`.
@@ -769,6 +918,14 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         try await transport.delete(path: path, connection: connection)
     }
 
+    /// One ssh run for the whole selection instead of one per item.
+    func delete(paths: [String]) async throws {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        try await transport.delete(paths: paths, connection: connection)
+    }
+
     func copy(path: String, to destinationPath: String) async throws {
         guard isAvailable else {
             throw FileExplorerError.providerUnavailable
@@ -781,6 +938,14 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
             throw FileExplorerError.providerUnavailable
         }
         return try await transport.fileStamp(path: path, connection: connection)
+    }
+
+    /// Downloads `path` with its stamp (read before the bytes), in one request where possible.
+    func downloadFileWithStamp(path: String, to localURL: URL) async throws -> SSHRemoteFileStamp? {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.downloadFileWithStamp(path: path, connection: connection, to: localURL)
     }
 
     /// Atomically replaces the remote file with `contents` and returns its new stamp.
@@ -814,7 +979,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection,
         showHidden: Bool
     ) async throws -> [FileExplorerEntry] {
-        try await Self.runSSHListCommand(path: path, connection: connection, showHidden: showHidden)
+        if let listing = try? await SSHFileChannelRegistry.shared.channel(for: connection).list(path, showHidden: showHidden) {
+            return Self.parseListOutput(String(decoding: listing, as: UTF8.self), path: path, showHidden: showHidden)
+        }
+        return try await Self.runSSHListCommand(path: path, connection: connection, showHidden: showHidden)
     }
 
     nonisolated func downloadFile(
@@ -822,7 +990,30 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection,
         to localURL: URL
     ) async throws {
+        // Larger files stream through their own ssh run instead of being held whole.
+        if let read = try? await SSHFileChannelRegistry.shared.channel(for: connection)
+            .read(path, maxBytes: SSHFileChannel.maximumReadBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return
+        }
         try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+    }
+
+    /// On the channel the read's reply carries its stamp (stat'd before the
+    /// bytes), so an open is one request; otherwise a stamp, then a download.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp? {
+        if let read = try? await SSHFileChannelRegistry.shared.channel(for: connection)
+            .read(path, maxBytes: SSHFileChannel.maximumReadBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return SSHRemoteFileStamp(modificationTime: read.modificationTime, size: read.size)
+        }
+        let stamp = try? await fileStamp(path: path, connection: connection)
+        try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+        return stamp
     }
 
     /// The remote command for a whole-file download, as a POSIX script any
@@ -840,6 +1031,13 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL,
         maxBytes: Int64
     ) async throws {
+        // Over the cap the channel sends nothing; the per-exec read then gives the
+        // caller its `maxBytes + 1` bytes, as before.
+        if maxBytes <= SSHFileChannel.maximumReadBytes,
+           let read = try? await SSHFileChannelRegistry.shared.channel(for: connection).read(path, maxBytes: maxBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return
+        }
         try await runDownload(
             command: Self.cappedDownloadCommand(path: path, maxBytes: maxBytes),
             connection: connection,
@@ -852,6 +1050,57 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     static func cappedDownloadCommand(path: String, maxBytes: Int64) -> String {
         let word = remoteShellPathWord(path)
         return SlangWorkspaceRoot.posixShellCommand("test -f \(word) && head -c \(max(0, maxBytes) + 1) < \(word)")
+    }
+
+    /// One ssh run for every spelling (``RemoteFileProbe``), instead of one
+    /// per spelling plus a `$HOME` lookup and a `stat`.
+    nonisolated func probeDownload(
+        candidates: [String],
+        maxBytes: Int64?,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> RemoteFileProbe.Header {
+        guard !candidates.isEmpty else { throw RemoteFileProbe.Failure.noFile }
+        do {
+            let read = try await SSHFileChannelRegistry.shared.channel(for: connection)
+                .probe(candidates, maxBytes: min(maxBytes ?? SSHFileChannel.maximumReadBytes, SSHFileChannel.maximumReadBytes))
+            if let path = read.path, path.hasPrefix("/"), (try? read.data.write(to: localURL)) != nil {
+                return RemoteFileProbe.Header(index: read.index, path: path,
+                                              modificationTime: read.modificationTime, size: read.size)
+            }
+        } catch SSHFileChannel.Failure.noFile {
+            throw RemoteFileProbe.Failure.noFile
+        } catch let SSHFileChannel.Failure.tooLarge(refused) where (maxBytes ?? .max) <= SSHFileChannel.maximumReadBytes {
+            // Refused under the caller's own cap: named, as the one-run probe does (a
+            // cap-0 probe is how a clicked dump is located).
+            guard let path = refused.path, path.hasPrefix("/") else { throw RemoteFileProbe.Failure.tooLarge }
+            throw RemoteFileProbe.Oversize(header: RemoteFileProbe.Header(
+                index: refused.index, path: path, modificationTime: refused.modificationTime, size: refused.size
+            ))
+        } catch {
+            // No channel: one ssh run for this probe, as before.
+        }
+        let raw = localURL.deletingLastPathComponent()
+            .appendingPathComponent(".probe-" + UUID().uuidString, isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: raw) }
+        let commandProcess = SSHDownloadCommandProcess(
+            connection: connection,
+            command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
+            outputURL: raw
+        )
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(with: Result { try commandProcess.run() })
+                }
+            }
+        } onCancel: {
+            commandProcess.terminate()
+        }
+        guard let header = try RemoteFileProbe.outcome(status: result.terminationStatus, raw: raw, to: localURL) else {
+            throw FileExplorerError.sshCommandFailed(result.stderr)
+        }
+        return header
     }
 
     private nonisolated func runDownload(
@@ -937,6 +1186,34 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     #else
     @Sendable
     #endif
+    nonisolated func delete(
+        paths: [String],
+        connection: SSHFileExplorerConnection
+    ) async throws {
+        var removed: [String] = []
+        for batch in SSHFileExplorerMutationCommand.deleteBatches(paths) {
+            // Only this run knows the nonce, so a login dotfile's output can't fake a removal.
+            let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            let result = try await Self.runSSHProcess(
+                connection: connection,
+                command: SSHFileExplorerMutationCommand.delete(paths: batch, nonce: nonce).command
+            )
+            let indices = SSHFileExplorerMutationCommand.removedIndices(in: result.stdout, nonce: nonce)
+            removed += indices.filter { batch.indices.contains($0) }.map { batch[$0] }
+            guard result.terminationStatus != 0 else { continue }
+            // 255: ssh itself failed (connection, auth); keep its diagnostics.
+            let error: Error = result.terminationStatus == 255
+                ? FileExplorerError.sshCommandFailed(result.stderr)
+                : FileExplorerError.mutationError(exitStatus: result.terminationStatus)
+            throw removed.isEmpty ? error : FileExplorerPartialRemovalError(removedPaths: removed, underlying: error)
+        }
+    }
+
+    #if compiler(>=6.2)
+    @concurrent
+    #else
+    @Sendable
+    #endif
     nonisolated func copy(
         path: String,
         to destinationPath: String,
@@ -957,6 +1234,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
+        // A missing file or any channel trouble takes the per-exec path, whose errors callers know.
+        if let stat = try? await SSHFileChannelRegistry.shared.channel(for: connection).stat(path) {
+            return SSHRemoteFileStamp(modificationTime: stat.modificationTime, size: stat.size)
+        }
         let output = try await Self.runSSHCommand(
             connection: connection,
             command: SSHFileExplorerMutationCommand.fileStamp(path: path).command
@@ -1339,6 +1620,38 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     }
 }
 
+/// One ``SSHFileChannel`` per SSH connection (destination, port, identity and
+/// options, so the same ControlPath), shared by every Files panel, terminal
+/// link and `cmux open` for that host. A connected Files panel holds a lease
+/// that starts its channel at once and ends it on disconnect; otherwise a
+/// channel starts on its first request and ends after ten idle minutes.
+final class SSHFileChannelRegistry: @unchecked Sendable {
+    static let shared = SSHFileChannelRegistry()
+
+    private let pool = SSHFileChannelPool()
+
+    func channel(for connection: SSHFileExplorerConnection) -> SSHFileChannel {
+        pool.channel(key: Self.key(connection), launch: Self.launch(connection))
+    }
+
+    /// Holds `connection`'s channel up while a workspace is connected to it, starting it now.
+    func lease(for connection: SSHFileExplorerConnection) -> SSHFileChannelPool.Lease {
+        pool.retain(key: Self.key(connection), launch: Self.launch(connection))
+    }
+
+    private static func key(_ connection: SSHFileExplorerConnection) -> String {
+        [connection.destination, connection.port.map(String.init) ?? "", connection.identityFile ?? ""]
+            .joined(separator: "\u{0}") + "\u{0}" + connection.sshOptions.joined(separator: "\u{1f}")
+    }
+
+    private static func launch(_ connection: SSHFileExplorerConnection) -> SSHFileChannel.Launch {
+        { command in
+            (URL(fileURLWithPath: "/usr/bin/ssh"),
+             ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command))
+        }
+    }
+}
+
 enum FileExplorerError: LocalizedError, Equatable {
     case providerUnavailable
     case sshCommandFailed(String)
@@ -1413,6 +1726,15 @@ final class FileExplorerStore: ObservableObject {
 
     var provider: FileExplorerProvider?
 
+    /// Keeps the connected SSH host's file channel up (started on connect, so no
+    /// open pays for it) and ends it on disconnect or a change of connection.
+    private var fileChannelLease: SSHFileChannelPool.Lease?
+    private var fileChannelConnection: SSHFileExplorerConnection?
+    /// Only a Files panel's store (an SSH workspace root) holds its host's
+    /// channel; a preview-only store (a terminal's in-place opens, Go to File)
+    /// uses it unpinned, so it idles out instead of outliving the workspace.
+    var holdsFileChannel = false
+
     /// Whether hidden files are shown. Set from FileExplorerState externally.
     var showHiddenFiles: Bool = false
 
@@ -1453,6 +1775,10 @@ final class FileExplorerStore: ObservableObject {
 
     private let gitStatusProvider: GitStatusProvider
     private var gitStatusGeneration: UInt64 = 0
+    /// Git status runs started and not yet finished, and whether a Refresh
+    /// asked for one more after them (``refreshGitStatusCoalesced()``).
+    private var gitStatusRunsInFlight = 0
+    private var gitStatusRerunQueued = false
 
     init(gitStatusProvider: GitStatusProvider = GitStatusProvider()) {
         self.gitStatusProvider = gitStatusProvider
@@ -1572,6 +1898,7 @@ final class FileExplorerStore: ObservableObject {
             return
         }
         let connection = (provider as? SSHFileExplorerProvider)?.connection
+        gitStatusRunsInFlight += 1
         Task { [weak self] in
             let status = await Task.detached(priority: .utility) {
                 if let connection {
@@ -1580,8 +1907,15 @@ final class FileExplorerStore: ObservableObject {
                 }
                 return source.fetchStatus(directory: path)
             }.value
-            guard let self, self.gitStatusGeneration == generation, self.resourceContextID == context else { return }
-            self.gitStatusByPath = status
+            guard let self else { return }
+            self.gitStatusRunsInFlight -= 1
+            if self.gitStatusGeneration == generation, self.resourceContextID == context {
+                self.gitStatusByPath = status
+            }
+            if self.gitStatusRunsInFlight == 0, self.gitStatusRerunQueued {
+                self.gitStatusRerunQueued = false
+                self.refreshGitStatus()
+            }
         }
     }
 
@@ -1732,13 +2066,21 @@ final class FileExplorerStore: ObservableObject {
         let context = resourceContextID
         var removedPaths: Set<String> = []
         do {
-            for path in topLevelPaths.sorted() {
-                if useTrash {
+            let ordered = topLevelPaths.sorted()
+            if useTrash {
+                for path in ordered {
                     try await provider.moveToTrash(path: path)
-                } else {
-                    try await provider.delete(path: path)
+                    removedPaths.insert(path)
                 }
-                removedPaths.insert(path)
+            } else {
+                // One request for the whole selection: an SSH host deletes it in one run.
+                do {
+                    try await provider.delete(paths: ordered)
+                } catch let partial as FileExplorerPartialRemovalError {
+                    removedPaths.formUnion(partial.removedPaths)
+                    throw partial.underlying
+                }
+                removedPaths.formUnion(ordered)
             }
         } catch {
             // Earlier items may already be gone; drop their state before
@@ -1884,10 +2226,20 @@ final class FileExplorerStore: ObservableObject {
         }
         if providerChanged { resetResourceContext(preservingNavigation: true) }
         provider = newProvider
+        updateFileChannelLease()
         // Re-expand previously expanded nodes if provider becomes available
         if reloadIfAvailable, newProvider?.isAvailable == true {
             reload()
         }
+    }
+
+    /// Holds the file channel of the provider's host while it is an available SSH host.
+    func updateFileChannelLease() {
+        let ssh = provider as? SSHFileExplorerProvider
+        let wanted = holdsFileChannel ? ssh.flatMap { $0.isAvailable && $0.usesFileChannel ? $0.connection : nil } : nil
+        guard wanted != fileChannelConnection else { return }
+        fileChannelConnection = wanted
+        fileChannelLease = wanted.map { SSHFileChannelRegistry.shared.lease(for: $0) }
     }
 
     #if DEBUG
@@ -1900,6 +2252,8 @@ final class FileExplorerStore: ObservableObject {
         #if DEBUG
         NSLog("[FileExplorer] reload() path=\(rootPath) provider=\(type(of: provider).self)")
         #endif
+        // A Files refresh also refreshes what Go to File lists.
+        GoToFileSnapshotLoader.cache.invalidateAll()
         contentRevision &+= 1
         cancelAllLoads()
         rootNodes = []
@@ -1912,6 +2266,57 @@ final class FileExplorerStore: ObservableObject {
             await self.loadChildren(for: nil, at: path)
         }
         loadTasks[rootPath] = task
+    }
+
+    /// Right-click Refresh: re-lists `path` through the normal listing path.
+    /// The root re-lists the whole tree (expanded folders re-expand); a loaded
+    /// folder re-lists only itself. A folder that was never listed is left for
+    /// its next expand, which lists it fresh.
+    func refresh(directoryAt path: String) {
+        guard !rootPath.isEmpty, provider != nil else { return }
+        if Self.pathsEqual(path, rootPath) {
+            reload()
+            refreshGitStatusCoalesced()
+            return
+        }
+        guard let node = nodesByPath[path], node.isDirectory,
+              node.resourceContextID == nil || node.resourceContextID == resourceContextID,
+              node.children != nil, loadTasks[path] == nil, !loadingPaths.contains(path) else { return }
+        // A Files refresh also refreshes what Go to File lists.
+        GoToFileSnapshotLoader.cache.invalidateAll()
+        // Everything below the folder is replaced by the new listing: a load
+        // still running there would land on nodes that are no longer shown.
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        for (key, task) in loadTasks where key.hasPrefix(prefix) {
+            task.cancel()
+            loadTasks.removeValue(forKey: key)
+        }
+        loadingPaths = loadingPaths.filter { !$0.hasPrefix(prefix) }
+        for (key, scheduler) in prefetchSchedulers where key.hasPrefix(prefix) {
+            scheduler.cancel()
+            prefetchSchedulers.removeValue(forKey: key)
+        }
+        nodesByPath = nodesByPath.filter { !$0.key.hasPrefix(prefix) }
+        node.isLoading = true
+        node.error = nil
+        objectWillChange.send()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.loadChildren(for: node, at: path)
+        }
+        loadTasks[path] = task
+        refreshGitStatusCoalesced()
+    }
+
+    /// Refresh's git status: a Refresh while a run is in flight asks for one
+    /// more run when it ends instead of starting its own, so repeated
+    /// Refreshes cost at most one extra run (`git status` over SSH).
+    private func refreshGitStatusCoalesced() {
+        if gitStatusRunsInFlight > 0 {
+            gitStatusRerunQueued = true
+        } else {
+            refreshGitStatus()
+        }
     }
 
     func expand(node: FileExplorerNode) {
@@ -1974,6 +2379,9 @@ final class FileExplorerStore: ObservableObject {
 
     func prefetchChildren(for node: FileExplorerNode) {
         guard node.resourceContextID == nil || node.resourceContextID == resourceContextID, node.isDirectory, node.children == nil, !loadingPaths.contains(node.path) else { return }
+        // Each SSH listing is its own ssh run on the host, so hovering across a
+        // tree would start one per folder passed over. SSH folders list when opened.
+        guard !(provider is SSHFileExplorerProvider) else { return }
         // Debounce: only prefetch if hover persists for 200ms
         let path = node.path
         let scheduler = prefetchSchedulers[path] ?? MainActorDeferredActionScheduler()

@@ -12,6 +12,9 @@ struct FileExplorerPreviewCoordinator {
     struct Presentation {
         /// Opens the preview of the local (lease) path, or returns nil.
         let openPreview: @MainActor (Workspace, String) -> FilePreviewPanel?
+        /// Whether showing the preview (new, or one already open) may move
+        /// keyboard focus to it, read when it is shown.
+        let takesFocus: @MainActor () -> Bool
         /// Reports a failure, including a preview that didn't open or a refresh that failed.
         let reportFailure: @MainActor (Error) -> Void
         /// Whether the opened panel may still refresh from its host, for the
@@ -69,13 +72,14 @@ struct FileExplorerPreviewCoordinator {
                     if try await Self.refreshExistingRemotePreview(
                         path: path, providerIdentity: providerIdentity, workspace: workspace, pane: pane,
                         store: store, context: context, isCurrent: isCurrent,
-                        validate: {}, provider: remote
+                        validate: {}, provider: remote, takesFocus: presentation?.takesFocus
                     ) { return }
                     // The waveform viewer reads FSDB on the SSH host; dumps run to
                     // hundreds of MB, so none is downloaded.
                     let lease = remote is SSHFileExplorerProvider && FilePreviewKindResolver.isReadInPlaceOnRemoteHost(path)
                         ? try await store.cloudPreviewCache.placeholder(path: path, provider: remote)
-                        : try await store.cloudPreviewCache.materialize(path: path, provider: remote)
+                        : try await store.cloudPreviewCache.materialize(path: path, provider: remote,
+                                                                         allowRecentCopy: true)
                     guard isCurrent(), store.resourceContextID == context else { return }
                     let opened = presentation.map { $0.openPreview(workspace, lease.url.path) }
                         ?? workspace.openFilePreviewSurfaces(inPane: pane, filePaths: [lease.url.path],
@@ -93,7 +97,14 @@ struct FileExplorerPreviewCoordinator {
                         if presentation == nil {
                             Self.installRemoteLinkOpener(on: panel, workspace: workspace, store: store, isCurrent: isCurrent)
                         }
-                        workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: panel)
+                        if presentation?.takesFocus() ?? true {
+                            workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: panel)
+                        }
+                        // A recent copy painted at once; now check it against the host.
+                        if lease.isUnverified {
+                            try await Self.revalidate(panel: panel, lease: lease, workspace: workspace, provider: remote,
+                                                      isCurrent: presentation?.isPanelCurrent ?? isCurrent)
+                        }
                     } else {
                         presentation?.reportFailure(FileExplorerError.providerUnavailable)
                     }
@@ -120,7 +131,8 @@ struct FileExplorerPreviewCoordinator {
         context: UUID,
         isCurrent: @escaping @MainActor () -> Bool,
         validate: @escaping @MainActor () throws -> Void,
-        provider: any RemoteFileExplorerProvider
+        provider: any RemoteFileExplorerProvider,
+        takesFocus: (@MainActor () -> Bool)? = nil
     ) async throws -> Bool {
         guard let existing = workspace.panels.values
             .compactMap({ $0 as? FilePreviewPanel })
@@ -133,14 +145,43 @@ struct FileExplorerPreviewCoordinator {
         guard let lease = existing.cloudPreviewLease else { return false }
         guard !existing.isClosed else { return true }
         try validate()
+        if provider is SSHFileExplorerProvider {
+            // The open copy shows at once; a newer host file then replaces it in place.
+            let focus = takesFocus?() ?? true
+            _ = workspace.openOrFocusFilePreviewSurface(inPane: pane, filePath: existing.filePath, focus: focus)
+            if focus { workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: existing) }
+            try await revalidate(panel: existing, lease: lease, workspace: workspace, provider: provider,
+                                 isCurrent: { isCurrent() && store.resourceContextID == context })
+            return true
+        }
         try await lease.refresh(using: provider)
         guard isCurrent(), store.resourceContextID == context, !existing.isClosed,
               workspace.panels[existing.id] != nil else { return true }
         try validate()
         _ = existing.reloadFromDisk()
-        _ = workspace.openOrFocusFilePreviewSurface(inPane: pane, filePath: existing.filePath, focus: true)
-        workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: existing)
+        let focus = takesFocus?() ?? true
+        _ = workspace.openOrFocusFilePreviewSurface(inPane: pane, filePath: existing.filePath, focus: focus)
+        if focus { workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: existing) }
         return true
+    }
+
+    /// Checks a shown SSH copy against the host (one stat when unchanged) and
+    /// reloads the panel when a newer host file replaced it. A buffer edited
+    /// before that keeps the old copy's stamp, so its save reports the host's
+    /// change as a conflict instead of overwriting it.
+    static func revalidate(
+        panel: FilePreviewPanel,
+        lease: CloudFilePreviewLease,
+        workspace: Workspace,
+        provider: any RemoteFileExplorerProvider,
+        isCurrent: @escaping @MainActor () -> Bool
+    ) async throws {
+        let shownStamp = lease.remoteStamp
+        guard try await lease.refresh(using: provider), !panel.isClosed, panel.cloudPreviewLease === lease else { return }
+        if isCurrent(), workspace.panels[panel.id] != nil {
+            await panel.reloadFromDisk().value
+        }
+        if panel.isDirty { lease.remoteStamp = shownStamp }
     }
 
     private static func installRemotePreviewRefresh(

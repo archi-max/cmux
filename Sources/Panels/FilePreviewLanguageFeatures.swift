@@ -247,16 +247,25 @@ final class FilePreviewLanguageFeatures: NSObject {
             return
         }
         self.context = context
-        if let remote = context.remote {
-            await startCompletionMirror(documentURI: context.documentURI, remote: remote)
-        }
+        // The profile listing, the local completion mirror and the server need
+        // only the root, so they start together (on an SSH host each is a round trip).
+        let started = await SlangStartupSchedule.run(
+            listing: { _ = SlangCompilationActions.refreshListing(for: self) },
+            mirror: { [weak self] in
+                guard let self, let context = self.context, let remote = context.remote else { return }
+                await self.startCompletionMirror(documentURI: context.documentURI, remote: remote)
+            },
+            server: {
+                try await LanguageServerPool.shared.session(
+                    launch: context.serverLaunch,
+                    rootURI: context.rootURI,
+                    languageId: Self.languageId
+                )
+            }
+        )
         let session: LanguageServerSession
         do {
-            session = try await LanguageServerPool.shared.session(
-                launch: context.serverLaunch,
-                rootURI: context.rootURI,
-                languageId: Self.languageId
-            )
+            session = try started.get()
         } catch {
             // Keep feeding the local completion server.
             isUnavailable = completionMirror == nil
@@ -1686,14 +1695,24 @@ final class FilePreviewLanguageFeatures: NSObject {
         }
     }
 
+    /// Puts the caret at a 1-based `line` (and `column`) of `panel` once its
+    /// text has loaded: a terminal's `path:line[:column]` link.
+    /// Puts the caret at `line` (1-based); with `takesFocus: false` the text
+    /// view is not made first responder, so a background open keeps the
+    /// user's focus.
+    static func reveal(line: Int, column: Int?, in panel: FilePreviewPanel, takesFocus: Bool = true) {
+        let position = LSPPosition(line: max(0, line - 1), character: max(0, (column ?? 1) - 1))
+        selectWhenLoaded(LSPRange(start: position, end: position), in: panel, takesFocus: takesFocus)
+    }
+
     /// A freshly opened panel loads its text asynchronously; wait for it.
-    private static func selectWhenLoaded(_ range: LSPRange, in panel: FilePreviewPanel) {
+    private static func selectWhenLoaded(_ range: LSPRange, in panel: FilePreviewPanel, takesFocus: Bool = true) {
         Task { @MainActor [weak panel] in
             for _ in 0..<100 {
                 guard let panel, !panel.isClosed else { return }
                 if let textView = panel.textView, !panel.textContent.isEmpty, textView.string == panel.textContent {
                     select(range, in: textView)
-                    textView.window?.makeFirstResponder(textView)
+                    if takesFocus { textView.window?.makeFirstResponder(textView) }
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(50))

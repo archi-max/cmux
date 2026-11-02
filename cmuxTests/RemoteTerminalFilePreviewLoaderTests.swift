@@ -91,6 +91,78 @@ import Testing
         #expect(await transport.requests.paths.isEmpty)
     }
 
+    // MARK: path:line links, the host path, one round trip
+
+    @Test func aBareNameWithALineOpensTheFileAtThatLine() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = PreviewDownloadTransport(files: ["/w/rtl/alu.sv": Data("module alu;".utf8)])
+        let download = try await makeLoader(transport: transport, cache: root).load(
+            tokens: ["rtl/alu.sv:42:7"], workingDirectory: "/w"
+        )
+        #expect(download.remotePath == "/w/rtl/alu.sv")
+        #expect(download.line == 42)
+        #expect(download.column == 7)
+        #expect(try String(contentsOf: download.url, encoding: .utf8) == "module alu;")
+        // `alu.sv:42` parses as a URL with the scheme `alu.sv`; it is still a file.
+        let bare = try await makeLoader(transport: PreviewDownloadTransport(files: ["/w/alu.sv": Data("x".utf8)]), cache: root)
+            .load(tokens: ["alu.sv:42"], workingDirectory: "/w")
+        #expect(bare.remotePath == "/w/alu.sv")
+        #expect(bare.line == 42)
+    }
+
+    @Test func aDownloadNamesTheHostPathItRead() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = PreviewDownloadTransport(files: ["/home/remote/notes.md": Data("n".utf8)])
+        let clicked = try await makeLoader(transport: transport, cache: root).load(tokens: ["~/notes.md"], workingDirectory: nil)
+        #expect(clicked.remotePath == "/home/remote/notes.md")
+        #expect(clicked.remoteStamp != nil, "an editable preview needs the stamp for its save-time check")
+        let opened = try await makeLoader(transport: transport, cache: root).load(exactPath: "/home/remote/notes.md", maxBytes: 1_000)
+        #expect(opened.remotePath == "/home/remote/notes.md")
+        #expect(opened.remoteStamp != nil)
+    }
+
+    @Test func theWorkingDirectoryIsAskedOnlyForRelativeLinks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = PreviewDownloadTransport(files: ["/abs/a.sv": Data("a".utf8), "/live/b.sv": Data("b".utf8)])
+        let asked = PreviewDownloadRequests()
+        let loader = makeLoader(transport: transport, cache: root)
+        _ = try await loader.load(tokens: ["/abs/a.sv:3"]) { await asked.record("cwd"); return "/live" }
+        #expect(await asked.paths.isEmpty)
+        let relative = try await loader.load(tokens: ["b.sv"]) { await asked.record("cwd"); return "/live" }
+        #expect(await asked.paths == ["cwd"])
+        #expect(relative.remotePath == "/live/b.sv")
+    }
+
+    @Test func aClickedDumpIsLocatedOnTheHostWithoutDownloadingIt() async throws {
+        // A relative ⌘-click on a waveform dump opens the viewer that reads it
+        // on the host; only the host path is needed, never the bytes.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = PreviewDownloadTransport(files: ["/w/sim/dump.fsdb": Data(count: 4096)])
+        let header = try await makeLoader(transport: transport, cache: root).locate(tokens: ["sim/dump.fsdb"]) { "/w" }
+        #expect(header.path == "/w/sim/dump.fsdb")
+        #expect(await transport.requests.paths.isEmpty, "no bytes of the dump")
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.fsdb"]))
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.fsdb:3"]))
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["/home/u/sim/dump.fsdb"]), "absolute links too")
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["~/sim/DUMP.FSDB"]))
+        #expect(!RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["docs/CACHE.md"]))
+        #expect(!RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.vcd"]))
+    }
+
+    @Test func aClickOnAMissingFileFailsWithItsReason() async throws {
+        // The failure is logged by reason; "no such file" must not read as an ssh fault.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let loader = makeLoader(transport: PreviewDownloadTransport(files: [:]), cache: root)
+        await #expect(throws: RemoteFileProbe.Failure.noFile) {
+            _ = try await loader.load(tokens: ["docs/missing.md"], workingDirectory: "/w")
+        }
+    }
+
     // MARK: cmux open (exact path, size-capped)
 
     @Test func commandLineDownloadStopsAtTheCapEvenWhenTheHostUnderstatesTheSize() async throws {
