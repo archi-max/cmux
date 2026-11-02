@@ -269,7 +269,8 @@ case "${1:-}" in
     ;;
   riscv)
     swiftc -O "$HERE/riscv/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
-      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerStrings.swift" -o "$OUT/riscv"
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerStrings.swift" \
+      "$ROOT/Sources/Panels/WaveformValueAliasFiles.swift" -o "$OUT/riscv"
     "$OUT/riscv" "$ASSETS" "$HERE/riscv/riscv.vcd" "$HERE/riscv/aliases.alias" "$OUT/riscv.png" | grep -v '^\[log\]' | tee "$OUT/riscv.log"
     grep -q '^RISCV CHECKS PASSED' "$OUT/riscv.log"
     ;;

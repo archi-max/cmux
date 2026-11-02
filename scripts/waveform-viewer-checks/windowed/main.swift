@@ -615,6 +615,64 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       d.getElementById('search-bar').blur();
       return null
       """)
+    // Bit-pattern formats stay bit patterns: each searches the exact value of a far
+    // change (outside every loaded window) and must reach the helper as a `search`
+    // (a whole-value pattern), not as page-side window scans. ASCII stays text.
+    func bits(_ t: Int) async -> String? {
+      let r = try? await helper.request(json(["cmd": "valueAt", "signalIds": [2], "t": t]))
+      return r.flatMap { (try? JSONSerialization.jsonObject(with: $0.header)) as? [String: Any] }
+        .flatMap { ($0["result"] as? [String: Any])?["values"] as? [String] }?.first
+    }
+    var far = end * 7 / 10
+    var value = ""
+    for _ in 0..<50 {
+      if let a = await bits(far - 1), let b = await bits(far), a != b, !b.contains("x") { value = b; break }
+      far += 2000
+    }
+    let word = UInt32(value, radix: 2) ?? 0
+    expect(!value.isEmpty, "a far change of bus0 to search for: \(far) \(value)")
+    _ = await call("""
+      if (!window.__relayCmds) {
+        window.__relayCmds = [];
+        const real = window.fetch;
+        window.fetch = (u, o) => {
+          try { const j = JSON.parse(o && o.body); if (j && j.cmd) { window.__relayCmds.push(j.cmd); } } catch (e) {}
+          return real(u, o);
+        };
+      }
+      return null
+      """)
+    let cases: [(command: String, format: String, query: String, exact: Bool)] = [
+      ("displayAsHexadecimal", "hexadecimal", String(word, radix: 16), true),
+      ("displayAsBinary", "binary", value, true),
+      ("displayAsDecimal", "decimal", String(word), true),
+      ("displayAsDecimalSigned", "signed", String(Int32(bitPattern: word)), true),
+      ("displayAsFloat", "float32", "1.5", false),
+    ]
+    // The row's format, as cmux's context menu sets it, once the viewer reports it.
+    func setFormat(_ command: String, _ format: String) async -> Bool {
+      _ = await call("""
+        document.getElementById('viewer').contentDocument.getElementById('search-bar').blur();
+        await cmuxCommands.run('vaporview.\(command)', { netlistId: 3, width: 32 });
+        return null
+        """)
+      return await waitFor(3000) {
+        await self.call("const s = cmuxCommands.sessionSnapshot().state.displayedSignals.find((d) => d.name === 'tb.dut.bus0'); return s ? s.numberFormat : ''") as? String == format
+      }
+    }
+    for c in cases {
+      expect(await setFormat(c.command, c.format), "bus0 is shown as \(c.format)")
+      _ = await call("window.__relayCmds.length = 0; return null")
+      let t = await search(c.query, from: 0)
+      let cmds = await call("return [...new Set(window.__relayCmds)]") as? [String] ?? []
+      if c.exact { expect(t == far, "\(c.format) search for the far value \(c.query) finds it: t \(t), want \(far)") }
+      expect(cmds.contains("search"), "\(c.format) search reaches the helper as a bit pattern: \(cmds)")
+    }
+    expect(await setFormat("displayAsAscii", "ascii"), "bus0 is shown as ascii")
+    _ = await call("window.__relayCmds.length = 0; return null")
+    _ = await search("a", from: 0)
+    let asciiCmds = await call("return [...new Set(window.__relayCmds)]") as? [String] ?? []
+    expect(!asciiCmds.contains("search"), "ASCII stays a text search (no helper search): \(asciiCmds)")
     _ = await call("await cmuxCommands.run('vaporview.displayAsHexadecimal', { netlistId: 3 }); return null")
   }
 
