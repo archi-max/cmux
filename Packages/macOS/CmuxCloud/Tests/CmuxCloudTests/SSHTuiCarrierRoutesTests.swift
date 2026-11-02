@@ -8,11 +8,15 @@ import Testing
 struct SSHTuiCarrierRoutesTests {
     private static let environment = ["PATH": "/usr/bin", "SSH_AUTH_SOCK": "/tmp/cmux-routes-agent.sock"]
 
-    private func configuration(options: [String]) -> WorkspaceRemoteConfiguration {
+    private func configuration(
+        _ destination: String = "alice@example.invalid",
+        options: [String],
+        agent: String = "/tmp/cmux-routes-agent.sock"
+    ) -> WorkspaceRemoteConfiguration {
         WorkspaceRemoteConfiguration(
-            destination: "alice@example.invalid", port: nil, identityFile: nil, sshOptions: options,
+            destination: destination, port: nil, identityFile: nil, sshOptions: options,
             localProxyPort: nil, relayPort: nil, relayID: nil, relayToken: nil, localSocketPath: nil,
-            terminalStartupCommand: nil, agentSocketPath: "/tmp/cmux-routes-agent.sock"
+            terminalStartupCommand: nil, agentSocketPath: agent
         )
     }
 
@@ -59,5 +63,51 @@ struct SSHTuiCarrierRoutesTests {
         let workspace = configuration(options: [])
         #expect(SSHTuiCarrierRoutes().fileOperationSSHOptions(for: workspace)
             == SSHTuiConnection(configuration: workspace).fileOperationSSHOptions)
+    }
+
+    // The next three tests come from the independent review of this change.
+
+    /// Each machine gets only its own carrier, and a machine with none gets its own options.
+    @Test("Another machine's carrier is never used")
+    func anotherMachinesCarrierIsNeverUsed() {
+        let a = SSHTuiConnection(configuration: configuration("alice@a.invalid", options: []), environment: Self.environment)
+        let b = SSHTuiConnection(configuration: configuration("bob@b.invalid", options: []), environment: Self.environment)
+        let routes = SSHTuiCarrierRoutes()
+        routes.record(a)
+        routes.record(b)
+        let pathA = controlPaths(a.fileOperationSSHOptions)
+        let pathB = controlPaths(b.fileOperationSSHOptions)
+        #expect(pathA != pathB)
+        #expect(controlPaths(routes.fileOperationSSHOptions(for: configuration("bob@b.invalid", options: []))) == pathB)
+        #expect(controlPaths(routes.fileOperationSSHOptions(for: configuration("alice@a.invalid", options: []))) == pathA)
+        let c = configuration("carol@c.invalid", options: [])
+        #expect(routes.fileOperationSSHOptions(for: c) == SSHTuiConnection(configuration: c).fileOperationSSHOptions)
+    }
+
+    @Test("A re-adopted carrier replaces the old route")
+    func aReadoptedCarrierReplacesTheOldRoute() {
+        let old = SSHTuiConnection(configuration: configuration("alice@a.invalid", options: []), environment: Self.environment)
+        let new = SSHTuiConnection(
+            configuration: configuration("alice@a.invalid", options: ["ControlPath=none"]),
+            environment: Self.environment
+        )
+        #expect(old.id == new.id)
+        let routes = SSHTuiCarrierRoutes()
+        routes.record(old)
+        routes.record(new)
+        #expect(controlPaths(routes.fileOperationSSHOptions(for: configuration("alice@a.invalid", options: []))) == ["ControlPath=none"])
+    }
+
+    /// The carrier is shared per machine, agent included, as its terminals are;
+    /// a one-off run still never becomes a master.
+    @Test("A different agent on the same machine never starts a master")
+    func aDifferentAgentOnTheSameMachine() {
+        let carrier = SSHTuiConnection(configuration: configuration("alice@a.invalid", options: []), environment: Self.environment)
+        let other = configuration("alice@a.invalid", options: [], agent: "/tmp/cmux-routes-agent-B.sock")
+        let routes = SSHTuiCarrierRoutes()
+        routes.record(carrier)
+        let options = routes.fileOperationSSHOptions(for: other)
+        #expect(controlPaths(options) == controlPaths(carrier.fileOperationSSHOptions))
+        #expect(!options.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
     }
 }
