@@ -765,14 +765,14 @@ extension SlangCompilationActions {
         for editor in FilePreviewLanguageFeatures.allLinkables where editor.linkHostIdentity == hostIdentity {
             guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted,
                   let root = session.rootURI?.path else { continue }
-            // A saved build file may fix a profile that elaborated nothing.
-            if isBuildFile { designFilesChanged(session: session) }
             // Profiles also live outside the root (~/.config/cmux-slang): list again, not reusing a
             // listing that started before the save.
             listings[editor.linkRootKey] = nil
             refreshListing(for: editor, force: true)
             // The server's form of both paths (symlinks and /private resolved locally).
             let savedPath = session.serverPath(for: URL(fileURLWithPath: path))
+            // A saved build file may fix a profile that elaborated nothing.
+            if isBuildFile { designFileSaved(savedPath, session: session) }
             if isConfig, [".slang/server.json", SlangServerConfigFile.relativePath].contains(where: {
                 session.serverPath(for: URL(fileURLWithPath: SlangServerConfigFile.path(inWorkspace: root, relativePath: $0))) == savedPath
             }) {
@@ -1078,13 +1078,36 @@ extension SlangCompilationActions {
         }
     }
 
-    /// A design file of `session` (a source or a build file) was saved or reloaded from disk: a
-    /// profile that elaborated nothing is tried again, now for the active file.
-    static func designFilesChanged(session: LanguageServerSession) {
+    /// `path` (the server's form) was saved or reloaded from disk in `session`: a profile that
+    /// elaborated nothing is tried again, now for the active file, only if its build includes the
+    /// file (verify R2), so saving any source doesn't rebuild every broken profile.
+    static func designFileSaved(_ path: String, session: LanguageServerSession) {
         let entry = entry(for: session)
         guard let follower = entry.follower else { return }
-        follower.designFilesChanged()
-        if entry.activeWaveform != nil || entry.activeEditor?.linkSession?.session === session { follower.activeFileChanged() }
+        let editor = entry.activeEditor ?? FilePreviewLanguageFeatures.allLinkables.first { $0.linkSession?.session === session }
+        let listing = editor.flatMap { cachedListing(for: $0) }
+        let root = editor?.linkContext?.rootURI?.path
+        let serverPath = { (file: String) in session.serverPath(for: URL(fileURLWithPath: file)) }
+        let cleared = follower.designFileSaved { choice in
+            switch choice {
+            case .topLevel(let file):
+                return file == path
+            case .buildFile(let build):
+                if build == path { return true }
+                // A build whose files aren't known (not listed yet) may include it.
+                guard let root, let profile = listing?.profiles.first(where: { serverPath($0.path) == build }) else { return true }
+                // slang resolves a build file's relative paths against the server's folder. Sources of
+                // nested command files aren't read here, so a build with any may include it.
+                return !profile.buildFile.commandFiles.isEmpty
+                    || profile.buildFile.involves(path, buildFilePath: profile.path, baseDirectory: root, normalize: serverPath)
+            case .explore, .configured:
+                // Every file of the root is part of these.
+                return true
+            }
+        }
+        if cleared, entry.activeWaveform != nil || entry.activeEditor?.linkSession?.session === session {
+            follower.activeFileChanged()
+        }
     }
 
     private static func follower(for session: LanguageServerSession, entry: Entry) -> SlangProfileFollower {
@@ -1104,7 +1127,7 @@ extension SlangCompilationActions {
             },
             isBusy: { [weak session] in session.map { Self.isBusy($0) } ?? true },
             apply: { [weak session, weak entry] choice in
-                guard let session, let entry else { return .failed }
+                guard let session, let entry else { return .error }
                 return await follow(choice, session: session, entry: entry)
             },
             missing: { [weak entry] choice in
@@ -1125,9 +1148,11 @@ extension SlangCompilationActions {
     }
 
     /// Switches `session` to `choice` for the active file. Nothing is asked or shown on success
-    /// (the header changes); a profile that elaborates nothing is put back and reported once.
+    /// (the header changes); a profile that elaborates nothing is put back and reported once, and
+    /// a switch that throws is put back, reported and tried again on the next focus.
     private static func follow(_ choice: SlangProfileChoice, session: LanguageServerSession, entry: Entry) async -> SlangProfileFollower.ApplyResult {
-        if case .buildFile = choice, await session.supportsCommand("slang.setBuildFile") != true { return .failed }
+        // Not the profile's fault: tried again on the next focus (verify R1).
+        if case .buildFile = choice, await session.supportsCommand("slang.setBuildFile") != true { return .error }
         // Another change took the server since the follower looked: it waits and tries again.
         guard claim([session]) else { return .busy }
         defer { release([session]) }
@@ -1153,38 +1178,53 @@ extension SlangCompilationActions {
         } catch {
             failure = error
         }
-        let tops = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }.map(\.name)
-        if let path = choice.path, failure != nil || tops.isEmpty {
-            // What went wrong, read before the restore replaces the compilation.
-            let detail: String
-            if let failure {
-                detail = userMessage(for: failure)
-            } else {
-                let summary = await session.diagnosticsSummary()
-                let errors = await session.takeRecentErrorMessages()
-                detail = Outcome(tops: [], instanceCount: 0, summary: summary, serverErrors: errors).failureDetail
+        let showsMessage = { (lines: [String]) in
+            guard let editor, entry.activeEditor === editor, entry.activeWaveform == nil else { return }
+            editor.showLinkMessage(lines.filter { !$0.isEmpty }.joined(separator: "\n"))
+        }
+        if let failure {
+            // A thrown switch (an ssh timeout, a restart, a lost connection): the previous
+            // compilation is put back and the profile is tried again on the next focus (verify R1).
+            slangProfileLogger.error("following the active file's profile failed: \(String(describing: failure), privacy: .public)")
+            let detail = userMessage(for: failure)
+            try? await session.slangSwitch(to: SlangProfileChoice(previous), configuredBuild: configured)
+            FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
+            if let path = choice.path, await !fileExists(path, editor: editor) {
+                slangProfileLogger.info("profile \(path, privacy: .public) is gone; its files follow the last-set profile")
+                return .missing
             }
+            showsMessage([
+                String(
+                    format: String(localized: "slangProfile.switchError.detail", defaultValue: "Couldn't switch slang-server to %@; it is tried again the next time this file is focused."),
+                    profileName(of: choice)
+                ),
+                detail,
+            ])
+            return .error
+        }
+        // An unanswered scope query (a lost connection) says nothing about the profile: only an
+        // answer with no top levels counts as elaborating nothing.
+        let tops = (try? await session.slangScopeChildren(""))?.filter { $0.kind != "Package" }.map(\.name)
+        if let path = choice.path, tops?.isEmpty == true {
+            // What went wrong, read before the restore replaces the compilation.
+            let summary = await session.diagnosticsSummary()
+            let errors = await session.takeRecentErrorMessages()
+            let detail = Outcome(tops: [], instanceCount: 0, summary: summary, serverErrors: errors).failureDetail
             try? await session.slangSwitch(to: SlangProfileChoice(previous), configuredBuild: configured)
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
             if await !fileExists(path, editor: editor) {
                 slangProfileLogger.info("profile \(path, privacy: .public) is gone; its files follow the last-set profile")
                 return .missing
             }
-            // Reported once: the follower doesn't build this profile again until a design file
-            // is saved or the user chooses it.
-            if let editor, entry.activeEditor === editor, entry.activeWaveform == nil {
-                editor.showLinkMessage([
-                    String(
-                        format: String(localized: "slangProfile.switchFailed.detail", defaultValue: "slang-server elaborated nothing from profile %@."),
-                        profileName(of: choice)
-                    ),
-                    detail,
-                ].filter { !$0.isEmpty }.joined(separator: "\n"))
-            }
-            return .failed
-        }
-        if let failure {
-            slangProfileLogger.error("following the active file's profile failed: \(String(describing: failure), privacy: .public)")
+            // Reported once: the follower doesn't build this profile again until a file of its
+            // build is saved or the user chooses it.
+            showsMessage([
+                String(
+                    format: String(localized: "slangProfile.switchFailed.detail", defaultValue: "slang-server elaborated nothing from profile %@."),
+                    profileName(of: choice)
+                ),
+                detail,
+            ])
             return .failed
         }
         let applied = choice.resolved(configuredBuild: configured)

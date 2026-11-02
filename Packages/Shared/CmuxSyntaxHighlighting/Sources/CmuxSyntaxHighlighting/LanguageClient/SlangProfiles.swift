@@ -64,12 +64,19 @@ public struct SlangBuildFile: Equatable, Sendable {
         }
     }
 
-    /// Stub.
+    /// Whether `path` is part of this build: the build file at `buildFilePath` itself, one of its
+    /// nested command files or one of its sources (relative ones against `baseDirectory`).
+    /// `normalize` maps each candidate to the form `path` is in (e.g. real paths).
     public func involves(
         _ path: String, buildFilePath: String, baseDirectory: String,
         normalize: (String) -> String = { $0 }
     ) -> Bool {
-        false
+        func absolute(_ file: String) -> String {
+            let joined = file.hasPrefix("/") ? file : (baseDirectory as NSString).appendingPathComponent(file)
+            return normalize((joined as NSString).standardizingPath)
+        }
+        if normalize((buildFilePath as NSString).standardizingPath) == path { return true }
+        return (commandFiles + sources).contains { absolute($0) == path }
     }
 
     /// Words of a command file: `//`, `#` and `/* */` comments dropped, quotes grouping words,

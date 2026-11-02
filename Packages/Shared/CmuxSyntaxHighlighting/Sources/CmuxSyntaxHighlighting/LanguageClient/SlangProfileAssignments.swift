@@ -291,16 +291,16 @@ public final class SlangProfileFollower {
         }
     }
 
-    /// A design file (a build file or a source) of the server was saved or reloaded: a profile
-    /// that elaborated nothing may build now, so it is tried again.
-    public func designFilesChanged() {
-        failed.removeAll()
-    }
-
-    /// A file was saved or reloaded. Stub.
+    /// A file was saved or reloaded. Profiles that elaborated nothing and whose build `involves`
+    /// it (its build file, a command file or a source) may build now: they are forgotten and the
+    /// active file is followed again. Returns whether any was forgotten.
     @discardableResult
     public func designFileSaved(involves: (SlangProfileChoice) -> Bool) -> Bool {
-        false
+        let cleared = failed.filter(involves)
+        guard !cleared.isEmpty else { return false }
+        failed.subtract(cleared)
+        activeFileChanged()
+        return true
     }
 
     /// The user chose `choice` themselves: tried again on the next focus even if it failed.
@@ -370,8 +370,10 @@ public final class SlangProfileFollower {
             switch await hooks.apply(wanted) {
             case .applied:
                 return
-            case .failed, .error:
+            case .failed:
                 failed.insert(wanted)
+                return
+            case .error:
                 return
             case .busy:
                 guard await waitBusy(&waited) else { return }
