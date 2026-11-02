@@ -177,6 +177,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         webView.isWaveformViewer = true
         webView.onPointerDown = { [weak self] in
             Self.lastActivePanel = self?.panel
+            // A focused waveform's server builds the profile the waveform was elaborated against.
+            if let panel = self?.panel { SlangCompilationActions.waveformBecameActive(panel) }
+        }
+        webView.onBecomeFirstResponder = { [weak self] in
+            if let panel = self?.panel { SlangCompilationActions.waveformBecameActive(panel) }
         }
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsBackForwardNavigationGestures = false

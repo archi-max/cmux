@@ -74,7 +74,8 @@ extension SlangCompilationActions {
         // The file's own (or the last-set) profile isn't what the server compiles: an editor that
         // isn't the active one, or a profile that couldn't be built.
         if entry.following == nil, let mine = profileChoice(for: editor),
-           mine != SlangProfileChoice(CompilationState(target: entry.target, isExplore: entry.isExplore)) {
+           resolved(mine, session: session, entry: entry)
+            != resolved(SlangProfileChoice(CompilationState(target: entry.target, isExplore: entry.isExplore)), session: session, entry: entry) {
             label = String(
                 format: String(localized: "slangProfile.header.fileProfile", defaultValue: "%1$@ · this file: %2$@"),
                 label,
@@ -95,8 +96,9 @@ extension SlangCompilationActions {
 
     /// The server's compilation changed (or it restarted): read its tops again and update the headers.
     static func compilationDidChange(session: LanguageServerSession) {
-        // The state machine pane's answers were worked out for the design before.
-        WaveformFSMEngines.designChanged()
+        // The state machine pane's answers were worked out for the design before: those of this
+        // server's waveforms only.
+        WaveformFSMEngines.designChanged(session: session)
         Task { @MainActor in
             let tops = ((try? await session.slangScopeChildren("")) ?? []).filter { $0.kind != "Package" }.map(\.name)
             let entry = Self.entry(for: session)
@@ -273,11 +275,15 @@ extension SlangCompilationActions {
 
     /// Builds the design from `profile` with `slang.setBuildFile` (no restart, no file written).
     static func switchProfile(editor: FilePreviewLanguageFeatures, to profile: SlangProfile) {
-        guard let session = editor.linkSession?.session, claim([session]) else {
+        guard let session = editor.linkSession?.session else {
             NSSound.beep()
             return
         }
         Task { @MainActor in
+            guard await claimForUser(session) else {
+                NSSound.beep()
+                return
+            }
             defer { release([session]) }
             guard await session.supportsCommand("slang.setBuildFile") == true else {
                 showAlert(
@@ -386,11 +392,15 @@ extension SlangCompilationActions {
 
     /// No top level and no build file, not even the config's, until another is chosen.
     static func exploreMode(editor: FilePreviewLanguageFeatures) {
-        guard let session = editor.linkSession?.session, claim([session]) else {
+        guard let session = editor.linkSession?.session else {
             NSSound.beep()
             return
         }
         Task { @MainActor in
+            guard await claimForUser(session) else {
+                NSSound.beep()
+                return
+            }
             defer { release([session]) }
             do {
                 // Sent again after a restart, unlike setTopLevel("").
@@ -417,11 +427,15 @@ extension SlangCompilationActions {
 
     /// Relaunches the editor's server (it rereads its config files), keeping what cmux set it to compile.
     static func restartLanguageServer(editor: FilePreviewLanguageFeatures) {
-        guard let session = editor.linkSession?.session, claim([session]) else {
+        guard let session = editor.linkSession?.session else {
             NSSound.beep()
             return
         }
         Task { @MainActor in
+            guard await claimForUser(session) else {
+                NSSound.beep()
+                return
+            }
             defer { release([session]) }
             editor.showLinkMessage(String(localized: "slangProfile.restart.progress", defaultValue: "Restarting slang-server…"), isProgress: true)
             refreshListing(for: editor, force: true)
@@ -924,7 +938,40 @@ extension SlangCompilationActions {
         change(&assignments)
         guard assignments != before else { return }
         loadedAssignments?[rootKey] = assignments
-        assignmentStore.save(assignments, root: rootKey)
+        scheduleAssignmentSave()
+    }
+
+    private static var assignmentSave: Task<Void, Never>?
+    private static var assignmentsDirty = false
+    private static var terminationFlush: (any NSObjectProtocol)?
+
+    /// Writes every root's choices a second after the last change, encoded and written off the
+    /// main thread, one write at a time (verify L3). Quitting writes what is left at once.
+    private static func scheduleAssignmentSave() {
+        assignmentsDirty = true
+        if terminationFlush == nil {
+            terminationFlush = NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated {
+                    guard assignmentsDirty, let roots = loadedAssignments else { return }
+                    assignmentsDirty = false
+                    assignmentStore.saveAll(roots)
+                }
+            }
+        }
+        let previous = assignmentSave
+        previous?.cancel()
+        assignmentSave = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            // A write still going on finishes first, so an older copy never lands last.
+            await previous?.value
+            guard assignmentsDirty, let roots = loadedAssignments else { return }
+            assignmentsDirty = false
+            let store = assignmentStore
+            _ = await Task.detached(priority: .utility) { store.saveAll(roots) }.value
+        }
     }
 
     /// The editor's file as the server names it (the remote path for an SSH file).
@@ -980,9 +1027,36 @@ extension SlangCompilationActions {
     /// settles its server compiles the file's profile.
     static func editorBecameActive(_ editor: FilePreviewLanguageFeatures) {
         installKeyWindowFollow()
+        // An editor has focus now, not a waveform, for every server.
+        forgetActiveWaveforms()
         guard let session = editor.linkSession?.session else { return }
         let entry = entry(for: session)
         entry.activeEditor = editor
+        follower(for: session, entry: entry).activeFileChanged()
+    }
+
+    /// The profile each waveform viewer was elaborated against or auto-picked (in memory only).
+    private static let waveformChoices = NSMapTable<FilePreviewPanel, WaveformChoice>.weakToStrongObjects()
+
+    private final class WaveformChoice {
+        let choice: SlangProfileChoice
+        init(_ choice: SlangProfileChoice) { self.choice = choice }
+    }
+
+    /// The waveform viewer `waveform` was linked to `session`'s design as it compiles now (its
+    /// auto-pick, the link's elaboration, or the design it opened against): focusing it brings that back.
+    static func recordWaveformDesign(_ waveform: FilePreviewPanel, session: LanguageServerSession) async {
+        let state = await currentState(of: session)
+        waveformChoices.setObject(WaveformChoice(SlangProfileChoice(state)), forKey: waveform)
+    }
+
+    /// A waveform viewer took focus (a click, its tab, its window): its server builds the profile
+    /// the waveform was elaborated against, so cross-probing, FSM, enums and inline values map to it.
+    static func waveformBecameActive(_ waveform: FilePreviewPanel) {
+        guard waveform.previewMode == .waveform, let session = WaveformSourceLink.linkedSession(for: waveform) else { return }
+        installKeyWindowFollow()
+        let entry = entry(for: session)
+        entry.activeWaveform = waveform
         follower(for: session, entry: entry).activeFileChanged()
     }
 
@@ -992,9 +1066,15 @@ extension SlangCompilationActions {
     private static func installKeyWindowFollow() {
         guard keyWindowFollow == nil else { return }
         keyWindowFollow = SlangKeyWindowFollow(name: NSWindow.didBecomeKeyNotification) { object in
-            guard let window = object as? NSWindow,
-                  let textView = window.firstResponder as? SavingTextView else { return }
-            textView.languageFeatures?.editorDidBecomeActive()
+            guard let window = object as? NSWindow else { return }
+            if let textView = window.firstResponder as? SavingTextView {
+                textView.languageFeatures?.editorDidBecomeActive()
+                return
+            }
+            // A waveform viewer's page (or a view inside it) has focus.
+            var view = window.firstResponder as? NSView
+            while let current = view, !(current is MarkdownWebView) { view = current.superview }
+            (view as? MarkdownWebView)?.onBecomeFirstResponder?()
         }
     }
 
@@ -1004,15 +1084,19 @@ extension SlangCompilationActions {
         let entry = entry(for: session)
         guard let follower = entry.follower else { return }
         follower.designFilesChanged()
-        if entry.activeEditor?.linkSession?.session === session { follower.activeFileChanged() }
+        if entry.activeWaveform != nil || entry.activeEditor?.linkSession?.session === session { follower.activeFileChanged() }
     }
 
     private static func follower(for session: LanguageServerSession, entry: Entry) -> SlangProfileFollower {
         if let follower = entry.follower { return follower }
         let follower = SlangProfileFollower(hooks: .init(
             wanted: { [weak entry] in
-                guard let editor = entry?.activeEditor else { return nil }
-                return profileChoice(for: editor)
+                guard let entry else { return nil }
+                if let waveform = entry.activeWaveform {
+                    return SlangProfileFocus.waveform(waveformChoices.object(forKey: waveform)?.choice).wanted(in: SlangProfileAssignments())
+                }
+                guard let editor = entry.activeEditor, let file = fileKey(of: editor) else { return nil }
+                return SlangProfileFocus.file(file).wanted(in: assignments(rootKey: editor.linkRootKey))
             },
             current: { [weak session] in
                 guard let session else { return CompilationState(target: nil, isExplore: false) }
@@ -1024,8 +1108,16 @@ extension SlangCompilationActions {
                 return await follow(choice, session: session, entry: entry)
             },
             missing: { [weak entry] choice in
-                guard let path = choice.path, let editor = entry?.activeEditor else { return }
+                guard let entry, let path = choice.path else { return }
+                if let waveform = entry.activeWaveform, waveformChoices.object(forKey: waveform)?.choice.path == path {
+                    waveformChoices.removeObject(forKey: waveform)
+                }
+                guard let editor = entry.activeEditor else { return }
                 updateAssignments(rootKey: editor.linkRootKey) { $0.profileWasRemoved(path) }
+            },
+            resolve: { [weak session, weak entry] choice in
+                guard let session, let entry else { return choice }
+                return resolved(choice, session: session, entry: entry)
             }
         ))
         entry.follower = follower
@@ -1048,15 +1140,16 @@ extension SlangCompilationActions {
         }
         await editor?.sendCurrentText()
         let previous = await currentState(of: session)
+        // `.configured` arrives resolved to the config's build when the listing is known; read it now if not.
+        if choice == .configured, let editor, cachedListing(for: editor) == nil {
+            _ = await refreshListing(for: editor)?.value
+        }
+        let configured = configuredBuild(session: session, entry: entry)
         _ = await session.takeRecentErrorMessages()
         var failure: (any Error)?
         do {
-            switch choice {
-            case .buildFile(let path): try await session.slangSetBuildFile(path)
-            case .topLevel(let path): try await session.slangSetTopLevel(path)
-            case .explore: try await session.slangExplore()
-            case .configured: await restore(CompilationState(target: nil, isExplore: false), on: session)
-            }
+            // At runtime, never a restart: the config's build is set as a build file (verify M1).
+            try await session.slangSwitch(to: choice, configuredBuild: configured)
         } catch {
             failure = error
         }
@@ -1071,7 +1164,7 @@ extension SlangCompilationActions {
                 let errors = await session.takeRecentErrorMessages()
                 detail = Outcome(tops: [], instanceCount: 0, summary: summary, serverErrors: errors).failureDetail
             }
-            await restore(previous, on: session)
+            try? await session.slangSwitch(to: SlangProfileChoice(previous), configuredBuild: configured)
             FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
             if await !fileExists(path, editor: editor) {
                 slangProfileLogger.info("profile \(path, privacy: .public) is gone; its files follow the last-set profile")
@@ -1079,7 +1172,7 @@ extension SlangCompilationActions {
             }
             // Reported once: the follower doesn't build this profile again until a design file
             // is saved or the user chooses it.
-            if let editor, entry.activeEditor === editor {
+            if let editor, entry.activeEditor === editor, entry.activeWaveform == nil {
                 editor.showLinkMessage([
                     String(
                         format: String(localized: "slangProfile.switchFailed.detail", defaultValue: "slang-server elaborated nothing from profile %@."),
@@ -1094,11 +1187,38 @@ extension SlangCompilationActions {
             slangProfileLogger.error("following the active file's profile failed: \(String(describing: failure), privacy: .public)")
             return .failed
         }
-        entry.target = choice.state.target
-        entry.isExplore = choice == .explore
+        let applied = choice.resolved(configuredBuild: configured)
+        entry.target = applied.state.target
+        entry.isExplore = applied == .explore
         WaveformSourceLink.topLevelWasChosen(session: session)
         FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         return .applied
+    }
+
+    /// The config's build of `session`'s root as the server names it, from the active (or any)
+    /// editor's cached listing; nil when no config names one or nothing is listed yet.
+    private static func configuredBuild(session: LanguageServerSession, entry: Entry) -> String? {
+        let editor = entry.activeEditor ?? FilePreviewLanguageFeatures.allLinkables.first { $0.linkSession?.session === session }
+        guard let editor, let root = editor.linkContext?.rootURI?.path, let listing = cachedListing(for: editor),
+              let build = SlangServerConfigFile.configuredBuild(in: listing.configs, root: root) else { return nil }
+        return session.serverPath(for: URL(fileURLWithPath: build))
+    }
+
+    /// `.configured` as the config's build, so it is compared with (and switched to) what the server compiles.
+    private static func resolved(_ choice: SlangProfileChoice, session: LanguageServerSession, entry: Entry) -> SlangProfileChoice {
+        choice.resolved(configuredBuild: configuredBuild(session: session, entry: entry))
+    }
+
+    /// Claims `session` for a choice the user made (menu, palette): after a focus switch that is
+    /// running, instead of failing (verify L1). False when another user change holds it.
+    static func claimForUser(_ session: LanguageServerSession) async -> Bool {
+        for _ in 0..<4 {
+            if claim([session]) { return true }
+            let entry = entry(for: session)
+            guard entry.following != nil, let follower = entry.follower else { return false }
+            await follower.waitForRunningSwitch()
+        }
+        return claim([session])
     }
 
     /// Whether `path` is still there (on the editor's SSH host for a remote file). An unanswered

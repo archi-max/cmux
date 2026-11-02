@@ -306,7 +306,7 @@ extension SlangServerConfigFile {
         }
 
         init(path: String, data: Data?) {
-            self.init(path: path, health: SlangServerConfigFile.health(of: data))
+            self.init(path: path, health: SlangServerConfigFile.health(of: data), build: SlangServerConfigFile.build(in: data))
         }
     }
 
@@ -314,7 +314,11 @@ extension SlangServerConfigFile {
     /// `.slang/local/server.json`'s `"build"` over `.slang/server.json`'s, made absolute against
     /// the root. Nil when neither readable config names one.
     public static func configuredBuild(in configs: [Found], root: String) -> String? {
-        nil // stub
+        let local = path(inWorkspace: root)
+        let ordered = configs.filter { $0.health == .valid && $0.build?.isEmpty == false }
+            .sorted { ($0.path == local ? 1 : 0) < ($1.path == local ? 1 : 0) }
+        guard let build = ordered.last?.build else { return nil }
+        return build.hasPrefix("/") ? build : (root as NSString).appendingPathComponent(build)
     }
 
     /// slang-server reads its configs with comments and trailing commas allowed; JSON5 covers both.

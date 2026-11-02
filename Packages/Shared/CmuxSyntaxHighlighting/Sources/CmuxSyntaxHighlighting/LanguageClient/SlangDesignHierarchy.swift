@@ -1052,9 +1052,11 @@ extension LanguageServerSession {
         case .topLevel(let path): try await slangSetTopLevel(path)
         case .explore: try await slangExplore()
         case .configured:
-            // Stub: what the first round did (a restart when cmux wrote the config).
-            _ = configuredBuild
-            try await restart(keepingCompilation: false)
+            if let configuredBuild {
+                try await slangSetBuildFile(configuredBuild)
+            } else {
+                try await slangSetTopLevel("")
+            }
         }
     }
 

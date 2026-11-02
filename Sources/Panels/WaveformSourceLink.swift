@@ -75,6 +75,11 @@ enum WaveformSourceLink {
     }
 
     /// The editor to ask about `waveform`'s signals: the one that last linked with it, else the workspace's most recent.
+    /// The language server answering for `waveform`'s design (its paired or most recent editor's).
+    static func linkedSession(for waveform: FilePreviewPanel) -> LanguageServerSession? {
+        linkedEditor(for: waveform)?.linkSession?.session
+    }
+
     private static func linkedEditor(for waveform: FilePreviewPanel) -> FilePreviewLanguageFeatures? {
         if let paired = pairedEditors.object(forKey: waveform), paired.linkSession != nil,
            paired.linkWorkspaceId == waveform.workspaceId {
@@ -727,6 +732,7 @@ enum WaveformSourceLink {
                 state.setByLink = true
                 SlangCompilationActions.recordTarget(.topLevel(candidate.file), for: session)
                 SlangCompilationActions.recordLastSet(.topLevel(candidate.file), session: session)
+                await SlangCompilationActions.recordWaveformDesign(waveform, session: session)
                 FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
                 return true
             }
@@ -751,7 +757,10 @@ enum WaveformSourceLink {
         for top in tops.prefix(8) {
             children[top] = (await Self.dumpChildren([top], in: waveform) ?? []).filter(\.isScope).map(\.name)
         }
-        return await SlangCompilationActions.autoPickProfile(session: session, dumpTops: tops, dumpChildren: children, progress: progress)
+        let picked = await SlangCompilationActions.autoPickProfile(session: session, dumpTops: tops, dumpChildren: children, progress: progress)
+        // The waveform's profile from now on: focusing it builds this again.
+        if picked { await SlangCompilationActions.recordWaveformDesign(waveform, session: session) }
+        return picked
     }
 
     /// When a waveform opens, its workspace's servers with no top level build from the matching profile.
@@ -760,7 +769,14 @@ enum WaveformSourceLink {
         for editor in FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId) {
             guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted,
                   Self.topLevelState(for: session).elaboration == nil,
-                  let tops = try? await session.slangScopeChildren(""), tops.allSatisfy({ $0.kind == "Package" }) else { continue }
+                  let tops = try? await session.slangScopeChildren("") else { continue }
+            guard tops.allSatisfy({ $0.kind == "Package" }) else {
+                // The design is already built: the waveform opened against it, so that is its profile.
+                if linkedSession(for: waveform) === session, !SlangCompilationActions.isBusy(session) {
+                    await SlangCompilationActions.recordWaveformDesign(waveform, session: session)
+                }
+                continue
+            }
             _ = await autoPickProfile(session: session, waveform: waveform) { _ in }
         }
     }

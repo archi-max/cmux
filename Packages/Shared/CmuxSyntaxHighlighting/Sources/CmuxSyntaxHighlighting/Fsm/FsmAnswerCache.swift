@@ -48,7 +48,10 @@ public struct FsmAnswerCache<Answer> {
     /// The design of only these waveforms changed (their server switched profiles): other
     /// waveforms keep their answers. Runs going on for them are still shown, not kept.
     public mutating func designChanged(waveforms: [String]) {
-        // stub
+        for waveform in waveforms {
+            waveformEpochs[waveform, default: 0] += 1
+            answers[waveform] = nil
+        }
     }
 
     /// A run for `path`, or nil when one for the current generation is running.

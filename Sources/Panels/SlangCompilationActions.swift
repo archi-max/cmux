@@ -38,6 +38,8 @@ enum SlangCompilationActions {
         var autoPickDeclined = false
         /// The editor last made active (focus, tab or open): the server follows its file's profile.
         weak var activeEditor: FilePreviewLanguageFeatures?
+        /// A waveform viewer linked to this server that has focus now (cleared when an editor takes it).
+        weak var activeWaveform: FilePreviewPanel?
         /// Switches the server to the active file's profile once focus settles.
         var follower: SlangProfileFollower?
         /// The profile a focus switch is building now (the header says so meanwhile).
@@ -102,6 +104,15 @@ enum SlangCompilationActions {
 
     static func release(_ sessions: [LanguageServerSession]) {
         for session in sessions { busySessions.remove(ObjectIdentifier(session)) }
+        // A focus switch that gave up waiting for this change runs now (verify L2).
+        for session in sessions {
+            entries.first { $0.session === session }?.follower?.serverBecameFree()
+        }
+    }
+
+    /// An editor took focus: no waveform viewer is the active source of any server.
+    static func forgetActiveWaveforms() {
+        for entry in entries { entry.activeWaveform = nil }
     }
 
     typealias CompilationState = LanguageServerSession.SlangCompilationState
@@ -131,11 +142,16 @@ enum SlangCompilationActions {
 
     /// Elaborates the design with the file of `module` (the editor's document) as the top level.
     static func setTopLevel(module: String, editor: FilePreviewLanguageFeatures, anchor: Int) {
-        guard let (session, documentURI) = editor.linkSession, claim([session]) else {
+        guard let (session, documentURI) = editor.linkSession else {
             NSSound.beep()
             return
         }
         Task { @MainActor in
+            // After a focus switch already running, never a beep for it (verify L1).
+            guard await claimForUser(session) else {
+                NSSound.beep()
+                return
+            }
             defer { release([session]) }
             // The server must see the current text.
             await editor.sendCurrentText()
