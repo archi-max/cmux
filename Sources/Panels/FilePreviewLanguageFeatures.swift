@@ -231,7 +231,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         guard let session, let documentURI else { return }
         Task { await session.save(uri: documentURI, text: text) }
         WaveformEnumLink.documentSaved(session)
-        WaveformFSMEngines.designChanged()
+        WaveformFSMEngines.designChanged(session: session)
         SlangCompilationActions.designFilesChanged(session: session)
     }
 
@@ -336,7 +336,7 @@ final class FilePreviewLanguageFeatures: NSObject {
         lastSentText = text
         if reloadedFromDisk {
             await WaveformEnumLink.documentReloadedFromDisk(session, uri: documentURI, text: text, version: documentVersion)
-            WaveformFSMEngines.designChanged()
+            WaveformFSMEngines.designChanged(session: session)
             SlangCompilationActions.designFilesChanged(session: session)
         } else {
             await session.change(uri: documentURI, text: text, version: documentVersion)

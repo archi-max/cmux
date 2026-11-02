@@ -177,6 +177,8 @@ final class MarkdownWebRenderingCoordinator {
 @MainActor
 final class MarkdownWebView: CmuxUndoableWebView {
     var onPointerDown: (() -> Void)?
+    /// The page took keyboard focus (a tab or pane switch, a window becoming key).
+    var onBecomeFirstResponder: (() -> Void)?
     /// Invoked after this view is attached to a window. Keep this separate
     /// from pointer focus so a panel can complete a focus request made before
     /// SwiftUI mounted the WebKit view.
@@ -281,6 +283,18 @@ final class MarkdownWebView: CmuxUndoableWebView {
         editableFocusStateConfirmed = false
         onPointerDown?()
         super.mouseDown(with: event)
+    }
+
+    // Nonisolated like CmuxWebView's: AppKit/WebKit can call it during a responder change outside
+    // Swift's main-actor context. The callback runs on the next main-queue turn.
+    override nonisolated func becomeFirstResponder() -> Bool {
+        let didBecome = super.becomeFirstResponder()
+        if didBecome {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.onBecomeFirstResponder?() }
+            }
+        }
+        return didBecome
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

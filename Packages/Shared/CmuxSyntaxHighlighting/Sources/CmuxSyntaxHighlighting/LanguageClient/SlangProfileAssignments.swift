@@ -39,7 +39,8 @@ public enum SlangProfileChoice: Codable, Equatable, Hashable, Sendable {
     /// The compilation this choice stands for: the config's build (`configuredBuild`) for
     /// `.configured`, so following it switches at runtime and compares with what the server compiles.
     public func resolved(configuredBuild: String?) -> SlangProfileChoice {
-        self // stub
+        if self == .configured, let configuredBuild { return .buildFile(configuredBuild) }
+        return self
     }
 
     /// The same choice with its path (or a path below a moved folder) moved to `new`.
@@ -178,7 +179,6 @@ public struct SlangProfileAssignmentStore: @unchecked Sendable {
     @discardableResult
     public func saveAll(_ all: [String: SlangProfileAssignments]) -> [String: SlangProfileAssignments] {
         var roots = all.filter { $0.value.lastSet != nil || !$0.value.files.isEmpty }
-        if Bool("stub") ?? true { return all }
         if roots.count > Self.maxRoots {
             let kept = roots.sorted { $0.value.updatedAt > $1.value.updatedAt }.prefix(Self.maxRoots)
             roots = Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
@@ -202,7 +202,7 @@ public enum SlangProfileFocus: Equatable, Sendable {
     public func wanted(in assignments: SlangProfileAssignments) -> SlangProfileChoice? {
         switch self {
         case .file(let file): return assignments.choice(forFile: file)
-        case .waveform: return nil // stub
+        case .waveform(let choice): return choice
         }
     }
 }
@@ -301,13 +301,18 @@ public final class SlangProfileFollower {
 
     /// The server's change that held it is over: a follow that gave up waiting for it runs now.
     public func serverBecameFree() {
-        // stub
+        guard gaveUpWhileBusy else { return }
+        gaveUpWhileBusy = false
+        activeFileChanged()
     }
 
     /// Returns once the switch running now (if any) is over, so a user's choice goes after it
     /// instead of failing to get the server.
     public func waitForRunningSwitch() async {
-        // stub
+        while let task = running {
+            await task.value
+            if running == task { running = nil }
+        }
     }
 
     /// Returns once no switch is pending or running (for tests).
@@ -350,9 +355,9 @@ public final class SlangProfileFollower {
             }
             // A newer focus is waiting for its debounce: it decides.
             if pending != nil { return }
-            guard let wanted = hooks.wanted(), !failed.contains(wanted) else { return }
+            guard let wanted = hooks.wanted().map({ hooks.resolve($0) }), !failed.contains(wanted) else { return }
             let current = await hooks.current()
-            guard SlangProfileChoice(current) != wanted else { return }
+            guard hooks.resolve(SlangProfileChoice(current)) != wanted else { return }
             switch await hooks.apply(wanted) {
             case .applied:
                 return

@@ -24,6 +24,7 @@ enum WaveformFSMEngines {
     /// The waveform was opened or reloaded: its answers may be out of date. An open pane asks
     /// again itself (cmux-fsm.js, `refresh`).
     static func waveformOpened(_ waveform: FilePreviewPanel) {
+        knownWaveforms.add(waveform)
         cache.opened(waveformKey(waveform))
     }
 
@@ -33,10 +34,21 @@ enum WaveformFSMEngines {
         cache.designChanged()
     }
 
+    /// Waveform viewers the pane answered or was opened for (to find a server's waveforms).
+    private static let knownWaveforms = NSHashTable<FilePreviewPanel>.weakObjects()
+
+    /// `session`'s design changed (a profile switch, a new top): only the answers of the
+    /// waveforms linked to it are dropped; other roots' waveforms keep theirs (verify L4).
+    static func designChanged(session: LanguageServerSession) {
+        let waveforms = knownWaveforms.allObjects.filter { WaveformSourceLink.linkedSession(for: $0) === session }
+        cache.designChanged(waveforms: waveforms.map(waveformKey))
+    }
+
     /// The page's `fsmRequest`: the state machine of the register at dump path `value`.
     /// - refresh: the pane asks again after a reload; its graph stays up until the answer.
     static func requested(_ value: Any?, refresh: Bool = false, waveform: FilePreviewPanel) {
         guard let path = WaveformSourceLink.dumpPath(fromPage: value), let signal = path.last else { return }
+        knownWaveforms.add(waveform)
         let waveformKey = waveformKey(waveform)
         let pathKey = HierarchyPathMapping.join(path)
         let page = waveform.nativeViewSessions.waveform
