@@ -57,7 +57,7 @@ On the first open of an FSDB on a host:
 4. The helper prints a ready line, and the viewer sends `open`.
 
 If v2 can't be built or doesn't get ready, cmux falls back to the whole-signal helper in `../fsdb-helper/`, and the
-status strip says so, with a Retry button. The "FSDB signal loading" setting can force whole signals.
+status strip says so, with a Retry Windowed button. The "FSDB signal loading" setting can force whole signals.
 
 ## Protocol
 
@@ -98,7 +98,7 @@ In this tree:
 - A worker that dies is restarted and reopens the file. Its queued and running parts fail with an error, so no
   request waits forever. After more than 5 restarts in 30 s the helper gives up and reports the error.
 
-*(coming in stack-10, helper commits `4984aea`, `39f9ebc`, `94d2e8b`)*:
+*(coming)*:
 - **Open timeout.** An `open` that doesn't answer in 120 s relaunches the helper once and resends the open. A second
   timeout reports "did not open the file in time". The whole open, relaunch included, is bounded at 240 s.
 - **Stdin watchdog.** The launcher runs under a watchdog. When the SSH session's stdin closes (the viewer closed, or
@@ -119,7 +119,7 @@ In this tree:
 | Private install, private run directory | The helper runs code and loads libraries from its install. An install others can write is refused. The reader's log directory goes to a private folder on node-local `/tmp`, not a shared home. |
 | Memory bounds | Each worker has an RSS cap (1 GB by default). Over it, the store shrinks first, then the worker is replaced when idle. A load that would pass twice the cap is undone. |
 | Store cache on disk | Walked signals are saved under `/tmp/<user>-cmux-helper/` (keyed by path, size, mtime and inode, LRU-bounded), so a reopened dump draws about 20× faster. Not on an NFS home. |
-| Background work yields on SIGUSR2 | Background walks poll for SIGUSR2 every 4096 changes and between signals, and yield to interactive requests. A `cancel` drops queued parts; running ones finish and are discarded. *(coming, `07e4a1a`)* searchText is cancelled by SIGUSR2 too, because a SIGINT-based cancel killed workers and cancelled unrelated requests. |
+| Background work yields on SIGUSR2 | Background walks poll for SIGUSR2 every 4096 changes and between signals, and yield to interactive requests. A `cancel` drops queued parts; running ones finish and are discarded. *(coming)* searchText is cancelled by SIGUSR2 too, because a SIGINT-based cancel killed workers and cancelled unrelated requests. |
 | Node.js on the host | It reuses VaporView's Node-API reader addon and worker code unmodified. The cost is Node.js 18 or later on the host (found on `PATH` and in common places, or set with `CMUX_FSDB_NODE`; build exit 11 if missing). |
 | Watchdog kills only its own children *(coming)* | A pid can be reused once a process exits. The watchdog signals only processes that are still children of the launch shell, so it never touches another user's process. |
 
