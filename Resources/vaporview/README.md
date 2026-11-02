@@ -174,7 +174,8 @@ keybindings, netlist view, settings, sessions and terminal links).
   `helper.js` coordinates a pool of `worker.js` processes (four), each with the
   file open and its signals in the addon's compact store, and answers
   `window`, `valueAt`, `edge`, `search`, `count`, `cancel` and the v1
-  `signals`; `expr.js` evaluates derived signals. `addon/fsdb_reader.cpp` is
+  `signals`; `expr.js` evaluates derived signals; `tree.js` keeps the reader's
+  arrays as scopes in `children` (each with its elements inline). `addon/fsdb_reader.cpp` is
   upstream `src/fsdb_reader.cpp`, unmodified apart from a two-line license
   header; `build.sh` splices in
   `packed.cpp.inc`, `window.cpp.inc`, `deval.h` and `derive.cpp.inc` and

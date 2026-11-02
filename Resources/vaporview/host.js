@@ -373,8 +373,12 @@
       async children(item) {
         const scopePath = item.scopePath.concat([item.name]).join('.');
         const { result } = await request({ cmd: 'children', scopeOffsetIdx: item.id, scopePath });
-        return result.scopes.map((s) => ({ kind: 'scope', name: s.name, id: s.scopeOffsetIdx, type: s.type }))
-          .concat(result.vars.map((v) => ({ kind: 'var', ...v })));
+        // cmux: the reader's arrays come as scopes with their contents inline (helper-v2's tree.js).
+        const items = (r) => r.scopes.map((s) => (s.inline
+          ? { kind: 'scope', name: s.name, type: s.type || 'array', array: true, inline: items(s.inline) }
+          : { kind: 'scope', name: s.name, id: s.scopeOffsetIdx, type: s.type }))
+          .concat(r.vars.map((v) => ({ kind: 'var', ...v })));
+        return items(result);
       },
       // Values in effect at `time` per variable (helper v2's point query), or null
       // when the helper has none (v1); then the link falls back to `changes`.
@@ -617,8 +621,21 @@
     if (!item.childrenRequest) {
       const scopePath = item.scopePath.concat([item.name]);
       item.childrenRequest = backend.children(item).then((list) => {
-        const out = list.map((c) => ({ ...c, scopePath }));
-        out.forEach((c) => { if (c.kind === 'var') { doc.items.set(c.netlistId, c); } });
+        // cmux: an array (`array`, from the FSDB reader) is a scope node holding its elements,
+        // nested by dimension. Its elements are also children of the scope it is in, with
+        // that scope's path (scope.name), so finding, adding and counting a scope's signals
+        // stay as without arrays; the netlist shows each element only under its own node
+        // (`arrayParent`, not enumerable, so it isn't copied or serialized).
+        const elements = [];
+        const place = (c, parent) => {
+          const o = { ...c, scopePath };
+          delete o.inline;
+          if (parent) { Object.defineProperty(o, 'arrayParent', { value: parent, enumerable: false }); }
+          if (Array.isArray(c.inline)) { o.children = c.inline.map((x) => place(x, o)); }
+          if (o.kind === 'var') { doc.items.set(o.netlistId, o); if (parent) { elements.push(o); } }
+          return o;
+        };
+        const out = list.map((c) => place(c, null)).concat(elements);
         item.children = out;
         return out;
       }).finally(() => { delete item.childrenRequest; });
@@ -761,7 +778,7 @@
             results.push({ instancePath, isVar: c.kind === 'var', type: c.type || '', msb: c.kind === 'var' ? c.msb : -1, lsb: c.kind === 'var' ? c.lsb : -1 });
           }
         }
-        if (c.kind === 'scope') { queue.push(c); }
+        if (c.kind === 'scope' && !c.array) { queue.push(c); }  // an array's elements are its scope's children too
       }
     }
     return { totalResults: total, searchResults: results };
@@ -1015,7 +1032,9 @@
         if (!scope || scope.kind !== 'scope') { return null; }
         items = await getChildren(scope);
       }
-      return items.slice(0, maxChildren).map((x) => (x.kind === 'var' ? { name: x.name, isScope: false, width: x.width } : { name: x.name, isScope: x.kind === 'scope' }));
+      // An array node isn't a scope of the design (its elements are listed as the scope's own).
+      return items.filter((x) => !x.array).slice(0, maxChildren)
+        .map((x) => (x.kind === 'var' ? { name: x.name, isScope: false, width: x.width } : { name: x.name, isScope: x.kind === 'scope' }));
     }
 
     // netlistIds of the shown rows, inside groups too. pinnedOnly: not the
