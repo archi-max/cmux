@@ -688590,6 +688590,183 @@
         }
       }
     },
+    "slangProfile.header.fileProfile": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · this file: %2$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · このファイル: %2$@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · diese Datei: %2$@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · ce fichier : %2$@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · هذا الملف: %2$@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · este archivo: %2$@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · 此檔案：%2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · 此文件：%2$@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · 이 파일: %2$@"
+          }
+        }
+      }
+    },
+    "slangProfile.menu.followLastSet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the Last-Set Profile for This File"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このファイルに最後に設定したプロファイルを使用"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zuletzt gesetztes Profil für diese Datei verwenden"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utiliser le dernier profil choisi pour ce fichier"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "استخدام آخر ملف تعريف مُعيَّن لهذا الملف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar el último perfil elegido para este archivo"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此檔案使用最後設定的設定檔"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件使用最后设置的配置"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 파일에 마지막으로 설정한 프로필 사용"
+          }
+        }
+      }
+    },
+    "slangProfile.menu.followLastSet.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Each file keeps the profile chosen while it was active. Files with none use the profile set last."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "各ファイルは、アクティブなときに選択したプロファイルを保持します。プロファイルのないファイルは、最後に設定したプロファイルを使用します。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jede Datei behält das Profil, das gewählt wurde, während sie aktiv war. Dateien ohne eigenes Profil verwenden das zuletzt gesetzte."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chaque fichier garde le profil choisi lorsqu’il était actif. Les fichiers sans profil utilisent le dernier profil choisi."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يحتفظ كل ملف بملف التعريف الذي اختير أثناء نشاطه. وتستخدم الملفات التي ليس لها ملف تعريف آخر ملف تعريف مُعيَّن."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cada archivo conserva el perfil elegido mientras estaba activo. Los archivos sin perfil usan el último perfil elegido."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每個檔案會保留其作用中時所選的設定檔。沒有設定檔的檔案會使用最後設定的設定檔。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每个文件会保留其处于活动状态时所选的配置。没有配置的文件会使用最后设置的配置。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "각 파일은 활성 상태일 때 선택한 프로필을 유지합니다. 프로필이 없는 파일은 마지막으로 설정한 프로필을 사용합니다."
+          }
+        }
+      }
+    },
     "slangProfile.header.withTop": {
       "extractionState": "manual",
       "localizations": {
@@ -689648,6 +689825,65 @@
           "stringUnit": {
             "state": "translated",
             "value": "프로필 %@에서 설계를 빌드하는 중…"
+          }
+        }
+      }
+    },
+    "slangProfile.switchError.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t switch slang-server to %@; it is tried again the next time this file is focused."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server を %@ に切り替えられませんでした。このファイルに次にフォーカスしたときに再試行します。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server konnte nicht zu %@ wechseln; beim nächsten Fokussieren dieser Datei wird es erneut versucht."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de faire passer slang-server à %@ ; une nouvelle tentative aura lieu au prochain focus sur ce fichier."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر تبديل slang-server إلى %@؛ ستتم إعادة المحاولة عند التركيز على هذا الملف في المرة القادمة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cambiar slang-server a %@; se volverá a intentar la próxima vez que se enfoque este archivo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法將 slang-server 切換到 %@；下次聚焦此檔案時會再試一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将 slang-server 切换到 %@；下次聚焦此文件时会重试。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server를 %@(으)로 전환하지 못했습니다. 다음에 이 파일에 포커스하면 다시 시도합니다."
           }
         }
       }

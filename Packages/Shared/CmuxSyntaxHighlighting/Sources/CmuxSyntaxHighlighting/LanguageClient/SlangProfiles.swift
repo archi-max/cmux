@@ -9,6 +9,20 @@ public struct SlangBuildFile: Equatable, Sendable {
     public var sources: [String] = []
     /// Nested `-f` / `-F` command files as written.
     public var commandFiles: [String] = []
+    /// Library files (`-v` / `--libfile`) as written.
+    public var libraryFiles: [String] = []
+    /// The build reaches files it doesn't name: a glob source, a library directory (`-y`,
+    /// `--libdir`, `+libext+`) or an include directory (`-I`, `--include-directory`, `--isystem`,
+    /// `+incdir+`). Any saved file may then be part of it.
+    public var mayReachUnlistedFiles = false
+
+    /// Single-letter options slang also takes with the value attached (`-Iinc`, `-fsub.f`).
+    private static let attachableOptions: Set<String> = [
+        "-I", "-y", "-Y", "-v", "-f", "-F", "-D", "-U", "-G", "-T", "-W", "-j", "-L", "-C",
+    ]
+
+    private static let libraryFileOptions: Set<String> = ["-v", "--libfile"]
+    private static let unlistedFileOptions: Set<String> = ["-y", "--libdir", "-I", "--include-directory", "--isystem"]
 
     public init(tops: [String] = [], sources: [String] = [], commandFiles: [String] = []) {
         self.tops = tops
@@ -32,22 +46,38 @@ public struct SlangBuildFile: Equatable, Sendable {
         while index < words.count {
             let word = words[index]
             index += 1
-            if word.hasPrefix("+") { continue } // +define+, +incdir+, +libext+
-            if let equals = word.firstIndex(of: "="), word.hasPrefix("-") {
-                let option = String(word[..<equals])
-                let value = String(word[word.index(after: equals)...])
+            if word.hasPrefix("+") { // +define+, +incdir+, +libext+
+                if word.hasPrefix("+incdir+") || word.hasPrefix("+libext+") { result.mayReachUnlistedFiles = true }
+                continue
+            }
+            func take(_ option: String, _ value: String) {
                 if option == "--top" || option == "-top" { result.tops.append(value) }
                 if option == "-f" || option == "-F" { result.commandFiles.append(value) }
+                if libraryFileOptions.contains(option) { result.libraryFiles.append(value) }
+                if unlistedFileOptions.contains(option) { result.mayReachUnlistedFiles = true }
+            }
+            // `-Iinc` is `-I inc`; a whole option name (`-top`) stays whole (verify W1).
+            if !word.hasPrefix("--"), word.count > 2, !optionsWithValue.contains(word) {
+                let option = String(word.prefix(2))
+                let rest = word.dropFirst(2)
+                if attachableOptions.contains(option), !rest.hasPrefix("=") {
+                    take(option, String(rest))
+                    continue
+                }
+            }
+            if let equals = word.firstIndex(of: "="), word.hasPrefix("-") {
+                take(String(word[..<equals]), String(word[word.index(after: equals)...]))
                 continue
             }
             if word.hasPrefix("-") {
                 guard optionsWithValue.contains(word), index < words.count else { continue }
                 let value = words[index]
                 index += 1
-                if word == "--top" || word == "-top" { result.tops.append(value) }
-                if word == "-f" || word == "-F" { result.commandFiles.append(value) }
+                take(word, value)
                 continue
             }
+            // slang expands `*`, `?` and `...` in source paths.
+            if word.contains("*") || word.contains("?") || word.contains("...") { result.mayReachUnlistedFiles = true }
             result.sources.append(word)
         }
         return result
@@ -62,6 +92,22 @@ public struct SlangBuildFile: Equatable, Sendable {
             let path = (absolute as NSString).standardizingPath
             return path.hasPrefix(prefix) || path == root ? nil : path
         }
+    }
+
+    /// Whether `path` is part of this build: the build file at `buildFilePath` itself, one of its
+    /// nested command files, library files or sources (relative ones against `baseDirectory`).
+    /// Files reached only through globs or directories aren't seen: see `mayReachUnlistedFiles`.
+    /// `normalize` maps each candidate to the form `path` is in (e.g. real paths).
+    public func involves(
+        _ path: String, buildFilePath: String, baseDirectory: String,
+        normalize: (String) -> String = { $0 }
+    ) -> Bool {
+        func absolute(_ file: String) -> String {
+            let joined = file.hasPrefix("/") ? file : (baseDirectory as NSString).appendingPathComponent(file)
+            return normalize((joined as NSString).standardizingPath)
+        }
+        if normalize((buildFilePath as NSString).standardizingPath) == path { return true }
+        return (commandFiles + libraryFiles + sources).contains { absolute($0) == path }
     }
 
     /// Words of a command file: `//`, `#` and `/* */` comments dropped, quotes grouping words,
@@ -94,7 +140,8 @@ public struct SlangBuildFile: Equatable, Sendable {
                 finish()
                 continue
             }
-            if char == "/", next == "*" {
+            // Only at a word's start: slang reads `rtl/*.sv` as a glob, not a comment.
+            if char == "/", next == "*", !hasWord {
                 index += 2
                 while index + 1 < chars.count, !(chars[index] == "*" && chars[index + 1] == "/") { index += 1 }
                 index += 2
@@ -216,7 +263,7 @@ public enum SlangProfileCatalog {
             let path = String(header[header.index(after: space)...])
             switch header[..<space] {
             case "profile": listing.profiles.append(SlangProfile(path: path, buildFile: SlangBuildFile.parse(body)))
-            case "config": listing.configs.append(.init(path: path, health: SlangServerConfigFile.health(of: Data(body.utf8))))
+            case "config": listing.configs.append(.init(path: path, data: Data(body.utf8)))
             default: break
             }
         }
@@ -227,7 +274,7 @@ public enum SlangProfileCatalog {
     public static func localListing(root: String, home: String = NSHomeDirectory()) -> Listing {
         let configs = [SlangServerConfigFile.path(inWorkspace: root, relativePath: ".slang/server.json"), SlangServerConfigFile.path(inWorkspace: root)]
             .filter { FileManager.default.fileExists(atPath: $0) }
-            .map { SlangServerConfigFile.Found(path: $0, health: SlangServerConfigFile.health(of: FileManager.default.contents(atPath: $0))) }
+            .map { SlangServerConfigFile.Found(path: $0, data: FileManager.default.contents(atPath: $0)) }
         return Listing(profiles: localProfiles(root: root, home: home), configs: configs)
     }
 
@@ -281,6 +328,29 @@ public enum SlangProfileCatalog {
     }
 }
 
+/// What a waveform viewer opened against an already-built design builds from.
+public enum SlangWaveformDesign: Equatable, Sendable {
+    /// The profile (build file path) whose `--top` matches the dump.
+    case profile(String)
+    /// The design built now, whose tops are the dump's.
+    case current
+}
+
+extension SlangProfileCatalog {
+    /// The design a waveform opened while `designTops` are built belongs to: the profile matching
+    /// its dump (as the auto-pick matches it), else the built design when its tops are the dump's
+    /// top scopes or the ones just below them, else nil (verify L5).
+    public static func waveformDesign(
+        dumpTops: [String], children: [String: [String]], profiles: [SlangProfile], designTops: [String]
+    ) -> SlangWaveformDesign? {
+        if let profile = profile(matchingDumpTops: dumpTops, children: children, in: profiles) {
+            return .profile(profile.path)
+        }
+        let names = Set(dumpTops + dumpTops.flatMap { children[$0] ?? [] })
+        return !designTops.isEmpty && !names.isDisjoint(with: designTops) ? .current : nil
+    }
+}
+
 extension SlangServerConfigFile {
     /// What a `server.json` holds, for the editor's warning.
     public enum Health: Equatable, Sendable {
@@ -296,11 +366,29 @@ extension SlangServerConfigFile {
     public struct Found: Equatable, Sendable {
         public var path: String
         public var health: Health
+        /// The `"build"` the file names, as written.
+        public var build: String?
 
-        public init(path: String, health: Health) {
+        public init(path: String, health: Health, build: String? = nil) {
             self.path = path
             self.health = health
+            self.build = build
         }
+
+        init(path: String, data: Data?) {
+            self.init(path: path, health: SlangServerConfigFile.health(of: data), build: SlangServerConfigFile.build(in: data))
+        }
+    }
+
+    /// The build file the root's configs make slang-server compile when nothing else is set:
+    /// `.slang/local/server.json`'s `"build"` over `.slang/server.json`'s, made absolute against
+    /// the root. Nil when neither readable config names one.
+    public static func configuredBuild(in configs: [Found], root: String) -> String? {
+        let local = path(inWorkspace: root)
+        let ordered = configs.filter { $0.health == .valid && $0.build?.isEmpty == false }
+            .sorted { ($0.path == local ? 1 : 0) < ($1.path == local ? 1 : 0) }
+        guard let build = ordered.last?.build else { return nil }
+        return build.hasPrefix("/") ? build : (root as NSString).appendingPathComponent(build)
     }
 
     /// slang-server reads its configs with comments and trailing commas allowed; JSON5 covers both.

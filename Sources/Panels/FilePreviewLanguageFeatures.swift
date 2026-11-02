@@ -231,7 +231,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         guard let session, let documentURI else { return }
         Task { await session.save(uri: documentURI, text: text) }
         WaveformEnumLink.documentSaved(session)
-        WaveformFSMEngines.designChanged()
+        WaveformFSMEngines.designChanged(session: session)
+        SlangCompilationActions.designFileSaved(session.serverPath(for: documentURI), session: session)
     }
 
     private func startSession() async {
@@ -284,6 +285,18 @@ final class FilePreviewLanguageFeatures: NSObject {
         updateSlangHeader()
         SlangCompilationActions.refreshListing(for: self)
         SlangCompilationActions.compilationDidChange(session: session)
+        // Opened into focus (or restored as the focused editor): the server builds its file's profile.
+        if let textView = self.textView, textView.window?.firstResponder === textView {
+            editorDidBecomeActive()
+        }
+    }
+
+    /// The editor took focus (or was clicked): it is the active file its server follows.
+    func editorDidBecomeActive() {
+        guard !isDetached else { return }
+        lastActivity = Date()
+        guard linkSession != nil else { return }
+        SlangCompilationActions.editorBecameActive(self)
     }
 
     /// Remote slang-server builds can hang on completion, so a remote document
@@ -323,7 +336,8 @@ final class FilePreviewLanguageFeatures: NSObject {
         lastSentText = text
         if reloadedFromDisk {
             await WaveformEnumLink.documentReloadedFromDisk(session, uri: documentURI, text: text, version: documentVersion)
-            WaveformFSMEngines.designChanged()
+            WaveformFSMEngines.designChanged(session: session)
+            SlangCompilationActions.designFileSaved(session.serverPath(for: documentURI), session: session)
         } else {
             await session.change(uri: documentURI, text: text, version: documentVersion)
         }
@@ -505,7 +519,7 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// Cmd-click on an identifier goes to its definition.
     func handleMouseDown(_ event: NSEvent) -> Bool {
-        lastActivity = Date()
+        editorDidBecomeActive()
         linkMessageMayClose()
         guard !isDetached, event.clickCount == 1,
               event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,

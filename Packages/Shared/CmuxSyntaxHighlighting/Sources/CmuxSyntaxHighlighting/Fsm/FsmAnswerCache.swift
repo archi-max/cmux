@@ -15,12 +15,15 @@ public struct FsmAnswerCache<Answer> {
     public struct Run: Sendable {
         let ticket: Ticket
         let designEpoch: Int
+        let waveformEpoch: Int
     }
 
     private var generations: [String: Int] = [:]
     private var answers: [String: [String: Answer]] = [:]
     private var running: Set<Ticket> = []
     private var designEpoch = 0
+    /// Per waveform: design changes of the server it links to (`designChanged(waveforms:)`).
+    private var waveformEpochs: [String: Int] = [:]
 
     public init() {}
 
@@ -42,11 +45,20 @@ public struct FsmAnswerCache<Answer> {
         answers = [:]
     }
 
+    /// The design of only these waveforms changed (their server switched profiles): other
+    /// waveforms keep their answers. Runs going on for them are still shown, not kept.
+    public mutating func designChanged(waveforms: [String]) {
+        for waveform in waveforms {
+            waveformEpochs[waveform, default: 0] += 1
+            answers[waveform] = nil
+        }
+    }
+
     /// A run for `path`, or nil when one for the current generation is running.
     public mutating func start(_ waveform: String, _ path: String) -> Run? {
         let ticket = Ticket(waveform: waveform, path: path, generation: generations[waveform, default: 0])
         guard running.insert(ticket).inserted else { return nil }
-        return Run(ticket: ticket, designEpoch: designEpoch)
+        return Run(ticket: ticket, designEpoch: designEpoch, waveformEpoch: waveformEpochs[waveform, default: 0])
     }
 
     /// The run ended with `answer`. Whether to show it: false when its waveform was opened again
@@ -55,7 +67,7 @@ public struct FsmAnswerCache<Answer> {
         let ticket = run.ticket
         running.remove(ticket)
         guard ticket.generation == generations[ticket.waveform, default: 0] else { return false }
-        if keep, run.designEpoch == designEpoch { answers[ticket.waveform, default: [:]][ticket.path] = answer }
+        if keep, run.designEpoch == designEpoch, run.waveformEpoch == waveformEpochs[ticket.waveform, default: 0] { answers[ticket.waveform, default: [:]][ticket.path] = answer }
         return true
     }
 }

@@ -1654,6 +1654,10 @@ final class FileExplorerStore: ObservableObject {
         }
         let context = resourceContextID
         try await provider.rename(path: path, to: destinationPath)
+        // Files and slang profiles below the renamed path keep their per-file profile choices.
+        if let host = (provider as? SSHFileExplorerProvider)?.remoteIdentity ?? (provider is LocalFileExplorerProvider ? "local" : nil) {
+            SlangCompilationActions.pathWasMoved(from: path, to: destinationPath, hostIdentity: host)
+        }
         guard self.provider === provider, resourceContextID == context else {
             throw FileExplorerError.providerUnavailable
         }

@@ -510,6 +510,13 @@ final class SavingTextView: NSTextView, FilePreviewAutomaticScrollSuppressing {
         panel?.retryPendingFocus()
     }
 
+    override func becomeFirstResponder() -> Bool {
+        let didBecome = super.becomeFirstResponder()
+        // A tab or pane switch into this editor: its server follows the file's slang profile.
+        if didBecome { languageFeatures?.editorDidBecomeActive() }
+        return didBecome
+    }
+
     override func resignFirstResponder() -> Bool {
         let didResign = super.resignFirstResponder()
         if didResign {
