@@ -62,7 +62,8 @@ import Testing
         #expect(profiles.map(\.name) == ["a", "b"])
         #expect(listing.configs == [
             .init(path: "/r/.slang/server.json", health: .empty),
-            .init(path: "/r/.slang/local/server.json", health: .valid),
+            // JSON5, as slang-server reads it: the build is still found (verify N1).
+            .init(path: "/r/.slang/local/server.json", health: .valid, build: "a.f"),
         ])
         #expect(SlangProfileCatalog.parseListing("") == .init())
     }

@@ -1038,22 +1038,47 @@ extension SlangCompilationActions {
     /// The profile each waveform viewer was elaborated against or auto-picked (in memory only).
     private static let waveformChoices = NSMapTable<FilePreviewPanel, WaveformChoice>.weakToStrongObjects()
 
+    /// A choice is the server's it was recorded with: a waveform's profile of one root is never
+    /// applied to another root's server (verify L6).
     private final class WaveformChoice {
         let choice: SlangProfileChoice
-        init(_ choice: SlangProfileChoice) { self.choice = choice }
+        weak var session: LanguageServerSession?
+        init(_ choice: SlangProfileChoice, session: LanguageServerSession) {
+            self.choice = choice
+            self.session = session
+        }
     }
 
     /// The waveform viewer `waveform` was linked to `session`'s design as it compiles now (its
     /// auto-pick, the link's elaboration, or the design it opened against): focusing it brings that back.
     static func recordWaveformDesign(_ waveform: FilePreviewPanel, session: LanguageServerSession) async {
         let state = await currentState(of: session)
-        waveformChoices.setObject(WaveformChoice(SlangProfileChoice(state)), forKey: waveform)
+        recordWaveformChoice(SlangProfileChoice(state), waveform: waveform, session: session)
+    }
+
+    /// `waveform`'s profile on `session` is `choice` (a profile matching its dump).
+    static func recordWaveformChoice(_ choice: SlangProfileChoice, waveform: FilePreviewPanel, session: LanguageServerSession) {
+        waveformChoices.setObject(WaveformChoice(choice, session: session), forKey: waveform)
+    }
+
+    /// `waveform`'s recorded profile, if it was recorded on `session`.
+    private static func waveformChoice(_ waveform: FilePreviewPanel, session: LanguageServerSession) -> SlangProfileChoice? {
+        guard let recorded = waveformChoices.object(forKey: waveform), recorded.session === session else { return nil }
+        return recorded.choice
+    }
+
+    /// The server a focused waveform follows: its paired editor's, else the one its profile was
+    /// recorded with, else the workspace's most recent editor's (which changes with focus).
+    private static func followedSession(for waveform: FilePreviewPanel) -> LanguageServerSession? {
+        WaveformSourceLink.pairedSession(for: waveform)
+            ?? waveformChoices.object(forKey: waveform)?.session
+            ?? WaveformSourceLink.linkedSession(for: waveform)
     }
 
     /// A waveform viewer took focus (a click, its tab, its window): its server builds the profile
     /// the waveform was elaborated against, so cross-probing, FSM, enums and inline values map to it.
     static func waveformBecameActive(_ waveform: FilePreviewPanel) {
-        guard waveform.previewMode == .waveform, let session = WaveformSourceLink.linkedSession(for: waveform) else { return }
+        guard waveform.previewMode == .waveform, let session = followedSession(for: waveform) else { return }
         installKeyWindowFollow()
         let entry = entry(for: session)
         entry.activeWaveform = waveform
@@ -1113,10 +1138,11 @@ extension SlangCompilationActions {
     private static func follower(for session: LanguageServerSession, entry: Entry) -> SlangProfileFollower {
         if let follower = entry.follower { return follower }
         let follower = SlangProfileFollower(hooks: .init(
-            wanted: { [weak entry] in
+            wanted: { [weak entry, weak session] in
                 guard let entry else { return nil }
                 if let waveform = entry.activeWaveform {
-                    return SlangProfileFocus.waveform(waveformChoices.object(forKey: waveform)?.choice).wanted(in: SlangProfileAssignments())
+                    let choice = session.flatMap { waveformChoice(waveform, session: $0) }
+                    return SlangProfileFocus.waveform(choice).wanted(in: SlangProfileAssignments())
                 }
                 guard let editor = entry.activeEditor, let file = fileKey(of: editor) else { return nil }
                 return SlangProfileFocus.file(file).wanted(in: assignments(rootKey: editor.linkRootKey))

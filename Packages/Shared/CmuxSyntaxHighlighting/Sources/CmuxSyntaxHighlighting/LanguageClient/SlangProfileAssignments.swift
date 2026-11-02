@@ -305,7 +305,9 @@ public final class SlangProfileFollower {
 
     /// The user chose `choice` themselves: tried again on the next focus even if it failed.
     public func userChose(_ choice: SlangProfileChoice) {
+        // Remembered resolved: choosing the config clears its failed build (verify L7).
         failed.remove(choice)
+        failed.remove(hooks.resolve(choice))
     }
 
     /// The server's change that held it is over: a follow that gave up waiting for it runs now.
