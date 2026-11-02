@@ -4,7 +4,7 @@ module tb_h;
   logic [3:0] sel = 4'b0000;
   logic [1:0] widx = 2'd1, pr = 2'b00;
   logic [7:0] din = 8'h10;
-  logic [7:0] q, r, cx, rd0, rd1, pv, uv, mv, dly;
+  logic [7:0] q, r, cx, rd0, rd1, pv, uv, mv, dly, ms;
   wire  [7:0] bus;
   logic [3:0] sel_o;
   h_mix dut (.*);
@@ -23,5 +23,11 @@ module tb_h;
     #10 begin sel = 4'bx000; din = 8'h65; pr = 2'b01; end             // t=62
     #10 begin sel = 4'b0z10; din = 8'h76; widx = 2'bxx; oe_b = 0; c = 0; end  // t=72
     #20 $finish;                                                     // t=92
+  end
+  // Two delay scales fit ms's change at 5 ns (5000 ps): 1000 (#5) and 100 (#50, the same value
+  // written again, so no change). The write in effect at 30 ns is the #5 one.
+  initial begin
+    #5 ms = 8'h99;
+    #45 ms = 8'h99;                                                  // t=50
   end
 endmodule

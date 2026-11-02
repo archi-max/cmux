@@ -26,6 +26,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var modelRequests = 0
   /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
   var engineAnswer: [String: Any]?
+  /// Per traced signal (the request's dump path), ahead of `engineAnswer`.
+  var engineAnswers: [String: [String: Any]] = [:]
   var engineRequests = 0
   /// How long cmux takes to answer an engine request (the Verdi session's answer time).
   var engineDelay: TimeInterval = 0
@@ -35,8 +37,20 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var updates = 0
   var checksStarted = false
 
-  func call(_ js: String) async -> Any? {
-    do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
+  /// Runs `js` as an async function body; past `timeout` it fails (nil) instead of hanging the run.
+  func call(_ js: String, timeout: TimeInterval = 60) async -> Any? {
+    let raced = """
+      let timer;
+      try {
+        return await Promise.race([
+          (async () => {
+      \(js)
+          })(),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('harness: no answer in \(Int(timeout)) s')), \(Int(timeout * 1000))); }),
+        ]);
+      } finally { clearTimeout(timer); }
+      """
+    do { return try await web.callAsyncJavaScript(raced, arguments: [:], in: nil, contentWorld: .page) }
     catch { print("JS ERROR", js.prefix(120), error); return nil }
   }
 
@@ -441,6 +455,42 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(largeEngine?["verdi"] as? String == "large" && largeEngine?["name"] as? String == "cmux",
            "a large port hop is not followed: \(String(describing: largeEngine))")
     expect((large?["panelAfter"] as? String ?? "").contains("Verdi: not checked (large signal)"), "the panel says the signal was too large")
+
+    // Two Verdi checks that hop to different signals (q's and qd's statements in u_sink) go one
+    // read at a time too: counted at every read request of the whole run, not one sample. A new
+    // session (backendChanged) so nothing is cached.
+    engineAnswers = ["tb_c.dut.q": ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56],
+                     "tb_c.dut.qd": ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 57]]
+    let two = await call("""
+      const b = cmuxWaveform.host.currentBackend, t = cmuxWaveform.trace;
+      cmuxWaveform.traceVerdiBudgetMs = 20000;
+      t.backendChanged();
+      const own = b.signalChanges.bind(b);
+      const names = []; let chain = Promise.resolve(), hops = 0, mostHops = 0;
+      const isHop = (name) => name.includes('.u_sink.');
+      b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+      b.signalChanges = (v, max) => {
+        const name = cmuxWaveform.host.pathOf ? cmuxWaveform.host.pathOf(v).join('.') : String(v.netlistId);
+        const hop = isHop(name);
+        names.push(name);
+        if (hop) { hops++; mostHops = Math.max(mostHops, hops); }
+        const run = chain.then(() => new Promise((r) => setTimeout(r, 300))).then(() => own(v, max)).finally(() => { if (hop) { hops--; } });
+        chain = run.catch(() => {});
+        return run;
+      };
+      try {
+        await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        await t.driverOfDesign({ designPath: 'tb_c.dut.qd', designPrefix: '', dumpPrefix: '', time: 60 });
+        if (t.settled) { await t.settled(); }
+        return { mostHops, names: names.join(' '), steps: t.state().steps };
+      } finally { delete b.valuesAt; delete b.changes; b.signalChanges = own; cmuxWaveform.traceVerdiBudgetMs = 1500; }
+      """) as? [String: Any]
+    let twoNames = two?["names"] as? String ?? ""
+    print("[verdi async] two hopping checks: \(String(describing: two))")
+    expect(twoNames.contains("u_sink.q") && twoNames.contains("u_sink.qd"), "both checks followed their port hop: \(twoNames)")
+    expect((two?["mostHops"] as? Int ?? 99) <= 1, "two checks' port-hop reads go one at a time: at most \(String(describing: two?["mostHops"])) at once")
+    engineAnswers = [:]
+
     engineAnswer = nil
     _ = await call("delete cmuxWaveform.traceVerdiBudgetMs; return null")
 
@@ -498,7 +548,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     case "engine":
       engineRequests += 1
       if engineHang { return }
-      let result: [String: Any] = engineAnswer ?? ["state": "none"]
+      let result: [String: Any] = (body["signal"] as? String).flatMap { engineAnswers[$0] } ?? engineAnswer ?? ["state": "none"]
       if engineDelay > 0 {
         DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { self.answer(id, ok: true, result: result) }
       } else {
