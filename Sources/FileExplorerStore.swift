@@ -338,6 +338,17 @@ protocol SSHFileExplorerTransport: AnyObject {
         to localURL: URL,
         maxBytes: Int64
     ) async throws
+    /// Downloads the first of `candidates` (host paths, `~` allowed) that is
+    /// a regular readable file, to `localURL`, and names it. With `maxBytes`,
+    /// a larger file is refused (``RemoteFileProbe/Failure/tooLarge``) and at
+    /// most `maxBytes + 1` bytes are read. Throws
+    /// ``RemoteFileProbe/Failure/noFile`` when none is.
+    nonisolated func probeDownload(
+        candidates: [String],
+        maxBytes: Int64?,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> RemoteFileProbe.Header
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -450,6 +461,49 @@ extension SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         throw FileExplorerError.mutationFailed
+    }
+
+    /// One request per spelling, for transports without the one-run probe
+    /// (test transports): `$HOME` looked up once, then for each candidate a
+    /// stamp and a download.
+    nonisolated func probeDownload(
+        candidates: [String],
+        maxBytes: Int64?,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> RemoteFileProbe.Header {
+        var home: String?
+        for (index, candidate) in candidates.enumerated() {
+            try Task.checkCancellation()
+            var path = candidate
+            if candidate == "~" || candidate.hasPrefix("~/") {
+                if home == nil { home = try await resolveHomePath(connection: connection) }
+                guard let home, home.hasPrefix("/") else { continue }
+                path = candidate == "~" ? home : home + (home.hasSuffix("/") ? "" : "/") + String(candidate.dropFirst(2))
+            }
+            do {
+                if let maxBytes {
+                    let stamp = try await fileStamp(path: path, connection: connection)
+                    guard stamp.size <= maxBytes else { throw RemoteFileProbe.Failure.tooLarge }
+                    try await downloadFile(path: path, connection: connection, to: localURL, maxBytes: maxBytes)
+                    return RemoteFileProbe.Header(
+                        index: index, path: path, modificationTime: stamp.modificationTime, size: stamp.size
+                    )
+                }
+                try await downloadFile(path: path, connection: connection, to: localURL)
+                let size = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?
+                    .int64Value ?? 0
+                let stamp = try? await fileStamp(path: path, connection: connection)
+                return RemoteFileProbe.Header(
+                    index: index, path: path, modificationTime: stamp?.modificationTime ?? 0, size: stamp?.size ?? size
+                )
+            } catch let failure as RemoteFileProbe.Failure {
+                throw failure
+            } catch {
+                try Task.checkCancellation()
+            }
+        }
+        throw RemoteFileProbe.Failure.noFile
     }
 
     /// Transports without a bounded read download everything; callers still
@@ -733,6 +787,17 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         try await transport.downloadFile(path: path, connection: connection, to: localURL)
     }
 
+    /// Downloads the first of `candidates` that is a file, in one round trip
+    /// where the transport can (``SSHFileExplorerTransport/probeDownload``).
+    func probeDownload(candidates: [String], maxBytes: Int64?, to localURL: URL) async throws -> RemoteFileProbe.Header {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.probeDownload(
+            candidates: candidates, maxBytes: maxBytes, connection: connection, to: localURL
+        )
+    }
+
     /// Downloads at most `maxBytes + 1` bytes of `path`.
     func downloadFile(path: String, to localURL: URL, maxBytes: Int64) async throws {
         guard isAvailable else {
@@ -852,6 +917,44 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     static func cappedDownloadCommand(path: String, maxBytes: Int64) -> String {
         let word = remoteShellPathWord(path)
         return SlangWorkspaceRoot.posixShellCommand("test -f \(word) && head -c \(max(0, maxBytes) + 1) < \(word)")
+    }
+
+    /// One ssh run for every spelling (``RemoteFileProbe``), instead of one
+    /// per spelling plus a `$HOME` lookup and a `stat`.
+    nonisolated func probeDownload(
+        candidates: [String],
+        maxBytes: Int64?,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> RemoteFileProbe.Header {
+        guard !candidates.isEmpty else { throw RemoteFileProbe.Failure.noFile }
+        let raw = localURL.deletingLastPathComponent()
+            .appendingPathComponent(".probe-" + UUID().uuidString, isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: raw) }
+        let commandProcess = SSHDownloadCommandProcess(
+            connection: connection,
+            command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
+            outputURL: raw
+        )
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(with: Result { try commandProcess.run() })
+                }
+            }
+        } onCancel: {
+            commandProcess.terminate()
+        }
+        switch result.terminationStatus {
+        case 0:
+            return try RemoteFileProbe.extract(from: raw, to: localURL)
+        case RemoteFileProbe.noFileStatus:
+            throw RemoteFileProbe.Failure.noFile
+        case RemoteFileProbe.tooLargeStatus:
+            throw RemoteFileProbe.Failure.tooLarge
+        default:
+            throw FileExplorerError.sshCommandFailed(result.stderr)
+        }
     }
 
     private nonisolated func runDownload(

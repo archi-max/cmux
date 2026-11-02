@@ -113,8 +113,10 @@ import Testing
         for shell in Self.shells {
             let result = try run(RemoteFileProbe.command(candidates: [file.path], maxBytes: 10), shell: shell, home: root, in: root)
             #expect(result.status == RemoteFileProbe.tooLargeStatus, "\(shell)")
-            let size = (try FileManager.default.attributesOfItem(atPath: result.raw.path)[.size] as? NSNumber)?.intValue ?? -1
-            #expect(size < 100, "\(shell): the file's bytes are not sent")
+            let sent = root.appendingPathComponent("o-" + UUID().uuidString)
+            let header = try RemoteFileProbe.extract(from: result.raw, to: sent)
+            #expect(header.size == 100, "\(shell): the header still says how big it is")
+            #expect(try Data(contentsOf: sent).isEmpty, "\(shell): the file's bytes are not sent")
             let fits = try run(RemoteFileProbe.command(candidates: [file.path], maxBytes: 100), shell: shell, home: root, in: root)
             #expect(fits.status == 0, "\(shell)")
         }
