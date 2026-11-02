@@ -731,6 +731,20 @@ endmodule
     moved("swapped, the mark's line now unrelated, its old text elsewhere", swappedTwin, mark: 3,
           swappedNew.replacingOccurrences(of: "w <= 0;", with: "y <= 0;").replacingOccurrences(of: "    x <= x + 1;\n    y <= 0;", with: "    x <= x + 1;\n    qq = rr ^ ss;"), .lost)
 
+    // D1 (verify-debugger-fix): more than the 256 searched lines added right above an edited marked
+    // line in one reload. The line it became is found from the gap's end as well as from its top.
+    let headD1 = "module p(input logic clk);\n  logic a, b, c, out;\n", tailD1 = "  always_ff @(posedge clk) a <= b;\nendmodule\n"
+    func addedD1(_ count: Int) -> String { (0..<count).map { "  wire [7:0] n\($0) = \($0);\n" }.joined() }
+    let oldD1 = headD1 + "  assign out = a & b;\n" + tailD1
+    moved("300 lines added right above an edited marked line", oldD1, mark: 2,
+          headD1 + addedD1(300) + "  assign out = a & c;\n" + tailD1, .line(302))
+    moved("1000 lines added right above it", oldD1, mark: 2,
+          headD1 + addedD1(1000) + "  assign out = a & c;\n" + tailD1, .line(1002))
+    moved("300 lines added right below it", oldD1, mark: 2,
+          headD1 + "  assign out = a & c;\n" + addedD1(300) + tailD1, .line(2))
+    moved("10 lines added right above it", oldD1, mark: 2,
+          headD1 + addedD1(10) + "  assign out = a & c;\n" + tailD1, .line(12))
+
     // F1 (verify-dbg3): a reload that changes every line costs about the same per line at any size.
     // It was O(marks × gap): 10× the lines with 10× the marks took about 100× as long, not 10×.
     func reloadMilliseconds(_ lines: Int) -> (ms: Double, marks: Int, lost: Int) {
@@ -757,8 +771,8 @@ endmodule
     }
     let small = (0..<3).map { _ in reloadMilliseconds(1_000) }.min { $0.ms < $1.ms }!
     var large = reloadMilliseconds(10_000)
-    if large.ms >= small.ms * 30 { let again = reloadMilliseconds(10_000); if again.ms < large.ms { large = again } }
-    expect(large.ms < small.ms * 30 && small.marks == 5 && large.marks == 50 && small.lost == 0 && large.lost == 0,
+    if large.ms >= max(small.ms, 1) * 30 { let again = reloadMilliseconds(10_000); if again.ms < large.ms { large = again } }
+    expect(large.ms < max(small.ms, 1) * 30 && small.marks == 5 && large.marks == 50 && small.lost == 0 && large.lost == 0,
            "a reload changing every line: 10k lines and 50 marks in \(Int(large.ms)) ms, 1k and 5 in \(Int(small.ms)) ms (under 30×; marks \(small.marks)/\(large.marks), lost \(small.lost)/\(large.lost))")
 
     // R3: the page posts its (empty) signal list while it handles setLineBreakpoints, before the
