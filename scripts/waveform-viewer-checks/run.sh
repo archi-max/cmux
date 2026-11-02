@@ -64,6 +64,8 @@
 #   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
 #                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
 #                                        given; its models of the trace fixtures equal trace/models
+#   ./run.sh debugger-invoke             debugger commands from keys, menu, palette with a
+#                                        viewer field focused; the no-viewer notice
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #   ./run.sh text                        text breakpoints' formats and match rules (cmux-textmatch.js) in JavaScriptCore
 #   ./run.sh text-breakpoints            text breakpoints in the page: hits, menus, conditions, caps, watchdog
@@ -297,6 +299,10 @@ case "${1:-}" in
   trace)
     swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
     "$OUT/trace" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-trace.js" "$HERE/trace"
+    ;;
+  debugger-invoke)
+    swiftc -swift-version 6 -O "$HERE/debugger-invoke/main.swift" "$ROOT/Sources/Panels/WaveformDebuggerInvocation.swift" -o "$OUT/debugger-invoke"
+    "$OUT/debugger-invoke"
     ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"

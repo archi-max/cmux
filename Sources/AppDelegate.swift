@@ -16843,7 +16843,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return WaveformTrace.performFromShortcut(window: resolvedShortcutEventWindow(event))
         }
         for (action, command) in WaveformDebugger.shortcutCommands where matchConfiguredShortcut(event: event, action: action) {
-            return WaveformDebugger.performFromShortcut(command, window: resolvedShortcutEventWindow(event))
+            return WaveformDebugger.performFromShortcut(
+                command, window: resolvedShortcutEventWindow(event),
+                characters: event.charactersIgnoringModifiers, modifierFlags: event.modifierFlags
+            )
         }
         if matchConfiguredShortcut(event: event, action: .markdownZoomIn) {
             return shortcutEventMarkdownPanel(event)?.zoomIn() ?? false

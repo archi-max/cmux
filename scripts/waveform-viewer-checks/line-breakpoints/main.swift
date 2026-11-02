@@ -568,29 +568,29 @@ endmodule
     expect(LB.marks[separators]?.first?.line == 7 && LB.marks[separators]?.first?.text == "assign done = count == limit;",
            "line numbers count every line break the gutter does: \(state(separators))")
 
-    // L10: placing many marks in a big file is one pass, not one per mark. Timed against 200 marks in the
-    // same file, so a loaded Mac slows both: one pass costs about the same for both, a pass per mark 10x.
-    var manyText = "module many(input logic clk);\n"
-    for i in 0..<50_000 { manyText += "  assign w\(i) = r\(i);\n" }
-    manyText += "endmodule\n"
-    func place(_ count: Int) -> (ms: Double, placed: Bool) {
-        let space = UUID()
-        let step = 50_000 / count
+    // L10: placing many marks in a big file is one pass, not one per mark. Relative to a 10x smaller
+    // file with 10x fewer marks (best of 3), so load doesn't flake it: one pass per mark is about 100x.
+    func placeMilliseconds(_ lines: Int, marks count: Int) -> (ms: Double, marks: Int, lost: Int) {
+        let workspace = UUID()
+        var text = "module many(input logic clk);\n"
+        for i in 0..<lines { text += "  assign w\(i) = r\(i);\n" }
+        text += "endmodule\n"
+        let step = lines / count
         LB.restore(SessionWaveformBreakpointsSnapshot(lines: (0..<count).map {
             LB.Mark(id: UUID(), path: "/rtl/many.sv", line: 1 + $0 * step, text: "assign w\($0 * step) = r\($0 * step);")
-        }, signals: nil), in: space)
-        let view = open(manyText, workspace: space, path: "/rtl/many.sv")
+        }, signals: nil), in: workspace)
+        let view = open(text, workspace: workspace, path: "/rtl/many.sv")
         let started = Date()
         _ = LB.styles(in: view)
         let ms = Date().timeIntervalSince(started) * 1000
-        return (ms, (LB.marks[space] ?? []).count == count && (LB.marks[space] ?? []).allSatisfy { !$0.lost })
+        let placed = LB.marks[workspace] ?? []
+        return (ms, placed.count, placed.filter(\.lost).count)
     }
-    let few = place(200)
-    let lots = place(2000)
-    let fewAgain = place(200)
-    let baseline = min(few.ms, fewAgain.ms)
-    expect(lots.placed && (lots.ms < 500 || lots.ms < 4 * max(baseline, 1)),
-           "2000 marks in a 50k-line file placed in \(Int(lots.ms)) ms (under 500, or under 4x the \(Int(baseline)) ms of 200 marks)")
+    let smallPlace = (0..<3).map { _ in placeMilliseconds(5_000, marks: 200) }.min { $0.ms < $1.ms }!
+    var bigPlace = placeMilliseconds(50_000, marks: 2000)
+    if bigPlace.ms >= smallPlace.ms * 30 { let again = placeMilliseconds(50_000, marks: 2000); if again.ms < bigPlace.ms { bigPlace = again } }
+    expect(bigPlace.ms < max(smallPlace.ms, 1) * 30 && bigPlace.marks == 2000 && smallPlace.marks == 200 && bigPlace.lost == 0 && smallPlace.lost == 0,
+           "2000 marks in a 50k-line file placed in \(Int(bigPlace.ms)) ms, 200 in 5k in \(String(format: "%.1f", smallPlace.ms)) ms (under 30x; lost \(bigPlace.lost))")
 
     // N8: an older manifest's list goes to the first viewer that reports; cleared there, it does not
     // come back after a relaunch, nor go to an unrelated viewer.
@@ -710,12 +710,14 @@ endmodule
             for _ in 0..<keys { type(view, "x") }
             return Date().timeIntervalSince(started) * 1000 / Double(keys)
         }
+        // Best of 3 each, and a ratio (1.5× plus 2 ms): the Mac's load moves both a lot. The O(file)
+        // cost this guards against is tens of ms per key at this size.
         _ = time(20)
-        let without = time(200)
+        let without = (0..<3).map { _ in time(100) }.min()!
         _ = LB.gutterClicked(view, lineStart: starts(view)[50_001])
-        let with = time(200)
-        expect(with < without + 2 && dots(view) == [50_001],
-               "TK1: typing on the line above a mark at 100k lines: \(String(format: "%.2f", with)) ms/key, \(String(format: "%.2f", without)) without (within 2): \(dots(view))")
+        let with = (0..<3).map { _ in time(100) }.min()!
+        expect(with < without * 1.5 + 2 && dots(view) == [50_001],
+               "TK1: typing on the line above a mark at 100k lines: \(String(format: "%.2f", with)) ms/key, \(String(format: "%.2f", without)) without (best of 3, within 1.5× + 2): \(dots(view))")
     }
     LB.isUndoing = { _ in false }
 
@@ -790,6 +792,55 @@ endmodule
     moved("spacing aside, the same text wins over a nearer line it was joined into", source, mark: 4,
           source.replacingOccurrences(of: "  assign done = count == limit;\n", with: "  wire w;\n  assign done = count == limit; assign go = 1;\n  assign done = count==limit;\n  wire v;\n  assign done = count ==limit;\n  wire u;\n"), .line(6))
 
+    // Mutants that survived verify-dbg3 (T1-T3).
+    // G2: two lines in its gap as like it as each other: neither is its statement (a tie is lost).
+    moved("two equally like lines in its gap", "module m;\n  logic a;\n  assign a = b & c;\n  logic z;\nendmodule\n", mark: 2,
+          "module m;\n  logic a;\n  assign a = b & d;\n  assign a = b & e;\n  logic z;\nendmodule\n", .lost)
+    // G4: a format joins a long begin label onto the short marked line (too unlike it for the similarity).
+    moved("a format joining a long begin label onto the marked line",
+          "module m;\n  always @*\n    begin : the_combinational_block_label\n      y = a;\n    end\nendmodule\n", mark: 1,
+          "module m;\n  always @* begin : the_combinational_block_label\n    y = a;\n  end\nendmodule\n", .line(1), format: true)
+    // R4c's "a block that stayed keeps the diff's pairing": the mark's text is twice in the file, the
+    // line once in each file just above it stayed, and a line was added between them.
+    let stayedTwin = "module t(input logic clk);\n  assign a = 1;\n  x <= 0;\n  y <= 0;\n  assign b = 2;\n  y <= 0;\nendmodule\n"
+    moved("a line added above a repeated marked line whose block stayed", stayedTwin, mark: 3,
+          stayedTwin.replacingOccurrences(of: "  x <= 0;\n", with: "  x <= 0;\n  z <= 5;\n"), .line(4))
+    moved("the same as a format", stayedTwin, mark: 3,
+          stayedTwin.replacingOccurrences(of: "  x <= 0;\n", with: "  x <= 0;\n  z <= 5;\n"), .line(4), format: true)
+    // R4c's similarity gate: its block moved and its line there is now unrelated: lost, not moved onto it.
+    moved("swapped, the mark's line now unrelated, its old text elsewhere", swappedTwin, mark: 3,
+          swappedNew.replacingOccurrences(of: "w <= 0;", with: "y <= 0;").replacingOccurrences(of: "    x <= x + 1;\n    y <= 0;", with: "    x <= x + 1;\n    qq = rr ^ ss;"), .lost)
+
+    // F1 (verify-dbg3): a reload that changes every line costs about the same per line at any size.
+    // It was O(marks × gap): 10× the lines with 10× the marks took about 100× as long, not 10×.
+    func reloadMilliseconds(_ lines: Int) -> (ms: Double, marks: Int, lost: Int) {
+        var text = "module big(input logic clk);\n", reloaded = "module big(input logic clk);\n"
+        for i in 0..<lines {
+            text += "  always_ff @(posedge clk) r\(i) <= r\(i) + 1; // filler\n"
+            reloaded += "  assign w\(i) = q\(i * 7 % 1000) ^ k\(i);\n"
+        }
+        text += "endmodule\n"
+        reloaded += "endmodule\n"
+        let workspace = UUID()
+        let view = SavingTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        view.string = text
+        FilePreviewLanguageFeatures.all.append(FilePreviewLanguageFeatures(textView: view, path: "/rtl/big.sv", workspace: workspace))
+        _ = LB.styles(in: view)
+        let lineStarts = (text as NSString).lineStarts(), count = lines / 200
+        for j in 0..<count { _ = LB.gutterClicked(view, lineStart: lineStarts[1 + j * 200 + 100]) }
+        let started = Date()
+        view.textStorage!.replaceCharacters(in: NSRange(location: 0, length: view.textStorage!.length), with: reloaded)
+        let ms = Date().timeIntervalSince(started) * 1000
+        let marks = LB.marks[workspace] ?? []
+        FilePreviewLanguageFeatures.all.removeAll { $0.textView === view }
+        return (ms, marks.count, marks.filter(\.lost).count)
+    }
+    let small = (0..<3).map { _ in reloadMilliseconds(1_000) }.min { $0.ms < $1.ms }!
+    var large = reloadMilliseconds(10_000)
+    if large.ms >= small.ms * 30 { let again = reloadMilliseconds(10_000); if again.ms < large.ms { large = again } }
+    expect(large.ms < small.ms * 30 && small.marks == 5 && large.marks == 50 && small.lost == 0 && large.lost == 0,
+           "a reload changing every line: 10k lines and 50 marks in \(Int(large.ms)) ms, 1k and 5 in \(Int(small.ms)) ms (under 30×; marks \(small.marks)/\(large.marks), lost \(small.lost)/\(large.lost))")
+
     // R3: the page posts its (empty) signal list while it handles setLineBreakpoints, before the
     // reply (a real WKWebView does: see breakpoints' ordering check). The saved list still goes back.
     for legacy in [false, true] {
@@ -809,8 +860,9 @@ endmodule
         for _ in 0..<40 where !page.calls.contains(where: { $0.function == "restoreWatches" }) { try? await Task.sleep(nanoseconds: 20_000_000) }
         let restored = (page.calls.first { $0.function == "restoreBreakpoints" }?.argument["items"] as? [[String: Any]])?.compactMap { $0["path"] as? [String] }
         let watched = page.calls.first { $0.function == "restoreWatches" }?.argument["items"] as? [String]
-        expect(restored == [["TOP", "x"]] && watched == ["x + 1"] && LB.signals(for: viewer).map(\.path) == [["TOP", "x"]],
-               "a page that reports its empty list while loading still gets the saved one\(legacy ? " (older manifest)" : ""): \(page.calls.map(\.function)) \(String(describing: restored)) \(String(describing: watched)) kept \(LB.signals(for: viewer).map(\.path))")
+        expect(restored == [["TOP", "x"]] && watched == ["x + 1"] && LB.signals(for: viewer).map(\.path) == [["TOP", "x"]]
+               && LB.watches(for: viewer) == ["x + 1"],
+               "a page that reports its empty lists while loading still gets the saved ones and keeps them\(legacy ? " (older manifest)" : ""): \(page.calls.map(\.function)) \(String(describing: restored)) \(String(describing: watched)) kept \(LB.signals(for: viewer).map(\.path)) \(LB.watches(for: viewer))")
         page.onCall = nil
     }
 }
@@ -827,5 +879,5 @@ extension NSString {
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in await run() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 90) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 240) { print("timeout"); exit(1) }
 app.run()

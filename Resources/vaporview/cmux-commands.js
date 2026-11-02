@@ -865,9 +865,19 @@
   let resolving = 0;
   let resolveEpoch = 0;
   let deferredAdds = [];
+  // Views posted (or dropped) so far: an Add All that read the rows before a
+  // view came and went reads them again.
+  let viewGeneration = 0;
+  let settleWaiters = [];
   function deferWhileApplying(add) {
     if (!resolving) { return null; }
     return new Promise((resolve) => { deferredAdds.push({ add, resolve }); });
+  }
+  // Null when no view is looking up its rows; else a promise of true once none
+  // is (after the held adds ran), or false when a reload or open dropped them.
+  function viewsSettled() {
+    if (!resolving) { return null; }
+    return new Promise((resolve) => { settleWaiters.push(resolve); });
   }
   function flushDeferredAdds() {
     if (resolving) { return; }
@@ -876,17 +886,46 @@
     list.forEach((d) => {
       try { d.resolve(d.add()); } catch (error) { host().log('held add: ' + error); d.resolve(0); }
     });
+    const waiters = settleWaiters;
+    settleWaiters = [];
+    waiters.forEach((resolve) => resolve(true));
   }
   function dropDeferredAdds() {
     resolveEpoch++;
+    viewGeneration++;
     resolving = 0;
     const list = deferredAdds;
     deferredAdds = [];
     list.forEach((d) => d.resolve(0));
+    const waiters = settleWaiters;
+    settleWaiters = [];
+    waiters.forEach((resolve) => resolve(false));
+  }
+  // Waits until no view is looking up its rows; false when a reload or open
+  // dropped the wait. Run synchronously after it, a read of the shown rows is
+  // the view that is (or is about to be) shown.
+  async function untilViewsSettled() {
+    let wait;
+    while ((wait = viewsSettled())) { if (!(await wait)) { return false; } }
+    return true;
+  }
+  // `read` after the views settle, again when a view came while it ran (it
+  // awaits): its result is checked against the rows that view leaves. Null when
+  // a reload or open dropped the wait.
+  async function withSettledViews(read) {
+    for (let tries = 0; ; tries++) {
+      if (!(await untilViewsSettled())) { return null; }
+      // A view that came in the microtasks since: wait for it too.
+      if (resolving && tries < 8) { continue; }
+      const generation = viewGeneration;
+      const result = await read();
+      if (tries >= 8 || (!resolving && generation === viewGeneration)) { return result; }
+    }
   }
 
   async function postSession(session, stateChangeType) {
     const epoch = resolveEpoch;
+    viewGeneration++;
     resolving++;
     try {
       return await resolveAndPostSession(session, stateChangeType);
@@ -1166,7 +1205,13 @@
 
   // Add All in Scope's signals, leaving out those shown already (and repeats):
   // the warning and the cap count only what would be added.
+  // An Undo or restore still looking up its rows decides what is shown: they
+  // are read once it has (verify-parity-fu N1), so a signal it takes out is added.
   async function scopeVariables(scope, recursive, maxChildren) {
+    return (await withSettledViews(() => scopeVariablesNow(scope, recursive, maxChildren))) || [];
+  }
+
+  async function scopeVariablesNow(scope, recursive, maxChildren) {
     const vars = [];
     const seen = new Set();
     const shown = host().shownFilter ? host().shownFilter() : () => false;
@@ -1760,6 +1805,7 @@
     // A reload or restore has not come back yet (Undo/Redo wait for it).
     isRestoring: () => reloading || restorePending,
     deferWhileApplying,
+    withSettledViews,
     // Whether the viewer answers an apply-state (it has asked for its state),
     // and whether a context is such an answer.
     viewerAnswersViews: () => restoreAsked,
