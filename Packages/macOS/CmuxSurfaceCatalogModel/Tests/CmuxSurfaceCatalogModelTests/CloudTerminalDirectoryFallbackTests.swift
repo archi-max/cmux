@@ -92,7 +92,7 @@ import Testing
         }
         let start = try #require(fallback.observe([terminal("t1", title: "0")], projected: ["t1"]).first)
         _ = fallback.finish(start, directory: nil)
-        for _ in 1..<CloudTerminalDirectoryFallback.maximumFailedProbes { if let p = next() { _ = fallback.finish(p, directory: nil) } }
+        for _ in 1..<(CloudTerminalDirectoryFallback.maximumFailedProbes - 1) { if let p = next() { _ = fallback.finish(p, directory: nil) } }
         // The last allowed query succeeds instead.
         if let p = next() { _ = fallback.finish(p, directory: "/ok") }
         #expect(next() != nil)
