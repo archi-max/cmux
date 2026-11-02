@@ -6,7 +6,7 @@ import Testing
     @Test func buildFileTopsSourcesAndSkippedOptions() {
         let text = """
         // pipeline build
-        --top mp_pipeline_tb  # wrapper
+        --top tb_cpu  # wrapper
         -I hvl/include +incdir+rtl/inc
         +define+FOO=1 -DBAR=2 --std 1800-2017
         -f common.f
@@ -14,7 +14,7 @@ import Testing
         rtl/cpu.sv "pkg/my types.sv" /* hvl/old.sv */ hvl/top_tb.sv
         """
         let file = SlangBuildFile.parse(text)
-        #expect(file.tops == ["mp_pipeline_tb", "other_top"])
+        #expect(file.tops == ["tb_cpu", "other_top"])
         #expect(file.commandFiles == ["common.f"])
         #expect(file.sources == ["rtl/cpu.sv", "pkg/my types.sv", "hvl/top_tb.sv"])
     }
@@ -47,9 +47,9 @@ import Testing
     }
 
     @Test func sourcesOutsideTheRootAreReported() {
-        let file = SlangBuildFile(sources: ["rtl/cpu.sv", "../../ece411-cp3-worktree/rtl/cpu.sv", "/home/u/ece411/x.sv", "/home/u/ece4110/y.sv"])
-        let outside = file.sources(outside: "/home/u/ece411", baseDirectory: "/home/u/ece411/.slang")
-        #expect(outside == ["/home/u/ece411-cp3-worktree/rtl/cpu.sv", "/home/u/ece4110/y.sv"])
+        let file = SlangBuildFile(sources: ["rtl/cpu.sv", "../../course-tb_cpu-worktree/rtl/cpu.sv", "/home/u/course/x.sv", "/home/u/course0/y.sv"])
+        let outside = file.sources(outside: "/home/u/course", baseDirectory: "/home/u/course/.slang")
+        #expect(outside == ["/home/u/course-tb_cpu-worktree/rtl/cpu.sv", "/home/u/course0/y.sv"])
     }
 
     @Test func listingParsesPathsAndBodies() {
@@ -113,10 +113,10 @@ import Testing
     }
 
     @Test func autoPickMatchesTheDumpTopOrTheScopeBelowIt() {
-        let a = SlangProfile(path: "/r/.slang/a.f", buildFile: .init(tops: ["mp_pipeline_tb"]))
+        let a = SlangProfile(path: "/r/.slang/a.f", buildFile: .init(tops: ["tb_cpu"]))
         let b = SlangProfile(path: "/r/.slang/b.f", buildFile: .init(tops: ["cache_tb"]))
         let stray = SlangProfile(path: "/r/sim/old.f", buildFile: .init(tops: ["cache_tb"]))
-        #expect(SlangProfileCatalog.profile(matchingDumpTops: ["mp_pipeline_tb"], children: [:], in: [a, b]) == a)
+        #expect(SlangProfileCatalog.profile(matchingDumpTops: ["tb_cpu"], children: [:], in: [a, b]) == a)
         #expect(SlangProfileCatalog.profile(matchingDumpTops: ["TOP"], children: ["TOP": ["cache_tb"]], in: [a, b]) == b)
         #expect(SlangProfileCatalog.profile(matchingDumpTops: ["cache_tb"], children: [:], in: [b, stray]) == b)
         #expect(SlangProfileCatalog.profile(matchingDumpTops: ["nothing"], children: [:], in: [a, b]) == nil)
