@@ -44,6 +44,9 @@ final class SSHMasterPool: @unchecked Sendable {
         }
 
         func path(ofMaster index: Int) -> String { index == 0 ? basePath : basePath + String(index + 1) }
+
+        /// Stub until the pool keys hosts by destination.
+        var key: String { basePath }
     }
 
     /// Starts and checks masters; a mock in tests.
@@ -60,7 +63,30 @@ final class SSHMasterPool: @unchecked Sendable {
     /// Sessions lent per master.
     static var capacity: Int { sessionsPerMaster - reserve }
 
+    static let carrierCapacity = 3
+
     static let shared = SSHMasterPool(control: ProcessControl())
+
+    /// Stub: options for a synchronous run.
+    final class Lease: @unchecked Sendable {
+        let sshOptions: [String]
+        init(sshOptions: [String]) { self.sshOptions = sshOptions }
+        func release() {}
+    }
+
+    /// Stub: ignores the carrier.
+    func warm(_ route: Route, carrierPath: String?) { warm(route) }
+
+    /// Stub: passes the options through.
+    func lease(destination: String, port: Int?, identityFile: String?, sshOptions options: [String]) -> Lease {
+        Lease(sshOptions: options)
+    }
+
+    /// Stub: never uses the carrier.
+    func carrierPathIfMastersFail(_ route: Route) -> String? { nil }
+
+    /// Stub.
+    func runsWaiting(_ route: Route) -> Int { 0 }
 
     private struct Master {
         var live = false
@@ -333,6 +359,9 @@ final class SSHMasterPool: @unchecked Sendable {
 extension SSHMasterPool {
     /// The real masters: `ssh -fN` with ControlMaster=yes, and `ssh -O check`.
     struct ProcessControl: Control {
+        /// Stub.
+        static func fitsSocketPath(_ expandedPath: String) -> Bool { true }
+
         func start(_ route: Route, path: String) async -> Bool {
             var arguments = ["-T", "-N", "-f",
                              "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",

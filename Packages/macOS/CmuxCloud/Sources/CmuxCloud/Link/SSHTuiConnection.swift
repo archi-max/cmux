@@ -157,6 +157,9 @@ public struct SSHTuiConnection: Sendable {
         return route + ["ControlPath=" + path + operationsControlPathSuffix]
     }
 
+    /// Stub until one-off runs can fall back to the carrier.
+    public var carrierSSHOptions: [String] { [] }
+
     /// Appended to the carrier's ControlPath for this app's one-off masters:
     /// `-ops`, plus the build's tag, so two installed apps never lend sessions
     /// on one master without counting each other's.
