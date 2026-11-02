@@ -256,6 +256,9 @@ public struct SSHTuiHostOpenCommand: Sendable {
         let delimiter = "CMUX_SSH_CLI_EOF"
         return """
         cmux_cli_dir="\(installDirectory)"
+        # Private directories: the shell runs and sources what is installed here.
+        (
+        umask 077
         if [ ! -x "$cmux_cli_dir/cmux" ]; then
           mkdir -p "$cmux_cli_dir" 2>/dev/null &&
           cat > "$cmux_cli_dir/.cmux.$$" 2>/dev/null <<'\(delimiter)' &&
@@ -263,8 +266,9 @@ public struct SSHTuiHostOpenCommand: Sendable {
           chmod 755 "$cmux_cli_dir/.cmux.$$" && mv -f "$cmux_cli_dir/.cmux.$$" "$cmux_cli_dir/cmux" 2>/dev/null
           rm -f "$cmux_cli_dir/.cmux.$$" 2>/dev/null
         fi
+        \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_cli_dir")))
         if [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ]; then PATH="$cmux_cli_dir:$PATH"; export PATH; fi
-        \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_cli_dir"))unset cmux_cli_dir
+        unset cmux_cli_dir
 
         """
     }
