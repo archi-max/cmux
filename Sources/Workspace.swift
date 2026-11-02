@@ -7307,7 +7307,13 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
             return
         }
         if usesSSHTui, let configuration = remoteConfiguration {
-            DetectedSSHSession(configuration: configuration).uploadDroppedFiles(fileURLs, operation: operation, completion: completion)
+            // One session the app's one-off master lends for the whole drop.
+            let lease = configuration.fileOperationLease()
+            DetectedSSHSession(configuration: configuration, sshOptions: lease.sshOptions)
+                .uploadDroppedFiles(fileURLs, operation: operation) { result in
+                    lease.release()
+                    completion(result)
+                }
             return
         }
         guard let controller = remoteSessionController else {

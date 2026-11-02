@@ -1023,15 +1023,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                 command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
                 outputURL: raw
             )
-            return try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        continuation.resume(with: Result { try commandProcess.run() })
-                    }
-                }
-            } onCancel: {
-                commandProcess.terminate()
-            }
+            return try await Self.runChild(
+                limit: maxBytes == nil ? Self.downloadHoldLimit : Self.commandHoldLimit,
+                run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+            )
         }
         guard let header = try RemoteFileProbe.outcome(status: result.terminationStatus, raw: raw, to: localURL) else {
             throw FileExplorerError.sshCommandFailed(result.stderr)
@@ -1051,15 +1046,9 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                 command: command,
                 outputURL: outputURL
             )
-            return try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        continuation.resume(with: Result { try commandProcess.run() })
-                    }
-                }
-            } onCancel: {
-                commandProcess.terminate()
-            }
+            return try await Self.runChild(
+                limit: Self.downloadHoldLimit, run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+            )
         }
         guard result.terminationStatus == 0 else {
             try? FileManager.default.removeItem(at: outputURL)
@@ -1224,6 +1213,43 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     }
 
     private static let writeFileTimeout: Duration = .seconds(20)
+
+    /// The longest a one-off command holds its lent session (a listing stuck
+    /// on a dead mount, say); a write, a search and Go to File end sooner.
+    private static let commandHoldLimit: Duration = .seconds(60)
+    /// The longest a download holds its lent session.
+    private static let downloadHoldLimit: Duration = .seconds(600)
+
+    /// Runs an ssh child off Swift's cooperative executor, terminating it when
+    /// the caller is cancelled or after `limit`, so it can't hold its session
+    /// on the one-off master for ever.
+    private nonisolated static func runChild(
+        limit: Duration,
+        run: @escaping @Sendable () throws -> SSHCommandResult,
+        terminate: @escaping @Sendable () -> Void
+    ) async throws -> SSHCommandResult {
+        try await withThrowingTaskGroup(of: SSHCommandResult.self) { group in
+            group.addTask {
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            continuation.resume(with: Result { try run() })
+                        }
+                    }
+                } onCancel: {
+                    terminate()
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: limit)
+                throw FileExplorerError.sshCommandFailed("timed out")
+            }
+            // Leaving the group cancels the other task and waits for it, so
+            // the child has exited before the session goes back.
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
 
     private struct SSHCommandResult: Sendable {
         let stdout: String
@@ -1439,15 +1465,9 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     ) async throws -> SSHCommandResult {
         let result = try await SSHMasterPool.shared.withSession(connection) { leased in
             let commandProcess = SSHCommandProcess(connection: leased, command: command, input: input)
-            return try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        continuation.resume(with: Result { try commandProcess.run() })
-                    }
-                }
-            } onCancel: {
-                commandProcess.terminate()
-            }
+            return try await runChild(
+                limit: commandHoldLimit, run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+            )
         }
         return result
     }

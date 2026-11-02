@@ -27,7 +27,7 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
     /// Nothing unregisters a manager today; a future unregister needs a `remove(id:)` there.
     private let carrierRoutes: SSHTuiCarrierRoutes?
     /// Opens the host's one-off master as soon as the carrier connects
-    /// (``SSHMasterPool/warm(_:)``). The app passes `.shared`; tests leave it nil.
+    /// (``SSHMasterPool/warm(_:carrierPath:)``). The app passes `.shared`; tests leave it nil.
     private let masterPool: SSHMasterPool?
 
     init(connection: SSHTuiConnection, clientURL: URL, paths: CloudTuiClientPaths, isEnabled: @escaping @Sendable () -> Bool,
@@ -110,7 +110,7 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
             destination: configuration.destination, port: configuration.port,
             identityFile: configuration.identityFile, sshOptions: connection.fileOperationSSHOptions
         ) else { return }
-        masterPool.warm(route)
+        masterPool.warm(route, carrierPath: SSHMasterPool.controlPath(in: connection.carrierSSHOptions))
     }
 
     /// The OpenSSH options the next carrier dials with.

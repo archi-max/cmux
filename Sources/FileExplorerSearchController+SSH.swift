@@ -38,7 +38,9 @@ extension FileSearchController {
 
     /// Runs Find in Files on an SSH workspace's host and streams matches like the local search.
     ///
-    /// The search reuses the Files panel's ssh options (its ControlPath master),
+    /// The search runs on a session the app's one-off master lends
+    /// (``SSHMasterPool/lease(destination:port:identityFile:sshOptions:)``),
+    /// given back when the ssh child exits,
     /// is cancelled by a newer query through the generation guard and
     /// ``stopAndAdvanceGeneration()`` (which terminates the ssh child), stops at
     /// ``maxResults`` with a `.limited` note, and fails after
@@ -61,10 +63,18 @@ extension FileSearchController {
             rootPath: rootPath,
             remoteTimeoutSeconds: max(1, timeoutSeconds - 3)
         )
+        let connection = provider.connection
+        let lease = SSHMasterPool.shared.lease(
+            destination: connection.destination, port: connection.port,
+            identityFile: connection.identityFile, sshOptions: connection.sshOptions
+        )
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = ProcessSSHFileExplorerTransport.sshArguments(
-            connection: provider.connection,
+            connection: SSHFileExplorerConnection(
+                destination: connection.destination, port: connection.port,
+                identityFile: connection.identityFile, sshOptions: lease.sshOptions
+            ),
             command: command.command
         )
         // An open pipe nobody writes to: ssh never reads the app's stdin, and
@@ -82,6 +92,7 @@ extension FileSearchController {
         )
         let terminationSignal = FileSearchTerminationSignal()
         process.terminationHandler = { process in
+            lease.release()
             let status = process.terminationStatus
             Task {
                 await terminationSignal.complete(status: status)
@@ -91,6 +102,7 @@ extension FileSearchController {
         do {
             try process.run()
         } catch {
+            lease.release()
             process.standardInput = nil
             process.standardOutput = nil
             process.standardError = nil

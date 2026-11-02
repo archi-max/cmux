@@ -1,26 +1,42 @@
 import Foundation
 
 /// Pre-warmed ControlMasters for this app's one-off `ssh` runs to a host
-/// (Files listings, reads, writes and downloads, previews, probes), kept apart
-/// from the carrier's.
+/// (Files listings, reads, writes and downloads, previews, probes, search,
+/// git status, Go to File, file drops), kept apart from the carrier's.
 ///
 /// sshd allows 10 sessions on one connection by default and refuses the rest
 /// ("Session open refused by peer", exit 255) without falling back to a direct
 /// connection. So the pool:
 /// - opens the first master as soon as the host's carrier connects
-///   (``warm(_:)``), so the first one-off run doesn't pay the handshake;
+///   (``warm(_:carrierPath:)``), so the first one-off run doesn't pay the
+///   handshake;
 /// - keeps it alive (ServerAliveInterval 15, CountMax 4), checks it with
-///   `ssh -O check` and, when it dies, starts it again with backoff;
+///   `ssh -O check` and, when it dies, starts it again with backoff (up to
+///   10 minutes);
 /// - lends at most ``capacity`` sessions per master (10 less a reserve of 2),
-///   opens another master (`-ops-<app>2`, `…3`) when they are all in use, and
-///   queues a run when it can't;
+///   opens another master (`…2`, `…3`) when they are all in use, and queues a
+///   run when it can't;
 /// - never fails a run: one that can't get a session soon runs on a
 ///   connection of its own (`ControlPath=none`).
 ///
+/// A master logs in in batch mode, so on a host that only takes a password it
+/// can't start. Runs there use the carrier's authenticated master instead, as
+/// they did before these masters existed, at most ``carrierCapacity`` at a
+/// time before they wait, and every one after ``maxWait``.
+///
+/// Only paths a carrier registered with ``warm(_:carrierPath:)`` are pooled;
+/// any other options pass through untouched, so a user's own ControlPath never
+/// gets a master started at it.
+///
 /// A run passes its options with the base path ``Route/basePath`` as its
 /// ControlPath (``SSHTuiConnection/fileOperationSSHOptions``); the pool swaps
-/// in the master it lends. Batch runs use `ControlMaster=no`, so a run on a
-/// master that died meanwhile still connects directly.
+/// in the master it lends. Batch runs use `ControlMaster=no`, which still uses
+/// a master that exists, so a run on a master that died meanwhile connects
+/// directly.
+///
+/// A run inside another run's ``withSession(destination:port:identityFile:sshOptions:isolation:_:)``
+/// for the same host can't deadlock: at capacity it waits ``maxWait`` and then
+/// runs on its own connection.
 final class SSHMasterPool: @unchecked Sendable {
     /// One host's one-off masters.
     struct Route: Sendable, Equatable {
@@ -45,16 +61,41 @@ final class SSHMasterPool: @unchecked Sendable {
 
         func path(ofMaster index: Int) -> String { index == 0 ? basePath : basePath + String(index + 1) }
 
-        /// Stub until the pool keys hosts by destination.
-        var key: String { basePath }
+        /// One host's masters. A template such as `…/%C-ops` names a different
+        /// socket for every host, so the destination and port are part of it.
+        var key: String { [destination, port.map(String.init) ?? "", basePath].joined(separator: "\u{1F}") }
     }
 
     /// Starts and checks masters; a mock in tests.
     protocol Control: Sendable {
-        /// Opens a master at `path`; true once it accepts sessions.
+        /// Opens a master at `path`, or adopts a live one; true once it accepts sessions.
         func start(_ route: Route, path: String) async -> Bool
         /// `ssh -O check`: true while the master at `path` runs.
         func isAlive(_ route: Route, path: String) async -> Bool
+    }
+
+    /// Options for a synchronous run (``lease(destination:port:identityFile:sshOptions:)``).
+    /// Call ``release()`` when the run's process exits; it is also released
+    /// when the lease goes away.
+    final class Lease: @unchecked Sendable {
+        let sshOptions: [String]
+        private let lock = NSLock()
+        private var onRelease: (() -> Void)?
+
+        init(sshOptions: [String], onRelease: (() -> Void)? = nil) {
+            self.sshOptions = sshOptions
+            self.onRelease = onRelease
+        }
+
+        deinit { onRelease?() }
+
+        func release() {
+            let release: (() -> Void)? = lock.withLock {
+                defer { onRelease = nil }
+                return onRelease
+            }
+            release?()
+        }
     }
 
     static let sessionsPerMaster = 10
@@ -62,31 +103,10 @@ final class SSHMasterPool: @unchecked Sendable {
     static let maxMasters = 3
     /// Sessions lent per master.
     static var capacity: Int { sessionsPerMaster - reserve }
-
+    /// Sessions lent on the carrier's master when this app's masters can't start.
     static let carrierCapacity = 3
 
     static let shared = SSHMasterPool(control: ProcessControl())
-
-    /// Stub: options for a synchronous run.
-    final class Lease: @unchecked Sendable {
-        let sshOptions: [String]
-        init(sshOptions: [String]) { self.sshOptions = sshOptions }
-        func release() {}
-    }
-
-    /// Stub: ignores the carrier.
-    func warm(_ route: Route, carrierPath: String?) { warm(route) }
-
-    /// Stub: passes the options through.
-    func lease(destination: String, port: Int?, identityFile: String?, sshOptions options: [String]) -> Lease {
-        Lease(sshOptions: options)
-    }
-
-    /// Stub: never uses the carrier.
-    func carrierPathIfMastersFail(_ route: Route) -> String? { nil }
-
-    /// Stub.
-    func runsWaiting(_ route: Route) -> Int { 0 }
 
     private struct Master {
         var live = false
@@ -96,17 +116,31 @@ final class SSHMasterPool: @unchecked Sendable {
         var retryAt: ContinuousClock.Instant?
     }
 
+    private enum Grant {
+        /// Not a pooled path: run with the options as given.
+        case unpooled
+        case path(String)
+        /// A connection of its own.
+        case direct
+    }
+
     private struct Waiter {
         let id: UUID
-        let continuation: CheckedContinuation<String?, Never>
+        let continuation: CheckedContinuation<Grant, Error>
     }
 
     private struct Host {
         var route: Route
+        var carrierPath: String?
         var masters: [Master] = [Master()]
+        var carrierInUse = 0
         var waiters: [Waiter] = []
         var health: Task<Void, Never>?
         var lastInterest: ContinuousClock.Instant
+
+        /// The first master can't start (no batch-mode login, say), so runs
+        /// use the carrier's authenticated master.
+        var usesCarrier: Bool { carrierPath != nil && !masters[0].live && masters[0].failures > 0 }
     }
 
     private let control: Control
@@ -135,18 +169,30 @@ final class SSHMasterPool: @unchecked Sendable {
 
     // MARK: Use
 
-    /// Opens `route`'s first master now and keeps it alive while the host is
-    /// in use. Call when the host's carrier connects.
-    func warm(_ route: Route) {
+    /// Registers `route` as a pooled host, opens its first master now and
+    /// keeps it alive while the host is in use. Call when the host's carrier
+    /// connects. `carrierPath` is the carrier's ControlPath, which runs use
+    /// when the master can't start; a route at the carrier's own path is not
+    /// pooled.
+    func warm(_ route: Route, carrierPath: String?) {
+        guard route.basePath != carrierPath else { return }
         lock.withLock {
-            touch(route)
-            startIfNeeded(route.basePath, index: 0)
+            let key = route.key
+            if hosts[key] == nil {
+                hosts[key] = Host(route: route, carrierPath: carrierPath, lastInterest: clock.now)
+            } else {
+                hosts[key]?.route = route
+                hosts[key]?.carrierPath = carrierPath
+            }
+            touch(key)
+            startIfNeeded(key, index: 0)
         }
     }
 
     /// Runs `body` with `options`, their ControlPath swapped for a master with
-    /// a free session (or `none`, a direct connection, when none frees up in
-    /// time). Options that name no pool path pass through unchanged.
+    /// a free session (the carrier's when the masters can't start, or `none`, a
+    /// direct connection, when none frees up in time). Options that name no
+    /// pooled path pass through unchanged.
     func withSession<T>(
         destination: String,
         port: Int?,
@@ -158,37 +204,97 @@ final class SSHMasterPool: @unchecked Sendable {
         guard let route = Route(destination: destination, port: port, identityFile: identityFile, sshOptions: options) else {
             return try await body(options)
         }
-        let path = await acquire(route)
-        defer { if let path { release(route.basePath, path: path) } }
-        return try await body(Self.replacingControlPath(in: options, with: path ?? "none"))
+        switch try await acquire(route.key) {
+        case .unpooled:
+            return try await body(options)
+        case .direct:
+            return try await body(Self.replacingControlPath(in: options, with: "none"))
+        case .path(let path):
+            defer { release(route.key, path: path) }
+            return try await body(Self.replacingControlPath(in: options, with: path))
+        }
     }
 
-    /// Sessions lent on the master at `path`.
+    /// ``withSession(destination:port:identityFile:sshOptions:isolation:_:)``
+    /// for a run that can't wait: a free session now, else the carrier's when
+    /// the masters can't start, else a connection of its own.
+    func lease(destination: String, port: Int?, identityFile: String?, sshOptions options: [String]) -> Lease {
+        guard let route = Route(destination: destination, port: port, identityFile: identityFile, sshOptions: options) else {
+            return Lease(sshOptions: options)
+        }
+        let key = route.key
+        let grant: Grant = lock.withLock {
+            guard hosts[key] != nil else { return .unpooled }
+            touch(key)
+            if let path = lend(key) { return .path(path) }
+            if let carrier = overflowToCarrier(key) { return .path(carrier) }
+            startMore(key)
+            return .direct
+        }
+        switch grant {
+        case .unpooled:
+            return Lease(sshOptions: options)
+        case .direct:
+            return Lease(sshOptions: Self.replacingControlPath(in: options, with: "none"))
+        case .path(let path):
+            return Lease(sshOptions: Self.replacingControlPath(in: options, with: path)) { [weak self] in
+                self?.release(key, path: path)
+            }
+        }
+    }
+
+    /// The carrier's ControlPath while `route`'s masters can't start, for a
+    /// long-lived run that would otherwise open its own connection (which
+    /// can't log in either).
+    func carrierPathIfMastersFail(_ route: Route) -> String? {
+        lock.withLock {
+            guard let host = hosts[route.key], host.usesCarrier else { return nil }
+            return host.carrierPath
+        }
+    }
+
+    /// Sessions lent on the master (or carrier) at `path`.
     func sessionsInUse(_ route: Route, path: String) -> Int {
         lock.withLock {
-            guard let host = hosts[route.basePath] else { return 0 }
+            guard let host = hosts[route.key] else { return 0 }
+            if path == host.carrierPath { return host.carrierInUse }
             return host.masters.indices.first { route.path(ofMaster: $0) == path }.map { host.masters[$0].inUse } ?? 0
         }
     }
 
-    // MARK: Lending
-
-    private func acquire(_ route: Route) async -> String? {
-        let id = UUID()
-        let path: String? = await withCheckedContinuation { continuation in
-            let immediate: String?? = lock.withLock {
-                touch(route)
-                if let path = lend(route.basePath) { return .some(path) }
-                hosts[route.basePath]?.waiters.append(Waiter(id: id, continuation: continuation))
-                growIfFull(route.basePath)
-                return nil
-            }
-            if let immediate { continuation.resume(returning: immediate) }
-        }
-        return path
+    /// Runs queued for a session on `route`'s masters.
+    func runsWaiting(_ route: Route) -> Int {
+        lock.withLock { hosts[route.key]?.waiters.count ?? 0 }
     }
 
-    /// Called under the lock: a session on the first live master with room.
+    // MARK: Lending
+
+    private func acquire(_ key: String) async throws -> Grant {
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Grant, Error>) in
+                let immediate: Result<Grant, Error>? = lock.withLock {
+                    guard hosts[key] != nil else { return .success(.unpooled) }
+                    // A cancel that came before this waiter was queued: the
+                    // handler below found nothing to remove.
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    touch(key)
+                    if let path = lend(key) { return .success(.path(path)) }
+                    hosts[key]?.waiters.append(Waiter(id: id, continuation: continuation))
+                    startMore(key)
+                    scheduleExpiry(key, waiter: id)
+                    return nil
+                }
+                if let immediate { continuation.resume(with: immediate) }
+            }
+        } onCancel: {
+            let continuation: CheckedContinuation<Grant, Error>? = lock.withLock { removeWaiter(key, id: id) }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Called under the lock: a session on the first live master with room,
+    /// or on the carrier's while the masters can't start.
     private func lend(_ key: String) -> String? {
         guard var host = hosts[key] else { return nil }
         for index in host.masters.indices where host.masters[index].live && host.masters[index].inUse < Self.capacity {
@@ -196,12 +302,26 @@ final class SSHMasterPool: @unchecked Sendable {
             hosts[key] = host
             return host.route.path(ofMaster: index)
         }
+        if host.usesCarrier, let carrier = host.carrierPath, host.carrierInUse < Self.carrierCapacity {
+            host.carrierInUse += 1
+            hosts[key] = host
+            return carrier
+        }
         return nil
     }
 
+    /// Called under the lock: past the carrier's share, a run that can't wait
+    /// still uses the carrier while the masters can't start; its own
+    /// connection couldn't log in.
+    private func overflowToCarrier(_ key: String) -> String? {
+        guard let host = hosts[key], host.usesCarrier, let carrier = host.carrierPath else { return nil }
+        hosts[key]?.carrierInUse += 1
+        return carrier
+    }
+
     /// Called under the lock: every live master is full, so start the next
-    /// (or the first again), and bound the wait.
-    private func growIfFull(_ key: String) {
+    /// (or the first again).
+    private func startMore(_ key: String) {
         guard let host = hosts[key] else { return }
         if let index = host.masters.indices.first(where: { !host.masters[$0].live && !host.masters[$0].starting }) {
             startIfNeeded(key, index: index)
@@ -209,39 +329,54 @@ final class SSHMasterPool: @unchecked Sendable {
             hosts[key]?.masters.append(Master())
             startIfNeeded(key, index: host.masters.count)
         }
-        guard let waiter = hosts[key]?.waiters.last else { return }
+    }
+
+    /// Called under the lock: bounds a queued run's wait.
+    private func scheduleExpiry(_ key: String, waiter id: UUID) {
         let maxWait = maxWait
         Task { [weak self] in
             try? await Task.sleep(for: maxWait)
-            self?.expire(key, waiter: waiter.id)
+            self?.expire(key, waiter: id)
         }
     }
 
-    /// A waiter that got no session in time runs on its own connection.
+    /// Called under the lock.
+    private func removeWaiter(_ key: String, id: UUID) -> CheckedContinuation<Grant, Error>? {
+        guard let index = hosts[key]?.waiters.firstIndex(where: { $0.id == id }) else { return nil }
+        return hosts[key]?.waiters.remove(at: index).continuation
+    }
+
+    /// A waiter that got no session in time runs on its own connection, or on
+    /// the carrier's while the masters can't start.
     private func expire(_ key: String, waiter id: UUID) {
-        let continuation: CheckedContinuation<String?, Never>? = lock.withLock {
-            guard let index = hosts[key]?.waiters.firstIndex(where: { $0.id == id }) else { return nil }
-            return hosts[key]?.waiters.remove(at: index).continuation
+        let expired: (CheckedContinuation<Grant, Error>, Grant)? = lock.withLock {
+            guard let continuation = removeWaiter(key, id: id) else { return nil }
+            return (continuation, overflowToCarrier(key).map { .path($0) } ?? .direct)
         }
-        continuation?.resume(returning: nil)
+        if let (continuation, grant) = expired { continuation.resume(returning: grant) }
     }
 
     private func release(_ key: String, path: String) {
-        let handoffs: [(CheckedContinuation<String?, Never>, String)] = lock.withLock {
-            guard var host = hosts[key],
-                  let index = host.masters.indices.first(where: { host.route.path(ofMaster: $0) == path }) else { return [] }
-            host.masters[index].inUse = max(0, host.masters[index].inUse - 1)
+        let handoffs: [(CheckedContinuation<Grant, Error>, String)] = lock.withLock {
+            guard var host = hosts[key] else { return [] }
+            if path == host.carrierPath {
+                host.carrierInUse = max(0, host.carrierInUse - 1)
+            } else if let index = host.masters.indices.first(where: { host.route.path(ofMaster: $0) == path }) {
+                host.masters[index].inUse = max(0, host.masters[index].inUse - 1)
+            } else {
+                return []
+            }
             hosts[key] = host
             return drainWaiters(key)
         }
-        for (continuation, path) in handoffs { continuation.resume(returning: path) }
+        for (continuation, path) in handoffs { continuation.resume(returning: .path(path)) }
     }
 
     /// Called under the lock: lends free sessions to waiters, oldest first.
-    private func drainWaiters(_ key: String) -> [(CheckedContinuation<String?, Never>, String)] {
-        var handoffs: [(CheckedContinuation<String?, Never>, String)] = []
-        while let waiter = hosts[key]?.waiters.first, let path = lend(key) {
-            hosts[key]?.waiters.removeFirst()
+    private func drainWaiters(_ key: String) -> [(CheckedContinuation<Grant, Error>, String)] {
+        var handoffs: [(CheckedContinuation<Grant, Error>, String)] = []
+        while hosts[key]?.waiters.isEmpty == false, let path = lend(key) {
+            guard let waiter = hosts[key]?.waiters.removeFirst() else { break }
             handoffs.append((waiter.continuation, path))
         }
         return handoffs
@@ -249,16 +384,10 @@ final class SSHMasterPool: @unchecked Sendable {
 
     // MARK: Masters
 
-    /// Called under the lock.
-    private func touch(_ route: Route) {
-        if hosts[route.basePath] == nil {
-            hosts[route.basePath] = Host(route: route, lastInterest: clock.now)
-        } else {
-            hosts[route.basePath]?.route = route
-            hosts[route.basePath]?.lastInterest = clock.now
-        }
-        if hosts[route.basePath]?.health == nil {
-            let key = route.basePath
+    /// Called under the lock: the host is in use; keep its health loop running.
+    private func touch(_ key: String) {
+        hosts[key]?.lastInterest = clock.now
+        if hosts[key] != nil, hosts[key]?.health == nil {
             hosts[key]?.health = Task { [weak self] in await self?.watch(key) }
         }
     }
@@ -282,7 +411,7 @@ final class SSHMasterPool: @unchecked Sendable {
     }
 
     private func started(_ key: String, index: Int, ok: Bool) {
-        let handoffs: [(CheckedContinuation<String?, Never>, String)] = lock.withLock {
+        let handoffs: [(CheckedContinuation<Grant, Error>, String)] = lock.withLock {
             guard var host = hosts[key], host.masters.indices.contains(index) else { return [] }
             host.masters[index].starting = false
             host.masters[index].live = ok
@@ -291,14 +420,16 @@ final class SSHMasterPool: @unchecked Sendable {
                 host.masters[index].retryAt = nil
             } else {
                 host.masters[index].failures += 1
-                // 1, 2, 4 … 60 seconds.
-                let seconds = min(60, 1 << min(host.masters[index].failures - 1, 6))
+                // 1, 2, 4 … 512 seconds, then every 10 minutes: on a host
+                // that takes only a password every try is a refused login.
+                let seconds = min(600, 1 << min(host.masters[index].failures - 1, 10))
                 host.masters[index].retryAt = clock.now + .seconds(seconds)
             }
             hosts[key] = host
+            // A first master that can't start hands its waiters the carrier.
             return drainWaiters(key)
         }
-        for (continuation, path) in handoffs { continuation.resume(returning: path) }
+        for (continuation, path) in handoffs { continuation.resume(returning: .path(path)) }
     }
 
     /// The health loop: checks each master and replaces a dead first master
@@ -344,61 +475,97 @@ final class SSHMasterPool: @unchecked Sendable {
 
     private static func optionKey(_ option: String) -> String? {
         let trimmed = option.trimmingCharacters(in: .whitespaces)
-        guard let separator = trimmed.firstIndex(where: { $0 == "=" || $0 == " " }) else { return nil }
+        guard let separator = trimmed.firstIndex(where: { $0 == "=" || $0 == " " || $0 == "\t" }) else { return nil }
         return trimmed[..<separator].lowercased()
     }
 
     private static func optionValue(_ option: String) -> String {
         let trimmed = option.trimmingCharacters(in: .whitespaces)
-        guard let separator = trimmed.firstIndex(where: { $0 == "=" || $0 == " " }) else { return "" }
+        guard let separator = trimmed.firstIndex(where: { $0 == "=" || $0 == " " || $0 == "\t" }) else { return "" }
         return trimmed[trimmed.index(after: separator)...]
-            .trimmingCharacters(in: CharacterSet(charactersIn: "= ").union(.whitespaces))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "=").union(.whitespaces))
     }
 }
 
 extension SSHMasterPool {
     /// The real masters: `ssh -fN` with ControlMaster=yes, and `ssh -O check`.
     struct ProcessControl: Control {
-        /// Stub.
-        static func fitsSocketPath(_ expandedPath: String) -> Bool { true }
+        /// macOS caps an AF_UNIX `sun_path` at 104 bytes including the NUL,
+        /// and OpenSSH first binds the path plus 17 bytes (`.` and 16 random
+        /// characters).
+        static func fitsSocketPath(_ expandedPath: String) -> Bool {
+            expandedPath.utf8.count + 17 <= 103
+        }
 
         func start(_ route: Route, path: String) async -> Bool {
-            var arguments = ["-T", "-N", "-f",
+            // A master an earlier launch of this app left running (ControlPersist).
+            if await isAlive(route, path: path) { return true }
+            // A master at a path too long for a socket would carry on as a plain
+            // connection, unseen, so don't start one; runs use the carrier.
+            guard let expanded = await Self.expandedControlPath(route, path: path), Self.fitsSocketPath(expanded) else {
+                return false
+            }
+            // A stale socket would make the master carry on without one, too.
+            if FileManager.default.fileExists(atPath: expanded) { try? FileManager.default.removeItem(atPath: expanded) }
+            let arguments = ["-T", "-N", "-f",
                              "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                              "-o", "ControlMaster=yes", "-o", "ControlPersist=600",
-                             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-                             "-o", "ControlPath=" + path]
-            if let port = route.port { arguments += ["-p", String(port)] }
-            if let identity = route.identityFile, !identity.isEmpty { arguments += ["-i", identity] }
-            for option in route.options { arguments += ["-o", option] }
-            arguments += ["--", route.destination]
-            guard await Self.run(arguments, timeout: 25) == 0 else { return false }
+                             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
+                + Self.routeArguments(route, path: path)
+            guard await Self.run(arguments, timeout: 25).status == 0 else { return false }
             return await isAlive(route, path: path)
         }
 
         func isAlive(_ route: Route, path: String) async -> Bool {
-            await Self.run(["-o", "ControlPath=" + path, "-O", "check", "--", route.destination], timeout: 5) == 0
+            // The route's port, user and options too: `%C` and the like expand from them.
+            await Self.run(["-O", "check"] + Self.routeArguments(route, path: path), timeout: 5).status == 0
         }
 
-        private static func run(_ arguments: [String], timeout: TimeInterval) async -> Int32? {
+        private static func routeArguments(_ route: Route, path: String) -> [String] {
+            var arguments = ["-o", "ControlPath=" + path]
+            if let port = route.port { arguments += ["-p", String(port)] }
+            if let identity = route.identityFile, !identity.isEmpty { arguments += ["-i", identity] }
+            for option in route.options { arguments += ["-o", option] }
+            return arguments + ["--", route.destination]
+        }
+
+        /// The socket path `path` names for `route`, as `ssh -G` expands it
+        /// (no connection).
+        private static func expandedControlPath(_ route: Route, path: String) async -> String? {
+            let result = await run(["-G"] + routeArguments(route, path: path), timeout: 5, capturesOutput: true)
+            guard result.status == 0 else { return nil }
+            for line in result.output.split(separator: "\n") where line.hasPrefix("controlpath ") {
+                return String(line.dropFirst("controlpath ".count))
+            }
+            return nil
+        }
+
+        private static func run(
+            _ arguments: [String],
+            timeout: TimeInterval,
+            capturesOutput: Bool = false
+        ) async -> (status: Int32?, output: String) {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
                     process.arguments = arguments
-                    // No pipes: a backgrounded master must not hold one open.
+                    // No pipes for a master: a backgrounded one must not hold
+                    // one open. `ssh -G` exits at once, so its output may.
+                    let pipe = capturesOutput ? Pipe() : nil
                     process.standardInput = FileHandle.nullDevice
-                    process.standardOutput = FileHandle.nullDevice
+                    process.standardOutput = pipe ?? FileHandle.nullDevice
                     process.standardError = FileHandle.nullDevice
                     do { try process.run() } catch {
-                        continuation.resume(returning: nil)
+                        continuation.resume(returning: (nil, ""))
                         return
                     }
                     let timer = DispatchWorkItem { if process.isRunning { process.terminate() } }
                     DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
+                    let data = pipe?.fileHandleForReading.readDataToEndOfFile() ?? Data()
                     process.waitUntilExit()
                     timer.cancel()
-                    continuation.resume(returning: process.terminationStatus)
+                    continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
                 }
             }
         }
