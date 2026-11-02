@@ -93,6 +93,20 @@ enum WaveformDebugger {
 
     /// The viewer the commands act on for a focused panel: a waveform viewer
     /// itself, or the workspace's viewer next to a SystemVerilog editor.
+#if DEBUG
+    /// Each check `target(for:)` makes, for the DEBUG invoke log.
+    static func targetDiagnosis(_ panel: FilePreviewPanel?) -> String {
+        guard let panel else { return "panel=nil" }
+        var text = "panel=\(panel.id.uuidString.prefix(5)) mode=\(panel.previewMode) closed=\(panel.isClosed ? 1 : 0)"
+        if panel.previewMode == .text {
+            let supported = FilePreviewLanguageFeatures.isSupported(filePath: panel.filePath)
+            text += " svSource=\(supported ? 1 : 0)"
+            if supported { text += " nearViewer=\(WaveformSourceLink.waveformPanel(near: panel).map { String($0.id.uuidString.prefix(5)) } ?? "nil")" }
+        }
+        return text + " target=\(target(for: panel).map { String($0.id.uuidString.prefix(5)) } ?? "nil")"
+    }
+#endif
+
     static func target(for panel: FilePreviewPanel?) -> FilePreviewPanel? {
         guard let panel, !panel.isClosed else { return nil }
         if panel.previewMode == .waveform { return panel }
@@ -103,10 +117,14 @@ enum WaveformDebugger {
 
     /// F10, Shift-F10, F5 and Shift-F5. False (the key goes on) unless a waveform viewer,
     /// or a SystemVerilog editor with a viewer in its workspace, has focus. In a viewer
-    /// text field the key goes to the field only when it types text (`characters`, the
-    /// event's charactersIgnoringModifiers): a function key still runs.
-    static func performFromShortcut(_ command: Command, window: NSWindow?, characters: String?) -> Bool {
-        run(command, source: .key(typesText: WaveformDebuggerInvocation.typesText(characters)), window: window)
+    /// text field the key goes to the field when the field uses it (`characters`, the
+    /// event's charactersIgnoringModifiers, and its modifier flags): F1–F35 and
+    /// Command/Control chords still run.
+    static func performFromShortcut(
+        _ command: Command, window: NSWindow?, characters: String?, modifierFlags: NSEvent.ModifierFlags
+    ) -> Bool {
+        let fieldUsesKey = WaveformDebuggerInvocation.fieldUsesKey(characters, modifierFlags: modifierFlags)
+        return run(command, source: .key(fieldUsesKey: fieldUsesKey), window: window)
     }
 
     /// The View menu: runs on the focused viewer whatever has focus inside it; with no
@@ -168,7 +186,8 @@ enum WaveformDebugger {
         }
         guard let waveform = target(for: panel) else {
 #if DEBUG
-            cmuxDebugLog("waveformDebugger.invoke command=\(command) source=palette panel=\(panel.map { "\($0.id.uuidString.prefix(5)) mode=\($0.previewMode) closed=\($0.isClosed ? 1 : 0)" } ?? "nil") -> unavailable")
+            cmuxDebugLog("waveformDebugger.invoke command=\(command) source=palette \(targetDiagnosis(panel)) -> unavailable | "
+                + (AppDelegate.shared?.shortcutFocusedWaveformPanelDiagnosis(in: NSApp.keyWindow) ?? "noAppDelegate"))
 #endif
             return false
         }
@@ -589,5 +608,23 @@ extension WaveformDebugger {
             )
             return WaveformSourceLink.instances(holding: probe.name, paths: paths)
         }
+    }
+}
+
+extension WaveformDebuggerNotice {
+    /// The no-viewer notice in the key (else main) window, over its terminal and browser
+    /// portals; a beep when there is no window.
+    static func showUnavailable(in window: NSWindow? = NSApp.keyWindow ?? NSApp.mainWindow) {
+        let message = WaveformDebuggerInvocation.unavailableMessage
+        guard let window else { NSSound.beep(); return }
+        let shown: NSTextField?
+        if let target = AppWindowChromeComposition().contentOverlayTargetResolver.installationTarget(for: window) {
+            shown = show(message, in: target.container, reference: target.reference) {
+                $0 is WindowTerminalHostView || $0 is WindowBrowserHostView
+            }
+        } else {
+            shown = show(message, in: window.contentView)
+        }
+        if shown == nil { NSSound.beep() }
     }
 }
