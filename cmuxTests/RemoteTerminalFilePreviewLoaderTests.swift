@@ -147,6 +147,8 @@ import Testing
         #expect(await transport.requests.paths.isEmpty, "no bytes of the dump")
         #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.fsdb"]))
         #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.fsdb:3"]))
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["/home/u/sim/dump.fsdb"]), "absolute links too")
+        #expect(RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["~/sim/DUMP.FSDB"]))
         #expect(!RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["docs/CACHE.md"]))
         #expect(!RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: ["sim/dump.vcd"]))
     }
