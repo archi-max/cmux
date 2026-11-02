@@ -246,16 +246,25 @@ final class FilePreviewLanguageFeatures: NSObject {
             return
         }
         self.context = context
-        if let remote = context.remote {
-            await startCompletionMirror(documentURI: context.documentURI, remote: remote)
-        }
+        // The profile listing, the local completion mirror and the server need
+        // only the root, so they start together (on an SSH host each is a round trip).
+        let started = await SlangStartupSchedule.run(
+            listing: { _ = SlangCompilationActions.refreshListing(for: self) },
+            mirror: { [weak self] in
+                guard let self, let context = self.context, let remote = context.remote else { return }
+                await self.startCompletionMirror(documentURI: context.documentURI, remote: remote)
+            },
+            server: {
+                try await LanguageServerPool.shared.session(
+                    launch: context.serverLaunch,
+                    rootURI: context.rootURI,
+                    languageId: Self.languageId
+                )
+            }
+        )
         let session: LanguageServerSession
         do {
-            session = try await LanguageServerPool.shared.session(
-                launch: context.serverLaunch,
-                rootURI: context.rootURI,
-                languageId: Self.languageId
-            )
+            session = try started.get()
         } catch {
             // Keep feeding the local completion server.
             isUnavailable = completionMirror == nil

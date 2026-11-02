@@ -19,13 +19,14 @@ enum SlangStartupSchedule {
         server: @MainActor () async throws -> Server
     ) async -> Result<Server, Error> {
         listing()
-        await mirror()
+        async let mirrorStarted: Void = mirror()
         let result: Result<Server, Error>
         do {
             result = .success(try await server())
         } catch {
             result = .failure(error)
         }
+        await mirrorStarted
         return result
     }
 }
