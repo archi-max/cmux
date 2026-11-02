@@ -454,6 +454,35 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(wide["lateTaken"] as? Bool == false && wide["silentAdded"] as? Int == 0,
            "and a late answer adds nothing: \(wide["lateTaken"] ?? "nil") +\(wide["silentAdded"] ?? "nil")")
 
+    // A reload (or another file) while a declared split waits: the click is dropped quietly.
+    // No message lands on the reloaded file, and an answer that comes after the reload adds
+    // nothing, even one inside the 5 s.
+    let stale = await call("""
+      const toasts = [];
+      const toast = window.cmuxUI.toast;
+      window.cmuxUI.toast = (text) => { toasts.push(String(text)); };
+      sent.length = 0;
+      const t0 = Date.now();
+      await choose('wide[299:0]', null, SPLIT, T('splitDeclared'));
+      await choose('wide[299:0]', null, SPLIT, T('splitDeclared'));
+      const asked = sent.filter((m) => m.type === 'packedDims').map((m) => m.id);
+      window.cmuxWaveform.reload({});
+      await reloaded();
+      await until(() => shown().includes('wide[299:0]'));
+      const before = shown().length;
+      R.asked = asked.length;
+      R.lateTaken = window.cmuxWaveform.split.declared({ id: asked[0], dims: [[1, 0], [149, 0]] });
+      R.lateMs = Date.now() - t0;
+      await sleep(Math.max(0, 6500 - (Date.now() - t0)));
+      R.toasts = toasts.slice();
+      R.added = shown().length - before;
+      window.cmuxUI.toast = toast;
+      """)
+    expect(stale["asked"] as? Int == 2, "two clicks asked cmux: \(stale["asked"] ?? "nil")")
+    expect(stale["lateTaken"] as? Bool == false && stale["added"] as? Int == 0,
+           "an answer after a reload adds nothing (it came \(stale["lateMs"] ?? "?") ms after the click): \(stale["lateTaken"] ?? "nil") +\(stale["added"] ?? "nil")")
+    expect((stale["toasts"] as? [String])?.isEmpty == true, "and no message lands on the reloaded file: \(stale["toasts"] ?? "nil")")
+
     // A session's slice past the end of a signal that got narrower (a parameter changed) is
     // missing, by its own name, rather than cut down to the bits left under its old name.
     await open(file: waveURL.deletingLastPathComponent().appendingPathComponent("narrow.vcd"))
