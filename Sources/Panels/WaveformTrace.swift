@@ -536,6 +536,7 @@ enum WaveformTrace {
             "traceVerdiStarting": String(localized: "waveformTrace.page.verdi.starting", defaultValue: "Verdi is starting on the host"),
             "traceVerdiChecking": String(localized: "waveformTrace.page.verdi.checking", defaultValue: "Verdi is checking…"),
             "traceVerdiTimedOut": String(localized: "waveformTrace.page.verdi.timedOut", defaultValue: "Verdi: not checked (timed out)"),
+            "traceVerdiLarge": String(localized: "waveformTrace.page.verdi.large", defaultValue: "Verdi: not checked (large signal)"),
             "traceVerdiNotFound": String(localized: "waveformTrace.page.verdi.notFound", defaultValue: "Verdi does not know this signal"),
             "traceVerdiLastChange": String(localized: "waveformTrace.page.verdi.lastChange", defaultValue: "Verdi (driver of the last change):"),
             "traceThroughPorts": String(localized: "waveformTrace.page.throughPorts", defaultValue: "through the ports of %@"),

@@ -702870,6 +702870,65 @@
         }
       }
     },
+    "waveformTrace.page.verdi.large": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi: not checked (large signal)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi: لم يتم التحقق (إشارة كبيرة)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi: nicht geprüft (großes Signal)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi: sin comprobar (señal grande)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi : non vérifié (signal volumineux)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi: 未確認（大きな信号）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi: 확인하지 못함(큰 신호)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi：未检查（信号过大）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi：未檢查（訊號過大）"
+          }
+        }
+      }
+    },
     "waveformTrace.page.verdi.lastChange": {
       "extractionState": "manual",
       "localizations": {

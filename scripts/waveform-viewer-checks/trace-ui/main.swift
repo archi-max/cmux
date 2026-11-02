@@ -331,7 +331,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let openedVerdi = events.last { $0["event"] as? String == "open" }?["loc"] as? [String: Any]
     expect(clickedVerdi == true && openedVerdi?["line"] as? Int == 56 && (openedVerdi?["file"] as? String ?? "").hasSuffix("c_struct.sv"),
            "the filled-in statement (Verdi's line) is clickable and opens it: \(String(describing: openedVerdi))")
-    // Moved on: a newer trace before Verdi answered drops that answer.
+    // A newer trace before Verdi answered: the newer step gets its own answer; the older one, still in
+    // the history, keeps its check (a check is dropped only when its step leaves the history).
     _ = await shown("tb_c.dut.q", settle: false)
     let newer = await shown("tb_c.dut.u_mid.u_sink.q", settle: true)
     let older = await call("cmuxWaveform.trace.back(); const st = cmuxWaveform.trace.state().step; cmuxWaveform.trace.forward(); return st") as? [String: Any]
@@ -340,9 +341,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(((newer?["after"] as? [String: Any])?["engine"] as? [String: Any])?["name"] as? String == "verdi"
              && (newer?["after"] as? [String: Any])?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q",
            "the newer step gets its own Verdi answer")
-    expect(older?["signal"] as? String == "tb_c.dut.q" && (older?["engine"] as? [String: Any])?["verdi"] as? String == "dropped"
-             && ((older?["via"] as? [Any]) ?? []).isEmpty,
-           "the step moved on from keeps ours, Verdi's answer dropped: \(String(describing: older?["engine"]))")
+    // The older step is still in the history (Back reaches it): its check fills it in too.
+    expect(older?["signal"] as? String == "tb_c.dut.q" && (older?["engine"] as? [String: Any])?["name"] as? String == "verdi"
+             && !((older?["via"] as? [Any]) ?? []).isEmpty,
+           "the step moved on from, still in the history, gets its Verdi answer: \(String(describing: older?["engine"]))")
 
     // Back within the budget keeps the check: trace A (a port hop), click a fan-in row (B), go Back
     // to A before Verdi answers; A is filled in, not left "checking".
@@ -353,20 +355,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
       try {
         await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const atA = t.state().at;
         const row = document.querySelector('#cmux-trace tr.fanin');
         if (!row) { return { error: 'no fan-in row' }; }
         row.click();
-        for (let i = 0; i < 100 && t.state().steps < 2; i++) { await new Promise((r) => setTimeout(r, 10)); }
-        const steps = t.state().steps;
+        for (let i = 0; i < 300 && t.state().at !== atA + 1; i++) { await new Promise((r) => setTimeout(r, 10)); }
+        const clickedOn = t.state().at === atA + 1;
         t.back();
+        const backOn = t.state().at === atA;
         if (t.settled) { await t.settled(); }
-        return { steps, at: t.state().at, step: t.state().step, panel: document.getElementById('cmux-trace')?.innerText || '' };
+        return { clickedOn, backOn, step: t.state().step, panel: document.getElementById('cmux-trace')?.innerText || '' };
       } finally { delete b.valuesAt; delete b.changes; }
       """) as? [String: Any]
     let backStep = backA?["step"] as? [String: Any]
-    expect(backA?["steps"] as? Int == 2 && backA?["at"] as? Int == 0 && backStep?["signal"] as? String == "tb_c.dut.q"
+    expect(backA?["clickedOn"] as? Bool == true && backA?["backOn"] as? Bool == true && backStep?["signal"] as? String == "tb_c.dut.q"
              && (backStep?["engine"] as? [String: Any])?["name"] as? String == "verdi",
-           "Back to a step within its budget: its Verdi check still fills it in: \(String(describing: backStep?["engine"])) steps \(String(describing: backA?["steps"]))")
+           "Back to a step within its budget: its Verdi check still fills it in: \(String(describing: backStep?["engine"])) \(String(describing: backA?["clickedOn"])) \(String(describing: backA?["backOn"]))")
     expect(!(backA?["panel"] as? String ?? "").contains("Verdi is checking"), "the panel does not stay on \"Verdi is checking…\"")
     // close() during a check drops it: no update afterwards.
     let updatesAtClose = updates
