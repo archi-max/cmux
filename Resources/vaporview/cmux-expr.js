@@ -428,7 +428,7 @@
   const COMPARE = new Set(['==', '!=', '===', '!==', '<', '<=', '>', '>=']);
   const SHIFT = new Set(['<<', '>>', '<<<', '>>>']);
 
-  function evaluateNode(rootNode, env) {
+  function evaluateNode(rootNode, env, contextWidth) {
     const signals = new Map();
     const signal = (node) => {
       if (!signals.has(node)) {
@@ -676,12 +676,15 @@
       }
       return null;
     }
-    return ev(rootNode, width(rootNode), signed(rootNode));
+    // An assignment's context (11.6.1): the larger of the target's width and the expression's.
+    const cw = Number(contextWidth) > 0 ? Math.min(Number(contextWidth), MAX_WIDTH) : 0;
+    return ev(rootNode, Math.max(width(rootNode), cw), signed(rootNode));
   }
 
-  function evaluate(ast, env) {
+  // options.width: the context width (an assignment target's), as in `lhs = expr`.
+  function evaluate(ast, env, options) {
     try {
-      return { value: evaluateNode(ast, env || (() => null)) };
+      return { value: evaluateNode(ast, env || (() => null), options && options.width) };
     } catch (error) {
       if (error && error.exprError) { return { error: error.exprError, at: error.at }; }
       throw error;

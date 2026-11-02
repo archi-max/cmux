@@ -1,0 +1,276 @@
+$date
+	Sun Nov  1 01:03:48 2026
+$end
+
+$version
+	Synopsys VCS version W-2024.09_Full64
+$end
+
+$timescale
+	1ns
+$end
+
+$comment Csum: 1 b3dc56392d4a9291 $end
+
+
+$scope module tb_c $end
+$var reg 1 ! clk $end
+$var reg 1 " rst_n $end
+$var reg 1 # go $end
+$var reg 8 $ d [7:0] $end
+$var reg 8 % q [7:0] $end
+$var reg 8 & qd [7:0] $end
+
+$scope module dut $end
+$var reg 1 ' clk $end
+$var reg 1 ( rst_n $end
+$var reg 1 ) go $end
+$var reg 8 * d [7:0] $end
+$var reg 8 + q [7:0] $end
+$var reg 8 , qd [7:0] $end
+$var reg 13 - p [12:0] $end
+
+$scope module u_src $end
+$var reg 1 . clk $end
+$var reg 1 / rst_n $end
+$var reg 1 0 go $end
+$var reg 8 1 d [7:0] $end
+$var reg 1 2 valid_q $end
+$var reg 4 3 id_q [3:0] $end
+$var reg 8 4 data_q [7:0] $end
+$var reg 13 5 out [12:0] $end
+$upscope $end
+
+
+$scope module u_mid $end
+$var reg 1 6 clk $end
+$var reg 1 7 rst_n $end
+$var reg 8 8 q [7:0] $end
+$var reg 8 9 qd [7:0] $end
+$var reg 13 : pin [12:0] $end
+
+$scope module u_sink $end
+$var reg 1 ; clk $end
+$var reg 1 < rst_n $end
+$var reg 8 = q [7:0] $end
+$var reg 8 > qd [7:0] $end
+$var reg 8 ? mix [7:0] $end
+$var reg 13 @ in [12:0] $end
+$upscope $end
+
+$upscope $end
+
+$upscope $end
+
+$upscope $end
+
+$enddefinitions $end
+
+#0
+$dumpvars
+0!
+0)
+0(
+0#
+0"
+07
+0<
+00
+0/
+02
+b0xxxxxxxxxxxx @
+b0xxxxxxxxxxxx 5
+b0xxxxxxxxxxxx -
+b0xxxxxxxxxxxx :
+b00010000 $
+bxxxxxxxx 4
+b00010000 *
+b00000000 +
+b00000000 ,
+bxxxx 3
+bxxxxxxxx ?
+b00000000 %
+b00000000 &
+b00000000 8
+b00000000 9
+b00000000 =
+b00000000 >
+b00010000 1
+0'
+0.
+06
+0;
+$end
+#5
+1!
+1'
+1.
+16
+1;
+#10
+0!
+0'
+0.
+06
+0;
+#15
+1!
+1'
+1.
+16
+1;
+#20
+0!
+0'
+0.
+06
+0;
+#22
+1"
+1(
+17
+1<
+1/
+#25
+1!
+1'
+1.
+16
+1;
+#30
+0!
+0'
+0.
+06
+0;
+#35
+1!
+1'
+1.
+16
+1;
+#40
+1#
+1)
+10
+0!
+0'
+0.
+06
+0;
+#45
+1!
+1'
+1.
+16
+1;
+b00010000 4
+12
+b1xxxx00010000 5
+b1xxxx00010000 -
+b1xxxx00010000 :
+b1xxxx00010000 @
+#50
+0!
+0'
+0.
+06
+0;
+#55
+1!
+1'
+1.
+16
+1;
+bxxxxxxxx =
+bxxxxxxxx 8
+bxxxxxxxx +
+bxxxxxxxx %
+b00010000 >
+b00010000 9
+b00010000 ,
+b00010000 &
+#60
+bxxxxxxxx $
+bxxxxxxxx *
+bxxxxxxxx 1
+0!
+0'
+0.
+06
+0;
+#65
+1!
+1'
+1.
+16
+1;
+bxxxxxxxx 4
+b1xxxxxxxxxxxx 5
+b1xxxxxxxxxxxx -
+b1xxxxxxxxxxxx :
+b1xxxxxxxxxxxx @
+#70
+b00100000 $
+b00100000 *
+b00100000 1
+0!
+0'
+0.
+06
+0;
+#75
+1!
+1'
+1.
+16
+1;
+b00100000 4
+bxxxxxxxx >
+bxxxxxxxx 9
+bxxxxxxxx ,
+bxxxxxxxx &
+b1xxxx00100000 5
+b1xxxx00100000 -
+b1xxxx00100000 :
+b1xxxx00100000 @
+#80
+0!
+0'
+0.
+06
+0;
+#85
+1!
+1'
+1.
+16
+1;
+b00100000 >
+b00100000 9
+b00100000 ,
+b00100000 &
+#90
+0!
+0'
+0.
+06
+0;
+#95
+1!
+1'
+1.
+16
+1;
+#100
+0!
+0'
+0.
+06
+0;
+#105
+1!
+1'
+1.
+16
+1;

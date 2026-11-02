@@ -616,6 +616,9 @@ final class FilePreviewLanguageFeatures: NSObject {
             addScope.target = self
             menu.insertItem(addScope, at: separatorIndex)
             separatorIndex += 1
+            // Driver tracing (WaveformTrace).
+            menu.insertItem(WaveformTrace.editorMenuItem(target: self, action: #selector(traceDriverFromMenu(_:))), at: separatorIndex)
+            separatorIndex += 1
             if let instances = instanceMenu(at: contextMenuCharacterIndex) {
                 menu.insertItem(instances, at: separatorIndex)
                 separatorIndex += 1
@@ -734,6 +737,19 @@ final class FilePreviewLanguageFeatures: NSObject {
         addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location)
     }
 
+    @objc private func traceDriverFromMenu(_ sender: Any?) {
+        guard let textView else { return }
+        addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location, trace: true)
+    }
+
+    /// Traces the driver of the signal at the caret at the waveform's marker (WaveformTrace). False when there is no waveform.
+    @discardableResult
+    func traceDriverUnderCaret() -> Bool {
+        guard canAddToWaveform, let textView else { return false }
+        addSignalToWaveform(at: textView.selectedRange().location, trace: true)
+        return true
+    }
+
     @objc private func addScopeToWaveformFromMenu(_ sender: Any?) {
         guard let textView else { return }
         addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location, wholeScope: true)
@@ -761,8 +777,9 @@ final class FilePreviewLanguageFeatures: NSObject {
         return true
     }
 
-    /// `wholeScope`: the instance's signals rather than the one signal.
-    private func addSignalToWaveform(at index: Int, wholeScope: Bool = false) {
+    /// `wholeScope`: the instance's signals rather than the one signal. `trace`: trace the
+    /// signal's driver at the marker instead of adding it (WaveformTrace).
+    private func addSignalToWaveform(at index: Int, wholeScope: Bool = false, trace: Bool = false) {
         guard let textView else { return }
         guard let session, let documentURI, let storage = textView.textStorage,
               let identifier = FilePreviewLanguageIdentifier.range(containing: index, in: storage.string as NSString)
@@ -789,7 +806,17 @@ final class FilePreviewLanguageFeatures: NSObject {
             let progress: @MainActor @Sendable (String) -> Void = { [weak self] note in
                 self?.showLinkMessage(note, at: identifier.location, isProgress: true)
             }
-            let message = wholeScope
+            let message = trace
+                ? await WaveformTrace.traceFromEditor(
+                    session: session,
+                    documentURI: documentURI,
+                    position: position,
+                    symbol: symbol,
+                    editor: self,
+                    chooseInstance: chooseInstance,
+                    progress: progress
+                )
+                : wholeScope
                 ? await WaveformSourceLink.addScope(
                     session: session,
                     documentURI: documentURI,
@@ -840,6 +867,16 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     var linkWorkspaceId: UUID? {
         linkPanel?.workspaceId
+    }
+
+    /// The language server's root folder (a remote path for SSH files), for driver tracing's design model.
+    var linkRootPath: String? {
+        context?.rootURI?.standardizedFileURL.path
+    }
+
+    /// The SSH route of a remote file, nil for a local one.
+    var linkRemoteRoute: FilePreviewLanguageDocumentContext.RemoteRoute? {
+        context?.remote
     }
 
     /// The SSH host of a remote file, `local` otherwise.

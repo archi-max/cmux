@@ -200,6 +200,8 @@ extension ShortcutAction {
             return String(localized: "shortcut.addSignalToWaveform.label", defaultValue: "Add Signal to Waveform")
         case .revealWaveformSignalInSource:
             return String(localized: "shortcut.revealWaveformSignalInSource.label", defaultValue: "Show Waveform Signal in Source")
+        case .traceWaveformDriver:
+            return String(localized: "shortcut.traceWaveformDriver.label", defaultValue: "Trace Driver")
         case .navigateSourceBack:
             return String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")
         case .navigateSourceForward:

@@ -50,6 +50,20 @@
 #   ./run.sh machine-fsdb <ssh-host> <remote.fsdb> <commit.log> [prog.elf]
 #                                        the machine state on a remote FSDB against its commit.log
 #   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
+#   ./run.sh trace                       driver tracing's engine (cmux-trace.js): active drivers on the
+#                                        trace fixtures' models and VCS/Icarus dumps, and the replay oracle
+#   ./run.sh trace-ui                    driver tracing's page (cmux-trace-ui.js): Trace Driver from a
+#                                        row and a path, the panel, fan-in clicks, Back/Forward, the row
+#                                        menu, errors; the harness answers as cmux from trace/models
+#   ./run.sh trace-smoke <model.json> <dump.vcd>
+#                                        the replay oracle on one real design (cmux-sv-model --once '*'
+#                                        output and its VCD): steps by trust, reasons, time per step
+#   ./run.sh trace-fsdb <ssh-host> <remote.fsdb> <model.json> <instance> <time>
+#                                        driver tracing on a remote FSDB through the helper: every signal
+#                                        of <instance> at <time> and two levels of fan-in, with timings
+#   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
+#                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
+#                                        given; its models of the trace fixtures equal trace/models
 #   ./run.sh expr                        the debugger's expression evaluator (cmux-expr.js) in JavaScriptCore
 #   ./run.sh text                        text breakpoints' formats and match rules (cmux-textmatch.js) in JavaScriptCore
 #   ./run.sh text-breakpoints            text breakpoints in the page: hits, menus, conditions, caps, watchdog
@@ -212,6 +226,72 @@ case "${1:-}" in
     swiftc -swift-version 6 -O "$HERE/asm-listing/main.swift" "$HERE/asm-listing/stubs.swift" "$OUT/asm-listing-model.swift" \
       "$A"/Sources/CmuxSyntaxHighlighting/AsmListing/*.swift -o "$OUT/asm-listing"
     "$OUT/asm-listing" "$A/Tests/Fixtures/AsmListing/gnu-rv32-code.dis"
+    ;;
+  sv-model)
+    BIN="${2:-}"
+    if [ -z "$BIN" ]; then
+      DEST="$HOME/.cache/cmux/sv-model-check/$(cat "$ASSETS/sv-model/"* | shasum -a 256 | cut -c1-16)"
+      [ -x "$DEST/cmux-sv-model" ] || sh "$ASSETS/sv-model/build.sh" "$ASSETS/sv-model" "$DEST"
+      BIN="$DEST/cmux-sv-model"
+    fi
+    bash "$HERE/trace/regen-models.sh" "$BIN" "$OUT/models"
+    fails=0
+    for f in "$HERE/trace/models/"*.json; do
+      if cmp -s "$f" "$OUT/models/$(basename "$f")"; then echo "ok   $(basename "$f")"; else echo "FAIL $(basename "$f") differs"; fails=$((fails + 1)); fi
+    done
+    # The protocol: ready line, load, lookup, instance, an unknown path, a bad request.
+    cd "$HERE/trace/designs"
+    printf '%s\n' '{"id":1,"cmd":"load","args":["--top","tb_c","c_struct.sv","tb_c.sv"]}' \
+      '{"id":2,"cmd":"lookup","path":"tb_c.dut.u_mid.u_sink.in"}' '{"id":3,"cmd":"instance","path":"tb_c.dut.u_src"}' \
+      '{"id":4,"cmd":"instance","path":"tb_c.nope"}' 'not json' '{"id":5,"cmd":"version"}' '{"id":6,"cmd":"instances"}' | "$BIN" > "$OUT/protocol.log"
+    check() { if grep -q "$1" "$OUT/protocol.log"; then echo "ok   $2"; else echo "FAIL $2"; fails=$((fails + 1)); fi; }
+    check '^{"id":0,"ready":true' 'ready line'
+    check '^{"id":1,"ok":true,"tops":\["tb_c"\],"errors":0' 'load'
+    check '^{"id":2,"ok":true,"instance":"tb_c.dut.u_mid.u_sink","name":"in"}' 'lookup'
+    check '^{"id":3,"ok":true,"model":{"version":1,"path":"tb_c.dut.u_src","module":"c_src"' 'instance'
+    check '^{"id":4,"ok":false,"error":"noInstance"' 'unknown instance'
+    check '^{"id":-1,"ok":false,"error":"badRequest"' 'bad request'
+    check '^{"id":5,"ok":true,"model":1,"slang":"12.1"}' 'version'
+    check '^{"id":6,"ok":true,"tops":\["tb_c"\],"instances":\["tb_c","tb_c.dut","tb_c.dut.u_mid","tb_c.dut.u_mid.u_sink","tb_c.dut.u_src"\]}' 'instances'
+    # writers: the instances that write into an interface instance through modport ports.
+    printf '%s\n' '{"id":1,"cmd":"load","args":["--top","tb_f","f_bus.sv","tb_f.sv"]}' \
+      '{"id":2,"cmd":"writers","path":"tb_f.bus"}' '{"id":3,"cmd":"writers","path":"tb_f.dut"}' '{"id":4,"cmd":"writers","path":"tb_f.nope"}' \
+      | "$BIN" > "$OUT/protocol.log"
+    check '^{"id":2,"ok":true,"writers":\["tb_f.dut","tb_f.u_mem"\]}' 'writers of an interface instance'
+    check '^{"id":3,"ok":true,"writers":\[\]}' 'writers: none'
+    check '^{"id":4,"ok":false,"error":"noInstance"' 'writers of an unknown instance'
+    [ "$fails" = 0 ] && echo "SV MODEL CHECKS PASSED" || { echo "SV MODEL CHECKS FAILED: $fails"; exit 1; }
+    ;;
+  trace-ui)
+    swiftc -O "$HERE/trace-ui/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/trace-ui"
+    "$OUT/trace-ui" "$ASSETS" "$HERE/trace" "$OUT/trace-ui.png" | tee "$OUT/trace-ui.log"
+    grep -q '^TRACE UI CHECKS PASSED' "$OUT/trace-ui.log"
+    ;;
+  trace-fsdb)
+    shift
+    if [ $# -lt 5 ]; then echo "trace-fsdb: needs <ssh-host> <remote.fsdb> <model.json> <instance> <time>"; exit 2; fi
+    # The Verdi engine's client (SVModelSidecar) in one module: only the target enum of its package file.
+    L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
+    sed -n '/^public enum SlangCompilationTarget/,/^}/p' "$L/SlangDesignHierarchy.swift" > "$OUT/slang-target.swift"
+    swiftc -O "$HERE/trace-fsdb/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$L/SVModelSidecar.swift" "$L/VerdiTraceLaunch.swift" \
+      "$L/HierarchyPathMapping.swift" "$OUT/slang-target.swift" -o "$OUT/trace-fsdb"
+    "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
+    grep -q '^TRACE FSDB CHECKS PASSED' "$OUT/trace-fsdb.log"
+    ;;
+  trace-smoke)
+    mkdir -p "$OUT/smoke/models" "$OUT/smoke/dumps" "$OUT/smoke/designs"
+    cp "$2" "$OUT/smoke/models/design.json"
+    cp "$3" "$OUT/smoke/dumps/design.vcd"
+    cp "$HERE/trace/vcd.js" "$OUT/smoke/vcd.js"
+    cp "$HERE/trace/smoke.js" "$OUT/smoke/cases.js"
+    swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
+    "$OUT/trace" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-trace.js" "$OUT/smoke"
+    ;;
+  trace)
+    swiftc -swift-version 6 -O "$HERE/trace/main.swift" -o "$OUT/trace"
+    "$OUT/trace" "$ASSETS/cmux-expr.js" "$ASSETS/cmux-trace.js" "$HERE/trace"
     ;;
   line-breakpoints)
     L="$ROOT/Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/LanguageClient"
