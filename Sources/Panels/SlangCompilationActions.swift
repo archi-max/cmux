@@ -42,8 +42,6 @@ enum SlangCompilationActions {
         var follower: SlangProfileFollower?
         /// The profile a focus switch is building now (the header says so meanwhile).
         var following: SlangProfileChoice?
-        /// The profile whose failed focus switch was last reported, so it isn't reported on every focus.
-        var reportedFollowFailure: SlangProfileChoice?
 
         init(session: LanguageServerSession) {
             self.session = session

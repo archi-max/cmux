@@ -751,6 +751,8 @@ extension SlangCompilationActions {
         for editor in FilePreviewLanguageFeatures.allLinkables where editor.linkHostIdentity == hostIdentity {
             guard let session = editor.linkSession?.session, seen.insert(ObjectIdentifier(session)).inserted,
                   let root = session.rootURI?.path else { continue }
+            // A saved build file may fix a profile that elaborated nothing.
+            if isBuildFile { designFilesChanged(session: session) }
             // Profiles also live outside the root (~/.config/cmux-slang): list again, not reusing a
             // listing that started before the save.
             listings[editor.linkRootKey] = nil
@@ -953,7 +955,8 @@ extension SlangCompilationActions {
         guard let owner = choosingEditor(editor, session: session) else { return }
         let file = fileKey(of: owner)
         updateAssignments(rootKey: owner.linkRootKey) { $0.choose(choice, file: file) }
-        entry(for: session).reportedFollowFailure = nil
+        // Chosen again: a profile that failed on an earlier focus is built again on the next one.
+        entry(for: session).follower?.userChose(choice)
         updateHeaders(of: session)
     }
 
@@ -976,10 +979,32 @@ extension SlangCompilationActions {
     /// `editor` became the active one (focus, a click, a tab switch or an open): once focus
     /// settles its server compiles the file's profile.
     static func editorBecameActive(_ editor: FilePreviewLanguageFeatures) {
+        installKeyWindowFollow()
         guard let session = editor.linkSession?.session else { return }
         let entry = entry(for: session)
         entry.activeEditor = editor
         follower(for: session, entry: entry).activeFileChanged()
+    }
+
+    /// Follows windows becoming key (Cmd-`, a title-bar click): the key window's focused editor is the active file.
+    private static var keyWindowFollow: SlangKeyWindowFollow?
+
+    private static func installKeyWindowFollow() {
+        guard keyWindowFollow == nil else { return }
+        keyWindowFollow = SlangKeyWindowFollow(name: NSWindow.didBecomeKeyNotification) { object in
+            guard let window = object as? NSWindow,
+                  let textView = window.firstResponder as? SavingTextView else { return }
+            textView.languageFeatures?.editorDidBecomeActive()
+        }
+    }
+
+    /// A design file of `session` (a source or a build file) was saved or reloaded from disk: a
+    /// profile that elaborated nothing is tried again, now for the active file.
+    static func designFilesChanged(session: LanguageServerSession) {
+        let entry = entry(for: session)
+        guard let follower = entry.follower else { return }
+        follower.designFilesChanged()
+        if entry.activeEditor?.linkSession?.session === session { follower.activeFileChanged() }
     }
 
     private static func follower(for session: LanguageServerSession, entry: Entry) -> SlangProfileFollower {
@@ -1011,7 +1036,8 @@ extension SlangCompilationActions {
     /// (the header changes); a profile that elaborates nothing is put back and reported once.
     private static func follow(_ choice: SlangProfileChoice, session: LanguageServerSession, entry: Entry) async -> SlangProfileFollower.ApplyResult {
         if case .buildFile = choice, await session.supportsCommand("slang.setBuildFile") != true { return .failed }
-        guard claim([session]) else { return .failed }
+        // Another change took the server since the follower looked: it waits and tries again.
+        guard claim([session]) else { return .busy }
         defer { release([session]) }
         let editor = entry.activeEditor
         entry.following = choice
@@ -1051,8 +1077,9 @@ extension SlangCompilationActions {
                 slangProfileLogger.info("profile \(path, privacy: .public) is gone; its files follow the last-set profile")
                 return .missing
             }
-            if entry.reportedFollowFailure != choice, let editor, entry.activeEditor === editor {
-                entry.reportedFollowFailure = choice
+            // Reported once: the follower doesn't build this profile again until a design file
+            // is saved or the user chooses it.
+            if let editor, entry.activeEditor === editor {
                 editor.showLinkMessage([
                     String(
                         format: String(localized: "slangProfile.switchFailed.detail", defaultValue: "slang-server elaborated nothing from profile %@."),
@@ -1069,7 +1096,6 @@ extension SlangCompilationActions {
         }
         entry.target = choice.state.target
         entry.isExplore = choice == .explore
-        entry.reportedFollowFailure = nil
         WaveformSourceLink.topLevelWasChosen(session: session)
         FilePreviewLanguageFeatures.designHierarchyDidChange(session: session)
         return .applied

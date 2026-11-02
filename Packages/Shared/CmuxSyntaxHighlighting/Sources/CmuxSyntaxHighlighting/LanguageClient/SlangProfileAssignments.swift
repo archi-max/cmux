@@ -226,6 +226,9 @@ public final class SlangProfileFollower {
     private let hooks: Hooks
     private var pending: Task<Void, Never>?
     private var running: Task<Void, Never>?
+    /// Profiles that elaborated nothing: not built again on focus until their files change or
+    /// the user chooses them, so a broken profile doesn't recompile on every tab switch.
+    private var failed: Set<SlangProfileChoice> = []
 
     public init(
         debounce: Duration = .milliseconds(250),
@@ -250,11 +253,16 @@ public final class SlangProfileFollower {
         }
     }
 
-    /// A design file (a build file or a source) of the server was saved or reloaded (stub).
-    public func designFilesChanged() {}
+    /// A design file (a build file or a source) of the server was saved or reloaded: a profile
+    /// that elaborated nothing may build now, so it is tried again.
+    public func designFilesChanged() {
+        failed.removeAll()
+    }
 
-    /// The user chose `choice` themselves (stub).
-    public func userChose(_ choice: SlangProfileChoice) {}
+    /// The user chose `choice` themselves: tried again on the next focus even if it failed.
+    public func userChose(_ choice: SlangProfileChoice) {
+        failed.remove(choice)
+    }
 
     /// Returns once no switch is pending or running (for tests).
     public func waitUntilIdle() async {
@@ -287,27 +295,61 @@ public final class SlangProfileFollower {
 
     private func switchIfNeeded() async {
         var waited: Duration = .zero
-        // At most twice: a missing profile, then the last-set profile it falls back to.
-        for _ in 0..<2 {
-            while hooks.isBusy() {
-                guard waited < maxBusyWait else { return }
-                try? await Task.sleep(for: busyRetry)
-                waited += busyRetry
-                if pending != nil { return }
+        // At most two switches: a missing profile, then the last-set profile it falls back to.
+        var switches = 0
+        while switches < 2 {
+            if hooks.isBusy() {
+                guard await waitBusy(&waited) else { return }
+                continue
             }
             // A newer focus is waiting for its debounce: it decides.
             if pending != nil { return }
-            guard let wanted = hooks.wanted() else { return }
+            guard let wanted = hooks.wanted(), !failed.contains(wanted) else { return }
             let current = await hooks.current()
             guard SlangProfileChoice(current) != wanted else { return }
-            guard await hooks.apply(wanted) == .missing else { return }
-            hooks.missing(wanted)
+            switch await hooks.apply(wanted) {
+            case .applied:
+                return
+            case .failed:
+                failed.insert(wanted)
+                return
+            case .busy:
+                guard await waitBusy(&waited) else { return }
+            case .missing:
+                hooks.missing(wanted)
+                switches += 1
+            }
         }
+    }
+
+    /// Waits one retry step while another change runs; false once it waited too long or a newer focus came.
+    private func waitBusy(_ waited: inout Duration) async -> Bool {
+        guard waited < maxBusyWait else { return false }
+        try? await Task.sleep(for: busyRetry)
+        waited += busyRetry
+        return pending == nil
     }
 }
 
-/// Reports each window that becomes key (stub: reports nothing).
+/// Reports each window that becomes key (Cmd-`, a click on its title bar), so its focused
+/// editor becomes the active file without another click. `name` is AppKit's
+/// `NSWindow.didBecomeKeyNotification` in the app. Observes until released.
 @MainActor
 public final class SlangKeyWindowFollow {
-    public init(center: NotificationCenter = .default, name: Notification.Name, activate: @escaping @MainActor @Sendable (Any?) -> Void) {}
+    private let center: NotificationCenter
+    /// Set once in init and only removed in deinit.
+    nonisolated(unsafe) private var observer: (any NSObjectProtocol)?
+
+    public init(center: NotificationCenter = .default, name: Notification.Name, activate: @escaping @MainActor @Sendable (Any?) -> Void) {
+        self.center = center
+        observer = center.addObserver(forName: name, object: nil, queue: .main) { note in
+            // Delivered on the main queue, where the window lives.
+            nonisolated(unsafe) let object = note.object
+            MainActor.assumeIsolated { activate(object) }
+        }
+    }
+
+    deinit {
+        if let observer { center.removeObserver(observer) }
+    }
 }
