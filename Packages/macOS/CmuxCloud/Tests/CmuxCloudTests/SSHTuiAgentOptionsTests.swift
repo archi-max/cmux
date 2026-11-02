@@ -52,6 +52,71 @@ struct SSHTuiAgentOptionsTests {
         #expect(longLived.contains("ProxyCommand=/bin/sh -c true"))
     }
 
+    /// What a one-off run actually executes: the batch arguments put
+    /// `ControlMaster=no` first, which still uses a master that exists, so the
+    /// first ControlPath ssh reads must be the one-off master's, and nothing may
+    /// let the run become a master or persist one.
+    @Test("A one-off run's final ssh arguments use the one-off master")
+    func oneOffArgumentsReachTheOneOffMaster() throws {
+        let connection = connection(
+            agent: "/tmp/cmux-route-agent.sock",
+            options: ["ProxyCommand=/bin/sh -c true", "__cmux_route_sensitive=" + String(repeating: "d", count: 64)],
+            environment: ["PATH": "/usr/bin", "SSH_AUTH_SOCK": "/tmp/cmux-route-agent.sock"]
+        )
+        let carrierPath = try #require(connection.preflightArguments.first { $0.hasPrefix("ControlPath=") })
+        let argv = connection.configuration.batchSSHCommandArguments(
+            command: "true", effectiveSSHOptions: connection.fileOperationSSHOptions
+        )
+        let options = argv.indices.compactMap { index -> String? in
+            index > 0 && argv[index - 1] == "-o" ? argv[index] : nil
+        }
+        func first(_ key: String) -> String? {
+            options.first { $0.lowercased().hasPrefix(key.lowercased() + "=") }
+        }
+        #expect(first("ControlPath") == carrierPath + connection.operationsControlPathSuffix)
+        #expect(first("ControlMaster") == "ControlMaster=no")
+        #expect(first("ControlPersist") == nil)
+
+        // On a host where that master can't log in, runs use the carrier's.
+        let carrier = connection.carrierSSHOptions
+        #expect(carrier.filter { $0.hasPrefix("ControlPath=") } == [carrierPath])
+        #expect(!carrier.contains { $0.lowercased().hasPrefix("controlmaster") || $0.lowercased().hasPrefix("controlpersist") })
+        let carrierArgv = connection.configuration.batchSSHCommandArguments(command: "true", effectiveSSHOptions: carrier)
+        #expect(carrierArgv.first { $0.hasPrefix("ControlPath=") } == carrierPath)
+    }
+
+    /// Each app's one-off masters have their own socket, short enough to fit
+    /// a socket path with the master's number after it.
+    @Test("Each build names its own short one-off master suffix")
+    func eachBuildHasItsOwnShortSuffix() {
+        let configuration = plainConfiguration(options: ["ControlPath=/tmp/cmux-test-cm"])
+        let release = SSHTuiConnection(configuration: configuration, environment: [:], bundleIdentifier: "com.cmuxterm.app")
+        let tagged = SSHTuiConnection(configuration: configuration, environment: [:],
+                                      bundleIdentifier: "com.cmuxterm.app.debug." + String(repeating: "x", count: 40))
+        let other = SSHTuiConnection(configuration: configuration, environment: [:],
+                                     bundleIdentifier: "com.cmuxterm.app.debug.other")
+        #expect(release.operationsControlPathSuffix == "-ops")
+        #expect(tagged.operationsControlPathSuffix.count == 11)
+        #expect(tagged.operationsControlPathSuffix.hasPrefix("-ops-"))
+        #expect(tagged.operationsControlPathSuffix != other.operationsControlPathSuffix)
+        #expect(Set([release, tagged, other].map(\.fileOperationSSHOptions)).count == 3)
+    }
+
+    /// Options that ask for no master, or a path a suffix would break, keep
+    /// the carrier's options as they are.
+    @Test("An explicit ControlMaster=no or a trailing % keeps the carrier's options")
+    func optionsThatCantTakeASuffixKeepTheCarrier() {
+        for options in [["ControlMaster=no", "ControlPath=/tmp/cmux-test-cm"], ["ControlPath=/tmp/cmux-test-cm-%"]] {
+            let connection = SSHTuiConnection(configuration: plainConfiguration(options: options), environment: [:],
+                                              bundleIdentifier: "com.cmuxterm.app")
+            #expect(connection.fileOperationSSHOptions == connection.carrierSSHOptions)
+            #expect(!connection.fileOperationSSHOptions.contains { $0.hasSuffix("-ops") })
+        }
+        let escaped = SSHTuiConnection(configuration: plainConfiguration(options: ["ControlPath=/tmp/cmux-test-cm-%%"]),
+                                       environment: [:], bundleIdentifier: "com.cmuxterm.app")
+        #expect(escaped.fileOperationSSHOptions.contains("ControlPath=/tmp/cmux-test-cm-%%-ops"))
+    }
+
     @Test("A restored cmux carrier keeps its saved route socket with an agent")
     func restoredCmuxCarrierKeepsSavedControlPath() throws {
         let socketDirectory = try #require(SSHConnectionSharingOptions().controlSocketDirectoryPath)
@@ -106,6 +171,14 @@ struct SSHTuiAgentOptionsTests {
     }
 
     /// Builds the same socket override the CLI sends to the app.
+    private func plainConfiguration(options: [String]) -> WorkspaceRemoteConfiguration {
+        WorkspaceRemoteConfiguration(
+            destination: "example.invalid", port: nil, identityFile: nil, sshOptions: options,
+            localProxyPort: nil, relayPort: nil, relayID: nil, relayToken: nil, localSocketPath: nil,
+            terminalStartupCommand: nil, agentSocketPath: nil
+        )
+    }
+
     private func connection(
         agent: String,
         options: [String],
