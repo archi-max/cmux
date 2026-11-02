@@ -411,19 +411,24 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     ) async -> [String: String]? {
         guard !ManagedFileTransferPolicy.isDisabled,
               // No file, or one too big to be a session: nothing is downloaded.
-              let stamp = try? await provider.fileStamp(path: path),
-              stamp.size <= Int64(maxSessionFileSize),
               let text = try? await downloadSessionText(path: path, provider: provider),
               isSession(text) else { return nil }
         return ["path": path, "text": text]
     }
 
-    /// `path` on the host as text, through a temporary local copy (8 MB at most).
+    /// `path` on the host as text, through a temporary local copy (8 MB at most),
+    /// in one request: a missing or larger file sends nothing.
     nonisolated private static func downloadSessionText(path: String, provider: SSHFileExplorerProvider) async throws -> String {
         let local = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-waveform-session-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: local) }
-        try await provider.downloadFile(path: path, to: local)
+        do {
+            _ = try await provider.downloadFileWithStamp(path: path, to: local, maxBytes: Int64(maxSessionFileSize))
+        } catch RemoteFileProbe.Failure.tooLarge {
+            throw CocoaError(.fileReadTooLarge)
+        } catch RemoteFileProbe.Failure.noFile {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
         return try await readSessionText(at: local)
     }
 
@@ -641,8 +646,6 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
                 try WaveformValueAliasFiles.checkRemotePath(path)
                 // Too big to be an alias file: nothing is downloaded.
-                let stamp = try await provider.fileStamp(path: path)
-                guard stamp.size <= Int64(Self.maxSessionFileSize) else { throw CocoaError(.fileReadTooLarge) }
                 let text = try await Self.downloadSessionText(path: path, provider: provider)
                 guard let self else { return }
                 // Keyed by host and path, so a same-named file elsewhere is another file.
@@ -681,8 +684,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                 case .remote(let path):
                     guard let provider else { throw CocoaError(.fileReadNoSuchFile) }
                     guard !ManagedFileTransferPolicy.isDisabled else { throw ManagedFileTransferPolicy.refusalError() }
-                    let stamp = try await provider.fileStamp(path: path)
-                    guard stamp.size <= Int64(Self.maxSessionFileSize) else { throw CocoaError(.fileReadTooLarge) }
+                    // Too big to be an alias file: nothing is downloaded.
                     return try await Self.downloadSessionText(path: path, provider: provider)
                 case .otherHost:
                     throw CocoaError(.fileReadNoSuchFile)

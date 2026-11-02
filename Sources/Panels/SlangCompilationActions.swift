@@ -468,10 +468,13 @@ enum SlangCompilationActions {
             var existing: Data?
             var stamp: SSHRemoteFileStamp?
             if try await remoteFileExists(location.path, provider: provider) {
-                stamp = try await provider.fileStamp(path: location.path)
                 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("cmux-slang-\(UUID().uuidString).json")
                 defer { try? FileManager.default.removeItem(at: scratch) }
-                try await provider.downloadFile(path: location.path, to: scratch)
+                // One request: the stamp comes with the bytes it was read before.
+                guard let read = try await provider.downloadFileWithStamp(path: location.path, to: scratch) else {
+                    throw FileExplorerError.providerUnavailable
+                }
+                stamp = read
                 existing = try Data(contentsOf: scratch)
             } else {
                 let parent = (directory as NSString).deletingLastPathComponent
