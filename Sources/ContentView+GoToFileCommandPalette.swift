@@ -80,11 +80,24 @@ enum GoToFilePaletteRouting {
             workspaceId: workspace.id, connection: connection, displayTarget: configuration.displayTarget,
             rootPath: snapshot, isAvailable: true, unavailableDetail: nil
         )
-        let liveRoot: @MainActor () async -> String? = { [weak workspace] in
+        let lookup: @MainActor @Sendable () async -> String? = { [weak workspace] in
             guard let workspace, workspace.usesSSHTui,
                   let resource = SurfaceCatalog.shared.resource(forPanel: terminalID),
                   let provider = SurfaceCatalog.shared.provider(for: resource.machine) else { return nil }
             return await provider.currentWorkingDirectory(of: resource)
+        }
+        // Bounded like a terminal link's lookup: a stalled query falls back to the last reported directory.
+        let liveRoot: @MainActor () async -> String? = {
+            await withTaskGroup(of: String?.self) { group in
+                group.addTask { await lookup() }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(3))
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
         }
         return (.ssh(connection: connection, rootPath: snapshot), root, liveRoot)
     }
