@@ -22,10 +22,17 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
     /// Browser forwards keyed by the loopback port they reach on the SSH host.
     private var loopbackForwards: [Int: LoopbackForwardProcess] = [:]
     private var loopbackForwardStarts: [Int: Task<UInt16, Error>] = [:]
+    /// Where one-off runs of every workspace on this machine learn this carrier's
+    /// options. The app passes `.shared`; tests leave it nil so nothing leaks.
+    /// Nothing unregisters a manager today; a future unregister needs a `remove(id:)` there.
+    private let carrierRoutes: SSHTuiCarrierRoutes?
 
     init(connection: SSHTuiConnection, clientURL: URL, paths: CloudTuiClientPaths, isEnabled: @escaping @Sendable () -> Bool,
-         agentHookProviders: @escaping @Sendable () -> [String] = { [] }) {
+         agentHookProviders: @escaping @Sendable () -> [String] = { [] },
+         carrierRoutes: SSHTuiCarrierRoutes? = nil) {
         self.connection = connection
+        self.carrierRoutes = carrierRoutes
+        carrierRoutes?.record(connection)
         self.clientURL = clientURL
         self.paths = paths
         self.isEnabled = isEnabled
@@ -115,6 +122,7 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
         // The check above suspends; a carrier started meanwhile keeps its options.
         guard current === observed, connecting == nil else { return }
         connection = replacement
+        carrierRoutes?.record(replacement)
     }
 
     func link(machineID: String) -> CloudMachineLink? {

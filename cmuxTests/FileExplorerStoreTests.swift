@@ -111,6 +111,10 @@ private final class MockSSHFileExplorerTransport: SSHFileExplorerTransport {
         mutationOperations.append("delete:\(path)")
     }
 
+    func delete(paths: [String], connection: SSHFileExplorerConnection) async throws {
+        mutationOperations.append("delete-batch:\(paths.joined(separator: ","))")
+    }
+
     func copy(
         path: String,
         to destinationPath: String,
@@ -331,6 +335,50 @@ struct FileExplorerStoreTests {
         try await store.removeEntries(paths: ["/home/dev/project/a", "/home/dev/project/a/b"])
 
         #expect(provider.operations == ["delete:/home/dev/project/a"])
+    }
+
+    /// Each SSH mutation is its own ssh run on the host, so removing a
+    /// selection must cost one run, not one per item.
+    @Test
+    func testSSHStoreRemovesASelectionInOneTransportCall() async throws {
+        let transport = MockSSHFileExplorerTransport()
+        let provider = SSHFileExplorerProvider(
+            destination: "dev@host", port: nil, identityFile: nil, sshOptions: [],
+            homePath: "/home/dev", isAvailable: true, transport: transport
+        )
+        let store = FileExplorerStore()
+        store.setProviderForTesting(provider, reloadIfAvailable: false)
+        store.rootPath = "/home/dev/project"
+
+        try await store.removeEntries(paths: [
+            "/home/dev/project/c", "/home/dev/project/a", "/home/dev/project/a/inner", "/home/dev/project/b",
+        ])
+
+        #expect(transport.mutationOperations == [
+            "delete-batch:/home/dev/project/a,/home/dev/project/b,/home/dev/project/c",
+        ])
+    }
+
+    /// Hovering across an SSH tree must not start one ssh listing per folder
+    /// passed over; SSH folders list when they are opened.
+    @Test
+    func testSSHHoverDoesNotPrefetchFolders() async throws {
+        let transport = MockSSHFileExplorerTransport()
+        let provider = SSHFileExplorerProvider(
+            destination: "dev@host", port: nil, identityFile: nil, sshOptions: [],
+            homePath: "/home/dev", isAvailable: true, transport: transport
+        )
+        let store = FileExplorerStore()
+        store.setProviderForTesting(provider, reloadIfAvailable: false)
+        store.rootPath = "/home/dev"
+        let folder = FileExplorerNode(name: "project", path: "/home/dev/project", isDirectory: true)
+
+        store.prefetchChildren(for: folder)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(transport.listedPaths.isEmpty)
+        #expect(folder.children == nil)
     }
 
     @Test
