@@ -2015,8 +2015,33 @@ final class FileExplorerStore: ObservableObject {
         loadTasks[rootPath] = task
     }
 
-    /// Placeholder (red): right-click Refresh.
-    func refresh(directoryAt path: String) {}
+    /// Right-click Refresh: re-lists `path` through the normal listing path.
+    /// The root re-lists the whole tree (expanded folders re-expand); a loaded
+    /// folder re-lists only itself. A folder that was never listed is left for
+    /// its next expand, which lists it fresh.
+    func refresh(directoryAt path: String) {
+        guard !rootPath.isEmpty, provider != nil else { return }
+        if Self.pathsEqual(path, rootPath) {
+            reload()
+            refreshGitStatus()
+            return
+        }
+        guard let node = nodesByPath[path], node.isDirectory,
+              node.resourceContextID == nil || node.resourceContextID == resourceContextID,
+              node.children != nil, loadTasks[path] == nil, !loadingPaths.contains(path) else { return }
+        // Entries below the folder are replaced by the new listing.
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        nodesByPath = nodesByPath.filter { !$0.key.hasPrefix(prefix) }
+        node.isLoading = true
+        node.error = nil
+        objectWillChange.send()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.loadChildren(for: node, at: path)
+        }
+        loadTasks[path] = task
+        refreshGitStatus()
+    }
 
     func expand(node: FileExplorerNode) {
         guard node.resourceContextID == nil || node.resourceContextID == resourceContextID, node.isDirectory else { return }
