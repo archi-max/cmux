@@ -12,6 +12,9 @@ struct FileExplorerPreviewCoordinator {
     struct Presentation {
         /// Opens the preview of the local (lease) path, or returns nil.
         let openPreview: @MainActor (Workspace, String) -> FilePreviewPanel?
+        /// Whether showing the preview (new, or one already open) may move
+        /// keyboard focus to it, read when it is shown.
+        let takesFocus: @MainActor () -> Bool
         /// Reports a failure, including a preview that didn't open or a refresh that failed.
         let reportFailure: @MainActor (Error) -> Void
         /// Whether the opened panel may still refresh from its host, for the
@@ -69,7 +72,7 @@ struct FileExplorerPreviewCoordinator {
                     if try await Self.refreshExistingRemotePreview(
                         path: path, providerIdentity: providerIdentity, workspace: workspace, pane: pane,
                         store: store, context: context, isCurrent: isCurrent,
-                        validate: {}, provider: remote
+                        validate: {}, provider: remote, takesFocus: presentation?.takesFocus
                     ) { return }
                     // The waveform viewer reads FSDB on the SSH host; dumps run to
                     // hundreds of MB, so none is downloaded.
@@ -93,7 +96,9 @@ struct FileExplorerPreviewCoordinator {
                         if presentation == nil {
                             Self.installRemoteLinkOpener(on: panel, workspace: workspace, store: store, isCurrent: isCurrent)
                         }
-                        workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: panel)
+                        if presentation?.takesFocus() ?? true {
+                            workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: panel)
+                        }
                     } else {
                         presentation?.reportFailure(FileExplorerError.providerUnavailable)
                     }
@@ -120,7 +125,8 @@ struct FileExplorerPreviewCoordinator {
         context: UUID,
         isCurrent: @escaping @MainActor () -> Bool,
         validate: @escaping @MainActor () throws -> Void,
-        provider: any RemoteFileExplorerProvider
+        provider: any RemoteFileExplorerProvider,
+        takesFocus: (@MainActor () -> Bool)? = nil
     ) async throws -> Bool {
         guard let existing = workspace.panels.values
             .compactMap({ $0 as? FilePreviewPanel })
@@ -138,8 +144,9 @@ struct FileExplorerPreviewCoordinator {
               workspace.panels[existing.id] != nil else { return true }
         try validate()
         _ = existing.reloadFromDisk()
-        _ = workspace.openOrFocusFilePreviewSurface(inPane: pane, filePath: existing.filePath, focus: true)
-        workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: existing)
+        let focus = takesFocus?() ?? true
+        _ = workspace.openOrFocusFilePreviewSurface(inPane: pane, filePath: existing.filePath, focus: focus)
+        if focus { workspace.handKeyboardFocusFromRightSidebarAfterFileOpen(to: existing) }
         return true
     }
 

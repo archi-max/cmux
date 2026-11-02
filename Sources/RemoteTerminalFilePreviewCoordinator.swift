@@ -150,15 +150,19 @@ final class RemoteTerminalFilePreviewCoordinator {
             // waiting for a fresh download into a second tab. The request
             // crossed the relay, so focus moves only if the user is still
             // on the terminal.
-            let focus = RemotePreviewOpenRules.placement(
+            let placement = RemotePreviewOpenRules.placement(
                 isSelected: workspace.owningTabManager?.selectedTabId == workspace.id,
                 isRetired: workspace.isRetiredFromOwningTabManager,
                 sourceUnchanged: true,
                 configurationUnchanged: true,
                 sourceIsFocused: workspace.focusedPanelId == sourcePanelID,
                 windowIsKey: panel.hostedView.window?.isKeyWindow == true
-            ) == .focused
-            _ = workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: existing.filePath, focus: focus)
+            )
+            guard let placement,
+                  workspace.openOrFocusFilePreviewSplit(
+                      from: sourcePanelID, filePath: existing.filePath, focus: placement.takesFocus
+                  ) != nil else { return .started }
+            if placement.announcesOpen { Self.announceOpen(of: path, in: workspace, from: sourcePanelID) }
             if !existing.isDirty { existing.refreshRemotePreview() }
             return .started
         }
@@ -257,7 +261,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                         opened = false
                     }
                     if !opened {
-                        if placement == .focused { NSSound.beep() }
+                        if placement.takesFocus { NSSound.beep() }
                         Self.discardUnlessShown(download, cacheRoot: cacheRoot)
                     }
                 case .commandLine:
@@ -364,7 +368,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             }
             Self.discardUnlessShown(download, cacheRoot: cacheDirectory)
             guard workspace.openOrFocusFilePreviewSplit(
-                from: sourcePanelID, filePath: existing.filePath, focus: now == .focused
+                from: sourcePanelID, filePath: existing.filePath, focus: now.takesFocus
             ) != nil else { return false }
             target = existing
             finalPlacement = now
@@ -378,37 +382,40 @@ final class RemoteTerminalFilePreviewCoordinator {
                 )
             }, placement: placement),
                   let panel = workspace.openOrFocusFilePreviewSplit(
-                      from: sourcePanelID, filePath: lease.url.path, focus: now == .focused
+                      from: sourcePanelID, filePath: lease.url.path, focus: now.takesFocus
                   ) else {
                 return false
             }
             panel.cloudPreviewLease = lease
             if viewer == .renderedMarkdown, !panel.isShowingMarkdownPreview {
                 panel.toggleMarkdownPreview()
-                if now == .focused { panel.focus() }
+                if now.takesFocus { panel.focus() }
             }
             target = panel
             finalPlacement = now
         }
         if let line = download.line {
             FilePreviewLanguageFeatures.reveal(
-                line: line, column: download.column, in: target, takesFocus: finalPlacement == .focused
+                line: line, column: download.column, in: target, takesFocus: finalPlacement.takesFocus
             )
         }
-        if finalPlacement == .unfocusedInAnotherWorkspace {
-            // Not on screen: say where it went instead of opening silently.
-            TerminalNotificationStore.shared.addNotification(
-                tabId: workspace.id,
-                surfaceId: sourcePanelID,
-                title: RemotePreviewNotice.opened(
-                    fileName: (remotePath as NSString).lastPathComponent,
-                    workspaceName: workspace.title
-                ),
-                subtitle: "",
-                body: remotePath
-            )
-        }
+        if finalPlacement.announcesOpen { Self.announceOpen(of: remotePath, in: workspace, from: sourcePanelID) }
         return true
+    }
+
+    /// Says where a preview went when it opened in a workspace that isn't on
+    /// screen, instead of opening it silently.
+    private static func announceOpen(of remotePath: String, in workspace: Workspace, from sourcePanelID: UUID) {
+        TerminalNotificationStore.shared.addNotification(
+            tabId: workspace.id,
+            surfaceId: sourcePanelID,
+            title: RemotePreviewNotice.opened(
+                fileName: (remotePath as NSString).lastPathComponent,
+                workspaceName: workspace.title
+            ),
+            subtitle: "",
+            body: remotePath
+        )
     }
 
     /// Deletes a download that won't be shown, if it created its cache file
@@ -472,6 +479,19 @@ final class RemoteTerminalFilePreviewCoordinator {
             }
         }
         guard let viewerIdentity = identity(workspace) else { return .unavailable }
+        // The viewer opens after a host round trip: it takes focus only if the
+        // user is still on the terminal, like a downloaded preview.
+        let takesFocus: @MainActor () -> Bool = { [weak workspace, weak terminal] in
+            guard let workspace, let terminal else { return false }
+            return RemotePreviewOpenRules.placement(
+                isSelected: workspace.owningTabManager?.selectedTabId == workspaceID,
+                isRetired: workspace.isRetiredFromOwningTabManager,
+                sourceUnchanged: workspace.terminalPanel(for: sourcePanelID) === terminal,
+                configurationUnchanged: workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration,
+                sourceIsFocused: workspace.focusedPanelId == sourcePanelID,
+                windowIsKey: terminal.hostedView.window?.isKeyWindow == true
+            )?.takesFocus ?? false
+        }
         FileExplorerPreviewCoordinator(store: inPlaceStore).open(
             path: path,
             workspace: workspace,
@@ -487,8 +507,9 @@ final class RemoteTerminalFilePreviewCoordinator {
             },
             presentation: FileExplorerPreviewCoordinator.Presentation(
                 openPreview: { workspace, localPath in
-                    workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localPath)
+                    workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localPath, focus: takesFocus())
                 },
+                takesFocus: takesFocus,
                 reportFailure: { _ in notice() },
                 isPanelCurrent: { [weak workspace] in
                     guard let workspace else { return false }
