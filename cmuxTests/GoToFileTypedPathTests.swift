@@ -93,6 +93,37 @@ import Testing
     }
 
     @MainActor
+    private final class Gate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private(set) var isWaiting = false
+        func wait() async {
+            await withCheckedContinuation { waiter = $0; isWaiting = true }
+        }
+        func open() {
+            waiter?.resume()
+            waiter = nil
+        }
+    }
+
+    @MainActor
+    @Test func aRefreshDuringAListingIsNotUndoneByIt() async throws {
+        // A Files refresh lands while Go to File is still listing: the
+        // pre-refresh listing reaches the caller but isn't kept for 45 s.
+        let cache = ExpiringValueCache<String, Int>(lifetime: .seconds(45))
+        let gate = Gate()
+        let inFlight = Task { @MainActor in
+            try await cache.value(for: "/w") { await gate.wait(); return 1 }
+        }
+        while !gate.isWaiting { await Task.yield() }
+        cache.invalidateAll()
+        gate.open()
+        let stale = try await inFlight.value
+        #expect(stale == 1, "the caller still gets what it asked for")
+        let fresh = try await cache.value(for: "/w") { 2 }
+        #expect(fresh == 2, "listed again after the refresh")
+    }
+
+    @MainActor
     @Test func aFailedListingIsNotKept() async throws {
         let cache = ExpiringValueCache<String, Int>(lifetime: .seconds(45))
         var threw = false

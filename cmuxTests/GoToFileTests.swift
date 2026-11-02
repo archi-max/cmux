@@ -413,6 +413,30 @@ struct GoToFileTests {
 
     @MainActor
     @Test
+    func testAQueuedEnterDoesNotOpenAFuzzyMatchForALaterTypedPath() async throws {
+        let gate = AsyncGate()
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in
+            await gate.wait()
+            return GoToFileSnapshot(paths: ["etc/hosts.sv", "hdl/foo.sv"], isTruncated: false)
+        })
+        var opened: [String] = []
+        model.onDeferredOpen = { opened.append($0) }
+        model.begin(source: .local(rootPath: "/w"), workspaceId: UUID())
+        model.update(query: "foo")
+        #expect(model.openSelectionOrQueue() == nil)
+        #expect(model.opensWhenRanked)
+        // The user goes on typing a path before the listing lands.
+        model.update(query: "/etc/hosts")
+        #expect(!model.opensWhenRanked, "Enter was for the old query")
+        await gate.open()
+        try await Self.waitUntil { !model.isLoading }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(opened.isEmpty, "row 0 is the typed path; no fuzzy result opens on its own")
+        #expect(model.selectedTypedPath == "/etc/hosts")
+    }
+
+    @MainActor
+    @Test
     func testATypedPathsOnlySessionListsNothingAndNeverQueuesEnter() async throws {
         let calls = CallCounter()
         let model = GoToFilePaletteModel(loadSnapshot: { _ in
