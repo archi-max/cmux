@@ -689829,6 +689829,65 @@
         }
       }
     },
+    "slangProfile.switchError.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't switch slang-server to %@; it is tried again the next time this file is focused."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server を %@ に切り替えられませんでした。このファイルに次にフォーカスしたときに再試行します。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server konnte nicht zu %@ wechseln; beim nächsten Fokussieren dieser Datei wird es erneut versucht."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Impossible de faire passer slang-server à %@ ; une nouvelle tentative aura lieu au prochain focus sur ce fichier."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر تبديل slang-server إلى %@؛ ستتم إعادة المحاولة عند التركيز على هذا الملف في المرة القادمة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo cambiar slang-server a %@; se volverá a intentar la próxima vez que se enfoque este archivo."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法將 slang-server 切換到 %@；下次聚焦此檔案時會再試一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将 slang-server 切换到 %@；下次聚焦此文件时会重试。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang-server를 %@(으)로 전환하지 못했습니다. 다음에 이 파일에 포커스하면 다시 시도합니다."
+          }
+        }
+      }
+    },
     "slangProfile.switchFailed.detail": {
       "extractionState": "manual",
       "localizations": {
