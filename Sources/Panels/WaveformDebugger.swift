@@ -82,8 +82,6 @@ enum WaveformDebugger {
 
     // MARK: Targets and commands
 
-    /// The viewer the commands act on for a focused panel: a waveform viewer
-    /// itself, or the workspace's viewer next to a SystemVerilog editor.
 #if DEBUG
     /// Each check `target(for:)` makes, for the DEBUG invoke log.
     static func targetDiagnosis(_ panel: FilePreviewPanel?) -> String {
@@ -98,6 +96,8 @@ enum WaveformDebugger {
     }
 #endif
 
+    /// The viewer the commands act on for a focused panel: a waveform viewer
+    /// itself, or the workspace's viewer next to a SystemVerilog editor.
     static func target(for panel: FilePreviewPanel?) -> FilePreviewPanel? {
         guard let panel, !panel.isClosed else { return nil }
         if panel.previewMode == .waveform { return panel }
