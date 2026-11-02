@@ -122,14 +122,15 @@ const api = {
   },
   getchildren({ id, startIndex }) { return JSON.parse(liftString('getchildren', ex.getchildren(id, startIndex))); },
   getsignaldata({ signalIds }) { ex.getsignaldata(...lowerU32List(signalIds)); return 'ok'; },
-  // cmux: one signal's value changes as [[time, value], ...], kept in the page; null
-  // past maxChanges (packed data is counted before it is unpacked).
+  // cmux: one signal's value changes as [[time, value], ...], kept in the page; null past
+  // maxChanges (an LZ4 frame's record count is known from its size, so it isn't decoded).
   getsignalchanges({ signalId, maxChanges }) {
-    const limit = Number(maxChanges) || Infinity;
     const c = captureSignal(signalId);
+    const limit = Number(maxChanges) || Infinity;
     if (c.lz4.length) {
       if (c.size / (8 + c.width) > limit) { return null; }
-      return decodeRecords(lz4Frame(concat(c.lz4), c.size), c.width);
+      const records = decodeRecords(lz4Frame(concat(c.lz4), c.size), c.width);
+      return records.length > limit ? null : records;
     }
     const changes = c.json.length ? JSON.parse(c.json.join('')) : [];
     return changes.length > limit ? null : changes;
