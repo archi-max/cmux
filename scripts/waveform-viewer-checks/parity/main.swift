@@ -2021,7 +2021,25 @@ extension Harness {
         await sleep(800);
         R.afterLocals = tr();
         R.pinnedClk = n('top.clk');
+        // A pinned drop of top.clk still on its way, then a drop of it into Locals, then Add All:
+        // the Locals add doesn't hide the pinned one, so it is pinned once.
+        removeAll(clk); await sleep(800);
+        R.clearedClk = n('top.clk');
+        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: clk.netlistId }], groupPath: [], dropIndex: 0 });
+        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: clk.netlistId }], groupPath: ['Locals'], dropIndex: 0 });
+        R.pendingScope = JSON.stringify(await link.addScope({ path: ['top'] }));
+        await sleep(800);
+        R.afterPending = tr();
+        R.pinnedAfterPending = n('top.clk');
         await d.setLocals({ path: null }); await sleep(400);
+        // W1: a view whose rows never come back (a lookup that doesn't answer) holds Add All for at
+        // most the settle cap, then it reads the rows as they are.
+        const cap = C.settleTimeoutMs; C.settleTimeoutMs = 1000;
+        slow(60000); C.run('cmux.undo'); await sleep(100);
+        const started = Date.now();
+        R.cappedScope = JSON.stringify(await link.addScope({ path: ['top'] }));
+        R.cappedMs = Date.now() - started;
+        H.findItem = findItem; C.settleTimeoutMs = cap;
         """) { r in
           let s = { (k: String) in r[k] as? String ?? "nil" }
           check(s("before") == "top.core.acc,top.clk", "AT setup: \(s("before"))")
@@ -2030,6 +2048,11 @@ extension Harness {
           check(s("afterMenu") == "top.core.acc,top.clk", "the netlist menu's Add All during such an Undo too: \(s("afterMenu"))")
           check(s("localsScope") == #"{"added":1,"total":1}"# && r["pinnedClk"] as? Int == 1,
                 "Add All right after a drop into Locals pins the signal once: \(s("localsScope")), pinned \(r["pinnedClk"] ?? "nil"): \(s("afterLocals"))")
+          check(r["clearedClk"] as? Int == 0 && s("pendingScope") == #"{"added":0,"total":0}"# && r["pinnedAfterPending"] as? Int == 1,
+                "a drop into Locals doesn't hide a pinned drop still on its way: Add All \(s("pendingScope")), pinned \(r["clearedClk"] ?? "nil") → \(r["pinnedAfterPending"] ?? "nil"): \(s("afterPending"))")
+          let cappedMs = r["cappedMs"] as? Int ?? -1
+          check(s("cappedScope") != "nil" && s("cappedScope") != "null" && cappedMs >= 900 && cappedMs < 4000,
+                "Add All while a view's rows never come back answers after the settle cap: \(s("cappedScope")) in \(cappedMs) ms")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
