@@ -343,6 +343,96 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(older?["signal"] as? String == "tb_c.dut.q" && (older?["engine"] as? [String: Any])?["verdi"] as? String == "dropped"
              && ((older?["via"] as? [Any]) ?? []).isEmpty,
            "the step moved on from keeps ours, Verdi's answer dropped: \(String(describing: older?["engine"]))")
+
+    // Back within the budget keeps the check: trace A (a port hop), click a fan-in row (B), go Back
+    // to A before Verdi answers; A is filled in, not left "checking".
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    engineDelay = 0.8
+    let backA = await call("""
+      const b = cmuxWaveform.host.currentBackend, t = cmuxWaveform.trace;
+      b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+      try {
+        await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const row = document.querySelector('#cmux-trace tr.fanin');
+        if (!row) { return { error: 'no fan-in row' }; }
+        row.click();
+        for (let i = 0; i < 100 && t.state().steps < 2; i++) { await new Promise((r) => setTimeout(r, 10)); }
+        const steps = t.state().steps;
+        t.back();
+        if (t.settled) { await t.settled(); }
+        return { steps, at: t.state().at, step: t.state().step, panel: document.getElementById('cmux-trace')?.innerText || '' };
+      } finally { delete b.valuesAt; delete b.changes; }
+      """) as? [String: Any]
+    let backStep = backA?["step"] as? [String: Any]
+    expect(backA?["steps"] as? Int == 2 && backA?["at"] as? Int == 0 && backStep?["signal"] as? String == "tb_c.dut.q"
+             && (backStep?["engine"] as? [String: Any])?["name"] as? String == "verdi",
+           "Back to a step within its budget: its Verdi check still fills it in: \(String(describing: backStep?["engine"])) steps \(String(describing: backA?["steps"]))")
+    expect(!(backA?["panel"] as? String ?? "").contains("Verdi is checking"), "the panel does not stay on \"Verdi is checking…\"")
+    // close() during a check drops it: no update afterwards.
+    let updatesAtClose = updates
+    let closedCheck = await call("""
+      const b = cmuxWaveform.host.currentBackend, t = cmuxWaveform.trace;
+      b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+      try {
+        await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        t.close();
+        if (t.settled) { await t.settled(); }
+        await new Promise((r) => setTimeout(r, 1000));
+        return { open: t.state().open, steps: t.state().steps };
+      } finally { delete b.valuesAt; delete b.changes; }
+      """) as? [String: Any]
+    await sleep(100)
+    expect(closedCheck?["open"] as? Bool == false && updates == updatesAtClose + 0, "close() during a Verdi check drops it (no update after): \(updates - updatesAtClose)")
+    engineDelay = 0
+
+    // Our step's reads go first: on a helper that serves one read at a time (300 ms each), a
+    // Verdi check's port-hop reads go one at a time and wait for the next step's own reads.
+    // tb_c.dut.q: 2 reads of ours, then the hop's u_sink.q and its 4 leaves; the next step starts
+    // when the hop asks for its first leaf.
+    let order = await call("""
+      const b = cmuxWaveform.host.currentBackend, t = cmuxWaveform.trace;
+      await t.driverOfDesign({ designPath: 'tb_c.dut.u_src.id_q', designPrefix: '', dumpPrefix: '', time: 60 });  // a VCD session: nothing read on the next
+      const own = b.signalChanges.bind(b);
+      const names = []; let chain = Promise.resolve(), queued = 0, requests = 0, during = false, after = false, mostBg = 0, readsDuringB = 0, trigger;
+      const ready = new Promise((resolve) => { trigger = resolve; });
+      b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); };
+      b.signalChanges = (v, max) => {
+        queued++; requests++; names.push((during ? 'B:' : '') + (cmuxWaveform.host.pathOf ? cmuxWaveform.host.pathOf(v).join('.') : v.netlistId));
+        if (requests === 4) { trigger(); }
+        if (during) { readsDuringB++; } else if (after) { mostBg = Math.max(mostBg, queued); }
+        const run = chain.then(() => new Promise((r) => setTimeout(r, 300))).then(() => own(v, max)).finally(() => { queued--; });
+        chain = run.catch(() => {});
+        return run;
+      };
+      try {
+        await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        after = true;
+        await Promise.race([ready, new Promise((r) => setTimeout(r, 4000))]);
+        await new Promise((r) => setTimeout(r, 0));
+        mostBg = Math.max(mostBg, queued);
+        during = true;
+        const t0 = performance.now();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_src.id_q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const ms = performance.now() - t0;
+        during = false;
+        if (t.settled) { await t.settled(); }
+        return { ms, readsDuringB, mostBg, requests, names: names.join(' ') };
+      } finally { delete b.valuesAt; delete b.changes; b.signalChanges = own; }
+      """) as? [String: Any]
+    let orderMs = order?["ms"] as? Double ?? .infinity, bReads = order?["readsDuringB"] as? Int ?? 0
+    print(String(format: "[verdi async] serial helper: next step shown in %.0f ms with %d reads of its own; %@", orderMs, bReads, String(describing: order)))
+    expect(bReads > 0 && orderMs < Double(bReads + 1) * 300 + 250, "the next step waits for at most one Verdi read in flight (\(Int(orderMs)) ms, \(bReads) reads)")
+    expect((order?["mostBg"] as? Int ?? 99) <= 1, "Verdi's port-hop reads go one at a time: \(String(describing: order?["mostBg"]))")
+
+    // A port hop whose reads would be too large is not followed: "Verdi: not checked (large signal)".
+    _ = await call("cmuxWaveform.traceVerdiMaxBits = 1; return null")
+    let large = await shown("tb_c.dut.q", settle: true)
+    _ = await call("delete cmuxWaveform.traceVerdiMaxBits; return null")
+    let largeEngine = (large?["after"] as? [String: Any])?["engine"] as? [String: Any]
+    expect(largeEngine?["verdi"] as? String == "large" && largeEngine?["name"] as? String == "cmux",
+           "a large port hop is not followed: \(String(describing: largeEngine))")
+    expect((large?["panelAfter"] as? String ?? "").contains("Verdi: not checked (large signal)"), "the panel says the signal was too large")
+    engineAnswer = nil
     _ = await call("delete cmuxWaveform.traceVerdiBudgetMs; return null")
 
     // Status while cmux builds; close.
@@ -457,7 +547,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
         "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
         "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiChecking": "Verdi is checking…",
-        "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLastChange": "Verdi (driver of the last change):",
+        "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLarge": "Verdi: not checked (large signal)", "traceVerdiLastChange": "Verdi (driver of the last change):",
         "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
         "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
       ]
