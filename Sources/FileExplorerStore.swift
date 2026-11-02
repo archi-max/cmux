@@ -291,7 +291,7 @@ extension FileExplorerProvider {
     var supportsTrash: Bool { false }
 }
 
-struct SSHFileExplorerConnection: Equatable, Sendable {
+struct SSHFileExplorerConnection: Hashable, Sendable {
     let destination: String
     let port: Int?
     let identityFile: String?
@@ -1999,6 +1999,8 @@ final class FileExplorerStore: ObservableObject {
         #if DEBUG
         NSLog("[FileExplorer] reload() path=\(rootPath) provider=\(type(of: provider).self)")
         #endif
+        // A Files refresh also refreshes what Go to File lists.
+        GoToFileSnapshotLoader.cache.invalidateAll()
         contentRevision &+= 1
         cancelAllLoads()
         rootNodes = []

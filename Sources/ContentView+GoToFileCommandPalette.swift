@@ -81,19 +81,8 @@ enum GoToFilePaletteRouting {
                 reuseExisting: true
             ).isEmpty
         case .ssh(let connection, _):
-            let store: FileExplorerStore
-            if sidebarStore.workspaceRootIdentity == workspace.id,
-               let provider = sidebarStore.provider as? SSHFileExplorerProvider,
-               provider.connection == connection, provider.isAvailable {
-                store = sidebarStore
-            } else {
-                guard let root = model.workspaceRoot else { return false }
-                store = model.remotePreviewStore
-                // Rebind when the workspace, connection, root folder or availability changed.
-                if store.workspaceRootIdentity != workspace.id || model.remotePreviewRoot != root {
-                    store.applyWorkspaceRoot(root)
-                    model.remotePreviewRoot = root
-                }
+            guard let store = sshStore(connection: connection, model: model, workspace: workspace, sidebarStore: sidebarStore) else {
+                return false
             }
             FileExplorerPreviewCoordinator(store: store).open(
                 path: absolutePath,
@@ -104,16 +93,94 @@ enum GoToFilePaletteRouting {
             return true
         }
     }
+
+    /// Opens a typed path (``GoToFileTypedPath``) in `pane`, wherever it is on
+    /// the session's host: `~/` against the host's `$HOME` (looked up over
+    /// ssh, never evaluated by a shell), `./` and `../` against the root. SSH
+    /// files open through the Files preview path, as listed results do: a
+    /// lease that names the host path and saves back, an FSDB dump read in
+    /// place on the host.
+    static func open(
+        typedPath: String,
+        model: GoToFilePaletteModel,
+        workspace: Workspace,
+        pane: PaneID,
+        sidebarStore: FileExplorerStore,
+        isCurrent: @escaping @MainActor () -> Bool
+    ) -> Bool {
+        guard model.workspaceId == workspace.id, let source = model.source else { return false }
+        switch source {
+        case .local(let root):
+            guard let path = GoToFileTypedPath.resolve(typedPath, root: root, home: NSHomeDirectory()) else { return false }
+            return !workspace.openFileSurfaces(inPane: pane, filePaths: [path], focus: true, reuseExisting: true).isEmpty
+        case .ssh(let connection, let root):
+            guard let store = sshStore(connection: connection, model: model, workspace: workspace, sidebarStore: sidebarStore),
+                  let provider = store.provider as? SSHFileExplorerProvider else { return false }
+            let open: @MainActor (String) -> Void = { [weak workspace] path in
+                guard let workspace, isCurrent() else { return }
+                FileExplorerPreviewCoordinator(store: store).open(path: path, workspace: workspace, pane: pane, isCurrent: isCurrent)
+            }
+            guard GoToFileTypedPath.needsHome(typedPath) else {
+                guard let path = GoToFileTypedPath.resolve(typedPath, root: root, home: nil) else { return false }
+                open(path)
+                return true
+            }
+            let knownHome = provider.homePath
+            Task { @MainActor in
+                var home: String? = knownHome.hasPrefix("/") ? knownHome : nil
+                if home == nil { home = try? await provider.resolveHomePath() }
+                guard let path = GoToFileTypedPath.resolve(typedPath, root: root, home: home) else {
+                    if isCurrent() { NSSound.beep() }
+                    return
+                }
+                open(path)
+            }
+            return true
+        }
+    }
+
+    /// The store that serves SSH previews for `connection`: the Files
+    /// sidebar's when it shows this workspace, else the palette's own.
+    private static func sshStore(
+        connection: SSHFileExplorerConnection,
+        model: GoToFilePaletteModel,
+        workspace: Workspace,
+        sidebarStore: FileExplorerStore
+    ) -> FileExplorerStore? {
+        if sidebarStore.workspaceRootIdentity == workspace.id,
+           let provider = sidebarStore.provider as? SSHFileExplorerProvider,
+           provider.connection == connection, provider.isAvailable {
+            return sidebarStore
+        }
+        guard let root = model.workspaceRoot else { return nil }
+        let store = model.remotePreviewStore
+        // Rebind when the workspace, connection, root folder or availability changed.
+        if store.workspaceRootIdentity != workspace.id || model.remotePreviewRoot != root {
+            store.applyWorkspaceRoot(root)
+            model.remotePreviewRoot = root
+        }
+        return store
+    }
 }
 
 /// The Go to File result list under the palette's search field.
 struct GoToFileResultsView: View {
     @ObservedObject var model: GoToFilePaletteModel
     let onRun: (String) -> Void
+    let onRunTypedPath: (String) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.results.isEmpty {
+            if let typedPath = model.typedPath {
+                Button { onRunTypedPath(typedPath) } label: {
+                    typedPathRow(typedPath, isSelected: model.selectedIndex == 0)
+                }
+                .buttonStyle(.plain)
+            }
+            if model.results.isEmpty, model.typedPath != nil, model.errorMessage == nil {
+                // The typed path is the answer; no "no match" line under it.
+                EmptyView()
+            } else if model.results.isEmpty {
                 Text(emptyText)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -124,7 +191,7 @@ struct GoToFileResultsView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(model.results.enumerated()), id: \.element) { index, path in
                                 Button { onRun(path) } label: {
-                                    row(path: path, isSelected: index == model.selectedIndex)
+                                    row(path: path, isSelected: index + model.resultRowOffset == model.selectedIndex)
                                 }
                                 .buttonStyle(.plain)
                                 .id(path)
@@ -187,12 +254,32 @@ struct GoToFileResultsView: View {
         .contentShape(Rectangle())
     }
 
+    private func typedPathRow(_ path: String, isSelected: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.right.doc.on.clipboard")
+                .frame(width: 16)
+                .foregroundStyle(.secondary)
+            Text(String(
+                format: String(localized: "commandPalette.goToFile.openTypedPath", defaultValue: "Open %@"),
+                path
+            ))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(isSelected ? Color.accentColor.opacity(0.14) : .clear)
+        .contentShape(Rectangle())
+    }
+
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
-        guard model.results.indices.contains(model.selectedIndex) else { return }
+        let index = model.selectedIndex - model.resultRowOffset
+        guard model.results.indices.contains(index) else { return }
         var transaction = Transaction()
         transaction.animation = nil
         withTransaction(transaction) {
-            proxy.scrollTo(model.results[model.selectedIndex], anchor: .center)
+            proxy.scrollTo(model.results[index], anchor: .center)
         }
     }
 }

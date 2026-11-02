@@ -364,6 +364,53 @@ struct GoToFileTests {
         #expect(opened == ["hdl/cpu.sv"])
     }
 
+    @Test
+    func testDotfilesInTheListingMatchADotQuery() {
+        // The listing keeps dotfiles (git ls-files -co --exclude-standard, or
+        // find); only ignored files and the pruned directories are left out.
+        let ranked = GoToFileRanker.rank(paths: [".gitignore", ".bashrc", "hdl/alu.sv"], query: ".git", limit: 10)
+        #expect(ranked.first == ".gitignore")
+        #expect(GoToFileRanker.rank(paths: [".gitignore", ".bashrc"], query: ".bash", limit: 10) == [".bashrc"])
+    }
+
+    @MainActor
+    @Test
+    func testATypedPathIsTheTopRowAndOpensWithoutTheListing() async throws {
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in GoToFileSnapshot(paths: Self.tree, isTruncated: false) })
+        model.begin(source: .ssh(
+            connection: SSHFileExplorerConnection(destination: "u@remote-host", port: nil, identityFile: nil, sshOptions: []),
+            rootPath: "/home/u/proj"
+        ), workspaceId: UUID())
+        model.update(query: "~/.bashrc")
+        #expect(model.typedPath == "~/.bashrc")
+        #expect(model.selectedTypedPath == "~/.bashrc", "selected before any ranking lands")
+        #expect(model.openSelectionOrQueue() == nil)
+        #expect(!model.opensWhenRanked, "Enter opens the typed path, it isn't queued")
+        try await Self.waitUntil { !model.isLoading }
+        #expect(model.selectedTypedPath == "~/.bashrc")
+        model.update(query: "alu")
+        #expect(model.typedPath == nil)
+        try await Self.waitUntil { model.results.first == "hdl/alu.sv" }
+        #expect(model.selectedRelativePath == "hdl/alu.sv")
+    }
+
+    @MainActor
+    @Test
+    func testRowsUnderATypedPathAreReachedByMovingDown() async throws {
+        let model = GoToFilePaletteModel(loadSnapshot: { _ in GoToFileSnapshot(paths: ["tb/alu_tb.sv"], isTruncated: false) })
+        model.begin(source: .local(rootPath: "/w"), workspaceId: UUID())
+        model.update(query: "./tb/alu_tb.sv")
+        try await Self.waitUntil { !model.isLoading }
+        #expect(model.selectedTypedPath == "./tb/alu_tb.sv")
+        if !model.results.isEmpty {
+            #expect(model.moveSelection(by: 1))
+            #expect(model.selectedTypedPath == nil)
+            #expect(model.selectedRelativePath == model.results.first)
+        }
+        model.end()
+        #expect(model.typedPath == nil)
+    }
+
     @MainActor
     @Test
     func testSessionReportsListingFailures() async throws {
