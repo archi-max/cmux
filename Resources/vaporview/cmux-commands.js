@@ -1198,6 +1198,8 @@
     let path = String(name).trim().replace(/[:;]$/, '');
     const field = /\[(\d+:)?(\d+)\]$/.exec(path);
     // cmux: a signal named with an index (an array element, dfp_addr[1]) first, as named.
+    // So a var literally named `x[3]` (an escaped identifier dumped without its backslash)
+    // wins over bit 3 of a vector `x` in the same scope; `x[3:3]` still selects the bit.
     let item = field && msb === undefined ? await host().findItem(path, undefined, undefined, true) : null;
     if (field && msb === undefined && !item) {
       msb = field[1] ? parseInt(field[1], 10) : parseInt(field[2], 10);

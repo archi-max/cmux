@@ -1,3 +1,5 @@
+// Part of cmux's FSDB helper v2, written for cmux. GPL-3.0, as VaporView
+// (https://github.com/Lramseyer/vaporview), whose helper it extends; see ../LICENSE.
 // cmux: a scope's variables as the FSDB reader nests them. readVars reports an
 // ARRAY_BEGIN before an array's elements and an ARRAY_END after (nested for each
 // dimension). Each array becomes a scope of the `children` reply, `type: 'array'`,
