@@ -142,6 +142,43 @@ enum RemotePreviewOpenRules {
     /// connection, the request came from. Keyboard focus and the key window
     /// no longer count: the download takes from a few hundred ms to seconds,
     /// and moving to another tab meanwhile dropped the file without a word.
+    /// How a finished download opens, or nil when it is dropped.
+    /// Placeholder until the fix: the old gate, always with focus.
+    static func placement(
+        isSelected: Bool,
+        isRetired: Bool,
+        sourceUnchanged: Bool,
+        configurationUnchanged: Bool,
+        sourceIsFocused: Bool,
+        windowIsKey: Bool
+    ) -> RemotePreviewPlacement? {
+        downloadMayOpen(
+            isSelected: isSelected, isRetired: isRetired, sourceUnchanged: sourceUnchanged,
+            configurationUnchanged: configurationUnchanged, sourceIsFocused: sourceIsFocused, windowIsKey: windowIsKey
+        ) ? .focused : nil
+    }
+
+    /// Runs `prepare` and returns its value with the placement that holds
+    /// after it. Placeholder until the fix: the placement is read before.
+    static func openAfter<Value: Sendable>(
+        _ prepare: () async -> Value?,
+        placement: () -> RemotePreviewPlacement?
+    ) async -> (Value, RemotePreviewPlacement)? {
+        guard let before = placement(), let value = await prepare() else { return nil }
+        return (value, before)
+    }
+
+    /// Which leased viewer a ⌘-clicked host file opens in, or nil when it
+    /// gets none. Placeholder until the fix: Markdown opens as a cache copy.
+    static func clickViewer(
+        isMarkdown: Bool,
+        routesMarkdown: Bool,
+        routesSupportedFile: Bool
+    ) -> RemoteClickViewer? {
+        if isMarkdown && routesMarkdown { return nil }
+        return routesSupportedFile ? .source : nil
+    }
+
     static func downloadMayOpen(
         isSelected: Bool,
         isRetired: Bool,
@@ -152,4 +189,22 @@ enum RemotePreviewOpenRules {
     ) -> Bool {
         isSelected && !isRetired && sourceUnchanged && configurationUnchanged
     }
+}
+
+/// Where a finished download opens relative to the user's focus.
+enum RemotePreviewPlacement: Equatable, Sendable {
+    /// The user is still on the source terminal in the key window: the preview takes focus.
+    case focused
+    /// The workspace is on screen but the user moved on: open beside the terminal, keep focus where it is.
+    case unfocused
+    /// Another workspace is selected: open unfocused in the source workspace and say so in a notification.
+    case unfocusedInAnotherWorkspace
+}
+
+/// The leased viewer of a ⌘-clicked host file.
+enum RemoteClickViewer: Equatable, Sendable {
+    /// The editable source in the native file preview.
+    case source
+    /// The native file preview on its rendered Markdown view.
+    case renderedMarkdown
 }

@@ -146,6 +146,24 @@ import Testing
         }
     }
 
+    private func header(_ index: Int, _ path: String) -> String {
+        "cmux-probe:\(index) 1 3 \(Data(path.utf8).base64EncodedString())\n"
+    }
+
+    @Test func aMarkerInsideABannerLineIsNotTheHeader() throws {
+        let data = Data(("motd: " + header(7, "/fake") + header(0, "/home/u/a.sv") + "abc").utf8)
+        let (parsed, offset) = try RemoteFileProbe.parseHeader(in: data)
+        #expect(parsed.index == 0)
+        #expect(parsed.path == "/home/u/a.sv")
+        #expect(data[offset...] == Data("abc".utf8))
+    }
+
+    @Test func aHeaderWithARelativePathIsMalformed() {
+        #expect(throws: RemoteFileProbe.Failure.malformedOutput) {
+            _ = try RemoteFileProbe.parseHeader(in: Data((header(0, "a.sv") + "abc").utf8))
+        }
+    }
+
     // MARK: Open rules
 
     private actor Counter {
@@ -182,28 +200,73 @@ import Testing
         #expect(notAbsolute == "/home/u")
     }
 
-    @Test func aFinishedDownloadOpensAfterTheUserMovedToAnotherTabOfTheWorkspace() {
-        // `cmux open` and ⌘-click take a few hundred ms to seconds; switching
-        // tabs meanwhile used to drop the file silently.
-        #expect(RemotePreviewOpenRules.downloadMayOpen(
-            isSelected: true, isRetired: false, sourceUnchanged: true, configurationUnchanged: true,
-            sourceIsFocused: false, windowIsKey: false
-        ))
-        #expect(!RemotePreviewOpenRules.downloadMayOpen(
-            isSelected: false, isRetired: false, sourceUnchanged: true, configurationUnchanged: true,
-            sourceIsFocused: true, windowIsKey: true
-        ), "another workspace is selected")
-        #expect(!RemotePreviewOpenRules.downloadMayOpen(
-            isSelected: true, isRetired: false, sourceUnchanged: true, configurationUnchanged: false,
-            sourceIsFocused: true, windowIsKey: true
-        ), "the connection changed")
-        #expect(!RemotePreviewOpenRules.downloadMayOpen(
-            isSelected: true, isRetired: false, sourceUnchanged: false, configurationUnchanged: true,
-            sourceIsFocused: true, windowIsKey: true
-        ), "the terminal was replaced")
-        #expect(!RemotePreviewOpenRules.downloadMayOpen(
-            isSelected: true, isRetired: true, sourceUnchanged: true, configurationUnchanged: true,
-            sourceIsFocused: true, windowIsKey: true
-        ))
+    private func placement(
+        selected: Bool = true, retired: Bool = false, sourceUnchanged: Bool = true,
+        configurationUnchanged: Bool = true, focused: Bool, key: Bool
+    ) -> RemotePreviewPlacement? {
+        RemotePreviewOpenRules.placement(
+            isSelected: selected, isRetired: retired, sourceUnchanged: sourceUnchanged,
+            configurationUnchanged: configurationUnchanged, sourceIsFocused: focused, windowIsKey: key
+        )
+    }
+
+    @Test func aDownloadTakesFocusOnlyWhileTheUserIsStillOnTheSourceTerminal() {
+        #expect(placement(focused: true, key: true) == .focused)
+    }
+
+    @Test func aLateDownloadNeverTakesTheKeyboardFromAnotherPanel() {
+        // ⌘-click, then typing in another terminal of the workspace during the
+        // download: the keystrokes must stay there.
+        #expect(placement(focused: false, key: true) == .unfocused)
+        #expect(placement(focused: true, key: false) == .unfocused, "another window or app is in front")
+        #expect(placement(focused: false, key: false) == .unfocused)
+    }
+
+    @Test func aDownloadWhoseWorkspaceWasLeftStillOpensThereUnfocused() {
+        // Switching workspaces during the download used to drop the file silently.
+        #expect(placement(selected: false, focused: true, key: true) == .unfocusedInAnotherWorkspace)
+        #expect(placement(selected: false, focused: false, key: false) == .unfocusedInAnotherWorkspace)
+    }
+
+    @Test func aDownloadIsDroppedWhenItsSourceIsGone() {
+        #expect(placement(retired: true, focused: true, key: true) == nil)
+        #expect(placement(sourceUnchanged: false, focused: true, key: true) == nil, "the terminal was replaced")
+        #expect(placement(configurationUnchanged: false, focused: true, key: true) == nil, "the connection changed")
+        #expect(placement(selected: false, sourceUnchanged: false, focused: false, key: false) == nil)
+    }
+
+    private final class Flag: @unchecked Sendable {
+        var value: RemotePreviewPlacement?
+        init(_ value: RemotePreviewPlacement?) { self.value = value }
+    }
+
+    @Test func thePlacementIsReadAgainAfterTheLeaseIsPrepared() async {
+        // The user leaves the terminal while the download is moved into the lease cache.
+        let state = Flag(.focused)
+        let moved = await RemotePreviewOpenRules.openAfter({ state.value = .unfocused; return 1 }, placement: { state.value })
+        #expect(moved?.1 == .unfocused)
+        let gone = await RemotePreviewOpenRules.openAfter({ state.value = nil; return 1 }, placement: { state.value })
+        #expect(gone == nil, "the source went away during the await")
+        let failed = await RemotePreviewOpenRules.openAfter({ () -> Int? in nil }, placement: { .focused })
+        #expect(failed == nil)
+    }
+
+    private func viewer(markdown: Bool, routesMarkdown: Bool = true, routesSupported: Bool = true) -> RemoteClickViewer? {
+        RemotePreviewOpenRules.clickViewer(isMarkdown: markdown, routesMarkdown: routesMarkdown, routesSupportedFile: routesSupported)
+    }
+
+    @Test func aClickedMarkdownFileOpensLeasedAndRendered() {
+        // Like `cmux open` and the Files panel: the host path in the header,
+        // Save to the host. The Markdown viewer could only show the cache copy.
+        #expect(viewer(markdown: true) == .renderedMarkdown)
+        #expect(viewer(markdown: true, routesSupported: false) == .renderedMarkdown, "the Markdown route alone is enough")
+        #expect(viewer(markdown: true, routesMarkdown: false) == .source, "Markdown routing off: its source, still leased")
+    }
+
+    @Test func otherClickedFilesOpenLeasedAsSourceOrNotAtAll() {
+        // HTML included: a host page is never a local web page.
+        #expect(viewer(markdown: false) == .source)
+        #expect(viewer(markdown: false, routesSupported: false) == nil)
+        #expect(viewer(markdown: true, routesMarkdown: false, routesSupported: false) == nil)
     }
 }
