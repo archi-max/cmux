@@ -48,6 +48,9 @@ To see everything this branch adds on top of cmux, use the GitHub compare view `
 | cmux add-ons that run in the page: debugger, machine state, FSM, enums, expressions, RISC-V disassembler, sequence search | `Resources/vaporview/cmux-*.js` |
 | How each bundled file was built, and the modifications | `Resources/vaporview/README.md` |
 
+For a feature-by-feature guide to cmux's VaporView changes, with screenshots and the files involved, see
+[docs/vaporview/README.md](vaporview/README.md).
+
 ### FSDB on a remote host
 
 FSDB is read on the remote host by `Resources/vaporview/fsdb-helper-v2/`. This is a small Node helper with VaporView's FSDB reader addon, compiled on the host against that host's own Verdi install. cmux uploads it over SSH and streams only the windows of data the viewer needs. Synopsys libraries are never bundled or redistributed. See `fsdb-helper-v2/NOTICE`.
