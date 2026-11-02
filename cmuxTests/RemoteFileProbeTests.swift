@@ -306,6 +306,15 @@ import Testing
         #expect(other == "SSHFailed", "the type, never the message")
     }
 
+    @Test func aTerminalsDumpOpensOverThatTerminalsOwnConnection() {
+        // The Files panel need not be connected (or rooted on the host) for a
+        // terminal's link or `cmux open` to open a dump the host reads.
+        #expect(RemotePreviewOpenRules.inPlaceConnection(terminal: "u@host:22", filesRoot: nil as String?) == "u@host:22")
+        #expect(RemotePreviewOpenRules.inPlaceConnection(terminal: "u@host:22", filesRoot: "u@host:22") == "u@host:22")
+        #expect(RemotePreviewOpenRules.inPlaceConnection(terminal: nil as String?, filesRoot: "u@host:22") == nil,
+                "a terminal that isn't on the host never opens there")
+    }
+
     private final class Flag: @unchecked Sendable {
         var value: RemotePreviewPlacement?
         init(_ value: RemotePreviewPlacement?) { self.value = value }
