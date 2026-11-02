@@ -139,9 +139,16 @@ public struct SSHTuiConnection: Sendable {
     /// default), every app's carrier for a host shares one master, and a
     /// refused session gets no fallback, so one-off runs there could refuse a
     /// carrier's reconnect. They name this app's own one-off master instead,
-    /// ``operationsControlPath``, which the app opens when the carrier connects
-    /// and lends sessions on (a batch run never starts a master itself). A
-    /// carrier that shares nothing (`ControlPath=none`) keeps them unshared.
+    /// the carrier's ControlPath plus ``operationsControlPathSuffix``, which the
+    /// app opens when the carrier connects and lends sessions on (a batch run
+    /// never starts a master itself); while that master can't start, as on a
+    /// host that only takes a password, the app lends the carrier's
+    /// (``carrierSSHOptions``) instead.
+    ///
+    /// A carrier that shares nothing (`ControlPath=none`) keeps them unshared.
+    /// One whose options say `ControlMaster=no`, or whose path ends in a `%`
+    /// that a suffix would turn into an unknown token, gets
+    /// ``carrierSSHOptions`` as they are.
     public var fileOperationSSHOptions: [String] {
         let resolver = SSHAgentSocketResolver(environment: [:])
         let options = sshOptions
@@ -154,17 +161,33 @@ public struct SSHTuiConnection: Sendable {
             return route
         }
         guard path.lowercased() != "none" else { return route + ["ControlPath=none"] }
+        let master = resolver.optionValue(named: "ControlMaster", in: options)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trailingPercents = path.reversed().prefix { $0 == "%" }.count
+        guard master != "no", trailingPercents % 2 == 0 else { return carrierSSHOptions }
         return route + ["ControlPath=" + path + operationsControlPathSuffix]
     }
 
-    /// Stub until one-off runs can fall back to the carrier.
-    public var carrierSSHOptions: [String] { [] }
+    /// The carrier's route and ControlPath, without the options that would let
+    /// a run become a master: what one-off runs used before they had masters
+    /// of their own, and what they fall back to on a host where those can't
+    /// log in.
+    public var carrierSSHOptions: [String] {
+        let resolver = SSHAgentSocketResolver(environment: [:])
+        return sshOptions.filter { option in
+            let key = resolver.optionKey(option)
+            return key != "controlmaster" && key != "controlpersist"
+        }
+    }
 
     /// Appended to the carrier's ControlPath for this app's one-off masters:
-    /// `-ops`, plus the build's tag, so two installed apps never lend sessions
-    /// on one master without counting each other's.
+    /// `-ops`, plus a short digest of the build's tag, so two installed apps
+    /// never lend sessions on one master without counting each other's. Kept
+    /// short: the master's socket path must fit in `sun_path`.
     public var operationsControlPathSuffix: String {
-        "-ops" + (remoteTag.map { "-" + $0 } ?? "")
+        guard let remoteTag else { return "-ops" }
+        let digest = SHA256.hash(data: Data(remoteTag.utf8)).prefix(3).map { String(format: "%02x", $0) }.joined()
+        return "-ops-" + digest
     }
 
     /// The SSH options for a long-lived run beside the carrier, such as a

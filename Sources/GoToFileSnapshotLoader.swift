@@ -31,8 +31,9 @@ enum GoToFileSnapshotError: Error, Equatable, LocalizedError {
 /// Takes the one file-list snapshot a Go to File session ranks against.
 ///
 /// Local and SSH roots run the same ``SSHFileSearchCommand/fileList(rootPath:maxDepth:remoteTimeoutSeconds:watchdog:)``
-/// script, locally under `/bin/sh` and remotely over the workspace's ssh
-/// ControlPath. Cancelling the calling task terminates the child.
+/// script, locally under `/bin/sh` and remotely on a session the app's
+/// one-off master lends (``SSHMasterPool``). Cancelling the calling task
+/// terminates the child.
 enum GoToFileSnapshotLoader {
     static let timeoutSeconds = 20
     /// Output beyond this many bytes stops the listing and marks it truncated.
@@ -80,7 +81,12 @@ enum GoToFileSnapshotLoader {
     }
 
     static func load(_ source: GoToFileSnapshotSource) async throws -> GoToFileSnapshot {
-        try await load(invocation(for: source))
+        guard case .ssh(let connection, let rootPath) = source else {
+            return try await load(invocation(for: source))
+        }
+        return try await SSHMasterPool.shared.withSession(connection) { leased in
+            try await load(invocation(for: .ssh(connection: leased, rootPath: rootPath)))
+        }
     }
 
     static func load(
