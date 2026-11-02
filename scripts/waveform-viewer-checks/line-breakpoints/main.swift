@@ -557,19 +557,29 @@ endmodule
     expect(LB.marks[separators]?.first?.line == 7 && LB.marks[separators]?.first?.text == "assign done = count == limit;",
            "line numbers count every line break the gutter does: \(state(separators))")
 
-    // L10: placing many marks in a big file is one pass, not one per mark.
-    let many = UUID()
+    // L10: placing many marks in a big file is one pass, not one per mark. Timed against 200 marks in the
+    // same file, so a loaded Mac slows both: one pass costs about the same for both, a pass per mark 10x.
     var manyText = "module many(input logic clk);\n"
     for i in 0..<50_000 { manyText += "  assign w\(i) = r\(i);\n" }
     manyText += "endmodule\n"
-    LB.restore(SessionWaveformBreakpointsSnapshot(lines: (0..<2000).map {
-        LB.Mark(id: UUID(), path: "/rtl/many.sv", line: 1 + $0 * 25, text: "assign w\($0 * 25) = r\($0 * 25);")
-    }, signals: nil), in: many)
-    let manyView = open(manyText, workspace: many, path: "/rtl/many.sv")
-    let placeStarted = Date()
-    _ = LB.styles(in: manyView)
-    let placeMs = Date().timeIntervalSince(placeStarted) * 1000
-    expect(placeMs < 500 && (LB.marks[many] ?? []).allSatisfy { !$0.lost }, "2000 marks in a 50k-line file placed in \(Int(placeMs)) ms (under 500)")
+    func place(_ count: Int) -> (ms: Double, placed: Bool) {
+        let space = UUID()
+        let step = 50_000 / count
+        LB.restore(SessionWaveformBreakpointsSnapshot(lines: (0..<count).map {
+            LB.Mark(id: UUID(), path: "/rtl/many.sv", line: 1 + $0 * step, text: "assign w\($0 * step) = r\($0 * step);")
+        }, signals: nil), in: space)
+        let view = open(manyText, workspace: space, path: "/rtl/many.sv")
+        let started = Date()
+        _ = LB.styles(in: view)
+        let ms = Date().timeIntervalSince(started) * 1000
+        return (ms, (LB.marks[space] ?? []).count == count && (LB.marks[space] ?? []).allSatisfy { !$0.lost })
+    }
+    let few = place(200)
+    let lots = place(2000)
+    let fewAgain = place(200)
+    let baseline = min(few.ms, fewAgain.ms)
+    expect(lots.placed && (lots.ms < 500 || lots.ms < 4 * max(baseline, 1)),
+           "2000 marks in a 50k-line file placed in \(Int(lots.ms)) ms (under 500, or under 4x the \(Int(baseline)) ms of 200 marks)")
 
     // N8: an older manifest's list goes to the first viewer that reports; cleared there, it does not
     // come back after a relaunch, nor go to an unrelated viewer.
