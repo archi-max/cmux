@@ -58,23 +58,28 @@ public enum SSHTuiShellIntegration {
     fi
     __cmux_ssh_report_cwd() {
       builtin local ret=$?
-      if [[ "${__cmux_ssh_reported_cwd-}" != "$PWD" ]]; then
+      # A name with control characters would end the report early and inject
+      # its own escape sequences.
+      if [[ "${__cmux_ssh_reported_cwd-}" != "$PWD" && "$PWD" != *[[:cntrl:]]* ]]; then
         __cmux_ssh_reported_cwd=$PWD
         builtin printf '\e]7;kitty-shell-cwd://%s%s\a' "$HOSTNAME" "$PWD"
       fi
       builtin return "$ret"
     }
-    # After the startup files, so their PROMPT_COMMAND keeps running. A nested
-    # shell can inherit PROMPT_COMMAND without the function, hence 2>/dev/null.
+    # The prompt runs the hook through this unexported name: a child shell that
+    # inherits an exported PROMPT_COMMAND expands it to nothing instead of
+    # looking up a command that isn't there.
+    __cmux_ssh_cwd_hook=__cmux_ssh_report_cwd
+    # After the startup files, so their PROMPT_COMMAND keeps running. A
+    # newline, unlike `;`, also follows a trailing `&` or comment.
     if [[ -n "${bash_preexec_imported-}${__bp_imported-}" ]]; then
       precmd_functions+=(__cmux_ssh_report_cwd)
     elif [[ $(builtin declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-      PROMPT_COMMAND+=("__cmux_ssh_report_cwd 2>/dev/null")
+      PROMPT_COMMAND+=('${__cmux_ssh_cwd_hook-} 2>/dev/null')
     elif [[ -z "${PROMPT_COMMAND-}" ]]; then
-      PROMPT_COMMAND="__cmux_ssh_report_cwd 2>/dev/null"
+      PROMPT_COMMAND='${__cmux_ssh_cwd_hook-} 2>/dev/null'
     else
-      [[ "$PROMPT_COMMAND" =~ (\;[[:space:]]*|$'\n')$ ]] || PROMPT_COMMAND+=";"
-      PROMPT_COMMAND+="__cmux_ssh_report_cwd 2>/dev/null"
+      PROMPT_COMMAND+=$'\n''${__cmux_ssh_cwd_hook-} 2>/dev/null'
     fi
 
     """#
@@ -93,18 +98,25 @@ public enum SSHTuiShellIntegration {
     [[ -r ${ZDOTDIR:-$HOME}/.zshenv ]] && builtin source ${ZDOTDIR:-$HOME}/.zshenv
     if [[ -o interactive ]]; then
       __cmux_ssh_report_cwd() {
-        if [[ ${__cmux_ssh_reported_cwd-} != "$PWD" ]]; then
+        # A .zshrc may reassign precmd_functions; a cd (chpwd) puts it back.
+        (( ${precmd_functions[(Ie)__cmux_ssh_report_cwd]} )) || precmd_functions+=(__cmux_ssh_report_cwd)
+        # A name with control characters would end the report early.
+        if [[ ${__cmux_ssh_reported_cwd-} != "$PWD" && $PWD != *[[:cntrl:]]* ]]; then
           __cmux_ssh_reported_cwd=$PWD
           builtin printf '\e]7;kitty-shell-cwd://%s%s\a' "$HOST" "$PWD"
         fi
       }
-      builtin autoload -Uz add-zsh-hook && add-zsh-hook precmd __cmux_ssh_report_cwd
+      # The arrays directly: add-zsh-hook needs fpath, which a .zshenv may replace.
+      precmd_functions+=(__cmux_ssh_report_cwd)
+      chpwd_functions+=(__cmux_ssh_report_cwd)
     fi
 
     """#
 
     /// Shell code that installs both files under the directory in the
     /// shell variable `directoryVariable`. Any failure only skips the file.
+    /// The caller runs it under `umask 077`, so directories are private; the
+    /// files are 644.
     static func installCode(directoryVariable: String) -> String {
         [(bashEnvironmentPath, bashEnvironmentFile, "CMUX_SSH_BASH_EOF"),
          (zshEnvironmentPath, zshEnvironmentFile, "CMUX_SSH_ZSH_EOF")].map { path, contents, delimiter in
@@ -114,6 +126,7 @@ public enum SSHTuiShellIntegration {
               mkdir -p "$\(directoryVariable)/\(parent)" 2>/dev/null &&
               cat > "$\(directoryVariable)/\(path).$$" 2>/dev/null <<'\(delimiter)' &&
             \(contents)\(delimiter)
+              chmod 644 "$\(directoryVariable)/\(path).$$" 2>/dev/null &&
               mv -f "$\(directoryVariable)/\(path).$$" "$\(directoryVariable)/\(path)" 2>/dev/null
               rm -f "$\(directoryVariable)/\(path).$$" 2>/dev/null
             fi
@@ -125,30 +138,43 @@ public enum SSHTuiShellIntegration {
     /// Shell code that starts the login shell through the installed files,
     /// found under `installDirectory`, or falls through when it cannot.
     static func launchCode(installDirectory: String) -> String {
-        """
-        cmux_ssh_dir="\(installDirectory)"
+        #"""
+        cmux_ssh_dir="\#(installDirectory)"
         cmux_ssh_shell=${SHELL:-/bin/sh}
+        # The shell sources these files, so nobody else may be able to rewrite
+        # any of them: every entry is the user's, with no group or other write.
+        cmux_ssh_private() {
+          [ -r "$1" ] && [ -z "$(find "$cmux_ssh_dir" \( -type l -o -perm -020 -o -perm -002 -o ! -user "$(id -u)" \) -print 2>/dev/null || echo error)" ]
+        }
         case ${cmux_ssh_shell##*/} in
           bash)
-            if [ -r "$cmux_ssh_dir/\(bashEnvironmentPath)" ] &&
-              { [ "$cmux_ssh_shell" != /bin/bash ] || [ "$(uname -s 2>/dev/null)" != Darwin ]; }; then
-              if [ -n "${ENV+x}" ]; then CMUX_SSH_BASH_ENV=$ENV; export CMUX_SSH_BASH_ENV; fi
-              if [ -z "${HISTFILE+x}" ]; then
-                HISTFILE=$HOME/.bash_history; CMUX_SSH_BASH_UNEXPORT_HISTFILE=1
-                export HISTFILE CMUX_SSH_BASH_UNEXPORT_HISTFILE
-              fi
-              ENV=$cmux_ssh_dir/\(bashEnvironmentPath); CMUX_SSH_BASH_INJECT=1; export ENV CMUX_SSH_BASH_INJECT
-              exec "$cmux_ssh_shell" --posix -l
-            fi ;;
+            # bash expands ENV before reading it, so a path it would change
+            # keeps the plain launch, as does Apple's bash 3.2 (it ignores ENV
+            # in POSIX mode).
+            case $cmux_ssh_dir in
+              *[\$\`\\]*) ;;
+              *)
+                if cmux_ssh_private "$cmux_ssh_dir/\#(bashEnvironmentPath)" &&
+                  { [ "$cmux_ssh_shell" != /bin/bash ] || [ "$(uname -s 2>/dev/null)" != Darwin ]; }; then
+                  if [ -n "${ENV+x}" ]; then CMUX_SSH_BASH_ENV=$ENV; export CMUX_SSH_BASH_ENV; fi
+                  if [ -z "${HISTFILE+x}" ]; then
+                    HISTFILE=$HOME/.bash_history; CMUX_SSH_BASH_UNEXPORT_HISTFILE=1
+                    export HISTFILE CMUX_SSH_BASH_UNEXPORT_HISTFILE
+                  fi
+                  ENV=$cmux_ssh_dir/\#(bashEnvironmentPath); CMUX_SSH_BASH_INJECT=1; export ENV CMUX_SSH_BASH_INJECT
+                  exec "$cmux_ssh_shell" --posix -l
+                fi ;;
+            esac ;;
           zsh)
-            if [ -r "$cmux_ssh_dir/\(zshEnvironmentPath)" ]; then
+            if cmux_ssh_private "$cmux_ssh_dir/\#(zshEnvironmentPath)"; then
               if [ -n "${ZDOTDIR+x}" ]; then CMUX_SSH_ZDOTDIR=$ZDOTDIR; export CMUX_SSH_ZDOTDIR; fi
-              ZDOTDIR=$cmux_ssh_dir/\((zshEnvironmentPath as NSString).deletingLastPathComponent); export ZDOTDIR
+              ZDOTDIR=$cmux_ssh_dir/\#((zshEnvironmentPath as NSString).deletingLastPathComponent); export ZDOTDIR
               exec "$cmux_ssh_shell" -l
             fi ;;
         esac
         unset cmux_ssh_dir cmux_ssh_shell
+        unset -f cmux_ssh_private
 
-        """
+        """#
     }
 }
