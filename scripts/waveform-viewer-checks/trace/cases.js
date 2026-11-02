@@ -134,8 +134,8 @@ const TRACE_CASES = [
   { d: 'h', sig: 'tb_h.dut.cx', t: 66000, kind: 'proc', stmt: "cx = 8'ha1;", value: '10100001', dec: [['sel', 0]], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
   { d: 'h', sig: 'tb_h.dut.cx', t: 76000, kind: 'proc', stmt: "cx = 8'hb2;", value: '10110010', dec: [['sel', 1]], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
   { d: 'h', sig: 'tb_h.dut.cx', t: 46000, kind: 'proc', stmt: "cx = 8'hc3;", value: '11000011', dec: [['sel', 2]], trust: 'exact' },
-  // An x-index write writes no element: mem[0] keeps its reset value (Icarus dumps the elements).
-  { d: 'h', sig: 'tb_h.dut.mem[0]', t: 50000, kind: 'proc', value: '00000000', trust: 'exact', dumps: ['icarus'] },
+  // An x-index write writes no element: mem[0] keeps the write before it (Icarus dumps the elements).
+  { d: 'h', sig: 'tb_h.dut.mem[0]', t: 50000, kind: 'proc', stmt: 'mem[0] <= din;', value: '01000011', trust: 'exact', dumps: ['icarus'] },
   { d: 'h', sig: 'tb_h.dut.mem[1]', t: 50000, kind: 'proc', value: '00111101', trust: 'computed', dumps: ['icarus'] },
   // priority: two items match, no violation; unique: the same is a violation.
   { d: 'h', sig: 'tb_h.dut.pv', t: 36000, kind: 'proc', stmt: "pv = 8'h01;", value: '00000001', dec: [['pr', 0]], viol: [null], trust: 'exact' },
@@ -147,6 +147,7 @@ const TRACE_CASES = [
   { d: 'h', sig: 'tb_h.dut.dly', t: 30000, kind: 'assign', stmt: 'dly = din', reasons: ['delay'], trust: 'approximate' },
   // The testbench write in effect at t: the delays (ns) scaled to the dump's ps.
   { d: 'h', sig: 'tb_h.din', t: 45000, kind: 'initial', file: 'tb_h.sv', line: 21, stmt: "din = 8'h43;", root: 'testbench' },
+  { d: 'h', sig: 'tb_h.din', t: 10000, kind: 'initial', file: 'tb_h.sv', line: 6, stmt: "din = 8'b00010000", root: 'testbench' },
   { d: 'h', sig: 'tb_h.din', t: 80000, kind: 'initial', file: 'tb_h.sv', line: 24, stmt: "din = 8'h76;", root: 'testbench' },
 ];
 
