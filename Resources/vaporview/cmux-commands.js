@@ -1349,7 +1349,8 @@
   // splits by its outer dimension, each element by the next, down to the last (its bits), all
   // in one undo step; elements are listed as declared, left index first (at the top bits).
   // A click that gets no answer (the language server is still loading, busy or gone) says so
-  // after DECLARED_TIMEOUT_MS; an answer after that is ignored.
+  // after DECLARED_TIMEOUT_MS; an answer after that is ignored. A reload or another file
+  // (a new loadGeneration) drops a waiting click quietly, as aliasReads does.
   const pendingDeclared = new Map();
   const DECLARED_TIMEOUT_MS = 5000;
   let nextDeclared = 1;
@@ -1359,10 +1360,11 @@
     const path = v && host().pathOf ? host().pathOf(v) : null;
     if (!path || !path.length) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return; }
     const id = nextDeclared++;
+    const generation = host().loadGeneration;
     const timer = setTimeout(() => {
-      if (pendingDeclared.delete(id)) { ui().toast(S().messageDeclaredNoAnswer, 'warning'); }
+      if (pendingDeclared.delete(id) && generation === host().loadGeneration) { ui().toast(S().messageDeclaredNoAnswer, 'warning'); }
     }, DECLARED_TIMEOUT_MS);
-    pendingDeclared.set(id, { e, timer });
+    pendingDeclared.set(id, { e, timer, generation });
     host().toNative({ type: 'packedDims', id, path });
   }
   // dims [[left, right], ...] as nested parts of a block of their width, bits from 0.
@@ -1380,12 +1382,17 @@
     }
     return parts;
   }
+  function dropPendingDeclared() {
+    for (const pending of pendingDeclared.values()) { clearTimeout(pending.timer); }
+    pendingDeclared.clear();
+  }
   const countParts = (parts) => parts.reduce((n, p) => n + 1 + countParts(p.parts || []), 0);
   function declared(answer) {
     const pending = answer && pendingDeclared.get(answer.id);
     if (!pending) { return false; }
     pendingDeclared.delete(answer.id);
     clearTimeout(pending.timer);
+    if (pending.generation !== host().loadGeneration) { return false; }
     const e = pending.e;
     const dims = Array.isArray(answer.dims) ? answer.dims : null;
     const ok = dims && dims.length >= 2 && dims.every((d) => Array.isArray(d) && d.length === 2 && d.every(Number.isInteger));
@@ -1697,6 +1704,7 @@
 
   function init(config) {
     loadSettings(config.settings);
+    dropPendingDeclared();
     webviewContext = null;
     undoStack = [];
     redoStack = [];
@@ -1739,6 +1747,7 @@
   // history keeps that view as the one to go back to.
   function willReload() {
     pendingReload = false;
+    dropPendingDeclared();
     document.getElementById('status-reload').hidden = true;
     // A change from the last 250 ms reaches cmux before the viewer unloads.
     if (snapshotScheduled) { sendSessionSnapshot(); }
