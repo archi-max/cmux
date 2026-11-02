@@ -296,6 +296,23 @@ public enum SlangProfileCatalog {
     }
 }
 
+/// What a waveform viewer opened against an already-built design builds from.
+public enum SlangWaveformDesign: Equatable, Sendable {
+    /// The profile (build file path) whose `--top` matches the dump.
+    case profile(String)
+    /// The design built now, whose tops are the dump's.
+    case current
+}
+
+extension SlangProfileCatalog {
+    /// Stub.
+    public static func waveformDesign(
+        dumpTops: [String], children: [String: [String]], profiles: [SlangProfile], designTops: [String]
+    ) -> SlangWaveformDesign? {
+        nil
+    }
+}
+
 extension SlangServerConfigFile {
     /// What a `server.json` holds, for the editor's warning.
     public enum Health: Equatable, Sendable {

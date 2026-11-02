@@ -20,6 +20,7 @@ import Testing
         var maxInFlight = 0
         var applyTime: Duration = .zero
         var maxBusyWait: Duration = .seconds(5)
+        private var applyWaiters: [CheckedContinuation<Void, Never>] = []
 
         func follower() -> SlangProfileFollower {
             SlangProfileFollower(debounce: .milliseconds(30), busyRetry: .milliseconds(20), maxBusyWait: maxBusyWait, hooks: .init(
@@ -30,6 +31,9 @@ import Testing
                     self.inFlight += 1
                     self.maxInFlight = max(self.maxInFlight, self.inFlight)
                     self.applied.append(choice)
+                    let waiters = self.applyWaiters
+                    self.applyWaiters = []
+                    waiters.forEach { $0.resume() }
                     try? await Task.sleep(for: self.applyTime)
                     self.current = choice.state
                     self.inFlight -= 1
@@ -39,10 +43,10 @@ import Testing
             ))
         }
 
-        /// Until the first switch has started (bounded).
+        /// Until the first switch has started: signalled by apply, never a wall clock (verify T2).
         func waitForFirstApply() async {
-            let deadline = ContinuousClock.now + .seconds(60)
-            while applied.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
+            guard applied.isEmpty else { return }
+            await withCheckedContinuation { applyWaiters.append($0) }
         }
     }
 
