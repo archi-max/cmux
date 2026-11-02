@@ -1,6 +1,6 @@
 `timescale 1ns/1ns
 // Design F (cmux trace fixtures): signals of an interface instance that other instances write
-// through modport ports, the way the ECE 411 testbenches' memory models answer the CPU. The
+// through modport ports, the way course testbenches' memory models answer the CPU. The
 // memory model drives rdata (comb) and resp (a flop); the dut drives addr (an assign) and req
 // (a flop), and reads rdata and resp back through its own port. store[3] is never written.
 interface f_bus (input logic clk);

@@ -358,7 +358,7 @@
   // the value has not changed since an earlier time, ours (the statement active at t) stays first
   // and Verdi's is shown second; any other difference makes the step approximate.
   // A step's Verdi check (the answer and our port-hop following to it) gets this long after ours
-  // is shown; past it the step says "Verdi: not checked (timed out)". cp3: Verdi answers in well
+  // is shown; past it the step says "Verdi: not checked (timed out)". On a CPU design Verdi answers in well
   // under a second once warm (it was asked when the step started), a port hop on a whole-signal
   // helper takes up to ~30 s.
   const VERDI_BUDGET_MS = 10000;
