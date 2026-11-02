@@ -7,7 +7,11 @@
 import AppKit
 import WebKit
 
+// Line-buffered, so a crash keeps what was printed.
+setvbuf(stdout, nil, _IOLBF, 0)
 let args = CommandLine.arguments
+/// A duration for a message: a failed call's .infinity must not trap in Int(_:).
+func msText(_ ms: Double) -> String { ms.isFinite ? String(Int(ms)) : "no answer" }
 let assetRoot = URL(fileURLWithPath: args[1], isDirectory: true)
 let traceDir = URL(fileURLWithPath: args[2], isDirectory: true)
 let out = URL(fileURLWithPath: args[3])
@@ -280,7 +284,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     print(String(format: "[timing] v1 step %.0f ms, %d reads (serial would be %.0f ms), at most %d at once", ms, reads, serial, timing?["most"] as? Int ?? 0))
     expect(reads > 2 && timing?["unique"] as? Int == reads, "v1 helper: each signal read once, also when asked twice at the same time: \(String(describing: timing))")
     expect((timing?["most"] as? Int ?? 0) > 1, "v1 helper: a step's signals are read concurrently: \(String(describing: timing))")
-    expect(timing?["engine"] as? String == "verdi" && ms < serial * 0.6, "v1 helper + Verdi: the step takes well under the serial time (\(Int(ms)) ms vs \(Int(serial)) ms)")
+    expect(timing?["engine"] as? String == "verdi" && ms < serial * 0.6, "v1 helper + Verdi: the step takes well under the serial time (\(msText(ms)) ms vs \(Int(serial)) ms)")
 
     // A step never waits on Verdi: ours is shown at once and Verdi's line filled in when it comes,
     // within a per-step budget (its port-hop following included); past it, "not checked (timed out)".
@@ -311,7 +315,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let hungAfter = (hung?["after"] as? [String: Any])?["engine"] as? [String: Any]
     print(String(format: "[verdi async] hung Verdi: step shown in %.0f ms, settled %.0f ms later", hungMs, hung?["settleMs"] as? Double ?? -1))
     expect(hungMs < 1000 && hungEngine?["name"] as? String == "cmux" && hungEngine?["verdi"] as? String == "checking",
-           "a hung Verdi does not delay the shown step (\(Int(hungMs)) ms): \(String(describing: hungEngine))")
+           "a hung Verdi does not delay the shown step (\(msText(hungMs)) ms): \(String(describing: hungEngine))")
     expect((hung?["panel"] as? String ?? "").contains("Verdi is checking…"), "the panel says Verdi is checking")
     expect(hungAfter?["verdi"] as? String == "timedOut" && hungAfter?["name"] as? String == "cmux"
              && (hung?["after"] as? [String: Any])?["trust"] as? String == "exact",
@@ -330,7 +334,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     print(String(format: "[verdi async] slow Verdi (800 ms): step shown in %.0f ms", slowMs))
     expect(slowMs < 700 && (slowStep?["engine"] as? [String: Any])?["verdi"] as? String == "checking"
              && ((slowStep?["driver"] as? [String: Any])?["kind"] as? String ?? "").hasPrefix("port"),
-           "a slow Verdi does not delay the shown step (\(Int(slowMs)) ms)")
+           "a slow Verdi does not delay the shown step (\(msText(slowMs)) ms)")
     expect(((slowAfter?["stmt"] as? [String: Any])?["loc"] as? [String: Any])?["line"] as? Int == 56
              && (slowAfter?["engine"] as? [String: Any])?["name"] as? String == "verdi" && !((slowAfter?["via"] as? [Any]) ?? []).isEmpty,
            "Verdi's answer fills the step in when it arrives (followed through the ports): \(String(describing: slowAfter?["engine"]))")
@@ -443,7 +447,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let bReads = duringB.filter { $0.hasPrefix("B:tb_c.dut.u_src.") }.count, bgDuringB = duringB.count - bReads
     let orderMs = order?["ms"] as? Double ?? .infinity
     print(String(format: "[verdi async] serial helper: next step shown in %.0f ms with %d reads of its own, %d of Verdi's started during it; %@", orderMs, bReads, bgDuringB, String(describing: order)))
-    expect(bReads > 0 && orderMs < Double(bReads + 1) * 300 + 250, "the next step waits for at most one Verdi read in flight (\(Int(orderMs)) ms, \(bReads) reads)")
+    expect(bReads > 0 && orderMs < Double(bReads + 1) * 300 + 250, "the next step waits for at most one Verdi read in flight (\(msText(orderMs)) ms, \(bReads) reads)")
     expect(bgDuringB == 0, "no Verdi read starts while the next step runs: \(duringB.joined(separator: " "))")
     expect((order?["mostBg"] as? Int ?? 99) <= 1, "Verdi's port-hop reads go one at a time: \(String(describing: order?["mostBg"]))")
 
