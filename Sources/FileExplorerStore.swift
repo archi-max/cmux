@@ -316,6 +316,11 @@ struct SSHRemoteFileStamp: Equatable, Sendable {
     }
 
     var statOutput: String { "\(modificationTime) \(size)" }
+
+    init(modificationTime: Int64, size: Int64) {
+        self.modificationTime = modificationTime
+        self.size = size
+    }
 }
 
 protocol SSHFileExplorerTransport: AnyObject {
@@ -885,7 +890,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection,
         showHidden: Bool
     ) async throws -> [FileExplorerEntry] {
-        try await Self.runSSHListCommand(path: path, connection: connection, showHidden: showHidden)
+        if let listing = try? await SSHFileChannelRegistry.shared.channel(for: connection).list(path, showHidden: showHidden) {
+            return Self.parseListOutput(String(decoding: listing, as: UTF8.self), path: path, showHidden: showHidden)
+        }
+        return try await Self.runSSHListCommand(path: path, connection: connection, showHidden: showHidden)
     }
 
     nonisolated func downloadFile(
@@ -893,6 +901,12 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection,
         to localURL: URL
     ) async throws {
+        // Larger files stream through their own ssh run instead of being held whole.
+        if let read = try? await SSHFileChannelRegistry.shared.channel(for: connection)
+            .read(path, maxBytes: SSHFileChannel.maximumReadBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return
+        }
         try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
     }
 
@@ -911,6 +925,13 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL,
         maxBytes: Int64
     ) async throws {
+        // Over the cap the channel sends nothing; the per-exec read then gives the
+        // caller its `maxBytes + 1` bytes, as before.
+        if maxBytes <= SSHFileChannel.maximumReadBytes,
+           let read = try? await SSHFileChannelRegistry.shared.channel(for: connection).read(path, maxBytes: maxBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return
+        }
         try await runDownload(
             command: Self.cappedDownloadCommand(path: path, maxBytes: maxBytes),
             connection: connection,
@@ -934,6 +955,20 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL
     ) async throws -> RemoteFileProbe.Header {
         guard !candidates.isEmpty else { throw RemoteFileProbe.Failure.noFile }
+        do {
+            let read = try await SSHFileChannelRegistry.shared.channel(for: connection)
+                .probe(candidates, maxBytes: min(maxBytes ?? SSHFileChannel.maximumReadBytes, SSHFileChannel.maximumReadBytes))
+            if let path = read.path, path.hasPrefix("/"), (try? read.data.write(to: localURL)) != nil {
+                return RemoteFileProbe.Header(index: read.index, path: path,
+                                              modificationTime: read.modificationTime, size: read.size)
+            }
+        } catch SSHFileChannel.Failure.noFile {
+            throw RemoteFileProbe.Failure.noFile
+        } catch SSHFileChannel.Failure.tooLarge where (maxBytes ?? .max) <= SSHFileChannel.maximumReadBytes {
+            throw RemoteFileProbe.Failure.tooLarge
+        } catch {
+            // No channel: one ssh run for this probe, as before.
+        }
         let raw = localURL.deletingLastPathComponent()
             .appendingPathComponent(".probe-" + UUID().uuidString, isDirectory: false)
         defer { try? FileManager.default.removeItem(at: raw) }
@@ -1060,6 +1095,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
+        // A missing file or any channel trouble takes the per-exec path, whose errors callers know.
+        if let stat = try? await SSHFileChannelRegistry.shared.channel(for: connection).stat(path) {
+            return SSHRemoteFileStamp(modificationTime: stat.modificationTime, size: stat.size)
+        }
         let output = try await Self.runSSHCommand(
             connection: connection,
             command: SSHFileExplorerMutationCommand.fileStamp(path: path).command
@@ -1439,6 +1478,31 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
 
     private static func shellSingleQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+}
+
+/// One ``SSHFileChannel`` per SSH connection (destination, port, identity and
+/// options, so the same ControlPath), shared by every Files panel, terminal
+/// link and `cmux open` for that host. Each is started on its first request
+/// and ends after ten idle minutes.
+final class SSHFileChannelRegistry: @unchecked Sendable {
+    static let shared = SSHFileChannelRegistry()
+
+    private let lock = NSLock()
+    private var channels: [String: SSHFileChannel] = [:]
+
+    func channel(for connection: SSHFileExplorerConnection) -> SSHFileChannel {
+        let key = [connection.destination, connection.port.map(String.init) ?? "", connection.identityFile ?? ""]
+            .joined(separator: "\u{0}") + "\u{0}" + connection.sshOptions.joined(separator: "\u{1f}")
+        return lock.withLock {
+            if let channel = channels[key] { return channel }
+            let channel = SSHFileChannel(launch: { command in
+                (URL(fileURLWithPath: "/usr/bin/ssh"),
+                 ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command))
+            })
+            channels[key] = channel
+            return channel
+        }
     }
 }
 
