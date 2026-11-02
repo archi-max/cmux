@@ -249,6 +249,15 @@ public struct CloudTuiCommandLine: Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// The foreground process-group leader's executable path or name (argv[0] on
+    /// Linux, so a tmux client reads `tmux: client`). Older daemons named the field
+    /// `foreground_process_name`.
+    public static func foregroundExecutable(fromProcessInfo result: [String: Any]) -> String? {
+        guard let name = (result["foreground_executable"] ?? result["foreground_process_name"]) as? String else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// `terminal <term_id> output read [--after <offset>] [--max-bytes <n>]` (spec
     /// `terminal.output_read`): the terminal's retained OUTPUT as text — the whole build log,
     /// not the 24 rows currently on screen — with `{text, start_offset, next_offset, complete}`;

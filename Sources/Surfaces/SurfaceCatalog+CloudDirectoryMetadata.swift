@@ -138,10 +138,12 @@ extension SurfaceCatalog {
 }
 
 /// The Files panel follows a cmux-tui terminal's graph `cwd`, which moves only when the
-/// remote shell reports its directory. For a terminal whose shell never does (a configured
-/// command, tmux, fish), ask the daemon for the foreground process's directory instead:
-/// once when the terminal is shown and again when its title changes, one query per
-/// terminal at a time, each bounded to 3 s. No timer.
+/// remote shell reports its directory. For a terminal whose shell never does (fish, a
+/// configured command), ask the daemon for the foreground process's directory instead:
+/// when the terminal is shown and when its title changes, one query per terminal at a
+/// time, starts at least a second apart, each bounded to 3 s, over an already connected
+/// link only. No timer. Inside tmux the foreground process is the tmux client, whose
+/// directory never moves, so that answer is skipped.
 extension SurfaceCatalog {
     nonisolated static let cloudDirectoryProbeTimeout: Duration = .seconds(3)
 
@@ -177,40 +179,44 @@ extension SurfaceCatalog {
 
     private func startCloudDirectoryProbe(_ probe: CloudTerminalDirectoryFallback.Probe, on machine: SurfaceMachineID) {
         let id = SurfaceResourceID(machine: machine, kind: .terminal, key: probe.terminalID)
-        guard let resource = resources[id], let provider = provider(for: machine) else {
-            finishCloudDirectoryProbe(probe, id: id, directory: nil)
+        guard let resource = resources[id], provider(for: machine) != nil else {
+            finishCloudDirectoryProbe(probe, id: id, answer: .skipped)
             return
         }
         cloudDirectoryProbeTasks[id]?.cancel()
-        let live: @MainActor @Sendable () async -> String? = { [weak provider] in
-            await provider?.currentWorkingDirectory(of: resource)
+        let live: @MainActor @Sendable () async -> CloudTerminalDirectoryFallback.Answer = { [weak self] in
+            guard let provider = self?.provider(for: machine) else { return .skipped }
+            return await provider.foregroundDirectoryAnswer(of: resource)
         }
         cloudDirectoryProbeTasks[id] = Task { [weak self] in
-            let directory = await withTaskGroup(of: String?.self) { group in
+            // Spacing between a terminal's queries, so a fast-changing title cannot
+            // turn into back-to-back requests.
+            if probe.delay > 0 {
+                do { try await Task.sleep(for: .seconds(probe.delay)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            let answer = await withTaskGroup(of: CloudTerminalDirectoryFallback.Answer.self) { group in
                 group.addTask { await live() }
                 group.addTask {
                     try? await Task.sleep(for: SurfaceCatalog.cloudDirectoryProbeTimeout)
-                    return nil
+                    return .failed
                 }
-                let first = await group.next() ?? nil
+                let first = await group.next() ?? .failed
                 group.cancelAll()
                 return first
             }
             guard let self, !Task.isCancelled else { return }
-            self.finishCloudDirectoryProbe(probe, id: id, directory: directory)
+            self.finishCloudDirectoryProbe(probe, id: id, answer: answer)
         }
     }
 
     private func finishCloudDirectoryProbe(
         _ probe: CloudTerminalDirectoryFallback.Probe,
         id: SurfaceResourceID,
-        directory: String?
+        answer: CloudTerminalDirectoryFallback.Answer
     ) {
         guard var fallback = cloudDirectoryFallbacks[id.machine] else { return }
-        let trimmed = directory?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let found = trimmed?.isEmpty == false ? trimmed : nil
-        let result = fallback.finish(probe, answer: found.map { .directory($0) } ?? .failed,
-                                     now: ProcessInfo.processInfo.systemUptime)
+        let result = fallback.finish(probe, answer: answer, now: ProcessInfo.processInfo.systemUptime)
         cloudDirectoryFallbacks[id.machine] = fallback
         cloudDirectoryProbeTasks[id] = nil
         if let next = result.next { startCloudDirectoryProbe(next, on: id.machine) }
