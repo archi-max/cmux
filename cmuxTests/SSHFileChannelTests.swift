@@ -314,7 +314,7 @@ import Testing
                 (URL(fileURLWithPath: "/bin/sh"), ["-c", "HOME='\(homePath)'; TMPDIR='\(tmpPath)'; export TMPDIR; \(command)"])
             }
         }
-        return (SSHFileChannelPool(), launch)
+        return (SSHFileChannelPool(releaseGrace: 0.3), launch)
     }
 
     @Test func aConnectedHostsFirstOpenMakesNoSpawnAndADisconnectLeavesNothing() async throws {

@@ -764,6 +764,9 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         self.state = State(homePath: homePath, isAvailable: isAvailable)
     }
 
+    /// Whether reads go over the host's ``SSHFileChannel`` (the real ssh transport).
+    var usesFileChannel: Bool { transport is ProcessSSHFileExplorerTransport }
+
     func updateAvailability(_ available: Bool, homePath: String?) {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -964,8 +967,13 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
             }
         } catch SSHFileChannel.Failure.noFile {
             throw RemoteFileProbe.Failure.noFile
-        } catch SSHFileChannel.Failure.tooLarge where (maxBytes ?? .max) <= SSHFileChannel.maximumReadBytes {
-            throw RemoteFileProbe.Failure.tooLarge
+        } catch let SSHFileChannel.Failure.tooLarge(refused) where (maxBytes ?? .max) <= SSHFileChannel.maximumReadBytes {
+            // Refused under the caller's own cap: named, as the one-run probe does (a
+            // cap-0 probe is how a clicked dump is located).
+            guard let path = refused.path, path.hasPrefix("/") else { throw RemoteFileProbe.Failure.tooLarge }
+            throw RemoteFileProbe.Oversize(header: RemoteFileProbe.Header(
+                index: refused.index, path: path, modificationTime: refused.modificationTime, size: refused.size
+            ))
         } catch {
             // No channel: one ssh run for this probe, as before.
         }
@@ -1483,25 +1491,32 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
 
 /// One ``SSHFileChannel`` per SSH connection (destination, port, identity and
 /// options, so the same ControlPath), shared by every Files panel, terminal
-/// link and `cmux open` for that host. Each is started on its first request
-/// and ends after ten idle minutes.
+/// link and `cmux open` for that host. A connected Files panel holds a lease
+/// that starts its channel at once and ends it on disconnect; otherwise a
+/// channel starts on its first request and ends after ten idle minutes.
 final class SSHFileChannelRegistry: @unchecked Sendable {
     static let shared = SSHFileChannelRegistry()
 
-    private let lock = NSLock()
-    private var channels: [String: SSHFileChannel] = [:]
+    private let pool = SSHFileChannelPool()
 
     func channel(for connection: SSHFileExplorerConnection) -> SSHFileChannel {
-        let key = [connection.destination, connection.port.map(String.init) ?? "", connection.identityFile ?? ""]
+        pool.channel(key: Self.key(connection), launch: Self.launch(connection))
+    }
+
+    /// Holds `connection`'s channel up while a workspace is connected to it, starting it now.
+    func lease(for connection: SSHFileExplorerConnection) -> SSHFileChannelPool.Lease {
+        pool.retain(key: Self.key(connection), launch: Self.launch(connection))
+    }
+
+    private static func key(_ connection: SSHFileExplorerConnection) -> String {
+        [connection.destination, connection.port.map(String.init) ?? "", connection.identityFile ?? ""]
             .joined(separator: "\u{0}") + "\u{0}" + connection.sshOptions.joined(separator: "\u{1f}")
-        return lock.withLock {
-            if let channel = channels[key] { return channel }
-            let channel = SSHFileChannel(launch: { command in
-                (URL(fileURLWithPath: "/usr/bin/ssh"),
-                 ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command))
-            })
-            channels[key] = channel
-            return channel
+    }
+
+    private static func launch(_ connection: SSHFileExplorerConnection) -> SSHFileChannel.Launch {
+        { command in
+            (URL(fileURLWithPath: "/usr/bin/ssh"),
+             ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command))
         }
     }
 }
@@ -1579,6 +1594,11 @@ final class FileExplorerStore: ObservableObject {
     private(set) var workspaceRootIdentity: UUID?
 
     var provider: FileExplorerProvider?
+
+    /// Keeps the connected SSH host's file channel up (started on connect, so no
+    /// open pays for it) and ends it on disconnect or a change of connection.
+    private var fileChannelLease: SSHFileChannelPool.Lease?
+    private var fileChannelConnection: SSHFileExplorerConnection?
 
     /// Whether hidden files are shown. Set from FileExplorerState externally.
     var showHiddenFiles: Bool = false
@@ -2047,10 +2067,20 @@ final class FileExplorerStore: ObservableObject {
         }
         if providerChanged { resetResourceContext(preservingNavigation: true) }
         provider = newProvider
+        updateFileChannelLease()
         // Re-expand previously expanded nodes if provider becomes available
         if reloadIfAvailable, newProvider?.isAvailable == true {
             reload()
         }
+    }
+
+    /// Holds the file channel of the provider's host while it is an available SSH host.
+    func updateFileChannelLease() {
+        let ssh = provider as? SSHFileExplorerProvider
+        let wanted = ssh.flatMap { $0.isAvailable && $0.usesFileChannel ? $0.connection : nil }
+        guard wanted != fileChannelConnection else { return }
+        fileChannelConnection = wanted
+        fileChannelLease = wanted.map { SSHFileChannelRegistry.shared.lease(for: $0) }
     }
 
     #if DEBUG

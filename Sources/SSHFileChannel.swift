@@ -22,7 +22,16 @@ import Foundation
 /// the per-exec path, and a new channel is started only after a backoff. When
 /// the channel's stdin ends (closed, or ssh gone), a read stuck on the host is
 /// killed there by the script's watchdog, as the FSDB helper's.
-final class SSHFileChannel: @unchecked Sendable {
+/// The host file reads the Files panel and file links need, behind one
+/// interface, so another carrier (the remote daemon) can serve them instead.
+protocol RemoteFileOps: AnyObject, Sendable {
+    func stat(_ path: String) async throws -> SSHFileChannel.Reply
+    func read(_ path: String, maxBytes: Int64?) async throws -> SSHFileChannel.Reply
+    func probe(_ candidates: [String], maxBytes: Int64?) async throws -> SSHFileChannel.Reply
+    func list(_ path: String, showHidden: Bool) async throws -> Data
+}
+
+final class SSHFileChannel: RemoteFileOps, @unchecked Sendable {
     struct Reply: Equatable, Sendable {
         var modificationTime: Int64
         var size: Int64
@@ -38,8 +47,11 @@ final class SSHFileChannel: @unchecked Sendable {
         case unavailable
         /// No candidate is a regular readable file.
         case noFile
-        /// The file is larger than the cap; nothing of it was sent.
-        case tooLarge
+        /// The file is larger than the cap; nothing of it was sent. The reply
+        /// names it (stamp, candidate index and path), with no data.
+        case tooLarge(Reply)
+        /// The file changed while it was read (its bytes don't match its stat).
+        case changed
         /// The host reported an error for this request.
         case failed(Int32)
     }
@@ -51,10 +63,10 @@ final class SSHFileChannel: @unchecked Sendable {
     static let okStatus: Int32 = 0
     static let noFileStatus: Int32 = 3
     static let tooLargeStatus: Int32 = 4
-    /// The largest read the channel serves; larger files stream through their own
-    /// ssh run, so neither side holds a whole large file (the host stages each read
-    /// in a private temporary file to frame it exactly).
-    static let maximumReadBytes: Int64 = 32 << 20
+    /// The largest read the channel serves. The server answers one request at
+    /// a time, so a larger read streams through its own ssh run instead of
+    /// holding up the stats, lists and small reads queued behind it.
+    static let maximumReadBytes: Int64 = 1 << 20
     /// How long a stuck read on the host may outlive the channel's stdin.
     static let stuckGrace = 3
 
@@ -67,7 +79,15 @@ final class SSHFileChannel: @unchecked Sendable {
     private var input: FileHandle?
     private var generation = 0
     private var nextId = 1
-    private var pending: [Int: CheckedContinuation<Reply, Error>] = [:]
+    private var pending: [Int: Pending] = [:]
+    private var isReadyNow = false
+    private var pinCount = 0
+
+    private struct Pending {
+        let continuation: CheckedContinuation<Reply, Error>
+        /// For reads: the cap the reply must respect (nil: none), checked with its stat size.
+        let readCap: Int64??
+    }
     private var downUntil: Date?
     private var backoff: TimeInterval = 1
     private var launches = 0
@@ -77,7 +97,7 @@ final class SSHFileChannel: @unchecked Sendable {
     init(
         launch: @escaping Launch,
         readyTimeout: TimeInterval = 10,
-        requestTimeout: TimeInterval = 60,
+        requestTimeout: TimeInterval = 20,
         idleTimeout: TimeInterval = 10 * 60
     ) {
         self.launch = launch
@@ -91,29 +111,51 @@ final class SSHFileChannel: @unchecked Sendable {
     /// ssh runs started so far (for the round-trip checks).
     var launchCount: Int { lock.withLock { launches } }
 
+    /// Whether a run is up and has sent its ready line.
+    var isReady: Bool { lock.withLock { input != nil && isReadyNow } }
+
+    /// Starts a run now, if none runs and no backoff is pending, so the first
+    /// request doesn't pay for the ssh session and the server's start.
+    func prewarm() {
+        lock.withLock {
+            _ = startLocked()
+            scheduleIdleLocked()
+        }
+    }
+
+    /// While pinned (a workspace is connected to the host), an idle channel stays up.
+    func pin() { lock.withLock { pinCount += 1 } }
+    func unpin() {
+        lock.withLock {
+            pinCount = max(0, pinCount - 1)
+            if pinCount == 0, input != nil { scheduleIdleLocked() }
+        }
+    }
+
     // MARK: Requests
 
     /// `<mtime> <size>` of a regular file.
     func stat(_ path: String) async throws -> Reply {
-        try await request(op: "stat", words: [Self.encode(path)])
+        try await request(op: "stat", words: [Self.encode(path)], readCap: nil)
     }
 
     /// A regular file's stamp (read first) and bytes; at most `maxBytes + 1`
     /// bytes when capped, ``Failure/tooLarge`` when its size is over the cap.
     func read(_ path: String, maxBytes: Int64?) async throws -> Reply {
-        try await request(op: "read", words: [Self.cap(maxBytes), Self.encode(path)])
+        try await request(op: "read", words: [Self.cap(maxBytes), Self.encode(path)], readCap: .some(maxBytes))
     }
 
     /// The first of `candidates` that is a regular readable file (`~` and
     /// `~/…` expanded on the host), read as ``read(_:maxBytes:)``.
     func probe(_ candidates: [String], maxBytes: Int64?) async throws -> Reply {
         guard !candidates.isEmpty else { throw Failure.noFile }
-        return try await request(op: "probe", words: [Self.cap(maxBytes)] + candidates.map(Self.encode))
+        return try await request(op: "probe", words: [Self.cap(maxBytes)] + candidates.map(Self.encode),
+                                 readCap: .some(maxBytes))
     }
 
     /// The Files panel's `ls -1paF` (`-A` with hidden files) of a folder.
     func list(_ path: String, showHidden: Bool) async throws -> Data {
-        try await request(op: showHidden ? "lista" : "list", words: [Self.encode(path)]).data
+        try await request(op: showHidden ? "lista" : "list", words: [Self.encode(path)], readCap: nil).data
     }
 
     /// Ends the channel; waiting requests fail with ``Failure/unavailable``.
@@ -124,7 +166,7 @@ final class SSHFileChannel: @unchecked Sendable {
     private static func encode(_ path: String) -> String { Data(path.utf8).base64EncodedString() }
     private static func cap(_ maxBytes: Int64?) -> String { maxBytes.map { String(max(0, $0)) } ?? "-1" }
 
-    private func request(op: String, words: [String]) async throws -> Reply {
+    private func request(op: String, words: [String], readCap: Int64??) async throws -> Reply {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Reply, Error>) in
             lock.lock()
             guard let input = startLocked() else {
@@ -134,7 +176,7 @@ final class SSHFileChannel: @unchecked Sendable {
             }
             let id = nextId
             nextId += 1
-            pending[id] = continuation
+            pending[id] = Pending(continuation: continuation, readCap: readCap)
             let gen = generation
             let line = Data((["\(id)", op] + words).joined(separator: " ").utf8) + Data([0x0A])
             writeQueue.async { try? input.write(contentsOf: line) }
@@ -207,7 +249,7 @@ final class SSHFileChannel: @unchecked Sendable {
         let gen = generation
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if self.lock.withLock({ self.pending.isEmpty && self.generation == gen }) {
+            if self.lock.withLock({ self.pending.isEmpty && self.pinCount == 0 && self.generation == gen }) {
                 self.tearDown(generation: gen, backoff: false)
             }
         }
@@ -219,9 +261,10 @@ final class SSHFileChannel: @unchecked Sendable {
     private func tearDown(generation gen: Int?, backoff: Bool) {
         let (process, input, waiting): (Process?, FileHandle?, [CheckedContinuation<Reply, Error>]) = lock.withLock {
             guard gen == nil || gen == generation, self.process != nil || self.input != nil else { return (nil, nil, []) }
-            let old = (self.process, self.input, Array(pending.values))
+            let old = (self.process, self.input, pending.values.map(\.continuation))
             self.process = nil
             self.input = nil
+            isReadyNow = false
             pending.removeAll()
             idleWork?.cancel()
             idleWork = nil
@@ -243,18 +286,34 @@ final class SSHFileChannel: @unchecked Sendable {
         switch event {
         case .ready:
             lock.withLock {
-                if gen == generation { backoff = 1; downUntil = nil }
+                if gen == generation { backoff = 1; downUntil = nil; isReadyNow = true }
             }
             return true
         case let .reply(id, status, reply):
-            let waiting: CheckedContinuation<Reply, Error>? = lock.withLock {
+            let entry: Pending? = lock.withLock {
                 gen == generation ? pending.removeValue(forKey: id) : nil
             }
-            guard let waiting else { return true }
+            guard let entry else { return true }
+            let waiting = entry.continuation
+            var refused = reply
+            refused.data = Data()
             switch status {
-            case Self.okStatus: waiting.resume(returning: reply)
+            case Self.okStatus:
+                if case let .some(cap) = entry.readCap {
+                    // A file that grew past the cap or changed size between its stat and its
+                    // read: never handed over as if it were the whole file.
+                    if let cap, Int64(reply.data.count) > cap {
+                        waiting.resume(throwing: Failure.tooLarge(refused))
+                        return true
+                    }
+                    if Int64(reply.data.count) != reply.size {
+                        waiting.resume(throwing: Failure.changed)
+                        return true
+                    }
+                }
+                waiting.resume(returning: reply)
             case Self.noFileStatus: waiting.resume(throwing: Failure.noFile)
-            case Self.tooLargeStatus: waiting.resume(throwing: Failure.tooLarge)
+            case Self.tooLargeStatus: waiting.resume(throwing: Failure.tooLarge(refused))
             default: waiting.resume(throwing: Failure.failed(status))
             }
             return true
@@ -340,6 +399,8 @@ final class SSHFileChannel: @unchecked Sendable {
         send() {
           if [ "$6" -ge 0 ] && [ "$3" -gt "$6" ]; then reply "$1" \(tooLargeStatus) "$2" "$3" 0 "$4" "$(enc "$5")"; return; fi
           if [ "$6" -ge 0 ]; then head -c "$(($6 + 1))" < "$5" > "$W/f"; else cat < "$5" > "$W/f"; fi || { reply "$1" 1; return; }
+          n=$(wc -c < "$W/f" | tr -d ' ')
+          if [ "$6" -ge 0 ] && [ "$n" -gt "$6" ]; then reply "$1" \(tooLargeStatus) "$2" "$n" 0 "$4" "$(enc "$5")"; return; fi
           frame "$1" "$2" "$3" "$4" "$(enc "$5")"
         }
         serve() {
@@ -350,12 +411,12 @@ final class SSHFileChannel: @unchecked Sendable {
             id=$1; op=$2; shift 2
             case $op in
               stat)
-                if p=$(dec "$1") && [ -n "$p" ] && [ -f "$p" ] && s=$(st "$p"); then set -- $s; reply "$id" 0 "$1" "$2"
+                if p=$(dec "$1" && echo .) && p=${p%.} && [ -n "$p" ] && [ -f "$p" ] && s=$(st "$p"); then set -- $s; reply "$id" 0 "$1" "$2"
                 else reply "$id" \(noFileStatus); fi ;;
               read|probe)
                 cap=$1; shift; i=0; found=
                 for e in "$@"; do
-                  if p=$(dec "$e") && [ -n "$p" ]; then
+                  if p=$(dec "$e" && echo .) && p=${p%.} && [ -n "$p" ]; then
                     if [ "$op" = probe ]; then case $p in "~") p=$HOME ;; "~/"*) p=$HOME/${p#"~/"} ;; esac; fi
                     if [ -f "$p" ] && [ -r "$p" ] && s=$(st "$p"); then set -- $s; send "$id" "$1" "$2" "$i" "$p" "$cap"; found=1; break; fi
                   fi
@@ -365,7 +426,7 @@ final class SSHFileChannel: @unchecked Sendable {
                 [ -n "$found" ] || reply "$id" \(noFileStatus) ;;
               list|lista)
                 fl=-1paF; [ "$op" = lista ] && fl=-1paFA
-                if p=$(dec "$1") && [ -n "$p" ] && QUOTING_STYLE=literal ls $fl -- "$p" > "$W/f" 2>/dev/null; then frame "$id" 0 0 0 -
+                if p=$(dec "$1" && echo .) && p=${p%.} && [ -n "$p" ] && QUOTING_STYLE=literal ls $fl -- "$p" > "$W/f" 2>/dev/null; then frame "$id" 0 0 0 -
                 else reply "$id" 1; fi ;;
               *) reply "$id" 2 ;;
             esac
@@ -386,5 +447,86 @@ final class SSHFileChannel: @unchecked Sendable {
         rm -rf "$W"
         exit $s
         """
+    }
+}
+
+/// The file channels of every host in use, one per connection key. A
+/// connected workspace holds a ``Lease`` on its connection's channel: the
+/// channel starts when the first lease is taken, stays up while any is held,
+/// and is closed (its host server ended) ``releaseGrace`` after the last one
+/// goes, so switching to another workspace and back keeps it warm. A channel
+/// asked for with no lease (a file link on a host with no Files panel)
+/// starts on its first request and ends after its idle timeout.
+final class SSHFileChannelPool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var channels: [String: SSHFileChannel] = [:]
+    private var leases: [String: Int] = [:]
+    private var closing: [String: DispatchWorkItem] = [:]
+    private let releaseGrace: TimeInterval
+
+    init(releaseGrace: TimeInterval = 30) {
+        self.releaseGrace = releaseGrace
+    }
+
+    final class Lease: @unchecked Sendable {
+        let key: String
+        private weak var pool: SSHFileChannelPool?
+        fileprivate init(key: String, pool: SSHFileChannelPool) {
+            self.key = key
+            self.pool = pool
+        }
+        deinit { pool?.release(key) }
+    }
+
+    var channelCount: Int { lock.withLock { channels.count } }
+
+    func channel(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> SSHFileChannel {
+        lock.withLock {
+            if let channel = channels[key] { return channel }
+            let channel = SSHFileChannel(launch: launch())
+            channels[key] = channel
+            return channel
+        }
+    }
+
+    /// Holds `key`'s channel up, starting it now.
+    func retain(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> Lease {
+        let channel = self.channel(key: key, launch: launch())
+        let first: Bool = lock.withLock {
+            leases[key, default: 0] += 1
+            if let pending = closing.removeValue(forKey: key) {
+                // Taken again within the grace: the channel is still pinned.
+                pending.cancel()
+                return false
+            }
+            return leases[key] == 1
+        }
+        if first { channel.pin() }
+        channel.prewarm()
+        return Lease(key: key, pool: self)
+    }
+
+    fileprivate func release(_ key: String) {
+        lock.withLock {
+            guard let count = leases[key] else { return }
+            if count > 1 {
+                leases[key] = count - 1
+                return
+            }
+            leases[key] = 0
+            let work = DispatchWorkItem { [weak self] in self?.close(key) }
+            closing[key] = work
+            DispatchQueue.global().asyncAfter(deadline: .now() + releaseGrace, execute: work)
+        }
+    }
+
+    private func close(_ key: String) {
+        let channel: SSHFileChannel? = lock.withLock {
+            guard closing.removeValue(forKey: key) != nil, leases[key] == 0 else { return nil }
+            leases[key] = nil
+            return channels.removeValue(forKey: key)
+        }
+        channel?.unpin()
+        channel?.close()
     }
 }
