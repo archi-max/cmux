@@ -52,6 +52,8 @@ To see everything this branch adds on top of cmux, use the GitHub compare view `
 
 FSDB is read on the remote host by `Resources/vaporview/fsdb-helper-v2/`. This is a small Node helper with VaporView's FSDB reader addon, compiled on the host against that host's own Verdi install. cmux uploads it over SSH and streams only the windows of data the viewer needs. Synopsys libraries are never bundled or redistributed. See `fsdb-helper-v2/NOTICE`.
 
+Packed arrays (`logic [1:0][31:0] dfp_addr`) are usually written to an FSDB as one flat vector, and the netlist shows them that way. To get their elements as separate signals, run the simulation with the environment variable `FSDB_PACKED_MODE=0` and turn on packed multi-dimensional array dumping (the `+packedmda` option of `$fsdbDumpvars`, or `+fsdb+packedmda` on the simulator's command line). The netlist then shows each array as a node holding its elements, `dfp_addr[1]` and `dfp_addr[0]`, nested by dimension. A dump without that variable stays flat, even with packed array dumping on. Either way, **Split ▸ By Declared Dimensions** (or Into N Parts, By Width, Bits) splits a flat bus in the viewer.
+
 ### Tests
 
 `scripts/waveform-viewer-checks/` contains headless harnesses for each area. `run.sh <suite>` runs one suite, for example `windowed`, `debugger`, `breakpoints`, `machine`, `fsm`, `riscv`, `xss` or `parity`.

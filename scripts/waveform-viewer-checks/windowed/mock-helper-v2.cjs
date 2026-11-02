@@ -158,10 +158,23 @@ function makeSynth(spec) {
     const word = (i) => (i === 0 ? 0x12345537 : i === far ? 0xdeadc0b7 : i === asc ? 0x636d7578 : INSN_WORDS[hash32(11, i) & 15]);
     addVar('insn', 32, new Sig(32, t, (i) => bin32(word(i), 32), { num: word }));
   }
+  const own = vars.length;
+  // arrays=1: packed arrays as helper-v2 reports the reader's ARRAY scopes (tree.js): a scope
+  // of the reply with its elements inline, by their full names; nested for each dimension.
+  const arrayScopes = [];
+  if (p.arrays) {
+    const element = (name, width, seed) => {
+      addVar(name, width, new Sig(width, periodic(4000), (i) => bin32(hash32(seed, i) & (2 ** width - 1), width), { num: (i) => hash32(seed, i) & (2 ** width - 1) }));
+      return vars[vars.length - 1];
+    };
+    arrayScopes.push({ name: 'dfp_addr[1:0]', type: 'array', inline: { scopes: [], vars: [element('dfp_addr[1]', 16, 401), element('dfp_addr[0]', 16, 402)] } });
+    arrayScopes.push({ name: 'cube[1:0]', type: 'array', inline: { vars: [], scopes: [1, 0].map((a) => ({ name: `cube[${a}][2:0]`, type: 'array',
+      inline: { scopes: [], vars: [2, 1, 0].map((b) => element(`cube[${a}][${b}]`, 4, 410 + a * 3 + b)) } })) } });
+  }
   const metadata = { timeTableLoaded: true, scopeCount: 2, netlistIdCount: vars.length, signalIdCount: vars.length,
     timeTableCount: 0, timeEnd, minTimeStep: 1000, timeScale: 1, timeUnit: 'ps' };
-  const scopes = { 1: { name: 'tb', scopes: [{ name: 'dut', scopeOffsetIdx: 2, type: 'module' }], vars: vars.slice(0, 2) },
-    2: { name: 'dut', scopes: [], vars: vars.slice(2) } };
+  const scopes = { 1: { name: 'tb', scopes: [{ name: 'dut', scopeOffsetIdx: 2, type: 'module' }, ...arrayScopes], vars: vars.slice(0, 2) },
+    2: { name: 'dut', scopes: [], vars: vars.slice(2, own) } };
   return {
     metadata, top: [{ name: 'tb', scopeOffsetIdx: 1, type: 'module' }],
     children: (idx) => ({ scopes: scopes[idx]?.scopes || [], vars: scopes[idx]?.vars || [] }),

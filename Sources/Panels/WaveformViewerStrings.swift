@@ -117,6 +117,7 @@ enum WaveformViewerStrings {
             "messageInvalidSplitWidth": String(localized: "filePreview.waveform.message.invalidSplitWidth", defaultValue: "Enter a width in bits, less than the row's width."),
             "messageInvalidSlice": String(localized: "filePreview.waveform.message.invalidSlice", defaultValue: "“%@” isn't a bit range of this row (%@)."),
             "messageTooManySlices": String(localized: "filePreview.waveform.message.tooManySlices", defaultValue: "Too many slices at once. Choose fewer, wider parts."),
+            "messageDeclaredNoAnswer": String(localized: "filePreview.waveform.message.declaredNoAnswer", defaultValue: "cmux didn't hear back from the language server about this signal's dimensions. Try again once the design has loaded, or split it by width."),
             "messageNoDeclaredDimensions": String(localized: "filePreview.waveform.message.noDeclaredDimensions", defaultValue: "The design gives this signal no packed dimensions to split by. Open its source in the editor, or split it by width."),
             "messageDeclaredWidth": String(localized: "filePreview.waveform.message.declaredWidth", defaultValue: "The design declares “%@” with another width than this row's."),
             "submenu.highlightEdge": String(localized: "filePreview.waveform.submenu.highlightEdge", defaultValue: "Edge Guides"),

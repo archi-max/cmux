@@ -122,6 +122,7 @@ const zlib = require('node:zlib');
 const { fork } = require('node:child_process');
 const crypto = require('node:crypto');
 const expr = require('./expr.js');
+const { readScopeTree } = require('./tree.js');
 
 const OUT = 3;
 const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Release/fsdb_reader.node');
@@ -1444,12 +1445,11 @@ const handlers = {
       start += r.totalReturned;
       if (!r.totalReturned) { break; }
     }
-    const vars = [];
-    addon.readVars(scopePath, scopeOffsetIdx,
+    // The reader's arrays come as scopes holding their elements (tree.js).
+    const tree = readScopeTree(addon, scopePath, scopeOffsetIdx,
       (name, type, encoding, varPath, netlistId, signalId, width, msb, lsb) =>
-        { widthOf.set(signalId, width); vars.push({ name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }); },
-      () => {}, () => {}, () => {}, () => {});
-    return { scopes: scopes.filter((s) => !s.name.startsWith('$')), vars };
+        { widthOf.set(signalId, width); return { name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }; });
+    return { scopes: scopes.filter((s) => !s.name.startsWith('$')).concat(tree.scopes), vars: tree.vars };
   },
 
   // Header {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs}]};

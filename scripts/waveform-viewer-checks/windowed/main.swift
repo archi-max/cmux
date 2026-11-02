@@ -603,7 +603,10 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// Message types the page posted to native.
   var nativeTypes: [String] = []
 
-  init(loading: WaveformFSDBHelper.Loading, vcd: URL? = nil) { self.loading = loading; self.vcd = vcd }
+  /// The mock's dump to open.
+  let dumpSpec: String
+
+  init(loading: WaveformFSDBHelper.Loading, vcd: URL? = nil, dump spec: String = dump) { self.loading = loading; self.vcd = vcd; self.dumpSpec = spec }
 
   func call(_ js: String) async -> Any? {
     do { return try await web.callAsyncJavaScript(js, arguments: [:], in: nil, contentWorld: .page) }
@@ -643,7 +646,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     window.alphaValue = 0
     window.ignoresMouseEvents = true
     window.orderBack(nil)
-    helper = makeHelper(home: home, loading: loading, allowedFile: dump)
+    helper = makeHelper(home: home, loading: loading, allowedFile: dumpSpec)
     return await withCheckedContinuation { c in
       opened = c
       web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
@@ -665,7 +668,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         cmuxWaveform.open({url:'cmux-waveform://viewer/x.fsdb', format:'fsdb',
           strings:{netlist:'Netlist', loading:'Loading…', openFailed:'Could not open', addSignal:'Add', debuggerLocals:'Locals',
             debuggerCycle:'Cycle %1$@ of %2$@ · %3$@', debuggerRate:'%@ cycles/s', debuggerTooManyEdges:'too many'},
-          fsdb:{url:'\(relayURL.absoluteString)', path:'\(dump)'}})
+          fsdb:{url:'\(relayURL.absoluteString)', path:'\(dumpSpec)'}})
         """)
     } else if type == "opened" {
       opened?.resume(returning: true); opened = nil
@@ -1156,6 +1159,57 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(pixels > 500, "loading whole: bus0 is drawn: \(pixels) drawn pixels")
   }
 
+  /// The reader's ARRAY scopes (helper-v2 replies with them inline): the netlist shows each
+  /// array as a node holding its elements, nested by dimension; an element's path stays
+  /// scope.name (adding by path, the link's scope listing, search, reveal).
+  func arrayChecks() async {
+    let r = await call("""
+      const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+      const tree = document.getElementById('tree');
+      const rowOf = (name) => [...tree.querySelectorAll('.row')].find((x) => x.querySelector('.name').textContent === name && x.offsetParent !== null);
+      const kids = (row) => [...row.nextElementSibling.children].filter((e) => e.classList.contains('row')).map((e) => e.querySelector('.name').textContent);
+      const open = async (name) => { const row = rowOf(name); if (!row) { return null; } if (!row.classList.contains('open')) { row.click(); }
+        for (let i = 0; i < 60 && !row.nextElementSibling.children.length; i++) { await sleep(50); } return kids(row); };
+      const R = {};
+      R.tb = await open('tb');
+      R.addr = await open('dfp_addr[1:0]');
+      R.cube = await open('cube[1:0]');
+      R.cube1 = await open('cube[1][2:0]');
+      const H = window.cmuxWaveform.host, L = window.cmuxWaveform.link;
+      const v = await H.findItem('tb.dfp_addr[0]', undefined, undefined, true);
+      R.found = v ? [window.cmuxNetlist.instancePath(v), v.width] : null;
+      R.cubeElem = (await H.findItem('tb.cube[1][2]', undefined, undefined, true) || {}).width || null;
+      R.linkTb = ((await L.scopeChildren(['tb'])) || []).map((x) => x.name + (x.isScope ? '/' : ''));
+      const found = await H.search('dfp_addr[0]');
+      R.search = found.searchResults.map((x) => x.instancePath);
+      rowOf('dfp_addr[1:0]').click(); await sleep(200);
+      R.revealed = await window.cmuxNetlist.reveal(v.netlistId);
+      const shown = rowOf('dfp_addr[0]');
+      R.revealedShown = !!shown && shown.classList.contains('selected');
+      await window.cmuxCommands.run('waveformViewer.addVariable', { instancePath: 'tb.dfp_addr[1]', quiet: true });
+      const rows = () => { const st = window.cmuxCommands.sessionSnapshot().state; return ((st && st.displayedSignals) || []).map((d) => d.name); };
+      for (let i = 0; i < 100 && !rows().length; i++) { await sleep(50); }
+      R.rows = rows();
+      return JSON.stringify(R);
+      """) as? String
+    let o = (r.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any]) ?? [:]
+    print("arrays:", o)
+    let tb = o["tb"] as? [String] ?? []
+    expect(tb.contains("dfp_addr[1:0]") && tb.contains("cube[1:0]") && !tb.contains("dfp_addr[1]") && !tb.contains("cube[1][2]"),
+           "the scope shows each array as one node, not its elements: \(tb)")
+    expect(o["addr"] as? [String] == ["dfp_addr[1]", "dfp_addr[0]"], "the array node holds its elements: \(o["addr"] ?? "nil")")
+    expect(o["cube"] as? [String] == ["cube[1][2:0]", "cube[0][2:0]"] && o["cube1"] as? [String] == ["cube[1][2]", "cube[1][1]", "cube[1][0]"],
+           "a 3-D array nests by dimension: \(o["cube"] ?? "nil") \(o["cube1"] ?? "nil")")
+    expect((o["found"] as? [Any]).map { "\($0)" } == "[tb.dfp_addr[0], 16]" && o["cubeElem"] as? Int == 4,
+           "an element's path is still scope.name: \(o["found"] ?? "nil")")
+    let link = o["linkTb"] as? [String] ?? []
+    expect(link.contains("dfp_addr[0]") && link.contains("cube[0][1]") && !link.contains(where: { $0.hasSuffix("/") && $0 != "dut/" }),
+           "the source link's scope listing has the elements, not the array nodes: \(link)")
+    expect(o["search"] as? [String] == ["tb.dfp_addr[0]"], "search finds an element once: \(o["search"] ?? "nil")")
+    expect(o["revealed"] as? Bool == true && o["revealedShown"] as? Bool == true, "Show in Netlist opens the array node to the element")
+    expect(o["rows"] as? [String] == ["tb.dfp_addr[1]"], "an element adds by its path: \(o["rows"] ?? "nil")")
+  }
+
   func snapshot() async {
     await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
       web.takeSnapshot(with: nil) { img, _ in
@@ -1193,6 +1247,11 @@ func run() async {
     expect(ok2, "loading whole page opened")
     if ok2 { await whole.wholeChecks() }
     whole.close()
+    let arrays = Page(loading: .auto, dump: "synth:ms=1,buses=1,wide=0,arrays=1")
+    let ok4 = await arrays.open(home: home)
+    expect(ok4, "a page with packed arrays opened")
+    if ok4 { await arrays.arrayChecks() }
+    arrays.close()
     let vcdURL = scratch.appendingPathComponent("small.vcd")
     try Data("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n#20\n0!\n".utf8)
       .write(to: vcdURL)
