@@ -190,6 +190,8 @@ public final class SlangProfileFollower {
         case failed
         /// The profile's file no longer exists.
         case missing
+        /// Another change took the server first: try again.
+        case busy
     }
 
     public struct Hooks {
@@ -248,6 +250,12 @@ public final class SlangProfileFollower {
         }
     }
 
+    /// A design file (a build file or a source) of the server was saved or reloaded (stub).
+    public func designFilesChanged() {}
+
+    /// The user chose `choice` themselves (stub).
+    public func userChose(_ choice: SlangProfileChoice) {}
+
     /// Returns once no switch is pending or running (for tests).
     public func waitUntilIdle() async {
         while true {
@@ -296,4 +304,10 @@ public final class SlangProfileFollower {
             hooks.missing(wanted)
         }
     }
+}
+
+/// Reports each window that becomes key (stub: reports nothing).
+@MainActor
+public final class SlangKeyWindowFollow {
+    public init(center: NotificationCenter = .default, name: Notification.Name, activate: @escaping @MainActor @Sendable (Any?) -> Void) {}
 }

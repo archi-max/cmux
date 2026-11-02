@@ -135,6 +135,9 @@ import Testing
         var busy = false
         var applied: [SlangProfileChoice] = []
         var missingPaths: Set<String> = []
+        var failingPaths: Set<String> = []
+        /// Apply answers `.busy` this many times first (another change claimed the server meanwhile).
+        var busyAnswers = 0
         var fallback: SlangProfileChoice?
 
         func follower(debounce: Duration = .milliseconds(40)) -> SlangProfileFollower {
@@ -143,8 +146,13 @@ import Testing
                 current: { self.current },
                 isBusy: { self.busy },
                 apply: { choice in
+                    if self.busyAnswers > 0 {
+                        self.busyAnswers -= 1
+                        return .busy
+                    }
                     self.applied.append(choice)
                     if let path = choice.path, self.missingPaths.contains(path) { return .missing }
+                    if let path = choice.path, self.failingPaths.contains(path) { return .failed }
                     self.current = choice.state
                     return .applied
                 },
@@ -210,6 +218,46 @@ import Testing
         #expect(SlangProfileChoice(fake.current) == SlangProfileAssignmentsTests.tbB)
     }
 
+    @Test func aProfileThatElaboratesNothingIsTriedOnceUntilItsFilesChange() async {
+        let fake = Fake()
+        fake.failingPaths = ["/w/.slang/tb_a.f"]
+        let follower = fake.follower(debounce: .milliseconds(10))
+        func focus(_ choice: SlangProfileChoice) async {
+            fake.wanted = choice
+            follower.activeFileChanged()
+            await follower.waitUntilIdle()
+        }
+        let tbA = SlangProfileAssignmentsTests.tbA
+        let tbB = SlangProfileAssignmentsTests.tbB
+        await focus(tbA)
+        await focus(tbB)
+        await focus(tbA)
+        await focus(tbA)
+        // tb_a failed once: later focuses don't build it again, tb_b still switches.
+        #expect(fake.applied == [tbA, tbB])
+        // A saved design file (its .f or a source) may fix it: tried again.
+        follower.designFilesChanged()
+        await focus(tbA)
+        #expect(fake.applied == [tbA, tbB, tbA])
+        await focus(tbA)
+        #expect(fake.applied == [tbA, tbB, tbA])
+        // The user choosing it again also tries it again.
+        follower.userChose(tbA)
+        await focus(tbA)
+        #expect(fake.applied == [tbA, tbB, tbA, tbA])
+    }
+
+    @Test func aSwitchThatLostTheServerToAnotherChangeIsTriedAgain() async {
+        let fake = Fake()
+        fake.busyAnswers = 2
+        fake.wanted = SlangProfileAssignmentsTests.tbB
+        let follower = fake.follower(debounce: .milliseconds(10))
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [SlangProfileAssignmentsTests.tbB])
+        #expect(SlangProfileChoice(fake.current) == SlangProfileAssignmentsTests.tbB)
+    }
+
     @Test func eachSettledFocusIsFollowed() async {
         let fake = Fake()
         let follower = fake.follower(debounce: .milliseconds(10))
@@ -219,6 +267,34 @@ import Testing
             await follower.waitUntilIdle()
         }
         #expect(fake.applied == [SlangProfileAssignmentsTests.tbA, SlangProfileAssignmentsTests.tbB, SlangProfileAssignmentsTests.tbA])
+    }
+}
+
+/// A window becoming key (Cmd-`, a click on its title bar) makes its focused editor the active one.
+@MainActor
+@Suite struct SlangKeyWindowFollowTests {
+    static let didBecomeKey = Notification.Name("cmux.test.didBecomeKey")
+
+    final class Window {}
+
+    @Test func eachKeyWindowIsReported() async throws {
+        let center = NotificationCenter()
+        var activated: [ObjectIdentifier] = []
+        var follow: SlangKeyWindowFollow? = SlangKeyWindowFollow(center: center, name: Self.didBecomeKey) { object in
+            if let window = object as? Window { activated.append(ObjectIdentifier(window)) }
+        }
+        let first = Window()
+        let second = Window()
+        center.post(name: Self.didBecomeKey, object: first)
+        center.post(name: Self.didBecomeKey, object: second)
+        for _ in 0..<50 where activated.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(activated == [ObjectIdentifier(first), ObjectIdentifier(second)])
+        // Released: no more reports.
+        follow = nil
+        center.post(name: Self.didBecomeKey, object: first)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(activated.count == 2)
+        _ = follow
     }
 }
 
