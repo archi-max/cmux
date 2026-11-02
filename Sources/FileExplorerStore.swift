@@ -410,6 +410,13 @@ protocol SSHFileExplorerTransport: AnyObject {
         path: String,
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp
+    /// Downloads `path` and returns its stamp as read before the bytes (nil if
+    /// it couldn't be read), in one host request where the transport can.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp?
     #if compiler(>=6.2)
     @concurrent
     #else
@@ -466,6 +473,17 @@ extension SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         throw FileExplorerError.mutationFailed
+    }
+
+    /// A stamp, then a download: a write in between shows up as a conflict.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp? {
+        let stamp = try? await fileStamp(path: path, connection: connection)
+        try await downloadFile(path: path, connection: connection, to: localURL)
+        return stamp
     }
 
     /// One request per spelling, for transports without the one-run probe
@@ -862,6 +880,14 @@ final class SSHFileExplorerProvider: RemoteFileExplorerProvider, @unchecked Send
         return try await transport.fileStamp(path: path, connection: connection)
     }
 
+    /// Downloads `path` with its stamp (read before the bytes), in one request where possible.
+    func downloadFileWithStamp(path: String, to localURL: URL) async throws -> SSHRemoteFileStamp? {
+        guard isAvailable else {
+            throw FileExplorerError.providerUnavailable
+        }
+        return try await transport.downloadFileWithStamp(path: path, connection: connection, to: localURL)
+    }
+
     /// Atomically replaces the remote file with `contents` and returns its new stamp.
     /// Throws ``FileExplorerError/remoteFileChanged`` when `expectedStamp` no longer matches.
     func writeFile(path: String, contents: Data, expectedStamp: SSHRemoteFileStamp?) async throws -> SSHRemoteFileStamp {
@@ -911,6 +937,23 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
             return
         }
         try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+    }
+
+    /// On the channel the read's reply carries its stamp (stat'd before the
+    /// bytes), so an open is one request; otherwise a stamp, then a download.
+    nonisolated func downloadFileWithStamp(
+        path: String,
+        connection: SSHFileExplorerConnection,
+        to localURL: URL
+    ) async throws -> SSHRemoteFileStamp? {
+        if let read = try? await SSHFileChannelRegistry.shared.channel(for: connection)
+            .read(path, maxBytes: SSHFileChannel.maximumReadBytes),
+           (try? read.data.write(to: localURL)) != nil {
+            return SSHRemoteFileStamp(modificationTime: read.modificationTime, size: read.size)
+        }
+        let stamp = try? await fileStamp(path: path, connection: connection)
+        try await runDownload(command: Self.downloadCommand(path: path), connection: connection, to: localURL)
+        return stamp
     }
 
     /// The remote command for a whole-file download, as a POSIX script any
