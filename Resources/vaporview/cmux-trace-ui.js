@@ -111,19 +111,54 @@
   }
 
   // One read per signal: a read already under way is shared (a step asks for its leaves together).
-  // A signal only a Verdi check read (`background`) is evicted before the ones our steps read, so
-  // following Verdi's port hops does not push a step's signals out (cp3: ex_mem read again).
-  function changesOf(v, background) {
-    const s = session;
+  // A Verdi check's reads (`bg`: { stop, maxBits, hint }) are background reads: they wait until no
+  // step of ours is running and go one at a time (the v1 helper serves one read at a time, so a
+  // step behind them would wait); one whose history would be larger than maxBits (width x changes,
+  // the changes estimated by `hint`, the traced signal's, which a port passes on) is refused. A
+  // signal only a Verdi check read is evicted before the ones our steps read.
+  const VERDI_MAX_BITS = 64e6;
+  function changesOf(v, bg) {
+    const s = session, id = v.netlistId;
     if (!s.background) { s.background = new Set(); }
-    if (!background) { s.background.delete(v.netlistId); }
-    if (s.changes.has(v.netlistId)) { return Promise.resolve(s.changes.get(v.netlistId)); }
+    if (!bg) { s.background.delete(id); }
+    if (s.changes.has(id)) { return Promise.resolve(s.changes.get(id)); }
     if (!s.reading) { s.reading = new Map(); }
-    if (s.reading.has(v.netlistId)) { return s.reading.get(v.netlistId); }
-    if (background) { s.background.add(v.netlistId); }
-    const read = readChanges(s, v).finally(() => { s.reading.delete(v.netlistId); });
-    s.reading.set(v.netlistId, read);
-    return read;
+    const under = s.reading.get(id);
+    if (under && (under.started || bg)) { return under.promise; }
+    const entry = { started: !bg };
+    const done = () => { if (s.reading.get(id) === entry) { s.reading.delete(id); } };
+    if (!bg) {
+      // Ours: now (a background read of it still waiting in line is overtaken).
+      entry.promise = readChanges(s, v).finally(done);
+    } else {
+      const width = Number(v.width) || 1;
+      const count = Number.isFinite(bg.hint) ? bg.hint : null;
+      const bits = count !== null ? count * width : (width > 64 ? Infinity : 0);
+      if (bits > bg.maxBits) { return Promise.reject(Object.assign(new Error('large'), { code: 'large' })); }
+      entry.promise = inLine(s, () => {
+        if (bg.stop()) { throw Object.assign(new Error('stale'), { code: 'stale' }); }
+        if (s.changes.has(id)) { return s.changes.get(id); }
+        const now = s.reading.get(id);
+        if (now && now !== entry) { return now.promise; }
+        entry.started = true;
+        s.background.add(id);
+        return readChanges(s, v);
+      }).finally(done);
+    }
+    s.reading.set(id, entry);
+    return entry.promise;
+  }
+  // Runs `read` after the background reads before it, once no step of ours is running.
+  function inLine(s, read) {
+    const turn = (s.line || Promise.resolve()).then(() => idle(s)).then(read);
+    s.line = turn.catch(() => {});
+    return turn;
+  }
+  function idle(s) { return s.steps > 0 ? new Promise((resolve) => { (s.idle = s.idle || []).push(resolve); }) : Promise.resolve(); }
+  function stepStarted(s) { s.steps = (s.steps || 0) + 1; }
+  function stepEnded(s) {
+    s.steps = Math.max(0, (s.steps || 0) - 1);
+    if (!s.steps && s.idle) { const w = s.idle; s.idle = []; w.forEach((resolve) => resolve()); }
   }
   async function readChanges(s, v) {
     const changes = await host.signalChanges(v, MAX_CHANGES);
@@ -161,7 +196,7 @@
     const neg = (prev === '1' && now !== '1') || ((prev === 'x' || prev === 'z') && now === '0');
     return edge === 'PosEdge' ? pos : edge === 'NegEdge' ? neg : pos || neg;
   };
-  // The dump provider; `background` marks what Verdi checks read (evicted before the rest).
+  // The dump provider; `background` ({ stop, maxBits, hint }): a Verdi check's (see changesOf).
   function makeDump(background) {
   return {
     async values(paths, time) {
@@ -239,8 +274,9 @@
   }
   // The dump for a Verdi check's own engine: no new reads once the check is late or stale (a read
   // under way still finishes; the helper serves one at a time, so a step after it would wait).
-  function guardedDump(stop) {
-    const d = makeDump(true);
+  function guardedDump(stop, hint) {
+    const max = Number(waveform.traceVerdiMaxBits) > 0 ? Number(waveform.traceVerdiMaxBits) : VERDI_MAX_BITS;
+    const d = makeDump({ stop, maxBits: max, hint });
     const guard = (f) => (...args) => (stop() ? Promise.reject(Object.assign(new Error('stale'), { code: 'stale' })) : f(...args));
     return { values: guard(d.values), lastChange: guard(d.lastChange), prevEdge: guard(d.prevEdge) };
   }
@@ -295,18 +331,20 @@
     const dumpPath = toDump(designPath);
     const verdi = session.kind === 'local' ? null : askVerdi(dumpPath, time);
     let step;
+    const ours = session;
+    stepStarted(ours);
     try {
       step = await session.engine.active(designPath, time);
     } catch (error) {
       host.log(error);
       if (run === running) { showError(error.message || s.traceFailed); }
       return null;
-    }
+    } finally { stepEnded(ours); }
     if (run !== running) { return null; }
     step.dumpPath = dumpPath;
     step.engine = { name: 'cmux' };
     // Ours is shown now; Verdi's answer fills the step in later (verdiCheck), never before.
-    if (verdi && !step.error) { step.engine.verdi = 'checking'; verdiCheck(step, time, verdi, run); }
+    if (verdi && !step.error) { step.engine.verdi = 'checking'; verdiCheck(step, time, verdi); }
     if (push) { history.steps.push(step); history.at = history.steps.length - 1; }
     render();
     host.toNative({ type: 'trace', event: 'step', step: plain(step) });
@@ -326,20 +364,26 @@
   const VERDI_BUDGET_MS = 10000;
   const verdiBudget = () => (Number(waveform.traceVerdiBudgetMs) > 0 ? Number(waveform.traceVerdiBudgetMs) : VERDI_BUDGET_MS);
   const checks = new Set();
-  // Fills `step` (shown, in the history) in with Verdi's answer when it comes within the budget;
-  // drops it when a newer trace has started (or the panel closed) meanwhile.
-  function verdiCheck(step, time, asked, run) {
+  // Fills `step` in with Verdi's answer when it comes within the budget, while the step is in the
+  // history (Back to it keeps the check); dropped once the step is not (a branch, close()).
+  function verdiCheck(step, time, asked) {
     const deadline = Date.now() + verdiBudget();
     const late = { timedOut: true };
     let timer;
     const limit = new Promise((resolve) => { timer = setTimeout(() => resolve(late), Math.max(0, deadline - Date.now())); });
-    const stop = () => run !== running || Date.now() > deadline;
-    const engine = window.cmuxTrace.createEngine({ models: session.models, dump: guardedDump(stop), options: session.options });
+    const gone = () => !history.steps.includes(step);
+    const stop = () => gone() || Date.now() > deadline;
+    const v = session.vars.get(step.signal);
+    const known = v && session.changes.get(v.netlistId);
+    const hint = Array.isArray(known) ? known.length : undefined;
+    const engine = window.cmuxTrace.createEngine({ models: session.models, dump: guardedDump(stop, hint), options: session.options });
     const check = Promise.race([withVerdi(step, time, asked, stop, engine), limit]).then((out) => {
-      if (run !== running) { step.engine.verdi = 'dropped'; return; }
+      if (gone()) { step.engine.verdi = 'dropped'; return; }
       let shown = step;
       if (out === late || !out) {
         step.engine.verdi = 'timedOut';
+      } else if (out.large) {
+        step.engine.verdi = 'large';
       } else {
         const i = history.steps.indexOf(step);
         if (i >= 0) { history.steps[i] = out; }
@@ -387,7 +431,11 @@
         const next = (cur.fanin || []).filter((f) => f.path);
         if (next.length !== 1) { break; }
         via.push({ signal: cur.signal, src: cur.stmt ? cur.stmt.src : '', loc: cur.stmt ? cur.stmt.loc : null });
-        try { cur = await engine.active(next[0].path, time); } catch (error) { if (stop()) { return null; } throw error; }
+        try { cur = await engine.active(next[0].path, time); } catch (error) {
+          if (stop()) { return null; }
+          if (error && error.code === 'large') { return { large: true }; }
+          throw error;
+        }
         if (stop()) { return null; }
         if (cur.error) { break; }
       }
@@ -541,6 +589,7 @@
     if (e.verdi === 'starting') { text += ' · ' + s.traceVerdiStarting; }
     if (e.verdi === 'checking') { text += ' · ' + s.traceVerdiChecking; }
     if (e.verdi === 'timedOut') { text += ' · ' + s.traceVerdiTimedOut; }
+    if (e.verdi === 'large') { text += ' · ' + s.traceVerdiLarge; }
     if (e.verdi === 'unavailable') { text += ' · ' + format(s['traceVerdiUnavailable_' + e.reason] || s.traceVerdiUnavailable, e.message || ''); }
     if (e.verdiNotFound) { text += ' · ' + s.traceVerdiNotFound; }
     div.append(el('span', '', text));
