@@ -442,6 +442,11 @@ from VaporView's VS Code integration:
   setting descriptions and prompt text.
 - `Sources/Panels/WaveformTerminalLinks.swift` and CmuxTerminalCore's
   `WaveformTerminalLink.swift`: terminal links, from `terminal_links.ts`.
+- `cmux-formats.js`: the viewer's value formatters (`value_format.ts`, with
+  the cmux fork's `riscv_disasm.ts` and `value_alias.ts`), bundled unchanged
+  for text breakpoints by `scripts/waveform-viewer-checks/text/build-formats.mjs`.
+  `cmux-textmatch.js` applies the viewer's value-search rules
+  (`value_search.ts`, the fork's `extra_formats.ts`) to their text.
 
 The patch's RISC-V instruction format was written from the RISC-V
 Unprivileged (20191213) and Privileged (20211203) ISA specifications (RISC-V
@@ -558,6 +563,19 @@ come from simulating NERV (riscv-formal `cores/nerv`, ISC), PicoRV32
 Xenia Wolf) and Ibex (https://github.com/lowRISC/ibex, Apache-2.0, Copyright
 lowRISC contributors) at pinned commits; each fixture directory carries the
 core's licence and a NOTICE.
+
+### Compiler Explorer (the assembly-listing parser)
+
+- **Version:** main, commit `4341ea30ac71a06cd97bd31c3c7483e5a8802901` (2026-11-01)
+- **License:** BSD 2-Clause License (text below, under "Shared License Texts"; also in the file header)
+- **Copyright:** Copyright (c) 2012-2022, Compiler Explorer Authors
+- **Source:** https://github.com/compiler-explorer/compiler-explorer/blob/4341ea30ac71a06cd97bd31c3c7483e5a8802901/lib/parsers/asm-parser.ts
+
+`Packages/Shared/CmuxSyntaxHighlighting/Sources/CmuxSyntaxHighlighting/AsmListing/AsmListingParser.swift`
+(objdump listings for the waveform debugger's assembly breakpoints) is a Swift
+port of Compiler Explorer's objdump-output parser (`processBinaryAsm` and its
+`lineRe`, `labelRe`, `asmOpcodeRe`, `relocationRe` and `destRe` patterns),
+extended by cmux. No Compiler Explorer code is bundled as is.
 
 ### FSDB helper sources (`Resources/vaporview/fsdb-helper/`)
 

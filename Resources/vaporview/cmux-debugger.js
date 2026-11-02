@@ -166,7 +166,10 @@
   function publicState() { return cycleInfo(markerTime()); }
 
   function post(event, extra) {
-    host.toNative(Object.assign({ type: 'debugger', event }, publicState(), extra || {}));
+    const info = publicState();
+    host.toNative(Object.assign({ type: 'debugger', event }, info, extra || {}));
+    // cmux's listings show the commits at the marker's cycle (none after Stop).
+    if (CB && (event === 'cycle' || event === 'state')) { CB.postCurrent(state.stepping ? info.edgeTime : null); }
   }
 
   // While playing, each move straight from the page (the viewer's markerSet, and so the cycle
@@ -776,6 +779,26 @@
   // line breakpoints cmux sets (setLineBreakpoints): { id, kind: 'line', key, label, paths, ... }.
   const breakpoints = [];
   let nextBreakpointId = 1;
+  // Text breakpoints (cmux-debugger-text.js): { id, kind: 'text', path, format, pattern, caseSensitive,
+  // anyRegisterNames, enabled, times, timesFor, condition }; at most this many enabled.
+  const TB = waveform.debuggerText;
+  const MAX_TEXT_BREAKPOINTS = 32;
+  const signalKind = (k) => (k === 'equals' || k === 'change' || (k === 'text' && TB) ? k : null);
+  const textFields = (q) => ({ format: String(q.format || 'hexadecimal'), pattern: String(q.pattern || ''),
+    caseSensitive: !!q.caseSensitive, anyRegisterNames: q.anyRegisterNames !== false });
+  const enabledTexts = () => breakpoints.filter((b) => b.kind === 'text' && b.enabled).length;
+  // Commit breakpoints (cmux-debugger-commits.js): { id, kind: 'pc' | 'commitText' | 'write', pcs, channel,
+  // key (a listing's, which cmux owns), pattern, caseSensitive, anyRegisterNames, loc, enabled, condition }; no path.
+  const CB = waveform.debuggerCommits;
+  const isCommit = (b) => !!(CB && CB.isKind(b.kind));
+  const MAX_COMMIT_BREAKPOINTS = { pc: 1024, commitText: 32, write: 256 };
+  const enabledOfKind = (kind) => breakpoints.filter((b) => b.kind === kind && b.enabled).length;
+  const commitFields = (kind, q) => {
+    const f = CB.fields(kind, q);
+    return kind === 'pc' ? { pcs: f.pcs, channel: f.channel } : kind === 'write' ? { loc: f.loc }
+      : { pattern: f.pattern, caseSensitive: f.caseSensitive, anyRegisterNames: f.anyRegisterNames };
+  };
+  const pathsOf = (b) => (b.kind === 'line' ? b.paths : b.path ? [b.path] : []);
   let lastHitId = null;
   let lastHitBackend = null;  // a reload clears the hit mark
   let continueRequest = 0;
@@ -847,7 +870,7 @@
     return true;
   }
 
-  const baseName = (bp) => (bp.kind === 'line' ? bp.label : (bp.kind === 'equals'
+  const baseName = (bp) => (bp.kind === 'line' ? bp.label : bp.kind === 'text' ? TB.label(bp) : isCommit(bp) ? CB.label(bp) : (bp.kind === 'equals'
     ? format(S().debuggerBreakpointEquals, bp.path.join('.'), bp.value)
     : format(S().debuggerBreakpointChanges, bp.path.join('.'))));
   const breakpointName = (bp) => (bp.condition ? format(S().debuggerBreakpointIf, baseName(bp), bp.condition) : baseName(bp));
@@ -855,7 +878,11 @@
   const isLastHit = (bp) => bp.id === lastHitId && lastHitBackend === host.currentBackend;
   const publicBreakpoint = (bp) => ({ id: bp.id, kind: bp.kind, enabled: bp.enabled, hit: isLastHit(bp), label: breakpointName(bp),
     path: bp.path ? bp.path.slice() : null, value: bp.kind === 'equals' ? bp.value : null,
-    key: bp.kind === 'line' ? bp.key : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
+    format: bp.kind === 'text' ? bp.format : null, pattern: bp.kind === 'text' || bp.kind === 'commitText' ? bp.pattern : null,
+    caseSensitive: bp.kind === 'text' || bp.kind === 'commitText' ? bp.caseSensitive : null,
+    anyRegisterNames: bp.kind === 'text' || bp.kind === 'commitText' ? bp.anyRegisterNames : null,
+    pcs: bp.kind === 'pc' ? bp.pcs.slice() : null, channel: bp.kind === 'pc' ? bp.channel : null, loc: bp.kind === 'write' ? bp.loc : null,
+    key: bp.kind === 'line' || bp.kind === 'pc' ? bp.key || null : null, paths: bp.kind === 'line' ? bp.paths.map((p) => p.slice()) : null,
     condition: bp.condition || null, conditionError: bp.conditionError || null,
     // The paths a line's search reads (its units' with a condition).
     searchedPaths: bp.kind === 'line' ? (bp.condition && bp.units ? bp.units : [bp]).reduce((n, u) => n + u.paths.length, 0) : null });
@@ -884,7 +911,7 @@
     const checked = checkCondition(raw);
     bp.condition = checked.error ? String(raw).trim() : (checked.condition || null);
     bp.conditionError = checked.error ? checked.message : null;
-    const said = (bp.key || JSON.stringify(bp.path)) + '\u0000' + bp.condition;
+    const said = (bp.key || (bp.path ? JSON.stringify(bp.path) : name)) + '\u0000' + bp.condition;
     if (checked.error && !conditionErrorsSaid.has(said)) {
       conditionErrorsSaid.add(said);
       window.cmuxUI.toast(format(S().debuggerConditionError, name, checked.message), 'warning');
@@ -894,19 +921,38 @@
   // cmux owns line breakpoints: the list's checkbox and remove button tell it.
   const toldLine = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'lineBreakpoint', key: bp.key,
     enabled: bp.enabled, removed: false }, extra || {}));
+  // And a listing's PC breakpoints (cmux-debugger-commits.js; keyed by the listing's mark).
+  const toldPc = (bp, extra) => host.toNative(Object.assign({ type: 'debugger', event: 'pcBreakpoint', key: bp.key,
+    enabled: bp.enabled, removed: false }, extra || {}));
+  const told = (bp, extra) => { if (bp.kind === 'line') { toldLine(bp, extra); } else if (bp.kind === 'pc' && bp.key) { toldPc(bp, extra); } };
 
   // The signal breakpoints of a restored session (cmux), in place of the page's; checked when
   // searched, since the file may not be open yet.
   function restoreBreakpoints(query) {
     const items = Array.isArray((query || {}).items) ? query.items : [];
-    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind !== 'line') { breakpoints.splice(i, 1); } }
+    const listingOwned = (b) => b.kind === 'line' || (b.kind === 'pc' && b.key);
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (!listingOwned(breakpoints[i])) { breakpoints.splice(i, 1); } }
     const restored = [];
     for (const item of items) {
+      if (CB && CB.isKind(item.kind)) {
+        const bp = Object.assign({ id: nextBreakpointId++, kind: item.kind, key: null, value: null, enabled: item.enabled !== false,
+          times: null, timesFor: null, condition: null, conditionError: null }, commitFields(item.kind, item));
+        if (CB.check(bp.kind, bp)) { continue; }
+        if (bp.enabled && restored.filter((b) => b.kind === bp.kind && b.enabled).length >= MAX_COMMIT_BREAKPOINTS[bp.kind]) { bp.enabled = false; }
+        conditionOf(bp, item.condition, baseName(bp));
+        restored.push(bp);
+        continue;
+      }
       const path = Array.isArray(item.path) ? item.path.map(String) : null;
-      const kind = item.kind === 'equals' ? 'equals' : (item.kind === 'change' ? 'change' : null);
+      const kind = signalKind(item.kind);
       if (!path || !path.length || !kind) { continue; }
       const bp = { id: nextBreakpointId++, path, kind, value: kind === 'equals' ? String(item.value || '') : null,
         pattern: null, enabled: item.enabled !== false, times: null, timesFor: null, condition: null, conditionError: null };
+      if (kind === 'text') {
+        Object.assign(bp, textFields(item));
+        // Past the cap: kept, but off.
+        if (bp.enabled && restored.filter((b) => b.kind === 'text' && b.enabled).length >= MAX_TEXT_BREAKPOINTS) { bp.enabled = false; }
+      }
       conditionOf(bp, item.condition, baseName(bp));
       restored.push(bp);
     }
@@ -974,12 +1020,65 @@
     return lines.map(publicBreakpoint);
   }
 
+  // A listing's PC breakpoints (cmux, WaveformDebuggerAsmBreakpoints.swift): replace cmux's, keep the page's.
+  // items: [{ key, listingLabel, pcs, channel?, enabled, condition? }]
+  // Whether cmux has a listing for this dump (an open one, or one beside the dump): rows then offer
+  // Show Value as Address in Listing.
+  let listingAvailable = false;
+  const refusedMarks = new Set();  // key + pcs of marks refused (said once)
+
+  function setPcBreakpoints(query) {
+    listingAvailable = !!(query || {}).listing;
+    if (!CB) { return []; }
+    const items = Array.isArray((query || {}).items) ? query.items : [];
+    const oldMarks = breakpoints.filter((b) => b.kind === 'pc' && b.key);
+    const old = new Map(oldMarks.map((b) => [b.key, b]));
+    const marks = [];
+    for (const item of items) {
+      const key = String(item.key || '');
+      const fields = commitFields('pc', item);
+      const error = CB.check('pc', fields);
+      // A mark cmux can't search (a PC from 2^53 up): said once, not placed.
+      if (key && error === 'addressTooLarge' && !refusedMarks.has(key + '\u0000' + fields.pcs.join())) {
+        refusedMarks.add(key + '\u0000' + fields.pcs.join());
+        const name = CB.label(Object.assign({ kind: 'pc', listingLabel: String(item.listingLabel || key) }, fields));
+        window.cmuxUI.toast(format(S().debuggerCommitError, name, CB.errorText(error)), 'warning');
+      }
+      if (!key || marks.some((b) => b.key === key) || error) { continue; }
+      const before = old.get(key);
+      const listingLabel = String(item.listingLabel || key);
+      const enabled = item.enabled !== false;
+      const condition = String(item.condition === undefined || item.condition === null ? '' : item.condition).trim() || null;
+      // Unchanged: the same object (its hits and a play stop on it are kept).
+      if (before && before.listingLabel === listingLabel && before.enabled === enabled && (before.condition || null) === condition
+        && before.channel === fields.channel && before.pcs.join() === fields.pcs.join()) {
+        marks.push(before);
+        continue;
+      }
+      const bp = Object.assign({ id: before ? before.id : nextBreakpointId++, kind: 'pc', key, listingLabel: String(item.listingLabel || key),
+        value: null, enabled: item.enabled !== false, times: null, timesFor: null, condition: null, conditionError: null,
+        warned: before ? before.warned : undefined }, fields);
+      conditionOf(bp, item.condition, baseName(bp));
+      if (!!bp.conditionError !== !!(before && before.conditionError) || (bp.conditionError && (!before || before.condition !== bp.condition))) {
+        host.toNative({ type: 'debugger', event: 'pcBreakpoint', key, conditionError: !!bp.conditionError });
+      }
+      marks.push(bp);
+    }
+    if (marks.length === oldMarks.length && marks.every((b, i) => b === oldMarks[i])) { return marks.map(publicBreakpoint); }
+    for (let i = breakpoints.length - 1; i >= 0; i--) { if (breakpoints[i].kind === 'pc' && breakpoints[i].key) { breakpoints.splice(i, 1); } }
+    if (lastHitId !== null && !breakpoints.some((b) => b.id === lastHitId) && !marks.some((b) => b.id === lastHitId)) { lastHitId = null; }
+    breakpoints.push(...marks);
+    breakpointsChanged();
+    return marks.map(publicBreakpoint);
+  }
+
   const signalOf = async (path) => (await host.findLinkItem(path, true)) || null;
 
   async function addBreakpoint(query) {
     const q = query || {};
+    if (CB && CB.isKind(q.kind)) { return addCommitBreakpoint(q); }
     const path = Array.isArray(q.path) ? q.path.map(String) : null;
-    const kind = q.kind === 'equals' ? 'equals' : (q.kind === 'change' ? 'change' : null);
+    const kind = signalKind(q.kind);
     if (!path || !path.length || !kind) { return null; }
     const v = await signalOf(path);
     if (!v) {
@@ -998,6 +1097,7 @@
       return null;
     }
     const condition = checked.condition || null;
+    if (kind === 'text') { return addTextBreakpoint(path, q, condition); }
     const width = Number(v.width) || 1;
     const same = breakpoints.find((b) => b.kind === kind && JSON.stringify(b.path) === JSON.stringify(path)
       && (kind !== 'equals' || parseValue(b.value, width) === pattern) && (b.condition || null) === condition);
@@ -1012,12 +1112,153 @@
     return publicBreakpoint(bp);
   }
 
+  // A text breakpoint (Break When Text Matches…): checked, the same one enabled again.
+  function addTextBreakpoint(path, q, condition) {
+    const fields = textFields(q);
+    const checked = TB.spec(fields);
+    if (checked.error) {
+      window.cmuxUI.toast(format(S().debuggerTextError, TB.label(Object.assign({ path }, fields)), TB.errorText(checked.error)), 'warning');
+      return null;
+    }
+    const same = breakpoints.find((b) => b.kind === 'text' && JSON.stringify(b.path) === JSON.stringify(path) && b.format === fields.format
+      && b.pattern === fields.pattern && b.caseSensitive === fields.caseSensitive && b.anyRegisterNames === fields.anyRegisterNames
+      && (b.condition || null) === condition);
+    if (!(same && same.enabled) && enabledTexts() >= MAX_TEXT_BREAKPOINTS) {
+      window.cmuxUI.toast(format(S().debuggerTextTooMany, number(MAX_TEXT_BREAKPOINTS)), 'warning');
+      return null;
+    }
+    if (same) {
+      same.enabled = true;
+      breakpointsChanged();
+      return publicBreakpoint(same);
+    }
+    const bp = Object.assign({ id: nextBreakpointId++, path, kind: 'text', value: null, enabled: true, times: null, timesFor: null, condition }, fields);
+    breakpoints.push(bp);
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
+  // A commit breakpoint (Break at Address…, Break When Next Instruction Matches…, Break When Written…):
+  // checked, the same one enabled again.
+  function addCommitBreakpoint(q) {
+    const kind = q.kind;
+    const fields = commitFields(kind, q);
+    const error = CB.check(kind, fields);
+    const checked = checkCondition(q.condition);
+    // Refused: named as it was given.
+    const given = error === 'address' ? { pcs: [].concat(q.pcs ?? q.pc ?? []).map(String) } : error === 'location' ? { loc: String(q.loc ?? '') } : {};
+    const name = CB.label(Object.assign({ kind }, fields, given));
+    if (error) {
+      window.cmuxUI.toast(format(S().debuggerCommitError, name, CB.errorText(error)), 'warning');
+      return null;
+    }
+    if (checked.error) {
+      window.cmuxUI.toast(format(S().debuggerConditionError, name, checked.message), 'warning');
+      return null;
+    }
+    const condition = checked.condition || null;
+    const same = breakpoints.find((b) => b.kind === kind && !b.key && JSON.stringify(commitFields(kind, b)) === JSON.stringify(fields)
+      && (b.condition || null) === condition);
+    if (!(same && same.enabled) && enabledOfKind(kind) >= MAX_COMMIT_BREAKPOINTS[kind]) {
+      window.cmuxUI.toast(format(S().debuggerCommitTooMany, number(MAX_COMMIT_BREAKPOINTS[kind])), 'warning');
+      return null;
+    }
+    if (same) {
+      same.enabled = true;
+      breakpointsChanged();
+      return publicBreakpoint(same);
+    }
+    const bp = Object.assign({ id: nextBreakpointId++, kind, key: null, value: null, enabled: true, times: null, timesFor: null,
+      condition, conditionError: null }, fields);
+    breakpoints.push(bp);
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
+  // setCommitBreakpoint({ id, pattern?, caseSensitive?, anyRegisterNames?, loc?, pcs? }): a commit
+  // breakpoint's fields changed (its list menu); one that does not check is refused (said, the old kept).
+  function setCommitBreakpoint(query) {
+    const q = query || {};
+    const bp = breakpoints.find((b) => b.id === Number(q.id) && isCommit(b) && !b.key);
+    if (!bp) { return null; }
+    const fields = commitFields(bp.kind, Object.assign({}, bp, Object.fromEntries(Object.entries(q).filter(([k, v]) => v !== undefined && k !== 'id'))));
+    const error = CB.check(bp.kind, fields);
+    if (error) {
+      window.cmuxUI.toast(format(S().debuggerCommitError, CB.label(Object.assign({ kind: bp.kind }, fields)), CB.errorText(error)), 'warning');
+      return null;
+    }
+    Object.assign(bp, fields, { warned: null });
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
+  // The three ways to add one, as prompts (the list's and View > Waveform Debugger's Add Instruction Breakpoint…).
+  async function promptCommitBreakpoint(query) {
+    const s = S();
+    const kind = (query || {}).kind;
+    const prompts = {
+      pc: { title: s.debuggerAddressPrompt, placeholder: s.debuggerAddressPlaceholder },
+      commitText: { title: s.debuggerCommitTextPrompt, placeholder: s.debuggerTextPlaceholder },
+      write: { title: s.debuggerWrittenPrompt, placeholder: s.debuggerWrittenPlaceholder },
+    };
+    if (!CB || !prompts[kind]) { return null; }
+    try {
+      const text = await window.cmuxUI.prompt({ title: prompts[kind].title || '', placeholder: prompts[kind].placeholder || '' });
+      if (text === undefined || !String(text).trim().length) { return null; }
+      const value = String(text);
+      if (kind === 'pc') {
+        const pcs = value.split(/[\s,]+/).filter(Boolean);
+        return addBreakpoint({ kind, pcs: pcs.map((p) => CB.parseAddress(p) || p) });
+      }
+      if (kind === 'write') { return addBreakpoint({ kind, loc: CB.parseLocation(value) || value }); }
+      return addBreakpoint({ kind, pattern: value });
+    } catch (error) {
+      host.log(error);
+      return null;
+    }
+  }
+
+  const commitMenuItems = () => {
+    const s = S();
+    return [
+      { label: s.debuggerBreakAtAddress || '', run: () => promptCommitBreakpoint({ kind: 'pc' }) },
+      { label: s.debuggerBreakOnCommitText || '', run: () => promptCommitBreakpoint({ kind: 'commitText' }) },
+      { label: s.debuggerBreakWhenWritten || '', run: () => promptCommitBreakpoint({ kind: 'write' }) },
+    ];
+  };
+  // View > Waveform Debugger > Add Instruction Breakpoint…: the three, as a menu in the viewer.
+  function chooseCommitBreakpoint(query) {
+    if (!CB) { return false; }
+    const q = query || {};
+    const x = Number.isFinite(q.x) ? q.x : Math.round(window.innerWidth / 2);
+    const y = Number.isFinite(q.y) ? q.y : Math.round(window.innerHeight / 3);
+    window.cmuxUI.showMenu(commitMenuItems(), x, y);
+    return true;
+  }
+
+  // setTextBreakpoint({ id, pattern?, caseSensitive?, anyRegisterNames?, format? }): a text breakpoint's
+  // fields changed (its list menu); one that does not check is refused (said, the old kept).
+  function setTextBreakpoint(query) {
+    const q = query || {};
+    const bp = breakpoints.find((b) => b.id === Number(q.id) && b.kind === 'text');
+    if (!bp) { return null; }
+    const fields = textFields(Object.assign({}, bp, Object.fromEntries(Object.entries(q).filter(([k, v]) => v !== undefined && k !== 'id'))));
+    const checked = TB.spec(fields);
+    if (checked.error) {
+      window.cmuxUI.toast(format(S().debuggerTextError, TB.label(Object.assign({ path: bp.path }, fields)), TB.errorText(checked.error)), 'warning');
+      return null;
+    }
+    Object.assign(bp, fields, { times: null, timesFor: null, warned: null });
+    breakpointsChanged();
+    return publicBreakpoint(bp);
+  }
+
   function removeBreakpoint(query) {
     const i = breakpoints.findIndex((b) => b.id === Number((query || {}).id));
     if (i < 0) { return false; }
     const [bp] = breakpoints.splice(i, 1);
     if (bp.id === lastHitId) { lastHitId = null; }
-    if (bp.kind === 'line') { toldLine(bp, { removed: true }); }
+    told(bp, { removed: true });
     breakpointsChanged();
     return true;
   }
@@ -1026,8 +1267,16 @@
     const q = query || {};
     const bp = breakpoints.find((b) => b.id === Number(q.id));
     if (!bp) { return false; }
+    if (isCommit(bp) && q.enabled && !bp.enabled && enabledOfKind(bp.kind) >= MAX_COMMIT_BREAKPOINTS[bp.kind]) {
+      window.cmuxUI.toast(format(S().debuggerCommitTooMany, number(MAX_COMMIT_BREAKPOINTS[bp.kind])), 'warning');
+      return false;
+    }
+    if (bp.kind === 'text' && q.enabled && !bp.enabled && enabledTexts() >= MAX_TEXT_BREAKPOINTS) {
+      window.cmuxUI.toast(format(S().debuggerTextTooMany, number(MAX_TEXT_BREAKPOINTS)), 'warning');
+      return false;
+    }
     bp.enabled = !!q.enabled;
-    if (bp.kind === 'line') { toldLine(bp); }
+    told(bp);
     breakpointsChanged();
     return true;
   }
@@ -1047,7 +1296,7 @@
     bp.conditionError = null;
     if (bp.units) { for (const u of bp.units) { u.condition = bp.condition; u.conditionError = null; } }
     bp.warned = null;
-    if (bp.kind === 'line') { toldLine(bp, { condition: bp.condition }); }
+    told(bp, { condition: bp.condition });
     breakpointsChanged();
     return publicBreakpoint(bp);
   }
@@ -1056,12 +1305,12 @@
     // Changes no breakpoint watches any more are let go (each may hold up to 1M).
     const watched = new Set();
     // A disabled one's are let go too (read again when it is enabled).
-    for (const b of breakpoints.filter((x) => x.enabled)) { for (const path of (b.kind === 'line' ? b.paths : [b.path])) { watched.add(JSON.stringify(path)); } }
+    for (const b of breakpoints.filter((x) => x.enabled)) { for (const path of pathsOf(b)) { watched.add(JSON.stringify(path)); } }
     for (const key of Array.from(changeCache.keys())) { if (!watched.has(key)) { changeCache.delete(key); } }
     // cmux keeps the signal breakpoints for the workspace's session (restoreBreakpoints).
-    host.toNative({ type: 'debugger', event: 'breakpoints', items: breakpoints.filter((b) => b.kind !== 'line')
-      .map((b) => ({ path: b.path.slice(), kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled,
-        condition: b.condition || null })) });
+    host.toNative({ type: 'debugger', event: 'breakpoints', items: breakpoints.filter((b) => b.kind !== 'line' && !(b.kind === 'pc' && b.key))
+      .map((b) => Object.assign({ path: b.path ? b.path.slice() : [], kind: b.kind, value: b.kind === 'equals' ? b.value : null, enabled: b.enabled,
+        condition: b.condition || null }, b.kind === 'text' ? textFields(b) : isCommit(b) ? commitFields(b.kind, b) : {})) });
     renderBreakpoints();
     // Play does not stop on a breakpoint just disabled or removed while the next one is searched.
     if (playStop && (!playStop.bp.enabled || !breakpoints.includes(playStop.bp))) { playStop = null; }
@@ -1117,7 +1366,7 @@
   function releaseChanges(paths, bp, backend) {
     for (const path of paths) {
       const key = JSON.stringify(path);
-      const wants = (b) => b !== bp && b.timesFor !== backend && (b.kind === 'line' ? b.paths : [b.path]).some((p) => JSON.stringify(p) === key);
+      const wants = (b) => b !== bp && b.timesFor !== backend && pathsOf(b).some((p) => JSON.stringify(p) === key);
       // A line searched per instance builds its times per instance (its units), not as a whole.
       const needed = breakpoints.some((b) => b.enabled && (b.condition && b.units ? b.units.some(wants) : wants(b)));
       if (!needed) { changeCache.delete(key); }
@@ -1150,6 +1399,8 @@
     const backend = host.currentBackend;
     // Still loading: nothing to say yet (a warning now would hide the real one later).
     if (!host.dataReady()) { return undefined; }
+    // A commit breakpoint's times are kept with the commit index they came from.
+    if (isCommit(bp)) { return CB.times(bp, (text) => warnOnce(bp, text)); }
     if (bp.timesFor === backend && bp.times) { return bp.times; }
     const paths = bp.kind === 'line' ? bp.paths : [bp.path];
     let times = [];
@@ -1166,6 +1417,15 @@
       if (entry.changes === undefined) { incomplete = true; continue; }
       if (!entry.changes) {
         warnOnce(bp, format(S().debuggerTooManyChanges, path.join('.')));
+        continue;
+      }
+      if (bp.kind === 'text') {
+        const textTimes = await TB.times(bp, entry, (text) => warnOnce(bp, text));
+        if (host.currentBackend !== backend) { return null; }
+        if (!textTimes) { continue; }
+        found++;
+        times = times.concat(Array.from(textTimes));
+        releaseChanges([path], bp, backend);
         continue;
       }
       // A restored value is read once the signal's width is known, and again when a reload changed it.
@@ -1233,7 +1493,7 @@
     const say = (message) => { warnOnce(bp, format(S().debuggerConditionError, baseName(bp), message)); return false; };
     const parsed = X.parse(bp.condition);
     if (parsed.error) { return say(exprMessage(parsed.error, parsed.at)); }
-    const scope = bp.kind === 'line' ? (bp.scope || (bp.paths[0] ? bp.paths[0].slice(0, -1) : null)) : bp.path.slice(0, -1);
+    const scope = bp.kind === 'line' ? (bp.scope || (bp.paths[0] ? bp.paths[0].slice(0, -1) : null)) : bp.path ? bp.path.slice(0, -1) : (isCommit(bp) ? CB.scopeOf(bp) : null);
     const prepared = await machineEnv(parsed.ast, (m) => m.prepare());
     if (prepared && prepared.error) { return say(prepared.error.message); }
     const paths = X.names(parsed.ast).filter((path) => !isMachineName(path));
@@ -1322,6 +1582,31 @@
     return { id: found.bp.id, time: found.time, landed: edges[found.index], cycle: found.index + 1 };
   }
 
+  // Run to a PC's next (dir 1) or previous (-1) commit, without a breakpoint (a listing's gutter menu).
+  async function runToPc(query) {
+    const q = query || {};
+    const dir = Number(q.dir) < 0 ? -1 : 1;
+    if (!CB) { return Object.assign(publicState(), { hit: null, reason: 'none' }); }
+    const bp = Object.assign({ kind: 'pc', key: null, enabled: true }, commitFields('pc', q));
+    if (CB.check('pc', bp)) { return Object.assign(publicState(), { hit: null, reason: 'address' }); }
+    const request = ++continueRequest;
+    const edges = await start();
+    if (!edges) { return Object.assign(publicState(), { hit: null, reason: startFailure || 'noClock' }); }
+    pause();
+    const backend = host.currentBackend;
+    const times = await CB.times(bp, (text) => window.cmuxUI.toast(text, 'warning'));
+    if (request !== continueRequest || host.currentBackend !== backend) { return Object.assign(publicState(), { hit: null, reason: 'superseded' }); }
+    if (!times) { return Object.assign(publicState(), { hit: null, reason: 'noStream' }); }
+    const hit = nearestHit(times, edges, markerTime(), dir);
+    if (!hit || hit.index >= edges.length) {
+      window.cmuxUI.toast((dir > 0 ? S().debuggerNoHitForward : S().debuggerNoHitBack) || '', 'info');
+      return Object.assign(publicState(), { hit: null, reason: dir > 0 ? 'end' : 'start' });
+    }
+    moveMarker(edges[hit.index]);
+    CB.landed(bp, hit.time);
+    return Object.assign(cycleInfo(edges[hit.index]), { hit: { time: hit.time, landed: edges[hit.index], cycle: hit.index + 1 }, reason: 'hit' });
+  }
+
   // F5 (with `orTogglePlay`: Play/Pause when no breakpoint is enabled) and Shift-F5 (dir -1).
   async function continueRun(query) {
     const q = query || {};
@@ -1354,6 +1639,8 @@
       return Object.assign(publicState(), { hit: null, reason: 'afterLastEdge', time: found.time });
     }
     moveMarker(edges[found.index]);
+    // A commit breakpoint: the Machine section shows the commit that hit (several may share the cycle).
+    if (isCommit(found.bp)) { CB.landed(found.bp, found.time); }
     const hit = announceHit(found, edges);
     return Object.assign(cycleInfo(edges[found.index]), { hit, reason: 'hit' });
   }
@@ -1426,10 +1713,47 @@
     }
   }
 
+  // A commit breakpoint's own list items: its address, pattern or location; then the three adds.
+  function commitListItems(bp) {
+    if (!isCommit(bp)) { return []; }
+    const s = S();
+    const edit = (title, value, apply) => async () => {
+      try {
+        const text = await window.cmuxUI.prompt({ title: title || '', value });
+        if (text !== undefined && String(text).trim().length) { apply(String(text)); }
+      } catch (error) {
+        host.log(error);
+      }
+    };
+    const own = bp.key ? [] : bp.kind === 'pc'
+      ? [{ label: s.debuggerEditAddress || '', run: edit(s.debuggerAddressPrompt, bp.pcs.join(', '),
+        (t) => setCommitBreakpoint({ id: bp.id, pcs: t.split(/[\s,]+/).filter(Boolean) })) }]
+      : bp.kind === 'write'
+        ? [{ label: s.debuggerEditLocation || '', run: edit(s.debuggerWrittenPrompt, CB.locationText(bp.loc),
+          (t) => setCommitBreakpoint({ id: bp.id, loc: CB.parseLocation(t) || t })) }]
+        : [{ label: s.debuggerEditTextPattern || '', run: edit(s.debuggerCommitTextPrompt, bp.pattern, (t) => setCommitBreakpoint({ id: bp.id, pattern: t })) },
+          { label: (bp.caseSensitive ? '\u2713 ' : '') + (s.debuggerTextMatchCase || ''), run: () => setCommitBreakpoint({ id: bp.id, caseSensitive: !bp.caseSensitive }) },
+          { label: (bp.anyRegisterNames ? '\u2713 ' : '') + (s.debuggerTextAnyRegisterNames || ''),
+            run: () => setCommitBreakpoint({ id: bp.id, anyRegisterNames: !bp.anyRegisterNames }) }];
+    return own.concat(commitMenuItems());
+  }
+
   // The list row's menu: the condition, and remove.
   function breakpointMenuItems(bp) {
     const s = S();
-    return [
+    const text = bp.kind !== 'text' ? [] : [
+      { label: s.debuggerEditTextPattern || '', run: async () => {
+        try {
+          const pattern = await window.cmuxUI.prompt({ title: format(s.debuggerTextPrompt, bp.path.join('.'), TB.formatName(bp.format)), value: bp.pattern });
+          if (pattern !== undefined && String(pattern).length) { setTextBreakpoint({ id: bp.id, pattern: String(pattern) }); }
+        } catch (error) {
+          host.log(error);
+        }
+      } },
+      { label: (bp.caseSensitive ? '\u2713 ' : '') + (s.debuggerTextMatchCase || ''), run: () => setTextBreakpoint({ id: bp.id, caseSensitive: !bp.caseSensitive }) },
+    ].concat(TB.isRiscv(bp.format) ? [{ label: (bp.anyRegisterNames ? '\u2713 ' : '') + (s.debuggerTextAnyRegisterNames || ''),
+      run: () => setTextBreakpoint({ id: bp.id, anyRegisterNames: !bp.anyRegisterNames }) }] : []);
+    return text.concat(commitListItems(bp), [
       { label: s.debuggerEditCondition || '', run: async () => {
         try {
           const text = await window.cmuxUI.prompt({ title: s.debuggerConditionPrompt || '', value: bp.condition || '', placeholder: 'state == 3' });
@@ -1439,7 +1763,7 @@
         }
       } },
       { label: s.debuggerRemoveBreakpoint || '', run: () => removeBreakpoint({ id: bp.id }) },
-    ];
+    ]);
   }
 
   // The waveform row's menu items (cmux-commands.js adds them to the viewer's context menu).
@@ -1460,8 +1784,36 @@
           host.log(error);
         }
       } },
+    ].concat(TB ? [{ label: s.debuggerBreakWhenTextMatches || '', run: async () => {
+      try {
+        const textFormat = TB.formatOf(v.netlistId);
+        const pattern = await window.cmuxUI.prompt({ title: format(s.debuggerTextPrompt, path.join('.'), TB.formatName(textFormat)),
+          placeholder: s.debuggerTextPlaceholder || '' });
+        if (pattern !== undefined && String(pattern).length) { await addBreakpoint({ path, kind: 'text', format: textFormat, pattern: String(pattern) }); }
+      } catch (error) {
+        host.log(error);
+      }
+    } }] : [], [
       { label: s.debuggerAddWatch || '', run: () => addWatch({ expr: pathExpression(path) }) },
-    ].concat(window.cmuxMachine ? window.cmuxMachine.rowMenuItems(c) : []);
+    ], showAddressItems(v, path), window.cmuxMachine ? window.cmuxMachine.rowMenuItems(c) : []);
+  }
+
+  // Show Value as Address in Listing: an 8- to 64-bit row's value at the marker, as a PC, revealed in
+  // cmux's listing (`{ event: 'showAddress', pc, name }`; cmux says when no listing has it).
+  function showAddressItems(v, path) {
+    const width = Number(v.width) || 1;
+    if (!listingAvailable || width < 8 || width > 64) { return []; }
+    const s = S();
+    return [{ label: s.debuggerShowValueAsAddress || '', run: async () => {
+      const time = markerTime();
+      const bits = time === null ? undefined : (await bitsAt([v], time)).get(v.netlistId);
+      const name = path.join('.');
+      if (bits === undefined || !/^[01]+$/.test(bits)) {
+        window.cmuxUI.toast(format(s.debuggerAddressUnknown, name), 'warning');
+        return;
+      }
+      host.toNative({ type: 'debugger', event: 'showAddress', pc: '0x' + BigInt('0b' + bits).toString(16), name });
+    } }];
   }
 
   // A dump path as an expression: a segment that is not an identifier (or gen[3]) is escaped.
@@ -1997,7 +2349,14 @@
     step, jump, play, pause, togglePlay, setRate, changeRate, setClock, useSelectedAsClock, stop, setLocals, highlightRows,
     setRtlStatus, rtlShown,
     continue: continueRun, addBreakpoint, removeBreakpoint, setBreakpointEnabled, setBreakpointCondition, setLineBreakpoints, restoreBreakpoints,
+    setTextBreakpoint, setCommitBreakpoint, promptCommitBreakpoint, chooseCommitBreakpoint, setPcBreakpoints, runToPc,
+    // cmux's listings: the current commit's PC, a sample of the commits, and cmux's own warnings.
+    currentCommitPc: () => (CB && state.stepping ? CB.currentPc(publicState().edgeTime) : null),
+    commitSample: (query) => (CB ? CB.sample((query || {}).limit) : null),
+    say: (query) => { const q = query || {}; if (q.text) { window.cmuxUI.toast(String(q.text), q.level === 'warning' ? 'warning' : 'info'); } return true; },
     breakpoints: () => breakpoints.map(publicBreakpoint),
+    // The kinds addBreakpoint takes (cmux-machine.js's row menus offer Break When Written when 'write' is one).
+    breakpointKinds: () => ['change', 'equals'].concat(TB ? ['text'] : [], CB ? ['pc', 'commitText', 'write'] : []),
     // host.js: a load finished (a reload's new backend): the list drops the old hit mark.
     backendChanged: () => { if (window.cmuxMachine) { window.cmuxMachine.backendChanged(); } renderBreakpoints(); refreshWatches(); },
     // cmux-machine.js: the current commit moved inside the marker's cycle (cmux hears the new `current`).

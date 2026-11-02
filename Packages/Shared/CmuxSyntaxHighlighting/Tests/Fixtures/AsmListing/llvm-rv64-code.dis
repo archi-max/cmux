@@ -1,0 +1,36 @@
+
+prog64.elf:	file format elf64-littleriscv
+
+Disassembly of section .text:
+
+0000000080000000 <_start>:
+80000000: 20001137     	lui	sp, 0x20001
+80000004: 010a         	slli	sp, sp, 0x2
+80000006: 4501         	li	a0, 0x0
+80000008: 4295         	li	t0, 0x5
+8000000a: 050d         	addi	a0, a0, 0x3
+8000000c: 12fd         	addi	t0, t0, -0x1
+8000000e: fe029ee3     	bnez	t0, 0x8000000a <_start+0xa>
+80000012: 040000ef     	jal	0x80000052 <sum>
+80000016: 00001317     	auipc	t1, 0x1
+8000001a: fea30313     	addi	t1, t1, -0x16
+8000001e: 00a32023     	sw	a0, 0x0(t1)
+80000022: 30531073     	csrw	mtvec, t1
+80000026: 0001         	nop
+80000028: 00d605b3     	add	a1, a2, a3
+8000002c: a001         	j	0x8000002c <_start+0x2c>
+8000002e: 0001         	nop
+		...
+
+0000000080000050 <after_gap>:
+80000050: 9002         	ebreak
+
+0000000080000052 <sum>:
+80000052: 00000597     	auipc	a1, 0x0
+80000056: 01a58593     	addi	a1, a1, 0x1a
+8000005a: 02058613     	addi	a2, a1, 0x20
+8000005e: 4194         	lw	a3, 0x0(a1)
+80000060: 0591         	addi	a1, a1, 0x4
+80000062: 9d35         	addw	a0, a0, a3
+80000064: fec59de3     	bne	a1, a2, 0x8000005e <sum+0xc>
+80000068: 8082         	ret

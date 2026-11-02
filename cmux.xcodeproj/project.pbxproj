@@ -4463,11 +4463,14 @@
 		C37800000000000000000001 /* VMSSHCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C37800000000000000000002 /* VMSSHCommandTests.swift */; };
 		249A593EF9615DF0C071986D /* VMSSHTransportFallbackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5C553AF2050E7E6D7CD62EC /* VMSSHTransportFallbackTests.swift */; };
 		5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B002 /* WaveformDebugger.swift */; };
+		5A7EF0000000000000A5B0A6 /* WaveformDebuggerAsmBreakpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000A5B0A7 /* WaveformDebuggerAsmBreakpoints.swift */; };
+		5A7EF0000000000000A5B0A4 /* WaveformDebuggerCommitBreakpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000A5B0A5 /* WaveformDebuggerCommitBreakpoints.swift */; };
 		5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */; };
 		5A7EF0000000000000D0B0F2 /* WaveformDebuggerEvaluate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B0F3 /* WaveformDebuggerEvaluate.swift */; };
 		5A7EF0000000000000D0B0F0 /* WaveformDebuggerLineBreakpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B0F1 /* WaveformDebuggerLineBreakpoints.swift */; };
 		5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */; };
 		5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */; };
+		5A7EF0000000000000A5B0A2 /* WaveformDebuggerTextBreakpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000A5B0A3 /* WaveformDebuggerTextBreakpoints.swift */; };
 		5A7EF000000000000F5E0001 /* WaveformEnumLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */; };
 		5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */; };
 		CB0EBBD1B828D9EA5B91C951 /* WaveformLinkShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */; };
@@ -9159,11 +9162,14 @@
 		C37800000000000000000002 /* VMSSHCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMSSHCommandTests.swift; sourceTree = "<group>"; };
 		F5C553AF2050E7E6D7CD62EC /* VMSSHTransportFallbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VMSSHTransportFallbackTests.swift"; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B002 /* WaveformDebugger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebugger.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000A5B0A7 /* WaveformDebuggerAsmBreakpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerAsmBreakpoints.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000A5B0A5 /* WaveformDebuggerCommitBreakpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerCommitBreakpoints.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEditorHighlights.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B0F3 /* WaveformDebuggerEvaluate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerEvaluate.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B0F1 /* WaveformDebuggerLineBreakpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerLineBreakpoints.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B006 /* WaveformDebuggerMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerMenu.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0B008 /* WaveformDebuggerRTLStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerRTLStatus.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000A5B0A3 /* WaveformDebuggerTextBreakpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformDebuggerTextBreakpoints.swift; sourceTree = "<group>"; };
 		5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformEnumLink.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A8 /* WaveformFSDBHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformFSDBHelper.swift; sourceTree = "<group>"; };
 		E537D13C7A95A2564C089063 /* WaveformLinkShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WaveformLinkShortcutRoutingTests.swift"; sourceTree = "<group>"; };
@@ -12048,6 +12054,9 @@
 				5A7EF0000000000000D0B0F3 /* WaveformDebuggerEvaluate.swift */,
 				5A7EF0000000000000D0C1A3 /* WaveformMachineStateLoader.swift */,
 				5A7EF0000000000000D0C1A1 /* WaveformMachineState.swift */,
+				5A7EF0000000000000A5B0A3 /* WaveformDebuggerTextBreakpoints.swift */,
+				5A7EF0000000000000A5B0A7 /* WaveformDebuggerAsmBreakpoints.swift */,
+				5A7EF0000000000000A5B0A5 /* WaveformDebuggerCommitBreakpoints.swift */,
 				5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */,
 				5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */,
 				5A7EF0000000000000D0B002 /* WaveformDebugger.swift */,
@@ -17825,11 +17834,14 @@
 				ACE4FE2A8F1CC6C0B6A673AB /* VMClientSocketCommands.swift in Sources */,
 				C10DC1000000000000000013 /* VMClientTelemetry+Live.swift in Sources */,
 				5A7EF0000000000000D0B001 /* WaveformDebugger.swift in Sources */,
+				5A7EF0000000000000A5B0A6 /* WaveformDebuggerAsmBreakpoints.swift in Sources */,
+				5A7EF0000000000000A5B0A4 /* WaveformDebuggerCommitBreakpoints.swift in Sources */,
 				5A7EF0000000000000D0B003 /* WaveformDebuggerEditorHighlights.swift in Sources */,
 				5A7EF0000000000000D0B0F2 /* WaveformDebuggerEvaluate.swift in Sources */,
 				5A7EF0000000000000D0B0F0 /* WaveformDebuggerLineBreakpoints.swift in Sources */,
 				5A7EF0000000000000D0B005 /* WaveformDebuggerMenu.swift in Sources */,
 				5A7EF0000000000000D0B007 /* WaveformDebuggerRTLStatus.swift in Sources */,
+				5A7EF0000000000000A5B0A2 /* WaveformDebuggerTextBreakpoints.swift in Sources */,
 				5A7EF000000000000F5E0001 /* WaveformEnumLink.swift in Sources */,
 				5A7EF00000000000000000A7 /* WaveformFSDBHelper.swift in Sources */,
 				5A7EF0000000000000D0C1A0 /* WaveformMachineState.swift in Sources */,

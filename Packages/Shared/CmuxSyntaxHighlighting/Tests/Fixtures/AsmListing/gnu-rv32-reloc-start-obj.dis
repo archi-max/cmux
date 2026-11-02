@@ -1,0 +1,36 @@
+
+start32.o:     file format elf32-littleriscv
+
+
+Disassembly of section .text.init:
+
+00000000 <_start>:
+   0:	80004137          	lui	sp,0x80004
+   4:	4501                	li	a0,0
+   6:	4295                	li	t0,5
+   8:	050d                	addi	a0,a0,3
+   a:	12fd                	addi	t0,t0,-1
+   c:	fe029ee3          	bnez	t0,8 <_start+0x8>
+  10:	00000097          	auipc	ra,0x0
+			10: R_RISCV_CALL_PLT	sum
+			10: R_RISCV_RELAX	*ABS*
+  14:	000080e7          	jalr	ra # 10 <_start+0x10>
+
+00000018 <.Lpcrel_hi0>:
+  18:	00000317          	auipc	t1,0x0
+			18: R_RISCV_PCREL_HI20	result
+			18: R_RISCV_RELAX	*ABS*
+  1c:	00030313          	mv	t1,t1
+			1c: R_RISCV_PCREL_LO12_I	.Lpcrel_hi0
+			1c: R_RISCV_RELAX	*ABS*
+  20:	00a32023          	sw	a0,0(t1) # 18 <.Lpcrel_hi0>
+  24:	30531073          	csrw	mtvec,t1
+  28:	0001                	nop
+  2a:	00d605b3          	add	a1,a2,a3
+  2e:	a001                	j	2e <.Lpcrel_hi0+0x16>
+  30:	0001                	nop
+			30: R_RISCV_ALIGN	*ABS*+0x2
+	...
+
+00000052 <after_gap>:
+  52:	9002                	ebreak

@@ -237,7 +237,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       if (change) { await change.run(); }
       return labels;
     """) as? [String]
-    expect(menu == ["Break When Changes", "Break When Equals…", "Add Watch"], "the row menu items: \(String(describing: menu))")
+    expect(menu == ["Break When Changes", "Break When Equals…", "Break When Text Matches…", "Add Watch"], "the row menu items: \(String(describing: menu))")
     let added = (await list()).last
     expect(added?["path"] as? [String] == ["top", "data"] && added?["kind"] as? String == "change",
            "Break When Changes adds one for the row's signal: \(String(describing: added))")
@@ -1195,7 +1195,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   static let strings = """
   {netlist:'Netlist', loading:'Loading…', openFailed:'Could not open', addSignal:'Add', debuggerLocals:'Locals',
    debuggerCycle:'Cycle %1$@ of %2$@ · %3$@', debuggerRate:'%@ cycles/s',
-   debuggerBreakpoints:'Breakpoints', debuggerBreakWhenChanges:'Break When Changes', debuggerBreakWhenEquals:'Break When Equals…',
+   debuggerBreakpoints:'Breakpoints', debuggerBreakWhenChanges:'Break When Changes', debuggerBreakWhenEquals:'Break When Equals…', debuggerBreakWhenTextMatches:'Break When Text Matches…',
    debuggerBreakEqualsPrompt:'Break when %@ equals', debuggerBreakEqualsPlaceholder:"For example 'h3f, 8'b1010_??01, 12 or x",
    debuggerBreakpointChanges:'%@ changes', debuggerBreakpointEquals:'%1$@ == %2$@', debuggerRemoveBreakpoint:'Remove',
    debuggerBreakpointHit:'Breakpoint: %1$@ at %2$@ (cycle %3$@)', debuggerNoHitForward:'No breakpoint hit before the end.',

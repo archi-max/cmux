@@ -7,6 +7,7 @@ extension WaveformDebugger.Command {
     static let all: [WaveformDebugger.Command] = [
         .step(1), .step(-1), .first, .last, .continueToBreakpoint(1), .continueToBreakpoint(-1), .toggleLineBreakpoint,
         .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop, .evaluateExpression, .addWatch,
+        .addInstructionBreakpoint, .showInstructionInListing,
         .toggleMachineState, .loadELF,
     ]
 
@@ -42,6 +43,10 @@ extension WaveformDebugger.Command {
             return String(localized: "waveformDebugger.command.evaluate", defaultValue: "Evaluate Expression…")
         case .addWatch:
             return String(localized: "waveformDebugger.command.addWatch", defaultValue: "Add Watch…")
+        case .addInstructionBreakpoint:
+            return String(localized: "waveformDebugger.command.addInstructionBreakpoint", defaultValue: "Add Instruction Breakpoint…")
+        case .showInstructionInListing:
+            return String(localized: "waveformDebugger.command.showInstructionInListing", defaultValue: "Show Instruction in Listing")
         case .toggleMachineState:
             return String(localized: "waveformDebugger.command.toggleMachineState", defaultValue: "Show or Hide Machine State")
         case .loadELF:
@@ -66,6 +71,8 @@ extension WaveformDebugger.Command {
         case .stop: return "palette.waveformDebugger.stop"
         case .evaluateExpression: return "palette.waveformDebugger.evaluate"
         case .addWatch: return "palette.waveformDebugger.addWatch"
+        case .addInstructionBreakpoint: return "palette.waveformDebugger.addInstructionBreakpoint"
+        case .showInstructionInListing: return "palette.waveformDebugger.showInstructionInListing"
         case .toggleMachineState: return "palette.waveformDebugger.toggleMachineState"
         case .loadELF: return "palette.waveformDebugger.loadELF"
         }
@@ -89,6 +96,9 @@ extension WaveformDebugger.Command {
         case .stop: return common + ["stop", "exit", "locals"]
         case .evaluateExpression: return common + ["evaluate", "expression", "value", "print"]
         case .addWatch: return common + ["watch", "expression", "add"]
+        case .addInstructionBreakpoint:
+            return common + ["breakpoint", "instruction", "pc", "address", "commit", "write", "watchpoint", "register", "memory", "riscv"]
+        case .showInstructionInListing: return common + ["instruction", "listing", "objdump", "disassembly", "pc", "reveal", "riscv"]
         case .toggleMachineState: return common + ["machine", "registers", "memory", "riscv", "rvfi", "commit", "instruction"]
         case .loadELF: return common + ["elf", "program", "image", "symbols", "memory", "riscv"]
         }

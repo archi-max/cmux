@@ -1,0 +1,636 @@
+
+prog32.elf:	file format elf32-littleriscv
+
+Disassembly of section .text:
+
+80000000 <_start>:
+80000000: 80004137     	lui	sp, 0x80004
+80000004: 4501         	li	a0, 0x0
+80000006: 4295         	li	t0, 0x5
+80000008: 050d         	addi	a0, a0, 0x3
+8000000a: 12fd         	addi	t0, t0, -0x1
+8000000c: fe029ee3     	bnez	t0, 0x80000008 <_start+0x8>
+80000010: 283d         	jal	0x8000004e <sum>
+80000012: 00001317     	auipc	t1, 0x1
+80000016: fee30313     	addi	t1, t1, -0x12
+8000001a: 00a32023     	sw	a0, 0x0(t1)
+8000001e: 30531073     	csrw	mtvec, t1
+80000022: 0001         	nop
+80000024: 00d605b3     	add	a1, a2, a3
+80000028: a001         	j	0x80000028 <_start+0x28>
+8000002a: 0001         	nop
+		...
+
+8000004c <after_gap>:
+8000004c: 9002         	ebreak
+
+8000004e <sum>:
+8000004e: 00000597     	auipc	a1, 0x0
+80000052: 01a58593     	addi	a1, a1, 0x1a
+80000056: 02058613     	addi	a2, a1, 0x20
+8000005a: 4194         	lw	a3, 0x0(a1)
+8000005c: 0591         	addi	a1, a1, 0x4
+8000005e: 9536         	add	a0, a0, a3
+80000060: fec59de3     	bne	a1, a2, 0x8000005a <sum+0xc>
+80000064: 8082         	ret
+
+Disassembly of section .rodata.cst32:
+
+80000068 <table>:
+80000068: 01 00 00 00  	.word	0x00000001
+8000006c: 02 00 00 00  	.word	0x00000002
+80000070: 03 00 00 00  	.word	0x00000003
+80000074: 04 00 00 00  	.word	0x00000004
+80000078: 05 00 00 00  	.word	0x00000005
+8000007c: 06 00 00 00  	.word	0x00000006
+80000080: 07 00 00 00  	.word	0x00000007
+80000084: 08 00 00 00  	.word	0x00000008
+
+Disassembly of section .data:
+
+80001000 <result>:
+80001000: ef be ad de  	.word	0xdeadbeef
+80001004: 63 6d 75 78  	.word	0x78756d63
+
+Disassembly of section .riscv.attributes:
+
+00000000 <.riscv.attributes>:
+       0: 41 3e 00 00  	.word	0x00003e41
+       4: 00 72 69 73  	.word	0x73697200
+       8: 63 76 00 01  	.word	0x01007663
+       c: 34 00 00 00  	.word	0x00000034
+      10: 04 10 05 72  	.word	0x72051004
+      14: 76 33 32 69  	.word	0x69323376
+      18: 32 70 31 5f  	.word	0x5f317032
+      1c: 6d 32 70 30  	.word	0x3070326d
+      20: 5f 63 32 70  	.word	0x7032635f
+      24: 30 5f 7a 69  	.word	0x697a5f30
+      28: 63 73 72 32  	.word	0x32727363
+      2c: 70 30 5f 7a  	.word	0x7a5f3070
+      30: 6d 6d 75 6c  	.word	0x6c756d6d
+      34: 31 70 30 5f  	.word	0x5f307031
+      38: 7a 63 61 31  	.word	0x3161637a
+      3c: 70           	.byte	0x70
+      3d: 30 00        	.short	0x0030
+
+Disassembly of section .comment:
+
+00000000 <.comment>:
+       0: 6f48         	<unknown>
+       2: 656d         	lui	a0, 0x1b
+       4: 7262         	<unknown>
+       6: 7765         	lui	a4, 0xffff9
+       8: 6320         	<unknown>
+       a: 616c         	<unknown>
+       c: 676e         	<unknown>
+       e: 7620         	<unknown>
+      10: 7265         	lui	tp, 0xffff9
+      12: 6e6f6973     	csrrsi	s2, 0x6e6, 0x1e
+      16: 3220         	<unknown>
+      18: 2e312e33     	<unknown>
+      1c: 0034         	addi	a3, sp, 0x8
+      1d: 00           	.byte	0x00
+
+Disassembly of section .debug_info:
+
+00000000 <.debug_info>:
+       0: 81 00 00 00  	.word	0x00000081
+       4: 04 00 00 00  	.word	0x00000004
+       8: 00 00 04 01  	.word	0x01040000
+       c: 00 00 00 00  	.word	0x00000000
+      10: 00 00 00 80  	.word	0x80000000
+      14: 4e 00 00 80  	.word	0x8000004e
+      18: 2f 66 69 78  	.word	0x7869662f
+      1c: 74 75 72 65  	.word	0x65727574
+      20: 2f 73 72 63  	.word	0x6372732f
+      24: 2f 73 74 61  	.word	0x6174732f
+      28: 72 74 2e 53  	.word	0x532e7472
+      2c: 00 2f 66 69  	.word	0x69662f00
+      30: 78 74 75 72  	.word	0x72757478
+      34: 65 2f 73 72  	.word	0x72732f65
+      38: 63 00 48 6f  	.word	0x6f480063
+      3c: 6d 65 62 72  	.word	0x7262656d
+      40: 65 77 20 63  	.word	0x63207765
+      44: 6c 61 6e 67  	.word	0x676e616c
+      48: 20 76 65 72  	.word	0x72657620
+      4c: 73 69 6f 6e  	.word	0x6e6f6973
+      50: 20 32 33 2e  	.word	0x2e333220
+      54: 31 2e 34 00  	.word	0x00342e31
+      58: 01 80 02 73  	.word	0x73028001
+      5c: 74 61 72 74  	.word	0x74726174
+      60: 00 01 00 00  	.word	0x00000100
+      64: 00 0c 00 00  	.word	0x00000c00
+      68: 00 00 00 00  	.word	0x00000000
+      6c: 80 02 61 66  	.word	0x66610280
+      70: 74 65 72 5f  	.word	0x5f726574
+      74: 67 61 70 00  	.word	0x00706167
+      78: 01 00 00 00  	.word	0x00000001
+      7c: 1e 00 00 00  	.word	0x0000001e
+      80: 4c 00 00 80  	.word	0x8000004c
+      84: 00           	.byte	0x00
+      85: 95 00 00 00  	.word	0x00000095
+      89: 04 00 21 00  	.word	0x00210004
+      8d: 00 00 04 01  	.word	0x01040000
+      91: 00 00 00 00  	.word	0x00000000
+      95: 1d 00 1e 00  	.word	0x001e001d
+      99: 00 00 63 00  	.word	0x00630000
+      9d: 00 00 31 00  	.word	0x00310000
+      a1: 00 00 4e 00  	.word	0x004e0000
+      a5: 00 80 18 00  	.word	0x00188000
+      a9: 00 00 02 4e  	.word	0x4e020000
+      ad: 00 00 80 18  	.word	0x18800000
+      b1: 00 00 00 01  	.word	0x01000000
+      b5: 52 5c 00 00  	.word	0x00005c52
+      b9: 00 01 04 8a  	.word	0x8a040100
+      bd: 00 00 00 03  	.word	0x03000000
+      c1: 00 00 00 00  	.word	0x00000000
+      c5: 60 00 00 00  	.word	0x00000060
+      c9: 01 04 8a 00  	.word	0x008a0401
+      cd: 00 00 04 01  	.word	0x01040000
+      d1: 5a 65 00 00  	.word	0x0000655a
+      d5: 00 01 06 8a  	.word	0x8a060100
+      d9: 00 00 00 05  	.word	0x05000000
+      dd: 5a 00 00 80  	.word	0x8000005a
+      e1: 0a 00 00 00  	.word	0x0000000a
+      e5: 06 6b 00 00  	.word	0x00006b06
+      e9: 00 01 07 8a  	.word	0x8a070100
+      ed: 00 00 00 00  	.word	0x00000000
+      f1: 00 07 3e 00  	.word	0x003e0700
+      f5: 00 00 7e 00  	.word	0x007e0000
+      f9: 00 00 01 02  	.word	0x02010000
+      fd: 05 03 68 00  	.word	0x00680305
+     101: 00 80 08 8a  	.word	0x8a088000
+     105: 00 00 00 09  	.word	0x09000000
+     109: 91 00 00 00  	.word	0x00000091
+     10d: 08 00 0a 44  	.word	0x440a0008
+     111: 00 00 00 05  	.word	0x05000000
+     115: 04 0b 48 00  	.word	0x00480b04
+     119: 00 00 08 07  	.word	0x07080000
+     11d: 00           	.byte	0x00
+
+Disassembly of section .debug_abbrev:
+
+00000000 <.debug_abbrev>:
+       0: 01 11 01 10  	.word	0x10011101
+       4: 17 11 01 12  	.word	0x12011117
+       8: 01 03 08 1b  	.word	0x1b080301
+       c: 08 25 08 13  	.word	0x13082508
+      10: 05 00 00 02  	.word	0x02000005
+      14: 0a 00 03 08  	.word	0x0803000a
+      18: 3a 06 3b 06  	.word	0x063b063a
+      1c: 11 01 00 00  	.word	0x00000111
+      20: 00           	.byte	0x00
+      21: 01 11 01 25  	.word	0x25011101
+      25: 0e 13 05 03  	.word	0x0305130e
+      29: 0e 10 17 1b  	.word	0x1b17100e
+      2d: 0e 11 01 12  	.word	0x1201110e
+      31: 06 00 00 02  	.word	0x02000006
+      35: 2e 01 11 01  	.word	0x0111012e
+      39: 12 06 40 18  	.word	0x18400612
+      3d: 97 42 19 03  	.word	0x03194297
+      41: 0e 3a 0b 3b  	.word	0x3b0b3a0e
+      45: 0b 27 19 49  	.word	0x4919270b
+      49: 13 3f 19 00  	.word	0x00193f13
+      4d: 00 03 05 00  	.word	0x00050300
+      51: 02 17 03 0e  	.word	0x0e031702
+      55: 3a 0b 3b 0b  	.word	0x0b3b0b3a
+      59: 49 13 00 00  	.word	0x00001349
+      5d: 04 34 00 02  	.word	0x02003404
+      61: 18 03 0e 3a  	.word	0x3a0e0318
+      65: 0b 3b 0b 49  	.word	0x490b3b0b
+      69: 13 00 00 05  	.word	0x05000013
+      6d: 0b 01 11 01  	.word	0x0111010b
+      71: 12 06 00 00  	.word	0x00000612
+      75: 06 34 00 03  	.word	0x03003406
+      79: 0e 3a 0b 3b  	.word	0x3b0b3a0e
+      7d: 0b 49 13 00  	.word	0x0013490b
+      81: 00 07 34 00  	.word	0x00340700
+      85: 03 0e 49 13  	.word	0x13490e03
+      89: 3a 0b 3b 0b  	.word	0x0b3b0b3a
+      8d: 02 18 00 00  	.word	0x00001802
+      91: 08 01 01 49  	.word	0x49010108
+      95: 13 00 00 09  	.word	0x09000013
+      99: 21 00 49 13  	.word	0x13490021
+      9d: 37 0b 00 00  	.word	0x00000b37
+      a1: 0a 24 00 03  	.word	0x0300240a
+      a5: 0e 3e 0b 0b  	.word	0x0b0b3e0e
+      a9: 0b 00 00 0b  	.word	0x0b00000b
+      ad: 24 00 03 0e  	.word	0x0e030024
+      b1: 0b 0b 3e 0b  	.word	0x0b3e0b0b
+      b5: 00 00        	.short	0x0000
+      b7: 00           	.byte	0x00
+
+Disassembly of section .debug_aranges:
+
+00000000 <.debug_aranges>:
+       0: 1c 00 00 00  	.word	0x0000001c
+       4: 02 00 00 00  	.word	0x00000002
+       8: 00 00 04 00  	.word	0x00040000
+       c: 00 00 00 00  	.word	0x00000000
+      10: 00 00 00 80  	.word	0x80000000
+      14: 4e 00 00 00  	.word	0x0000004e
+		...
+
+Disassembly of section .debug_line:
+
+00000000 <.debug_line>:
+       0: 5f 00 00 00  	.word	0x0000005f
+       4: 04 00 2c 00  	.word	0x002c0004
+       8: 00 00 01 01  	.word	0x01010000
+       c: 01 fb 0e 0d  	.word	0x0d0efb01
+      10: 00 01 01 01  	.word	0x01010100
+      14: 01 00 00 00  	.word	0x00000001
+      18: 01 00 00 01  	.word	0x01000001
+      1c: 2f 66 69 78  	.word	0x7869662f
+      20: 74 75 72 65  	.word	0x65727574
+      24: 2f 73 72 63  	.word	0x6372732f
+      28: 00 00 73 74  	.word	0x74730000
+      2c: 61 72 74 2e  	.word	0x2e747261
+      30: 53 00 01 00  	.word	0x00010053
+      34: 00 00 00 05  	.word	0x05000000
+      38: 02 00 00 00  	.word	0x00000002
+      3c: 80 17 4b 2f  	.word	0x2f4b1780
+      40: 30 2f 2f 03  	.word	0x032f2f30
+      44: 01 09 04 00  	.word	0x00040901
+      48: 01 03 01 09  	.word	0x09010301
+      4c: 02 00 01 03  	.word	0x03010002
+      50: 01 09 08 00  	.word	0x00080901
+      54: 01 4b 4b 68  	.word	0x684b4b01
+      58: 03 05 09 24  	.word	0x24090503
+      5c: 00 01 02 02  	.word	0x02020100
+      60: 00 01        	.short	0x0100
+      62: 01           	.byte	0x01
+      63: 48 00 00 00  	.word	0x00000048
+      67: 04 00 1d 00  	.word	0x001d0004
+      6b: 00 00 01 01  	.word	0x01010000
+      6f: 01 fb 0e 0d  	.word	0x0d0efb01
+      73: 00 01 01 01  	.word	0x01010100
+      77: 01 00 00 00  	.word	0x00000001
+      7b: 01 00 00 01  	.word	0x01000001
+      7f: 00 73 75 6d  	.word	0x6d757300
+      83: 2e 63 00 00  	.word	0x0000632e
+      87: 00 00 00 00  	.word	0x00000000
+      8b: 05 02 4e 00  	.word	0x004e0205
+      8f: 00 80 16 05  	.word	0x05168000
+      93: 12 0a 03 03  	.word	0x03030a12
+      97: 09 0c 00 01  	.word	0x01000c09
+      9b: 05 17 2d 05  	.word	0x052d1705
+      9f: 0f 2f 05 05  	.word	0x05052f0f
+      a3: 2d 03 02 09  	.word	0x0902032d
+      a7: 04 00 01 02  	.word	0x02010004
+      ab: 02 00 01 01  	.word	0x01010002
+
+Disassembly of section .debug_loc:
+
+00000000 <.debug_loc>:
+       0: 00 00 00 00  	.word	0x00000000
+       4: 0c 00 00 00  	.word	0x0000000c
+       8: 01 00 5a 12  	.word	0x125a0001
+       c: 00 00 00 16  	.word	0x16000000
+      10: 00 00 00 04  	.word	0x04000000
+      14: 00 f3 01 5a  	.word	0x5a01f300
+      18: 9f 00 00 00  	.word	0x0000009f
+      1c: 00 00 00 00  	.word	0x00000000
+      20: 00           	.byte	0x00
+
+Disassembly of section .debug_str:
+
+00000000 <.debug_str>:
+       0: 48 6f 6d 65  	.word	0x656d6f48
+       4: 62 72 65 77  	.word	0x77657262
+       8: 20 63 6c 61  	.word	0x616c6320
+       c: 6e 67 20 76  	.word	0x7620676e
+      10: 65 72 73 69  	.word	0x69737265
+      14: 6f 6e 20 32  	.word	0x32206e6f
+      18: 33 2e 31 2e  	.word	0x2e312e33
+      1c: 34 00 2f 66  	.word	0x662f0034
+      20: 69 78 74 75  	.word	0x75747869
+      24: 72 65 2f 73  	.word	0x732f6572
+      28: 72 63 2f 73  	.word	0x732f6372
+      2c: 75 6d 2e 63  	.word	0x632e6d75
+      30: 00 2f 66 69  	.word	0x69662f00
+      34: 78 74 75 72  	.word	0x72757478
+      38: 65 2f 73 72  	.word	0x72732f65
+      3c: 63 00 74 61  	.word	0x61740063
+      40: 62 6c 65 00  	.word	0x00656c62
+      44: 69 6e 74 00  	.word	0x00746e69
+      48: 5f 5f 41 52  	.word	0x52415f5f
+      4c: 52 41 59 5f  	.word	0x5f594152
+      50: 53 49 5a 45  	.word	0x455a4953
+      54: 5f 54 59 50  	.word	0x5059545f
+      58: 45 5f 5f 00  	.word	0x005f5f45
+      5c: 73 75 6d 00  	.word	0x006d7573
+      60: 62 61 73 65  	.word	0x65736162
+      64: 00 74 6f 74  	.word	0x746f7400
+      68: 61 6c 00 69  	.word	0x69006c61
+      6c: 00           	.byte	0x00
+
+Disassembly of section .debug_frame:
+
+00000000 <.debug_frame>:
+       0: 10 00 00 00  	.word	0x00000010
+       4: ff ff ff ff  	.word	0xffffffff
+       8: 04 00 04 00  	.word	0x00040004
+       c: 01 7c 01 0c  	.word	0x0c017c01
+      10: 02 00 00 00  	.word	0x00000002
+      14: 0c 00 00 00  	.word	0x0000000c
+      18: 00 00 00 00  	.word	0x00000000
+      1c: 4e 00 00 80  	.word	0x8000004e
+      20: 18 00 00 00  	.word	0x00000018
+
+Disassembly of section .symtab:
+
+00000000 <.symtab>:
+		...
+      14: 0000         	unimp
+      16: 8000         	<unknown>
+      18: 0000         	unimp
+      1a: 0000         	unimp
+      1c: 00010003     	lb	zero, 0x0(sp)
+      20: 0000         	unimp
+      22: 0000         	unimp
+      24: 0068         	addi	a0, sp, 0xc
+      26: 8000         	<unknown>
+      28: 0000         	unimp
+      2a: 0000         	unimp
+      2c: 00020003     	lb	zero, 0x0(tp)
+      30: 0000         	unimp
+      32: 0000         	unimp
+      34: 1000         	addi	s0, sp, 0x20
+      36: 8000         	<unknown>
+      38: 0000         	unimp
+      3a: 0000         	unimp
+      3c: 00030003     	lb	zero, 0x0(t1)
+		...
+      4c: 00040003     	lb	zero, 0x0(s0)
+		...
+      5c: 00050003     	lb	zero, 0x0(a0)
+		...
+      6c: 00060003     	lb	zero, 0x0(a2)
+		...
+      7c: 00070003     	lb	zero, 0x0(a4)
+		...
+      8c: 00080003     	lb	zero, 0x0(a6)
+		...
+      9c: 00090003     	lb	zero, 0x0(s2)
+		...
+      ac: 000a0003     	lb	zero, 0x0(s4)
+		...
+      bc: 000b0003     	lb	zero, 0x0(s6)
+		...
+      cc: 000c0003     	lb	zero, 0x0(s8)
+      d0: 0001         	nop
+		...
+      da: 0000         	unimp
+      dc: 0004         	<unknown>
+      de: fff1         	bnez	a5, 0xba <.symtab+0xba>
+      e0: 0000000b     	<unknown>
+      e4: 0000         	unimp
+      e6: 8000         	<unknown>
+      e8: 0000         	unimp
+      ea: 0000         	unimp
+      ec: 0000         	unimp
+      ee: 0001         	nop
+      f0: 0039         	c.nop	0xe
+      f2: 0000         	unimp
+      f4: 002c         	addi	a1, sp, 0x8
+      f6: 8000         	<unknown>
+      f8: 0000         	unimp
+      fa: 0000         	unimp
+      fc: 0000         	unimp
+      fe: 0001         	nop
+     100: 0000000b     	<unknown>
+     104: 004c         	addi	a1, sp, 0x4
+     106: 8000         	<unknown>
+     108: 0000         	unimp
+     10a: 0000         	unimp
+     10c: 0000         	unimp
+     10e: 0001         	nop
+     110: 0039         	c.nop	0xe
+     112: 0000         	unimp
+     114: 1000         	addi	s0, sp, 0x20
+     116: 8000         	<unknown>
+     118: 0000         	unimp
+     11a: 0000         	unimp
+     11c: 0000         	unimp
+     11e: 00390003     	lb	zero, 0x3(s2)
+		...
+     12e: 0004         	<unknown>
+     130: 0039         	c.nop	0xe
+		...
+     13e: 0008         	<unknown>
+     140: 0039         	c.nop	0xe
+		...
+     14e: 00390007     	<unknown>
+		...
+     15e: 0006         	c.slli	zero, 0x1
+     160: 0039         	c.nop	0xe
+		...
+     16e: 0009         	c.nop	0x2
+     170: 003c         	addi	a5, sp, 0x8
+		...
+     17a: 0000         	unimp
+     17c: 0004         	<unknown>
+     17e: fff1         	bnez	a5, 0x15a <.symtab+0x15a>
+     180: 0000000b     	<unknown>
+     184: 004e         	c.slli	zero, 0x13
+     186: 8000         	<unknown>
+     188: 0000         	unimp
+     18a: 0000         	unimp
+     18c: 0000         	unimp
+     18e: 0001         	nop
+     190: 0042         	c.slli	zero, 0x10
+     192: 0000         	unimp
+     194: 0068         	addi	a0, sp, 0xc
+     196: 8000         	<unknown>
+     198: 0020         	addi	s0, sp, 0x8
+     19a: 0000         	unimp
+     19c: 0001         	nop
+     19e: 0002         	c.slli	zero, 0x0
+     1a0: 0039         	c.nop	0xe
+     1a2: 0000         	unimp
+     1a4: 0068         	addi	a0, sp, 0xc
+     1a6: 8000         	<unknown>
+     1a8: 0000         	unimp
+     1aa: 0000         	unimp
+     1ac: 0000         	unimp
+     1ae: 0002         	c.slli	zero, 0x0
+     1b0: 0039         	c.nop	0xe
+		...
+     1be: 000a         	c.slli	zero, 0x2
+     1c0: 0039         	c.nop	0xe
+     1c2: 0000         	unimp
+     1c4: 0021         	c.nop	0x8
+		...
+     1ce: 00390007     	<unknown>
+     1d2: 0000         	unimp
+     1d4: 0085         	addi	ra, ra, 0x1
+		...
+     1de: 0006         	c.slli	zero, 0x1
+     1e0: 0039         	c.nop	0xe
+		...
+     1ee: 0039000b     	<unknown>
+     1f2: 0000         	unimp
+     1f4: 001d         	c.nop	0x7
+		...
+     1fe: 0005         	c.nop	0x1
+     200: 0039         	c.nop	0xe
+     202: 0000         	unimp
+     204: 003d         	c.nop	0xf
+		...
+     20e: 0004         	<unknown>
+     210: 0039         	c.nop	0xe
+		...
+     21e: 000c         	<unknown>
+     220: 0039         	c.nop	0xe
+     222: 0000         	unimp
+     224: 00000063     	beqz	zero, 0x224 <.symtab+0x224>
+     228: 0000         	unimp
+     22a: 0000         	unimp
+     22c: 0000         	unimp
+     22e: 0009         	c.nop	0x2
+     230: 0048         	addi	a0, sp, 0x4
+     232: 0000         	unimp
+     234: 004e         	c.slli	zero, 0x13
+     236: 8000         	<unknown>
+     238: 0018         	<unknown>
+     23a: 0000         	unimp
+     23c: 0012         	c.slli	zero, 0x4
+     23e: 0001         	nop
+     240: 004c         	addi	a1, sp, 0x4
+     242: 0000         	unimp
+     244: 004c         	addi	a1, sp, 0x4
+     246: 8000         	<unknown>
+     248: 0000         	unimp
+     24a: 0000         	unimp
+     24c: 0010         	<unknown>
+     24e: 0001         	nop
+     250: 0056         	c.slli	zero, 0x15
+     252: 0000         	unimp
+     254: 0000         	unimp
+     256: 8000         	<unknown>
+     258: 0000         	unimp
+     25a: 0000         	unimp
+     25c: 0010         	<unknown>
+     25e: 0001         	nop
+     260: 005d         	c.nop	0x17
+     262: 0000         	unimp
+     264: 1000         	addi	s0, sp, 0x20
+     266: 8000         	<unknown>
+     268: 0000         	unimp
+     26a: 0000         	unimp
+     26c: 0010         	<unknown>
+     26e: 03           	<unknown>
+     26f: 00           	<unknown>
+
+Disassembly of section .strtab:
+
+00000000 <.strtab>:
+       0: 7300         	<unknown>
+       2: 6174         	<unknown>
+       4: 7472         	<unknown>
+       6: 6f2e3233     	<unknown>
+       a: 2400         	<unknown>
+       c: 7278         	<unknown>
+       e: 3376         	<unknown>
+      10: 6932         	<unknown>
+      12: 7032         	<unknown>
+      14: 5f31         	li	t5, -0x14
+      16: 326d         	jal	0xfffff9c0 <result+0xffffffff7fffe9c0>
+      18: 3070         	<unknown>
+      1a: 635f 7032 5f30       	<unknown>
+      20: 697a         	<unknown>
+      22: 32727363     	bgeu	tp, t2, 0x348 <.symtab+0x348>
+      26: 3070         	<unknown>
+      28: 7a5f 6d6d 6c75       	<unknown>
+      2e: 7031         	c.lui	zero, 0xfffec
+      30: 5f30         	lw	a2, 0x78(a4)
+      32: 637a         	<unknown>
+      34: 3161         	jal	0xfffffcbc <result+0xffffffff7fffecbc>
+      36: 3070         	<unknown>
+      38: 2400         	<unknown>
+      3a: 0064         	addi	s1, sp, 0xc
+      3c: 2e6d7573     	csrrci	a0, 0x2e6, 0x1a
+      40: 61740063     	beq	s0, s7, 0x640 <.symtab+0x640>
+      44: 6c62         	<unknown>
+      46: 0065         	c.nop	0x19
+      48: 006d7573     	csrrci	a0, 0x6, 0x1a
+      4c: 6661         	lui	a2, 0x18
+      4e: 6574         	<unknown>
+      50: 5f72         	lw	t5, 0x3c(sp)
+      52: 00706167     	<unknown>
+      56: 735f 6174 7472       	<unknown>
+      5c: 7200         	<unknown>
+      5e: 7365         	lui	t1, 0xffff9
+      60: 6c75         	lui	s8, 0x1d
+      62: 0074         	addi	a3, sp, 0xc
+
+Disassembly of section .shstrtab:
+
+00000000 <.shstrtab>:
+       0: 2e00         	<unknown>
+       2: 746d7973     	csrrci	s2, 0x746, 0x1a
+       6: 6261         	lui	tp, 0x18
+       8: 2e00         	<unknown>
+       a: 74727473     	csrrci	s0, mseccfg, 0x4
+       e: 6261         	lui	tp, 0x18
+      10: 2e00         	<unknown>
+      12: 74736873     	csrrsi	a6, mseccfg, 0x6
+      16: 7472         	<unknown>
+      18: 6261         	lui	tp, 0x18
+      1a: 2e00         	<unknown>
+      1c: 6574         	<unknown>
+      1e: 7478         	<unknown>
+      20: 2e00         	<unknown>
+      22: 6f72         	<unknown>
+      24: 6164         	<unknown>
+      26: 6174         	<unknown>
+      28: 632e         	<unknown>
+      2a: 32337473     	csrrci	s0, mhpmevent3, 0x6
+      2e: 2e00         	<unknown>
+      30: 6164         	<unknown>
+      32: 6174         	<unknown>
+      34: 2e00         	<unknown>
+      36: 6972         	<unknown>
+      38: 2e766373     	csrrsi	t1, 0x2e7, 0xc
+      3c: 7461         	lui	s0, 0xffff8
+      3e: 7274         	<unknown>
+      40: 6269         	lui	tp, 0x1a
+      42: 7475         	lui	s0, 0xffffd
+      44: 7365         	lui	t1, 0xffff9
+      46: 2e00         	<unknown>
+      48: 6d6d6f63     	bltu	s10, s6, 0x726 <.symtab+0x726>
+      4c: 6e65         	lui	t3, 0x19
+      4e: 0074         	addi	a3, sp, 0xc
+      50: 642e         	<unknown>
+      52: 6265         	lui	tp, 0x19
+      54: 6775         	lui	a4, 0x1d
+      56: 695f 666e 006f       	<unknown>
+      5c: 642e         	<unknown>
+      5e: 6265         	lui	tp, 0x19
+      60: 6775         	lui	a4, 0x1d
+      62: 615f 6262 6572       	<unknown>
+      68: 0076         	c.slli	zero, 0x1d
+      6a: 642e         	<unknown>
+      6c: 6265         	lui	tp, 0x19
+      6e: 6775         	lui	a4, 0x1d
+      70: 615f 6172 676e       	<unknown>
+      76: 7365         	lui	t1, 0xffff9
+      78: 2e00         	<unknown>
+      7a: 6564         	<unknown>
+      7c: 7562         	<unknown>
+      7e: 696c5f67     	<unknown>
+      82: 656e         	<unknown>
+      84: 2e00         	<unknown>
+      86: 6564         	<unknown>
+      88: 7562         	<unknown>
+      8a: 6f6c5f67     	<unknown>
+      8e: 642e0063     	beq	t3, sp, 0x6ce <.symtab+0x6ce>
+      92: 6265         	lui	tp, 0x19
+      94: 6775         	lui	a4, 0x1d
+      96: 735f 7274 2e00       	<unknown>
+      9c: 6564         	<unknown>
+      9e: 7562         	<unknown>
+      a0: 72665f67     	<unknown>
+      a4: 6d61         	lui	s10, 0x18
+      a6: 0065         	c.nop	0x19

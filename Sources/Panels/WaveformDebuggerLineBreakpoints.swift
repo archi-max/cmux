@@ -993,18 +993,24 @@ enum WaveformDebuggerLineBreakpoints {
 
     // MARK: Signal breakpoints
 
-    /// A breakpoint the page made on a waveform signal (Break When Changes / Equals…).
+    /// A breakpoint the page made on a waveform signal (Break When Changes / Equals… / Text Matches…).
     struct SignalBreakpoint: Codable, Equatable, Sendable {
         var path: [String]
         var kind: String
         var value: String?
         var enabled: Bool
         var condition: String? = nil
+        /// Text breakpoints (cmux-debugger-text.js); absent in older sessions and for other kinds.
+        var text: WaveformDebuggerTextBreakpoint? = nil
+        /// Commit breakpoints (cmux-debugger-commits.js; their path is empty); absent for other kinds.
+        var commit: WaveformDebuggerCommitBreakpoint? = nil
 
         var pageItem: [String: Any] {
             var item: [String: Any] = ["path": path, "kind": kind, "enabled": enabled]
             if let value { item["value"] = value }
             if let condition { item["condition"] = condition }
+            if let text { item.merge(text.pageFields) { first, _ in first } }
+            if let commit { item.merge(commit.pageFields) { first, _ in first } }
             return item
         }
     }
@@ -1036,11 +1042,18 @@ enum WaveformDebuggerLineBreakpoints {
         // given again to it (after it cleared it) or to other viewers.
         if signals[waveform.workspaceId]?[waveform.filePath] == nil { signals[waveform.workspaceId]?[""] = nil }
         signals[waveform.workspaceId, default: [:]][waveform.filePath] = items.compactMap { item in
-            guard let path = item["path"] as? [String], !path.isEmpty, let kind = item["kind"] as? String,
-                  kind == "change" || kind == "equals" else { return nil }
+            guard let path = item["path"] as? [String], let kind = item["kind"] as? String else { return nil }
             let condition = (item["condition"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            if WaveformDebuggerCommitBreakpoint.kinds.contains(kind) {
+                guard path.isEmpty, let commit = WaveformDebuggerCommitBreakpoint(pageItem: item, kind: kind) else { return nil }
+                return SignalBreakpoint(path: [], kind: kind, value: nil, enabled: item["enabled"] as? Bool ?? true, condition: condition, commit: commit)
+            }
+            guard !path.isEmpty, kind == "change" || kind == "equals" || kind == "text" else { return nil }
+            let text = kind == "text" ? WaveformDebuggerTextBreakpoint(pageItem: item) : nil
+            if kind == "text", text == nil { return nil }
             return SignalBreakpoint(
-                path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true, condition: condition
+                path: path, kind: kind, value: item["value"] as? String, enabled: item["enabled"] as? Bool ?? true, condition: condition,
+                text: text
             )
         }
     }
@@ -1063,11 +1076,13 @@ enum WaveformDebuggerLineBreakpoints {
         let lines = marks[workspace] ?? []
         let signalsByDump = (signals[workspace] ?? [:]).filter { !$0.value.isEmpty }
         let watchesByDump = (watches[workspace] ?? [:]).filter { !$0.value.isEmpty }
-        guard !lines.isEmpty || !signalsByDump.isEmpty || !watchesByDump.isEmpty else { return nil }
+        let pcMarks = WaveformDebuggerAsmBreakpoints.sessionMarks(of: workspace)
+        guard !lines.isEmpty || !signalsByDump.isEmpty || !watchesByDump.isEmpty || pcMarks != nil else { return nil }
         return SessionWaveformBreakpointsSnapshot(
             lines: lines.isEmpty ? nil : lines, signals: nil, watches: nil,
             signalsByDump: signalsByDump.isEmpty ? nil : signalsByDump,
-            watchesByDump: watchesByDump.isEmpty ? nil : watchesByDump
+            watchesByDump: watchesByDump.isEmpty ? nil : watchesByDump,
+            pcMarks: pcMarks
         )
     }
 
@@ -1117,6 +1132,7 @@ enum WaveformDebuggerLineBreakpoints {
         var watchesByDump = snapshot.watchesByDump ?? [:]
         if let legacy = snapshot.watches, !legacy.isEmpty, watchesByDump[""] == nil { watchesByDump[""] = legacy }
         if !watchesByDump.isEmpty { watches[workspace] = watchesByDump }
+        WaveformDebuggerAsmBreakpoints.restore(snapshot.pcMarks, in: workspace)
     }
 }
 
@@ -1130,4 +1146,6 @@ struct SessionWaveformBreakpointsSnapshot: Codable, Sendable, Equatable {
     /// Per viewer's dump (file path).
     var signalsByDump: [String: [WaveformDebuggerLineBreakpoints.SignalBreakpoint]]? = nil
     var watchesByDump: [String: [String]]? = nil
+    /// Breakpoints in assembly listings (WaveformDebuggerAsmBreakpoints), by PC and symbol+offset.
+    var pcMarks: [AsmMark]? = nil
 }
