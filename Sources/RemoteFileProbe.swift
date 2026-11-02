@@ -144,6 +144,13 @@ enum RemoteFileProbe {
 /// What decides how a terminal link or `cmux open` download opens, kept
 /// free of app types so it can be tested on its own.
 enum RemotePreviewOpenRules {
+    /// The SSH connection a dump read in place on the host is opened with,
+    /// for a terminal's link or `cmux open`. Placeholder until the fix: the
+    /// Files root's, which exists only while Files is connected over SSH.
+    static func inPlaceConnection<Connection: Equatable>(terminal: Connection?, filesRoot: Connection?) -> Connection? {
+        terminal == nil ? nil : filesRoot
+    }
+
     /// A short reason for the debug log when a remote preview fails, with no
     /// path or ssh output in it: the probe's own failure, a timeout or
     /// cancellation, else only the error's type.
