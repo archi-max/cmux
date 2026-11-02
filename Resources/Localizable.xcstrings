@@ -702044,6 +702044,655 @@
         }
       }
     },
+    "waveformDebugger.sequence.breakOnSequence": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Break When Sequence Matches…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anhalten, wenn die Sequenz passt…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter quand la séquence correspond…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التوقف عند تطابق التسلسل…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener cuando coincida la secuencia…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列符合時中斷…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列匹配时中断…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스가 일치하면 중단…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンスが一致したら停止…"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.prompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Break when the committed instructions match this sequence"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anhalten, wenn die ausgeführten Anweisungen dieser Sequenz entsprechen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter quand les instructions validées correspondent à cette séquence"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التوقف عندما تطابق التعليمات المنفذة هذا التسلسل"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener cuando las instrucciones confirmadas coincidan con esta secuencia"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "當提交的指令符合此序列時中斷"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当提交的指令匹配此序列时中断"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "커밋된 명령어가 이 시퀀스와 일치하면 중단"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コミットされた命令がこのシーケンスに一致したら停止"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd (one commit per ##1; ##[1:$] for any later one)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd (ein Commit je ##1; ##[1:$] für einen beliebigen späteren)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd (un commit par ##1 ; ##[1:$] pour n’importe quel commit ultérieur)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd (تنفيذ واحد لكل ##1؛ ##[1:$] لأي تنفيذ لاحق)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd (un commit por ##1; ##[1:$] para cualquiera posterior)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd（每個 ##1 為一次提交；##[1:$] 表示之後任一次）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd（每个 ##1 为一次提交；##[1:$] 表示之后任意一次）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd (##1마다 커밋 하나; ##[1:$]는 이후의 아무 커밋)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "{lw} as L ##1 rs1 == L.rd（##1 ごとに 1 コミット、##[1:$] は以降の任意のコミット）"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sequence %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sequenz %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Séquence %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التسلسل %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secuencia %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列 %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列 %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스 %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンス %@"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.startLabel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sequence %@, stopping at its first instruction"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sequenz %@, hält bei ihrer ersten Anweisung"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Séquence %@, arrêt à sa première instruction"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التسلسل %@، مع التوقف عند أول تعليمة فيه"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secuencia %@, se detiene en su primera instrucción"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列 %@，停在其第一條指令"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列 %@，停在其第一条指令"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스 %@, 첫 번째 명령어에서 중단"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンス %@（最初の命令で停止）"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the sequence is empty"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Sequenz ist leer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la séquence est vide"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التسلسل فارغ"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la secuencia está vacía"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列為空"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列为空"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스가 비어 있습니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンスが空です"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.tooLong": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the sequence is longer than %@ characters"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Sequenz ist länger als %@ Zeichen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la séquence dépasse %@ caractères"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التسلسل أطول من %@ حرفًا"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la secuencia tiene más de %@ caracteres"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列超過 %@ 個字元"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "序列超过 %@ 个字符"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스가 %@자보다 깁니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンスが %@ 文字を超えています"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.badSyntax": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the sequence doesn't parse (the Machine section's Sequences tab shows why)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Sequenz lässt sich nicht parsen (der Tab „Sequenzen“ im Bereich „Maschine“ zeigt den Grund)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la séquence ne s’analyse pas (l’onglet Séquences de la section État machine indique pourquoi)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر تحليل التسلسل (تعرض علامة التبويب «التسلسلات» في قسم «الآلة» السبب)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la secuencia no se puede analizar (la pestaña Secuencias de la sección Máquina muestra por qué)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法解析序列（「機器」區段的「序列」分頁會說明原因）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法解析序列（“机器”部分的“序列”标签页会说明原因）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스를 구문 분석할 수 없습니다(머신 섹션의 시퀀스 탭에서 이유를 확인하세요)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンスを解析できません（「マシン」セクションの「シーケンス」タブに理由が表示されます）"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: Die Suche hat ihr Budget erreicht, daher sind nur die ersten %2$@ Treffer Haltepunkt-Treffer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ : la recherche s’est arrêtée à son budget ; seules ses %2$@ premières correspondances sont des arrêts"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: توقف البحث عند حدّه، لذا فإن أول %2$@ تطابقات فقط هي نقاط توقف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: la búsqueda se detuvo en su límite, así que solo sus primeras %2$@ coincidencias son paradas"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：搜尋已達預算上限，因此只有前 %2$@ 個符合項目會作為中斷點命中"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：搜索已达预算上限，因此只有前 %2$@ 个匹配项作为断点命中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 검색이 예산에서 멈췄으므로 처음 %2$@개 일치 항목만 중단점 적중입니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 検索が上限に達したため、最初の %2$@ 件の一致だけがブレークポイントのヒットになります"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Sequence…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sequenz bearbeiten…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modifier la séquence…"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعديل التسلسل…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editar secuencia…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "編輯序列…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑序列…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시퀀스 편집…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "シーケンスを編集…"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.landStart": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop at Its First Instruction"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bei der ersten Anweisung anhalten"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter à sa première instruction"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التوقف عند أول تعليمة"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener en su primera instrucción"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停在其第一條指令"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停在其第一条指令"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "첫 번째 명령어에서 중단"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最初の命令で停止"
+          }
+        }
+      }
+    },
     "waveformDebugger.text.breakWhenMatches": {
       "extractionState": "manual",
       "localizations": {
