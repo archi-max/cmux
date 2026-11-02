@@ -699,13 +699,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
             self.generation += 1
             return self.generation
         }
-        let stderrReader = PipeReader(stderr.fileHandleForReading)
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self, let data = stderrReader.read() else {
-                handle.readabilityHandler = nil
-                return
-            }
-            if !data.isEmpty { self.appendStderr(data) }
+        let stderrReader = PipeReader(stderr.fileHandleForReading) { [weak self] in self?.appendStderr($0) }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            if !stderrReader.pump() { handle.readabilityHandler = nil }
         }
         process.terminationHandler = { [weak self] process in
             // What stderr still holds (the exit-87 machine line) before the exit is handled.
@@ -770,57 +766,69 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     /// still on its way finds an empty pipe, not an exception.
     private func drainStderr(_ handle: FileHandle, _ reader: PipeReader) {
         handle.readabilityHandler = nil
-        let rest = reader.drain()
-        if !rest.isEmpty { appendStderr(rest) }
+        reader.drain()
     }
 
     /// Reads a child's pipe without Foundation's raising reads: `availableData` and
     /// `readDataToEndOfFile` throw an Objective-C exception, which aborts cmux, on EAGAIN or
     /// any read error, and a handler call can still be on its way after the handler is
     /// cleared. Each read polls first, so none blocks or fails on an empty pipe that a
-    /// lingering child keeps open, and the fd's flags are never changed. One lock orders
-    /// the handler's reads and the final drain, so the bytes stay in order.
+    /// lingering child keeps open, and the fd's flags are never changed. Bytes go to `sink`
+    /// inside the reader's one lock, so the handler's reads and the final drain deliver
+    /// them in pipe order (a read and its append are one step).
     final class PipeReader: @unchecked Sendable {
         private let handle: FileHandle  // keeps the fd open
+        private let sink: @Sendable (Data) -> Void
         private let lock = NSLock()
 
-        init(_ handle: FileHandle) { self.handle = handle }
+        init(_ handle: FileHandle, sink: @escaping @Sendable (Data) -> Void) {
+            self.handle = handle
+            self.sink = sink
+        }
 
-        /// What the pipe holds now: some bytes, empty (nothing yet), or nil at its end (or
-        /// on a read error). `waiting`: until there is something or the end.
-        func read(waiting: Bool = false) -> Data? {
+        /// Delivers what the pipe holds now (maybe nothing). False at its end, or on a read error.
+        @discardableResult
+        func pump() -> Bool {
             lock.withLock {
-                let fd = handle.fileDescriptor
-                var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                while true {
-                    let r = poll(&p, 1, waiting ? -1 : 0)
-                    if r > 0 { break }
-                    if r == 0 { return Data() }
-                    if errno != EINTR { return nil }
-                }
-                var buffer = [UInt8](repeating: 0, count: 16384)
-                while true {
-                    let n = Darwin.read(fd, &buffer, buffer.count)
-                    if n > 0 { return Data(buffer[0..<n]) }
-                    if n == 0 { return nil }
-                    if errno == EINTR { continue }
-                    return errno == EAGAIN ? Data() : nil
-                }
+                guard let data = readLocked(waiting: false) else { return false }
+                if !data.isEmpty { sink(data) }
+                return true
             }
         }
 
-        /// Everything readable now, until the pipe is empty or ends.
-        func drain() -> Data {
-            var all = Data()
-            while let d = read(), !d.isEmpty { all.append(d) }
-            return all
+        /// Delivers everything readable now, until the pipe is empty or ends.
+        func drain() {
+            lock.withLock {
+                while let data = readLocked(waiting: false), !data.isEmpty { sink(data) }
+            }
         }
 
-        /// Everything until the pipe ends (every writer has closed it).
-        func readToEnd() -> Data {
-            var all = Data()
-            while let d = read(waiting: true) { all.append(d) }
-            return all
+        /// Delivers everything until the pipe ends (every writer has closed it).
+        func readToEnd() {
+            lock.withLock {
+                while let data = readLocked(waiting: true) { sink(data) }
+            }
+        }
+
+        /// Some bytes, empty (nothing yet), or nil at the end (or on a read error).
+        /// `waiting`: until there is something or the end. Called with `lock` held.
+        private func readLocked(waiting: Bool) -> Data? {
+            let fd = handle.fileDescriptor
+            var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            while true {
+                let r = poll(&p, 1, waiting ? -1 : 0)
+                if r > 0 { break }
+                if r == 0 { return Data() }
+                if errno != EINTR { return nil }
+            }
+            var buffer = [UInt8](repeating: 0, count: 16384)
+            while true {
+                let n = Darwin.read(fd, &buffer, buffer.count)
+                if n > 0 { return Data(buffer[0..<n]) }
+                if n == 0 { return nil }
+                if errno == EINTR { continue }
+                return errno == EAGAIN ? Data() : nil
+            }
         }
     }
 
@@ -866,13 +874,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         ssh.standardError = stderr
         // Drained as it arrives, so a chatty build never blocks on a full pipe.
         let log = InstallLog()
-        let stderrReader = PipeReader(stderr.fileHandleForReading)
+        let stderrReader = PipeReader(stderr.fileHandleForReading) { log.append($0) }
         stderr.fileHandleForReading.readabilityHandler = { handle in
-            guard let data = stderrReader.read() else {
-                handle.readabilityHandler = nil
-                return
-            }
-            if !data.isEmpty { log.append(data) }
+            if !stderrReader.pump() { handle.readabilityHandler = nil }
         }
 
         let status: Int32 = try await withCheckedThrowingContinuation { continuation in
@@ -907,7 +911,7 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         if tar.isRunning { tar.terminate() }
         // The handler may not have had the last lines yet; they are usually the useful ones.
         stderr.fileHandleForReading.readabilityHandler = nil
-        log.append(stderrReader.readToEnd())
+        stderrReader.readToEnd()
         if lock.withLock({ isStopped }) { throw Failure.stopped }
         let detail = Self.tail(of: log.data)
         if log.timedOut { throw Failure.timedOut(detail: detail) }
