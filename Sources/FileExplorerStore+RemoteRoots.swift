@@ -20,6 +20,7 @@ extension FileExplorerStore {
            existingProvider.displayTarget == displayTarget {
             sshProvider = existingProvider
             sshProvider.updateAvailability(isAvailable, homePath: nil)
+            updateFileChannelLease()
         } else {
             cancelRemoteHomeResolution()
             setRootPath("")
@@ -95,6 +96,7 @@ extension FileExplorerStore {
            existing.connection == connection,
            existing.displayTarget == displayTarget {
             existing.updateAvailability(true, homePath: nil)
+            updateFileChannelLease()
             return
         }
         cancelRemoteHomeResolution()
@@ -201,6 +203,7 @@ extension FileExplorerStore {
                     self.remoteHomeResolutionTask = nil
                     if let sshProvider = provider as? SSHFileExplorerProvider {
                         sshProvider.updateAvailability(true, homePath: homePath)
+                        self.updateFileChannelLease()
                     } else if let cloudProvider = provider as? CloudVMFileExplorerProvider {
                         self.setProvider(cloudProvider.resolvingHome(homePath), reloadIfAvailable: false)
                     }
