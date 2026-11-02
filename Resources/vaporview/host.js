@@ -572,7 +572,8 @@
 
   // netlistId -> { t, intoLocals } of an add the viewer has not reported back yet.
   const pendingAdds = new Map();
-  const isPending = (id, now) => { const p = pendingAdds.get(id); return p !== undefined && now - p.t < 2000; };
+  // On its way outside Locals (an add into Locals doesn't pin it: verify-parity-fu N2).
+  const isPending = (id, now) => { const p = pendingAdds.get(id); return p !== undefined && !p.intoLocals && now - p.t < 2000; };
 
   // Shown outside the debugger's Locals, or on its way there.
   function alreadyShown(netlistId, shown = shownIds(true), now = Date.now()) {
@@ -614,7 +615,8 @@
     const top = Array.isArray(groupPath) && groupPath.length
       ? (shownRows() || []).find((d) => d.dataType === 'signal-group' && d.groupName === groupPath[0]) : null;
     const intoLocals = isLocals(top);
-    vars.forEach((v) => pendingAdds.set(v.netlistId, { t: now, intoLocals }));
+    // An add into Locals doesn't hide a pinned add still on its way.
+    vars.forEach((v) => { if (!(intoLocals && isPending(v.netlistId, now))) { pendingAdds.set(v.netlistId, { t: now, intoLocals }); } });
     // Next to a selected row of the debugger's Locals, a new row would land in
     // Locals (and go with its next refill): it goes to the top level instead.
     if (groupPath === undefined && index === undefined && hostApi.topLevelIndexOutsideTransient) {
@@ -964,9 +966,15 @@
       const { path, confirmed } = query || {};
       const scope = await findLinkItem(path, false);
       if (!scope || scope.kind !== 'scope' || !initSent) { return null; }
-      const shown = shownIds(true);
-      const now = Date.now();
-      const all = (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId, now));
+      // The rows an Undo or restore still looking up its rows leaves decide what
+      // is shown: a signal it takes out is added (verify-parity-fu N1). A reload
+      // or open that drops the wait adds none.
+      const all = await window.cmuxCommands.withSettledViews(async () => {
+        const shown = shownIds(true);
+        const now = Date.now();
+        return (await getChildren(scope)).filter((c) => c.kind === 'var' && !shown.has(c.netlistId) && !isPending(c.netlistId, now));
+      });
+      if (!all) { return { added: 0, total: 0 }; }
       const vars = all.slice(0, maxScopeAdds);
       if (vars.length > confirmAbove && !confirmed) { return { needsConfirm: true, count: vars.length, total: all.length }; }
       // An add held for a view (Undo, restore) is checked against it when it
