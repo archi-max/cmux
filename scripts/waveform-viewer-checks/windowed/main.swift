@@ -223,6 +223,81 @@ func relayChecks() async throws {
          "open is limited to the panel's file: other \(header(other)), own \(header(own).keys.sorted())")
 }
 
+/// C1: a helper's pipes are read without Foundation's raising reads. `availableData` throws an
+/// Objective-C exception (an abort) on EAGAIN, which a handler call still on its way after the
+/// exit's drain can meet, on an empty pipe a lingering child keeps open.
+final class Collected: @unchecked Sendable {
+  private let lock = NSLock()
+  private var data = Data()
+  func append(_ d: Data) { lock.withLock { data.append(d) } }
+  var value: Data { lock.withLock { data } }
+}
+
+func stderrChecks() async throws {
+  // The failing state itself: an empty, non-blocking pipe that a writer still holds open.
+  let p = Pipe()
+  let rfd = p.fileHandleForReading.fileDescriptor
+  _ = fcntl(rfd, F_SETFL, fcntl(rfd, F_GETFL) | O_NONBLOCK)
+  let reader = WaveformFSDBHelper.PipeReader(p.fileHandleForReading)
+  let empty = reader.read()
+  try p.fileHandleForWriting.write(contentsOf: Data("abc".utf8))
+  let abc = reader.read()
+  try p.fileHandleForWriting.close()
+  let end = reader.read()
+  expect(empty == Data() && abc == Data("abc".utf8) && end == nil,
+         "a pipe read: nothing yet on an empty non-blocking pipe (no exception), then its bytes, then its end: \(String(describing: empty)), \(String(describing: abc)), \(String(describing: end))")
+
+  // The handler and the exit's drain racing on a pipe a writer trickles into, 200 times: no
+  // abort, and what was read is in order, each byte once (a prefix of what was written).
+  var disorder = 0
+  for round in 0..<200 {
+    let pipe = Pipe()
+    let r = WaveformFSDBHelper.PipeReader(pipe.fileHandleForReading)
+    let got = Collected()
+    pipe.fileHandleForReading.readabilityHandler = { h in
+      guard let d = r.read() else { h.readabilityHandler = nil; return }
+      got.append(d)
+    }
+    let w = pipe.fileHandleForWriting
+    let lines = (0..<300).map { String(format: "%05d\n", $0) }
+    let writer = Thread {
+      for (k, line) in lines.enumerated() {
+        try? w.write(contentsOf: Data(line.utf8))
+        if k % 10 == 0 { usleep(20) }
+      }
+    }
+    writer.start()
+    try await Task.sleep(nanoseconds: UInt64(round % 20) * 150_000)
+    pipe.fileHandleForReading.readabilityHandler = nil
+    got.append(r.drain())
+    while !writer.isFinished { try await Task.sleep(nanoseconds: 1_000_000) }
+    try? w.close()
+    let all = Data(lines.joined().utf8)
+    if !all.starts(with: got.value) { disorder += 1 }
+  }
+  expect(disorder == 0, "the handler and the drain racing on a trickled pipe, 200 rounds: no abort, \(disorder) out of order")
+
+  // End to end: 200 helper exits while a child the launcher left behind keeps writing to
+  // stderr (4 at a time). Each opens, stops, and leaves the next free to start.
+  let home = try makeHome("stderr-trickle", installs: [v2Launching("( i=0; while [ $i -lt 3000 ]; do echo \"trickle $i\" >&2; i=$((i+1)); done ) & exec node \(shellQuoted(mock)) --latency 2 --jitter 1 \"$@\" 3>&1 1>&2"), v1Install])
+  let fail: @Sendable (Error) -> String = { "\($0)" }
+  var opened = 0
+  for round in 0..<50 {
+    opened += await withTaskGroup(of: Int.self) { g in
+      for j in 0..<4 {
+        g.addTask {
+          let h = makeHelper(home: home, loading: .auto, hostKey: "host-trickle-\(round)-\(j)")
+          let r = await h.response(for: json(["cmd": "open", "file": "synth:ms=0.02", "id": 1]), failureMessage: fail)
+          h.stop()
+          return header(r)["result"] != nil ? 1 : 0
+        }
+      }
+      return await g.reduce(0, +)
+    }
+  }
+  expect(opened == 200, "200 helpers whose stderr a lingering child keeps writing to open and stop: \(opened) opened, no abort")
+}
+
 /// When v2 gives way to v1, and when it doesn't.
 func fallbackChecks() async throws {
   let fail: @Sendable (Error) -> String = { "\($0)" }
@@ -999,6 +1074,7 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 func run() async {
   do { try await relayChecks() } catch { expect(false, "relay checks ran: \(error)") }
   do { try await fallbackChecks() } catch { expect(false, "fallback checks ran: \(error)") }
+  do { try await stderrChecks() } catch { expect(false, "stderr checks ran: \(error)") }
   do {
     let home = try makeHome("page", installs: [v2Install, v1Install])
     let page = Page(loading: .auto)
