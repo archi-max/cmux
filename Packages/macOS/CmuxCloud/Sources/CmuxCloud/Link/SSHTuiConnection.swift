@@ -138,10 +138,10 @@ public struct SSHTuiConnection: Sendable {
     /// master counts against the server's per-connection `MaxSessions` (10 by
     /// default), every app's carrier for a host shares one master, and a
     /// refused session gets no fallback, so one-off runs there could refuse a
-    /// carrier's reconnect. They share a master of their own instead, at the
-    /// carrier's ControlPath plus ``operationsControlPathSuffix``, which the
-    /// first run starts. A carrier that shares nothing (`ControlPath=none`)
-    /// keeps them unshared.
+    /// carrier's reconnect. They name this app's own one-off master instead,
+    /// ``operationsControlPath``, which the app opens when the carrier connects
+    /// and lends sessions on (a batch run never starts a master itself). A
+    /// carrier that shares nothing (`ControlPath=none`) keeps them unshared.
     public var fileOperationSSHOptions: [String] {
         let resolver = SSHAgentSocketResolver(environment: [:])
         let options = sshOptions
@@ -154,11 +154,15 @@ public struct SSHTuiConnection: Sendable {
             return route
         }
         guard path.lowercased() != "none" else { return route + ["ControlPath=none"] }
-        return route + ["ControlMaster=auto", "ControlPersist=600", "ControlPath=" + path + Self.operationsControlPathSuffix]
+        return route + ["ControlPath=" + path + operationsControlPathSuffix]
     }
 
-    /// Appended to the carrier's ControlPath for the one-off runs' own master.
-    public static let operationsControlPathSuffix = "-ops"
+    /// Appended to the carrier's ControlPath for this app's one-off masters:
+    /// `-ops`, plus the build's tag, so two installed apps never lend sessions
+    /// on one master without counting each other's.
+    public var operationsControlPathSuffix: String {
+        "-ops" + (remoteTag.map { "-" + $0 } ?? "")
+    }
 
     /// The SSH options for a long-lived run beside the carrier, such as a
     /// language server or a waveform helper: the carrier's route on a
