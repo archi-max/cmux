@@ -53,8 +53,8 @@ screenshots, because those need the full app rather than the off-screen viewer h
 
 VaporView's menus, keys, netlist, sessions, settings and Auto Reload work in the panel as in VS Code, with the same
 command IDs. The differences:
-- A session `<name>.json` beside `<name>.vcd` loads automatically. For a dump on an SSH host, Save Vaporview
-  Session... (⌘S) asks where to write.
+- A session `<name>.json` beside `<name>.vcd` is offered when the dump opens (setting: Load a session file with the
+  same name as the dump; Ask by default). For a dump on an SSH host, Save Vaporview Session... (⌘S) asks where to write.
 - A signal already shown is never added twice, and there is no WCP server.
 - ⌘-click a time (`@ 50000`, `50,000 ns`) or an instance path in a cmux terminal to move the marker or add the signal.
 
@@ -78,15 +78,15 @@ The viewer and the helper then work as one:
   the zoom on screen, exact or summarized per pixel bucket. It prefetches neighbours, so panning rarely waits.
 - The helper keeps four worker processes with the dump open, and answers windows, values at the marker, next edge
   and value search from their in-memory stores.
-- Signals with at most 350,000 changes are loaded whole and then behave like local ones.
+- Signals with at most 350,000 changes, within byte limits, are loaded whole and then behave like local ones.
 - If the windowed helper can't start, cmux falls back to whole signals and says so in the status strip.
 
 Key decisions:
 - **Read in place, never download.** Dumps are often gigabytes and change with every run; only what's drawn moves.
 - **Built on the host.** cmux pipes the folder over SSH and builds it when the launcher exits 87 (missing or stale).
 - **Protocol v2:** JSON lines on stdin, replies on fd 3 (the reader prints to stdout), cancel by request id.
-- **Bounded replies and memory:** 1024 buckets per tile, so a reply is sized to the screen; 1 GB per worker.
-- **Recovery:** ready within 90 s or the host is skipped for 10 minutes; a dead worker restarts and reopens.
+- **Bounded replies and memory:** 1024 buckets per tile (256 above 64 bits), sized to the screen; 1 GB per worker.
+- **Recovery:** a v2 not ready in 90 s is skipped on that host for 10 minutes (whole signals meanwhile).
 - *(coming)* An open timeout with one relaunch, a watchdog that kills only its own children, protocol pinning.
 
 VCD, FST and GHW are parsed in the page by wellen, local or remote. The helper's design, protocol, timeouts and
@@ -150,8 +150,8 @@ The dump is a recorded run, so cmux steps through it like gdb, in both direction
   When Changes and Break When Equals… on a row; F9 on an editor line (stops when a signal it assigns changes);
   Break When Text Matches… (a regex over the row's shown text, such as `^csrw`); and the instruction kinds below.
   Any of them can take a condition. While playing, F5 pauses.
-- Stop Debugging ends stepping and removes Locals. Every item of View > Waveform Debugger is in the command
-  palette, and the keys can be rebound in cmux's keyboard settings.
+- Stop Debugging ends stepping and removes Locals. Every command of View > Waveform Debugger is in the
+  command palette, and the keys can be rebound in cmux's keyboard settings.
 - **Evaluate and watches:** SystemVerilog expressions, with IEEE 1800 widths and 4-state results, in the Evaluate
   field or as watches that update every step.
 
