@@ -83,6 +83,14 @@ import Testing
 
     static func alive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
 
+    /// stderr as it arrives (a blocking read would wait for the fake Verdi to end).
+    final class Heard: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        func append(_ chunk: Data) { lock.withLock { data.append(chunk) } }
+        var text: String { lock.withLock { String(decoding: data, as: UTF8.self) } }
+    }
+
     @Test func theLauncherSaysItWaitsForALicenceAndEndsVerdiWhenCmuxGoes() async throws {
         let host = try Self.fakeHost()
         defer { try? FileManager.default.removeItem(at: host.dir) }
@@ -107,10 +115,13 @@ import Testing
         }
         #expect(pid > 0, "the fake verdi started")
         // The launcher reports the licence queue on stderr (cmux shows it when it gives up).
+        let heard = Heard()
+        stderr.fileHandleForReading.readabilityHandler = { handle in heard.append(handle.availableData) }
+        defer { stderr.fileHandleForReading.readabilityHandler = nil }
         var said = ""
         for _ in 0..<80 where !said.contains("waiting for a Verdi licence") {
             try await Task.sleep(nanoseconds: 100_000_000)
-            if let chunk = try? stderr.fileHandleForReading.read(upToCount: 4096), !chunk.isEmpty { said += String(decoding: chunk, as: UTF8.self) }
+            said = heard.text
         }
         #expect(said.contains("cmux-verdi: waiting for a Verdi licence"), "stderr: \(said)")
         // cmux gives up: its ssh session ends. Verdi must not outlive it.
