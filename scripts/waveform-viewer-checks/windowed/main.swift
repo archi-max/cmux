@@ -878,10 +878,16 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     for c in cases {
       expect(await setFormat(c.command, c.format), "bus0 is shown as \(c.format)")
       _ = await call("window.__relayCmds.length = 0; return null")
+      let hitsBefore = await wc("w.stats.navHits") as? Int ?? 0
       let t = await search(c.query, from: 0)
       let cmds = await call("return [...new Set(window.__relayCmds)]") as? [String] ?? []
+      let cached = (await wc("w.stats.navHits") as? Int ?? 0) - hitsBefore
       if c.exact { expect(t == far, "\(c.format) search for the far value \(c.query) finds it: t \(t), want \(far)") }
-      expect(cmds.contains("search"), "\(c.format) search reaches the helper as a bit pattern: \(cmds)")
+      // The helper's search answers it: a round trip, or the cached answer to the same bit
+      // pattern an earlier format's search asked (hex, binary, decimal and signed of one
+      // value are one pattern). Never a page-side scan of windows.
+      expect(cmds.contains("search") || cached > 0,
+             "\(c.format) search reaches the helper as a bit pattern: \(cmds), cached answers \(cached)")
     }
     expect(await setFormat("displayAsAscii", "ascii"), "bus0 is shown as ascii")
     _ = await call("window.__relayCmds.length = 0; return null")
