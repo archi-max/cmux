@@ -7,7 +7,9 @@ private let slangServerPath = (NSHomeDirectory() as NSString).appendingPathCompo
 private let veriblePath = (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/verible-verilog-format")
 private let hasSlangServer = FileManager.default.isExecutableFile(atPath: slangServerPath)
 private let hasVerible = FileManager.default.isExecutableFile(atPath: veriblePath)
+/// Needs CMUX_LSP_SSH_HOST: an ssh destination with slang-server on its PATH (no default host).
 private let runSSHTests = ProcessInfo.processInfo.environment["CMUX_LSP_SSH_TEST"] == "1"
+    && ProcessInfo.processInfo.environment["CMUX_LSP_SSH_HOST"].map { !$0.isEmpty } == true
 
 private let subSource = """
 module sub (
@@ -407,7 +409,7 @@ struct SourceFormatterFailureTests {
 
 @Suite("Remote language tools over ssh", .serialized, .enabled(if: runSSHTests))
 struct RemoteLanguageToolTests {
-    private let host = ProcessInfo.processInfo.environment["CMUX_LSP_SSH_HOST"] ?? "ews-01"
+    private let host = ProcessInfo.processInfo.environment["CMUX_LSP_SSH_HOST"] ?? ""
 
     private func ssh(_ command: String) throws {
         let process = Process()
@@ -436,7 +438,7 @@ struct RemoteLanguageToolTests {
         let session = LanguageServerSession(launch: launch, rootURI: root, languageId: "verilog")
         try await exerciseSession(session, root: root, topText: topSource, checkCompletion: false)
 
-        // The slang-server 0.3.1+ build on ews-01 never answers completion
+        // The remote slang-server 0.3.1+ build we test against never answers completion
         // (it hangs inside the handler), so this only checks that the client
         // times out instead of hanging, and passes once the server is fixed.
         let top = root.appendingPathComponent("top.sv")
