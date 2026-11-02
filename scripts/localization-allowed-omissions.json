@@ -5409,5 +5409,96 @@
       "zh-Hans": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
       "zh-Hant": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required."
     }
+  },
+  "waveformDebugger.text.label": {
+    "source": "%1$@ ~ /%2$@/ (%3$@)",
+    "identityLocales": {
+      "de": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "fr": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "ar": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "es": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hant": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hans": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "ko": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required.",
+      "ja": "A signal path, the match operator ~, a /pattern/ and a format name: invariant notation in every locale. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.text.format.riscv": {
+    "source": "RISC-V",
+    "identityLocales": {
+      "de": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "fr": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "ar": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "es": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "zh-Hant": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "zh-Hans": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "ko": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required.",
+      "ja": "RISC-V is the instruction set architecture's name, not translated. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.text.format.ascii": {
+    "source": "ASCII",
+    "identityLocales": {
+      "de": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "fr": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "ar": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "es": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "zh-Hant": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "zh-Hans": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "ko": "ASCII is the character encoding's name, not translated. The translated entry is still required.",
+      "ja": "ASCII is the character encoding's name, not translated. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.text.format.riscvNumeric": {
+    "source": "RISC-V, x0–x31",
+    "identityLocales": {
+      "de": "RISC-V and the register names x0–x31 are invariant notation. The translated entry is still required.",
+      "fr": "RISC-V and the register names x0–x31 are invariant notation. The translated entry is still required.",
+      "es": "RISC-V and the register names x0–x31 are invariant notation. The translated entry is still required.",
+      "ko": "RISC-V and the register names x0–x31 are invariant notation. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.text.format.alias": {
+    "source": "alias %@",
+    "identityLocales": {
+      "fr": "The word alias is spelled the same in this locale. The translated entry is still required.",
+      "es": "The word alias is spelled the same in this locale. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.text.format.octal": {
+    "source": "octal",
+    "identityLocales": {
+      "fr": "The word octal is spelled the same in this locale. The translated entry is still required.",
+      "es": "The word octal is spelled the same in this locale. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.text.format.decimal": {
+    "source": "decimal",
+    "identityLocales": {
+      "es": "The word decimal is spelled the same in this locale. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.commit.pcLabel": {
+    "source": "PC %@",
+    "identityLocales": {
+      "de": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "fr": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "ar": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "es": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hant": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hans": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "ko": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required.",
+      "ja": "PC (program counter) and an address in hex: invariant notation in every locale. The translated entry is still required."
+    }
+  },
+  "waveformDebugger.commit.pcAtLabel": {
+    "source": "%1$@ (%2$@)",
+    "identityLocales": {
+      "de": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "fr": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "ar": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "es": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
+      "ko": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required."
+    }
   }
 }

@@ -72,6 +72,7 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
         context.coordinator.isHighlightingVisible = isVisibleInUI
         panel.attachTextView(textView)
         FilePreviewLanguageFeatures.sync(textView, filePath: filePath)
+        WaveformDebuggerAsmBreakpoints.sync(textView, filePath: filePath)
 
         scrollView.documentView = textView
         context.coordinator.scrollJumpLog = FilePreviewScrollJumpLog.installIfEnabled(
@@ -129,6 +130,7 @@ struct FilePreviewTextEditor<PanelModel>: NSViewRepresentable where PanelModel: 
         textView.applyFilePreviewWordWrap(wordWrap, scrollView: scrollView)
         panel.attachTextView(textView)
         FilePreviewLanguageFeatures.sync(textView, filePath: filePath)
+        WaveformDebuggerAsmBreakpoints.sync(textView, filePath: filePath)
         Self.applyChromeSettings(
             to: scrollView,
             lineNumbers: lineNumbers,

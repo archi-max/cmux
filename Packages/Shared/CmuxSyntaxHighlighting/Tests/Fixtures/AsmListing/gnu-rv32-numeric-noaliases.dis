@@ -1,0 +1,36 @@
+
+prog32.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text:
+
+80000000 <_start>:
+80000000:	80004137          	lui	x2,0x80004
+80000004:	4501                	c.li	x10,0
+80000006:	4295                	c.li	x5,5
+80000008:	050d                	c.addi	x10,3
+8000000a:	12fd                	c.addi	x5,-1
+8000000c:	fe029ee3          	bne	x5,x0,80000008 <_start+0x8>
+80000010:	283d                	c.jal	8000004e <sum>
+80000012:	00001317          	auipc	x6,0x1
+80000016:	fee30313          	addi	x6,x6,-18 # 80001000 <result>
+8000001a:	00a32023          	sw	x10,0(x6)
+8000001e:	30531073          	csrrw	x0,mtvec,x6
+80000022:	0001                	c.addi	x0,0
+80000024:	00d605b3          	add	x11,x12,x13
+80000028:	a001                	c.j	80000028 <_start+0x28>
+8000002a:	0001                	c.addi	x0,0
+	...
+
+8000004c <after_gap>:
+8000004c:	9002                	c.ebreak
+
+8000004e <sum>:
+8000004e:	00000597          	auipc	x11,0x0
+80000052:	01a58593          	addi	x11,x11,26 # 80000068 <table>
+80000056:	02058613          	addi	x12,x11,32
+8000005a:	4194                	c.lw	x13,0(x11)
+8000005c:	0591                	c.addi	x11,4
+8000005e:	9536                	c.add	x10,x13
+80000060:	fec59de3          	bne	x11,x12,8000005a <sum+0xc>
+80000064:	8082                	c.jr	x1

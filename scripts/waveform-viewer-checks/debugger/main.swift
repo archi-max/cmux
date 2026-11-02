@@ -227,24 +227,31 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       cmuxWaveform.host.toNative = (m) => {
         if (m && m.type === 'debugger' && m.event === 'moved') {
           moves.push({ time: m.movedTo, left: m.left, missed: m.missed, at: performance.now() });
-          // Answer each move at once, except the third, whose answer comes after 400 ms.
+          // Answer each move at once, except the third, whose answer is held until the page has given up
+          // on it and posted the next move (so it is late however late the machine fires the page's timers).
           const time = m.movedTo;
-          if (moves.length === 3) { setTimeout(() => d.rtlShown({ time }), 400); } else { Promise.resolve().then(() => d.rtlShown({ time })); }
+          if (moves.length === 3) { window.__held = time; } else {
+            if (moves.length === 4 && window.__held !== undefined) { const held = window.__held; window.__held = undefined; Promise.resolve().then(() => d.rtlShown({ time: held })); }
+            Promise.resolve().then(() => d.rtlShown({ time }));
+          }
         }
         return original(m);
       };
       try {
         await d.play({ rate: 20 });
         const started = performance.now();
-        while (moves.length < 6 && performance.now() - started < 4000) { await new Promise((r) => setTimeout(r, 50)); }
+        while (moves.length < 6 && performance.now() - started < 8000) { await new Promise((r) => setTimeout(r, 50)); }
         await d.pause();
       } finally { cmuxWaveform.host.toNative = original; }
       return moves.map((m) => ({ time: m.time, left: m.left, missed: m.missed }));
     """) as? [[String: Any]]
     let lateMissed = (late ?? []).enumerated().filter { $0.element["missed"] as? Bool == true }.map(\.offset)
     // (Moves after the late one that aren't missed got their answer before the 250 ms wait ran out:
-    // play went on at its rate. Counted that way, as a busy machine fires the page's timers late.)
-    expect((late?.count ?? 0) >= 6 && lateMissed == [3],
+    // play went on at its rate. Four moves are enough to see it (the late one and the one after it):
+    // under a load above 100 the page's 50 ms timers have fired so late that play made only 4 moves in
+    // 4 s, so the window is 8 s. A fixed 400 ms delay for the late answer wasn't late under such load
+    // either (its timer fired after the page's 250 ms one had not), so it is held for the next move.)
+    expect((late?.count ?? 0) >= 4 && lateMissed == [3],
            "a late answer: only the move after it says the page gave up waiting, and play goes on at its rate: \(lateMissed) of \(late?.count ?? 0) moves")
     expect(late.map { moves in zip(moves, moves.dropFirst()).allSatisfy { ($1["left"] as? NSNumber) == ($0["time"] as? NSNumber) } } == true,
            "each move names the cycle it left: \(String(describing: late?.prefix(4)))")

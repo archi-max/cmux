@@ -82,3 +82,14 @@ final class SavingTextView: NSTextView {
         return promptAnswer
     }
 }
+
+/// The listing breakpoints' session hooks (the real WaveformDebuggerAsmBreakpoints needs the app's text views).
+@MainActor enum WaveformDebuggerAsmBreakpoints {
+    static var saved: [UUID: [AsmMark]] = [:]
+    static var restored: [(workspace: UUID, marks: [AsmMark])] = []
+    static func sessionMarks(of workspace: UUID) -> [AsmMark]? { saved[workspace].flatMap { $0.isEmpty ? nil : $0 } }
+    static func restore(_ list: [AsmMark]?, in workspace: UUID) {
+        guard let list, !list.isEmpty else { return }
+        restored.append((workspace, list))
+    }
+}

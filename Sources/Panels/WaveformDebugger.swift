@@ -31,6 +31,11 @@ enum WaveformDebugger {
         /// Evaluate Expression… / Add Watch…: the viewer page asks for the expression.
         case evaluateExpression
         case addWatch
+        /// Add Instruction Breakpoint…: the page offers Break at Address…, Break When Next Instruction
+        /// Matches… and Break When Written… (cmux-debugger-commits.js).
+        case addInstructionBreakpoint
+        /// Show Instruction in Listing: the current commit's line in an open objdump listing.
+        case showInstructionInListing
         /// The Machine section (registers, memory, CSRs, history from the dump's commit stream).
         case toggleMachineState
         /// Load ELF…: the program image memory starts from.
@@ -91,7 +96,8 @@ enum WaveformDebugger {
     static func target(for panel: FilePreviewPanel?) -> FilePreviewPanel? {
         guard let panel, !panel.isClosed else { return nil }
         if panel.previewMode == .waveform { return panel }
-        guard panel.previewMode == .text, FilePreviewLanguageFeatures.isSupported(filePath: panel.filePath) else { return nil }
+        guard panel.previewMode == .text, FilePreviewLanguageFeatures.isSupported(filePath: panel.filePath)
+            || WaveformDebuggerAsmBreakpoints.showsListing(path: panel.filePath) else { return nil }
         return WaveformSourceLink.waveformPanel(near: panel)
     }
 
@@ -99,10 +105,18 @@ enum WaveformDebugger {
     /// or a SystemVerilog editor with a viewer in its workspace, has focus.
     static func performFromShortcut(_ command: Command, window: NSWindow?) -> Bool {
         // In the editor, with or without a viewer.
-        if command == .toggleLineBreakpoint { return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) }
+        if command == .toggleLineBreakpoint {
+            return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) || WaveformDebuggerAsmBreakpoints.toggleAtCaret(window: window)
+        }
         if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
             // Typing in the viewer's search or value field.
             guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
+            perform(command, on: waveform)
+            return true
+        }
+        // In a listing: the workspace's viewer.
+        if let textView = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window), textView.languageFeatures == nil,
+           WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil, let waveform = WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel) {
             perform(command, on: waveform)
             return true
         }
@@ -116,7 +130,8 @@ enum WaveformDebugger {
     @discardableResult
     static func perform(_ command: Command, for panel: FilePreviewPanel?) -> Bool {
         if command == .toggleLineBreakpoint {
-            return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: NSApp.keyWindow ?? NSApp.mainWindow)
+            let window = NSApp.keyWindow ?? NSApp.mainWindow
+            return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) || WaveformDebuggerAsmBreakpoints.toggleAtCaret(window: window)
         }
         guard let waveform = target(for: panel) else { return false }
         perform(command, on: waveform)
@@ -158,6 +173,15 @@ enum WaveformDebugger {
                 _ = await page.callDebugger("promptEvaluate")
             case .addWatch:
                 _ = await page.callDebugger("promptAddWatch")
+            case .addInstructionBreakpoint:
+                _ = await page.callDebugger("chooseCommitBreakpoint")
+            case .showInstructionInListing:
+                if !(await WaveformDebuggerAsmBreakpoints.revealCurrent(of: waveform)) {
+                    _ = await page.callDebugger("say", argument: ["text": String(
+                        localized: "waveformDebugger.asm.noListing",
+                        defaultValue: "No open listing has the current instruction. Open the program's objdump listing (.dis)."
+                    ), "level": "info"])
+                }
             case .toggleMachineState:
                 if (await page.callMachine("toggle") as? [String: Any])?["shown"] as? Bool == true {
                     WaveformMachineStateLoader.loadImageBeside(waveform)
@@ -175,6 +199,23 @@ enum WaveformDebugger {
         // The page's breakpoint list toggled or removed a line breakpoint.
         if body["event"] as? String == "lineBreakpoint" {
             WaveformDebuggerLineBreakpoints.pageReported(body, waveform: waveform)
+            return
+        }
+        // A listing's: its PC breakpoints, the commits at the marker, and the commit stream built.
+        if body["event"] as? String == "pcBreakpoint" {
+            WaveformDebuggerAsmBreakpoints.pageReported(body, waveform: waveform)
+            return
+        }
+        if body["event"] as? String == "commitPcs" {
+            WaveformDebuggerAsmBreakpoints.currentReported(body, waveform: waveform)
+            return
+        }
+        if body["event"] as? String == "commitsReady" {
+            WaveformDebuggerAsmBreakpoints.commitsReady(waveform)
+            return
+        }
+        if body["event"] as? String == "showAddress" {
+            WaveformDebuggerAsmBreakpoints.showAddress(body, waveform: waveform)
             return
         }
         // Its signal breakpoints changed: kept for the workspace's session.
@@ -235,6 +276,7 @@ enum WaveformDebugger {
     /// A new page (a reload or a web content crash) starts without stepping, and doesn't say so.
     static func pageLoaded(_ waveform: FilePreviewPanel) {
         WaveformDebuggerLineBreakpoints.pageLoaded(waveform)
+        WaveformDebuggerAsmBreakpoints.pageLoaded(waveform)
         guard isStepping(waveform) else { return }
         box(waveform).state = PageState()
         stoppedStepping(waveform, editors: FilePreviewLanguageFeatures.linkables(inWorkspace: waveform.workspaceId))
@@ -295,6 +337,8 @@ enum WaveformDebugger {
             ),
         ].merging(breakpointPageStrings()) { first, _ in first }.merging(expressionPageStrings()) { first, _ in first }
             .merging(WaveformMachineState.pageStrings()) { first, _ in first }
+            .merging(WaveformDebuggerTextBreakpoint.pageStrings()) { first, _ in first }
+            .merging(WaveformDebuggerCommitBreakpoint.pageStrings()) { first, _ in first }
     }
 
     /// Strings of the page's Evaluate and watches (cmux-debugger.js, cmux-expr.js).

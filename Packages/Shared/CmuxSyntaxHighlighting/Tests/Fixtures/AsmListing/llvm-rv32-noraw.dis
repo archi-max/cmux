@@ -1,0 +1,35 @@
+
+prog32.elf:	file format elf32-littleriscv
+
+Disassembly of section .text:
+
+80000000 <_start>:
+80000000:      	lui	sp, 0x80004
+80000004:      	li	a0, 0x0
+80000006:      	li	t0, 0x5
+80000008:      	addi	a0, a0, 0x3
+8000000a:      	addi	t0, t0, -0x1
+8000000c:      	bnez	t0, 0x80000008 <_start+0x8>
+80000010:      	jal	0x8000004e <sum>
+80000012:      	auipc	t1, 0x1
+80000016:      	addi	t1, t1, -0x12
+8000001a:      	sw	a0, 0x0(t1)
+8000001e:      	csrw	mtvec, t1
+80000022:      	nop
+80000024:      	add	a1, a2, a3
+80000028:      	j	0x80000028 <_start+0x28>
+8000002a:      	nop
+		...
+
+8000004c <after_gap>:
+8000004c:      	ebreak
+
+8000004e <sum>:
+8000004e:      	auipc	a1, 0x0
+80000052:      	addi	a1, a1, 0x1a
+80000056:      	addi	a2, a1, 0x20
+8000005a:      	lw	a3, 0x0(a1)
+8000005c:      	addi	a1, a1, 0x4
+8000005e:      	add	a0, a0, a3
+80000060:      	bne	a1, a2, 0x8000005a <sum+0xc>
+80000064:      	ret
