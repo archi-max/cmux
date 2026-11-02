@@ -116,7 +116,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             return await provider.currentWorkingDirectory(of: resource)
         }
         let workingDirectory: @Sendable () async -> String? = {
-            await RemotePreviewOpenRules.workingDirectory(
+            let directory = await RemotePreviewOpenRules.workingDirectory(
                 needsDirectory: true,
                 live: {
                     // Bounded: a link that stalls must not hold the click for the whole download deadline.
@@ -133,6 +133,11 @@ final class RemoteTerminalFilePreviewCoordinator {
                 },
                 snapshot: snapshotDirectory
             )
+            #if DEBUG
+            let source = directory == nil ? "none" : directory == snapshotDirectory ? "snapshot" : "live"
+            cmuxDebugLog("remotePreview.cwd surface=\(sourcePanelID.uuidString) source=\(source)")
+            #endif
+            return directory
         }
         let provider = SSHFileExplorerProvider(
             destination: configuration.destination,
@@ -178,6 +183,51 @@ final class RemoteTerminalFilePreviewCoordinator {
         #if DEBUG
         cmuxDebugLog("remotePreview.start request=\(requestID.uuidString) surface=\(sourcePanelID.uuidString)")
         #endif
+        if case .click(let tokens) = request, RemoteTerminalFilePreviewLoader.readsInPlaceOnHost(tokens: tokens) {
+            // A waveform dump: find it on the host (relative links against the
+            // shell's live directory) and open the viewer that reads it there,
+            // as `cmux open` does; never download it.
+            let task = Task { [weak self, weak workspace, weak panel] in
+                defer {
+                    if self?.tasks[sourcePanelID]?.id == requestID {
+                        self?.tasks.removeValue(forKey: sourcePanelID)
+                    }
+                }
+                do {
+                    let header = try await withThrowingTaskGroup(of: RemoteFileProbe.Header.self) { group in
+                        group.addTask { try await loader.locate(tokens: tokens, workingDirectory: workingDirectory) }
+                        group.addTask {
+                            // A genuine transfer deadline, not a delay used to synchronize UI state.
+                            try await clock.sleep(for: timeout)
+                            throw URLError(.timedOut)
+                        }
+                        defer { group.cancelAll() }
+                        return try await group.next()!
+                    }
+                    guard !Task.isCancelled, let self, let workspace, let panel,
+                          workspace.terminalPanel(for: sourcePanelID) === panel else { return }
+                    let outcome: CommandLineOpenOutcome = FilePreviewKindResolver.isReadInPlaceOnRemoteHost(header.path)
+                        ? self.openInPlaceOnHost(path: header.path, workspace: workspace, sourcePanelID: sourcePanelID)
+                        : .unavailable
+                    #if DEBUG
+                    cmuxDebugLog("remotePreview.complete request=\(requestID.uuidString) inPlace=\(outcome == .started)")
+                    #endif
+                    if outcome != .started, workspace.focusedPanelId == sourcePanelID { NSSound.beep() }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    #if DEBUG
+                    cmuxDebugLog("remotePreview.failed request=\(requestID.uuidString) reason=\(Self.failureReason(error))")
+                    #endif
+                    guard let workspace, let panel,
+                          workspace.terminalPanel(for: sourcePanelID) === panel,
+                          workspace.focusedPanelId == sourcePanelID,
+                          panel.hostedView.window?.isKeyWindow == true else { return }
+                    NSSound.beep()
+                }
+            }
+            tasks[sourcePanelID] = (requestID, task)
+            return .started
+        }
         let sourceSurface = panel.surface
         let lifecycleID = sourceSurface.terminalLifecycleId
         let attemptID = workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID]
@@ -294,7 +344,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             } catch {
                 guard !Task.isCancelled else { return }
                 #if DEBUG
-                cmuxDebugLog("remotePreview.failed request=\(requestID.uuidString)")
+                cmuxDebugLog("remotePreview.failed request=\(requestID.uuidString) reason=\(Self.failureReason(error))")
                 #endif
                 guard let workspace, let panel,
                       workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration,
@@ -319,6 +369,11 @@ final class RemoteTerminalFilePreviewCoordinator {
         }
         tasks[sourcePanelID] = (requestID, task)
         return .started
+    }
+
+    /// Why a preview failed, for the debug log: no path or ssh output.
+    private static func failureReason(_ error: Error) -> String {
+        error as? RemoteTerminalFilePreviewError == .fileTooLarge ? "tooLarge" : RemotePreviewOpenRules.failureReason(error)
     }
 
     /// The leased viewer of a clicked host file under the user's routing settings.

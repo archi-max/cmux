@@ -340,7 +340,7 @@ protocol SSHFileExplorerTransport: AnyObject {
     ) async throws
     /// Downloads the first of `candidates` (host paths, `~` allowed) that is
     /// a regular readable file, to `localURL`, and names it. With `maxBytes`,
-    /// a larger file is refused (``RemoteFileProbe/Failure/tooLarge``) and at
+    /// a larger file is refused (``RemoteFileProbe/Oversize``, naming it) and at
     /// most `maxBytes + 1` bytes are read. Throws
     /// ``RemoteFileProbe/Failure/noFile`` when none is.
     nonisolated func probeDownload(
@@ -484,7 +484,11 @@ extension SSHFileExplorerTransport {
             do {
                 if let maxBytes {
                     let stamp = try await fileStamp(path: path, connection: connection)
-                    guard stamp.size <= maxBytes else { throw RemoteFileProbe.Failure.tooLarge }
+                    guard stamp.size <= maxBytes else {
+                        throw RemoteFileProbe.Oversize(header: RemoteFileProbe.Header(
+                            index: index, path: path, modificationTime: stamp.modificationTime, size: stamp.size
+                        ))
+                    }
                     try await downloadFile(path: path, connection: connection, to: localURL, maxBytes: maxBytes)
                     return RemoteFileProbe.Header(
                         index: index, path: path, modificationTime: stamp.modificationTime, size: stamp.size
@@ -499,6 +503,8 @@ extension SSHFileExplorerTransport {
                 )
             } catch let failure as RemoteFileProbe.Failure {
                 throw failure
+            } catch let oversize as RemoteFileProbe.Oversize {
+                throw oversize
             } catch {
                 try Task.checkCancellation()
             }
@@ -945,16 +951,10 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         } onCancel: {
             commandProcess.terminate()
         }
-        switch result.terminationStatus {
-        case 0:
-            return try RemoteFileProbe.extract(from: raw, to: localURL)
-        case RemoteFileProbe.noFileStatus:
-            throw RemoteFileProbe.Failure.noFile
-        case RemoteFileProbe.tooLargeStatus:
-            throw RemoteFileProbe.Failure.tooLarge
-        default:
+        guard let header = try RemoteFileProbe.outcome(status: result.terminationStatus, raw: raw, to: localURL) else {
             throw FileExplorerError.sshCommandFailed(result.stderr)
         }
+        return header
     }
 
     private nonisolated func runDownload(
