@@ -352,4 +352,31 @@ import Testing
         #expect(cold.launchCount == 0)
         cold.close()
     }
+
+    @Test func aConnectedHostsChannelComesBackByItselfAfterItDrops() async throws {
+        // A run that ends (the network dropped, the host rebooted) is started again after its
+        // backoff while a workspace is connected, so the next open doesn't pay for the spawn.
+        let pinned = SSHFileChannel(launch: Self.readyThen("sleep 0.3"), readyTimeout: 5)
+        pinned.pin()
+        pinned.prewarm()
+        try await Task.sleep(nanoseconds: 2_600_000_000)
+        #expect(pinned.launchCount >= 2, "a connected host's channel wasn't restarted: \(pinned.launchCount) runs")
+        pinned.unpin()
+        pinned.close()
+        // With no workspace connected, a dropped channel waits for the next request.
+        let idle = SSHFileChannel(launch: Self.readyThen("sleep 0.3"), readyTimeout: 5)
+        idle.prewarm()
+        try await Task.sleep(nanoseconds: 2_600_000_000)
+        #expect(idle.launchCount == 1, "an unconnected host's channel restarted: \(idle.launchCount) runs")
+        idle.close()
+        // Closed for good: never restarted.
+        let closed = SSHFileChannel(launch: Self.readyThen("sleep 0.3"), readyTimeout: 5)
+        closed.pin()
+        closed.prewarm()
+        closed.close()
+        let runs = closed.launchCount
+        try await Task.sleep(nanoseconds: 2_600_000_000)
+        #expect(closed.launchCount == runs, "a closed channel restarted")
+        closed.unpin()
+    }
 }
