@@ -1492,6 +1492,9 @@
       // cmux addition: the debugger's breakpoints on a signal row (cmux-debugger.js).
       const breakItems = window.cmuxDebugger ? window.cmuxDebugger.rowMenuItems(args) : [];
       if (breakItems.length) { items.push({ separator: true }, ...breakItems); }
+      // cmux addition: Trace Driver on a signal row (cmux-trace-ui.js).
+      const traceItems = window.cmuxTraceUI ? window.cmuxTraceUI.rowMenuItems(args) : [];
+      if (traceItems.length) { items.push({ separator: true }, ...traceItems); }
       const rect = document.getElementById('viewer').getBoundingClientRect();
       ui().showMenu(items, rect.left + e.clientX, rect.top + e.clientY);
     });

@@ -86,7 +86,7 @@ enum WaveformSourceLink {
         return paired.linkSession?.session
     }
 
-    private static func linkedEditor(for waveform: FilePreviewPanel) -> FilePreviewLanguageFeatures? {
+    static func linkedEditor(for waveform: FilePreviewPanel) -> FilePreviewLanguageFeatures? {
         if let paired = pairedEditors.object(forKey: waveform), paired.linkSession != nil,
            paired.linkWorkspaceId == waveform.workspaceId {
             return paired
@@ -109,13 +109,13 @@ enum WaveformSourceLink {
     /// top scope names), so a unit testbench and a system testbench of one design keep
     /// separate rules even when both dumps start at `TOP` or `tb`. Nil while the viewer
     /// has no hierarchy (loading or reloading), so nothing reads or writes a key without tops.
-    private static func mappingKey(rootKey: String, waveform: FilePreviewPanel) async -> String? {
+    static func mappingKey(rootKey: String, waveform: FilePreviewPanel) async -> String? {
         guard let tops = await Self.dumpChildren([], in: waveform), !tops.isEmpty else { return nil }
         let file = (waveform.filePath as NSString).lastPathComponent
         return rootKey + "|" + file + "|" + tops.map(\.name).sorted().joined(separator: ",")
     }
 
-    private static var waveformLoadingMessage: String {
+    static var waveformLoadingMessage: String {
         String(
             localized: "waveformLink.waveformLoading",
             defaultValue: "The waveform is still loading. Try again in a moment."
@@ -303,14 +303,14 @@ enum WaveformSourceLink {
         let isInModule: Bool
     }
 
-    private enum DesignPaths {
+    enum DesignPaths {
         case paths([String])
         case message(String)
     }
 
     /// The design paths of the symbol at `position`, for the instances the user picks when
     /// the module has several (empty when the menu is dismissed). Offers to elaborate in explore mode.
-    private static func chosenDesignPaths(
+    static func chosenDesignPaths(
         session: LanguageServerSession,
         documentURI: URL,
         position: LSPPosition,
@@ -553,7 +553,7 @@ enum WaveformSourceLink {
     /// name of a net, such as the instance port a testbench wire is connected to. Else, for an
     /// instance array element's input, the bus it is a slice of (`bits`: `[7:4]`), so a dump
     /// that stops above the array still shows its value.
-    private static func dumpedAlias(
+    static func dumpedAlias(
         of designPath: String,
         session: LanguageServerSession,
         waveform: FilePreviewPanel,
@@ -574,7 +574,7 @@ enum WaveformSourceLink {
         return (slice.path, dumpPaths, "[\(slice.msb):\(slice.lsb)]")
     }
 
-    private enum DumpResolution {
+    enum DumpResolution {
         case found([String])
         /// The design root's dump scope (named) is there, but not the signal.
         case notDumped(String)
@@ -584,7 +584,7 @@ enum WaveformSourceLink {
 
     /// The dump paths of `designPath`: under the saved mapping, else under
     /// rules inferred from the two hierarchies (saved as inferred).
-    private static func resolveDumpPaths(
+    static func resolveDumpPaths(
         _ designPath: String,
         session: LanguageServerSession,
         waveform: FilePreviewPanel,
@@ -649,7 +649,7 @@ enum WaveformSourceLink {
         await waveform.nativeViewSessions.waveform.callLink("hasSignal", argument: path) as? Bool == true
     }
 
-    private static func dumpChildren(_ path: [String], in waveform: FilePreviewPanel) async -> [HierarchyNode]? {
+    static func dumpChildren(_ path: [String], in waveform: FilePreviewPanel) async -> [HierarchyNode]? {
         let result = await waveform.nativeViewSessions.waveform.callLink("scopeChildren", argument: path)
         guard let items = result as? [[String: Any]] else { return nil }
         return items.prefix(maxScopeChildren).compactMap { item in
@@ -1014,7 +1014,7 @@ enum WaveformSourceLink {
     }
 
     /// The editor that opened `path` on the same host and workspace as `editor`, once its text has loaded.
-    private static func editor(showing path: String, like editor: FilePreviewLanguageFeatures) async -> FilePreviewLanguageFeatures? {
+    static func editor(showing path: String, like editor: FilePreviewLanguageFeatures) async -> FilePreviewLanguageFeatures? {
         for _ in 0..<100 {
             if let found = FilePreviewLanguageFeatures.linkable(showingDocumentPath: path, like: editor),
                found.linkText?.isEmpty == false {
@@ -1053,6 +1053,7 @@ enum WaveformSourceLink {
     static func waveformClosed(_ waveform: FilePreviewPanel) {
         markerTimes.removeObject(forKey: waveform)
         WaveformEnumLink.waveformReset(waveform)
+        WaveformTraceVerdi.stop(for: waveform)
         if lastWaveformPanel === waveform { lastWaveformPanel = nil }
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
@@ -1062,6 +1063,7 @@ enum WaveformSourceLink {
         markerTimes.removeObject(forKey: waveform)
         WaveformEnumLink.waveformReset(waveform)
         WaveformEnumLink.waveformReloading()
+        WaveformTraceVerdi.stop(for: waveform)
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
 

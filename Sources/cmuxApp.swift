@@ -1239,6 +1239,11 @@ struct cmuxApp: App {
                     NSSound.beep()
                 }
             }
+            Button(String(localized: "shortcut.traceWaveformDriver.label", defaultValue: "Trace Driver")) {
+                if !WaveformTrace.performFromShortcut(window: NSApp.keyWindow ?? NSApp.mainWindow) {
+                    NSSound.beep()
+                }
+            }
             Button(String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")) {
                 if appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
                     .languageFeatures?.navigateBack() != true {

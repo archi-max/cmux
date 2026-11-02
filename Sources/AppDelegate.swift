@@ -16839,6 +16839,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if matchConfiguredShortcut(event: event, action: .revealWaveformSignalInSource) {
             return WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel(in: resolvedShortcutEventWindow(event)))
         }
+        if matchConfiguredShortcut(event: event, action: .traceWaveformDriver) {
+            return WaveformTrace.performFromShortcut(window: resolvedShortcutEventWindow(event))
+        }
         for (action, command) in WaveformDebugger.shortcutCommands where matchConfiguredShortcut(event: event, action: action) {
             return WaveformDebugger.performFromShortcut(command, window: resolvedShortcutEventWindow(event))
         }

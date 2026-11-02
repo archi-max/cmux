@@ -1,0 +1,137 @@
+$date
+	Sun Nov  1 02:01:21 2026
+$end
+
+$version
+	Synopsys VCS version W-2024.09_Full64
+$end
+
+$timescale
+	1ns
+$end
+
+$comment Csum: 1 7bddaff800ff9fb1 $end
+
+
+$scope module tb_f $end
+$var reg 1 ! clk $end
+$var reg 1 " rst_n $end
+$var reg 8 # a [7:0] $end
+$var reg 8 $ q [7:0] $end
+
+$scope module bus $end
+$var reg 1 % clk $end
+$var reg 8 & addr [7:0] $end
+$var reg 8 ' rdata [7:0] $end
+$var reg 1 ( req $end
+$var reg 1 ) resp $end
+$upscope $end
+
+
+$scope module u_mem $end
+$var reg 1 * rst_n $end
+$upscope $end
+
+
+$scope module dut $end
+$var reg 1 + rst_n $end
+$var reg 8 , a [7:0] $end
+$var reg 8 - q [7:0] $end
+$upscope $end
+
+$upscope $end
+
+$enddefinitions $end
+
+#0
+$dumpvars
+0!
+0"
+b00000000 #
+b00000000 ,
+b00000000 -
+b00000000 $
+b00000000 '
+b00000000 &
+0*
+0+
+0%
+0(
+0)
+$end
+#5
+1!
+1%
+#10
+0!
+0%
+#15
+1!
+1%
+#20
+0!
+0%
+#22
+1"
+1+
+1*
+#25
+1!
+1%
+1(
+b00010000 '
+#30
+b00000001 #
+b00000001 ,
+b00000001 &
+0!
+0%
+b00100001 '
+#35
+1!
+1%
+1)
+#40
+0!
+0%
+#45
+1!
+1%
+b00100001 -
+b00100001 $
+#50
+b00000011 #
+b00000011 ,
+b00000011 &
+0!
+0%
+bxxxxxxxx '
+#55
+1!
+1%
+bxxxxxxxx -
+bxxxxxxxx $
+#60
+0!
+0%
+#65
+1!
+1%
+#70
+b00000010 #
+b00000010 ,
+b00000010 &
+0!
+0%
+b00110010 '
+#75
+1!
+1%
+b00110010 -
+b00110010 $
+#80
+0!
+0%
+#85
+1!
+1%

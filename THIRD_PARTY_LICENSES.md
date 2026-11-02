@@ -388,7 +388,26 @@ Provides diagnostics, hover, go to definition, find references and completion.
 - **Copyright:** Copyright (c) 2015-2026 Michael Popoloski
 - **Source:** https://github.com/MikePopoloski/slang
 
-The SystemVerilog compiler library that slang-server is built on.
+The SystemVerilog compiler library that slang-server is built on. Driver
+tracing's design model sidecar, `cmux-sv-model`
+(`Resources/vaporview/sv-model/`, cmux's own code), is built on slang: cmux
+ships only its sources, and `build.sh` fetches slang release v12.1 (checked by
+SHA-256) and compiles it on the machine that holds the design. Its
+expression semantics are mirrored by `Resources/vaporview/cmux-expr.js` and
+`cmux-trace.js`, whose headers carry slang's license.
+
+### fmt, Boost.Regex and toml++ (built with slang, not bundled)
+
+- **fmt:** MIT License, Copyright (c) 2012 - present, Victor Zverovich and
+  {fmt} contributors, https://github.com/fmtlib/fmt (release 12.2.0)
+- **Boost.Regex:** Boost Software License 1.0, Copyright (c) 1998-2002 John
+  Maddock and Boost contributors, https://github.com/MikePopoloski/regex (slang's standalone copy,
+  tag boost-1.91.0)
+- **toml++:** MIT License, Copyright (c) Mark Gillard,
+  https://github.com/marzer/tomlplusplus (release 3.4.0)
+
+slang's build uses these header-only libraries; `cmux-sv-model`'s `build.sh`
+fetches them with slang (each checked by SHA-256) when it compiles on the host.
 
 ### Verible
 
