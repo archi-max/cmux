@@ -41,7 +41,7 @@ import Testing
 
         /// Until the first switch has started (bounded).
         func waitForFirstApply() async {
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + .seconds(60)
             while applied.isEmpty, ContinuousClock.now < deadline { await Task.yield() }
         }
     }

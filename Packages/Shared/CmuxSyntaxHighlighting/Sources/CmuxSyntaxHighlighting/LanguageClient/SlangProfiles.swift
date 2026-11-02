@@ -64,6 +64,14 @@ public struct SlangBuildFile: Equatable, Sendable {
         }
     }
 
+    /// Stub.
+    public func involves(
+        _ path: String, buildFilePath: String, baseDirectory: String,
+        normalize: (String) -> String = { $0 }
+    ) -> Bool {
+        false
+    }
+
     /// Words of a command file: `//`, `#` and `/* */` comments dropped, quotes grouping words,
     /// a backslash escaping the next character (so `\"` stays a quote inside a define).
     static func words(in text: String) -> [String] {

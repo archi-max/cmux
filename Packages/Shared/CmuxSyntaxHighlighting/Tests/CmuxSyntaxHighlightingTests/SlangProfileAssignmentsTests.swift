@@ -126,6 +126,22 @@ import Testing
         #expect(Self.tbA.resolved(configuredBuild: "/w/tb.f") == Self.tbA)
     }
 
+    @Test func aSavedFileInvolvesABuildWhenItIsTheFileItsCommandFilesOrItsSources() {
+        let build = SlangBuildFile.parse("--top tb_a\n-f common.f\nrtl/alu.sv\n/abs/pkg.sv\n../shared/x.sv\n")
+        func involves(_ path: String) -> Bool {
+            build.involves(path, buildFilePath: "/w/.slang/tb_a.f", baseDirectory: "/w")
+        }
+        #expect(involves("/w/.slang/tb_a.f"))
+        #expect(involves("/w/common.f"))
+        #expect(involves("/w/rtl/alu.sv"))
+        #expect(involves("/abs/pkg.sv"))
+        #expect(involves("/shared/x.sv"))
+        #expect(!involves("/w/rtl/other.sv"))
+        #expect(!involves("/w/.slang/tb_b.f"))
+        // Paths compared in the server's form (e.g. real paths).
+        #expect(build.involves("/private/w/rtl/alu.sv", buildFilePath: "/w/.slang/tb_a.f", baseDirectory: "/w", normalize: { "/private" + $0 }))
+    }
+
     @Test func aFocusedWaveformWantsItsOwnProfile() {
         var assignments = SlangProfileAssignments()
         assignments.choose(Self.tbB, file: "/w/b_tb.sv")
@@ -186,6 +202,8 @@ import Testing
         var failingPaths: Set<String> = []
         /// Apply answers `.busy` this many times first (another change claimed the server meanwhile).
         var busyAnswers = 0
+        /// Apply throws (an ssh timeout, a restart) this many times first.
+        var errorAnswers = 0
         var fallback: SlangProfileChoice?
         var configuredBuild: String?
         /// How long apply takes.
@@ -203,6 +221,10 @@ import Testing
                         return .busy
                     }
                     self.applied.append(choice)
+                    if self.errorAnswers > 0 {
+                        self.errorAnswers -= 1
+                        return .error
+                    }
                     if self.applyTime > .zero { try? await Task.sleep(for: self.applyTime) }
                     if let path = choice.path, self.missingPaths.contains(path) { return .missing }
                     if let path = choice.path, self.failingPaths.contains(path) { return .failed }
@@ -289,8 +311,12 @@ import Testing
         await focus(tbA)
         // tb_a failed once: later focuses don't build it again, tb_b still switches.
         #expect(fake.applied == [tbA, tbB])
-        // A saved design file (its .f or a source) may fix it: tried again.
-        follower.designFilesChanged()
+        // A saved file of another profile's build doesn't make tb_a worth rebuilding.
+        #expect(!follower.designFileSaved(involves: { $0 == tbB }))
+        await focus(tbA)
+        #expect(fake.applied == [tbA, tbB])
+        // A saved file of tb_a's build (its .f or a source) may fix it: tried again.
+        #expect(follower.designFileSaved(involves: { $0 == tbA }))
         await focus(tbA)
         #expect(fake.applied == [tbA, tbB, tbA])
         await focus(tbA)
@@ -299,6 +325,22 @@ import Testing
         follower.userChose(tbA)
         await focus(tbA)
         #expect(fake.applied == [tbA, tbB, tbA, tbA])
+    }
+
+    @Test func anErrorIsNotRememberedAndTheNextFocusTriesAgain() async {
+        let fake = Fake()
+        fake.errorAnswers = 1
+        let follower = fake.follower(debounce: .milliseconds(10))
+        fake.wanted = .explore
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [.explore])
+        #expect(SlangProfileChoice(fake.current) != .explore)
+        // An ssh timeout or a restart isn't the profile's fault: the next focus builds it.
+        follower.activeFileChanged()
+        await follower.waitUntilIdle()
+        #expect(fake.applied == [.explore, .explore])
+        #expect(SlangProfileChoice(fake.current) == .explore)
     }
 
     @Test func aSwitchThatLostTheServerToAnotherChangeIsTriedAgain() async {
