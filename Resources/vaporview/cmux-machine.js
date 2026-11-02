@@ -898,7 +898,14 @@
       brk.addEventListener('click', () => {
         st.seq.query = input.value;
         if (!input.value.trim()) { return; }
-        Promise.resolve(D.addBreakpoint({ kind: 'sequence', query: input.value, land: st.seq.land })).catch((error) => host.log(error));
+        // Said: added, already there, or enabled again (the list may be out of sight).
+        const before = new Map(D.breakpoints().map((b) => [b.id, b.enabled]));
+        Promise.resolve(D.addBreakpoint({ kind: 'sequence', query: input.value, land: st.seq.land })).then((bp) => {
+          if (!bp) { return; }  // refused: the debugger said why
+          const was = before.get(bp.id);
+          const text = was === undefined ? s.machineSeqBreakAdded : was ? s.machineSeqBreakExists : s.machineSeqBreakEnabled;
+          window.cmuxUI.toast(format(text, bp.label), 'info');
+        }).catch((error) => host.log(error));
       });
       bar.appendChild(brk);
     }
