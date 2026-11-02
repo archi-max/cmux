@@ -1672,6 +1672,13 @@ final class FilePreviewLanguageFeatures: NSObject {
         }
     }
 
+    /// Puts the caret at a 1-based `line` (and `column`) of `panel` once its
+    /// text has loaded: a terminal's `path:line[:column]` link.
+    static func reveal(line: Int, column: Int?, in panel: FilePreviewPanel) {
+        let position = LSPPosition(line: max(0, line - 1), character: max(0, (column ?? 1) - 1))
+        selectWhenLoaded(LSPRange(start: position, end: position), in: panel)
+    }
+
     /// A freshly opened panel loads its text asynchronously; wait for it.
     private static func selectWhenLoaded(_ range: LSPRange, in panel: FilePreviewPanel) {
         Task { @MainActor [weak panel] in

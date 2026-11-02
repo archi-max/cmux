@@ -1305,7 +1305,8 @@ final class FilePreviewPanel: Panel, ObservableObject, FilePreviewTextEditingPan
     weak var textView: NSTextView? {
         didSet { if isReadOnlyPreview { textView?.isEditable = false } }
     }
-    var cloudPreviewRemotePath: String?
+    /// The host path of a remote preview; the header shows it instead of the cache copy.
+    @Published var cloudPreviewRemotePath: String?
     var cloudPreviewProviderIdentity: String?
     var remotePreviewRefresh: (@MainActor () -> Void)?
     var cloudPreviewLease: CloudFilePreviewLease? {
@@ -2013,9 +2014,11 @@ struct FilePreviewPanelView: View {
     }
 
     private var header: some View {
-        PanelFilePathHeader(
+        let shownPath = FilePreviewPathPresentation(localPath: panel.filePath, remotePath: panel.cloudPreviewRemotePath)
+        return PanelFilePathHeader(
             iconSystemName: panel.displayIcon ?? "doc.viewfinder",
-            filePath: panel.filePath,
+            filePath: shownPath.displayedPath,
+            localCopyPath: shownPath.localCopyPath,
             foregroundColor: themeForegroundColor
         ) {
             if panel.previewMode == .text {

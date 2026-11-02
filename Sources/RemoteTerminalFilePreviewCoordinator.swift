@@ -17,6 +17,9 @@ final class RemoteTerminalFilePreviewCoordinator {
     /// preview path. Bound with ``FileExplorerStore/bindSSHPreviewProvider``:
     /// no root folder, so it never lists or runs git status on the host.
     private lazy var inPlaceStore = FileExplorerStore()
+    /// Holds the leases of previews opened in the native file preview, so
+    /// they name their host path, save back and refresh like Files-panel ones.
+    private let leaseCache = CloudFilePreviewCache()
 
     init(
         defaults: UserDefaults,
@@ -66,7 +69,7 @@ final class RemoteTerminalFilePreviewCoordinator {
 
     @discardableResult
     func open(workspace: Workspace, sourcePanelID: UUID, tokens: [String]) -> Bool {
-        let tokens = tokens.filter { RemoteTerminalPathResolver().isFileReference($0) }
+        let tokens = tokens.filter { RemoteTerminalPathResolver().isClickedFileCandidate($0) }
         guard !tokens.isEmpty else { return false }
         return start(.click(tokens: tokens), workspace: workspace, sourcePanelID: sourcePanelID) != .unavailable
     }
@@ -102,7 +105,34 @@ final class RemoteTerminalFilePreviewCoordinator {
             }
         }
         let cacheRoot = cacheDirectory
-        let directory = workspace.effectivePanelDirectory(panelId: sourcePanelID)
+        let snapshotDirectory = workspace.effectivePanelDirectory(panelId: sourcePanelID)
+        // A cmux-tui terminal's reported cwd is the directory it was spawned
+        // in; only a live process query knows where the shell `cd`'d to.
+        let liveDirectory: @MainActor @Sendable () async -> String? = { [weak workspace] in
+            guard let workspace, workspace.usesSSHTui,
+                  let resource = SurfaceCatalog.shared.resource(forPanel: sourcePanelID),
+                  let provider = SurfaceCatalog.shared.provider(for: resource.machine) else { return nil }
+            return await provider.currentWorkingDirectory(of: resource)
+        }
+        let workingDirectory: @Sendable () async -> String? = {
+            await RemotePreviewOpenRules.workingDirectory(
+                needsDirectory: true,
+                live: {
+                    // Bounded: a link that stalls must not hold the click for the whole download deadline.
+                    await withTaskGroup(of: String?.self) { group in
+                        group.addTask { await liveDirectory() }
+                        group.addTask {
+                            try? await Task.sleep(for: .seconds(3))
+                            return nil
+                        }
+                        let first = await group.next() ?? nil
+                        group.cancelAll()
+                        return first
+                    }
+                },
+                snapshot: snapshotDirectory
+            )
+        }
         let provider = SSHFileExplorerProvider(
             destination: configuration.destination,
             port: configuration.port,
@@ -113,6 +143,14 @@ final class RemoteTerminalFilePreviewCoordinator {
             isAvailable: true,
             transport: transport
         )
+        if case .commandLine(let path) = request,
+           let existing = Self.openPreview(of: path, identity: provider.remoteIdentity, in: workspace) {
+            // Already open: show it now and refresh it in place, instead of
+            // waiting for a fresh download into a second tab.
+            _ = workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: existing.filePath)
+            if !existing.isDirty { existing.refreshRemotePreview() }
+            return .started
+        }
         let loader = RemoteTerminalFilePreviewLoader(
             provider: provider,
             cacheDirectory: cacheDirectory,
@@ -141,7 +179,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                     group.addTask {
                         switch request {
                         case .click(let tokens):
-                            return try await loader.load(tokens: tokens, workingDirectory: directory)
+                            return try await loader.load(tokens: tokens, workingDirectory: workingDirectory)
                         case .commandLine(let path):
                             return try await loader.load(exactPath: path, maxBytes: RemoteTerminalFilePreviewCoordinator.maximumCommandLineOpenBytes)
                         }
@@ -161,19 +199,27 @@ final class RemoteTerminalFilePreviewCoordinator {
                     return
                 }
                 guard let self, let workspace, let panel, let sourceSurface,
-                      !ManagedFileTransferPolicy.isDisabled,
-                      !workspace.isRetiredFromOwningTabManager,
-                      workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration,
-                      workspace.terminalPanel(for: sourcePanelID) === panel,
-                      panel.surface === sourceSurface,
-                      sourceSurface.terminalLifecycleId == lifecycleID,
-                      workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID] == attemptID,
-                      workspace.sshTuiConnectionAttemptID == tuiAttemptID,
-                      SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: sourcePanelID)?.resource == projectionResource,
-                      sourceSurface.owningWorkspace() === workspace,
-                      workspace.owningTabManager?.selectedTabId == workspace.id,
-                      workspace.focusedPanelId == sourcePanelID,
-                      panel.hostedView.window?.isKeyWindow == true else {
+                      !ManagedFileTransferPolicy.isDisabled else {
+                    Self.discardUnlessShown(download, cacheRoot: cacheRoot)
+                    return
+                }
+                let terminalIsTheSame = workspace.terminalPanel(for: sourcePanelID) === panel
+                    && panel.surface === sourceSurface
+                    && sourceSurface.terminalLifecycleId == lifecycleID
+                    && sourceSurface.owningWorkspace() === workspace
+                let projectionIsTheSame = workspace.remoteTerminalAttemptIDsBySurfaceId[sourcePanelID] == attemptID
+                    && SurfaceCatalog.shared.projectionIncludingPendingRestore(forPanel: sourcePanelID)?.resource
+                        == projectionResource
+                let connectionIsTheSame = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID) == configuration
+                    && workspace.sshTuiConnectionAttemptID == tuiAttemptID
+                guard RemotePreviewOpenRules.downloadMayOpen(
+                    isSelected: workspace.owningTabManager?.selectedTabId == workspace.id,
+                    isRetired: workspace.isRetiredFromOwningTabManager,
+                    sourceUnchanged: terminalIsTheSame && projectionIsTheSame,
+                    configurationUnchanged: connectionIsTheSame,
+                    sourceIsFocused: workspace.focusedPanelId == sourcePanelID,
+                    windowIsKey: panel.hostedView.window?.isKeyWindow == true
+                ) else {
                     #if DEBUG
                     cmuxDebugLog("remotePreview.discarded request=\(requestID.uuidString)")
                     #endif
@@ -183,12 +229,21 @@ final class RemoteTerminalFilePreviewCoordinator {
                 let opened: Bool
                 switch request {
                 case .click:
-                    opened = CommandClickFileOpenRouter.openInCmux(
-                        workspace: workspace,
-                        sourcePanelId: sourcePanelID,
-                        filePath: localURL.path,
-                        defaults: self.defaults
-                    )
+                    if Self.opensInFilePreview(localURL.path, defaults: self.defaults),
+                       let remotePath = download.remotePath {
+                        opened = await self.openLeased(
+                            download, remotePath: remotePath, provider: provider,
+                            workspace: workspace, sourcePanelID: sourcePanelID
+                        )
+                    } else {
+                        // Markdown and HTML keep their own viewers.
+                        opened = CommandClickFileOpenRouter.openInCmux(
+                            workspace: workspace,
+                            sourcePanelId: sourcePanelID,
+                            filePath: localURL.path,
+                            defaults: self.defaults
+                        )
+                    }
                     if !opened {
                         NSSound.beep()
                         Self.discardUnlessShown(download, cacheRoot: cacheRoot)
@@ -203,8 +258,15 @@ final class RemoteTerminalFilePreviewCoordinator {
                         opened = false
                         panel.hostedView.showTerminalNotice(RemotePreviewNotice.typeOpensFromFilesPanel)
                     } else {
-                        opened = FileRouteSettingsStore(defaults: self.defaults).shouldRouteSupportedFile(path: localURL.path)
-                            && workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: localURL.path) != nil
+                        if FileRouteSettingsStore(defaults: self.defaults).shouldRouteSupportedFile(path: localURL.path),
+                           let remotePath = download.remotePath {
+                            opened = await self.openLeased(
+                                download, remotePath: remotePath, provider: provider,
+                                workspace: workspace, sourcePanelID: sourcePanelID
+                            )
+                        } else {
+                            opened = false
+                        }
                         if !opened { panel.hostedView.showTerminalNotice(RemotePreviewNotice.couldNotOpen) }
                     }
                     if !opened { Self.discardUnlessShown(download, cacheRoot: cacheRoot) }
@@ -240,6 +302,61 @@ final class RemoteTerminalFilePreviewCoordinator {
         }
         tasks[sourcePanelID] = (requestID, task)
         return .started
+    }
+
+    /// Whether a clicked file opens in the native file preview (not the
+    /// Markdown viewer, not the browser, and file previews are on).
+    private static func opensInFilePreview(_ path: String, defaults: UserDefaults) -> Bool {
+        let settings = FileRouteSettingsStore(defaults: defaults)
+        return !settings.shouldRouteMarkdown(path: path)
+            && settings.shouldRouteSupportedFile(path: path)
+            && TerminalHTMLFileBrowserAction(defaults: defaults).browserURL(for: URL(fileURLWithPath: path)) == nil
+    }
+
+    /// The open preview of host file `path` on the connection `identity`, if any.
+    private static func openPreview(of path: String, identity: String, in workspace: Workspace) -> FilePreviewPanel? {
+        workspace.panels.values
+            .compactMap { $0 as? FilePreviewPanel }
+            .first { !$0.isClosed && $0.cloudPreviewRemotePath == path && $0.cloudPreviewProviderIdentity == identity }
+    }
+
+    /// Opens a download in the native file preview under an editable SSH
+    /// lease: the header shows the host path, Save writes to the host (with
+    /// the Files panel's conflict check), Refresh re-reads it. A preview of
+    /// the same host file that is already open is reused: its text is
+    /// replaced with the fresh bytes unless it has unsaved edits.
+    private func openLeased(
+        _ download: RemotePreviewDownload,
+        remotePath: String,
+        provider: SSHFileExplorerProvider,
+        workspace: Workspace,
+        sourcePanelID: UUID
+    ) async -> Bool {
+        let target: FilePreviewPanel
+        if let existing = Self.openPreview(of: remotePath, identity: provider.remoteIdentity, in: workspace) {
+            if !existing.isDirty, let lease = existing.cloudPreviewLease, lease.isEditable,
+               (try? FileManager.default.replaceItemAt(URL(fileURLWithPath: existing.filePath), withItemAt: download.url)) != nil {
+                lease.remoteStamp = download.remoteStamp
+                _ = existing.reloadFromDisk()
+            }
+            Self.discardUnlessShown(download, cacheRoot: cacheDirectory)
+            guard workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: existing.filePath) != nil else { return false }
+            target = existing
+        } else {
+            guard let lease = try? await leaseCache.adopt(
+                file: download.url, path: remotePath, provider: provider, stamp: download.remoteStamp
+            ) else { return false }
+            guard !workspace.isRetiredFromOwningTabManager,
+                  let panel = workspace.openOrFocusFilePreviewSplit(from: sourcePanelID, filePath: lease.url.path) else {
+                return false
+            }
+            panel.cloudPreviewLease = lease
+            target = panel
+        }
+        if let line = download.line {
+            FilePreviewLanguageFeatures.reveal(line: line, column: download.column, in: target)
+        }
+        return true
     }
 
     /// Deletes a download that won't be shown, if it created its cache file
