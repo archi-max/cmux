@@ -488,19 +488,29 @@ endmodule
     expect(LB.marks[separators]?.first?.line == 7 && LB.marks[separators]?.first?.text == "assign done = count == limit;",
            "line numbers count every line break the gutter does: \(state(separators))")
 
-    // L10: placing many marks in a big file is one pass, not one per mark.
-    let many = UUID()
-    var manyText = "module many(input logic clk);\n"
-    for i in 0..<50_000 { manyText += "  assign w\(i) = r\(i);\n" }
-    manyText += "endmodule\n"
-    LB.restore(SessionWaveformBreakpointsSnapshot(lines: (0..<2000).map {
-        LB.Mark(id: UUID(), path: "/rtl/many.sv", line: 1 + $0 * 25, text: "assign w\($0 * 25) = r\($0 * 25);")
-    }, signals: nil), in: many)
-    let manyView = open(manyText, workspace: many, path: "/rtl/many.sv")
-    let placeStarted = Date()
-    _ = LB.styles(in: manyView)
-    let placeMs = Date().timeIntervalSince(placeStarted) * 1000
-    expect(placeMs < 500 && (LB.marks[many] ?? []).allSatisfy { !$0.lost }, "2000 marks in a 50k-line file placed in \(Int(placeMs)) ms (under 500)")
+    // L10: placing many marks in a big file is one pass, not one per mark. Relative to a 10x smaller
+    // file with 10x fewer marks (best of 3), so load doesn't flake it: one pass per mark is about 100x.
+    func placeMilliseconds(_ lines: Int, marks count: Int) -> (ms: Double, marks: Int, lost: Int) {
+        let workspace = UUID()
+        var text = "module many(input logic clk);\n"
+        for i in 0..<lines { text += "  assign w\(i) = r\(i);\n" }
+        text += "endmodule\n"
+        let step = lines / count
+        LB.restore(SessionWaveformBreakpointsSnapshot(lines: (0..<count).map {
+            LB.Mark(id: UUID(), path: "/rtl/many.sv", line: 1 + $0 * step, text: "assign w\($0 * step) = r\($0 * step);")
+        }, signals: nil), in: workspace)
+        let view = open(text, workspace: workspace, path: "/rtl/many.sv")
+        let started = Date()
+        _ = LB.styles(in: view)
+        let ms = Date().timeIntervalSince(started) * 1000
+        let placed = LB.marks[workspace] ?? []
+        return (ms, placed.count, placed.filter(\.lost).count)
+    }
+    let smallPlace = (0..<3).map { _ in placeMilliseconds(5_000, marks: 200) }.min { $0.ms < $1.ms }!
+    var bigPlace = placeMilliseconds(50_000, marks: 2000)
+    if bigPlace.ms >= smallPlace.ms * 30 { let again = placeMilliseconds(50_000, marks: 2000); if again.ms < bigPlace.ms { bigPlace = again } }
+    expect(bigPlace.ms < max(smallPlace.ms, 1) * 30 && bigPlace.marks == 2000 && smallPlace.marks == 200 && bigPlace.lost == 0 && smallPlace.lost == 0,
+           "2000 marks in a 50k-line file placed in \(Int(bigPlace.ms)) ms, 200 in 5k in \(String(format: "%.1f", smallPlace.ms)) ms (under 30x; lost \(bigPlace.lost))")
 
     // N8: an older manifest's list goes to the first viewer that reports; cleared there, it does not
     // come back after a relaunch, nor go to an unrelated viewer.
