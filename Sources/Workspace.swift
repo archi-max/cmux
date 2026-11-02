@@ -7308,12 +7308,20 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
         }
         if usesSSHTui, let configuration = remoteConfiguration {
             // One session the app's one-off master lends for the whole drop.
-            let lease = configuration.fileOperationLease()
-            DetectedSSHSession(configuration: configuration, sshOptions: lease.sshOptions)
-                .uploadDroppedFiles(fileURLs, operation: operation) { result in
-                    lease.release()
-                    completion(result)
+            Task { @MainActor in
+                let lease: SSHMasterPool.Lease
+                do {
+                    lease = try await configuration.fileOperationLease()
+                } catch {
+                    completion(.failure(error))
+                    return
                 }
+                DetectedSSHSession(configuration: configuration, sshOptions: lease.sshOptions)
+                    .uploadDroppedFiles(fileURLs, operation: operation) { result in
+                        lease.release()
+                        completion(result)
+                    }
+            }
             return
         }
         guard let controller = remoteSessionController else {

@@ -1024,7 +1024,7 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                 outputURL: raw
             )
             return try await Self.runChild(
-                limit: maxBytes == nil ? Self.downloadHoldLimit : Self.commandHoldLimit,
+                limit: maxBytes == nil ? Self.downloadHoldLimit(writingTo: raw) : Self.commandHoldLimit,
                 run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
             )
         }
@@ -1047,7 +1047,7 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                 outputURL: outputURL
             )
             return try await Self.runChild(
-                limit: Self.downloadHoldLimit, run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+                limit: Self.downloadHoldLimit(writingTo: outputURL), run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
             )
         }
         guard result.terminationStatus == 0 else {
@@ -1214,17 +1214,31 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
 
     private static let writeFileTimeout: Duration = .seconds(20)
 
-    /// The longest a one-off command holds its lent session (a listing stuck
-    /// on a dead mount, say); a write, a search and Go to File end sooner.
-    private static let commandHoldLimit: Duration = .seconds(60)
-    /// The longest a download holds its lent session.
-    private static let downloadHoldLimit: Duration = .seconds(600)
+    /// How long an ssh child may hold its lent session on the one-off master.
+    private enum HoldLimit: Sendable {
+        /// At most this long in all (a listing stuck on a dead mount, say).
+        case total(Duration)
+        /// Until `progress` (bytes written so far) stops growing for this
+        /// long: a slow large download still finishes.
+        case stalled(Duration, progress: @Sendable () -> UInt64)
+    }
+
+    /// One-off commands; a write, a search and Go to File end sooner.
+    private static let commandHoldLimit = HoldLimit.total(.seconds(60))
+    private static let downloadStallLimit: Duration = .seconds(60)
+
+    /// A download's hold limit: no new bytes at `url` for a minute.
+    private nonisolated static func downloadHoldLimit(writingTo url: URL) -> HoldLimit {
+        .stalled(downloadStallLimit) {
+            ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        }
+    }
 
     /// Runs an ssh child off Swift's cooperative executor, terminating it when
-    /// the caller is cancelled or after `limit`, so it can't hold its session
-    /// on the one-off master for ever.
+    /// the caller is cancelled or `limit` runs out, so it can't hold its
+    /// session on the one-off master for ever.
     private nonisolated static func runChild(
-        limit: Duration,
+        limit: HoldLimit,
         run: @escaping @Sendable () throws -> SSHCommandResult,
         terminate: @escaping @Sendable () -> Void
     ) async throws -> SSHCommandResult {
@@ -1241,7 +1255,18 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                 }
             }
             group.addTask {
-                try await Task.sleep(for: limit)
+                switch limit {
+                case .total(let duration):
+                    try await Task.sleep(for: duration)
+                case .stalled(let stall, let progress):
+                    var last = progress()
+                    var lastChange = ContinuousClock.now
+                    while ContinuousClock.now - lastChange < stall {
+                        try await Task.sleep(for: .seconds(5))
+                        let now = progress()
+                        if now != last { last = now; lastChange = ContinuousClock.now }
+                    }
+                }
                 throw FileExplorerError.sshCommandFailed("timed out")
             }
             // Leaving the group cancels the other task and waits for it, so
@@ -1812,8 +1837,11 @@ final class FileExplorerStore: ObservableObject {
         Task { [weak self] in
             let status = await Task.detached(priority: .utility) {
                 if let connection {
-                    return source.fetchStatusSSH(directory: path, destination: connection.destination,
-                        port: connection.port, identityFile: connection.identityFile, sshOptions: connection.sshOptions)
+                    // On a session the app's one-off master lends.
+                    return (try? await SSHMasterPool.shared.withSession(connection) { leased in
+                        source.fetchStatusSSH(directory: path, destination: leased.destination,
+                            port: leased.port, identityFile: leased.identityFile, sshOptions: leased.sshOptions)
+                    }) ?? [:]
                 }
                 return source.fetchStatus(directory: path)
             }.value

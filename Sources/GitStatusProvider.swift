@@ -198,11 +198,6 @@ struct GitStatusProvider: Sendable {
         command: String, destination: String,
         port: Int?, identityFile: String?, sshOptions: [String]
     ) -> String? {
-        // A session the app's one-off master lends, given back once ssh exits.
-        let lease = SSHMasterPool.shared.lease(
-            destination: destination, port: port, identityFile: identityFile, sshOptions: sshOptions
-        )
-        defer { lease.release() }
         let process = Process()
         process.executableURL = sshExecutableURL
         process.arguments = ProcessSSHFileExplorerTransport.sshArguments(
@@ -210,7 +205,7 @@ struct GitStatusProvider: Sendable {
                 destination: destination,
                 port: port,
                 identityFile: identityFile,
-                sshOptions: lease.sshOptions
+                sshOptions: sshOptions
             ),
             command: command
         )
