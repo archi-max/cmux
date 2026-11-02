@@ -26,8 +26,20 @@ public final class SSHTuiCarrierRoutes: @unchecked Sendable {
         carriers[connection.id] = connection
     }
 
-    /// The options for a one-off `ssh`, `scp` or `sftp` to `configuration`'s machine.
+    /// The options for a one-off `ssh`, `scp` or `sftp` to `configuration`'s
+    /// machine: the carrier's, when one was recorded for it, else the
+    /// configuration's own.
+    ///
+    /// The carrier's master is the one this workspace's terminals already run
+    /// on, so reusing it grants these runs nothing the workspace lacks. The
+    /// options still never make a run a master (see
+    /// ``SSHTuiConnection/fileOperationSSHOptions``), and a carrier that shares
+    /// nothing (`ControlPath=none`) keeps them unshared too.
     public func fileOperationSSHOptions(for configuration: WorkspaceRemoteConfiguration) -> [String] {
-        SSHTuiConnection(configuration: configuration).fileOperationSSHOptions
+        let own = SSHTuiConnection(configuration: configuration)
+        lock.lock()
+        let carrier = carriers[own.id]
+        lock.unlock()
+        return (carrier ?? own).fileOperationSSHOptions
     }
 }
