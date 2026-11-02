@@ -504,6 +504,27 @@
     rows[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await sleep(80);
     expect(M.state().k === want[1].end, opts.name + ': clicking a match goes to its last step: ' + M.state().k + ' (' + want[1].end + ')');
+    // Break Here: a sequence breakpoint from the tab's query (as typed, Enter or not) and its Go to.
+    const seqBps = () => D.breakpoints().filter((b) => b.kind === 'sequence').map((b) => [b.query, b.land]);
+    const breakHere = () => box.querySelector('.seqbar .break');
+    expect(breakHere() && breakHere().textContent === 'Break Here', opts.name + ': the Sequences tab offers Break Here: ' + (breakHere() && breakHere().textContent));
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    expect(JSON.stringify(seqBps()) === JSON.stringify([[query, 'end']]), opts.name + ': Break Here makes a sequence breakpoint of the query: ' + JSON.stringify(seqBps()));
+    box.querySelector('.seqbar .land').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    box.querySelector('.seqbar .query').value = '{sw} ##1 {lw}';
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    expect(JSON.stringify(seqBps()) === JSON.stringify([[query, 'end'], ['{sw} ##1 {lw}', 'start']]),
+      opts.name + ': a query typed without Enter, landing where Go to says (first step): ' + JSON.stringify(seqBps()));
+    box.querySelector('.seqbar .query').value = '  ';
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    expect(seqBps().length === 2, opts.name + ': none for an empty query: ' + JSON.stringify(seqBps()));
+    for (const b of D.breakpoints().filter((x) => x.kind === 'sequence')) { D.removeBreakpoint({ id: b.id }); }
+    box.querySelector('.seqbar .land').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
     const times = await W.commits.sequenceTimes({ query, land: 'start' });
     expect(times.times.length === want.length && Array.from(times.times).every((t, i, a) => i === 0 || a[i - 1] <= t),
       opts.name + ': commits.sequenceTimes: ' + times.times.length + ' times');
