@@ -252,6 +252,35 @@ extension AppDelegate {
         return panel
     }
 
+#if DEBUG
+    /// Each check of `shortcutFocusedWaveformPanel`, for the debug log: which one fails.
+    func shortcutFocusedWaveformPanelDiagnosis(in window: NSWindow?) -> String {
+        func describe(_ object: AnyObject?) -> String {
+            object.map { "\(type(of: $0)):\(Unmanaged.passUnretained($0).toOpaque())" } ?? "nil"
+        }
+        var parts = ["window=\(window?.identifier?.rawValue ?? (window == nil ? "nil" : "unnamed")) key=\(window?.isKeyWindow == true ? 1 : 0)"]
+        parts.append("responder=\(describe(window?.firstResponder))")
+        let manager = shortcutContextTabManager(in: window)
+        parts.append("context=\(shortcutMainWindowContext(in: window) != nil ? 1 : 0) tabManager=\(manager != nil ? 1 : 0)")
+        guard let workspace = manager?.selectedWorkspace else { return (parts + ["workspace=nil"]).joined(separator: " ") }
+        parts.append("workspace=\(workspace.id.uuidString.prefix(5)) focusedPanel=\(workspace.focusedPanelId.map { String($0.uuidString.prefix(5)) } ?? "nil")")
+        guard let panelId = workspace.focusedPanelId, let panel = workspace.panels[panelId] else {
+            return (parts + ["panel=nil"]).joined(separator: " ")
+        }
+        parts.append("panelType=\(type(of: panel))")
+        if let preview = panel as? FilePreviewPanel {
+            parts.append("closed=\(preview.isClosed ? 1 : 0) mode=\(preview.previewMode)")
+            parts.append("sessionWebView=\(preview.nativeViewSessions.waveform.debugWebViewDescription)")
+            parts.append("holdsResponder=\(window?.firstResponder.map { preview.nativeViewSessions.waveform.holdsResponder($0) ? 1 : 0 } ?? -1)")
+            parts.append("editableFocused=\(preview.nativeViewSessions.waveform.isEditableElementFocused ? 1 : 0)")
+        }
+        // Every waveform viewer in the workspace, to see whether the responder is one of them.
+        let viewers = workspace.panels.values.compactMap { $0 as? FilePreviewPanel }.filter { $0.previewMode == .waveform }
+        parts.append("viewers=[" + viewers.map { "\($0.id.uuidString.prefix(5)):\($0.nativeViewSessions.waveform.debugWebViewDescription)" }.joined(separator: ",") + "]")
+        return parts.joined(separator: " ")
+    }
+#endif
+
     /// Resolves the editor that owns the requested window’s keyboard responder.
     func shortcutFocusedSavingTextView(in window: NSWindow?) -> SavingTextView? {
         guard let responder = window?.firstResponder ?? NSApp.keyWindow?.firstResponder ?? NSApp.mainWindow?.firstResponder else {
