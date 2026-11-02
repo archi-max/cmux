@@ -84,6 +84,42 @@ actor CloudFilePreviewCache {
         }
     }
 
+    /// Takes `file`, a complete download of `path` made elsewhere (a terminal
+    /// link or `cmux open`), into this cache under an editable SSH lease, so
+    /// its preview names the host path, saves back with the conflict check
+    /// and refreshes like one opened from the Files panel. `file` is moved.
+    func adopt(
+        file: URL,
+        path: String,
+        provider: SSHFileExplorerProvider,
+        stamp: SSHRemoteFileStamp?
+    ) throws -> CloudFilePreviewLease {
+        guard !ManagedFileTransferPolicy.isDisabled else {
+            throw ManagedFileTransferPolicy.refusalError()
+        }
+        if cleanupTask == nil {
+            let parent = root.deletingLastPathComponent()
+            cleanupTask = Task.detached(priority: .utility) { Self.removeStaleDirectories(in: parent) }
+        }
+        let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let filename = (path as NSString).lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != ".." else { throw FileExplorerError.providerUnavailable }
+        let url = directory.appendingPathComponent(filename, isDirectory: false)
+        entries.insert(url)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                   attributes: [.posixPermissions: 0o700])
+            try FileManager.default.moveItem(at: file, to: url)
+            try FileManager.default.setAttributes([.posixPermissions: Self.previewPermissions(for: provider)],
+                                                  ofItemAtPath: url.path)
+            return CloudFilePreviewLease(url: url, remotePath: path, remoteIdentity: provider.remoteIdentity,
+                                         cache: self, sshProvider: provider, remoteStamp: stamp)
+        } catch {
+            release(url)
+            throw error
+        }
+    }
+
     /// A lease for a remote file the viewer reads in place on the host (FSDB):
     /// an empty local stand-in carries the name, and nothing is downloaded.
     func placeholder(path: String, provider: any RemoteFileExplorerProvider) throws -> CloudFilePreviewLease {

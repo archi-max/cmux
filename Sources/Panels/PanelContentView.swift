@@ -287,9 +287,26 @@ struct PanelContentView: View {
 
 struct PanelFilePathHeader<TrailingContent: View>: View {
     let iconSystemName: String
+    /// The path shown and copied: a remote file's host path.
     let filePath: String
+    /// cmux's local copy of a remote file, offered as "Copy Local Path".
+    var localCopyPath: String? = nil
     let foregroundColor: NSColor
     @ViewBuilder let trailingContent: () -> TrailingContent
+
+    init(
+        iconSystemName: String,
+        filePath: String,
+        localCopyPath: String? = nil,
+        foregroundColor: NSColor,
+        @ViewBuilder trailingContent: @escaping () -> TrailingContent
+    ) {
+        self.iconSystemName = iconSystemName
+        self.filePath = filePath
+        self.localCopyPath = localCopyPath
+        self.foregroundColor = foregroundColor
+        self.trailingContent = trailingContent
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -305,12 +322,28 @@ struct PanelFilePathHeader<TrailingContent: View>: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .copyOnlyTextSelection(for: filePath)
+                .help(filePath)
+                .contextMenu {
+                    Button(String(localized: "fileExplorer.contextMenu.copyPath", defaultValue: "Copy Path")) {
+                        Self.copyToPasteboard(filePath)
+                    }
+                    if let localCopyPath {
+                        Button(String(localized: "filePreview.header.copyLocalPath", defaultValue: "Copy Local Path")) {
+                            Self.copyToPasteboard(localCopyPath)
+                        }
+                    }
+                }
             Spacer(minLength: 8)
             trailingContent()
         }
         .padding(.horizontal, RightSidebarChromeMetrics.contentIconLeadingPadding)
         .frame(height: RightSidebarChromeMetrics.secondaryBarHeight)
         .background(Color.clear)
+    }
+
+    private static func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
