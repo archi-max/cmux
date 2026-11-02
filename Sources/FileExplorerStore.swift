@@ -1728,6 +1728,10 @@ final class FileExplorerStore: ObservableObject {
 
     private let gitStatusProvider: GitStatusProvider
     private var gitStatusGeneration: UInt64 = 0
+    /// Git status runs started and not yet finished, and whether a Refresh
+    /// asked for one more after them (``refreshGitStatusCoalesced()``).
+    private var gitStatusRunsInFlight = 0
+    private var gitStatusRerunQueued = false
 
     init(gitStatusProvider: GitStatusProvider = GitStatusProvider()) {
         self.gitStatusProvider = gitStatusProvider
@@ -1847,6 +1851,7 @@ final class FileExplorerStore: ObservableObject {
             return
         }
         let connection = (provider as? SSHFileExplorerProvider)?.connection
+        gitStatusRunsInFlight += 1
         Task { [weak self] in
             let status = await Task.detached(priority: .utility) {
                 if let connection {
@@ -1855,8 +1860,15 @@ final class FileExplorerStore: ObservableObject {
                 }
                 return source.fetchStatus(directory: path)
             }.value
-            guard let self, self.gitStatusGeneration == generation, self.resourceContextID == context else { return }
-            self.gitStatusByPath = status
+            guard let self else { return }
+            self.gitStatusRunsInFlight -= 1
+            if self.gitStatusGeneration == generation, self.resourceContextID == context {
+                self.gitStatusByPath = status
+            }
+            if self.gitStatusRunsInFlight == 0, self.gitStatusRerunQueued {
+                self.gitStatusRerunQueued = false
+                self.refreshGitStatus()
+            }
         }
     }
 
@@ -2203,6 +2215,57 @@ final class FileExplorerStore: ObservableObject {
             await self.loadChildren(for: nil, at: path)
         }
         loadTasks[rootPath] = task
+    }
+
+    /// Right-click Refresh: re-lists `path` through the normal listing path.
+    /// The root re-lists the whole tree (expanded folders re-expand); a loaded
+    /// folder re-lists only itself. A folder that was never listed is left for
+    /// its next expand, which lists it fresh.
+    func refresh(directoryAt path: String) {
+        guard !rootPath.isEmpty, provider != nil else { return }
+        if Self.pathsEqual(path, rootPath) {
+            reload()
+            refreshGitStatusCoalesced()
+            return
+        }
+        guard let node = nodesByPath[path], node.isDirectory,
+              node.resourceContextID == nil || node.resourceContextID == resourceContextID,
+              node.children != nil, loadTasks[path] == nil, !loadingPaths.contains(path) else { return }
+        // A Files refresh also refreshes what Go to File lists.
+        GoToFileSnapshotLoader.cache.invalidateAll()
+        // Everything below the folder is replaced by the new listing: a load
+        // still running there would land on nodes that are no longer shown.
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        for (key, task) in loadTasks where key.hasPrefix(prefix) {
+            task.cancel()
+            loadTasks.removeValue(forKey: key)
+        }
+        loadingPaths = loadingPaths.filter { !$0.hasPrefix(prefix) }
+        for (key, scheduler) in prefetchSchedulers where key.hasPrefix(prefix) {
+            scheduler.cancel()
+            prefetchSchedulers.removeValue(forKey: key)
+        }
+        nodesByPath = nodesByPath.filter { !$0.key.hasPrefix(prefix) }
+        node.isLoading = true
+        node.error = nil
+        objectWillChange.send()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.loadChildren(for: node, at: path)
+        }
+        loadTasks[path] = task
+        refreshGitStatusCoalesced()
+    }
+
+    /// Refresh's git status: a Refresh while a run is in flight asks for one
+    /// more run when it ends instead of starting its own, so repeated
+    /// Refreshes cost at most one extra run (`git status` over SSH).
+    private func refreshGitStatusCoalesced() {
+        if gitStatusRunsInFlight > 0 {
+            gitStatusRerunQueued = true
+        } else {
+            refreshGitStatus()
+        }
     }
 
     func expand(node: FileExplorerNode) {

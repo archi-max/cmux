@@ -864,6 +864,7 @@ struct FileExplorerPanelView: NSViewRepresentable {
             }
 
             addRootPinMenuItems(for: clickedRow >= 0 ? node : nil, to: menu)
+            addRefreshMenuItem(for: clickedRow >= 0 ? node : nil, to: menu)
 
             guard clickedRow >= 0 else { return }
 
@@ -957,6 +958,31 @@ struct FileExplorerPanelView: NSViewRepresentable {
         @objc private func contextMenuClearBuildFile(_ sender: NSMenuItem) {
             guard let workspaceId = store.workspaceRootIdentity else { return }
             SlangCompilationActions.clearBuildFile(workspaceId: workspaceId, window: outlineView?.window)
+        }
+
+        /// `node` is the clicked row, or `nil` for the blank tree area.
+        private func addRefreshMenuItem(for node: FileExplorerNode?, to menu: NSMenu) {
+            guard store.provider != nil,
+                  let path = FileExplorerRefreshMenuTarget.path(clickedNode: node, rootPath: store.rootPath) else { return }
+            if node == nil, !menu.items.isEmpty, menu.items.last?.isSeparatorItem == false {
+                menu.addItem(.separator())
+            }
+            let refreshItem = NSMenuItem(
+                title: String(localized: "fileExplorer.contextMenu.refresh", defaultValue: "Refresh"),
+                action: #selector(contextMenuRefresh(_:)),
+                keyEquivalent: ""
+            )
+            refreshItem.target = self
+            refreshItem.representedObject = path
+            menu.addItem(refreshItem)
+            if node != nil {
+                menu.addItem(.separator())
+            }
+        }
+
+        @objc private func contextMenuRefresh(_ sender: NSMenuItem) {
+            guard let path = sender.representedObject as? String else { return }
+            store.refresh(directoryAt: path)
         }
 
         /// `node` is the clicked row, or `nil` for the blank tree area.
@@ -2395,5 +2421,14 @@ private extension FileExplorerContainerView {
         outlineView.activeNativeDragWriter = nil
         outlineView.activeNativeDragOwnerships = []
         outlineView.activeNativeDragOwnership = nil
+    }
+}
+
+/// The folder a context-menu Refresh re-lists: the clicked folder, or the
+/// root for the blank area. A file row has no Refresh.
+enum FileExplorerRefreshMenuTarget {
+    static func path(clickedNode: FileExplorerNode?, rootPath: String) -> String? {
+        guard let clickedNode else { return rootPath.isEmpty ? nil : rootPath }
+        return clickedNode.isDirectory ? clickedNode.path : nil
     }
 }
