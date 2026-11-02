@@ -709832,65 +709832,6 @@
         }
       }
     },
-    "waveformDebugger.sequence.incomplete": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: Die Suche hat ihr Budget erreicht, daher sind nur die ersten %2$@ Treffer Haltepunkt-Treffer"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ : la recherche s’est arrêtée à son budget ; seules ses %2$@ premières correspondances sont des arrêts"
-          }
-        },
-        "ar": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: توقف البحث عند حدّه، لذا فإن أول %2$@ تطابقات فقط هي نقاط توقف"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: la búsqueda se detuvo en su límite, así que solo sus primeras %2$@ coincidencias son paradas"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@：搜尋已達預算上限，因此只有前 %2$@ 個符合項目會作為中斷點命中"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@：搜索已达预算上限，因此只有前 %2$@ 个匹配项作为断点命中"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: 검색이 예산에서 멈췄으므로 처음 %2$@개 일치 항목만 중단점 적중입니다"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: 検索が上限に達したため、最初の %2$@ 件の一致だけがブレークポイントのヒットになります"
-          }
-        }
-      }
-    },
     "waveformDebugger.sequence.edit": {
       "extractionState": "manual",
       "localizations": {
@@ -716967,6 +716908,419 @@
           "stringUnit": {
             "state": "translated",
             "value": "設計未提供此訊號可用於拆分的打包維度。請在編輯器中開啟其原始碼，或依寬度拆分。"
+          }
+        }
+      }
+    },
+    "waveformMachine.seq.breakHere": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Break Here"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hier anhalten"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter ici"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التوقف هنا"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detener aquí"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此中斷"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此中断"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "여기서 중단"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここで停止"
+          }
+        }
+      }
+    },
+    "waveformMachine.seq.breakHereTooltip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a breakpoint that stops where the committed instructions match this sequence (at its last or first step, as Go to says)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Einen Haltepunkt hinzufügen, der anhält, wo die ausgeführten Anweisungen dieser Sequenz entsprechen (bei ihrem letzten oder ersten Schritt, wie „Gehe zu“ angibt)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter un point d’arrêt qui s’arrête là où les instructions validées correspondent à cette séquence (à sa dernière ou première étape, selon « Aller à »)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة نقطة توقف تتوقف حيث تطابق التعليمات المنفذة هذا التسلسل (عند خطوته الأخيرة أو الأولى، حسب «الانتقال إلى»)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir un punto de interrupción que se detiene donde las instrucciones confirmadas coinciden con esta secuencia (en su último o primer paso, según «Ir a»)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增中斷點，在提交的指令符合此序列處停止（依「前往」設定，停在最後或第一步）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加断点，在提交的指令匹配此序列处停止（按“转到”设置，停在最后或第一步）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "커밋된 명령어가 이 시퀀스와 일치하는 곳에서 멈추는 중단점을 추가합니다(이동 설정에 따라 마지막 또는 첫 단계에서)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コミットされた命令がこのシーケンスに一致する場所で停止するブレークポイントを追加します（「移動先」に従い、最後または最初のステップで）。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: only its first %2$@ matches are breakpoint hits"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: Nur die ersten %2$@ Treffer sind Haltepunkt-Treffer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ : seules ses %2$@ premières correspondances sont des arrêts"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: أول %2$@ تطابقات فقط هي نقاط توقف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: solo sus primeras %2$@ coincidencias son paradas"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：只有前 %2$@ 個符合項目會作為中斷點命中"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：只有前 %2$@ 个匹配项作为断点命中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 처음 %2$@개 일치 항목만 중단점 적중입니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 最初の %2$@ 件の一致だけがブレークポイントのヒットになります"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.stopped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: the search stopped at its budget at commit %2$@ of %3$@, so later matches are not breakpoint hits"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: Die Suche hat bei Commit %2$@ von %3$@ ihr Budget erreicht, daher sind spätere Treffer keine Haltepunkt-Treffer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ : la recherche s’est arrêtée à son budget au commit %2$@ sur %3$@ ; les correspondances suivantes ne sont pas des arrêts"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: توقف البحث عند حدّه في الالتزام %2$@ من %3$@، لذا فإن التطابقات اللاحقة ليست نقاط توقف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: la búsqueda se detuvo en su límite en el commit %2$@ de %3$@, así que las coincidencias posteriores no son paradas"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：搜尋在第 %2$@ 個提交（共 %3$@ 個）達到預算上限，因此之後的符合項目不會作為中斷點命中"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：搜索在第 %2$@ 个提交（共 %3$@ 个）达到预算上限，因此之后的匹配项不会作为断点命中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 검색이 커밋 %3$@개 중 %2$@번째에서 예산에 도달했으므로 이후 일치 항목은 중단점 적중이 아닙니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 検索が %3$@ 件中 %2$@ 件目のコミットで上限に達したため、それ以降の一致はブレークポイントのヒットになりません"
+          }
+        }
+      }
+    },
+    "waveformMachine.seq.breakAdded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Breakpoint added: %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haltepunkt hinzugefügt: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Point d’arrêt ajouté : %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تمت إضافة نقطة توقف: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Punto de interrupción añadido: %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已新增中斷點：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已添加断点：%@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중단점 추가됨: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブレークポイントを追加しました: %@"
+          }
+        }
+      }
+    },
+    "waveformMachine.seq.breakExists": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already a breakpoint: %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bereits ein Haltepunkt: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Déjà un point d’arrêt : %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نقطة توقف موجودة بالفعل: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ya es un punto de interrupción: %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已是中斷點：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已是断点：%@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이미 중단점입니다: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既にブレークポイントです: %@"
+          }
+        }
+      }
+    },
+    "waveformMachine.seq.breakEnabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Breakpoint enabled again: %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Haltepunkt wieder aktiviert: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Point d’arrêt réactivé : %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تمت إعادة تفعيل نقطة التوقف: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Punto de interrupción activado de nuevo: %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已重新啟用中斷點：%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已重新启用断点：%@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중단점을 다시 사용함: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブレークポイントを再び有効にしました: %@"
           }
         }
       }

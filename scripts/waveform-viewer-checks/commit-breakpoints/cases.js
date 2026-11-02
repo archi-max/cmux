@@ -16,7 +16,7 @@ async function runCommitCases() {
     debuggerCommitAddressTooLarge: 'too large', debuggerCommitTextJalHint: '%@: hint',
     debuggerBreakpointSequence: 'Sequence %@', debuggerBreakpointSequenceStart: 'Sequence %@ (its start)',
     debuggerSequenceNoQuery: 'no query', debuggerSequenceTooLong: 'longer than %@', debuggerSequenceBadSyntax: 'does not parse',
-    debuggerSequenceIncomplete: '%1$@: only %2$@',
+    debuggerSequenceLimit: '%1$@: first %2$@', debuggerSequenceStopped: '%1$@: stopped at %2$@ of %3$@',
   });
 
   // k: time, pc (NaN: x), insn, channel. Two commits share the cycle at 20 (channels 0 and 1).
@@ -249,8 +249,9 @@ async function runCommitCases() {
     waveform.machine = { sequence: async (q) => { asked.push(q); return answer; } };
     const seq = bp('sequence', { query: '{lw} ##1 {add}' });
     eq('sequence: its matches\' last commits', await hits(seq), [30, 70]);
-    eq('sequence: the whole trace is asked, with a budget', [(asked[0] || {}).query, (asked[0] || {}).from, (asked[0] || {}).limit > 100000, (asked[0] || {}).budget > 2000000],
-      ['{lw} ##1 {add}', 0, true, true]);
+    // §3A: 2M steps or 2 s a search.
+    eq('sequence: the whole trace is asked, with a budget of steps and of time', [(asked[0] || {}).query, (asked[0] || {}).from, (asked[0] || {}).limit > 100000,
+      (asked[0] || {}).budget, (asked[0] || {}).budgetMs], ['{lw} ##1 {add}', 0, true, 2000000, 2000]);
     eq('sequence: kAt is the match\'s last commit', [C.kAt(seq, 30), C.kAt(seq, 70), C.kAt(seq, 20)], [3, 7, null]);
     const start = bp('sequence', { query: '{lw} ##1 {add}', land: 'start' });
     eq('sequence at its start: the first commits', await hits(start), [20, 50]);
@@ -259,9 +260,60 @@ async function runCommitCases() {
     await hits(seq);
     eq('sequence: kept while the index is the same', asked.length, before);
     warnings.length = 0;
-    answer = { matches: [{ start: 1, end: 3, ks: [1, 3], startTime: 20, endTime: 30 }], incomplete: true, next: 4 };
-    eq('sequence stopped at its budget: the hits found', await hits(bp('sequence', { query: '{sw}' })), [30]);
-    eq('and that is said', warnings, ['Sequence {sw}: only 1']);
+    answer = { matches: [{ start: 1, end: 3, ks: [1, 3], startTime: 20, endTime: 30 }], incomplete: true, reason: 'time', next: 4 };
+    eq('sequence stopped at its time budget: the hits found', await hits(bp('sequence', { query: '{sw}' })), [30]);
+    eq('and where it stopped is said', warnings, ['Sequence {sw}: stopped at 5 of 8']);
+    warnings.length = 0;
+    answer = Object.assign({}, answer, { reason: 'budget' });
+    await hits(bp('sequence', { query: '{sw} ##1 {lw}' }));
+    eq('its step budget: the same', warnings, ['Sequence {sw} ##1 {lw}: stopped at 5 of 8']);
+    warnings.length = 0;
+    answer = Object.assign({}, answer, { reason: 'limit' });
+    await hits(bp('sequence', { query: '{sw} ##2 {lw}' }));
+    eq('its match limit: only the first matches', warnings, ['Sequence {sw} ##2 {lw}: first 1']);
+    warnings.length = 0;
+    // Too many partial matches at once: the search dropped some and went on to the end, nothing to say.
+    answer = Object.assign({}, answer, { reason: 'threads', next: null });
+    eq('the thread cap: its hits, nothing said', [await hits(bp('sequence', { query: '{sw} ##3 {lw}' })), warnings], [[30], []]);
+    warnings.length = 0;
+    // Several sequence breakpoints on one index share a time pool: 16 slow ones don't add up to minutes.
+    {
+      ix = makeIndex(rows);
+      const spent = [];
+      waveform.machine = { sequence: async (q) => { spent.push(q.budgetMs); return { matches: [], incomplete: true, reason: 'time', next: 0, ms: q.budgetMs }; } };
+      for (let i = 0; i < 16; i++) { await hits(bp('sequence', { query: '{lw} ##' + (i + 1) + ' {sw}' })); }
+      const total = spent.reduce((a, b) => a + b, 0);
+      eq('16 slow sequences: each has a time budget, the first 2 s, the rest from a pool of 8 s (at least 250 ms each)',
+        [spent.length, spent[0], spent.every((ms) => ms >= 250 && ms <= 2000), total <= 8000 + 16 * 250], [16, 2000, true, true]);
+      // Cut short by a low pool: searched again once the pool has refilled (it refills over 30 s), not before;
+      // then (its full 2 s) kept.
+      const realNow = Date.now;
+      let clock = realNow();
+      Date.now = () => clock;
+      const low = bp('sequence', { query: '{lw} ##50 {sw}' });
+      await hits(low);
+      const lowMs = spent[spent.length - 1];
+      await hits(low);
+      const whileLow = spent.length;
+      clock += 30000;
+      await hits(low);
+      const retried = spent.slice(whileLow);
+      eq('a search the pool cut short: kept while the pool is low, searched again with 2 s once it refilled',
+        [lowMs < 2000, whileLow === spent.length - retried.length, retried], [true, true, [2000]]);
+      await hits(low);
+      eq('and then kept', spent.length, whileLow + 1);
+      // Two at once for one breakpoint: one search.
+      const twice = bp('sequence', { query: '{lw} ##77 {sw}' });
+      const before2 = spent.length;
+      const both = await Promise.all([hits(twice), hits(twice)]);
+      eq('two times() at once for one breakpoint: searched once, both answered', [spent.length - before2, both], [1, [[], []]]);
+      Date.now = realNow;
+      ix = makeIndex(rows);
+      await hits(bp('sequence', { query: '{lw} ##99 {sw}' }));
+      eq('a rebuilt index: a new pool', spent[spent.length - 1], 2000);
+      waveform.machine = { sequence: async (q) => { asked.push(q); return answer; } };
+      warnings.length = 0;
+    }
     warnings.length = 0;
     answer = { error: 'unknownName', message: 'no such name: foo' };
     eq('sequence the search refuses: none', await hits(bp('sequence', { query: 'foo' })), null);

@@ -63,10 +63,9 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
             guard let loc = item["loc"] as? String, Self.isLocation(loc) else { return nil }
             self.init(loc: loc)
         case "sequence":
-            guard let query = item["query"] as? String, !query.isEmpty, query.count <= Self.maxQueryLength else { return nil }
-            let land = item["land"] as? String
-            guard land == nil || land == "end" || land == "start" else { return nil }
-            self.init(query: query, land: land)
+            // Its length as the page counts it (UTF-16 units); a landing other than its start is its end, as on the page.
+            guard let query = item["query"] as? String, !query.isEmpty, query.utf16.count <= Self.maxQueryLength else { return nil }
+            self.init(query: query, land: item["land"] as? String == "start" ? "start" : "end")
         default:
             return nil
         }
@@ -151,9 +150,13 @@ struct WaveformDebuggerCommitBreakpoint: Codable, Equatable, Sendable {
                 localized: "waveformDebugger.sequence.badSyntax",
                 defaultValue: "the sequence doesn't parse (the Machine section's Sequences tab shows why)"
             ),
-            "debuggerSequenceIncomplete": String(
-                localized: "waveformDebugger.sequence.incomplete",
-                defaultValue: "%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits"
+            "debuggerSequenceLimit": String(
+                localized: "waveformDebugger.sequence.limit",
+                defaultValue: "%1$@: only its first %2$@ matches are breakpoint hits"
+            ),
+            "debuggerSequenceStopped": String(
+                localized: "waveformDebugger.sequence.stopped",
+                defaultValue: "%1$@: the search stopped at its budget at commit %2$@ of %3$@, so later matches are not breakpoint hits"
             ),
             "debuggerEditSequence": String(localized: "waveformDebugger.sequence.edit", defaultValue: "Edit Sequence…"),
             "debuggerSequenceLandStart": String(

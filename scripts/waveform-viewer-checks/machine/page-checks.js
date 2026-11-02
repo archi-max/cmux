@@ -504,11 +504,53 @@
     rows[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await sleep(80);
     expect(M.state().k === want[1].end, opts.name + ': clicking a match goes to its last step: ' + M.state().k + ' (' + want[1].end + ')');
+    // Break Here: a sequence breakpoint from the tab's query (as typed, Enter or not) and its Go to.
+    const seqBps = () => D.breakpoints().filter((b) => b.kind === 'sequence').map((b) => [b.query, b.land]);
+    const breakHere = () => box.querySelector('.seqbar .break');
+    expect(breakHere() && breakHere().textContent === 'Break Here', opts.name + ': the Sequences tab offers Break Here: ' + (breakHere() && breakHere().textContent));
+    // What it did is said: added, already there, or enabled again, naming it (the debugger's label; its
+    // strings are cmux's, not loaded here: one given).
+    if (W.strings && !W.strings.debuggerBreakpointSequence) { W.strings.debuggerBreakpointSequence = 'Sequence %@'; }
+    const said = [];
+    const realToast = root.cmuxUI.toast;
+    root.cmuxUI.toast = (text, kind) => { said.push(text); return realToast(text, kind); };
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    expect(JSON.stringify(seqBps()) === JSON.stringify([[query, 'end']]), opts.name + ': Break Here makes a sequence breakpoint of the query: ' + JSON.stringify(seqBps()));
+    const made = D.breakpoints().find((b) => b.kind === 'sequence');
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    D.setBreakpointEnabled({ id: made.id, enabled: false });
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    root.cmuxUI.toast = realToast;
+    expect(JSON.stringify(said) === JSON.stringify(['Breakpoint added: ' + made.label, 'Already a breakpoint: ' + made.label, 'Breakpoint enabled again: ' + made.label])
+      && made.label.includes(query) && seqBps().length === 1 && D.breakpoints().find((b) => b.id === made.id).enabled,
+      opts.name + ': Break Here says what it did (added, already there, enabled again): ' + JSON.stringify(said));
+    box.querySelector('.seqbar .land').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    box.querySelector('.seqbar .query').value = '{sw} ##1 {lw}';
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    expect(JSON.stringify(seqBps()) === JSON.stringify([[query, 'end'], ['{sw} ##1 {lw}', 'start']]),
+      opts.name + ': a query typed without Enter, landing where Go to says (first step): ' + JSON.stringify(seqBps()));
+    box.querySelector('.seqbar .query').value = '  ';
+    breakHere().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
+    expect(seqBps().length === 2, opts.name + ': none for an empty query: ' + JSON.stringify(seqBps()));
+    for (const b of D.breakpoints().filter((x) => x.kind === 'sequence')) { D.removeBreakpoint({ id: b.id }); }
+    box.querySelector('.seqbar .land').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(30);
     const times = await W.commits.sequenceTimes({ query, land: 'start' });
     expect(times.times.length === want.length && Array.from(times.times).every((t, i, a) => i === 0 || a[i - 1] <= t),
       opts.name + ': commits.sequenceTimes: ' + times.times.length + ' times');
     const badq = await M.sequence({ query: '{lw} ##[3:1] {add}' });
     expect(badq.error === 'badDelay' && /delay must be/.test(badq.message), opts.name + ': a bad delay says why: ' + badq.message);
+    // Why a search stopped, given (the messages differ by reason): its step budget, or none when it finished.
+    const cut = await M.sequence({ query: '{lw} ##[1:$] {sw}', budget: 1 });
+    const whole = await M.sequence({ query: '{lw} ##[1:$] {sw}', budgetMs: 60000 });
+    expect(!cut.error && cut.incomplete && cut.reason === 'budget' && cut.next !== null && !whole.error && !whole.incomplete && whole.reason === null,
+      opts.name + ': a search says why it stopped: ' + JSON.stringify([cut.reason, cut.next, whole.reason]));
     const t5 = performance.now();
     const call = await M.sequence({ query: '/jal\\s+ra/ ##[1:$] {ret}' });
     note(opts.name + ': call ##[1:$] ret: ' + call.matches.length + ' matches in ' + (performance.now() - t5).toFixed(1) + ' ms');

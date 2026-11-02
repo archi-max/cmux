@@ -18,7 +18,13 @@
 //
 //   window.cmuxSequence = { parse, compile, search, decode, CLASSES }
 //   parse(text) -> { steps: [{ text, delay: { min, max } | null, capture, assigns, expr }] } | { error, at }
-//   search(stream, query, { from, limit, budget, maxThreads }) -> { matches: [{ start, end, ks }], incomplete, evaluated, next }
+//   search(stream, query, { from, limit, budget, maxThreads, budgetMs }) -> { matches: [{ start, end, ks }], incomplete,
+//     reason, evaluated, next }; reason (when incomplete): 'limit' (`limit` matches; `next` is the first start not
+//     searched), 'budget' (`budget` step evaluations) or 'time' (`budgetMs`): the starts from `next` on are not
+//     searched; 'threads': a start had over `maxThreads` threads (it may be missing or end later; later starts are searched)
+//   searchAsync(stream, query, { ...search's, sliceMs, pause }) -> Promise of search's result, plus `yields`: the same
+//     search, pausing (`pause()`, default a zero timeout) after each `sliceMs` (default 25) of work, so the page stays
+//     responsive
 //     stream: { count, insn: (k) -> number | null, pc: (k) -> number | null, value: (role, k) -> BigInt | null, roles: [names] }
 (function (root) {
   'use strict';
@@ -33,6 +39,8 @@
   const DEFAULT_BUDGET = 2000000;
   const DEFAULT_LIMIT = 100000;
   const DEFAULT_THREADS = 4096;
+  const DEFAULT_SLICE_MS = 25;  // searchAsync's work between pauses
+  const CLOCK_EVERY = 256;      // units of work (step evaluations, commits of a pass) between clock reads
   // Names decided by the instruction word alone: a conjunct over only these is evaluated per distinct insn.
   const STATIC = new Set(['insn', 'cls', 'compressed', 'size', 'rd', 'rs1', 'rs2', 'imm', 'csr', 'mnemonic'].concat(CLASSES));
 
@@ -363,7 +371,28 @@
 
   // Each start's first (earliest-ending) match, starts ascending from `from`.
   function search(stream, query, options) {
+    const run = searchSteps(stream, query, options || {});
+    let step = run.next();
+    while (!step.done) { step = run.next(); }
+    return step.value;
+  }
+
+  async function searchAsync(stream, query, options) {
     const opts = options || {};
+    const pause = typeof opts.pause === 'function' ? opts.pause
+      : (typeof setTimeout === 'function' ? () => new Promise((resolve) => setTimeout(resolve, 0)) : () => Promise.resolve());
+    const run = searchSteps(stream, query, Object.assign({}, opts, { sliceMs: Math.max(1, opts.sliceMs || DEFAULT_SLICE_MS) }));
+    let yields = 0;
+    let step = run.next();
+    while (!step.done) { yields++; await pause(); step = run.next(); }
+    return step.value.error ? step.value : Object.assign(step.value, { yields });
+  }
+
+  const now = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+
+  // search's loop as a generator: it yields after each `sliceMs` of work (searchAsync), never when `sliceMs` is unset.
+  function* searchSteps(stream, query, opts) {
+    const started = now();
     const c = compile(query, stream);
     if (c.error) { return c; }
     const steps = c.steps;
@@ -372,6 +401,30 @@
     const limit = opts.limit || DEFAULT_LIMIT;
     const maxThreads = opts.maxThreads || DEFAULT_THREADS;
     let evaluated = 0;
+    const deadline = opts.budgetMs > 0 ? started + opts.budgetMs : null;
+    const sliceMs = opts.sliceMs > 0 ? opts.sliceMs : null;
+    let work = 0;          // step evaluations and commits of the passes below
+    let nextClock = CLOCK_EVERY;
+    let lastPause = started;
+    let pauseDue = false;
+    let timedOut = false;
+    let reason = null;
+    // The clock, read every CLOCK_EVERY units of work: past the deadline, or time to pause.
+    const tick = () => {
+      if (work < nextClock) { return; }
+      nextClock = work + CLOCK_EVERY;
+      if (deadline === null && sliceMs === null) { return; }
+      const t = now();
+      if (deadline !== null && t > deadline) { timedOut = true; }
+      if (sliceMs !== null && t - lastPause >= sliceMs) { pauseDue = true; }
+    };
+    // Out of steps or time.
+    const spent = () => {
+      if (evaluated > budget) { reason = reason || 'budget'; return true; }
+      tick();
+      if (timedOut) { reason = reason || 'time'; return true; }
+      return false;
+    };
     // Next commit at or after k where step s's static part holds (for unbounded gaps), filled lazily backwards.
     // A step that reads no capture or local variable holds or not at k alone: its whole condition goes in the
     // array (one pass), so an unbounded gap to it is one lookup. Else only its static part does.
@@ -384,16 +437,20 @@
         const arr = new Int32Array(n + 1);
         arr[n] = -1;
         const empty = { caps: {}, locals: {} };
-        for (let j = n - 1; j >= 0; j--) {
-          const yes = steps[s].staticHolds(j) && (!free[s] || !steps[s].dynamicAst || (evaluated++, c.holds(steps[s], steps[s].dynamicAst, j, empty)));
-          arr[j] = yes ? j : arr[j + 1];
-        }
+        for (let j = n - 1; j >= 0; j--) { arr[j] = passHolds(s, j, empty) ? j : arr[j + 1]; }
         nextStatic[s] = arr;
       }
       return nextStatic[s][k];
     };
+    const passHolds = (s, j, empty) => {
+      work++;
+      return steps[s].staticHolds(j) && (!free[s] || !steps[s].dynamicAst || (evaluated++, c.holds(steps[s], steps[s].dynamicAst, j, empty)));
+    };
+    const usesPass = (s) => (s === 0 || (steps[s].src.delay && steps[s].src.delay.max === Infinity))
+      && (steps[s].staticAst || (free[s] && steps[s].dynamicAst));
     const stepHolds = (s, k, ctx) => {
       evaluated++;
+      work++;
       const step = steps[s];
       if (!step.staticHolds(k)) { return null; }
       if (step.dynamicAst && !c.holds(step, step.dynamicAst, k, ctx)) { return null; }
@@ -412,11 +469,29 @@
     };
     const matches = [];
     let incomplete = false;
+    let cut = false;  // some start had too many threads
     let next = null;
     try {
+      // The passes for the first step and the unbounded gaps, here so they pause and keep to the deadline too.
+      const empty = { caps: {}, locals: {} };
+      for (let s = 0; s < steps.length; s++) {
+        if (!usesPass(s) || nextStatic[s]) { continue; }
+        const arr = new Int32Array(n + 1);
+        arr[n] = -1;
+        for (let j = n - 1; j >= 0; j--) {
+          arr[j] = passHolds(s, j, empty) ? j : arr[j + 1];
+          if (work >= nextClock) {
+            tick();
+            if (timedOut) { return { matches, incomplete: true, reason: 'time', evaluated, next: Math.max(0, opts.from || 0), ms: Math.round(now() - started) }; }
+            if (pauseDue) { pauseDue = false; yield; lastPause = now(); }
+          }
+        }
+        nextStatic[s] = arr;
+      }
       for (let start = nextOf(0, Math.max(0, opts.from || 0)); start >= 0 && start < n; start = nextOf(0, start + 1)) {
-        if (evaluated > budget) { incomplete = true; next = start; break; }
-        if (matches.length >= limit) { incomplete = true; next = start; break; }
+        if (pauseDue) { pauseDue = false; yield; lastPause = now(); }
+        if (spent()) { incomplete = true; next = start; break; }
+        if (matches.length >= limit) { incomplete = true; reason = 'limit'; next = start; break; }
         const first = stepHolds(0, start, { caps: {}, locals: {} });
         if (!first) { continue; }
         // Threads: { k, ks, ctx }; level by level, deduplicated by (k, captures, locals).
@@ -431,6 +506,8 @@
             const hi = Math.min(n - 1, max === Infinity ? n - 1 : t.k + max);
             for (let j = max === Infinity ? nextOf(s, t.k + min) : t.k + min; j >= 0 && j <= hi; j = max === Infinity ? nextOf(s, j + 1) : j + 1) {
               if (last && j >= best) { break; }
+              if (pauseDue) { pauseDue = false; yield; lastPause = now(); }
+              if (spent()) { break; }
               const ctx = stepHolds(s, j, t.ctx);
               if (!ctx) { continue; }
               const key = j + '|' + keyOf(ctx);
@@ -439,12 +516,15 @@
               // when nothing later reads what this step captured.
               if (last) { best = Math.min(best, j); break; }
               if (!needsAll(steps, s)) { break; }
-              if (out.length > maxThreads || evaluated > budget) { break; }
+              if (out.length > maxThreads) { break; }
             }
-            if (out.length > maxThreads || evaluated > budget) { incomplete = true; break; }
+            if (out.length > maxThreads) { incomplete = true; cut = true; break; }
+            if (spent()) { incomplete = true; break; }
           }
           threads = last ? out.filter((t) => t.k === best) : out;
         }
+        // Stopped inside this start: it is searched again from `next`, not reported half-done.
+        if (reason) { next = start; break; }
         if (threads.length) {
           const t = threads.reduce((a, b) => (b.k < a.k ? b : a));
           matches.push({ start, end: t.k, ks: t.ks });
@@ -454,7 +534,7 @@
       if (error && error.sequenceError) { return { error: error.sequenceError, at: error.at === undefined ? null : error.at, step: error.step }; }
       throw error;
     }
-    return { matches, incomplete, evaluated, next };
+    return { matches, incomplete, reason: reason || (cut ? 'threads' : null), evaluated, next, ms: Math.round(now() - started) };
   }
 
   function isLocal(steps, name) { return steps.some((st) => st.src.assigns.some((a) => a.name === name)); }
@@ -490,5 +570,5 @@
       widthOf: (role) => (cols[role] ? cols[role].w : index.xlen) };
   }
 
-  root.cmuxSequence = Object.freeze({ parse, compile, search, decode, streamOf, CLASSES, MAX_STEPS });
+  root.cmuxSequence = Object.freeze({ parse, compile, search, searchAsync, decode, streamOf, CLASSES, MAX_STEPS });
 })(typeof window !== 'undefined' ? window : globalThis);
