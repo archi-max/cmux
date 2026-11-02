@@ -882,6 +882,18 @@
     land.title = s.machineSeqLandTooltip || '';
     land.addEventListener('click', () => { st.seq.land = st.seq.land === 'end' ? 'start' : 'end'; render(); });
     bar.append(input, land);
+    // Break Here: a sequence breakpoint of the query as typed, landing where Go to says (cmux-debugger-commits.js).
+    const D = waveform.debugger;
+    if (D && typeof D.breakpointKinds === 'function' && D.breakpointKinds().includes('sequence')) {
+      const brk = css(el('span', 'break', s.machineSeqBreakHere || ''), 'cursor: pointer; flex: none; text-decoration: underline;');
+      brk.title = s.machineSeqBreakHereTooltip || '';
+      brk.addEventListener('click', () => {
+        st.seq.query = input.value;
+        if (!input.value.trim()) { return; }
+        Promise.resolve(D.addBreakpoint({ kind: 'sequence', query: input.value, land: st.seq.land })).catch((error) => host.log(error));
+      });
+      bar.appendChild(brk);
+    }
     box.appendChild(bar);
     const r = st.seq.result;
     if (!r) { return; }
