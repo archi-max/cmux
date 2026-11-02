@@ -24,7 +24,7 @@ const label = Array.from(doc.querySelectorAll('.waveform-label[data-vscode-conte
 });
 if (!label) return 'no row';
 const r = label.getBoundingClientRect();
-label.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 5, clientY: r.top + 5 }));
+label.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 40, clientY: r.top + 5 }));
 return Array.from(document.querySelectorAll('.cmux-menu .cmux-menu-item .label')).map((l) => l.textContent).join('|');
 
 //// - wait=300

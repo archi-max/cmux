@@ -34,5 +34,6 @@ return null;
 await cmuxWaveform.machine.setTab({ tab: 'memory' });
 return null;
 //// machine-sequences wait=1500
+document.getElementById('netlist').style.width = '440px';
 const r = await cmuxWaveform.machine.setSequence({ query: '{lw} as L ##1 rs1 == L.rd || rs2 == L.rd' });
 return JSON.stringify(r && (r.matches ? r.matches.length : r));
