@@ -365,6 +365,22 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(100)
     let k2On = (await list()).first { $0["key"] as? String == "K2" }?["enabled"] as? Bool
     expect(k2On == true && listEvents.count == eventsBefore + 1, "one changed: it is taken (\(listEvents.count - eventsBefore) list events)")
+    // The mark that was hit, changed (cmux re-sends it with a condition edited in its gutter): the same id, still hit.
+    _ = await call("""
+      cmuxWaveform.debugger.setPcBreakpoints({ items: [
+        { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true, condition: 'top.flag == 1' },
+        { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: true, condition: 'top.flag' },
+        { key: 'K5', listingLabel: 'prog.dis: _start+0x8', pcs: ['0x80000008'], enabled: false }] }); return null
+    """)
+    let k1Changed = (await list()).first { $0["key"] as? String == "K1" }
+    expect(k1Changed?["condition"] as? String == "top.flag == 1" && k1Changed?["id"] as? Int == k1 && k1Changed?["hit"] as? Bool == true,
+           "the hit mark changed and re-sent: the same id, still the one hit: \(String(describing: k1Changed))")
+    _ = await call("""
+      cmuxWaveform.debugger.setPcBreakpoints({ items: [
+        { key: 'K1', listingLabel: 'prog.dis: _start+0x4', pcs: ['0x80000004'], enabled: true },
+        { key: 'K2', listingLabel: 'prog.dis: sum', pcs: ['0x80000010'], enabled: true, condition: 'top.flag' },
+        { key: 'K5', listingLabel: 'prog.dis: _start+0x8', pcs: ['0x80000008'], enabled: false }] }); return null
+    """)
     let toldKeys = (listEvents.last ?? []).filter { $0["kind"] as? String == "pc" && $0["key"] != nil && !($0["key"] is NSNull) }
     expect(toldKeys.isEmpty, "cmux keeps them itself (not in the page's saved list): \(toldKeys)")
     // The list's checkbox, condition and remove tell cmux.
