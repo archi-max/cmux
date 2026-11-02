@@ -689835,7 +689835,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn't switch slang-server to %@; it is tried again the next time this file is focused."
+            "value": "Couldn’t switch slang-server to %@; it is tried again the next time this file is focused."
           }
         },
         "ja": {

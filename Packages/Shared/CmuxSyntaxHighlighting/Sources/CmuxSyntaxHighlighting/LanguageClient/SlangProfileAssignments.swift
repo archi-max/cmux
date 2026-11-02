@@ -259,12 +259,17 @@ public final class SlangProfileFollower {
     private let debounce: Duration
     private let busyRetry: Duration
     private let maxBusyWait: Duration
+    private let errorBackoff: Duration
+    private let now: @MainActor () -> ContinuousClock.Instant
     private let hooks: Hooks
     private var pending: Task<Void, Never>?
     private var running: Task<Void, Never>?
     /// Profiles that elaborated nothing: not built again on focus until their files change or
     /// the user chooses them, so a broken profile doesn't recompile on every tab switch.
     private var failed: Set<SlangProfileChoice> = []
+    /// Profiles whose switch errored (an ssh outage, a restart), with when: a focus doesn't try
+    /// them again until `errorBackoff` passed, so an outage doesn't block every focus on a timeout.
+    private var errored: [SlangProfileChoice: ContinuousClock.Instant] = [:]
     /// A follow gave up waiting for a busy server: it runs again once the server is free.
     private var gaveUpWhileBusy = false
 
@@ -279,6 +284,8 @@ public final class SlangProfileFollower {
         self.debounce = debounce
         self.busyRetry = busyRetry
         self.maxBusyWait = maxBusyWait
+        self.errorBackoff = errorBackoff
+        self.now = now
         self.hooks = hooks
     }
 
@@ -308,8 +315,10 @@ public final class SlangProfileFollower {
     /// The user chose `choice` themselves: tried again on the next focus even if it failed.
     public func userChose(_ choice: SlangProfileChoice) {
         // Remembered resolved: choosing the config clears its failed build (verify L7).
-        failed.remove(choice)
-        failed.remove(hooks.resolve(choice))
+        for chosen in [choice, hooks.resolve(choice)] {
+            failed.remove(chosen)
+            errored[chosen] = nil
+        }
     }
 
     /// The server's change that held it is over: a follow that gave up waiting for it runs now.
@@ -369,15 +378,18 @@ public final class SlangProfileFollower {
             // A newer focus is waiting for its debounce: it decides.
             if pending != nil { return }
             guard let wanted = hooks.wanted().map({ hooks.resolve($0) }), !failed.contains(wanted) else { return }
+            if let at = errored[wanted], now() - at < errorBackoff { return }
             let current = await hooks.current()
             guard hooks.resolve(SlangProfileChoice(current)) != wanted else { return }
             switch await hooks.apply(wanted) {
             case .applied:
+                errored[wanted] = nil
                 return
             case .failed:
                 failed.insert(wanted)
                 return
             case .error:
+                errored[wanted] = now()
                 return
             case .busy:
                 guard await waitBusy(&waited) else { return }

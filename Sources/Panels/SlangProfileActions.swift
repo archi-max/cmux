@@ -1123,7 +1123,8 @@ extension SlangCompilationActions {
                 guard let root, let profile = listing?.profiles.first(where: { serverPath($0.path) == build }) else { return true }
                 // slang resolves a build file's relative paths against the server's folder. Sources of
                 // nested command files aren't read here, so a build with any may include it.
-                return !profile.buildFile.commandFiles.isEmpty
+                // Neither are files reached through globs or library and include directories (verify V1).
+                return !profile.buildFile.commandFiles.isEmpty || profile.buildFile.mayReachUnlistedFiles
                     || profile.buildFile.involves(path, buildFilePath: profile.path, baseDirectory: root, normalize: serverPath)
             case .explore, .configured:
                 // Every file of the root is part of these.
@@ -1219,15 +1220,20 @@ extension SlangCompilationActions {
                 slangProfileLogger.info("profile \(path, privacy: .public) is gone; its files follow the last-set profile")
                 return .missing
             }
+            // Once per outage: later focuses back off (the follower) and stay quiet until a switch works.
+            guard !entry.switchErrorShown else { return .error }
+            entry.switchErrorShown = true
             showsMessage([
                 String(
-                    format: String(localized: "slangProfile.switchError.detail", defaultValue: "Couldn't switch slang-server to %@; it is tried again the next time this file is focused."),
+                    format: String(localized: "slangProfile.switchError.detail", defaultValue: "Couldn’t switch slang-server to %@; it is tried again the next time this file is focused."),
                     profileName(of: choice)
                 ),
                 detail,
             ])
             return .error
         }
+        // The switch went through: the outage, if any, is over.
+        entry.switchErrorShown = false
         // An unanswered scope query (a lost connection) says nothing about the profile: only an
         // answer with no top levels counts as elaborating nothing.
         let tops = (try? await session.slangScopeChildren(""))?.filter { $0.kind != "Package" }.map(\.name)
