@@ -567,37 +567,37 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let h = String(repeating: "a", count: 64)
     let sessionJSON: [String: Any] = ["displayedSignals": [], "cmuxValueAliases": [
       ["key": "/m/local.alias", "path": "/elsewhere/x.alias", "sha256": h],
-      ["key": "ssh://host-01:22/r/remote.alias", "path": "/r/remote.alias", "sha256": h],
+      ["key": "ssh://remote-host:22/r/remote.alias", "path": "/r/remote.alias", "sha256": h],
       ["key": "ssh://other-host/r/other.alias", "sha256": h],
       ["key": "relative.alias", "sha256": h],
       ["key": "/m/nohash.alias", "text": "alias t\nendalias\n"],
       ["key": "/m/badhash.alias", "sha256": "ABC"],
     ]]
     // A real Files identity: destination, port, identity file, ssh options (\u{1f}-joined).
-    let identity = "ssh:host-01|22|/Users/u/.ssh/id_ed25519|ProxyJump=bastion:2222\u{1f}ServerAliveInterval=30"
+    let identity = "ssh:remote-host|22|/home/u/.ssh/id_ed25519|ProxyJump=bastion:2222\u{1f}ServerAliveInterval=30"
     r.noteSession(text: String(data: try! JSONSerialization.data(withJSONObject: sessionJSON), encoding: .utf8)!, remoteIdentity: identity)
     expect(r.record(for: "/m/local.alias") == .init(location: .local("/m/local.alias"), sha256: h),
            "a session's local entry is read from its key, not its path field: \(String(describing: r.record(for: "/m/local.alias")))")
-    expect(r.record(for: "ssh://host-01:22/r/remote.alias")?.location == .remote("/r/remote.alias"), "the open file's host: remote")
+    expect(r.record(for: "ssh://remote-host:22/r/remote.alias")?.location == .remote("/r/remote.alias"), "the open file's host: remote")
     expect(r.record(for: "ssh://other-host/r/other.alias")?.location == .otherHost("/r/other.alias"), "another host's file: other host")
     // Remote keys: destination and port only, never the identity file or ssh options.
     let remote = WaveformValueAliasFiles.remoteKey(identity: identity, path: "/r/a.alias")
-    expect(remote == "ssh://host-01:22/r/a.alias", "a remote key is ssh://<dest>:<port><path>: \(remote)")
+    expect(remote == "ssh://remote-host:22/r/a.alias", "a remote key is ssh://<dest>:<port><path>: \(remote)")
     expect(!remote.contains(".ssh") && !remote.contains("ProxyJump") && !remote.contains("|"), "and carries no identity file or ssh options")
-    let otherKey = "ssh:host-01|22|/Users/u/.ssh/other_key|"
+    let otherKey = "ssh:remote-host|22|/home/u/.ssh/other_key|"
     expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: otherKey) == .remote("/r/a.alias"),
            "the same host with another identity file or options is the same host")
     expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:host-02|22||") == .otherHost("/r/a.alias")
-           && WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:host-01|2222||") == .otherHost("/r/a.alias"),
+           && WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:remote-host|2222||") == .otherHost("/r/a.alias"),
            "another destination or port is another host")
     expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: nil) == .otherHost("/r/a.alias"),
            "an SSH key in a viewer on this Mac is another host")
-    expect(WaveformValueAliasFiles.remoteKey(identity: "ssh:host-01||||", path: "/r/a.alias") == "ssh://host-01/r/a.alias",
+    expect(WaveformValueAliasFiles.remoteKey(identity: "ssh:remote-host||||", path: "/r/a.alias") == "ssh://remote-host/r/a.alias",
            "no port: ssh://<dest><path>")
     let vm = WaveformValueAliasFiles.remoteKey(identity: "vm:abc|/secret/thing", path: "/p")
     expect(vm.hasPrefix("ssh://id-") && !vm.contains("secret") && WaveformValueAliasFiles.location(ofKey: vm, remoteIdentity: "vm:abc|/secret/thing") == .remote("/p"),
            "another kind of identity is named by its hash: \(vm)")
-    expect(WaveformValueAliasFiles.location(ofKey: "ssh:host-01|22|/k|:/r/a.alias", remoteIdentity: identity) == nil
+    expect(WaveformValueAliasFiles.location(ofKey: "ssh:remote-host|22|/k|:/r/a.alias", remoteIdentity: identity) == nil
            && WaveformValueAliasFiles.location(ofKey: "ssh:///r/a.alias", remoteIdentity: identity) == nil,
            "a key in another shape is not recorded")
     expect(r.record(for: "relative.alias") == nil && r.record(for: "/m/nohash.alias") == nil && r.record(for: "/m/badhash.alias") == nil,
@@ -785,7 +785,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       expect(message(path) == "The path must be an absolute path on the SSH host", "Load from Host refuses \"\(path)\": \(message(path) ?? "accepted")")
     }
     expect(message("/r/x.alias") == nil, "Load from Host takes \"/r/x.alias\"")
-    let identity = "ssh:host-01|22||"
+    let identity = "ssh:remote-host|22||"
     let key = WaveformValueAliasFiles.remoteKey(identity: identity, path: "/r/x.alias")
     expect(WaveformValueAliasFiles.location(ofKey: key, remoteIdentity: identity) == .remote("/r/x.alias"), "its key comes back as the same host's file: \(key)")
   }

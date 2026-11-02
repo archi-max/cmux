@@ -10,7 +10,7 @@
 //     FUZZ_SIM='<command>': check then re-runs each mismatch alone (in <dir>/alone/case-<i>/, the
 //     command run there with {sv} replaced by case.sv, its stdout read like <sim-output>) and
 //     reports only those that persist; the batch-only ones go to <dir>/batch-only.json. E.g.
-//     FUZZ_SIM='ssh host-01 "cd /tmp/x && cat > c.sv && vcs -sverilog -full64 -q c.sv -o simv >/dev/null && ./simv" < {sv}'
+//     FUZZ_SIM='ssh remote-host "cd /tmp/x && cat > c.sv && vcs -sverilog -full64 -q c.sv -o simv >/dev/null && ./simv" < {sv}'
 //
 // The generator covers the evaluator's operator subset (unsigned) over random 4-state signals of
 // widths 1-130 with descending, offset and ascending ranges, sized and unsized literals (x/z

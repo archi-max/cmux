@@ -227,7 +227,7 @@ func expect(_ ok: Bool, _ what: String) { print(ok ? "ok  " : "FAIL", what); if 
     await settle()
     expect(lineRanges.indices.allSatisfy { attribute(.backgroundColor, line: $0) == nil }, "an edit meanwhile: nothing drawn")
 
-    // An `include`d testbench fragment (design_b's adapter_tb.sv, included into tb_wrapper): its
+    // An `include`d testbench fragment (a design's adapter_tb.sv, included into tb_wrapper): its
     // lines belong to the file's pseudo-module, placed at tb_wrapper. slang's answers are recorded
     // from slang-server 0.3.1 on that design: tb_wrapper.dfp_ready is driven by the dut's port.
     let fragmentSource = """
