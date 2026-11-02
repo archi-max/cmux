@@ -414,13 +414,13 @@ struct AsmListingTests {
         print("4M-line listing parsed in \(elapsed)")
     }
 
-    // MARK: a real course listing (read only; never committed)
+    // MARK: a real program listing (read only; never committed)
 
-    /// cpu on host-01: every PC its commit.log retired is an instruction of its program.dis, with the
-    /// same encoding. Runs when ASM_LISTING_CPU_DIR holds program.dis and commit-pcs.txt
+    /// A real RISC-V run: every PC its commit.log retired is an instruction of its program.dis, with the
+    /// same encoding. Runs when ASM_LISTING_SAMPLE_DIR holds program.dis and commit-pcs.txt
     /// (`awk '{print $4, $5}' commit.log | sort -u`).
-    @Test func cpuListingHasEveryCommittedPC() throws {
-        guard let dir = ProcessInfo.processInfo.environment["ASM_LISTING_CPU_DIR"] else { return }
+    @Test func sampleListingHasEveryCommittedPC() throws {
+        guard let dir = ProcessInfo.processInfo.environment["ASM_LISTING_SAMPLE_DIR"] else { return }
         let base = URL(fileURLWithPath: dir)
         let listing = AsmListingParser.parse(try String(contentsOf: base.appendingPathComponent("program.dis"), encoding: .utf8))
         let pairs = try String(contentsOf: base.appendingPathComponent("commit-pcs.txt"), encoding: .utf8)
@@ -435,6 +435,6 @@ struct AsmListingTests {
             if inst?.encoding == insn { found += 1 }
         }
         #expect(found == pairs.count)
-        print("cpu: \(found)/\(pairs.count) committed PCs found with their encodings; \(listing.instructions.count) instructions")
+        print("sample: \(found)/\(pairs.count) committed PCs found with their encodings; \(listing.instructions.count) instructions")
     }
 }

@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 @Suite struct SlangWorkspaceRootTests {
-    static let file = "/home/u/work/proj/design_a/rtl/cpu.sv"
+    static let file = "/home/u/proj/course/cpu/rtl/cpu.sv"
 
     @Test func wrappingAPOSIXCommandAgainChangesNothing() throws {
         let once = SlangWorkspaceRoot.posixShellCommand("printf '%s' ok; exit 3")
@@ -22,16 +22,16 @@ import Testing
 
     @Test func theNearestServerConfigWins() {
         let markers = SlangWorkspaceRoot.Markers(
-            config: ["/home/u/work/proj/design_a", "/home/u/work"],
-            git: ["/home/u/work/proj/design_a/rtl", "/home/u/work/proj"],
+            config: ["/home/u/proj/course/cpu", "/home/u/proj"],
+            git: ["/home/u/proj/course/cpu/rtl", "/home/u/proj/course"],
             home: "/home/u"
         )
-        #expect(SlangWorkspaceRoot.root(forFile: Self.file, markers: markers) == "/home/u/work/proj/design_a")
+        #expect(SlangWorkspaceRoot.root(forFile: Self.file, markers: markers) == "/home/u/proj/course/cpu")
     }
 
     @Test func gitIsTheFallback() {
-        let markers = SlangWorkspaceRoot.Markers(git: ["/home/u/work/proj", "/home/u/work"], home: "/home/u")
-        #expect(SlangWorkspaceRoot.root(forFile: Self.file, markers: markers) == "/home/u/work/proj")
+        let markers = SlangWorkspaceRoot.Markers(git: ["/home/u/proj/course", "/home/u/proj"], home: "/home/u")
+        #expect(SlangWorkspaceRoot.root(forFile: Self.file, markers: markers) == "/home/u/proj/course")
     }
 
     @Test func homeNeverCountsAndNoMarkerGivesNil() {
@@ -49,11 +49,11 @@ import Testing
     }
 
     @Test func probeOutputRoundTrips() {
-        let output = "H /home/u\nS /home/u/work/proj/design_a\nG /home/u/work/proj\nG /home/u/a b\n\njunk\n"
+        let output = "H /home/u\nS /home/u/proj/course/cpu\nG /home/u/proj/course\nG /home/u/a b\n\njunk\n"
         let markers = SlangWorkspaceRoot.parseProbe(output)
         #expect(markers.home == "/home/u")
-        #expect(markers.config == ["/home/u/work/proj/design_a"])
-        #expect(markers.git == ["/home/u/work/proj", "/home/u/a b"])
+        #expect(markers.config == ["/home/u/proj/course/cpu"])
+        #expect(markers.git == ["/home/u/proj/course", "/home/u/a b"])
     }
 
     @Test func theProbeRunsInAShell() throws {
