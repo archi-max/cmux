@@ -105,9 +105,14 @@ actor CloudFilePreviewCache {
                 lease.recordLocalCopy()
                 return lease
             }
-            // Read before downloading: a write in between then shows up as a conflict.
-            let stamp = try? await sshProvider?.fileStamp(path: path)
-            try await provider.downloadFile(path: path, to: url)
+            // The stamp is read before the bytes: a write in between then shows up as a conflict.
+            let stamp: SSHRemoteFileStamp?
+            if let sshProvider {
+                stamp = try await sshProvider.downloadFileWithStamp(path: path, to: url)
+            } else {
+                stamp = nil
+                try await provider.downloadFile(path: path, to: url)
+            }
             try Task.checkCancellation()
             try FileManager.default.setAttributes([.posixPermissions: Self.previewPermissions(for: provider)],
                                                   ofItemAtPath: url.path)
@@ -212,12 +217,17 @@ actor CloudFilePreviewCache {
                 .appendingPathComponent(".cmux-refresh-" + UUID().uuidString, isDirectory: false)
             defer { try? FileManager.default.removeItem(at: temporary) }
             let sshProvider = provider as? SSHFileExplorerProvider
-            let stamp = try? await sshProvider?.fileStamp(path: path)
+            var stamp = try? await sshProvider?.fileStamp(path: path)
             if sshProvider != nil, let stamp, stamp == lease.remoteStamp, lease.localCopyIsUnchanged() {
                 lease.isUnverified = false
                 return false
             }
-            try await provider.downloadFile(path: path, to: temporary)
+            if let sshProvider {
+                // The download's own stamp is the one its bytes match.
+                stamp = try await sshProvider.downloadFileWithStamp(path: path, to: temporary)
+            } else {
+                try await provider.downloadFile(path: path, to: temporary)
+            }
             try Task.checkCancellation()
             try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: temporary.path)
             if FileManager.default.fileExists(atPath: destination.path) {

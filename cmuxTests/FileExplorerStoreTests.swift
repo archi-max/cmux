@@ -681,6 +681,26 @@ struct FileExplorerStoreTests {
         #expect(store.resourceContextID != otherContext, "another workspace on the same connection: a new context")
     }
 
+    /// Only a Files panel's SSH root holds its host's file channel up; a
+    /// preview-only store (a terminal's in-place opens, Go to File) never
+    /// pins it, so it can't outlive its workspace's connection.
+    @Test
+    func testOnlyAFilesRootHoldsTheHostsFileChannel() {
+        let transport = MockSSHFileExplorerTransport(homePath: .success("/home/dev"))
+        let connection = SSHFileExplorerConnection(destination: "dev@host", port: nil, identityFile: nil, sshOptions: [])
+        let preview = FileExplorerStore()
+        preview.bindSSHPreviewProvider(
+            workspaceId: UUID(), connection: connection, displayTarget: "dev@host", sshTransport: transport
+        )
+        #expect(!preview.holdsFileChannel)
+        let files = FileExplorerStore()
+        files.applyRemoteSSHWorkspaceRoot(
+            workspaceId: UUID(), connection: connection, displayTarget: "dev@host", rootPath: "/home/dev",
+            isAvailable: true, unavailableDetail: nil, sshTransport: transport
+        )
+        #expect(files.holdsFileChannel)
+    }
+
     @Test
     func testSwitchingFromLocalToRemoteRepointsTreeToRemoteHome() async throws {
         let transport = MockSSHFileExplorerTransport(homePath: .success("/home/dev"))
