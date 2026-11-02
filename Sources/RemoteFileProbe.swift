@@ -146,10 +146,10 @@ enum RemoteFileProbe {
 enum RemotePreviewOpenRules {
     /// The SSH connection a dump read in place on the host is opened with,
     /// for a terminal's link or `cmux open`: the terminal's own, the one a
-    /// download of the same link uses. The Files root needn't be connected
-    /// or rooted on the host; it is built from the same workspace
-    /// configuration, so when it is connected it is the same connection.
-    static func inPlaceConnection<Connection: Equatable>(terminal: Connection?, filesRoot: Connection?) -> Connection? {
+    /// download of the same link uses, never the Files root's. The Files
+    /// panel needn't be connected or rooted on the host; a connected Files
+    /// root is built from the same workspace configuration anyway.
+    static func inPlaceConnection<Connection: Equatable>(terminal: Connection?) -> Connection? {
         terminal
     }
 

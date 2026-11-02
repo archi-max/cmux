@@ -500,10 +500,6 @@ final class RemoteTerminalFilePreviewCoordinator {
     /// notice on the terminal.
     private func openInPlaceOnHost(path: String, workspace: Workspace, sourcePanelID: UUID) -> CommandLineOpenOutcome {
         let configuration = workspace.remoteTerminalFilePreviewConfiguration(for: sourcePanelID)
-        var filesRoot: SSHFileExplorerConnection?
-        if case .remoteSSH(_, let connection, _, _, true, _) = FileExplorerWorkspaceRootResolver().resolve(workspace) {
-            filesRoot = connection
-        }
         // The terminal's own SSH connection, as a download of the same link
         // uses: the Files panel needn't be connected to the host.
         let sshConnection = RemotePreviewOpenRules.inPlaceConnection(
@@ -512,8 +508,7 @@ final class RemoteTerminalFilePreviewCoordinator {
                     destination: $0.destination, port: $0.port,
                     identityFile: $0.identityFile, sshOptions: $0.fileOperationSSHOptions
                 )
-            },
-            filesRoot: filesRoot
+            }
         )
         let terminal = workspace.terminalPanel(for: sourcePanelID)
         let pane = workspace.paneId(forPanelId: sourcePanelID)
