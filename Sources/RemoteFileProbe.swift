@@ -194,13 +194,14 @@ enum RemotePreviewPlacement: Equatable, Sendable {
     /// Another workspace is selected: open unfocused in the source workspace and say so in a notification.
     case unfocusedInAnotherWorkspace
 
-    /// Whether the open moves keyboard focus to the preview.
-    /// Placeholder until the fix: every open focuses.
-    var takesFocus: Bool { true }
+    /// Whether the open moves keyboard focus to the preview. Every remote
+    /// open reads this: a download, an already-open file `cmux open` shows
+    /// again, and a dump the waveform viewer reads in place.
+    var takesFocus: Bool { self == .focused }
 
-    /// Whether the open posts an "Opened … in …" notification.
-    /// Placeholder until the fix: none does.
-    var announcesOpen: Bool { false }
+    /// Whether the open posts an "Opened … in …" notification: it landed
+    /// in a workspace that isn't on screen.
+    var announcesOpen: Bool { self == .unfocusedInAnotherWorkspace }
 }
 
 /// The leased viewer of a ⌘-clicked host file.
