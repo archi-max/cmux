@@ -151,6 +151,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let wrapped = "const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n"
       + "const C = window.cmuxCommands, H = window.cmuxWaveform.host, R = {};\n"
       + "const toasts = () => document.querySelectorAll('.cmux-toast').length;\n"
+      // Polls a condition until it holds or the deadline passes (a loaded machine can
+      // outrun a fixed sleep); the check that follows says what was missing.
+      + "const until = async (f, ms = 5000) => { const t = Date.now(); let ok; while (!(ok = await f()) && Date.now() - t < ms) { await sleep(50); } return ok; };\n"
       // A reload is done once the viewer's context is back (its Restore answer);
       // a fixed wait is not enough on a loaded machine.
       // isRestoring (newer pages): until the restore itself has come back, which a
@@ -618,6 +621,7 @@ extension Harness {
         vd().getElementById('autoReload').click();
         R.during = rows();
         await reloaded();
+        await until(() => drawn() >= 2);
         R.reloaded = drawn();
         window.cmuxWaveform.reload({});
         const reloadsBefore = reloads();
@@ -726,10 +730,15 @@ extension Harness {
         if (!box().checked) { box().click(); }
         await sleep(300);
         window.cmuxWaveform.reload({});
-        await sleep(1500);
+        await reloaded();
+        await until(() => box() && box().checked);
         R.afterReload = box().checked;
+        // The new file's viewer: its own document, once its restore is in.
+        const oldDoc = document.getElementById('viewer').contentDocument;
         window.cmuxWaveform.open(\(json));
-        await sleep(1500);
+        await until(() => document.getElementById('viewer').contentDocument !== oldDoc && box());
+        await reloaded();
+        await until(() => box() && !box().checked);
         R.afterOpen = box().checked;
         """) { r in
           check(r["afterReload"] as? Bool == true, "Auto Reload survives a reload")
