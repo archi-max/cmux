@@ -149,6 +149,8 @@ const TRACE_CASES = [
   { d: 'h', sig: 'tb_h.din', t: 45000, kind: 'initial', file: 'tb_h.sv', line: 21, stmt: "din = 8'h43;", root: 'testbench' },
   { d: 'h', sig: 'tb_h.din', t: 10000, kind: 'initial', file: 'tb_h.sv', line: 6, stmt: "din = 8'b00010000", root: 'testbench' },
   { d: 'h', sig: 'tb_h.din', t: 80000, kind: 'initial', file: 'tb_h.sv', line: 24, stmt: "din = 8'h76;", root: 'testbench' },
+  // Several delay scales fit (#5 at 1000 ps per ns, #50 at 100): the largest, so the #5 write.
+  { d: 'h', sig: 'tb_h.ms', t: 30000, kind: 'initial', file: 'tb_h.sv', line: 30, stmt: "ms = 8'h99;", root: 'testbench' },
 ];
 
 function runTraceChecks() {
