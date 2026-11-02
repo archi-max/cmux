@@ -16,6 +16,11 @@ public struct SlangBuildFile: Equatable, Sendable {
     /// `+incdir+`). Any saved file may then be part of it.
     public var mayReachUnlistedFiles = false
 
+    /// Single-letter options slang also takes with the value attached (`-Iinc`, `-fsub.f`).
+    private static let attachableOptions: Set<String> = [
+        "-I", "-y", "-Y", "-v", "-f", "-F", "-D", "-U", "-G", "-T", "-W", "-j", "-L", "-C",
+    ]
+
     private static let libraryFileOptions: Set<String> = ["-v", "--libfile"]
     private static let unlistedFileOptions: Set<String> = ["-y", "--libdir", "-I", "--include-directory", "--isystem"]
 
@@ -50,6 +55,15 @@ public struct SlangBuildFile: Equatable, Sendable {
                 if option == "-f" || option == "-F" { result.commandFiles.append(value) }
                 if libraryFileOptions.contains(option) { result.libraryFiles.append(value) }
                 if unlistedFileOptions.contains(option) { result.mayReachUnlistedFiles = true }
+            }
+            // `-Iinc` is `-I inc`; a whole option name (`-top`) stays whole (verify W1).
+            if !word.hasPrefix("--"), word.count > 2, !optionsWithValue.contains(word) {
+                let option = String(word.prefix(2))
+                let rest = word.dropFirst(2)
+                if attachableOptions.contains(option), !rest.hasPrefix("=") {
+                    take(option, String(rest))
+                    continue
+                }
             }
             if let equals = word.firstIndex(of: "="), word.hasPrefix("-") {
                 take(String(word[..<equals]), String(word[word.index(after: equals)...]))

@@ -999,6 +999,8 @@ extension SlangCompilationActions {
     /// The user made `session` compile `choice` with `editor`'s file active (nil: from the Files
     /// panel or the View menu, for the file active then): the file's profile and the last-set one.
     static func recordChoice(_ choice: SlangProfileChoice, session: LanguageServerSession, editor: FilePreviewLanguageFeatures?) {
+        // The user's switch went through: an outage after it reports its first error again.
+        entry(for: session).switchErrorShown = false
         guard let owner = choosingEditor(editor, session: session) else { return }
         let file = fileKey(of: owner)
         updateAssignments(rootKey: owner.linkRootKey) { $0.choose(choice, file: file) }
