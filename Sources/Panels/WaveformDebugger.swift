@@ -128,10 +128,22 @@ enum WaveformDebugger {
             guard WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil else { return nil }
             return WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel)
         }()
-        switch WaveformDebuggerInvocation.decide(
+        let decision = WaveformDebuggerInvocation.decide(
             source: source, focusedViewer: focused,
             viewerFieldFocused: focused?.nativeViewSessions.waveform.isEditableElementFocused ?? false, editorViewer: nearEditor
-        ) {
+        )
+#if DEBUG
+        let outcome: String
+        switch decision {
+        case .perform(let waveform): outcome = "perform panel=\(waveform.id.uuidString.prefix(5))"
+        case .passKey: outcome = "passKey"
+        case .unavailable: outcome = "unavailable"
+        }
+        cmuxDebugLog("waveformDebugger.invoke command=\(command) source=\(source) focusedViewer=\(focused != nil ? 1 : 0) "
+            + "nearEditor=\(nearEditor != nil ? 1 : 0) -> \(outcome) | "
+            + (AppDelegate.shared?.shortcutFocusedWaveformPanelDiagnosis(in: window ?? NSApp.keyWindow) ?? "noAppDelegate"))
+#endif
+        switch decision {
         case .perform(let waveform):
             perform(command, on: waveform)
             return true
@@ -147,7 +159,12 @@ enum WaveformDebugger {
             let window = NSApp.keyWindow ?? NSApp.mainWindow
             return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) || WaveformDebuggerAsmBreakpoints.toggleAtCaret(window: window)
         }
-        guard let waveform = target(for: panel) else { return false }
+        guard let waveform = target(for: panel) else {
+#if DEBUG
+            cmuxDebugLog("waveformDebugger.invoke command=\(command) source=palette panel=\(panel.map { "\($0.id.uuidString.prefix(5)) mode=\($0.previewMode) closed=\($0.isClosed ? 1 : 0)" } ?? "nil") -> unavailable")
+#endif
+            return false
+        }
         perform(command, on: waveform)
         return true
     }
