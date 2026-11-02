@@ -193,6 +193,14 @@ enum RemotePreviewPlacement: Equatable, Sendable {
     case unfocused
     /// Another workspace is selected: open unfocused in the source workspace and say so in a notification.
     case unfocusedInAnotherWorkspace
+
+    /// Whether the open moves keyboard focus to the preview.
+    /// Placeholder until the fix: every open focuses.
+    var takesFocus: Bool { true }
+
+    /// Whether the open posts an "Opened … in …" notification.
+    /// Placeholder until the fix: none does.
+    var announcesOpen: Bool { false }
 }
 
 /// The leased viewer of a ⌘-clicked host file.
