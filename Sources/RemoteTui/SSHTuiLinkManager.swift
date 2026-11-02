@@ -26,12 +26,17 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
     /// options. The app passes `.shared`; tests leave it nil so nothing leaks.
     /// Nothing unregisters a manager today; a future unregister needs a `remove(id:)` there.
     private let carrierRoutes: SSHTuiCarrierRoutes?
+    /// Opens the host's one-off master as soon as the carrier connects
+    /// (``SSHMasterPool/warm(_:)``). The app passes `.shared`; tests leave it nil.
+    private let masterPool: SSHMasterPool?
 
     init(connection: SSHTuiConnection, clientURL: URL, paths: CloudTuiClientPaths, isEnabled: @escaping @Sendable () -> Bool,
          agentHookProviders: @escaping @Sendable () -> [String] = { [] },
-         carrierRoutes: SSHTuiCarrierRoutes? = nil) {
+         carrierRoutes: SSHTuiCarrierRoutes? = nil,
+         masterPool: SSHMasterPool? = nil) {
         self.connection = connection
         self.carrierRoutes = carrierRoutes
+        self.masterPool = masterPool
         carrierRoutes?.record(connection)
         self.clientURL = clientURL
         self.paths = paths
@@ -88,12 +93,24 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
         do {
             let ready = try await attempt.value
             guard connecting == attempt, !attempt.isCancelled, isEnabled() else { throw CancellationError() }
+            warmOneOffMaster()
             return ready
         } catch {
             await link.disconnect()
             if current === link { current = nil }
             throw error
         }
+    }
+
+    /// The first Files listing or preview then finds a master ready.
+    private func warmOneOffMaster() {
+        guard let masterPool else { return }
+        let configuration = connection.configuration
+        guard let route = SSHMasterPool.Route(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: connection.fileOperationSSHOptions
+        ) else { return }
+        masterPool.warm(route)
     }
 
     /// The OpenSSH options the next carrier dials with.
