@@ -1,6 +1,6 @@
 // Part of cmux's FSDB helper v2. GPL-3.0, as VaporView
 // (https://github.com/Lramseyer/vaporview), which it is adapted from; see ../LICENSE.
-// FSDB helper v2: runs next to the dump (on EWS) and answers the viewer over a
+// FSDB helper v2: runs next to the dump (on the remote host) and answers the viewer over a
 // single ssh stdio channel. Requests are newline-delimited JSON on stdin;
 // replies go to fd 3 as a JSON line plus `binLength` raw bytes (v1 framing),
 // because Verdi's FsdbReader prints to stdout. Start it through helper-v2.sh.

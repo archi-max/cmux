@@ -58,7 +58,7 @@ func frames(_ chunks: [Data]) -> [FrameParser.Event] {
 func frame(_ e: FrameParser.Event?) -> FrameParser.Frame? { if case .frame(let f)? = e { return f }; return nil }
 let ready = frames([Data("\u{1b}]0;title\u{07}{\"id\":0,\"ready\":true}\n".utf8)])
 check(ready.count == 1 && frame(ready.first)?.isReady == true, "ready after noise without newline")
-let noise = frames([Data("Welcome to EWS\n{\"id\":0,\"ready\":true}\n".utf8)])
+let noise = frames([Data("Welcome to the cluster\n{\"id\":0,\"ready\":true}\n".utf8)])
 if case .unreadableLine? = noise.first {} else { check(false, "noise line") }
 check(noise.count == 2 && frame(noise.last)?.isReady == true, "ready after noise line")
 let wire = Data("{\"id\":3,\"binLength\":5}\nABCDE{\"id\":4}\n".utf8)

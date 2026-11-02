@@ -266,8 +266,8 @@ struct SSHFileSearchAccumulator: Sendable {
 
 /// Picks the stderr lines worth showing from a remote command.
 ///
-/// A login shell's rc files may print warnings on every ssh command (EWS's
-/// ~/.bashrc does), so once the tool has started only lines the tools
+/// A login shell's rc files may print warnings on every ssh command (a shared
+/// cluster's ~/.bashrc may), so once the tool has started only lines the tools
 /// themselves write are kept. Before that, everything is ssh's diagnosis.
 enum SSHRemoteStderr {
     static let toolPrefixes = [

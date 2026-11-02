@@ -587,7 +587,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let otherKey = "ssh:remote-host|22|/home/u/.ssh/other_key|"
     expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: otherKey) == .remote("/r/a.alias"),
            "the same host with another identity file or options is the same host")
-    expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:ews-02|22||") == .otherHost("/r/a.alias")
+    expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:other-host|22||") == .otherHost("/r/a.alias")
            && WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: "ssh:remote-host|2222||") == .otherHost("/r/a.alias"),
            "another destination or port is another host")
     expect(WaveformValueAliasFiles.location(ofKey: remote, remoteIdentity: nil) == .otherHost("/r/a.alias"),

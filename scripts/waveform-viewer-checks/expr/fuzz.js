@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Differential fuzz for cmux-expr.js against a SystemVerilog simulator (the referee; VCS on EWS).
+// Differential fuzz for cmux-expr.js against a SystemVerilog simulator (the referee; a commercial simulator on the remote host).
 //
 //   node fuzz.js gen <dir> <seed> <count>   writes <dir>/fuzz.sv and <dir>/cases.json
 //   node fuzz.js repro <dir> <i,j,...>      prints a .sv with only those cases
