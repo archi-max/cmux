@@ -224,7 +224,8 @@ final class SSHTuiWorkspaceCoordinator {
         guard let clientURL = clientURL() else { throw CloudMachineLink.LinkError.clientMissing }
         let links = SSHTuiLinkManager(connection: connection, clientURL: clientURL, paths: paths,
                                      isEnabled: { ManagedRemoteConnectionsPolicy.isEnabled },
-                                     agentHookProviders: { SSHTuiConnection.agentHookProviders(defaults: .standard) })
+                                     agentHookProviders: { SSHTuiConnection.agentHookProviders(defaults: .standard) },
+                                     carrierRoutes: .shared)
         let provider = CmuxTuiSurfaceProvider(
             summary: .ssh(connection), links: links, catalog: catalog,
             sshClipboardWriteTrustStore: sshClipboardWriteTrustStore

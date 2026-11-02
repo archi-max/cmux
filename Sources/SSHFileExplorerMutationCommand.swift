@@ -112,34 +112,66 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
         ].joined(separator: "; "))
     }
 
-    /// Prefix of the line ``delete(paths:nonce:)`` prints after removing `paths[i]`.
-    static let removedMarker = "cmux-removed:"
-
     /// Permanently removes each item in order in one run, with the same checks
     /// and exit statuses as ``delete(path:)``. It stops at the first failure,
-    /// and prints ``removedMarker`` with the index of every item it removed, so
-    /// a caller knows which are gone when a later one fails.
+    /// and prints ``removedMarker(nonce:)`` with the index of every item it
+    /// removed, so a caller knows which are gone when a later one fails.
+    ///
+    /// `nonce` must be fresh for each run and letters or digits only: login
+    /// dotfiles print to the same stdout, and can't guess it.
     static func delete(paths: [String], nonce: String) -> Self {
-        Self(script: ([decoder] + paths.enumerated().flatMap { index, path in [
+        precondition(!nonce.isEmpty && nonce.unicodeScalars.allSatisfy { $0.isASCII && CharacterSet.alphanumerics.contains($0) })
+        return Self(script: ([decoder] + paths.enumerated().flatMap { index, path in deleteSteps(path, index: index, nonce: nonce) })
+            .joined(separator: "; "))
+    }
+
+    /// The prefix of the line ``delete(paths:nonce:)`` prints after removing `paths[i]`.
+    static func removedMarker(nonce: String) -> String { "cmux-removed-\(nonce):" }
+
+    /// The indices ``delete(paths:nonce:)`` reported removed in `output`.
+    static func removedIndices(in output: String, nonce: String) -> [Int] {
+        let marker = removedMarker(nonce: nonce)
+        return output.split(whereSeparator: \.isNewline).compactMap { line in
+            line.hasPrefix(marker) ? Int(line.dropFirst(marker.count)) : nil
+        }
+    }
+
+    /// `paths` in order, split into runs of at most `maxCount` items whose
+    /// ``delete(paths:nonce:)`` command stays within `maxCommandBytes`.
+    ///
+    /// sshd hands the command to the login shell as one argument, and Linux caps
+    /// one argument at 128 KiB, so a count alone can't bound long paths. A
+    /// single path over the budget still gets a run of its own.
+    static func deleteBatches(_ paths: [String], maxCount: Int = 200, maxCommandBytes: Int = 64 * 1024) -> [[String]] {
+        // The fixed cost: `sh -c '...'`, the decoder and a full-length nonce.
+        let fixed = delete(paths: [], nonce: String(repeating: "f", count: 32)).command.utf8.count
+        var batches: [[String]] = []
+        var batch: [String] = []
+        var bytes = fixed
+        for path in paths {
+            let cost = 2 + deleteSteps(path, index: batch.count, nonce: String(repeating: "f", count: 32))
+                .reduce(0) { $0 + $1.utf8.count + 2 }
+            if !batch.isEmpty, batch.count >= maxCount || bytes + cost > maxCommandBytes {
+                batches.append(batch)
+                batch = []
+                bytes = fixed
+            }
+            batch.append(path)
+            bytes += cost
+        }
+        if !batch.isEmpty { batches.append(batch) }
+        return batches
+    }
+
+    private static func deleteSteps(_ path: String, index: Int, nonce: String) -> [String] {
+        [
             assign("t", path),
             assign("dir", parent(of: path)),
             "if \(exists("t")); then :; else exit 74; fi",
             requireWritable("dir"),
             "rm -rf -- \"$t\" || exit 1",
-            "echo \(removedMarker)\(index)",
-        ] }).joined(separator: "; "))
-    }
-
-    /// The indices ``delete(paths:nonce:)`` reported removed in `output`.
-    static func removedIndices(in output: String, nonce: String) -> [Int] {
-        output.split(whereSeparator: \.isNewline).compactMap { line in
-            line.hasPrefix(removedMarker) ? Int(line.dropFirst(removedMarker.count)) : nil
-        }
-    }
-
-    /// `paths` in order, split into runs of at most `maxCount` items.
-    static func deleteBatches(_ paths: [String], maxCount: Int = 200, maxCommandBytes: Int = 64 * 1024) -> [[String]] {
-        stride(from: 0, to: paths.count, by: maxCount).map { Array(paths[$0..<min($0 + maxCount, paths.count)]) }
+            "echo \(removedMarker(nonce: nonce))\(index)",
+        ]
     }
 
     /// Copies a file or directory tree to a destination that must not exist.
@@ -213,7 +245,9 @@ struct SSHFileExplorerMutationCommand: Equatable, Sendable {
 
     private static func assign(_ variable: String, _ path: String) -> String {
         let encoded = Data(path.utf8).base64EncodedString()
-        return "\(variable)=$(d \(encoded)); [ -n \"$\(variable)\" ] || exit 1"
+        // `$(...)` drops trailing newlines, which can be part of a name; the
+        // sentinel dot keeps them and is stripped after.
+        return "\(variable)=$(d \(encoded); echo .); \(variable)=${\(variable)%.}; [ -n \"$\(variable)\" ] || exit 1"
     }
 
     private static func exists(_ variable: String) -> String {
