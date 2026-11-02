@@ -205,13 +205,13 @@
         }
         return { width: r.value.w, msb: r.value.w - 1, lsb: 0, value: r.value };
       };
-      const text = width ? `(${width}'b0 | (${e.text}))` : e.text;
-      const p = parse(text);
+      // The target's width is the context width (no `W'b0 | (...)` wrapper: an OR makes z bits x).
+      const p = parse(e.text);
       if (p.error) {
         ctx.reasons.push({ code: p.error === 'tooManySignals' || p.error === 'tooLong' ? 'limits' : 'evaluator', src: e.src, error: p.error });
         return { value: allX(width || Math.max(1, e.width || 1)), reads, failed: true };
       }
-      const r = X.evaluate(p.ast, env);
+      const r = X.evaluate(p.ast, env, width ? { width } : undefined);
       if (r.error) {
         ctx.reasons.push({ code: 'evaluator', src: e.src, error: r.error });
         return { value: allX(width || Math.max(1, e.width || 1)), reads, failed: true };
@@ -622,7 +622,12 @@
         if (cm !== m) { step.driver.writer = cm.path; }
         const writes = [];
         collectWrites(d.p.body, c.name, writes);
-        step.stmt = writes.length ? { src: writes[writes.length - 1].src, loc: locOf(cm, writes[writes.length - 1].loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
+        // The write in effect at t (its #delays summed), else the body's last write.
+        const at = d.p.kind === 'Initial' ? writeAt(d.p.body, c.name, step.since, t) : null;
+        const shownWrite = at || writes[writes.length - 1];
+        step.stmt = shownWrite ? { src: shownWrite.src, loc: locOf(cm, shownWrite.loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
+        // Unchanged since 0 and no write at 0: the declaration's initializer.
+        if (!at && Number(step.since) === 0 && sig.init && d.p.kind === 'Initial') { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
         step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(cm, s.loc) }));
         step.root = 'testbench';
         step.trust = 'approximate';
@@ -657,6 +662,52 @@
       return step.computed ? 'computed' : 'exact';
     }
 
+    // An initial block's writes to `name` with their start times in delay units ({ s, at }); after a
+    // delay that is not a plain number (a unit, an expression, an event), the times are unknown.
+    function timedWrites(s, name, at, out) {
+      if (!s) { return at; }
+      switch (s.k) {
+        case 'seq': for (const x of s.s) { at = timedWrites(x, name, at, out); } return at;
+        case 'asgn': if (writesTo(s.lhs, name)) { out.push({ s, at }); } return at;
+        case 'timed': {
+          // The control is what precedes the statement's own text (the source may start with comments).
+          const all = String(s.src || ''), own = String((s.stmt && s.stmt.src) || '');
+          const head = own && all.endsWith(own) ? all.slice(0, all.length - own.length) : all;
+          const m = /#\s*(\d+)\s*$/.exec(head);
+          return timedWrites(s.stmt, name, m && at !== null ? at + Number(m[1]) : null, out);
+        }
+        case 'if': case 'case': {
+          const inner = [];
+          collectWrites(s, name, inner);
+          inner.forEach((x) => out.push({ s: x, at }));
+          return hasTimed(s) ? null : at;
+        }
+        default: return hasTimed(s) ? null : at;
+      }
+    }
+    function hasTimed(s) {
+      if (!s || typeof s !== 'object') { return false; }
+      if (s.k === 'timed') { return true; }
+      return ['s', 'stmt', 't', 'f', 'dflt'].some((k) => (Array.isArray(s[k]) ? s[k].some(hasTimed) : hasTimed(s[k])))
+        || (Array.isArray(s.items) && s.items.some((it) => hasTimed(it.s)));
+    }
+    // The write in effect at t: the dump's time unit per delay unit is a power of ten that puts one
+    // of the writes at `since` (the value's last change); the last write at or before t under it
+    // (the largest such scale when several fit). Null when none fits.
+    function writeAt(body, name, since, t) {
+      if (since === null || since === undefined) { return null; }
+      const list = [];
+      timedWrites(body, name, 0, list);
+      const known = list.filter((w) => w.at !== null);
+      let pick = null;
+      for (let scale = 1; scale <= 1e15; scale *= 10) {
+        if (!known.some((w) => w.at * scale === Number(since))) { continue; }
+        const before = known.filter((w) => w.at * scale <= Number(t));
+        if (before.length) { pick = before[before.length - 1].s; }
+      }
+      return pick;
+    }
+
     function collectWrites(s, name, out) {
       if (!s) { return; }
       switch (s.k) {
@@ -672,9 +723,13 @@
     function driverSummary(m, d) {
       if (d.type === 'assign') { return { kind: 'assign', src: d.a.src, loc: locOf(m, d.a.loc) }; }
       if (d.type === 'proc') { return { kind: 'proc', procKind: d.p.kind, src: d.p.body.src, loc: locOf(m, d.p.loc) }; }
-      if (d.type === 'portIn') { return { kind: 'portIn', port: d.port.name, instance: m.path, src: d.port.conn.src, loc: locOf(m, d.port.loc) }; }
-      return { kind: 'portOut', port: d.port.name, instance: d.child.path, src: d.port.conn ? d.port.conn.src : '', loc: locOf(m, d.port.loc) };
+      if (d.type === 'portIn') { return { kind: 'portIn', port: d.port.name, instance: m.path, src: connText(d.port.conn), loc: locOf(m, d.port.loc) }; }
+      return { kind: 'portOut', port: d.port.name, instance: d.child.path, src: connText(d.port.conn), loc: locOf(m, d.port.loc) };
     }
+
+    // A connection's source text; implicit .name and .* connections have none: their leaves'.
+    function leafText(e) { return String(e.text || '').replace(/_L(\d+)_/g, (all, i) => (e.leaves && e.leaves[Number(i)] !== undefined ? e.leaves[Number(i)] : all)); }
+    function connText(e) { return e ? (e.src || leafText(e)) : ''; }
 
     // The bits of the target a write covers, compared with the dump: undefined when not comparable.
     function consistentWith(rec, now, sig) {
@@ -704,12 +759,15 @@
         }
         ctx.reasons.forEach((x) => r.reasons.push(x));
         if (d.a.delay) { r.reasons.push({ code: 'delay', src: d.a.src }); }
+        const delayed = !!d.a.delay;
         const rec = recFor(ctx, d.a.lhs, name, ev.value, w);
         r.stmt = { src: d.a.src, loc: locOf(m, d.a.loc), rhs: d.a.rhs.src, rhsLoc: locOf(m, d.a.rhs.loc) };
         r.sample = t;
         r.predicted = rec ? shown(rec.value) : null;
         r.bits = rec ? { lsb: rec.lsb, width: rec.width } : null;
         r.consistent = consistentWith(rec, now, sig);
+        // A delayed assignment's value at t is its right side's at t - d: not comparable at t.
+        if (delayed && r.consistent === false) { r.consistent = undefined; }
         r.fanin = faninOf(m, d.a.rhs, ev.reads, t, 'data', []);
         notDumped(r, ctx);
         if (r.consistent === false) { explainMismatch(r, ctx); }
@@ -725,7 +783,7 @@
         await fillElements(ctx, pm, e, t);
         const ev = evalExpr(e, ctx, sig.width);
         ctx.reasons.forEach((x) => r.reasons.push(x));
-        r.stmt = { src: d.type === 'portIn' ? `.${label}(${e.src || e.text})` : `.${label}(${d.port.conn ? d.port.conn.src : ''})`, loc: locOf(m, d.port.loc) };
+        r.stmt = { src: d.type === 'portIn' ? `.${label}(${e.src || leafText(e)})` : `.${label}(${connText(d.port.conn)})`, loc: locOf(m, d.port.loc) };
         r.port = { name: label, dir: d.port.dir, instance: d.type === 'portIn' ? m.path : d.child.path };
         r.sample = t;
         // An output port into a part of the parent's net covers those bits only.
