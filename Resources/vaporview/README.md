@@ -187,7 +187,8 @@ keybindings, netlist view, settings, sessions and terminal links).
   scope shows once, and goes back to Locals when that row is removed.
   `wellen-worker.js` gains `getsignalchanges`, which keeps a signal's data in
   the page (decoding wellen's LZ4 frame, written from the LZ4 format
-  description) instead of sending it to the viewer frame; `host.js` exposes a
+  description) instead of sending it to the viewer frame, and answers null
+  past a change cap; `host.js` exposes a
   variable's changes and VaporView's events to it; `cmux-commands.js` leaves
   the Locals group out of sessions and undo.
 - `cmux-enum.js` (new, written for cmux): SystemVerilog enum member names.
@@ -199,6 +200,16 @@ keybindings, netlist view, settings, sessions and terminal links).
   Enum Names (`cmux-commands.js`) gives a row its table back. `host.js`
   `link.valuesAt` takes `raw` and answers `{bits}` (for cmux to name) for a row
   in its enum's own format or not shown, and a row's text otherwise.
+- `cmux-fsm.js` (new, written for cmux): the state machine pane. Show State
+  Machine on a vector row (`cmux-commands.js`) asks cmux, which finds the
+  register's machine (Verdi's FSM analysis, Yosys's FSM passes, or the dump
+  alone; `fsm/cmux-fsm-verdi.sh` is the Verdi side, run on the dump's host
+  with the user's own Verdi) and hands the model to the pane. It draws the
+  states and transitions as a layered SVG graph, dashes transitions only the
+  dump takes, marks the state at the marker and the transition into it,
+  moves the marker to a transition's next occurrence (Shift: previous) or a
+  state's next entry, and counts entries and transitions over the dump
+  (`host.js` `signalChanges`). The pane sits beside the viewer in `index.html`.
 - `vscode-theme.css` (new): the `--vscode-*` theme variables VS Code injects
   into webviews, with dark and light values; cmux overrides the background and
   foreground with the panel's colors.

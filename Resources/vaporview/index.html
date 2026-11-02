@@ -60,6 +60,49 @@
     #status-reload, #status-fallback { display: flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
     #status-reload[hidden], #status [hidden] { display: none; }
     #status-reload button, #status-fallback button { font: inherit; padding: 0 6px; }
+    /* State machine pane (cmux-fsm.js). */
+    #fsm { position: relative; box-sizing: border-box; width: min(340px, 35%); min-width: 200px; max-width: 70%; flex: none; display: flex; flex-direction: column;
+      border-left: 1px solid var(--vscode-widget-border); overflow: hidden; }
+    #fsm[hidden] { display: none; }
+    /* The resize grip: the pane's left edge, highlighted on hover and while dragging. */
+    #fsm .fsm-grip { position: absolute; left: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize; z-index: 1; }
+    #fsm .fsm-grip::after { content: ''; position: absolute; left: 1px; top: 50%; width: 3px; height: 28px; margin-top: -14px;
+      border-radius: 2px; background: var(--vscode-foreground); opacity: 0.25; }
+    #fsm .fsm-grip:hover, #fsm.resizing .fsm-grip { background: var(--vscode-focusBorder); }
+    #fsm .fsm-grip:hover::after, #fsm.resizing .fsm-grip::after { opacity: 0; }
+    #fsm.resizing { user-select: none; -webkit-user-select: none; }
+    body.cmux-fsm-resizing #viewer { pointer-events: none; }
+    body.cmux-fsm-resizing { cursor: col-resize; }
+    #fsm .fsm-head { flex: none; display: flex; align-items: center; padding: 6px 6px 2px 10px; }
+    #fsm .fsm-title { flex: 1; font-weight: 600; text-transform: uppercase; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    #fsm .fsm-close { cursor: pointer; padding: 1px; border-radius: 3px; }
+    #fsm .fsm-close:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.25)); }
+    #fsm .fsm-signal { flex: none; padding: 0 10px; font-family: var(--vscode-editor-font-family); overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; user-select: text; -webkit-user-select: text; }
+    #fsm .fsm-current { flex: none; padding: 2px 10px 4px; color: var(--vscode-foreground); font-weight: 600; }
+    #fsm .fsm-body { flex: 1; overflow: auto; min-height: 0; }
+    #fsm .fsm-status { padding: 16px 10px; color: var(--vscode-descriptionForeground); white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
+    #fsm .fsm-note { flex: none; padding: 4px 10px; font-size: 11px; color: var(--vscode-descriptionForeground); border-top: 1px solid var(--vscode-widget-border); }
+    #fsm .fsm-note:empty { display: none; }
+    #fsm svg { display: block; font-family: var(--vscode-font-family); font-size: 11px; }
+    #fsm .fsm-node { cursor: pointer; }
+    #fsm .fsm-node rect { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-foreground); stroke-opacity: 0.55; stroke-width: 1; }
+    #fsm .fsm-node.unlisted rect { stroke-dasharray: 4 3; }
+    #fsm .fsm-node:hover rect { stroke-opacity: 1; }
+    #fsm .fsm-node.current rect { fill: var(--vscode-list-activeSelectionBackground, #094771); stroke: var(--vscode-focusBorder); stroke-opacity: 1; stroke-width: 2; }
+    #fsm .fsm-node text { text-anchor: middle; fill: var(--vscode-foreground); pointer-events: none; }
+    #fsm .fsm-node.current text { fill: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); }
+    #fsm .fsm-node .fsm-node-name { font-weight: 600; }
+    #fsm .fsm-node .fsm-node-sub { font-size: 10px; fill-opacity: 0.75; font-family: var(--vscode-editor-font-family); }
+    #fsm .fsm-edge { cursor: pointer; }
+    #fsm .fsm-edge .fsm-line { fill: none; stroke: var(--vscode-foreground); stroke-opacity: 0.6; stroke-width: 1.2; }
+    #fsm .fsm-edge .fsm-hit { fill: none; stroke: transparent; stroke-width: 10; }
+    #fsm .fsm-edge.observed .fsm-line { stroke-dasharray: 5 4; }
+    #fsm .fsm-edge:hover .fsm-line { stroke-opacity: 1; stroke-width: 2; }
+    #fsm .fsm-edge.last .fsm-line { stroke: var(--vscode-focusBorder); stroke-opacity: 1; stroke-width: 2; }
+    #fsm .fsm-edge-label { fill: var(--vscode-descriptionForeground); font-size: 10px; }
+    #fsm .fsm-arrowhead { fill: var(--vscode-foreground); fill-opacity: 0.7; }
+    #fsm .fsm-reset-dot { fill: var(--vscode-foreground); }
     /* Context menus, dialogs and toasts (cmux-ui.js). */
     #cmux-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
     #cmux-overlay > * { pointer-events: auto; }
@@ -144,5 +187,6 @@
   <script src="cmux-machine-core.js"></script>
   <script src="cmux-sequence.js"></script>
   <script src="cmux-machine.js"></script>
+  <script src="cmux-fsm.js"></script>
 </body>
 </html>

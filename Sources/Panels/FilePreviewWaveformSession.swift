@@ -914,6 +914,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         await callPage(api: "enums", function, argument: argument)
     }
 
+    /// Like `callLink`, on `window.cmuxWaveform.fsm` (cmux-fsm.js).
+    func callFsm(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "fsm", function, argument: argument)
+    }
+
     /// Like `callLink`, on `window.cmuxWaveform.debugger` (cmux-debugger.js).
     func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
         await callPage(api: "debugger", function, argument: argument)
@@ -1005,7 +1010,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             webContentProcessRecoveryAttempts = 0
             topScopes = body["top"] as? [String] ?? []
             isFileOpen = true
-            if let panel { WaveformSourceLink.waveformOpened(panel) }
+            if let panel {
+                WaveformSourceLink.waveformOpened(panel)
+                WaveformFSMEngines.waveformOpened(panel)
+            }
         case "signalData":
             if let panel { WaveformSourceLink.waveformDataArrived(panel) }
         case "revealInSource":
@@ -1021,6 +1029,9 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if body["eventType"] as? String == "signalSelect", let panel { WaveformDebugger.rowSelected(in: panel) }
         case "debugger":
             if let panel { WaveformDebugger.pageReported(body, waveform: panel) }
+        case "fsmRequest":
+            // Show State Machine on a row: the engines find the register's machine.
+            if let panel { WaveformFSMEngines.requested(body["path"], refresh: body["refresh"] as? Bool == true, waveform: panel) }
         case "enumTypes":
             // Shown rows the page doesn't know the types of: slang-server says which are enums.
             if let panel { WaveformEnumLink.typesRequested(body["paths"], waveform: panel) }
