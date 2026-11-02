@@ -28,6 +28,10 @@ enum WaveformTraceVerdi {
         let key: String
         let sidecar: SVModelSidecar
         var state: State = .starting
+        /// Failed requests (or starts) in a row; after one, Verdi is asked again once
+        /// `VerdiTraceLaunch.retryDelay(failures:)` has passed.
+        var failures = 0
+        var retryAt: Date?
 
         init(key: String, sidecar: SVModelSidecar) {
             self.key = key
@@ -36,6 +40,8 @@ enum WaveformTraceVerdi {
     }
 
     private static var sessions: [String: Session] = [:]
+    /// The sessions' keys, least recently used first.
+    private static var order = VerdiTraceLaunch.SessionKeys()
     /// Which session each viewer uses, to stop it when the viewer closes or loads again.
     private static let viewerSessions = NSMapTable<FilePreviewPanel, Session>.weakToStrongObjects()
     /// Verdi sessions kept at most: each holds a licence seat and the design.
@@ -56,6 +62,8 @@ enum WaveformTraceVerdi {
         let key = remote.host + "|" + remote.remotePath
         if let known = sessions[key] {
             viewerSessions.setObject(known, forKey: waveform)
+            order.use(key)
+            if case .unavailable = known.state, let at = known.retryAt, Date() >= at { probe(known, host: remote.host) }
             return known
         }
         let sshArguments = remote.sshArguments
@@ -65,33 +73,68 @@ enum WaveformTraceVerdi {
             installCommand: nil
         )
         let session = Session(key: key, sidecar: sidecar)
-        if sessions.count >= maxSessions, let oldest = sessions.keys.sorted().first {
-            sessions.removeValue(forKey: oldest)?.sidecar.stop()
-        }
         sessions[key] = session
+        order.use(key)
+        for gone in order.evict(keeping: maxSessions) {
+            sessions.removeValue(forKey: gone)?.sidecar.stop()
+        }
         viewerSessions.setObject(session, forKey: waveform)
+        probe(session, host: remote.host)
+        return session
+    }
+
+    /// Starts the session (or, after a failure, asks it again): ready when Verdi answers `info`
+    /// with the FSDB's time unit. A start that failed for want of a seat or in time is retried
+    /// with backoff; one the host refused (no KDB, no Verdi, other units) is not.
+    private static func probe(_ session: Session, host: String) {
+        session.state = .starting
+        session.retryAt = nil
         Task { @MainActor in
+            var retry = false
             do {
-                let info = try await sidecar.request(["cmd": "info"], timeout: requestTimeout)
+                let info = try await session.sidecar.request(["cmd": "info"], timeout: requestTimeout)
                 session.state = VerdiTraceLaunch.unitsMatch(info) ? .ready
                     : .unavailable(code: "units", message: "\(info["fileUnit"] ?? "") / \(info["windowUnit"] ?? "")")
             } catch SVModelSidecar.Failure.request(code: let code, message: let message) {
                 session.state = .unavailable(code: code, message: message)
+                retry = code == "licence" || code == "start"
+            } catch let failure as SVModelSidecar.Failure {
+                switch failure {
+                case .timedOut(let detail), .exited(let detail):
+                    let start = VerdiTraceLaunch.startFailure(detail: detail)
+                    session.state = .unavailable(code: start.code, message: start.message.isEmpty
+                        ? WaveformTrace.sidecarMessage(failure, host: host) : start.message)
+                    retry = true
+                case .stopped:
+                    return
+                default:
+                    session.state = .unavailable(code: "start", message: WaveformTrace.sidecarMessage(failure, host: host))
+                    retry = true
+                }
             } catch {
-                session.state = .unavailable(code: "start", message: WaveformTrace.sidecarMessage(error, host: remote.host))
+                session.state = .unavailable(code: "start", message: WaveformTrace.sidecarMessage(error, host: host))
+                retry = true
             }
             if case .unavailable(let code, _) = session.state {
                 waveformTraceVerdiLogger.info("Verdi engine unavailable: \(code, privacy: .public)")
+                if retry { failed(session) }
             }
         }
-        return session
+    }
+
+    private static func failed(_ session: Session) {
+        session.failures += 1
+        session.retryAt = Date().addingTimeInterval(VerdiTraceLaunch.retryDelay(failures: session.failures))
     }
 
     /// The viewer closes or loads its file again: its Verdi session (the old FSDB) ends.
     static func stop(for waveform: FilePreviewPanel) {
         guard let session = viewerSessions.object(forKey: waveform) else { return }
         viewerSessions.removeObject(forKey: waveform)
-        if sessions[session.key] === session { sessions.removeValue(forKey: session.key) }
+        if sessions[session.key] === session {
+            sessions.removeValue(forKey: session.key)
+            order.remove(session.key)
+        }
         session.sidecar.stop()
     }
 
@@ -117,12 +160,21 @@ enum WaveformTraceVerdi {
             Task { @MainActor in
                 do {
                     let r = try await session.sidecar.request(["cmd": "active", "signal": signal, "time": time], timeout: requestTimeout)
+                    session.failures = 0
                     reply(["state": "ready", "scope": r["scope"] ?? "", "file": r["file"] ?? "", "line": r["line"] ?? 0])
                 } catch SVModelSidecar.Failure.request(code: "notFound", message: let message) {
                     reply(["state": "ready", "notFound": true, "message": message])
+                } catch SVModelSidecar.Failure.stopped {
+                    reply(["state": "none"])
                 } catch {
-                    session.state = .unavailable(code: "failed", message: WaveformTrace.sidecarMessage(error, host: nil))
-                    reply(["state": "unavailable", "reason": "failed", "message": WaveformTrace.sidecarMessage(error, host: nil)])
+                    // This request goes without Verdi; the session is asked again after a backoff
+                    // (`session(for:)` probes it once `retryAt` has passed).
+                    let message = WaveformTrace.sidecarMessage(error, host: nil)
+                    if session.state == .ready {
+                        session.state = .unavailable(code: "failed", message: message)
+                        failed(session)
+                    }
+                    reply(["state": "unavailable", "reason": "failed", "message": message])
                 }
             }
         }

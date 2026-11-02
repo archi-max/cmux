@@ -703047,6 +703047,65 @@
         }
       }
     },
+    "waveformTrace.page.verdi.licenceQueue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi not used: Verdi licence not available"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُستخدم Verdi: ترخيص Verdi غير متاح"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi nicht verwendet: Verdi-Lizenz nicht verfügbar"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi no se usa: la licencia de Verdi no está disponible"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi non utilisé : licence Verdi indisponible"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi は使っていません: Verdi のライセンスを利用できません"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi를 사용하지 않음: Verdi 라이선스를 사용할 수 없음"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未使用 Verdi：Verdi 许可证不可用"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未使用 Verdi：Verdi 授權無法使用"
+          }
+        }
+      }
+    },
     "waveformTrace.page.verdi.noKDB": {
       "extractionState": "manual",
       "localizations": {
