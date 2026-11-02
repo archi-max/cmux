@@ -252,6 +252,15 @@ extension AppDelegate {
         return panel
     }
 
+    /// The focused panel of `window`'s selected workspace when it is a file preview,
+    /// whatever holds the keyboard responder: what an explicit command (a menu item,
+    /// the palette) acts on.
+    func shortcutWorkspaceFocusedFilePreviewPanel(in window: NSWindow?) -> FilePreviewPanel? {
+        guard let workspace = shortcutContextTabManager(in: window)?.selectedWorkspace,
+              let panelId = workspace.focusedPanelId else { return nil }
+        return workspace.panels[panelId] as? FilePreviewPanel
+    }
+
 #if DEBUG
     /// Each check of `shortcutFocusedWaveformPanel`, for the debug log: which one fails.
     func shortcutFocusedWaveformPanelDiagnosis(in window: NSWindow?) -> String {

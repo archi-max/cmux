@@ -128,9 +128,16 @@ enum WaveformDebugger {
             guard WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil else { return nil }
             return WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel)
         }()
+        // A menu item acts on the workspace's focused viewer (or the viewer next to its focused
+        // editor) even when the viewer's web view doesn't hold the first responder.
+        var workspaceViewer: FilePreviewPanel?
+        if case .key = source {} else if focused == nil, nearEditor == nil {
+            workspaceViewer = target(for: AppDelegate.shared?.shortcutWorkspaceFocusedFilePreviewPanel(in: window))
+        }
         let decision = WaveformDebuggerInvocation.decide(
             source: source, focusedViewer: focused,
-            viewerFieldFocused: focused?.nativeViewSessions.waveform.isEditableElementFocused ?? false, editorViewer: nearEditor
+            viewerFieldFocused: focused?.nativeViewSessions.waveform.isEditableElementFocused ?? false, editorViewer: nearEditor,
+            workspaceViewer: workspaceViewer
         )
 #if DEBUG
         let outcome: String
@@ -140,7 +147,7 @@ enum WaveformDebugger {
         case .unavailable: outcome = "unavailable"
         }
         cmuxDebugLog("waveformDebugger.invoke command=\(command) source=\(source) focusedViewer=\(focused != nil ? 1 : 0) "
-            + "nearEditor=\(nearEditor != nil ? 1 : 0) -> \(outcome) | "
+            + "nearEditor=\(nearEditor != nil ? 1 : 0) workspaceViewer=\(workspaceViewer != nil ? 1 : 0) -> \(outcome) | "
             + (AppDelegate.shared?.shortcutFocusedWaveformPanelDiagnosis(in: window ?? NSApp.keyWindow) ?? "noAppDelegate"))
 #endif
         switch decision {

@@ -25,11 +25,14 @@ enum WaveformDebuggerInvocation {
         case unavailable
     }
 
-    /// What a command from `source` does, given the focused viewer (if a viewer has
-    /// focus), whether one of its text fields has focus, and the viewer next to a
-    /// focused SystemVerilog editor.
+    /// What a command from `source` does, given the focused viewer (its web view holds
+    /// the window's first responder), whether one of its text fields has focus, the
+    /// viewer next to a focused SystemVerilog editor, and the viewer for the workspace's
+    /// focused panel whatever holds the responder (`workspaceViewer`: the menu and the
+    /// palette act on it; a key doesn't, so it goes on to the view that has it).
     static func decide<Panel: AnyObject>(
-        source: Source, focusedViewer: Panel?, viewerFieldFocused: Bool, editorViewer: Panel?
+        source: Source, focusedViewer: Panel?, viewerFieldFocused: Bool, editorViewer: Panel?,
+        workspaceViewer: Panel? = nil
     ) -> Decision<Panel> {
         if let focusedViewer {
             if case .key(typesText: true) = source, viewerFieldFocused { return .passKey }
@@ -37,6 +40,7 @@ enum WaveformDebuggerInvocation {
         }
         if let editorViewer { return .perform(editorViewer) }
         if case .key = source { return .passKey }
+        if let workspaceViewer { return .perform(workspaceViewer) }
         return .unavailable
     }
 
