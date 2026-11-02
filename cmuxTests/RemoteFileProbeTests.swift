@@ -93,6 +93,23 @@ import Testing
         }
     }
 
+    @Test func aTrailingNewlineInANameIsKept() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("sibling".utf8).write(to: root.appendingPathComponent("trail"))
+        let file = root.appendingPathComponent("trail\n")
+        try Data("newline".utf8).write(to: file)
+        for shell in Self.shells {
+            let result = try run(RemoteFileProbe.command(candidates: [file.path], maxBytes: nil), shell: shell, home: root, in: root)
+            #expect(result.status == 0, "\(shell)")
+            let out = root.appendingPathComponent("o-" + UUID().uuidString)
+            let header = try RemoteFileProbe.extract(from: result.raw, to: out)
+            #expect(header.path == file.path, "\(shell): \(header.path.debugDescription)")
+            let bytes = try Data(contentsOf: out)
+            #expect(bytes == Data("newline".utf8), "\(shell): read its sibling")
+        }
+    }
+
     @Test func noCandidateIsAFileExitsWithTheNoFileStatus() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

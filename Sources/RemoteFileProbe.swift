@@ -80,7 +80,8 @@ enum RemoteFileProbe {
             #"dec() { printf %s "$1" | base64 -d 2>/dev/null || printf %s "$1" | base64 -D 2>/dev/null; }"#,
             "i=0",
             "for e in \(words.joined(separator: " ")); do",
-            #"  if p=$(dec "$e") && [ -n "$p" ]; then"#,
+            // `echo .` keeps a name's trailing newlines, which `$( )` would strip.
+            #"  if p=$(dec "$e" && echo .) && p=${p%.} && [ -n "$p" ]; then"#,
             #"    case $p in "~") p=$HOME ;; "~/"*) p=$HOME/${p#"~/"} ;; esac"#,
             #"    if [ -f "$p" ] && [ -r "$p" ] && s=$(st "$p"); then"#,
             "      set -- $s",

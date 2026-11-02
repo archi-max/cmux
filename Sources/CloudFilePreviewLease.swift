@@ -15,6 +15,20 @@ final class CloudFilePreviewLease: @unchecked Sendable {
     private let cache: CloudFilePreviewCache
     private let stampLock = NSLock()
     private var stamp: SSHRemoteFileStamp?
+    private var unverified: Bool
+    private var localCopy: LocalCopyState?
+
+    /// The local copy's modification date and size as the cache last wrote it.
+    private struct LocalCopyState: Equatable {
+        let modificationDate: Date?
+        let size: Int64?
+
+        init(url: URL) {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            modificationDate = attributes?[.modificationDate] as? Date
+            size = attributes?[.size] as? Int64
+        }
+    }
 
     init(
         url: URL,
@@ -23,7 +37,8 @@ final class CloudFilePreviewLease: @unchecked Sendable {
         cache: CloudFilePreviewCache,
         sshProvider: SSHFileExplorerProvider? = nil,
         remoteStamp: SSHRemoteFileStamp? = nil,
-        isPlaceholder: Bool = false
+        isPlaceholder: Bool = false,
+        isUnverified: Bool = false
     ) {
         self.url = url
         self.remotePath = remotePath
@@ -32,6 +47,7 @@ final class CloudFilePreviewLease: @unchecked Sendable {
         self.sshProvider = sshProvider
         self.stamp = remoteStamp
         self.isPlaceholder = isPlaceholder
+        self.unverified = isUnverified
     }
 
     deinit {
@@ -55,14 +71,36 @@ final class CloudFilePreviewLease: @unchecked Sendable {
         }
     }
 
-    func refresh(using provider: any RemoteFileExplorerProvider) async throws {
+    /// Whether the copy came from the cache's recent copy and hasn't been
+    /// checked against the host since; ``remoteStamp`` is then that copy's stamp.
+    var isUnverified: Bool {
+        get { stampLock.withLock { unverified } }
+        set { stampLock.withLock { unverified = newValue } }
+    }
+
+    /// Notes the local copy's state after the cache wrote it.
+    func recordLocalCopy() {
+        let state = LocalCopyState(url: url)
+        stampLock.withLock { localCopy = state }
+    }
+
+    /// Whether the local copy is still as the cache last wrote it.
+    func localCopyIsUnchanged() -> Bool {
+        let state = LocalCopyState(url: url)
+        return stampLock.withLock { localCopy != nil && localCopy == state && state.size != nil }
+    }
+
+    /// Refreshes the copy from the host; true when it was replaced.
+    @discardableResult
+    func refresh(using provider: any RemoteFileExplorerProvider) async throws -> Bool {
         try await cache.refresh(self, provider: provider)
     }
 
     /// Re-downloads an editable SSH preview through its own provider.
-    func refreshFromRemote() async throws {
+    @discardableResult
+    func refreshFromRemote() async throws -> Bool {
         guard let sshProvider else { throw FileExplorerError.providerUnavailable }
-        try await cache.refresh(self, provider: sshProvider)
+        return try await cache.refresh(self, provider: sshProvider)
     }
 
     /// Uploads `contents` to the remote file. Unless `overwrite` is set, throws
@@ -73,10 +111,13 @@ final class CloudFilePreviewLease: @unchecked Sendable {
             throw ManagedFileTransferPolicy.refusalError()
         }
         guard let sshProvider else { throw FileExplorerError.providerUnavailable }
-        remoteStamp = try await sshProvider.writeFile(
+        let stamp = try await sshProvider.writeFile(
             path: remotePath,
             contents: contents,
             expectedStamp: overwrite ? nil : remoteStamp
         )
+        remoteStamp = stamp
+        isUnverified = false
+        await cache.remember(path: remotePath, identity: remoteIdentity, contents: contents, stamp: stamp)
     }
 }
