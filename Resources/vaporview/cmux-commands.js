@@ -762,7 +762,8 @@
 
   // VaporviewDocument.convertSignalListToSettings: resolve saved rows to the
   // netlist of the file that is open now, by instance path.
-  async function convertSignalList(list, missing) {
+  // inSlices: `list` is a row's slices (cmuxSlices), see below.
+  async function convertSignalList(list, missing, inSlices) {
     const out = [];
     for (const signal of Array.isArray(list) ? list : []) {
       try {
@@ -774,8 +775,11 @@
           const source = [];
           for (const s of signal.source || []) {
             const v = await host().findItem(s.name, s.msb, s.lsb, true);
-            if (!v || v.kind !== 'var' || s.lsb >= v.width) {
-              missing.push(s.name);
+            // cmux: a slice past the end of a signal that got narrower is missing, under its own
+            // name, not cut down to the bits left (upstream's clamp below) under its old name.
+            const past = inSlices && v && v.kind === 'var' && s.msb >= v.width;
+            if (!v || v.kind !== 'var' || s.lsb >= v.width || past) {
+              missing.push(inSlices ? sliceLabel(s.name, signal) : s.name);
               source.push({ name: s.name, netlistId: undefined, signalId: undefined, signalWidth: s.signalWidth, msb: s.msb, lsb: Math.max(s.lsb, 0) });
             } else {
               source.push({ name: window.cmuxNetlist.instancePath(v), netlistId: v.netlistId, signalId: v.signalId,
@@ -809,7 +813,14 @@
   async function convertSlices(signal, missing) {
     const slices = signal && signal.cmuxSlices;
     if (!slices || !Array.isArray(slices.children)) { return null; }
-    return { collapseState: slices.collapseState, children: await convertSignalList(slices.children, missing) };
+    return { collapseState: slices.collapseState, children: await convertSignalList(slices.children, missing, true) };
+  }
+  // A slice in the missing-signals message: its signal's scope and its own name (top.g[1]).
+  function sliceLabel(sourceName, slice) {
+    const own = slice && slice.nameType === 'custom' && slice.customName ? String(slice.customName) : '';
+    if (!own) { return sourceName; }
+    const dot = String(sourceName).lastIndexOf('.');
+    return (dot >= 0 ? String(sourceName).slice(0, dot + 1) : '') + own;
   }
   function withSlices(row, slices) {
     if (slices) { row.cmuxSlices = slices; } else { delete row.cmuxSlices; }
@@ -1186,12 +1197,14 @@
   async function addSignalByName(name, msb, lsb, quiet) {
     let path = String(name).trim().replace(/[:;]$/, '');
     const field = /\[(\d+:)?(\d+)\]$/.exec(path);
-    if (field && msb === undefined) {
+    // cmux: a signal named with an index (an array element, dfp_addr[1]) first, as named.
+    let item = field && msb === undefined ? await host().findItem(path, undefined, undefined, true) : null;
+    if (field && msb === undefined && !item) {
       msb = field[1] ? parseInt(field[1], 10) : parseInt(field[2], 10);
       lsb = parseInt(field[2], 10);
       path = path.replace(/\[(\d+:)?(\d+)\]$/, '');
     }
-    const item = await host().findItem(path, msb, lsb, false);
+    if (!item) { item = await host().findItem(path, msb, lsb, false); }
     if (!item) {
       if (!quiet) { ui().toast(format(S().messageSignalNotFound, name), 'warning'); }
       return false;

@@ -6,7 +6,7 @@ third_party/node-addon-api/LICENSE.md and third_party/node-api-headers/LICENSE.
   a two-line licence header. VaporView: Lloyd Ramseyer (GitHub Lramseyer) and contributors,
   https://github.com/Lramseyer/vaporview, GPL-3.0. build.sh compiles it on the host together
   with the cmux additions addon/*.inc and addon/deval.h (GPL-3.0, as VaporView).
-- helper.js, worker.js, expr.js, build.sh, cmux-helper-v2.sh: cmux's helper-v2, distributed
+- helper.js, worker.js, expr.js, tree.js, build.sh, cmux-helper-v2.sh: cmux's helper-v2, distributed
   with the GPL-3.0 code above.
 - third_party/node-addon-api: node-addon-api headers, MIT (Node.js API collaborators).
 - third_party/node-api-headers: Node-API headers, MIT (Node.js).

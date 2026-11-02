@@ -81,6 +81,8 @@
           const name = varName(c);
           vars.push({ name, width: Number(c.width) || 1 });
           st.vars.set(JSON.stringify(path.concat([name])), c);
+        } else if (c.kind === 'scope' && c.array) {
+          // cmux: an FSDB array node: its elements are this scope's vars already.
         } else if (c.kind === 'scope') {
           // wellen's array element scope (`order` holding `[0]`, `[1]`) reads as order[0], order[1] here.
           let elements = null;
