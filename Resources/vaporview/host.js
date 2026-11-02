@@ -297,7 +297,7 @@
     // Whether the helper answers valueAt (v2); unknown until the first ask.
     let pointQuery;
     // The running helper's protocol, from cmux's reply header: 2 = windowed
-    // viewing (WINDOWING.md); 1 (or no header) = whole signals.
+    // viewing; 1 (or no header) = whole signals.
     let protocolVersion = 1;
     const noteProtocol = (response) => {
       const p = Number(response.headers.get('X-Cmux-Fsdb-Protocol'));

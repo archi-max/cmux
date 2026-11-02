@@ -1,6 +1,6 @@
 #!/bin/sh
 # Part of cmux's FSDB helper v2. GPL-3.0, as VaporView (see ../LICENSE).
-# Builds cmux's FSDB helper v2 (windowed viewing, WINDOWING.md protocol 2) on
+# Builds cmux's FSDB helper v2 (windowed viewing, protocol 2) on
 # the remote host, for the user running it.
 #
 # The FSDB reader addon links Synopsys Verdi's FsdbReader libraries, which are

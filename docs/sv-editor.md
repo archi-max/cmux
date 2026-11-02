@@ -53,7 +53,7 @@ For a feature-by-feature guide to cmux's VaporView changes, with screenshots and
 
 ### FSDB on a remote host
 
-FSDB is read on the remote host by `Resources/vaporview/fsdb-helper-v2/`. This is a small Node helper with VaporView's FSDB reader addon, compiled on the host against that host's own Verdi install. cmux uploads it over SSH and streams only the windows of data the viewer needs. Synopsys libraries are never bundled or redistributed. See `fsdb-helper-v2/NOTICE`.
+FSDB is read on the remote host by `Resources/vaporview/fsdb-helper-v2/`. This is a small Node helper with VaporView's FSDB reader addon, compiled on the host against that host's own Verdi install. cmux uploads it over SSH and streams only the windows of data the viewer needs. Synopsys libraries are never bundled or redistributed. See `fsdb-helper-v2/NOTICE`, and [its README](../Resources/vaporview/fsdb-helper-v2/README.md) for the design.
 
 ### Tests
 
