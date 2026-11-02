@@ -136,14 +136,13 @@ enum RemotePreviewOpenRules {
         return snapshot
     }
 
-    /// Whether a finished download still opens. The same rule as an FSDB
-    /// read in place (``RemotePreviewInPlaceGate/openIsCurrent``): the
-    /// workspace is still selected and the terminal is the one, on the same
-    /// connection, the request came from. Keyboard focus and the key window
-    /// no longer count: the download takes from a few hundred ms to seconds,
-    /// and moving to another tab meanwhile dropped the file without a word.
-    /// How a finished download opens, or nil when it is dropped.
-    /// Placeholder until the fix: the old gate, always with focus.
+    /// How a finished download opens, or nil when it is dropped. It is
+    /// dropped only when its source is gone: the workspace was closed, or
+    /// the terminal or its connection changed. Focus moves to the preview
+    /// only while the user is still on the source terminal in the key
+    /// window; a download that lands after they moved on (a few hundred ms
+    /// to seconds) opens beside it without taking their keystrokes, and one
+    /// whose workspace was left opens there, unfocused, with a notification.
     static func placement(
         isSelected: Bool,
         isRetired: Bool,
@@ -152,42 +151,37 @@ enum RemotePreviewOpenRules {
         sourceIsFocused: Bool,
         windowIsKey: Bool
     ) -> RemotePreviewPlacement? {
-        downloadMayOpen(
-            isSelected: isSelected, isRetired: isRetired, sourceUnchanged: sourceUnchanged,
-            configurationUnchanged: configurationUnchanged, sourceIsFocused: sourceIsFocused, windowIsKey: windowIsKey
-        ) ? .focused : nil
+        guard !isRetired, sourceUnchanged, configurationUnchanged else { return nil }
+        guard isSelected else { return .unfocusedInAnotherWorkspace }
+        return sourceIsFocused && windowIsKey ? .focused : .unfocused
     }
 
-    /// Runs `prepare` and returns its value with the placement that holds
-    /// after it. Placeholder until the fix: the placement is read before.
-    static func openAfter<Value: Sendable>(
-        _ prepare: () async -> Value?,
-        placement: () -> RemotePreviewPlacement?
+    /// Runs `prepare` (an await, such as moving the download into the
+    /// lease cache) and returns its value with the placement that holds
+    /// after it, so the open never uses a gate read before the await.
+    @MainActor
+    static func openAfter<Value>(
+        _ prepare: @MainActor () async -> Value?,
+        placement: @MainActor () -> RemotePreviewPlacement?
     ) async -> (Value, RemotePreviewPlacement)? {
-        guard let before = placement(), let value = await prepare() else { return nil }
-        return (value, before)
+        guard let value = await prepare(), let after = placement() else { return nil }
+        return (value, after)
     }
 
-    /// Which leased viewer a ⌘-clicked host file opens in, or nil when it
-    /// gets none. Placeholder until the fix: Markdown opens as a cache copy.
+    /// Which leased viewer a ⌘-clicked host file opens in, or nil when no
+    /// cmux viewer takes it. Every clicked file opens in the native preview
+    /// under a lease, like `cmux open` and the Files panel, so the header
+    /// names the host path and Save writes to the host. Markdown starts on
+    /// its rendered view when Markdown routing is on (the Markdown viewer
+    /// reads a local file and could only show the cache copy). HTML opens as
+    /// its source: a host page is never loaded as a local web page.
     static func clickViewer(
         isMarkdown: Bool,
         routesMarkdown: Bool,
         routesSupportedFile: Bool
     ) -> RemoteClickViewer? {
-        if isMarkdown && routesMarkdown { return nil }
+        if isMarkdown && routesMarkdown { return .renderedMarkdown }
         return routesSupportedFile ? .source : nil
-    }
-
-    static func downloadMayOpen(
-        isSelected: Bool,
-        isRetired: Bool,
-        sourceUnchanged: Bool,
-        configurationUnchanged: Bool,
-        sourceIsFocused: Bool,
-        windowIsKey: Bool
-    ) -> Bool {
-        isSelected && !isRetired && sourceUnchanged && configurationUnchanged
     }
 }
 

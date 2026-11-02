@@ -1674,19 +1674,22 @@ final class FilePreviewLanguageFeatures: NSObject {
 
     /// Puts the caret at a 1-based `line` (and `column`) of `panel` once its
     /// text has loaded: a terminal's `path:line[:column]` link.
-    static func reveal(line: Int, column: Int?, in panel: FilePreviewPanel) {
+    /// Puts the caret at `line` (1-based); with `takesFocus: false` the text
+    /// view is not made first responder, so a background open keeps the
+    /// user's focus.
+    static func reveal(line: Int, column: Int?, in panel: FilePreviewPanel, takesFocus: Bool = true) {
         let position = LSPPosition(line: max(0, line - 1), character: max(0, (column ?? 1) - 1))
-        selectWhenLoaded(LSPRange(start: position, end: position), in: panel)
+        selectWhenLoaded(LSPRange(start: position, end: position), in: panel, takesFocus: takesFocus)
     }
 
     /// A freshly opened panel loads its text asynchronously; wait for it.
-    private static func selectWhenLoaded(_ range: LSPRange, in panel: FilePreviewPanel) {
+    private static func selectWhenLoaded(_ range: LSPRange, in panel: FilePreviewPanel, takesFocus: Bool = true) {
         Task { @MainActor [weak panel] in
             for _ in 0..<100 {
                 guard let panel, !panel.isClosed else { return }
                 if let textView = panel.textView, !panel.textContent.isEmpty, textView.string == panel.textContent {
                     select(range, in: textView)
-                    textView.window?.makeFirstResponder(textView)
+                    if takesFocus { textView.window?.makeFirstResponder(textView) }
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(50))
