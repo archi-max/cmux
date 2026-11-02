@@ -214,7 +214,7 @@ final class RemoteTerminalFilePreviewCoordinator {
             // A waveform dump: find it on the host (relative links against the
             // shell's live directory) and open the viewer that reads it there,
             // as `cmux open` does; never download it.
-            let task = Task { [weak self, weak workspace, weak panel] in
+            let task = Task { [weak self, weak workspace] in
                 defer {
                     if self?.tasks[sourcePanelID]?.id == requestID {
                         self?.tasks.removeValue(forKey: sourcePanelID)
@@ -259,11 +259,9 @@ final class RemoteTerminalFilePreviewCoordinator {
                     #if DEBUG
                     cmuxDebugLog("remotePreview.failed request=\(requestID.uuidString) reason=\(Self.failureReason(error))")
                     #endif
-                    guard let workspace, let panel,
-                          workspace.terminalPanel(for: sourcePanelID) === panel,
-                          workspace.focusedPanelId == sourcePanelID,
-                          panel.hostedView.window?.isKeyWindow == true else { return }
-                    NSSound.beep()
+                    // Same rule as every other beep here: only at the user, on the
+                    // unchanged terminal of the selected workspace in the key window.
+                    if currentPlacement()?.takesFocus == true { NSSound.beep() }
                 }
             }
             tasks[sourcePanelID] = (requestID, task)
