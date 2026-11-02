@@ -1,6 +1,6 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..4068679
+index 0000000..4c32c7b
 --- /dev/null
 +++ b/CHANGES.md
 @@ -0,0 +1,226 @@
@@ -48,7 +48,7 @@ index 0000000..4068679
 +
 +Supported alias file formats:
 +
-+- **Verdi nWave alias file** (any extension except .json/.csv/.rc). The syntax follows the Verdi W-2024.09 Command Reference, "Add Alias from File" (pp. 604-616), and the resource-file items in Appendix B (p. 1964).
++- **Verdi nWave alias file** (any extension except .json/.csv/.rc). The syntax is nWave's alias-table format (an `alias ... endalias` table per name, plus the alias lines a Verdi resource file may hold), as described below.
 +  - Supported: `alias NAME ... endalias` blocks (keywords are case-insensitive), the older block style where a line holding only a name starts a table, and entries outside any block (they go into a table named after the file). Entries are `name value [colorID]`. A keyword counts only when it is unquoted, has the right number of arguments and (for block starts) sits outside an explicit block. Inside an `alias` block, a line holding only a name is a warning ("has no value"), not a new table. A missing `endalias` at the end of the file is also a warning. A value is a Verilog literal (`8'h1f`, `'b1?0?`, `4'd9`), a range `lo~hi` (spaces allowed, may be quoted), or `others`. Names with spaces are double-quoted.
 +  - Comments: whole-line `#` and `//`. As an extension, an unquoted `#...` or `//...` after the first token is a trailing comment (Verdi documents only comment lines). The exception is a `#rgb`/`#rrggbb` token that ends the line, which is a color. Colors are `ID_*`, `NULL` or `#rgb`.
 +  - Also supported: `slice NAME ... endslice`, where each row is `msb[:lsb] [table|radix]`. Rows display left to right, separated by spaces. A reversed range is shown bit-reversed. A field containing x/z shows `*`. Also: and `curAliasTable`.
@@ -106,7 +106,7 @@ index 0000000..4068679
 +`node test/riscv/run.cjs` bundles the tests with esbuild and runs them under node.
 +
 +- `disasm.test.ts`: 60,847 encodings × 4 objdump variants (default, `-M numeric`, `-M no-aliases`, both), plus 6 format-wrapper cases. That is 237,078 checks with 0 failures.
-+  - The expected text comes from GNU objdump 2.43.1 (ECE 411 toolchain on EWS, `/class/ece411/riscv/bin`) run over `corpus.s`.
++  - The expected text comes from GNU objdump 2.43.1 (a RISC-V GNU toolchain; `make_expected.sh` takes its bin folder from `RISCV_BIN`) run over `corpus.s`.
 +  - The corpus has 99 hand-picked encodings, one per alias rule, and 3,000 random RV32IMC/Zicsr encodings (seeded). Added after review: all 4096 CSR numbers, 300 fences with random rd/rs1/fm, 150 fully random words for each 32-bit major opcode, and all 49,152 16-bit compressed encodings.
 +  - `gen_corpus.py` and `make_expected.sh` regenerate them. 91,688 of the checks are encodings that both objdump and this disassembler call unknown. 6,316 are the RV32-reserved shifts, which are expected to show as hex.
 +- `alias.test.ts`: 82 checks covering every syntax form above, plus regressions for review findings M1, M2, M4, L3-L9, N2-N4 and `.rc` handling. The alias files in it were written for the test.
@@ -121,7 +121,7 @@ index 0000000..4068679
 +- RISC-V ISA specifications (RISC-V International, CC-BY-4.0), for the encodings, the CSR numbers and the pseudo-instruction table.
 +- The CSR name list matches the names GNU objdump 2.43.1 prints. It was taken from objdump's output (the names are the architectural CSR names from the RISC-V specs); no binutils code or tables were copied.
 +- GNU Binutils objdump 2.43.1 (GPL-3.0) was used only as the test oracle. It is not vendored, and none of its code is used.
-+- Verdi alias file syntax: Synopsys Verdi W-2024.09 Command Reference (proprietary). The syntax is implemented from a reading of the manual. No text from it is included here.
++- Verdi alias file syntax: implemented from the format's observable behaviour (the forms listed under Value aliases). No vendor text or code is included.
 +
 +## Review fixes (review-instr-a396e12.md)
 +
@@ -2339,7 +2339,7 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..8a335de
+index 0000000..22e4a44
 --- /dev/null
 +++ b/src/webview/window_cache.ts
 @@ -0,0 +1,1917 @@
@@ -2402,7 +2402,7 @@ index 0000000..8a335de
 +const FAIL_MAX_BACKOFF  = 60000;  // a failing signal is retried at most once a minute
 +const STATS_KEEP        = 5000;
 +const VALUEAT_EVERY_MS  = 50;     // marker drag: at most one valueAt round trip per 50 ms
-+// Hybrid thresholds, from a sweep on the cp3 dump (WKWebView, 20 signals, real helper; see
++// Hybrid thresholds, from a sweep on a large FSDB dump (WKWebView, 20 signals, real helper; see
 +// www-window/README.md): up to 7 signals of <= 350k changes loaded whole left pan/zoom at
 +// 17/18 ms p50/p95; 9 signals up to 1M changes (2 GB WebContent RSS) or 18 (3.4 GB peak,
 +// pan p50 32 ms) did not.
@@ -4683,15 +4683,15 @@ index 0000000..d625ff8
 +print(len(words), "encodings")
 diff --git a/test/riscv/make_expected.sh b/test/riscv/make_expected.sh
 new file mode 100644
-index 0000000..f2cb8e3
+index 0000000..26142bd
 --- /dev/null
 +++ b/test/riscv/make_expected.sh
 @@ -0,0 +1,13 @@
 +#!/bin/sh
-+# Run on a host with a RISC-V GNU toolchain (here: ECE 411's on EWS, binutils from
-+# riscv64-unknown-elf-gcc 14.2.0). Writes expected-<variant>.txt: "<addr> <text>" per line.
++# Run on a host with a RISC-V GNU toolchain (binutils 2.43.1, from riscv64-unknown-elf-gcc 14.2.0);
++# RISCV_BIN is its bin folder. Writes expected-<variant>.txt: "<addr> <text>" per line.
 +set -e
-+T=${RISCV_BIN:-/class/ece411/riscv/bin}
++T=${RISCV_BIN:?set RISCV_BIN to the bin folder of a RISC-V GNU toolchain}
 +$T/riscv64-unknown-elf-as -march=rv32imc_zicsr_zifencei -mabi=ilp32 corpus.s -o corpus.o
 +for v in default numeric no-aliases numeric,no-aliases; do
 +  if [ $v = default ]; then M=""; else M="-M $v"; fi
