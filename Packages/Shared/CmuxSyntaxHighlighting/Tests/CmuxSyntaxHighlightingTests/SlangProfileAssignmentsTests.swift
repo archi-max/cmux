@@ -142,6 +142,27 @@ import Testing
         #expect(build.involves("/private/w/rtl/alu.sv", buildFilePath: "/w/.slang/tb_a.f", baseDirectory: "/w", normalize: { "/private" + $0 }))
     }
 
+    @Test func aBuildThatReachesFilesItDoesntListMayInvolveAnyFile() {
+        // Globs, library directories and include directories reach files the build doesn't name.
+        for text in [
+            "rtl/*.sv\n", "rtl/alu?.sv\n", "rtl/.../*.sv\n", "-y lib\ntop.sv\n", "--libdir=lib\ntop.sv\n",
+            "-I inc\ntop.sv\n", "--include-directory inc\ntop.sv\n", "--isystem=inc\ntop.sv\n",
+            "+incdir+inc\ntop.sv\n", "+libext+.sv\ntop.sv\n",
+        ] {
+            #expect(SlangBuildFile.parse(text).mayReachUnlistedFiles, "\(text)")
+        }
+        for text in ["top.sv\n", "--top tb\n-D W=8\ntop.sv\n", "+define+W=8\ntop.sv\n", "-v lib/fifo.sv\ntop.sv\n"] {
+            #expect(!SlangBuildFile.parse(text).mayReachUnlistedFiles, "\(text)")
+        }
+        // A library file is named: it is checked like a source.
+        for text in ["-v lib/fifo.sv\ntop.sv\n", "--libfile=lib/fifo.sv\ntop.sv\n"] {
+            let build = SlangBuildFile.parse(text)
+            #expect(build.libraryFiles == ["lib/fifo.sv"])
+            #expect(build.involves("/w/lib/fifo.sv", buildFilePath: "/w/.slang/p.f", baseDirectory: "/w"))
+            #expect(!build.sources.contains("lib/fifo.sv"))
+        }
+    }
+
     @Test func aWaveformOpenedOnABuiltDesignTakesTheProfileMatchingItsDump() {
         let tbA = SlangProfile(path: "/w/.slang/tb_a.f", buildFile: SlangBuildFile(tops: ["tb_a"]))
         let tbB = SlangProfile(path: "/w/.slang/tb_b.f", buildFile: SlangBuildFile(tops: ["tb_b"]))
@@ -225,6 +246,9 @@ import Testing
         /// How long apply takes.
         var applyTime: Duration = .zero
         var maxBusyWait: Duration = .seconds(5)
+        var errorBackoff: Duration = .zero
+        /// The follower's clock, moved by the test.
+        var now = ContinuousClock.now
         private var applyWaiters: [CheckedContinuation<Void, Never>] = []
 
         /// Until the first switch has started: signalled by apply, never a wall clock (verify T2).
@@ -234,7 +258,9 @@ import Testing
         }
 
         func follower(debounce: Duration = .milliseconds(40)) -> SlangProfileFollower {
-            SlangProfileFollower(debounce: debounce, busyRetry: .milliseconds(20), maxBusyWait: maxBusyWait, hooks: .init(
+            SlangProfileFollower(
+                debounce: debounce, busyRetry: .milliseconds(20), maxBusyWait: maxBusyWait,
+                errorBackoff: errorBackoff, now: { self.now }, hooks: .init(
                 wanted: { self.wanted },
                 current: { self.current },
                 isBusy: { self.busy },
@@ -388,6 +414,43 @@ import Testing
         await follower.waitUntilIdle()
         #expect(fake.applied == [.explore, .explore])
         #expect(SlangProfileChoice(fake.current) == .explore)
+    }
+
+    @Test func anErroredProfileWaitsBeforeFocusTriesItAgain() async {
+        let fake = Fake()
+        fake.errorAnswers = 1
+        fake.errorBackoff = .seconds(30)
+        let follower = fake.follower(debounce: .milliseconds(10))
+        let tbA = SlangProfileAssignmentsTests.tbA
+        let tbB = SlangProfileAssignmentsTests.tbB
+        func focus(_ choice: SlangProfileChoice) async {
+            fake.wanted = choice
+            follower.activeFileChanged()
+            await follower.waitUntilIdle()
+        }
+        await focus(tbA)
+        #expect(fake.applied == [tbA])
+        // During an outage, focusing it again doesn't block on another ssh timeout.
+        fake.now += .seconds(10)
+        await focus(tbA)
+        #expect(fake.applied == [tbA])
+        // Another profile isn't held back by tb_a's error.
+        await focus(tbB)
+        #expect(fake.applied == [tbA, tbB])
+        // After the backoff, focus tries tb_a again.
+        fake.now += .seconds(25)
+        await focus(tbA)
+        #expect(fake.applied == [tbA, tbB, tbA])
+        #expect(SlangProfileChoice(fake.current) == tbA)
+        // tb_b errors now; the user choosing it again doesn't wait for the backoff.
+        fake.errorAnswers = 1
+        await focus(tbB)
+        await focus(tbB)
+        #expect(fake.applied == [tbA, tbB, tbA, tbB])
+        follower.userChose(tbB)
+        await focus(tbB)
+        #expect(fake.applied == [tbA, tbB, tbA, tbB, tbB])
+        #expect(SlangProfileChoice(fake.current) == tbB)
     }
 
     @Test func aSwitchThatLostTheServerToAnotherChangeIsTriedAgain() async {

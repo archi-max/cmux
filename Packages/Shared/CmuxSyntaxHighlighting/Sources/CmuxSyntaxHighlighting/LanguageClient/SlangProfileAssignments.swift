@@ -272,6 +272,8 @@ public final class SlangProfileFollower {
         debounce: Duration = .milliseconds(250),
         busyRetry: Duration = .milliseconds(300),
         maxBusyWait: Duration = .seconds(20),
+        errorBackoff: Duration = .seconds(30),
+        now: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
         hooks: Hooks
     ) {
         self.debounce = debounce

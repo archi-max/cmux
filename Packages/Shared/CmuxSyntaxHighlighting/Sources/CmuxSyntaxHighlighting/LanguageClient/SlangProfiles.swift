@@ -9,6 +9,10 @@ public struct SlangBuildFile: Equatable, Sendable {
     public var sources: [String] = []
     /// Nested `-f` / `-F` command files as written.
     public var commandFiles: [String] = []
+    /// Stub.
+    public var libraryFiles: [String] = []
+    /// Stub.
+    public var mayReachUnlistedFiles = false
 
     public init(tops: [String] = [], sources: [String] = [], commandFiles: [String] = []) {
         self.tops = tops
