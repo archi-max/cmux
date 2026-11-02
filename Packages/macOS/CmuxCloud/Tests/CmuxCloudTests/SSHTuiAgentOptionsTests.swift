@@ -22,11 +22,12 @@ struct SSHTuiAgentOptionsTests {
     }
 
     /// File drops, the Files explorer and file preview run batch-mode `ssh`/`scp`
-    /// beside the carrier. On a password-only host they can only log in through
-    /// the carrier's authenticated master, so they need its exact ControlPath,
-    /// and they must never become a master or carry cmux's route marker.
-    @Test("One-off file operations reuse the carrier's master and never become one")
-    func fileOperationsReuseTheCarrierMaster() throws {
+    /// beside the carrier. Every session on a master counts against the
+    /// server's per-connection limit, and every app's carrier for a host shares
+    /// one master, so they share a master of their own next to it, never the
+    /// carrier's, and never carry cmux's route marker.
+    @Test("One-off file operations share their own master beside the carrier's")
+    func fileOperationsUseTheirOwnMaster() throws {
         let routeIdentifier = String(repeating: "d", count: 64)
         let connection = connection(
             agent: "/tmp/cmux-route-agent.sock",
@@ -36,10 +37,18 @@ struct SSHTuiAgentOptionsTests {
         let carrierPath = try #require(connection.preflightArguments.first { $0.hasPrefix("ControlPath=") })
 
         let options = connection.fileOperationSSHOptions
-        #expect(options.filter { $0.hasPrefix("ControlPath=") } == [carrierPath])
-        #expect(!options.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
+        #expect(options.filter { $0.hasPrefix("ControlPath=") } == [carrierPath + "-ops"])
+        #expect(options.filter { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") }
+            == ["ControlMaster=auto", "ControlPersist=600"])
         #expect(!options.contains { $0.contains("__cmux_route_sensitive") })
         #expect(options.contains("ProxyCommand=/bin/sh -c true"))
+
+        // A language server or waveform helper holds its session for long: a connection of its own.
+        let longLived = connection.longLivedSSHOptions
+        #expect(longLived.filter { $0.lowercased().hasPrefix("controlpath") } == ["ControlPath=none"])
+        #expect(longLived.filter { $0.lowercased().hasPrefix("controlmaster") || $0.lowercased().hasPrefix("controlpersist") }
+            == ["ControlMaster=no"])
+        #expect(longLived.contains("ProxyCommand=/bin/sh -c true"))
     }
 
     @Test("A restored cmux carrier keeps its saved route socket with an agent")

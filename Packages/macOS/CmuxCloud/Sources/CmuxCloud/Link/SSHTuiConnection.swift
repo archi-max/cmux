@@ -146,6 +146,12 @@ public struct SSHTuiConnection: Sendable {
         }
     }
 
+    /// Appended to the carrier's ControlPath for the one-off runs' own master.
+    public static let operationsControlPathSuffix = "-ops"
+
+    /// Stub: the long-lived runs' options (red).
+    public var longLivedSSHOptions: [String] { fileOperationSSHOptions }
+
     /// The caller's options plus cmux's shared ControlMaster, as 0.64.25's
     /// connection broker used for every connect. Snapshots keep only the
     /// cmux-owned ControlPath an open used, so these defaults restore the rest;
