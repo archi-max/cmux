@@ -418,7 +418,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
 
     /// `path` on the host as text, through a temporary local copy (8 MB at most),
     /// in one request: a missing or larger file sends nothing.
-    nonisolated private static func downloadSessionText(path: String, provider: SSHFileExplorerProvider) async throws -> String {
+    nonisolated static func downloadSessionText(path: String, provider: SSHFileExplorerProvider) async throws -> String {
         let local = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-waveform-session-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: local) }
