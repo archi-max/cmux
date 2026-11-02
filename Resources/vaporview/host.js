@@ -625,7 +625,8 @@
         // nested by dimension. Its elements are also children of the scope it is in, with
         // that scope's path (scope.name), so finding, adding and counting a scope's signals
         // stay as without arrays; the netlist shows each element only under its own node
-        // (`arrayParent`, not enumerable, so it isn't copied or serialized).
+        // (`arrayParent`, not enumerable, so it isn't copied or serialized). That is only
+        // defensive: nothing spreads or serializes netlist items today, and no check depends on it.
         const elements = [];
         const place = (c, parent) => {
           const o = { ...c, scopePath };
