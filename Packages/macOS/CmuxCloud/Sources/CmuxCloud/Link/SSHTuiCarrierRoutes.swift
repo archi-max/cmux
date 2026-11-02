@@ -19,7 +19,8 @@ public final class SSHTuiCarrierRoutes: @unchecked Sendable {
 
     public init() {}
 
-    /// Records the connection a machine's carrier dials with.
+    /// Records the connection a machine's carrier dials with. Entries stay for
+    /// the app's life, as their managers do; unregistering one would need a `remove(id:)`.
     public func record(_ connection: SSHTuiConnection) {
         lock.lock()
         defer { lock.unlock() }
