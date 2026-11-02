@@ -3759,6 +3759,7 @@
 		19F2B27E1D232034AE95667C /* SSHFileExplorerListingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A5FFFD70CEFC28069D619BD /* SSHFileExplorerListingTests.swift */; };
 		FEAC00000000000000000001 /* SSHFileExplorerMutationCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAC00000000000000000002 /* SSHFileExplorerMutationCommand.swift */; };
 		FEAC00000000000000000005 /* SSHFileExplorerMutationCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAC00000000000000000006 /* SSHFileExplorerMutationCommandTests.swift */; };
+		1398DEF891FA5C0F6C16CDE7 /* SSHFileExplorerProvider+CappedDownload.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8AA58681A60A6081398DEF8 /* SSHFileExplorerProvider+CappedDownload.swift */; };
 		D458923DF733893F135A8968 /* SSHFileSearchCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43BEE6BFA7E4C4634347345D /* SSHFileSearchCommand.swift */; };
 		80A2EF607480B2B41D8EFD59 /* SSHFileSearchOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */; };
 		6B2A61D6577E14A98C26C0A9 /* SSHFileSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */; };
@@ -8479,6 +8480,7 @@
 		2A5FFFD70CEFC28069D619BD /* SSHFileExplorerListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileExplorerListingTests.swift"; sourceTree = "<group>"; };
 		FEAC00000000000000000002 /* SSHFileExplorerMutationCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileExplorerMutationCommand.swift; sourceTree = "<group>"; };
 		FEAC00000000000000000006 /* SSHFileExplorerMutationCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileExplorerMutationCommandTests.swift; sourceTree = "<group>"; };
+		B8AA58681A60A6081398DEF8 /* SSHFileExplorerProvider+CappedDownload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileExplorerProvider+CappedDownload.swift"; sourceTree = "<group>"; };
 		43BEE6BFA7E4C4634347345D /* SSHFileSearchCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileSearchCommand.swift; sourceTree = "<group>"; };
 		38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileSearchOutput.swift; sourceTree = "<group>"; };
 		A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileSearchTests.swift"; sourceTree = "<group>"; };
@@ -12803,6 +12805,7 @@
 				187F7D47F187EC9F853AB403 /* FilePreviewKindResolver+CommandLine.swift */,
 				EFCF589D6752E864288B73BA /* RemotePreviewCacheBudget.swift */,
 				9FE755034645659B4CB57989 /* RemoteFileProbe.swift */,
+				B8AA58681A60A6081398DEF8 /* SSHFileExplorerProvider+CappedDownload.swift */,
 				EF42857B7D2D8ADC96A00FB2 /* SSHFileChannel.swift */,
 				0D14864A24956D94145AB544 /* RemotePreviewInPlaceGate.swift */,
 				8F868B1288822F264BA11766 /* RemotePreviewCacheBudget+Panels.swift */,
@@ -17353,6 +17356,7 @@
 				A13387000000000000000005 /* SplitPaneGeometryProjection.swift in Sources */,
 				96A00FB2D46CBBD9B1AE1C9E /* SSHFileChannel.swift in Sources */,
 				FEAC00000000000000000001 /* SSHFileExplorerMutationCommand.swift in Sources */,
+				1398DEF891FA5C0F6C16CDE7 /* SSHFileExplorerProvider+CappedDownload.swift in Sources */,
 				D458923DF733893F135A8968 /* SSHFileSearchCommand.swift in Sources */,
 				80A2EF607480B2B41D8EFD59 /* SSHFileSearchOutput.swift in Sources */,
 					E30780000000000000000012 /* SSHPTYAttachStartupCommandBuilder.swift in Sources */,
