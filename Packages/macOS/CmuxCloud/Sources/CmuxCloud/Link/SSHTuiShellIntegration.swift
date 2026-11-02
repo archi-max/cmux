@@ -97,18 +97,23 @@ public enum SSHTuiShellIntegration {
     # zsh reads each later startup file from the restored ZDOTDIR.
     [[ -r ${ZDOTDIR:-$HOME}/.zshenv ]] && builtin source ${ZDOTDIR:-$HOME}/.zshenv
     if [[ -o interactive ]]; then
+      # Only from precmd: chpwd also runs in subshells and $(...), where a
+      # report would land in captured output.
       __cmux_ssh_report_cwd() {
-        # A .zshrc may reassign precmd_functions; a cd (chpwd) puts it back.
-        (( ${precmd_functions[(Ie)__cmux_ssh_report_cwd]} )) || precmd_functions+=(__cmux_ssh_report_cwd)
         # A name with control characters would end the report early.
         if [[ ${__cmux_ssh_reported_cwd-} != "$PWD" && $PWD != *[[:cntrl:]]* ]]; then
           __cmux_ssh_reported_cwd=$PWD
           builtin printf '\e]7;kitty-shell-cwd://%s%s\a' "$HOST" "$PWD"
         fi
       }
+      # A .zshrc may reassign precmd_functions; the next cd puts the hook back
+      # silently.
+      __cmux_ssh_rehook() {
+        (( ${precmd_functions[(Ie)__cmux_ssh_report_cwd]} )) || precmd_functions+=(__cmux_ssh_report_cwd)
+      }
       # The arrays directly: add-zsh-hook needs fpath, which a .zshenv may replace.
       precmd_functions+=(__cmux_ssh_report_cwd)
-      chpwd_functions+=(__cmux_ssh_report_cwd)
+      chpwd_functions+=(__cmux_ssh_rehook)
     fi
 
     """#
@@ -142,9 +147,21 @@ public enum SSHTuiShellIntegration {
         cmux_ssh_dir="\#(installDirectory)"
         cmux_ssh_shell=${SHELL:-/bin/sh}
         # The shell sources these files, so nobody else may be able to rewrite
-        # any of them: every entry is the user's, with no group or other write.
+        # or swap any of them: every entry, and each parent up to HOME, is the
+        # user's, not a symlink, with no group or other write.
+        cmux_ssh_unsafe() {
+          find "$@" \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
+        }
         cmux_ssh_private() {
-          [ -r "$1" ] && [ -z "$(find "$cmux_ssh_dir" \( -type l -o -perm -020 -o -perm -002 -o ! -user "$(id -u)" \) -print 2>/dev/null || echo error)" ]
+          [ -r "$1" ] && cmux_ssh_uid=$(id -u) && [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir")" ] || return 1
+          cmux_ssh_parent=$cmux_ssh_dir
+          while [ "$cmux_ssh_parent" != "$HOME" ]; do
+            case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
+            cmux_ssh_parent=${cmux_ssh_parent%/*}
+            # HOME itself may be a symlink; check what it points to.
+            if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
+            [ -z "$(cmux_ssh_unsafe "$1" -prune)" ] || return 1
+          done
         }
         case ${cmux_ssh_shell##*/} in
           bash)
@@ -172,8 +189,8 @@ public enum SSHTuiShellIntegration {
               exec "$cmux_ssh_shell" -l
             fi ;;
         esac
-        unset cmux_ssh_dir cmux_ssh_shell
-        unset -f cmux_ssh_private
+        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent
+        unset -f cmux_ssh_private cmux_ssh_unsafe
 
         """#
     }
