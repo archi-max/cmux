@@ -73,7 +73,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
       let fmt = waveURL.pathExtension.lowercased()
       let theme = "{kind:'dark', background:'#1e1e1e', foreground:'#cccccc'}"
-      web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'\(fmt)', path:'/work/sim/\(waveURL.lastPathComponent)', strings:\(strings), settings:{}})")
+      web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'\(fmt)', path:'/work/sim/\(waveURL.lastPathComponent)', strings:\(strings), settings:{defaultNameType:'signalName'}})")
     } else if type == "opened", !started {
       started = true
       Task { @MainActor in await self.run() }
