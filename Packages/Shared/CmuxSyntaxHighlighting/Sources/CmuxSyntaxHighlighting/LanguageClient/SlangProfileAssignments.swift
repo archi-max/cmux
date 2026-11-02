@@ -36,6 +36,12 @@ public enum SlangProfileChoice: Codable, Equatable, Hashable, Sendable {
         }
     }
 
+    /// The compilation this choice stands for: the config's build (`configuredBuild`) for
+    /// `.configured`, so following it switches at runtime and compares with what the server compiles.
+    public func resolved(configuredBuild: String?) -> SlangProfileChoice {
+        self // stub
+    }
+
     /// The same choice with its path (or a path below a moved folder) moved to `new`.
     func moving(from old: String, to new: String) -> SlangProfileChoice {
         switch self {
@@ -136,7 +142,7 @@ public struct SlangProfileAssignments: Codable, Equatable, Sendable {
 
 /// Every root's `SlangProfileAssignments`, kept in user defaults across launches. A root key
 /// names the host too (`local|/path`, or the SSH route then the remote path).
-public struct SlangProfileAssignmentStore {
+public struct SlangProfileAssignmentStore: @unchecked Sendable {
     public static let defaultsKey = "slangProfile.assignments"
     /// Roots kept; the ones unused longest are dropped first.
     public static let maxRoots = 32
@@ -162,11 +168,17 @@ public struct SlangProfileAssignmentStore {
     /// Writes `assignments` for `root` (an empty one removes the root).
     public func save(_ assignments: SlangProfileAssignments, root: String) {
         var roots = load()
-        if assignments.lastSet == nil, assignments.files.isEmpty {
-            roots[root] = nil
-        } else {
-            roots[root] = assignments
-        }
+        roots[root] = assignments
+        saveAll(roots)
+    }
+
+    /// Writes every root at once (empty ones dropped, the roots unused longest beyond
+    /// `maxRoots` too) and returns what was written. Safe off the main thread (UserDefaults is),
+    /// so the app encodes and writes in the background, debounced, from its copy in memory.
+    @discardableResult
+    public func saveAll(_ all: [String: SlangProfileAssignments]) -> [String: SlangProfileAssignments] {
+        var roots = all.filter { $0.value.lastSet != nil || !$0.value.files.isEmpty }
+        if Bool("stub") ?? true { return all }
         if roots.count > Self.maxRoots {
             let kept = roots.sorted { $0.value.updatedAt > $1.value.updatedAt }.prefix(Self.maxRoots)
             roots = Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
@@ -175,6 +187,22 @@ public struct SlangProfileAssignmentStore {
             defaults.removeObject(forKey: key)
         } else if let data = try? JSONEncoder().encode(roots) {
             defaults.set(data, forKey: key)
+        }
+        return roots
+    }
+}
+
+/// What has focus for a server: a SystemVerilog file, or a waveform viewer linked to it with the
+/// profile it was elaborated against or auto-picked (nil: none known, the server is left as it is).
+public enum SlangProfileFocus: Equatable, Sendable {
+    case file(String)
+    case waveform(SlangProfileChoice?)
+
+    /// The profile the server should compile while this has focus.
+    public func wanted(in assignments: SlangProfileAssignments) -> SlangProfileChoice? {
+        switch self {
+        case .file(let file): return assignments.choice(forFile: file)
+        case .waveform: return nil // stub
         }
     }
 }
@@ -204,19 +232,24 @@ public final class SlangProfileFollower {
         public var apply: @MainActor (SlangProfileChoice) async -> ApplyResult
         /// The profile is gone: drop it, so `wanted` falls back to the last-set profile.
         public var missing: @MainActor (SlangProfileChoice) -> Void
+        /// The compilation a choice stands for (`.configured` → the config's build), applied to
+        /// both what is wanted and what the server compiles before they are compared.
+        public var resolve: @MainActor (SlangProfileChoice) -> SlangProfileChoice
 
         public init(
             wanted: @escaping @MainActor () -> SlangProfileChoice?,
             current: @escaping @MainActor () async -> LanguageServerSession.SlangCompilationState,
             isBusy: @escaping @MainActor () -> Bool,
             apply: @escaping @MainActor (SlangProfileChoice) async -> ApplyResult,
-            missing: @escaping @MainActor (SlangProfileChoice) -> Void
+            missing: @escaping @MainActor (SlangProfileChoice) -> Void,
+            resolve: @escaping @MainActor (SlangProfileChoice) -> SlangProfileChoice = { $0 }
         ) {
             self.wanted = wanted
             self.current = current
             self.isBusy = isBusy
             self.apply = apply
             self.missing = missing
+            self.resolve = resolve
         }
     }
 
@@ -229,6 +262,8 @@ public final class SlangProfileFollower {
     /// Profiles that elaborated nothing: not built again on focus until their files change or
     /// the user chooses them, so a broken profile doesn't recompile on every tab switch.
     private var failed: Set<SlangProfileChoice> = []
+    /// A follow gave up waiting for a busy server: it runs again once the server is free.
+    private var gaveUpWhileBusy = false
 
     public init(
         debounce: Duration = .milliseconds(250),
@@ -262,6 +297,17 @@ public final class SlangProfileFollower {
     /// The user chose `choice` themselves: tried again on the next focus even if it failed.
     public func userChose(_ choice: SlangProfileChoice) {
         failed.remove(choice)
+    }
+
+    /// The server's change that held it is over: a follow that gave up waiting for it runs now.
+    public func serverBecameFree() {
+        // stub
+    }
+
+    /// Returns once the switch running now (if any) is over, so a user's choice goes after it
+    /// instead of failing to get the server.
+    public func waitForRunningSwitch() async {
+        // stub
     }
 
     /// Returns once no switch is pending or running (for tests).
@@ -324,7 +370,10 @@ public final class SlangProfileFollower {
 
     /// Waits one retry step while another change runs; false once it waited too long or a newer focus came.
     private func waitBusy(_ waited: inout Duration) async -> Bool {
-        guard waited < maxBusyWait else { return false }
+        guard waited < maxBusyWait else {
+            gaveUpWhileBusy = true
+            return false
+        }
         try? await Task.sleep(for: busyRetry)
         waited += busyRetry
         return pending == nil

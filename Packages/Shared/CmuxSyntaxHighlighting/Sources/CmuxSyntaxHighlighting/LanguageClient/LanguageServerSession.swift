@@ -77,6 +77,8 @@ public actor LanguageServerSession {
     private var state: State = .stopped
     private var tool: LanguageToolProcess?
     private var generation = 0
+    /// How many times the process was launched (each restart counts), for tests.
+    var launchGeneration: Int { generation }
     private var startTask: Task<Void, any Error>?
     private var nextRequestID = 1
     /// Tests: the error a port alias's declaration hover fails with instead of asking the server.
