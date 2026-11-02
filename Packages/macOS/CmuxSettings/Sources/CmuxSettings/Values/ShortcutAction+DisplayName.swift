@@ -209,7 +209,11 @@ extension ShortcutAction {
         case .stepWaveformCycleBack:
             return String(localized: "shortcut.stepWaveformCycleBack.label", defaultValue: "Step Back One Cycle")
         case .toggleWaveformPlayback:
-            return String(localized: "shortcut.toggleWaveformPlayback.label", defaultValue: "Play or Pause Waveform")
+            return String(localized: "shortcut.toggleWaveformPlayback.continueLabel", defaultValue: "Continue, or Play or Pause Waveform")
+        case .reverseContinueWaveform:
+            return String(localized: "shortcut.reverseContinueWaveform.label", defaultValue: "Reverse Continue to Breakpoint")
+        case .toggleWaveformBreakpoint:
+            return String(localized: "shortcut.toggleWaveformBreakpoint.label", defaultValue: "Toggle Breakpoint")
         case .openBrowser: return "Open Browser"
         case .focusBrowserAddressBar: return "Focus Address Bar"
         case .browserBack: return "Back"

@@ -1898,6 +1898,8 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var taskStatusHidden: Bool? = nil
     var checklist: [SessionChecklistItemSnapshot]? = nil
     var dock: SessionSplitContainerSnapshot? = nil // Missing legacy fields continue to seed from dock.json.
+    /// The waveform debugger's breakpoints; absent in older manifests and without any.
+    var waveformBreakpoints: SessionWaveformBreakpointsSnapshot? = nil
 }
 extension SessionWorkspaceSnapshot: WorkspaceSessionRemoteRestoreSnapshot {}
 

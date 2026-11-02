@@ -457,10 +457,13 @@ text from it is included.
 
 - **Version:** 0.25.7
 - **License:** BSD 3-Clause License
-- **Copyright:** Copyright (c) 2023-2024, The Regents of the University of California
+- **Copyright:** Copyright (c) 2023-2024, The Regents of the University of California; Copyright (c) 2024-2026, Cornell University
 - **Source:** https://github.com/ekiwi/wellen
 
-The waveform parser (VCD, FST, GHW), by Kevin Laeufer. Compiled into `filehandler.wasm`.
+The waveform parser (VCD, FST, GHW), by Kevin Laeufer. Compiled into `filehandler.wasm`, with cmux's
+change to `src/signal/transform.rs` (`Resources/vaporview/wellen-0.25.7-split-bit-start.patch`, under the
+same BSD 3-Clause License): merged split bits start at their first value, take an input that starts
+later than the others (or never), and hold X until it does.
 
 ### fst-reader
 
@@ -521,6 +524,40 @@ From esbuild's metafile for the production `webview.js`:
 
 `codicon.css` and `codicon.ttf` are bundled unmodified in
 `Resources/vaporview/codicons/` with both license files.
+
+### slang (the waveform debugger's expression semantics)
+
+- **Version:** master, commit `cd5a3d2` (2026-10-31; includes `0f89ca187`, unsized x/z literal extension)
+- **License:** MIT License (notice repeated in the file header)
+- **Copyright:** Copyright (c) 2015-2026 Michael Popoloski
+- **Source:** https://github.com/MikePopoloski/slang/tree/cd5a3d2
+
+`Resources/vaporview/cmux-expr.js` (Evaluate, watches and condition
+breakpoints) follows slang's constant evaluation: the four-state operator
+results of `SVInt` (`source/numeric/SVInt.cpp`) and the width and signedness
+rules of expression type propagation (`source/ast/expressions/`). It is a
+JavaScript reimplementation of those semantics; no slang code is bundled.
+
+### riscv-formal's RISC-V Formal Interface (the machine state's commit stream)
+
+- **Version:** master, commit `c992aa6` (2026-07-16)
+- **License:** ISC License (text below)
+- **Copyright:** Copyright (C) 2017 Claire Xenia Wolf <claire@yosyshq.com>
+- **Source:** https://github.com/YosysHQ/riscv-formal (`docs/rvfi.md`)
+
+`Resources/vaporview/cmux-machine-core.js` finds a core's retired-instruction
+stream by the RVFI signal names (`rvfi_valid`, `rvfi_pc_rdata`, ...) and
+replays it with the interface's documented meaning (masks, traps, NRET
+channels, order). Only the names and semantics are used; no riscv-formal code
+is bundled.
+
+The machine-state checks' fixture dumps
+(`scripts/waveform-viewer-checks/machine/fixtures/`, not bundled in the app)
+come from simulating NERV (riscv-formal `cores/nerv`, ISC), PicoRV32
+(https://github.com/YosysHQ/picorv32, ISC, Copyright (C) 2015-2021 Claire
+Xenia Wolf) and Ibex (https://github.com/lowRISC/ibex, Apache-2.0, Copyright
+lowRISC contributors) at pinned commits; each fixture directory carries the
+core's licence and a NOTICE.
 
 ### FSDB helper sources (`Resources/vaporview/fsdb-helper/`)
 

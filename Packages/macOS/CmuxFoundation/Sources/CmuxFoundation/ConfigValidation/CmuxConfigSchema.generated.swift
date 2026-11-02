@@ -2716,6 +2716,8 @@ enum CmuxEmbeddedConfigSchema {
               "stepWaveformCycleForward",
               "stepWaveformCycleBack",
               "toggleWaveformPlayback",
+              "reverseContinueWaveform",
+              "toggleWaveformBreakpoint",
               "openBrowser",
               "focusBrowserAddressBar",
               "browserBack",

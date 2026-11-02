@@ -17,6 +17,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const readline = require('node:readline');
 const zlib = require('node:zlib');
 
@@ -93,7 +94,14 @@ const handlers = {
         { scopeCount: scopecount, netlistIdCount: varcount, timeScale: timescale, timeUnit: timeunit }),
       (chunksize, timeend) => Object.assign(metadata, { timeEnd: Number(timeend), timeTableLoaded: true }));
     const top = addon.readScopes().filter((s) => !s.name.startsWith('$'));
-    return { metadata, top };
+    // What the page keys its caches by: this file as it is now, read by this helper version (the
+    // install folder is named <version>-<machine>).
+    let identity = null;
+    try {
+      const st = fs.statSync(String(file));
+      identity = { host: os.hostname(), path: String(file), size: st.size, mtimeMs: st.mtimeMs, helper: path.basename(__dirname) };
+    } catch (e) { identity = null; }
+    return { metadata, top, identity };
   },
 
   // Child scopes (paged by the reader) plus the scope's own variables.

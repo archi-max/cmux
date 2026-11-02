@@ -5396,5 +5396,18 @@
       "fr": "Alias is the standard French word for a substituted name (as in Verdi's value aliases). The translated entry is still required.",
       "es": "Alias is the standard Spanish word for a substituted name (as in Verdi's value aliases). The translated entry is still required."
     }
+  },
+  "waveformDebugger.breakpointEquals": {
+    "source": "%1$@ == %2$@",
+    "identityLocales": {
+      "ar": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "de": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "es": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "fr": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "ja": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "ko": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hans": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required.",
+      "zh-Hant": "A signal path, the SystemVerilog equality operator and a value: invariant notation in every locale. The translated entry is still required."
+    }
   }
 }

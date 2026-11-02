@@ -364,6 +364,15 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         return fileURL.resolvingSymlinksInPath().path.hasPrefix(cache)
     }
 
+    /// The window the viewer is in (sheets attach to it).
+    var webViewWindow: NSWindow? { webView?.window }
+
+    /// The open dump's own path, when it is a local file (the machine state looks for its ELF next to it).
+    var localDumpPath: String? {
+        guard !isRemoteCopy, let fileURL, fileURL.isFileURL else { return nil }
+        return fileURL.path
+    }
+
     /// Where the save and open panels start when there is no session file yet.
     private var sessionPanelDirectory: URL? {
         if let lastSessionURL { return lastSessionURL.deletingLastPathComponent() }
@@ -851,6 +860,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
     /// Like `callLink`, on `window.cmuxWaveform.debugger` (cmux-debugger.js).
     func callDebugger(_ function: String, argument: Any? = nil) async -> Any? {
         await callPage(api: "debugger", function, argument: argument)
+    }
+
+    /// Like `callLink`, on `window.cmuxWaveform.machine` (cmux-machine.js).
+    func callMachine(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "machine", function, argument: argument)
     }
 
     private func callPage(api: String, _ function: String, argument: Any?) async -> Any? {

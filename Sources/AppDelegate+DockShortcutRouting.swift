@@ -74,7 +74,7 @@ extension KeyboardShortcutSettings.Action {
              .toggleFileEditorWordWrap,
              .addSignalToWaveform, .revealWaveformSignalInSource,
              .navigateSourceBack, .navigateSourceForward,
-             .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
+             .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback, .reverseContinueWaveform, .toggleWaveformBreakpoint,
              .browserBack, .browserForward,
              .browserReload, .browserHardReload,
              .browserZoomIn, .browserZoomOut, .browserZoomReset,

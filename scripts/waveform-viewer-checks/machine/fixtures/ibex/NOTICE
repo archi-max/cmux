@@ -1,0 +1,10 @@
+Ibex (lowRISC) waveform fixture for cmux's machine-state checks (scripts/waveform-viewer-checks/machine).
+
+The dump (ibex.vcd) was produced by simulating the unmodified upstream core:
+  https://github.com/lowRISC/ibex
+  commit f4515520c0045bb8ef1e72d46ed82499a6ac5f18
+  licence: Apache-2.0 (copy in LICENSE)
+in our own testbench (../../cores/ibex_tb.sv) running our own program (../../prog, built with LLVM clang)
+with Verilator 5 (--binary --trace, -DRVFI; the dump filtered by ../../vcd-keep.py). Only the clock, reset and the core's RVFI outputs are kept in the dump. No upstream
+source is copied into this repository; ../../build-fixtures.sh rebuilds everything from a checkout
+of that commit. spike.log is Spike's --log-commits of the same prog.elf (the checks' oracle).
