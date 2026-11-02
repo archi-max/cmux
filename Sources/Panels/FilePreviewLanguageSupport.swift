@@ -288,14 +288,16 @@ struct FilePreviewLanguageDocumentContext {
         input: Data? = nil,
         timeout: TimeInterval = remoteProbeTimeout
     ) async -> FilePreviewRemoteShellResult? {
-        let options = configuration.fileOperationSSHOptions
-        let arguments = configuration.batchSSHCommandArguments(
-            command: SlangWorkspaceRoot.posixShellCommand(script),
-            effectiveSSHOptions: options
-        )
-        // A short run on the shared one-off master: it waits for a session there.
-        return try? await SSHSessionGate.shared.withSession(sharing: SSHSessionGate.sharedMasterKey(sshOptions: options)) {
-            await runProbe(arguments: arguments, input: input, timeout: timeout)
+        // A short run: on a session the one-off master lends (or its own connection).
+        return try? await SSHMasterPool.shared.withSession(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: configuration.fileOperationSSHOptions
+        ) { options in
+            let arguments = configuration.batchSSHCommandArguments(
+                command: SlangWorkspaceRoot.posixShellCommand(script),
+                effectiveSSHOptions: options
+            )
+            return await runProbe(arguments: arguments, input: input, timeout: timeout)
         }
     }
 

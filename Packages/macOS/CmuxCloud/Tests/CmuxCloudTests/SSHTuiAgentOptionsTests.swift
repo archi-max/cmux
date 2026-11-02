@@ -37,9 +37,10 @@ struct SSHTuiAgentOptionsTests {
         let carrierPath = try #require(connection.preflightArguments.first { $0.hasPrefix("ControlPath=") })
 
         let options = connection.fileOperationSSHOptions
-        #expect(options.filter { $0.hasPrefix("ControlPath=") } == [carrierPath + "-ops"])
-        #expect(options.filter { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") }
-            == ["ControlMaster=auto", "ControlPersist=600"])
+        #expect(options.filter { $0.hasPrefix("ControlPath=") } == [carrierPath + connection.operationsControlPathSuffix])
+        #expect(connection.operationsControlPathSuffix.hasPrefix("-ops"))
+        // The app opens that master; a batch run never becomes one.
+        #expect(!options.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
         #expect(!options.contains { $0.contains("__cmux_route_sensitive") })
         #expect(options.contains("ProxyCommand=/bin/sh -c true"))
 
