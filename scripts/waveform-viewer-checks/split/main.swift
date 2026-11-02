@@ -428,14 +428,31 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       window.cmuxUI.toast = (text) => { toasts.push(String(text)); };
       const before = shown().length;
       await choose('wide[299:0]', '1', S['submenu.createSignals'], T('createSignalsForAllCustomLength'));
-      window.cmuxUI.toast = toast;
-      R.toasts = toasts;
+      R.toasts = toasts.slice();
       R.added = shown().length - before;
+      // By Declared Dimensions when cmux never answers (the language server is busy or gone):
+      // after about 5 s the click says so, and an answer that comes later is ignored.
+      toasts.length = 0;
+      sent.length = 0;
+      await choose('wide[299:0]', null, SPLIT, T('splitDeclared'));
+      await sleep(3500);
+      R.silentEarly = toasts.slice();
+      await sleep(2500);
+      R.silentToasts = toasts.slice();
+      const asked = sent.find((m) => m.type === 'packedDims');
+      R.lateTaken = window.cmuxWaveform.split.declared({ id: asked ? asked.id : -1, dims: [[1, 0], [149, 0]] });
+      await sleep(400);
+      R.silentAdded = shown().length - before;
+      window.cmuxUI.toast = toast;
       """)
     expect(((wide["custom"] as? [String]) ?? []).contains(strings["command.createSignalsForAllCustomLength"] ?? "?"),
            "a 300-bit row has Custom Length: \(wide["custom"] ?? "nil")")
     expect(wide["toasts"] as? [String] == [strings["messageTooManySlices"] ?? "?"] && wide["added"] as? Int == 0,
            "300 one-bit slices are refused: \(wide["toasts"] ?? "nil") +\(wide["added"] ?? "nil")")
+    expect((wide["silentEarly"] as? [String])?.isEmpty == true && wide["silentToasts"] as? [String] == [strings["messageDeclaredNoAnswer"] ?? "?"],
+           "no answer from cmux: a message after about 5 s, not before: \(wide["silentEarly"] ?? "nil") then \(wide["silentToasts"] ?? "nil")")
+    expect(wide["lateTaken"] as? Bool == false && wide["silentAdded"] as? Int == 0,
+           "and a late answer adds nothing: \(wide["lateTaken"] ?? "nil") +\(wide["silentAdded"] ?? "nil")")
 
     // A session's slice past the end of a signal that got narrower (a parameter changed) is
     // missing, by its own name, rather than cut down to the bits left under its old name.
@@ -508,6 +525,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       // cmux's side: the packed dimensions slang would give each dump path.
       let dims: [String: [[Int]]] = ["top.cube": [[1, 0], [2, 0], [3, 0]], "top.nib": [[0, 1], [1, 0]], "top.odd": [[1, 0], [3, 0]]]
       let path = (body["path"] as? [String] ?? []).joined(separator: ".")
+      if path == "top.wide" { return }  // a language server that never answers
       let answer: [String: Any] = ["id": body["id"] ?? NSNull(), "dims": dims[path].map { $0 as Any } ?? NSNull()]
       let json = String(data: try! JSONSerialization.data(withJSONObject: answer), encoding: .utf8)!
       web.evaluateJavaScript("window.cmuxWaveform.split.declared(\(json))")
