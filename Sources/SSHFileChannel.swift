@@ -509,25 +509,30 @@ final class SSHFileChannelPool: @unchecked Sendable {
     var channelCount: Int { lock.withLock { channels.count } }
 
     func channel(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> SSHFileChannel {
-        lock.withLock {
-            if let channel = channels[key] { return channel }
-            let channel = SSHFileChannel(launch: launch())
-            channels[key] = channel
-            return channel
-        }
+        lock.withLock { channelLocked(key: key, launch: launch()) }
+    }
+
+    /// Called with `lock` held.
+    private func channelLocked(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> SSHFileChannel {
+        if let channel = channels[key] { return channel }
+        let channel = SSHFileChannel(launch: launch())
+        channels[key] = channel
+        return channel
     }
 
     /// Holds `key`'s channel up, starting it now.
     func retain(key: String, launch: @autoclosure () -> SSHFileChannel.Launch) -> Lease {
-        let channel = self.channel(key: key, launch: launch())
-        let first: Bool = lock.withLock {
+        // The channel is looked up under the lock that counts leases, so a grace
+        // close can't take it out of the pool between the two.
+        let (channel, first): (SSHFileChannel, Bool) = lock.withLock {
+            let channel = channelLocked(key: key, launch: launch())
             leases[key, default: 0] += 1
             if let pending = closing.removeValue(forKey: key) {
                 // Taken again within the grace: the channel is still pinned.
                 pending.cancel()
-                return false
+                return (channel, false)
             }
-            return leases[key] == 1
+            return (channel, leases[key] == 1)
         }
         if first { channel.pin() }
         channel.prewarm()

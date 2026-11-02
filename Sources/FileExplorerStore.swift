@@ -1642,6 +1642,10 @@ final class FileExplorerStore: ObservableObject {
     /// open pays for it) and ends it on disconnect or a change of connection.
     private var fileChannelLease: SSHFileChannelPool.Lease?
     private var fileChannelConnection: SSHFileExplorerConnection?
+    /// Only a Files panel's store (an SSH workspace root) holds its host's
+    /// channel; a preview-only store (a terminal's in-place opens, Go to File)
+    /// uses it unpinned, so it idles out instead of outliving the workspace.
+    var holdsFileChannel = false
 
     /// Whether hidden files are shown. Set from FileExplorerState externally.
     var showHiddenFiles: Bool = false
@@ -2120,7 +2124,7 @@ final class FileExplorerStore: ObservableObject {
     /// Holds the file channel of the provider's host while it is an available SSH host.
     func updateFileChannelLease() {
         let ssh = provider as? SSHFileExplorerProvider
-        let wanted = ssh.flatMap { $0.isAvailable && $0.usesFileChannel ? $0.connection : nil }
+        let wanted = holdsFileChannel ? ssh.flatMap { $0.isAvailable && $0.usesFileChannel ? $0.connection : nil } : nil
         guard wanted != fileChannelConnection else { return }
         fileChannelConnection = wanted
         fileChannelLease = wanted.map { SSHFileChannelRegistry.shared.lease(for: $0) }
