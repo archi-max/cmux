@@ -102,28 +102,42 @@ enum WaveformDebugger {
     }
 
     /// F10, Shift-F10, F5 and Shift-F5. False (the key goes on) unless a waveform viewer,
-    /// or a SystemVerilog editor with a viewer in its workspace, has focus.
-    static func performFromShortcut(_ command: Command, window: NSWindow?) -> Bool {
+    /// or a SystemVerilog editor with a viewer in its workspace, has focus. In a viewer
+    /// text field the key goes to the field only when it types text (`characters`, the
+    /// event's charactersIgnoringModifiers): a function key still runs.
+    static func performFromShortcut(_ command: Command, window: NSWindow?, characters: String?) -> Bool {
+        run(command, source: .key(typesText: WaveformDebuggerInvocation.typesText(characters)), window: window)
+    }
+
+    /// The View menu: runs on the focused viewer whatever has focus inside it; with no
+    /// viewer to act on, a notice says why.
+    static func performFromMenu(_ command: Command, window: NSWindow?) {
+        if !run(command, source: .menu, window: window) { WaveformDebuggerNotice.showUnavailable(in: window) }
+    }
+
+    private static func run(_ command: Command, source: WaveformDebuggerInvocation.Source, window: NSWindow?) -> Bool {
         // In the editor, with or without a viewer.
         if command == .toggleLineBreakpoint {
             return WaveformDebuggerLineBreakpoints.toggleAtCaret(window: window) || WaveformDebuggerAsmBreakpoints.toggleAtCaret(window: window)
         }
-        if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
-            // Typing in the viewer's search or value field.
-            guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
+        let focused = WaveformSourceLink.focusedWaveformPanel(in: window)
+        // With no viewer focused: the workspace's viewer next to a SystemVerilog editor or a listing.
+        let nearEditor: FilePreviewPanel? = focused != nil ? nil : {
+            guard let textView = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window) else { return nil }
+            if let features = textView.languageFeatures { return WaveformSourceLink.waveformPanel(near: features.linkPanel) }
+            guard WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil else { return nil }
+            return WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel)
+        }()
+        switch WaveformDebuggerInvocation.decide(
+            source: source, focusedViewer: focused,
+            viewerFieldFocused: focused?.nativeViewSessions.waveform.isEditableElementFocused ?? false, editorViewer: nearEditor
+        ) {
+        case .perform(let waveform):
             perform(command, on: waveform)
             return true
+        case .passKey, .unavailable:
+            return false
         }
-        // In a listing: the workspace's viewer.
-        if let textView = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window), textView.languageFeatures == nil,
-           WaveformDebuggerAsmBreakpoints.listing(in: textView) != nil, let waveform = WaveformSourceLink.waveformPanel(near: textView.panel as? FilePreviewPanel) {
-            perform(command, on: waveform)
-            return true
-        }
-        guard let features = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window)?.languageFeatures,
-              let waveform = WaveformSourceLink.waveformPanel(near: features.linkPanel) else { return false }
-        perform(command, on: waveform)
-        return true
     }
 
     /// Runs `command` on the viewer for `panel` (see `target(for:)`). False when there is none.

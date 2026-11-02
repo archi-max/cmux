@@ -16840,7 +16840,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return WaveformSourceLink.revealSelectedSignal(in: WaveformSourceLink.focusedWaveformPanel(in: resolvedShortcutEventWindow(event)))
         }
         for (action, command) in WaveformDebugger.shortcutCommands where matchConfiguredShortcut(event: event, action: action) {
-            return WaveformDebugger.performFromShortcut(command, window: resolvedShortcutEventWindow(event))
+            return WaveformDebugger.performFromShortcut(command, window: resolvedShortcutEventWindow(event), characters: event.charactersIgnoringModifiers)
         }
         if matchConfiguredShortcut(event: event, action: .markdownZoomIn) {
             return shortcutEventMarkdownPanel(event)?.zoomIn() ?? false
