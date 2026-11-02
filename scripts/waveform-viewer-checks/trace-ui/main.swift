@@ -423,9 +423,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         return { ms, readsDuringB, mostBg, requests, names: names.join(' ') };
       } finally { delete b.valuesAt; delete b.changes; b.signalChanges = own; }
       """) as? [String: Any]
-    let orderMs = order?["ms"] as? Double ?? .infinity, bReads = order?["readsDuringB"] as? Int ?? 0
-    print(String(format: "[verdi async] serial helper: next step shown in %.0f ms with %d reads of its own; %@", orderMs, bReads, String(describing: order)))
+    // B's own reads are its fan-in under u_src; a read of anything else that starts during B is
+    // a Verdi check's, which must wait until B is shown.
+    let duringB = (order?["names"] as? String ?? "").split(separator: " ").filter { $0.hasPrefix("B:") }
+    let bReads = duringB.filter { $0.hasPrefix("B:tb_c.dut.u_src.") }.count, bgDuringB = duringB.count - bReads
+    let orderMs = order?["ms"] as? Double ?? .infinity
+    print(String(format: "[verdi async] serial helper: next step shown in %.0f ms with %d reads of its own, %d of Verdi's started during it; %@", orderMs, bReads, bgDuringB, String(describing: order)))
     expect(bReads > 0 && orderMs < Double(bReads + 1) * 300 + 250, "the next step waits for at most one Verdi read in flight (\(Int(orderMs)) ms, \(bReads) reads)")
+    expect(bgDuringB == 0, "no Verdi read starts while the next step runs: \(duringB.joined(separator: " "))")
     expect((order?["mostBg"] as? Int ?? 99) <= 1, "Verdi's port-hop reads go one at a time: \(String(describing: order?["mostBg"]))")
 
     // A port hop whose reads would be too large is not followed: "Verdi: not checked (large signal)".
