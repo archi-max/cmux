@@ -695436,6 +695436,65 @@
         }
       }
     },
+    "waveformDebugger.noViewer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Focus a waveform viewer, or a SystemVerilog editor next to one."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ضع التركيز على عارض موجات، أو على محرر SystemVerilog بجانبه."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fokussiere einen Wellenform-Viewer oder einen SystemVerilog-Editor daneben."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enfoca un visor de formas de onda o un editor de SystemVerilog junto a uno."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Placez le focus sur un visualiseur de formes d’onde, ou sur un éditeur SystemVerilog à côté."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "波形ビューア、またはその隣の SystemVerilog エディタにフォーカスしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파형 뷰어나 그 옆의 SystemVerilog 편집기에 포커스를 두세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请将焦点放在波形查看器或其旁边的 SystemVerilog 编辑器上。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "請將焦點放在波形檢視器或其旁邊的 SystemVerilog 編輯器上。"
+          }
+        }
+      }
+    },
     "waveformDebugger.evaluate": {
       "extractionState": "manual",
       "localizations": {
