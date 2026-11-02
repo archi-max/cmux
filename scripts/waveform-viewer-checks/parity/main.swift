@@ -133,7 +133,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       ]
       self.strings = strings
       // PARITY_FROM=AQ runs from that phase on (for iterating; the full run is the check).
-      let from: [String: () -> Void] = ["P": phaseP, "AO": phaseAO, "AQ": phaseAQ, "AR": phaseAR, "AS": phaseAS]
+      let from: [String: () -> Void] = ["P": phaseP, "AO": phaseAO, "AQ": phaseAQ, "AR": phaseAR, "AS": phaseAS, "AT": phaseAT]
       if let name = ProcessInfo.processInfo.environment["PARITY_FROM"], let phase = from[name] { phase() } else { openFresh { self.phaseA() } }
     case "opened":
       opened += 1
@@ -1970,6 +1970,57 @@ extension Harness {
         """) { r in
           check(r["oldContexts"] as? Int ?? 0 > 0, "the old viewer sent a context after the open began")
           check(r["stale"] as? Int == 0, "the old viewer's context after an open isn't the shown rows (\(r["stale"] ?? "nil") samples)")
+          self.phaseAT()
+        }
+      }
+    }
+  }
+
+  // verify-parity-fu N1: an Add All during an Undo that removes a signal adds it
+  // (its candidates are the rows the Undo leaves, not the rows before it), from
+  // link.addScope and from the netlist menu. N2: an add into Locals still on its
+  // way doesn't keep Add All from pinning that signal.
+  func phaseAT() {
+    openFresh {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        self.js(Self.rowsProbe + """
+        const n = (name) => tr().split(',').filter((x) => x === name).length;
+        const link = window.cmuxWaveform.link;
+        const findItem = H.findItem;
+        const slow = (ms) => { H.findItem = async (...a) => { await sleep(ms); return findItem(...a); }; };
+        const top = await H.findLinkItem(['top'], false);
+        await byName('top.core.acc'); await sleep(600);
+        await byName('top.clk'); await sleep(600);
+        R.before = tr();
+        // The Undo takes top.clk out while it looks up its rows (slowly).
+        slow(1500); C.run('cmux.undo'); await sleep(100);
+        R.scope = JSON.stringify(await link.addScope({ path: ['top'] }));
+        await sleep(2000); H.findItem = findItem;
+        R.afterScope = tr();
+        // The Undo of that Add All takes it out again: the netlist menu's Add All during it.
+        slow(1500); C.run('cmux.undo'); await sleep(100);
+        await C.run('vaporview.addAllInScopeShallow', top);
+        await sleep(2000); H.findItem = findItem;
+        R.afterMenu = tr();
+        removeAll(clk); removeAll(acc); await sleep(600);
+        // N2: a drop of top.clk into Locals, then Add All of top at once.
+        await d.step({ by: 1 });
+        await d.setLocals({ path: ['top', 'core'] });
+        await sleep(600);
+        C.handleDrop({ resourceUriList: [{ cmuxNetlistId: clk.netlistId }], groupPath: ['Locals'], dropIndex: 0 });
+        R.localsScope = JSON.stringify(await link.addScope({ path: ['top'] }));
+        await sleep(800);
+        R.afterLocals = tr();
+        R.pinnedClk = n('top.clk');
+        await d.setLocals({ path: null }); await sleep(400);
+        """) { r in
+          let s = { (k: String) in r[k] as? String ?? "nil" }
+          check(s("before") == "top.core.acc,top.clk", "AT setup: \(s("before"))")
+          check(s("scope") == #"{"added":1,"total":1}"# && s("afterScope") == "top.core.acc,top.clk",
+                "Add All during an Undo that takes top.clk out adds it back: \(s("scope")) → \(s("afterScope"))")
+          check(s("afterMenu") == "top.core.acc,top.clk", "the netlist menu's Add All during such an Undo too: \(s("afterMenu"))")
+          check(s("localsScope") == #"{"added":1,"total":1}"# && r["pinnedClk"] as? Int == 1,
+                "Add All right after a drop into Locals pins the signal once: \(s("localsScope")), pinned \(r["pinnedClk"] ?? "nil"): \(s("afterLocals"))")
           print("PARITY CHECKS PASSED")
           exit(0)
         }
