@@ -485,7 +485,33 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // A session's slice past the end of a signal that got narrower (a parameter changed) is
     // missing, by its own name, rather than cut down to the bits left under its old name.
+    // Opening another file while a declared split waits drops it the same way (init's drop):
+    // no message on the new file, and a late answer, inside the 5 s, adds nothing.
+    _ = await call("""
+      window.__otherToasts = [];
+      window.__otherToast = window.cmuxUI.toast;
+      window.cmuxUI.toast = (text) => { window.__otherToasts.push(String(text)); };
+      sent.length = 0;
+      window.__otherT0 = Date.now();
+      await choose('wide[299:0]', null, SPLIT, T('splitDeclared'));
+      await choose('wide[299:0]', null, SPLIT, T('splitDeclared'));
+      window.__otherAsked = sent.filter((m) => m.type === 'packedDims').map((m) => m.id);
+      """)
     await open(file: waveURL.deletingLastPathComponent().appendingPathComponent("narrow.vcd"))
+    let other = await call("""
+      const t0 = window.__otherT0, asked = window.__otherAsked;
+      R.asked = asked.length;
+      R.lateTaken = window.cmuxWaveform.split.declared({ id: asked[0], dims: [[1, 0], [149, 0]] });
+      R.lateMs = Date.now() - t0;
+      await sleep(Math.max(0, 6500 - (Date.now() - t0)));
+      R.toasts = window.__otherToasts.slice();
+      R.shown = shown().length;
+      window.cmuxUI.toast = window.__otherToast;
+      """)
+    expect(other["asked"] as? Int == 2, "two clicks asked cmux before the other file opened: \(other["asked"] ?? "nil")")
+    expect(other["lateTaken"] as? Bool == false && other["shown"] as? Int == 0,
+           "an answer after another file opens adds nothing (it came \(other["lateMs"] ?? "?") ms after the click): \(other["lateTaken"] ?? "nil"), \(other["shown"] ?? "nil") rows")
+    expect((other["toasts"] as? [String])?.isEmpty == true, "and no message lands on the other file: \(other["toasts"] ?? "nil")")
     let narrow = await call("""
       const toasts = [];
       const toast = window.cmuxUI.toast;
