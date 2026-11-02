@@ -166,6 +166,8 @@ enum RemotePreviewOpenRules {
             }
         case is RemoteFileProbe.Oversize: return "tooLarge"
         case let error as URLError where error.code == .timedOut: return "timeout"
+        // Named explicitly: as an `Error` a URLError bridges to NSError.
+        case is URLError: return "URLError"
         case is CancellationError: return "cancelled"
         default: return String(describing: type(of: error))
         }
@@ -181,27 +183,28 @@ enum RemotePreviewOpenRules {
         live: @Sendable () async -> String?,
         snapshot: String?
     ) async -> String? {
-        guard needsDirectory else { return snapshot }
-        if let live = await live(), live.hasPrefix("/") { return live }
-        return snapshot
+        await resolvedWorkingDirectory(needsDirectory: needsDirectory, live: live, snapshot: snapshot).directory
     }
 
     /// ``workingDirectory(needsDirectory:live:snapshot:)`` and where the
-    /// directory came from, for the debug log.
-    /// Placeholder until the fix: told apart by comparing with the snapshot.
+    /// directory came from, for the debug log: "live" whenever the live
+    /// query answered, even with the spawn directory.
     static func resolvedWorkingDirectory(
         needsDirectory: Bool,
         live: @Sendable () async -> String?,
         snapshot: String?
     ) async -> (directory: String?, source: RemoteWorkingDirectorySource) {
-        let directory = await workingDirectory(needsDirectory: needsDirectory, live: live, snapshot: snapshot)
-        return (directory, directory == nil ? .none : directory == snapshot ? .snapshot : .live)
+        if needsDirectory, let live = await live(), live.hasPrefix("/") { return (live, .live) }
+        return (snapshot, snapshot == nil ? .none : .snapshot)
     }
 
     /// What a click on a file located on the host does once it is found.
-    /// Placeholder until the fix: the source isn't re-checked, and a refusal always beeps.
+    /// `placement` is read after the lookup: nil (the terminal, projection
+    /// or connection changed, as for a finished download) drops it, so a
+    /// reconnect to another host never opens the old path there.
     static func locatedAction(placement: RemotePreviewPlacement?, readsInPlace: Bool) -> RemoteLocatedAction {
-        readsInPlace ? .openInPlace : .refuse(beeps: true)
+        guard let placement else { return .drop }
+        return readsInPlace ? .openInPlace : .refuse(beeps: placement.takesFocus)
     }
 
     /// How a finished download opens, or nil when it is dropped. It is
