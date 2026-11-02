@@ -145,7 +145,7 @@ import Testing
     @Test func aBuildThatReachesFilesItDoesntListMayInvolveAnyFile() {
         // Globs, library directories and include directories reach files the build doesn't name.
         for text in [
-            "rtl/*.sv\n", "rtl/alu?.sv\n", "rtl/.../*.sv\n", "-y lib\ntop.sv\n", "--libdir=lib\ntop.sv\n",
+            "rtl/*.sv\n", "rtl/alu?.sv\n", "rtl/.../*.sv\n", "rtl/.../alu.sv\n", "-y lib\ntop.sv\n", "--libdir=lib\ntop.sv\n",
             "-I inc\ntop.sv\n", "--include-directory inc\ntop.sv\n", "--isystem=inc\ntop.sv\n",
             "+incdir+inc\ntop.sv\n", "+libext+.sv\ntop.sv\n",
         ] {
@@ -163,6 +163,25 @@ import Testing
             #expect(build.involves("/w/lib/fifo.sv", buildFilePath: "/w/.slang/p.f", baseDirectory: "/w"))
             #expect(!build.sources.contains("lib/fifo.sv"))
         }
+    }
+
+    @Test func attachedShortOptionValuesCountLikeSpacedOnes() {
+        // slang reads `-Iinc` as `-I inc` (checked with the real slang binary).
+        for text in ["-Iinc\ntop.sv\n", "-ylib\ntop.sv\n"] {
+            #expect(SlangBuildFile.parse(text).mayReachUnlistedFiles, "\(text)")
+            #expect(SlangBuildFile.parse(text).sources == ["top.sv"], "\(text)")
+        }
+        #expect(SlangBuildFile.parse("-vlib/fifo.sv\ntop.sv\n").libraryFiles == ["lib/fifo.sv"])
+        #expect(SlangBuildFile.parse("-fsub.f\n-Fother.f\ntop.sv\n").commandFiles == ["sub.f", "other.f"])
+        // Values that aren't files: dropped with their option, never read as sources.
+        #expect(SlangBuildFile.parse("-DW=8\n-UX\n-Tmax\n-Wextra\n-j4\n-Lwork\n-Cunit.f\n-Ysv\n-Gp=1\ntop.sv\n").sources == ["top.sv"])
+        #expect(!SlangBuildFile.parse("-DW=8\n-Ysv\ntop.sv\n").mayReachUnlistedFiles)
+        // A long single-dash option stays whole.
+        #expect(SlangBuildFile.parse("-top tb\ntop.sv\n").tops == ["tb"])
+        // Comments after white space are still dropped.
+        #expect(SlangBuildFile.parse("top.sv /* -y lib */\n").sources == ["top.sv"])
+        #expect(!SlangBuildFile.parse("top.sv /* -y lib */\n").mayReachUnlistedFiles)
+        #expect(SlangBuildFile.parse("a.sv /*\n multi\n line */ b.sv\n").sources == ["a.sv", "b.sv"])
     }
 
     @Test func aWaveformOpenedOnABuiltDesignTakesTheProfileMatchingItsDump() {
