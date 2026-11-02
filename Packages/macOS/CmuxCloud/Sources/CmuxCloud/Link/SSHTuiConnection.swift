@@ -131,26 +131,45 @@ public struct SSHTuiConnection: Sendable {
         return arguments
     }
 
-    /// The SSH options for a one-off `ssh`, `scp` or `sftp` beside the carrier,
-    /// such as a file drop, the Files explorer or a file preview.
+    /// The SSH options for a short one-off `ssh`, `scp` or `sftp` beside the
+    /// carrier, such as a file drop, a Files listing or a file preview.
     ///
-    /// They keep the carrier's route and the ControlPath of its authenticated
-    /// master: those batch-mode runs can log in to a password-only host only
-    /// through it. `ControlMaster` and `ControlPersist` are left out so a
-    /// one-off run never becomes the master itself.
+    /// They keep the carrier's route but not its master: every session over a
+    /// master counts against the server's per-connection `MaxSessions` (10 by
+    /// default), every app's carrier for a host shares one master, and a
+    /// refused session gets no fallback, so one-off runs there could refuse a
+    /// carrier's reconnect. They share a master of their own instead, at the
+    /// carrier's ControlPath plus ``operationsControlPathSuffix``, which the
+    /// first run starts. A carrier that shares nothing (`ControlPath=none`)
+    /// keeps them unshared.
     public var fileOperationSSHOptions: [String] {
         let resolver = SSHAgentSocketResolver(environment: [:])
-        return sshOptions.filter { option in
+        let options = sshOptions
+        let route = options.filter { option in
             let key = resolver.optionKey(option)
-            return key != "controlmaster" && key != "controlpersist"
+            return key != "controlmaster" && key != "controlpersist" && key != "controlpath"
         }
+        guard let path = resolver.optionValue(named: "ControlPath", in: options)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+            return route
+        }
+        guard path.lowercased() != "none" else { return route + ["ControlPath=none"] }
+        return route + ["ControlMaster=auto", "ControlPersist=600", "ControlPath=" + path + Self.operationsControlPathSuffix]
     }
 
     /// Appended to the carrier's ControlPath for the one-off runs' own master.
     public static let operationsControlPathSuffix = "-ops"
 
-    /// Stub: the long-lived runs' options (red).
-    public var longLivedSSHOptions: [String] { fileOperationSSHOptions }
+    /// The SSH options for a long-lived run beside the carrier, such as a
+    /// language server or a waveform helper: the carrier's route on a
+    /// connection of its own, so it holds no session on a shared master.
+    public var longLivedSSHOptions: [String] {
+        let resolver = SSHAgentSocketResolver(environment: [:])
+        return sshOptions.filter { option in
+            let key = resolver.optionKey(option)
+            return key != "controlmaster" && key != "controlpersist" && key != "controlpath"
+        } + ["ControlMaster=no", "ControlPath=none"]
+    }
 
     /// The caller's options plus cmux's shared ControlMaster, as 0.64.25's
     /// connection broker used for every connect. Snapshots keep only the

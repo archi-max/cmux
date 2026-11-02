@@ -736,8 +736,8 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
                   let configuration = AppDelegate.shared?.workspaceFor(tabId: panel.workspaceId)?.remoteConfiguration,
                   configuration.transport == .ssh else { return nil }
             // The same batch route as the Files explorer and the remote language
-            // server: it reuses the `cmux ssh` ControlPath.
-            let options = configuration.fileOperationSSHOptions
+            // server. The helper runs while the viewer is open: a connection of its own.
+            let options = configuration.longLivedSSHOptions
             return RemoteFSDB(remotePath: remotePath, host: configuration.destination) { command in
                 configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: options)
             }
