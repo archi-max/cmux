@@ -6,6 +6,9 @@
 //   commitText  an instruction whose text (the viewer's RISC-V format) matches `pattern`:
 //               Break When Next Instruction Matches…
 //   write       an instruction that writes `loc` (a register, a CSR, or memory bytes): Break When Written…
+//   sequence    the committed instructions match `query` (cmux-sequence.js's SVA-style steps, searched by the
+//               Machine section, window.cmuxWaveform.machine.sequence): Break When Sequence Matches…; a hit
+//               is a match's last commit (`land: 'end'`) or its first (`'start'`)
 // cmux-debugger.js owns the list, the search and the landing; this file gives a commit breakpoint's
 // fields, label and hit times (commit times are posedges, so a hit lands on its own cycle).
 //
@@ -17,6 +20,7 @@
 //   isKind(kind) -> bool
 //   fields(kind, item) -> the fields a breakpoint of `kind` keeps (and cmux saves)
 //   check(kind, fields) -> null | 'address' | 'addressTooLarge' | 'location' | 'pattern' | 'patternTooLong'
+//                          | 'query' | 'queryTooLong' | 'querySyntax'
 //   parseAddress(text) -> '0x…' | null        parseLocation(text) -> 'a0' | 'csr:mstatus' | 'mem:0x…/4' | null
 //   label(bp) -> string                       errorText(error) -> string
 //   times(bp, warn) -> Promise<Float64Array | null | undefined>   (undefined: the index is still building)
@@ -33,9 +37,12 @@
   const S = () => waveform.strings || {};
   const TB = waveform.debuggerText;
   const T = window.cmuxTextMatch;
-  const KINDS = new Set(['pc', 'commitText', 'write']);
+  const KINDS = new Set(['pc', 'commitText', 'write', 'sequence']);
   const MAX_PCS = 64;          // addresses per PC breakpoint
   const MEMORY_BYTES = 4;      // a memory location without a size: one word
+  const MAX_QUERY = 4096;      // a sequence's characters
+  const SEQUENCE_LIMIT = 1000000;   // matches a sequence breakpoint takes
+  const SEQUENCE_BUDGET = 20000000; // step evaluations per search (the Sequences tab's default is 2M)
   const ABI = ['zero', 'ra', 'sp', 'gp', 'tp', 't0', 't1', 't2', 's0', 's1', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7',
     's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 't3', 't4', 't5', 't6'];
   function format(template, ...args) {
@@ -84,6 +91,9 @@
         channel: Number.isInteger(q.channel) && q.channel >= 0 ? q.channel : null,
         key: q.key ? String(q.key) : null, listingLabel: q.listingLabel ? String(q.listingLabel) : null };
     }
+    if (kind === 'sequence') {
+      return { query: String(q.query === undefined || q.query === null ? '' : q.query).trim(), land: q.land === 'start' ? 'start' : 'end' };
+    }
     if (kind === 'commitText') {
       return { pattern: String(q.pattern === undefined || q.pattern === null ? '' : q.pattern), caseSensitive: !!q.caseSensitive,
         anyRegisterNames: q.anyRegisterNames !== false };
@@ -93,6 +103,12 @@
 
   function check(kind, f) {
     if (kind === 'pc') { return !(f.pcs && f.pcs.length) ? 'address' : f.pcs.some((pc) => tooLarge(pc)) ? 'addressTooLarge' : null; }
+    if (kind === 'sequence') {
+      if (!f.query) { return 'query'; }
+      if (f.query.length > MAX_QUERY) { return 'queryTooLong'; }
+      const Q = window.cmuxSequence;
+      return Q && Q.parse(f.query).error ? 'querySyntax' : null;
+    }
     if (kind === 'write') {
       if (!f.loc) { return 'location'; }
       const mem = /^mem:(0x[0-9a-f]+)\/(\d+)$/.exec(f.loc);
@@ -113,13 +129,15 @@
       return bp.listingLabel ? format(s.debuggerBreakpointPcAt, bp.listingLabel, where) : format(s.debuggerBreakpointPc, where);
     }
     if (bp.kind === 'commitText') { return format(s.debuggerBreakpointCommitText, bp.pattern); }
+    if (bp.kind === 'sequence') { return format(bp.land === 'start' ? s.debuggerBreakpointSequenceStart : s.debuggerBreakpointSequence, bp.query); }
     return format(s.debuggerBreakpointWritten, locationText(bp.loc || '?'));
   }
 
   function errorText(error) {
     const s = S();
     return { address: s.debuggerCommitBadAddress, addressTooLarge: s.debuggerCommitAddressTooLarge, location: s.debuggerCommitBadLocation, pattern: s.debuggerTextNoPattern,
-      patternTooLong: format(s.debuggerTextPatternTooLong, T.MAX_PATTERN) }[error] || error;
+      patternTooLong: format(s.debuggerTextPatternTooLong, T.MAX_PATTERN), query: s.debuggerSequenceNoQuery,
+      queryTooLong: format(s.debuggerSequenceTooLong, MAX_QUERY), querySyntax: s.debuggerSequenceBadSyntax }[error] || error;
   }
 
   // ---- the index's tables, built once per index ----
@@ -166,6 +184,16 @@
   }
 
   async function commitsOf(bp, ix, warn) {
+    if (bp.kind === 'sequence') {
+      const machine = waveform.machine;
+      if (!machine || typeof machine.sequence !== 'function') { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
+      let r = null;
+      try { r = await machine.sequence({ query: bp.query, from: 0, limit: SEQUENCE_LIMIT, budget: SEQUENCE_BUDGET }); } catch (error) { r = null; }
+      if (!r || r.error === 'noStream') { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
+      if (r.error) { warn(format(S().debuggerCommitError, label(bp), r.message || r.error)); return null; }
+      if (r.incomplete) { warn(format(S().debuggerSequenceIncomplete, label(bp), r.matches.length.toLocaleString())); }
+      return r.matches.map((m) => (bp.land === 'start' ? m.start : m.end));
+    }
     if (bp.kind === 'pc') {
       const table = byPc(ix);
       const ks = [];
@@ -215,7 +243,7 @@
     if (error) { warn(format(S().debuggerCommitError, label(bp), errorText(error))); return null; }
     const ix = await indexOf(bp, warn);
     if (!ix) { return null; }
-    const key = JSON.stringify([bp.kind, bp.pcs, bp.channel, bp.pattern, bp.caseSensitive, bp.anyRegisterNames, bp.loc]);
+    const key = JSON.stringify([bp.kind, bp.pcs, bp.channel, bp.pattern, bp.caseSensitive, bp.anyRegisterNames, bp.loc, bp.query, bp.land]);
     if (bp.commitHits && bp.commitHits.ix === ix && bp.commitHits.key === key) { return bp.commitHits.times; }
     const ks = await commitsOf(bp, ix, warn);
     if (!ks) { return null; }
@@ -326,5 +354,5 @@
   }
 
   waveform.debuggerCommits = Object.freeze({ isKind, fields, check, parseAddress, parseLocation, label, errorText, times, kAt, landed,
-    scopeOf, locationText, MAX_PCS, postCurrent, currentPc, sample, subscribe });
+    scopeOf, locationText, MAX_PCS, MAX_QUERY, postCurrent, currentPc, sample, subscribe });
 })();
