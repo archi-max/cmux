@@ -147,13 +147,13 @@ struct LSPResponseDecodingTests {
 struct LanguageToolRegistryTests {
     @Test("Remote destinations use ssh with an explicit PATH")
     func remoteLaunch() {
-        #expect(LanguageToolRegistry.languageServer(forLanguage: "verilog", remoteDestination: "host-01") == .ssh(
-            destination: "host-01",
+        #expect(LanguageToolRegistry.languageServer(forLanguage: "verilog", remoteDestination: "remote-host") == .ssh(
+            destination: "remote-host",
             sshOptions: [],
             remoteCommand: #"PATH="$HOME/.local/bin:$PATH" exec slang-server"#
         ))
-        #expect(LanguageToolRegistry.formatter(forLanguage: "verilog", remoteDestination: "host-01") == .ssh(
-            destination: "host-01",
+        #expect(LanguageToolRegistry.formatter(forLanguage: "verilog", remoteDestination: "remote-host") == .ssh(
+            destination: "remote-host",
             sshOptions: [],
             remoteCommand: #"PATH="$HOME/.local/bin:$PATH" exec verible-verilog-format --failsafe_success=false -"#
         ))
@@ -162,7 +162,7 @@ struct LanguageToolRegistryTests {
     @Test("Other languages have no tools")
     func otherLanguages() {
         #expect(LanguageToolRegistry.languageServer(forLanguage: "swift", remoteDestination: nil) == nil)
-        #expect(LanguageToolRegistry.formatter(forLanguage: "python", remoteDestination: "host-01") == nil)
+        #expect(LanguageToolRegistry.formatter(forLanguage: "python", remoteDestination: "remote-host") == nil)
     }
 
     @Test("ssh command line")

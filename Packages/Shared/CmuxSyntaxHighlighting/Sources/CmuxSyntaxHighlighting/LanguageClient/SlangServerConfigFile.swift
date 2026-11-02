@@ -41,7 +41,8 @@ public enum SlangServerConfigFile {
 
     /// The `"build"` value of a config file, if it names one.
     public static func build(in data: Data?) -> String? {
-        guard let data, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        // JSON5 (comments, trailing commas), as slang-server and the health check read it (verify N1).
+        guard let data, let object = (try? JSONSerialization.jsonObject(with: data, options: .json5Allowed)) as? [String: Any] else { return nil }
         return object["build"] as? String
     }
 }

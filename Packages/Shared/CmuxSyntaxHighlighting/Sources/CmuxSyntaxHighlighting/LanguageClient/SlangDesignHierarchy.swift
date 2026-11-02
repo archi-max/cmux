@@ -1043,6 +1043,23 @@ extension LanguageServerSession {
         rememberExploreMode()
     }
 
+    /// Switches what the server compiles to `choice` at runtime, never restarting it: a build
+    /// file, a top level, explore mode, or the config's build (`configuredBuild`, read from its
+    /// server.json; with none, no top level, as with Reset Top Level).
+    public func slangSwitch(to choice: SlangProfileChoice, configuredBuild: String?) async throws {
+        switch choice {
+        case .buildFile(let path): try await slangSetBuildFile(path)
+        case .topLevel(let path): try await slangSetTopLevel(path)
+        case .explore: try await slangExplore()
+        case .configured:
+            if let configuredBuild {
+                try await slangSetBuildFile(configuredBuild)
+            } else {
+                try await slangSetTopLevel("")
+            }
+        }
+    }
+
     /// What the server compiles, as set through this session: a top level or build file, explore
     /// mode chosen with `slangExplore`, or neither (the config's build, if any).
     public struct SlangCompilationState: Sendable, Equatable {

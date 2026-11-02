@@ -173,8 +173,8 @@ struct AsmMarkTests {
         #expect(rv32.match(committed: distinct, limit: 1000).notInListing == 1000)
     }
 
-    @Test func cpuListingMatchesItsCommits() throws {
-        guard let dir = ProcessInfo.processInfo.environment["ASM_LISTING_CPU_DIR"] else { return }
+    @Test func sampleListingMatchesItsCommits() throws {
+        guard let dir = ProcessInfo.processInfo.environment["ASM_LISTING_SAMPLE_DIR"] else { return }
         let base = URL(fileURLWithPath: dir)
         let listing = AsmListingParser.parse(try String(contentsOf: base.appendingPathComponent("program.dis"), encoding: .utf8))
         let pairs = try String(contentsOf: base.appendingPathComponent("commit-pcs.txt"), encoding: .utf8)
