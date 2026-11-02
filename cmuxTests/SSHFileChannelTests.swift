@@ -379,4 +379,80 @@ import Testing
         #expect(closed.launchCount == runs, "a closed channel restarted")
         closed.unpin()
     }
+
+    @Test func aPinnedChannelOutlivesItsIdleTimeout() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let homePath = root.path
+        let launch: SSHFileChannel.Launch = { command in
+            (URL(fileURLWithPath: "/bin/sh"), ["-c", "HOME='\(homePath)'; \(command)"])
+        }
+        let pinned = SSHFileChannel(launch: launch, idleTimeout: 0.5)
+        let loose = SSHFileChannel(launch: launch, idleTimeout: 0.5)
+        defer { pinned.close(); loose.close() }
+        pinned.pin()
+        pinned.prewarm()
+        loose.prewarm()
+        try await Task.sleep(nanoseconds: 1_800_000_000)
+        #expect(pinned.isReady && pinned.launchCount == 1, "a connected host's channel idled out")
+        #expect(!loose.isReady, "an unconnected host's idle channel stayed up")
+        pinned.unpin()
+    }
+
+    @Test func aChannelStaysWarmForTheGraceAfterItsLastLease() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tmp = root.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let homePath = root.path, tmpPath = tmp.path
+        let launch: SSHFileChannel.Launch = { command in
+            (URL(fileURLWithPath: "/bin/sh"), ["-c", "HOME='\(homePath)'; TMPDIR='\(tmpPath)'; export TMPDIR; \(command)"])
+        }
+        let pool = SSHFileChannelPool(releaseGrace: 1.0)
+        var lease: SSHFileChannelPool.Lease? = pool.retain(key: "h", launch: launch)
+        let channel = pool.channel(key: "h", launch: launch)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        #expect(channel.isReady)
+        // Switched away and back within the grace: the same run, still warm.
+        lease = nil
+        try await Task.sleep(nanoseconds: 300_000_000)
+        lease = pool.retain(key: "h", launch: launch)
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        #expect(pool.channel(key: "h", launch: launch) === channel && channel.isReady && channel.launchCount == 1,
+                "switching back within the grace restarted the channel: \(channel.launchCount) runs")
+        // Left for longer than the grace: closed, nothing left on the host.
+        lease = nil
+        _ = lease
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        #expect(pool.channelCount == 0 && !channel.isReady)
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: tmpPath)) ?? []
+        #expect(left.isEmpty, "host temp dir left: \(left)")
+    }
+
+    @Test func leasesTakenAndDroppedAtOnceLeaveNoServerBehind() async throws {
+        // retain racing the grace's close: every run ends once the last lease goes.
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tmp = root.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let homePath = root.path, tmpPath = tmp.path
+        let launch: SSHFileChannel.Launch = { command in
+            (URL(fileURLWithPath: "/bin/sh"), ["-c", "HOME='\(homePath)'; TMPDIR='\(tmpPath)'; export TMPDIR; \(command)"])
+        }
+        let pool = SSHFileChannelPool(releaseGrace: 0)
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    for _ in 0..<40 {
+                        let lease = pool.retain(key: "h", launch: launch)
+                        usleep(UInt32.random(in: 0..<3000))
+                        _ = lease
+                    }
+                }
+            }
+        }
+        try await Task.sleep(nanoseconds: 4_000_000_000)
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: tmpPath)) ?? []
+        #expect(pool.channelCount == 0 && left.isEmpty, "\(pool.channelCount) channels, host temp dirs left: \(left)")
+    }
 }
