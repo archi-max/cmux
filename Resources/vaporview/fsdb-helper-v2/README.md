@@ -78,10 +78,10 @@ The helper also has `derive` (a signal from a SystemVerilog expression) and `sea
 signals, streaming `partial` results); the Mac relay doesn't forward them yet.
 
 What is streamed, and when:
-- The viewer tiles time in powers of two, 1024 buckets per tile, and requests the tiles on screen plus one screen
+- The viewer tiles time in powers of two, 1024 buckets per tile (256 for signals wider than 64 bits), and requests the tiles on screen plus one screen
   either side and one zoom level out. Panning back hits the same tiles.
-- A signal with at most 350,000 changes is loaded whole once its count is known, and is then an ordinary local
-  signal. Only big or dense signals stay windowed.
+- A signal with at most 350,000 changes is loaded whole once its count is known, within byte limits (128 MB per
+  signal, 512 MB in total), and is then an ordinary local signal. Only big or dense signals stay windowed.
 - A signal not yet in a worker's store is read "cold": a small time range is read directly from the file, and the
   full walk continues in the background.
 - *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
