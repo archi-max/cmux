@@ -9,10 +9,15 @@ public struct SlangBuildFile: Equatable, Sendable {
     public var sources: [String] = []
     /// Nested `-f` / `-F` command files as written.
     public var commandFiles: [String] = []
-    /// Stub.
+    /// Library files (`-v` / `--libfile`) as written.
     public var libraryFiles: [String] = []
-    /// Stub.
+    /// The build reaches files it doesn't name: a glob source, a library directory (`-y`,
+    /// `--libdir`, `+libext+`) or an include directory (`-I`, `--include-directory`, `--isystem`,
+    /// `+incdir+`). Any saved file may then be part of it.
     public var mayReachUnlistedFiles = false
+
+    private static let libraryFileOptions: Set<String> = ["-v", "--libfile"]
+    private static let unlistedFileOptions: Set<String> = ["-y", "--libdir", "-I", "--include-directory", "--isystem"]
 
     public init(tops: [String] = [], sources: [String] = [], commandFiles: [String] = []) {
         self.tops = tops
@@ -36,22 +41,29 @@ public struct SlangBuildFile: Equatable, Sendable {
         while index < words.count {
             let word = words[index]
             index += 1
-            if word.hasPrefix("+") { continue } // +define+, +incdir+, +libext+
-            if let equals = word.firstIndex(of: "="), word.hasPrefix("-") {
-                let option = String(word[..<equals])
-                let value = String(word[word.index(after: equals)...])
+            if word.hasPrefix("+") { // +define+, +incdir+, +libext+
+                if word.hasPrefix("+incdir+") || word.hasPrefix("+libext+") { result.mayReachUnlistedFiles = true }
+                continue
+            }
+            func take(_ option: String, _ value: String) {
                 if option == "--top" || option == "-top" { result.tops.append(value) }
                 if option == "-f" || option == "-F" { result.commandFiles.append(value) }
+                if libraryFileOptions.contains(option) { result.libraryFiles.append(value) }
+                if unlistedFileOptions.contains(option) { result.mayReachUnlistedFiles = true }
+            }
+            if let equals = word.firstIndex(of: "="), word.hasPrefix("-") {
+                take(String(word[..<equals]), String(word[word.index(after: equals)...]))
                 continue
             }
             if word.hasPrefix("-") {
                 guard optionsWithValue.contains(word), index < words.count else { continue }
                 let value = words[index]
                 index += 1
-                if word == "--top" || word == "-top" { result.tops.append(value) }
-                if word == "-f" || word == "-F" { result.commandFiles.append(value) }
+                take(word, value)
                 continue
             }
+            // slang expands `*`, `?` and `...` in source paths.
+            if word.contains("*") || word.contains("?") || word.contains("...") { result.mayReachUnlistedFiles = true }
             result.sources.append(word)
         }
         return result
@@ -69,7 +81,8 @@ public struct SlangBuildFile: Equatable, Sendable {
     }
 
     /// Whether `path` is part of this build: the build file at `buildFilePath` itself, one of its
-    /// nested command files or one of its sources (relative ones against `baseDirectory`).
+    /// nested command files, library files or sources (relative ones against `baseDirectory`).
+    /// Files reached only through globs or directories aren't seen: see `mayReachUnlistedFiles`.
     /// `normalize` maps each candidate to the form `path` is in (e.g. real paths).
     public func involves(
         _ path: String, buildFilePath: String, baseDirectory: String,
@@ -80,7 +93,7 @@ public struct SlangBuildFile: Equatable, Sendable {
             return normalize((joined as NSString).standardizingPath)
         }
         if normalize((buildFilePath as NSString).standardizingPath) == path { return true }
-        return (commandFiles + sources).contains { absolute($0) == path }
+        return (commandFiles + libraryFiles + sources).contains { absolute($0) == path }
     }
 
     /// Words of a command file: `//`, `#` and `/* */` comments dropped, quotes grouping words,
@@ -113,7 +126,8 @@ public struct SlangBuildFile: Equatable, Sendable {
                 finish()
                 continue
             }
-            if char == "/", next == "*" {
+            // Only at a word's start: slang reads `rtl/*.sv` as a glob, not a comment.
+            if char == "/", next == "*", !hasWord {
                 index += 2
                 while index + 1 < chars.count, !(chars[index] == "*" && chars[index + 1] == "/") { index += 1 }
                 index += 2

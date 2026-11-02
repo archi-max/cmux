@@ -7,7 +7,7 @@ import Testing
 /// during a busy wait, prefix-aware moves with collisions, removed top-level choices, and the
 /// store at its caps.
 @MainActor
-@Suite struct SlangProfileFollowerRaceTests {
+@Suite(.timeLimit(.minutes(1))) struct SlangProfileFollowerRaceTests {
     static let a = SlangProfileChoice.buildFile("/w/a.f")
     static let b = SlangProfileChoice.buildFile("/w/b.f")
 

@@ -151,6 +151,8 @@ import Testing
         ] {
             #expect(SlangBuildFile.parse(text).mayReachUnlistedFiles, "\(text)")
         }
+        // `/*` inside a word is a glob, not a comment (slang-server elaborates `rtl/*.sv`).
+        #expect(SlangBuildFile.parse("rtl/*.sv\ntop.sv\n").sources == ["rtl/*.sv", "top.sv"])
         for text in ["top.sv\n", "--top tb\n-D W=8\ntop.sv\n", "+define+W=8\ntop.sv\n", "-v lib/fifo.sv\ntop.sv\n"] {
             #expect(!SlangBuildFile.parse(text).mayReachUnlistedFiles, "\(text)")
         }
@@ -229,7 +231,7 @@ import Testing
 /// The follower against fake hooks: debounce, no switch when unchanged, waiting while busy,
 /// and a missing profile's fallback.
 @MainActor
-@Suite struct SlangProfileFollowerTests {
+@Suite(.timeLimit(.minutes(1))) struct SlangProfileFollowerTests {
     @MainActor final class Fake {
         var wanted: SlangProfileChoice?
         var current = LanguageServerSession.SlangCompilationState(target: nil, isExplore: false)
