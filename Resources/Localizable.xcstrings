@@ -702516,65 +702516,6 @@
         }
       }
     },
-    "waveformDebugger.sequence.incomplete": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: the search stopped at its budget, so only its first %2$@ matches are breakpoint hits"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: Die Suche hat ihr Budget erreicht, daher sind nur die ersten %2$@ Treffer Haltepunkt-Treffer"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ : la recherche s’est arrêtée à son budget ; seules ses %2$@ premières correspondances sont des arrêts"
-          }
-        },
-        "ar": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: توقف البحث عند حدّه، لذا فإن أول %2$@ تطابقات فقط هي نقاط توقف"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: la búsqueda se detuvo en su límite, así que solo sus primeras %2$@ coincidencias son paradas"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@：搜尋已達預算上限，因此只有前 %2$@ 個符合項目會作為中斷點命中"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@：搜索已达预算上限，因此只有前 %2$@ 个匹配项作为断点命中"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: 검색이 예산에서 멈췄으므로 처음 %2$@개 일치 항목만 중단점 적중입니다"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@: 検索が上限に達したため、最初の %2$@ 件の一致だけがブレークポイントのヒットになります"
-          }
-        }
-      }
-    },
     "waveformDebugger.sequence.edit": {
       "extractionState": "manual",
       "localizations": {
@@ -702807,6 +702748,124 @@
           "stringUnit": {
             "state": "translated",
             "value": "コミットされた命令がこのシーケンスに一致する場所で停止するブレークポイントを追加します（「移動先」に従い、最後または最初のステップで）。"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: only its first %2$@ matches are breakpoint hits"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: Nur die ersten %2$@ Treffer sind Haltepunkt-Treffer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ : seules ses %2$@ premières correspondances sont des arrêts"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: أول %2$@ تطابقات فقط هي نقاط توقف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: solo sus primeras %2$@ coincidencias son paradas"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：只有前 %2$@ 個符合項目會作為中斷點命中"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：只有前 %2$@ 个匹配项作为断点命中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 처음 %2$@개 일치 항목만 중단점 적중입니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 最初の %2$@ 件の一致だけがブレークポイントのヒットになります"
+          }
+        }
+      }
+    },
+    "waveformDebugger.sequence.stopped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: the search stopped at its budget at commit %2$@ of %3$@, so later matches are not breakpoint hits"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: Die Suche hat bei Commit %2$@ von %3$@ ihr Budget erreicht, daher sind spätere Treffer keine Haltepunkt-Treffer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ : la recherche s’est arrêtée à son budget au commit %2$@ sur %3$@ ; les correspondances suivantes ne sont pas des arrêts"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: توقف البحث عند حدّه في الالتزام %2$@ من %3$@، لذا فإن التطابقات اللاحقة ليست نقاط توقف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: la búsqueda se detuvo en su límite en el commit %2$@ de %3$@, así que las coincidencias posteriores no son paradas"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：搜尋在第 %2$@ 個提交（共 %3$@ 個）達到預算上限，因此之後的符合項目不會作為中斷點命中"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@：搜索在第 %2$@ 个提交（共 %3$@ 个）达到预算上限，因此之后的匹配项不会作为断点命中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 검색이 커밋 %3$@개 중 %2$@번째에서 예산에 도달했으므로 이후 일치 항목은 중단점 적중이 아닙니다"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@: 検索が %3$@ 件中 %2$@ 件目のコミットで上限に達したため、それ以降の一致はブレークポイントのヒットになりません"
           }
         }
       }

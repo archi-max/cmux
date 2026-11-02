@@ -42,7 +42,13 @@
   const MEMORY_BYTES = 4;      // a memory location without a size: one word
   const MAX_QUERY = 4096;      // a sequence's characters
   const SEQUENCE_LIMIT = 1000000;   // matches a sequence breakpoint takes
-  const SEQUENCE_BUDGET = 20000000; // step evaluations per search (the Sequences tab's default is 2M)
+  const SEQUENCE_BUDGET = 2000000;  // step evaluations per search (§3A: 2M steps or 2 s)
+  const SEQUENCE_MS = 2000;         // a search's time budget
+  // The sequence breakpoints searched on one index within a while of each other (a rebuild, a restore)
+  // share a time pool, each taking at least SEQUENCE_MIN_MS: 16 slow ones take seconds, not minutes.
+  const SEQUENCE_POOL_MS = 8000;
+  const SEQUENCE_MIN_MS = 250;
+  const SEQUENCE_POOL_WINDOW_MS = 30000;
   const ABI = ['zero', 'ra', 'sp', 'gp', 'tp', 't0', 't1', 't2', 's0', 's1', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7',
     's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 't3', 't4', 't5', 't6'];
   function format(template, ...args) {
@@ -188,10 +194,25 @@
       const machine = waveform.machine;
       if (!machine || typeof machine.sequence !== 'function') { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
       let r = null;
-      try { r = await machine.sequence({ query: bp.query, from: 0, limit: SEQUENCE_LIMIT, budget: SEQUENCE_BUDGET }); } catch (error) { r = null; }
+      const t = tablesOf(ix);
+      const clock = Date.now();
+      if (!t.sequencePool || clock - t.sequencePool.since > SEQUENCE_POOL_WINDOW_MS) { t.sequencePool = { since: clock, left: SEQUENCE_POOL_MS }; }
+      const pool = t.sequencePool;
+      const budgetMs = Math.max(SEQUENCE_MIN_MS, Math.min(SEQUENCE_MS, pool.left));
+      try {
+        r = await machine.sequence({ query: bp.query, from: 0, limit: SEQUENCE_LIMIT, budget: SEQUENCE_BUDGET, budgetMs });
+      } catch (error) { r = null; }
+      pool.left -= r && r.ms > 0 ? r.ms : 0;
       if (!r || r.error === 'noStream') { warn(format(S().debuggerCommitsNone, label(bp))); return null; }
       if (r.error) { warn(format(S().debuggerCommitError, label(bp), r.message || r.error)); return null; }
-      if (r.incomplete) { warn(format(S().debuggerSequenceIncomplete, label(bp), r.matches.length.toLocaleString())); }
+      // Only the first matches (its limit); or it stopped part way (its step or time budget), the later ones not
+      // searched. The thread cap drops some partial matches but searches on: nothing to say.
+      if (r.incomplete && r.reason === 'limit') {
+        warn(format(S().debuggerSequenceLimit, label(bp), r.matches.length.toLocaleString()));
+      } else if (r.incomplete && r.reason !== 'threads') {
+        const at = r.next === null || r.next === undefined ? ix.count : r.next + 1;
+        warn(format(S().debuggerSequenceStopped, label(bp), at.toLocaleString(), ix.count.toLocaleString()));
+      }
       return r.matches.map((m) => (bp.land === 'start' ? m.start : m.end));
     }
     if (bp.kind === 'pc') {
