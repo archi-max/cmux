@@ -709655,6 +709655,65 @@
         }
       }
     },
+    "filePreview.waveform.message.declaredNoAnswer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux didn't hear back from the language server about this signal's dimensions. Try again once the design has loaded, or split it by width."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يتلقَّ cmux ردًا من خادم اللغة بشأن أبعاد هذه الإشارة. أعد المحاولة بعد تحميل التصميم، أو قسّمها حسب العرض."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux hat vom Sprachserver keine Antwort zu den Dimensionen dieses Signals erhalten. Versuche es erneut, sobald das Design geladen ist, oder teile es nach Breite auf."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux no recibió respuesta del servidor de lenguaje sobre las dimensiones de esta señal. Inténtalo de nuevo cuando el diseño se haya cargado o divídela por ancho."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux n’a pas reçu de réponse du serveur de langage sur les dimensions de ce signal. Réessayez une fois le design chargé, ou divisez-le par largeur."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この信号の次元について、cmux は言語サーバーから応答を受け取れませんでした。設計の読み込み後にもう一度試すか、幅ごとに分割してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux가 이 신호의 차원에 대해 언어 서버로부터 응답을 받지 못했습니다. 설계가 로드된 후 다시 시도하거나 너비별로 분할하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 未收到语言服务器关于此信号维度的回复。请在设计加载完成后重试，或按宽度拆分。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cmux 未收到語言伺服器關於此訊號維度的回覆。請在設計載入完成後再試一次，或依寬度拆分。"
+          }
+        }
+      }
+    },
     "filePreview.waveform.message.noDeclaredDimensions": {
       "extractionState": "manual",
       "localizations": {

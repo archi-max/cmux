@@ -1346,7 +1346,10 @@
   // (WaveformEnumLink.packedDimensionsRequested) and answers through split.declared. The row
   // splits by its outer dimension, each element by the next, down to the last (its bits), all
   // in one undo step; elements are listed as declared, left index first (at the top bits).
+  // A click that gets no answer (the language server is still loading, busy or gone) says so
+  // after DECLARED_TIMEOUT_MS; an answer after that is ignored.
   const pendingDeclared = new Map();
+  const DECLARED_TIMEOUT_MS = 5000;
   let nextDeclared = 1;
   function splitDeclared(e) {
     if (!e || e.rowId === undefined || !(e.width > 1) || e.netlistId === undefined) { return; }
@@ -1354,7 +1357,10 @@
     const path = v && host().pathOf ? host().pathOf(v) : null;
     if (!path || !path.length) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return; }
     const id = nextDeclared++;
-    pendingDeclared.set(id, e);
+    const timer = setTimeout(() => {
+      if (pendingDeclared.delete(id)) { ui().toast(S().messageDeclaredNoAnswer, 'warning'); }
+    }, DECLARED_TIMEOUT_MS);
+    pendingDeclared.set(id, { e, timer });
     host().toNative({ type: 'packedDims', id, path });
   }
   // dims [[left, right], ...] as nested parts of a block of their width, bits from 0.
@@ -1374,9 +1380,11 @@
   }
   const countParts = (parts) => parts.reduce((n, p) => n + 1 + countParts(p.parts || []), 0);
   function declared(answer) {
-    const e = answer && pendingDeclared.get(answer.id);
-    if (!e) { return false; }
+    const pending = answer && pendingDeclared.get(answer.id);
+    if (!pending) { return false; }
     pendingDeclared.delete(answer.id);
+    clearTimeout(pending.timer);
+    const e = pending.e;
     const dims = Array.isArray(answer.dims) ? answer.dims : null;
     const ok = dims && dims.length >= 2 && dims.every((d) => Array.isArray(d) && d.length === 2 && d.every(Number.isInteger));
     if (!ok) { ui().toast(S().messageNoDeclaredDimensions, 'warning'); return false; }
