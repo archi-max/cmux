@@ -1,0 +1,227 @@
+$date
+	Tue Nov  3 07:41:48 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module tb_i $end
+$var wire 32 ! word0 [31:0] $end
+$var wire 4 " pop [3:0] $end
+$var wire 8 # lost0 [7:0] $end
+$var reg 1 $ clk $end
+$var reg 32 % epoch [31:0] $end
+$var reg 2 & pick [1:0] $end
+$var reg 1 ' rst_n $end
+$var reg 4 ( valid [3:0] $end
+$var reg 32 ) wdata [31:0] $end
+$var reg 1 * we $end
+$var reg 2 + widx [1:0] $end
+$var reg 4 , wstrb [3:0] $end
+$var reg 32 - iters [31:0] $end
+$var reg 32 . settle [31:0] $end
+$scope module dut $end
+$var wire 1 $ clk $end
+$var wire 8 / lost0 [7:0] $end
+$var wire 2 0 pick [1:0] $end
+$var wire 1 ' rst_n $end
+$var wire 4 1 valid [3:0] $end
+$var wire 32 2 wdata [31:0] $end
+$var wire 1 * we $end
+$var wire 2 3 widx [1:0] $end
+$var wire 32 4 word0 [31:0] $end
+$var wire 4 5 wstrb [3:0] $end
+$var reg 4 6 pop [3:0] $end
+$scope begin $ivl_for_loop0 $end
+$var integer 32 7 t [31:0] $end
+$upscope $end
+$scope begin $ivl_for_loop1 $end
+$var integer 32 8 c [31:0] $end
+$upscope $end
+$scope begin $ivl_for_loop2 $end
+$var integer 32 9 c [31:0] $end
+$upscope $end
+$scope begin $ivl_for_loop3 $end
+$var integer 32 : b [31:0] $end
+$upscope $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 8 ; \lost[0] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 8 < \lost[1] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 8 = \lost[2] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 8 > \lost[3] [7:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 32 ? \mem[0] [31:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 32 @ \mem[1] [31:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 32 A \mem[2] [31:0] $end
+$upscope $end
+$upscope $end
+$scope module tb_i $end
+$scope module dut $end
+$var reg 32 B \mem[3] [31:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+bx B
+bx A
+bx @
+bx ?
+bx >
+bx =
+bx <
+bx ;
+b0 :
+b0 9
+b0 8
+b100 7
+b0 6
+b0 5
+bx 4
+b0 3
+b0 2
+b0 1
+b0 0
+bx /
+b0 .
+b100 -
+b0 ,
+b0 +
+0*
+b0 )
+b0 (
+0'
+b0 &
+b100 %
+0$
+bx #
+b0 "
+bx !
+$end
+#5000
+b0 >
+b0 =
+b0 <
+b0 ;
+b0 #
+b0 /
+b100 8
+1$
+#10000
+0$
+#12000
+1'
+#15000
+b1 .
+b100 9
+1$
+#20000
+0$
+#22000
+b10 "
+b10 6
+b100 7
+b1000100001100110010001000010001 )
+b1000100001100110010001000010001 2
+b11 ,
+b11 5
+1*
+b1 &
+b1 0
+b110 (
+b110 1
+#25000
+bx0010001000010001 ?
+bx0010001000010001 !
+bx0010001000010001 4
+b1 =
+b100 :
+b10 .
+b100 9
+1$
+#30000
+0$
+#32000
+b1000 "
+b1000 6
+b100 7
+b10001000011101110110011001010101 )
+b10001000011101110110011001010101 2
+b1100 ,
+b1100 5
+b11 &
+b11 0
+b1001 (
+b1001 1
+#35000
+b10001000011101110010001000010001 ?
+b10001000011101110010001000010001 !
+b10001000011101110010001000010001 4
+b1 ;
+b1 #
+b1 /
+b100 :
+b11 .
+b100 9
+1$
+#40000
+0$
+#42000
+b0 "
+b0 6
+b100 7
+0*
+b10 &
+b10 0
+b1 (
+b1 1
+#45000
+b10 ;
+b10 #
+b10 /
+b100 .
+b100 9
+1$
+#50000
+0$
+#55000
+b11 ;
+b11 #
+b11 /
+b101 .
+b100 9
+1$
+#60000
+0$
+#62000
