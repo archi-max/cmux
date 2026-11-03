@@ -811,6 +811,33 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       """) as? [String: Any]
     expect(ceiling?["verdi"] as? String == "large" && ceiling?["downloads"] as? Int == 0 && ceiling?["counted"] as? Bool == true,
            "v2 helper: a check's read over the v2 memory ceiling is not made: \(String(describing: ceiling))")
+    // The changes kept across signals are bounded by their bits (a wide signal's changes cost its
+    // width each), not by their number: with a 1-bit bound only the newest read is kept.
+    var cacheRuns: [[String: Any]] = []
+    for limit in ["undefined", "1"] {
+      let r = await call("""
+        const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+        if (\(limit) !== undefined) { cmuxWaveform.traceCacheBits = \(limit); }
+        try {
+          m.install(); m.downloads = 0;
+          t.backendChanged();
+          for (const path of [['u_mid', 'u_sink', 'q'], ['u_mid', 'u_sink', 'qd'], ['u_mid', 'u_sink', 'in'], ['u_mid', 'u_sink', 'mix'], ['u_src', 'data_q'], ['u_src', 'd']]) {
+            const v = await h.findLinkItem(['tb_c', 'dut', ...path], true);
+            if (v) { m.fail.add(v.signalId); }
+          }
+          await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          if (t.settled) { await t.settled(); }
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_src.data_q', designPrefix: '', dumpPrefix: '', time: 74 });
+          if (t.settled) { await t.settled(); }
+          return { downloads: m.downloads, cache: t.state().cache || null };
+        } finally { m.fail.clear(); m.remove(); delete cmuxWaveform.traceCacheBits; t.backendChanged(); }
+        """) as? [String: Any] ?? [:]
+      cacheRuns.append(r)
+    }
+    let whole = cacheRuns[0]["cache"] as? [String: Any], tight = cacheRuns[1]["cache"] as? [String: Any]
+    expect((cacheRuns[0]["downloads"] as? Int ?? 0) >= 2 && whole?["signals"] as? Int == cacheRuns[0]["downloads"] as? Int
+             && (whole?["bits"] as? Int ?? 0) > 0 && tight?["signals"] as? Int == 1 && (tight?["bits"] as? Int ?? 0) > 1,
+           "the changes kept are bounded by bits: \(cacheRuns)")
     // The helper doesn't know the count without a walk: an exact count is asked for, and a read
     // whose exact count fails too isn't made either (unknown is not "under").
     for exactFails in [false, true] {
