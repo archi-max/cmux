@@ -201,6 +201,10 @@ const TRACE_CASES = [
     fanin: { 'tb_k.dut.xa': XX } },
   // cnt is written only by its if's condition (cnt++ == 3), in a live procedure.
   { d: 'k', sig: 'tb_k.dut.cnt', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 47, trust: 'approximate', reasons: ['statement'] },
+  // gq <= a, but the testbench forced it to 77 at 27; dq's last own write was 11 at 15, then the
+  // testbench deposited 44 at 27: the testbench's statement, approximate ('force'), never exact.
+  { d: 'k', sig: 'tb_k.dut.gq', t: 30000, kind: 'initial', file: 'tb_k.sv', stmt: 'force dut.gq', since: 27000, value: '01110111', trust: 'approximate', reasons: ['force'] },
+  { d: 'k', sig: 'tb_k.dut.dq', t: 30000, kind: 'initial', file: 'tb_k.sv', stmt: '$deposit(dut.dq', since: 27000, value: '01000100', trust: 'approximate', reasons: ['force'] },
   { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 35, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
 ];
 

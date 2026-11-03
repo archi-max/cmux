@@ -45,4 +45,10 @@ module k_writes (
 
   logic [7:0] cnt = 8'd0, kq;
   always @(posedge clk) if (cnt++ == 8'd3) kq <= a;
+
+  // Written by the testbench too, after their own last writes: forced (gq) and deposited (dq). Their
+  // own drivers can't explain those values; the testbench's statements are shown, approximate.
+  logic [7:0] gq, dq;
+  always @(posedge clk) gq <= a;
+  always @(posedge clk) if (go) dq <= a;
 endmodule
