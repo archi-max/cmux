@@ -26,8 +26,11 @@
   };
   // Changes read per signal for edges and "since" (larger: the signal's step says so).
   const MAX_CHANGES = 2000000;
-  // Changes kept per trace session, all signals together (a whole-signal FSDB helper reads long ones).
-  const CACHED_CHANGES = 8000000;
+  // Changes kept per trace session, all signals together (a whole-signal FSDB helper reads long
+  // ones), bounded by their bits: each change costs its value's width plus 32 for its time and
+  // entry. About what 8M changes of a 32-bit signal took; a 512-bit signal keeps ~470k changes.
+  const CACHED_BITS = 256e6;
+  const cachedBits = () => (Number(waveform.traceCacheBits) > 0 ? Number(waveform.traceCacheBits) : CACHED_BITS);
   // Native requests that get no answer in this long fail (the sidecar may be building: minutes).
   const REQUEST_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -253,24 +256,29 @@
     const changes = await host.signalChanges(v, MAX_CHANGES);
     const out = Array.isArray(changes) ? changes : null;
     s.changes.set(v.netlistId, out);
-    // Keep at most CACHED_CHANGES changes across signals: Verdi checks' first, then the oldest read.
-    s.cached = (s.cached || 0) + (out ? out.length : 0);
+    // Keep at most CACHED_BITS across signals: Verdi checks' reads go first, then the oldest; the
+    // one just read stays.
+    if (!s.bitsOf) { s.bitsOf = new Map(); }
+    const bits = out ? out.length * ((Number(v.width) || 1) + 32) : 0;
+    s.bitsOf.set(v.netlistId, bits);
+    s.cached = (s.cached || 0) + bits;
+    const max = cachedBits();
     const drop = (id) => dropChanges(s, id);
     for (const id of [...s.background]) {
-      if (s.cached <= CACHED_CHANGES) { break; }
+      if (s.cached <= max) { break; }
       if (id !== v.netlistId && s.changes.has(id)) { drop(id); }
     }
     for (const id of [...s.changes.keys()]) {
-      if (s.cached <= CACHED_CHANGES || id === v.netlistId) { break; }
-      drop(id);
+      if (s.cached <= max) { break; }
+      if (id !== v.netlistId) { drop(id); }
     }
     return out;
   }
   function dropChanges(s, id) {
-    const list = s.changes.get(id);
     s.changes.delete(id);
     s.background.delete(id);
-    s.cached = (s.cached || 0) - (list ? list.length : 0);
+    s.cached = (s.cached || 0) - ((s.bitsOf && s.bitsOf.get(id)) || 0);
+    if (s.bitsOf) { s.bitsOf.delete(id); }
   }
   const bitsOf = (value, width) => {
     const t = String(value);
@@ -651,7 +659,8 @@
   function state() {
     const st = history.steps[history.at];
     return { open: !!(panel && !panel.hidden), steps: history.steps.length, at: history.at, step: st ? plain(st) : null,
-      prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0 } };
+      prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0 },
+      cache: { signals: session && session.changes ? session.changes.size : 0, bits: (session && session.cached) || 0 } };
   }
   const plain = (x) => JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   const number = (n) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString() : String(n));
