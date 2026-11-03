@@ -96,6 +96,8 @@
   // (or it was cancelled). A Verdi check's (`bg`) queries are kept in bg.pending while the helper
   // has them, so the check can cancel what is left when it ends.
   async function v2(req, bg) {
+    // A stopped check asks nothing more (its caller falls back to changesOf, which is stale then).
+    if (bg && bg.stop && bg.stop()) { return undefined; }
     const b = session.backend;
     const id = v2Id();
     const pending = bg && bg.pending;
@@ -105,7 +107,8 @@
     const r = answer && answer.reply;
     if (r && r.cancelled) { return undefined; }
     if (r && r.error && /larger than|store limit/i.test(String(r.error)) && req.signalId !== undefined) {
-      // Over the helper's store limit: its whole read is capped as well, so it is not tried.
+      // Over the helper's store limit (about 244 MB of history): a whole read, capped only by its
+      // change count, would be about a GB of values in the page, so the signal stays unknown.
       if (!session.refused) { session.refused = new Set(); }
       session.refused.add(req.signalId);
     }
@@ -142,8 +145,11 @@
     const id = v.signalId, rest = '?'.repeat(width - 1);
     const now = await v2({ cmd: 'valueAt', signalIds: [id], t: time }, bg);
     const value = now && Array.isArray(now.values) ? now.values[0] : undefined;
-    if (typeof value !== 'string') { return undefined; }
-    let bit = bitsOf(value, width).slice(-1).toLowerCase();
+    // A value of another width than the netlist's, or a last bit other than 0/1/x/z, can't be
+    // searched for: the caller reads the changes instead.
+    if (typeof value !== 'string' || value.length !== width) { return undefined; }
+    let bit = value.slice(-1).toLowerCase();
+    if (!'01xz'.includes(bit)) { return undefined; }
     let before = Math.floor(time) + 1;
     for (let run = 0; run < 16; run++) {
       let at = null, was = null;
@@ -168,10 +174,13 @@
   // step of ours is running and go one at a time (the v1 helper serves one read at a time, so a
   // step behind them would wait); one whose history would be larger than maxBits (width x changes,
   // the changes estimated by `hint`, the traced signal's, which a port passes on) is refused on v1,
-  // whose single reader it would hold; on v2 it is read (only when the helper's queries can't answer,
-  // and the check's budget still bounds it). A signal only a Verdi check read is evicted before the
-  // ones our steps read.
+  // whose single reader it would hold. On v2 such a read happens only when the helper's queries
+  // can't answer; once started it runs to the end (the check's budget only keeps new ones from
+  // starting), so one that ends after its check stopped is not kept, and one over V2_MAX_BITS
+  // (width x changes, the helper's count; a memory guard far above a 512-bit bus at MAX_CHANGES)
+  // is refused as large. A signal only a Verdi check read is evicted before the ones our steps read.
   const VERDI_MAX_BITS = 64e6;
+  const V2_MAX_BITS = 2e9;
   function changesOf(v, bg) {
     const s = session, id = v.netlistId;
     if (!s.background) { s.background = new Set(); }
@@ -190,18 +199,36 @@
       const count = Number.isFinite(bg.hint) ? bg.hint : null;
       const bits = count !== null ? count * width : (width > 64 ? Infinity : 0);
       if (s.kind !== 'v2' && bits > bg.maxBits) { return Promise.reject(Object.assign(new Error('large'), { code: 'large' })); }
-      entry.promise = inLine(s, () => {
+      entry.promise = inLine(s, async () => {
         if (bg.stop()) { throw Object.assign(new Error('stale'), { code: 'stale' }); }
         if (s.changes.has(id)) { return s.changes.get(id); }
         const now = s.reading.get(id);
         if (now && now !== entry) { return now.promise; }
+        if (s.kind === 'v2' && await overV2Ceiling(v, bg)) { throw Object.assign(new Error('large'), { code: 'large' }); }
+        if (bg.stop()) { throw Object.assign(new Error('stale'), { code: 'stale' }); }
         entry.started = true;
         s.background.add(id);
-        return readChanges(s, v);
+        const out = await readChanges(s, v);
+        // Ended after its check stopped, and no step of ours asked for it: not kept.
+        if (bg.stop() && s.background.has(id)) { dropChanges(s, id); }
+        return out;
       }).finally(done);
     }
     s.reading.set(id, entry);
     return entry.promise;
+  }
+  // Whether a check's whole read of `v` on v2 would be over the memory ceiling (width x changes):
+  // asked of the helper only when the width alone could get there.
+  async function overV2Ceiling(v, bg) {
+    const max = Number(waveform.traceVerdiV2MaxBits) > 0 ? Number(waveform.traceVerdiV2MaxBits) : V2_MAX_BITS;
+    const width = Number(v.width) || 1;
+    if (width * MAX_CHANGES <= max) { return false; }
+    const r = await v2({ cmd: 'count', signalIds: [v.signalId] }, bg);
+    const c = r && Array.isArray(r.counts) ? r.counts[0] : null;
+    if (!c || !Number.isFinite(Number(c.count))) { return false; }
+    // Over MAX_CHANGES the helper sends a count, no values: nothing to hold.
+    const count = Number(c.count);
+    return count <= MAX_CHANGES && count * (Number(c.bits) || width) > max;
   }
   // Runs `read` after the background reads before it, once no step of ours is running.
   function inLine(s, read) {
@@ -221,12 +248,7 @@
     s.changes.set(v.netlistId, out);
     // Keep at most CACHED_CHANGES changes across signals: Verdi checks' first, then the oldest read.
     s.cached = (s.cached || 0) + (out ? out.length : 0);
-    const drop = (id) => {
-      const list = s.changes.get(id);
-      s.changes.delete(id);
-      s.background.delete(id);
-      s.cached -= list ? list.length : 0;
-    };
+    const drop = (id) => dropChanges(s, id);
     for (const id of [...s.background]) {
       if (s.cached <= CACHED_CHANGES) { break; }
       if (id !== v.netlistId && s.changes.has(id)) { drop(id); }
@@ -236,6 +258,12 @@
       drop(id);
     }
     return out;
+  }
+  function dropChanges(s, id) {
+    const list = s.changes.get(id);
+    s.changes.delete(id);
+    s.background.delete(id);
+    s.cached = (s.cached || 0) - (list ? list.length : 0);
   }
   const bitsOf = (value, width) => {
     const t = String(value);
@@ -286,6 +314,7 @@
       const v = await varOf(p);
       if (!v) { return null; }
       if (session.kind === 'v2') {
+        if (refusedByHelper(v)) { return null; }
         // Integer times: the last change at or before `time` is the last one before time + 1.
         const at = await v2Edge(v, Math.floor(time) + 1, 'any', background);
         if (at !== undefined) { return at === null ? 0 : at; }
@@ -302,6 +331,7 @@
       const width = Number(v.width) || 1;
       // The helper's rise/fall is a change to 1/0 (x to 1 counts, 0 to x does not); a wide
       // clock's edge (its last bit) is searched for.
+      if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
       if (session.kind === 'v2' && width === 1) {
         const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any', background);
         if (at !== undefined) { return at; }
@@ -438,9 +468,11 @@
     const deadline = Date.now() + verdiBudget();
     const late = { timedOut: true };
     let timer;
-    const limit = new Promise((resolve) => { timer = setTimeout(() => resolve(late), Math.max(0, deadline - Date.now())); });
+    // Done once its budget is up or it has settled: from then on it reads and asks nothing.
+    let done = false;
+    const limit = new Promise((resolve) => { timer = setTimeout(() => { done = true; resolve(late); }, Math.max(0, deadline - Date.now())); });
     const gone = () => !history.steps.includes(step);
-    const stop = () => gone() || Date.now() > deadline;
+    const stop = () => done || gone() || Date.now() >= deadline;
     const v = session.vars.get(step.signal);
     const known = v && session.changes.get(v.netlistId);
     const hint = Array.isArray(known) ? known.length : undefined;
@@ -461,7 +493,7 @@
       if (history.steps[history.at] === shown) { render(); }
       host.toNative({ type: 'trace', event: 'update', step: plain(shown) });
     }).catch((error) => { host.log(error); step.engine.verdi = 'timedOut'; })
-      .finally(() => { clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check); });
+      .finally(() => { done = true; clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check); });
     checks.add(check);
   }
   // Resolves when every Verdi check under way has finished (cmux and the checks wait on this).

@@ -714316,6 +714316,65 @@
         }
       }
     },
+    "waveformTrace.reason.sinceUnknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When the value last changed is unknown (the signal is too large for the waveform reader); the activation shown is the last clock edge."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "وقت آخر تغيّر للقيمة غير معروف (الإشارة أكبر من أن يقرأها قارئ الموجات)؛ التنشيط المعروض هو آخر حافة ساعة."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wann sich der Wert zuletzt geändert hat, ist unbekannt (das Signal ist für den Wellenform-Leser zu groß); die gezeigte Aktivierung ist die letzte Taktflanke."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se sabe cuándo cambió el valor por última vez (la señal es demasiado grande para el lector de ondas); la activación mostrada es el último flanco de reloj."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On ne sait pas quand la valeur a changé pour la dernière fois (le signal est trop gros pour le lecteur de chronogrammes) ; l’activation affichée est le dernier front d’horloge."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "値が最後に変化した時刻は不明です（信号が波形リーダーには大きすぎます）。表示している起動は直前のクロックエッジです。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "값이 마지막으로 바뀐 시점을 알 수 없습니다(신호가 파형 리더가 읽기에 너무 큽니다). 표시된 활성화는 마지막 클록 에지입니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "值最后一次变化的时间未知（该信号对波形读取器来说太大）；显示的触发是最近一次时钟沿。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "值最後一次變化的時間未知（此訊號對波形讀取器來說太大）；顯示的觸發是最近一次時脈邊緣。"
+          }
+        }
+      }
+    },
     "waveformTrace.reason.statement": {
       "extractionState": "manual",
       "localizations": {
