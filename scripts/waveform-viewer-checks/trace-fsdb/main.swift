@@ -86,7 +86,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       : [WaveformFSDBHelper.Install(protocolVersion: 1, resourceRoot: helperRoot)]
     print("[helper] \(installs.map { "v\($0.protocolVersion)" }.joined(separator: ", then "))\(home.isEmpty ? "" : ", own install folder")")
     helper = WaveformFSDBHelper(sshArguments: { cmd in
-      ["-o", "BatchMode=yes", "-T", "--", sshHost, home + "exec nice -n 10 bash -c " + shellQuoted(cmd)]
+      ["-o", "BatchMode=yes", "-T", "--", sshHost, "exec env " + home + "nice -n 10 bash -c " + shellQuoted(cmd)]
     }, installs: installs) { status in print("[status]", status) }
     web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
   }
@@ -195,7 +195,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let p = Process(), out = Pipe()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
     p.arguments = ["-o", "BatchMode=yes", "-T", "--", sshHost,
-                   "ps -u \"$(id -un)\" -o rss=,args= | grep -E '[N]ovas|[v]erdi -nogui|[v]erdi3' | awk '{s+=$1; n++} END {printf \"%d processes, %.0f MB\", n, s/1024}'"]
+                   "exec bash -c " + shellQuoted("ps -u \"$(id -un)\" -o rss=,args= | grep -E '[N]ovas|[v]erdi -nogui|[v]erdi3' | awk '{s+=$1; n++} END {printf \"%d processes, %.0f MB\", n, s/1024}'")]
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
     do { try p.run() } catch { return "unknown (\(error))" }
