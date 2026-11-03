@@ -285,7 +285,7 @@ case "${1:-}" in
     swiftc -O "$HERE/trace-fsdb/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$L/SVModelSidecar.swift" "$L/VerdiTraceLaunch.swift" \
       "$L/HierarchyPathMapping.swift" "$OUT/slang-target.swift" -o "$OUT/trace-fsdb"
-    "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
+    "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep --line-buffered -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
     grep -q '^TRACE FSDB CHECKS PASSED' "$OUT/trace-fsdb.log"
     ;;
   trace-smoke)
