@@ -1,5 +1,5 @@
 $date
-	Tue Nov  3 14:31:44 2026
+	Tue Nov  3 14:36:25 2026
 $end
 $version
 	Icarus Verilog
@@ -25,10 +25,12 @@ $var wire 1 + is_xor $end
 $var wire 1 , is_add $end
 $var reg 8 - a2 [7:0] $end
 $var reg 2 . op [1:0] $end
-$var reg 8 / q [7:0] $end
-$var reg 8 0 tmp [7:0] $end
-$var reg 8 1 y [7:0] $end
-$var reg 8 2 zq [7:0] $end
+$var reg 16 / p0 [15:0] $end
+$var reg 16 0 p1 [15:0] $end
+$var reg 8 1 q [7:0] $end
+$var reg 8 2 tmp [7:0] $end
+$var reg 8 3 y [7:0] $end
+$var reg 8 4 zq [7:0] $end
 $upscope $end
 $upscope $end
 $enddefinitions $end
@@ -37,6 +39,8 @@ $dumpall
 $end
 #0
 $dumpvars
+bx 4
+bx 3
 bx 2
 bx 1
 bx 0
@@ -63,9 +67,11 @@ bx0001 #
 bx0001 (
 #5000
 b100010 "
-b100010 /
-b0 2
-bx 0
+b100010 1
+b0 4
+bx000100100010 /
+bx0000 0
+bx 2
 1%
 #10000
 0%
@@ -74,19 +80,20 @@ b1 '
 b1 *
 1&
 #15000
-bx 2
+bx000100100000 0
+bx 4
 1,
 0+
 b1 .
 bx0001 "
-bx0001 /
-bx 0
+bx0001 1
+bx 2
 1%
 #20000
 0%
 #22000
 b100101 !
-b100101 1
+b100101 3
 b10 '
 b10 *
 0&
@@ -94,13 +101,16 @@ b11 #
 b11 (
 #25000
 b100010 "
-b100010 /
-bx 0
+b100010 1
+b1100100010 /
+bx000100100000 0
+bx 2
 1%
 #30000
 0%
 #35000
-bx 0
+b1100100000 0
+bx 2
 1%
 #40000
 0%

@@ -2,7 +2,8 @@
 // Design J: an x reaching a flop through a blocking temp that the block sets to 'bx at its end
 // (a CPU core's current_pc), and an x made by a default 'bx because no item of a later
 // case (1'b1) matched (a CPU core's ALU result for an x instruction), and a flop rewritten with x
-// from a different source than the one that first made it x (x to x writes aren't changes).
+// from a different source than the one that first made it x (x to x writes aren't changes), and a
+// word whose x bits came from a whole write that a later part-select write (of known bits) overlaid.
 module j_temps (
   input  logic       clk,
   input  logic [7:0] a,
@@ -41,4 +42,11 @@ module j_temps (
       2'd1:    zq <= 8'bx;
       default: zq <= a2;
     endcase
+
+  logic [15:0] p0, p1;
+  always @(posedge clk) p0 <= {a, b};
+  always @(posedge clk) begin
+    p1 <= p0;
+    p1[3:0] <= 4'h0;
+  end
 endmodule
