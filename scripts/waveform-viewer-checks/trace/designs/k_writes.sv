@@ -2,13 +2,15 @@
 // Design K: writes the model can't re-execute but must still see, so that the signal's driver is
 // approximate rather than a confident "nothing writes it": a simulator's own task (one slang
 // doesn't know) given a variable by name, a task whose body writes a module variable, and a
-// function called in an assignment's right side whose body writes one. Also a guard: a later if
-// in the block that doesn't write the signal isn't why it has its value (ky).
-//
+// function called in an assignment's right side whose body writes one. Also guards: a later if in
+// the block that doesn't write the signal isn't why it has its value (ky), and a flop that went x
+// at an edge, then forced to x by the testbench: later edges, whose runs write known values,
+// didn't make the x in effect (fr).
 module k_writes (
   input  logic       clk,
   input  logic       go,
   input  logic [7:0] a,
+  input  logic [7:0] xa,
   output logic [7:0] fq
 );
   logic [7:0] vq;
@@ -36,4 +38,7 @@ module k_writes (
     ky = a;
     if (go) kz = a;
   end
+
+  logic [7:0] fr;
+  always @(posedge clk) fr <= xa;
 endmodule
