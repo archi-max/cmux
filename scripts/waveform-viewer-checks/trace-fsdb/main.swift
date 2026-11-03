@@ -8,11 +8,17 @@
 // `verdi -nogui` session found through the KDB next to the FSDB), answers the page's engine
 // requests from it, and counts how the two engines' answers compare. TRACE_FSDB_UNDRIVEN=a,b names
 // signals the design leaves undriven (no driver is the right answer for them). TRACE_FSDB_PROFILE=1 prints
-// each step's whole-signal reads (count, signals, how many were read before, changes, summed time, most at once).
+// each step's whole-signal reads (count, signals, how many were read before, changes, summed time, most at once),
+// and on helper v2 its windowed requests by command (count, summed time).
+// TRACE_FSDB_V2=1 runs the helpers as cmux does by default (waveform.fsdbLoading auto: helper v2,
+// <assetRoot>/fsdb-helper-v2, else v1); TRACE_FSDB_HOME=<dir> installs them under <dir> on the host
+// instead of the user's home (so a test never replaces the helpers in use). Default: helper v1.
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
 
+// Line-buffered: a run cut short keeps what it printed.
+setvbuf(stdout, nil, _IOLBF, 0)
 let args = CommandLine.arguments
 let assetRoot = URL(fileURLWithPath: args[1], isDirectory: true)
 let helperRoot = URL(fileURLWithPath: args[2], isDirectory: true)
@@ -65,9 +71,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     window.setFrameOrigin(NSPoint(x: -30000, y: -30000))
     window.alphaValue = 0
     window.ignoresMouseEvents = true
+    let env = ProcessInfo.processInfo.environment
+    let home = env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " " } ?? ""
+    let installs = env["TRACE_FSDB_V2"] == "1"
+      ? WaveformFSDBHelper.installs(v2Root: assetRoot.appendingPathComponent("fsdb-helper-v2", isDirectory: true), v1Root: helperRoot, loading: .auto)
+      : [WaveformFSDBHelper.Install(protocolVersion: 1, resourceRoot: helperRoot)]
+    print("[helper] \(installs.map { "v\($0.protocolVersion)" }.joined(separator: ", then "))\(home.isEmpty ? "" : ", own install folder")")
     helper = WaveformFSDBHelper(sshArguments: { cmd in
-      ["-o", "BatchMode=yes", "-T", "--", sshHost, "exec nice -n 10 bash -c " + shellQuoted(cmd)]
-    }, resourceRoot: helperRoot) { status in print("[status]", status) }
+      ["-o", "BatchMode=yes", "-T", "--", sshHost, home + "exec nice -n 10 bash -c " + shellQuoted(cmd)]
+    }, installs: installs) { status in print("[status]", status) }
     web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
   }
 
@@ -205,8 +217,16 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
               }
               finally { p.now--; p.ms += performance.now() - t; }
             };
+            if (b.v2) {
+              const v2 = b.v2.bind(b);
+              b.v2 = async (req) => {
+                const t = performance.now();
+                try { return await v2(req); }
+                finally { const c = p.v2[req.cmd] = p.v2[req.cmd] || { n: 0, ms: 0 }; c.n++; c.ms += performance.now() - t; }
+              };
+            }
           }
-          Object.assign(window.__traceProf, { calls: 0, signals: 0, changes: 0, ms: 0, most: 0, again: 0, againChanges: 0 });
+          Object.assign(window.__traceProf, { calls: 0, signals: 0, changes: 0, ms: 0, most: 0, again: 0, againChanges: 0, v2: {} });
           return null
           """)
       }
@@ -239,7 +259,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           print("[verdi differs] \(path) @\(t): cmux \((ours?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(ours?["line"] ?? "") verdi \((theirs?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(theirs?["line"] ?? "") since \(step["since"] ?? "")")
         }
       }
-      if profile, let p = await call("const p = window.__traceProf; return p ? { calls: p.calls, signals: p.signals, changes: p.changes, ms: p.ms, most: p.most, again: p.again, againChanges: p.againChanges } : null") as? [String: Any] {
+      if profile, let p = await call("const p = window.__traceProf; return p ? { calls: p.calls, signals: p.signals, changes: p.changes, ms: p.ms, most: p.most, again: p.again, againChanges: p.againChanges, v2: Object.entries(p.v2 || {}).map(([k, c]) => `${k} ${c.n} (${Math.round(c.ms)} ms)`).join(', ') } : null") as? [String: Any] {
+        if let v2 = p["v2"] as? String, !v2.isEmpty { print("[profile] \(path): v2 \(v2)") }
         print(String(format: "[profile] %@: %d reads, %d signals (%d read before, %d changes), %d changes, %.0f ms in reads (summed), at most %d at once",
                      path, p["calls"] as? Int ?? 0, p["signals"] as? Int ?? 0, p["again"] as? Int ?? 0, p["againChanges"] as? Int ?? 0,
                      p["changes"] as? Int ?? 0, p["ms"] as? Double ?? 0, p["most"] as? Int ?? 0))
