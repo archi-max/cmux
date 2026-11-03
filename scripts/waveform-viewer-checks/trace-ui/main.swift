@@ -503,7 +503,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("""
       const h = cmuxWaveform.host, b = h.currentBackend;
       const own = b.signalChanges.bind(b);
-      const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), pending: new Map(), inFake: false };
+      const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), fail: new Set(), pending: new Map(), inFake: false };
       const pad = (val, w) => { const t = String(val).toLowerCase(); return t.length >= w ? t : (t[0] === 'x' || t[0] === 'z' ? t[0] : '0').repeat(w - t.length) + t; };
       m.changes = async (id) => {
         m.inFake = true;
@@ -557,6 +557,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           }
           const ids = req.signalIds || [req.signalId];
           if (ids.some((id) => m.hang.has(id))) { return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          if (ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
           try { return { reply: { id: req.id, result: await m.answer(req) } }; }
           catch (error) { return { reply: { id: req.id, error: String(error.message) } }; }
         };
@@ -635,6 +636,30 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(cancelled?["verdi"] as? String == "timedOut" && (cancelled?["cancels"] as? Int ?? 0) > 0 && cancelled?["left"] as? Int == 0,
            "v2 helper: a Verdi check past its budget cancels its queries still with the helper: \(String(describing: cancelled))")
     expect(cancelled?["downloads"] as? Int == 0, "v2 helper: a timed-out Verdi check downloads nothing: \(String(describing: cancelled?["downloads"]))")
+
+    // On v2 a large signal is not skipped: a port hop the helper can't answer by query is read
+    // whole and followed, whatever its size (only v1 refuses: "not checked (large signal)").
+    let bigV2 = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+      cmuxWaveform.traceVerdiMaxBits = 1;
+      const widened = [];
+      try {
+        m.install(); m.downloads = 0;
+        t.backendChanged();
+        // Wider than 64 bits with no history read yet: what v1 refuses unread.
+        for (const name of ['q', 'qd', 'in', 'mix']) {
+          const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', name], true);
+          if (v) { m.fail.add(v.signalId); widened.push([v, v.width]); v.width = 65; }
+        }
+        await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        if (t.settled) { await t.settled(); }
+        const e = t.state().step && t.state().step.engine;
+        return { verdi: e && e.verdi, name: e && e.name, downloads: m.downloads };
+      } finally { for (const [v, w] of widened) { v.width = w; } m.fail.clear(); m.remove(); delete cmuxWaveform.traceVerdiMaxBits; t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] large signal: \(String(describing: bigV2))")
+    expect(bigV2 != nil && bigV2?["verdi"] as? String != "large" && bigV2?["verdi"] as? String != "timedOut" && (bigV2?["downloads"] as? Int ?? 0) > 0,
+           "v2 helper: a large port hop is followed, not skipped: \(String(describing: bigV2))")
     engineAnswers = [:]
 
     engineAnswer = nil
