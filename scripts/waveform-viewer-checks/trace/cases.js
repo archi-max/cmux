@@ -22,6 +22,8 @@ const TRACE_DUMPS = {
   h: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   i: ['icarus'],
   j: ['icarus'],
+  // The vendor task is $deposit under Icarus (the model sees $cmux_poke).
+  k: ['icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -184,6 +186,14 @@ const TRACE_CASES = [
   // p1 <= p0 then p1[3:0] <= 4'h0: p1's x bits (the high nibble, from a) came from the whole write.
   { d: 'j', sig: 'tb_j.dut.p1', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 49, stmt: 'p1 <= p0;', value: 'xxxx000100100000',
     fanin: { 'tb_j.dut.p0': 'xxxx000100100010' } },
+
+  // ---- K: writes that aren't re-executed: a driver that may have written, never a confident "nothing" ----
+  // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
+  { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 16, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
+  // A task call whose body writes tq.
+  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 23, stmt: 'clear_t;', trust: 'approximate', reasons: ['statement'] },
+  // fq <= bump(a), and bump's body writes fcnt.
+  { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 30, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
 ];
 
 function runTraceChecks() {
