@@ -13,6 +13,7 @@ module tb_k;
     #2  a = 8'h11;                   // t=2
     #10 begin go = 1; xa = 8'hxx; end  // t=12: vq, tq, fcnt written at 15; fr x at 15
     #10 begin go = 0; a = 8'h22; xa = 8'h05; force dut.fr = 8'bx; end  // t=22: fcnt, fq at 25; fr stays x
-    #20 $finish;                     // t=42
+    #5  begin force dut.gq = 8'h77; $deposit(dut.dq, 8'h44); end  // t=27
+    #15 $finish;                     // t=42
   end
 endmodule
