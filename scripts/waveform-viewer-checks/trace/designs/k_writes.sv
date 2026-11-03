@@ -2,7 +2,9 @@
 // Design K: writes the model can't re-execute but must still see, so that the signal's driver is
 // approximate rather than a confident "nothing writes it": a simulator's own task (one slang
 // doesn't know) given a variable by name, a task whose body writes a module variable, and a
-// function called in an assignment's right side whose body writes one.
+// function called in an assignment's right side whose body writes one. Also a guard: a later if
+// in the block that doesn't write the signal isn't why it has its value (ky).
+//
 module k_writes (
   input  logic       clk,
   input  logic       go,
@@ -28,4 +30,10 @@ module k_writes (
     bump = v;
   endfunction
   always @(posedge clk) fq <= bump(a);
+
+  logic [7:0] ky, kz;
+  always @* begin
+    ky = a;
+    if (go) kz = a;
+  end
 endmodule

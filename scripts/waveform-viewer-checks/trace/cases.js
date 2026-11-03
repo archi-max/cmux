@@ -5,7 +5,7 @@
 // the dump). Fields of a case, each checked when present:
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
-//   fanin { path or local name: bits, or '*' for any value }, roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
+//   fanin { path or local name: bits, or '*' for any value }, noFanin [names that must not be fan-in], roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
 //   trust, root, reasons [codes that must be there], viol [each decision's case violation or null],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
 /* global cmuxTrace, traceVcd, traceFiles */
@@ -189,11 +189,13 @@ const TRACE_CASES = [
 
   // ---- K: writes that aren't re-executed: a driver that may have written, never a confident "nothing" ----
   // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
-  { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 16, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
+  { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 18, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
   // A task call whose body writes tq.
-  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 23, trust: 'approximate', reasons: ['statement'] },
+  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 25, trust: 'approximate', reasons: ['statement'] },
   // fq <= bump(a), and bump's body writes fcnt.
-  { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 30, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
+  // ky = a, then if (go) kz = a: the later if doesn't write ky, so go isn't in its fan-in.
+  { d: 'k', sig: 'tb_k.dut.ky', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 36, stmt: 'ky = a;', fanin: { 'tb_k.dut.a': '00100010' }, noFanin: ['tb_k.dut.go'] },
+  { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 32, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
 ];
 
 function runTraceChecks() {
@@ -250,6 +252,9 @@ function runTraceChecks() {
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
       if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (v !== '*' && f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
+    }
+    for (const k of c.noFanin || []) {
+      if ((step.fanin || []).some((x) => x.path === k || (x.local && x.name === k))) { bad.push(`fan-in has ${k}, which isn't why it has its value`); }
     }
     for (const [k, v] of Object.entries(c.roles || {})) {
       const f = (step.fanin || []).find((x) => (x.path === k || (x.local && x.name === k)) && x.role === v);
