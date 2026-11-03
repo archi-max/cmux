@@ -21,6 +21,7 @@ const TRACE_DUMPS = {
   g: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   h: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   i: ['icarus'],
+  j: ['icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -168,6 +169,14 @@ const TRACE_CASES = [
   { d: 'i', sig: 'tb_i.settle', t: 30000, kind: 'proc', proc: 'Always', file: 'tb_i.sv', line: 14, stmt: 'settle++;', noReasons: ['noWrite'] },
   { d: 'i', sig: 'tb_i.iters', t: 30000, kind: 'initial', root: 'testbench', file: 'tb_i.sv', line: 16 },
   { d: 'i', sig: 'tb_i.epoch', t: 30000, kind: 'initial', root: 'testbench', file: 'tb_i.sv', line: 17, stmt: 'epoch = iters;' },
+
+  // ---- J: an x through a blocking temp the block ends with tmp = 'bx; a default 'bx no later case item replaced ----
+  // q <= tmp, tmp = go ? a : b earlier in the block: q's fan-in is a and go (what reached q), not just tmp.
+  { d: 'j', sig: 'tb_j.dut.q', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 17, stmt: 'q <= tmp;', act: 15000, value: 'xxxx0001',
+    fanin: { 'tb_j.dut.a': 'xxxx0001', 'tb_j.dut.go': '1', 'tb_j.dut.tmp': '*' } },
+  // y = 'bx, then case (1'b1) with x items: nothing matched, so the items are why y stayed x.
+  { d: 'j', sig: 'tb_j.dut.y', t: 10000, kind: 'proc', file: 'j_temps.sv', line: 26, stmt: "y = 'bx;",
+    fanin: { 'tb_j.dut.is_add': 'x', 'tb_j.dut.is_xor': 'x' } },
 ];
 
 function runTraceChecks() {
