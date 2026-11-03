@@ -495,6 +495,173 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect((two?["mostHops"] as? Int ?? 99) <= 1, "two checks' port-hop reads go one at a time: at most \(String(describing: two?["mostHops"])) at once")
     engineAnswers = [:]
 
+    // Helper v2 (windowed): nothing of a signal's history is downloaded, even where the page used to
+    // fall back to a whole read. A mock v2 helper answers edge, search, valueAt and cancel from this
+    // VCD's changes (normalized as the helper does: one value per time, no repeats), at a width the
+    // test may set (a 2-bit "clock" whose last bit is the edge), and can leave a signal's requests
+    // unanswered until cancelled.
+    _ = await call("""
+      const h = cmuxWaveform.host, b = h.currentBackend;
+      const own = b.signalChanges.bind(b);
+      const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), fail: new Set(), pending: new Map(), inFake: false };
+      const pad = (val, w) => { const t = String(val).toLowerCase(); return t.length >= w ? t : (t[0] === 'x' || t[0] === 'z' ? t[0] : '0').repeat(w - t.length) + t; };
+      m.changes = async (id) => {
+        m.inFake = true;
+        let ch;
+        try { ch = await own({ signalId: id }, 10000000); } finally { m.inFake = false; }
+        const w = m.widths.get(id) || 1, out = [];
+        for (const [at, val] of ch || []) {
+          const t = Number(at), v = pad(val, w);
+          if (out.length && out[out.length - 1][0] === t) { out.pop(); }
+          if (out.length && out[out.length - 1][1] === v) { continue; }
+          out.push([t, v]);
+        }
+        return out;
+      };
+      const lastBefore = (ch, t, ok) => { for (let i = ch.length - 1; i >= 0; i--) { if (ch[i][0] < t && ok(ch[i][1])) { return ch[i][0]; } } return null; };
+      const firstAfter = (ch, t, ok) => { for (const [at, v] of ch) { if (at > t && ok(v)) { return at; } } return null; };
+      const matches = (v, pattern) => v.length === pattern.length && [...pattern].every((c, i) => c === '?' || c === v[i]);
+      m.answer = async (req) => {
+        if (req.cmd === 'edge') {
+          const ch = await m.changes(req.signalId);
+          const ok = (v) => req.kind === 'any' || v.slice(-1) === (req.kind === 'rise' ? '1' : '0');
+          return { t: req.dir < 0 ? lastBefore(ch, req.t, ok) : firstAfter(ch, req.t, ok) };
+        }
+        if (req.cmd === 'search' && req.wildcard === '?') {
+          const ch = await m.changes(req.signalId);
+          const ok = (v) => matches(v, req.value);
+          return { t: req.dir < 0 ? lastBefore(ch, req.t, ok) : firstAfter(ch, req.t, ok) };
+        }
+        if (req.cmd === 'valueAt') {
+          const values = [];
+          for (const id of req.signalIds) {
+            const ch = await m.changes(id), w = m.widths.get(id) || 1;
+            let v = 'x'.repeat(w);
+            for (const [at, val] of ch) { if (at <= req.t) { v = val; } }
+            values.push(v);
+          }
+          return { values };
+        }
+        throw new Error('not here: ' + req.cmd);
+      };
+      m.install = () => {
+        b.signalChanges = (v, max) => { if (!m.inFake) { m.downloads++; } return own(v, max); };
+        b.windowed = () => true;
+        b.v2 = async (req) => {
+          m.asked.push(req.cmd);
+          if (req.cmd === 'cancel') {
+            m.cancels.push(req.target);
+            const p = m.pending.get(req.target);
+            if (p) { m.pending.delete(req.target); p({ reply: { id: req.target, cancelled: true } }); }
+            return { reply: { id: req.id, result: { cancelled: !!p } } };
+          }
+          const ids = req.signalIds || [req.signalId];
+          if (ids.some((id) => m.hang.has(id))) { return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          if (ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
+          try { return { reply: { id: req.id, result: await m.answer(req) } }; }
+          catch (error) { return { reply: { id: req.id, error: String(error.message) } }; }
+        };
+      };
+      m.remove = () => { b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
+      m.pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
+      return null
+      """)
+
+    // A wide clock (its last bit is the edge): the edge is found with the helper's search, not by
+    // downloading the clock's history.
+    let wide = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+      const clk = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'clk'], true);
+      const width = clk.width;
+      clk.width = 2;
+      m.widths.set(clk.signalId, 2);
+      const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      try {
+        t.backendChanged();
+        const plain = m.pick(await q());
+        m.install(); m.downloads = 0; m.asked = [];
+        t.backendChanged();
+        const v2 = m.pick(await q());
+        return { plain, v2, downloads: m.downloads, asked: [...new Set(m.asked)].sort() };
+      } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
+      """) as? [String: Any]
+    expect(wide?["plain"] as? String != nil && wide?["v2"] as? String == wide?["plain"] as? String,
+           "v2 helper, a 2-bit clock: the same step: \(String(describing: wide?["v2"])) vs \(String(describing: wide?["plain"]))")
+    expect(wide?["downloads"] as? Int == 0 && (wide?["asked"] as? [String])?.contains("search") == true,
+           "v2 helper, a 2-bit clock: its edge is searched for, no history downloaded: \(String(describing: wide?["asked"])) downloads \(String(describing: wide?["downloads"]))")
+
+    // Values the helper's batch can't give (a signal it fails, which fails the batch): each is
+    // asked again on its own, not downloaded.
+    let miss = await call("""
+      const h = cmuxWaveform.host, b = h.currentBackend, t = cmuxWaveform.trace, m = window.__v2mock;
+      const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      try {
+        t.backendChanged();
+        const plain = m.pick(await q());
+        m.install(); m.downloads = 0; m.asked = [];
+        b.changes = async () => { throw new Error('not here'); };
+        b.valuesAt = async () => { throw new Error('reader reports 0 bits (alias?)'); };
+        t.backendChanged();
+        const v2 = m.pick(await q());
+        return { plain, v2, downloads: m.downloads, asked: [...new Set(m.asked)].sort() };
+      } finally { m.remove(); t.backendChanged(); }
+      """) as? [String: Any]
+    expect(miss?["plain"] as? String != nil && miss?["v2"] as? String == miss?["plain"] as? String,
+           "v2 helper, a failed value batch: the same step: \(String(describing: miss?["v2"])) vs \(String(describing: miss?["plain"]))")
+    expect(miss?["downloads"] as? Int == 0 && (miss?["asked"] as? [String])?.contains("valueAt") == true,
+           "v2 helper, a failed value batch: values asked again of the helper, none downloaded: \(String(describing: miss?["asked"])) downloads \(String(describing: miss?["downloads"]))")
+
+    // A Verdi check that runs out of budget while its port-hop queries are still with the helper
+    // cancels them (they would keep a worker busy), and downloads nothing in their place.
+    engineAnswers = ["tb_c.dut.q": ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]]
+    let cancelled = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+      cmuxWaveform.traceVerdiBudgetMs = 800;
+      try {
+        m.install(); m.downloads = 0; m.asked = []; m.cancels = [];
+        t.backendChanged();
+        for (const name of ['q', 'qd', 'clk', 'rst_n', 'in', 'mix']) {
+          const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', name], true);
+          if (v) { m.hang.add(v.signalId); }
+        }
+        const step = await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const hung = m.pending.size;
+        if (t.settled) { await t.settled(); }
+        await new Promise((r) => setTimeout(r, 100));
+        return { shown: !!step, verdi: t.state().step && t.state().step.engine && t.state().step.engine.verdi,
+                 hungAtShown: hung, cancels: m.cancels.length, left: m.pending.size, downloads: m.downloads };
+      } finally { m.hang.clear(); m.pending.clear(); m.remove(); cmuxWaveform.traceVerdiBudgetMs = 1500; t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] cancel on budget: \(String(describing: cancelled))")
+    expect(cancelled?["verdi"] as? String == "timedOut" && (cancelled?["cancels"] as? Int ?? 0) > 0 && cancelled?["left"] as? Int == 0,
+           "v2 helper: a Verdi check past its budget cancels its queries still with the helper: \(String(describing: cancelled))")
+    expect(cancelled?["downloads"] as? Int == 0, "v2 helper: a timed-out Verdi check downloads nothing: \(String(describing: cancelled?["downloads"]))")
+
+    // On v2 a large signal is not skipped: a port hop the helper can't answer by query is read
+    // whole and followed, whatever its size (only v1 refuses: "not checked (large signal)").
+    let bigV2 = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+      cmuxWaveform.traceVerdiMaxBits = 1;
+      const widened = [];
+      try {
+        m.install(); m.downloads = 0;
+        t.backendChanged();
+        // Wider than 64 bits with no history read yet: what v1 refuses unread.
+        for (const name of ['q', 'qd', 'in', 'mix']) {
+          const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', name], true);
+          if (v) { m.fail.add(v.signalId); widened.push([v, v.width]); v.width = 65; }
+        }
+        await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        if (t.settled) { await t.settled(); }
+        const e = t.state().step && t.state().step.engine;
+        return { verdi: e && e.verdi, name: e && e.name, downloads: m.downloads };
+      } finally { for (const [v, w] of widened) { v.width = w; } m.fail.clear(); m.remove(); delete cmuxWaveform.traceVerdiMaxBits; t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] large signal: \(String(describing: bigV2))")
+    expect(bigV2 != nil && bigV2?["verdi"] as? String != "large" && bigV2?["verdi"] as? String != "timedOut" && (bigV2?["downloads"] as? Int ?? 0) > 0,
+           "v2 helper: a large port hop is followed, not skipped: \(String(describing: bigV2))")
+    engineAnswers = [:]
+
     engineAnswer = nil
     _ = await call("delete cmuxWaveform.traceVerdiBudgetMs; return null")
 
