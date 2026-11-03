@@ -70,8 +70,32 @@ fi
 command -v verdi >/dev/null 2>&1 || fail noVerdi ""
 CMUX_VERDI_COMPILE_DIR=$(cd "$(dirname "$DAIDIR")" && pwd)
 export CMUX_VERDI_COMPILE_DIR
+# cmux's requests reach serve.tcl through this relay, which also ends the session (serve.tcl ends at
+# stdin's end) once nothing has asked for CMUX_VERDI_IDLE_SECONDS (default 30 min). A connection
+# whose client slept or vanished without closing (no EOF, sshd lingering) would otherwise keep
+# Verdi, its memory and a licence seat for as long as TCP takes to notice. cmux starts the session
+# again on the next trace.
+IDLE=${CMUX_VERDI_IDLE_SECONDS:-1800}
+case $IDLE in ''|*[!0-9]*) IDLE=1800 ;; esac
+relay() {
+  local line part idle=0 status
+  trap '' PIPE
+  while :; do
+    if IFS= read -r -t 1 part; then
+      printf '%s\n' "$line$part" || return 0
+      line= idle=0
+    else
+      status=$?
+      # A timeout (status over 128) keeps what came of a line; anything else is stdin's end.
+      [ "$status" -gt 128 ] || return 0
+      line=$line$part
+      idle=$((idle + 1))
+      [ "$idle" -lt "$IDLE" ] || return 0
+    fi
+  done
+}
 # Only serve.tcl's lines reach cmux; the rest is kept for the failure message.
-nice -n 10 verdi -nogui -dbdir "$DAIDIR" -ssf "$FSDB" -play "$W/serve.tcl" 2>&1 | tee -a "$W/verdi.out" | grep --line-buffered '^{"id":'
+relay | nice -n 10 verdi -nogui -dbdir "$DAIDIR" -ssf "$FSDB" -play "$W/serve.tcl" 2>&1 | tee -a "$W/verdi.out" | grep --line-buffered '^{"id":'
 if ! grep -q '^{"id":0,"ready":true' "$W/verdi.out"; then
   if grep -qi 'could not checkout.*licen[cs]e' "$W/verdi.out"; then
     fail licence "$(grep -i 'could not checkout' "$W/verdi.out" | tail -1)"
