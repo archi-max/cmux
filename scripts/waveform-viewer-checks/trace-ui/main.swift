@@ -1031,6 +1031,60 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await prefetchRun(sessions: 2, delay: 0.3)
     expect(engineMostInFlight == 2, "prefetch, two sessions, cmux says pool 2: two requests at once (at most \(engineMostInFlight))")
     engineAnswer?["pool"] = nil
+    // Prefetched answers kept are capped (traceVerdiAnswers for tests), oldest out.
+    engineDelay = 0
+    let capped = await call("""
+      const t = cmuxWaveform.trace;
+      cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = 1; cmuxWaveform.traceVerdiAnswers = 2;
+      try {
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        await t.settled();
+        await new Promise((r) => setTimeout(r, 400));
+        return t.state().prefetch;
+      } finally { delete cmuxWaveform.traceVerdiAnswers; }
+      """) as? [String: Any]
+    expect((capped?["asked"] as? Int ?? 0) >= 3 && capped?["kept"] as? Int == 2,
+           "prefetch: the answers kept are capped, oldest out: \(String(describing: capped))")
+    // One session, prefetches queued behind one in flight: a click's step runs, and nothing is
+    // prefetched between it and its check's Verdi request; a clicked leaf still waiting in the
+    // queue is asked once (by the click), not prefetched again.
+    engineLog = []; engineLogGen += 1; engineDelay = 0.3
+    let queued = await call("""
+      const t = cmuxWaveform.trace, b = cmuxWaveform.host.currentBackend;
+      cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = 1;
+      t.backendChanged();
+      await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      await t.settled();
+      const leaves = (t.state().step.fanin || []).filter((f) => f.path).map((f) => ({ path: f.path, time: f.time }));
+      // The first prefetch is in flight now and the rest wait; the click's step is slow (500 ms).
+      await new Promise((r) => setTimeout(r, 450));
+      const slow = b.valuesAt;
+      b.valuesAt = async (...a) => { await new Promise((r) => setTimeout(r, 500)); return slow(...a); };
+      const queuedNow = (t.state().prefetch.queued || []);
+      const lastPath = queuedNow.length ? queuedNow[queuedNow.length - 1] : leaves[leaves.length - 1].path;
+      const last = leaves.find((l) => l.path === lastPath) || leaves[leaves.length - 1];
+      try {
+        await t.driverOfDesign({ designPath: last.path, designPrefix: '', dumpPrefix: '', time: last.time });
+        await t.settled();
+      } finally { b.valuesAt = slow; }
+      await new Promise((r) => setTimeout(r, 2000));
+      return { leaves: leaves.map((l) => l.path), last: last.path, queuedNow };
+      """) as? [String: Any]
+    engineDelay = 0
+    if let leaves = queued?["leaves"] as? [String], let last = queued?["last"] as? String, leaves.count >= 3,
+       (queued?["queuedNow"] as? [String])?.contains(last) == true {
+      // The click's check is the first request asked after the in-flight prefetch it found.
+      let asks = engineLog.map(\.signal)
+      let lastAsks = asks.filter { $0 == last }.count
+      expect(lastAsks == 1, "prefetch: a clicked leaf still in the queue is asked once, not prefetched too: \(lastAsks) of \(asks)")
+      let clickIndex = asks.lastIndex(of: last) ?? -1
+      let before = clickIndex > 0 ? Array(asks[1..<clickIndex]) : []
+      expect(clickIndex > 0 && before.count <= 2,
+             "prefetch, one session: no prefetch starts between a click's step and its check's request: \(asks)")
+    } else {
+      expect(false, "prefetch: the step has at least 3 fan-in leaves, one still queued when clicked: \(String(describing: queued))")
+    }
     // Closing the panel stops prefetching.
     engineLog = []; engineLogGen += 1; engineDelay = 0.3
     _ = await call("""
