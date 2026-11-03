@@ -520,16 +520,22 @@
     }
     return engineRequest(s, signal, time);
   }
-  function engineRequest(s, signal, time) {
+  // A background request (a prefetch) gets a shorter timeout natively, and its failure doesn't
+  // make the next clicks go without Verdi. Each answer says how many requests cmux's pool runs at
+  // once for this dump (`pool`).
+  function engineRequest(s, signal, time, background) {
     s.verdiInFlight = (s.verdiInFlight || 0) + 1;
-    return request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; })
+    const body = background ? { cmd: 'active', signal, time, background: true } : { cmd: 'active', signal, time };
+    return request('engine', body)
+      .then((r) => { const n = r && Math.floor(Number(r.pool)); if (n >= 1) { s.verdiPool = n; } return r; })
+      .catch((error) => { host.log(error); return null; })
       .finally(() => { s.verdiInFlight--; pumpPrefetch(s); });
   }
 
   // ---- Verdi prefetch (status/tracex-verdi-pool.md) ----
   // Once a step's check has settled, Verdi is asked about the step's fan-in leaves (the next click's
   // candidates) while it would sit idle: on one session only when no step or check of ours is
-  // asking, with N sessions (traceVerdiSessions) up to N requests at once. Answers are kept per
+  // asking, with N sessions (traceVerdiSessions, clamped to cmux's pool) up to N requests at once. Answers are kept per
   // trace session (a reload or another dump starts a new one), only when Verdi was ready.
   // Off by default until the pool A/B (one session: a click can wait behind one prefetch call).
   const VERDI_PREFETCH = 0;
@@ -537,7 +543,11 @@
     const n = Number(waveform.traceVerdiPrefetch);
     return waveform.traceVerdiPrefetch !== undefined && Number.isFinite(n) && n >= 0 ? Math.floor(n) : VERDI_PREFETCH;
   };
-  const verdiSessions = () => { const n = Math.floor(Number(waveform.traceVerdiSessions)); return n >= 1 ? Math.min(n, 8) : 1; };
+  // traceVerdiSessions, at most the pool cmux reported for this dump (one until it says more).
+  const verdiSessions = (s) => {
+    const n = Math.floor(Number(waveform.traceVerdiSessions));
+    return Math.min(n >= 1 ? Math.min(n, 8) : 1, (s && s.verdiPool) || 1);
+  };
   const ROLE_ORDER = { data: 0, index: 1, control: 2, clock: 3 };
   function prefetchLeaves(s, step) {
     if (s !== session || s.kind === 'local' || !step || !Array.isArray(step.fanin)) { return; }
@@ -559,12 +569,12 @@
   }
   function pumpPrefetch(s) {
     if (s !== session || !s.prefetch || !s.prefetch.length) { return; }
-    const n = verdiSessions();
+    const n = verdiSessions(s);
     while (s.prefetch.length && (s.verdiInFlight || 0) < n && (n > 1 || (!checks.size && !s.steps))) {
       const { key, signal, time } = s.prefetch.shift();
       if (s.verdiAnswers.has(key)) { continue; }
       s.prefetched = (s.prefetched || 0) + 1;
-      const p = engineRequest(s, signal, time).then((r) => {
+      const p = engineRequest(s, signal, time, true).then((r) => {
         if (!r || r.state !== 'ready') { if (s.verdiAnswers.get(key) === p) { s.verdiAnswers.delete(key); } return null; }
         return r;
       });

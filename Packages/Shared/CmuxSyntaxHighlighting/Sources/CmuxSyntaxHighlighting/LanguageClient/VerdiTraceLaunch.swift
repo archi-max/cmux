@@ -48,6 +48,19 @@ public enum VerdiTraceLaunch {
         return min(300, 15 * pow(2, Double(min(failures, 16) - 1)))
     }
 
+    /// Verdi sessions per dump, told to the page: its prefetch runs at most this many requests at
+    /// once (traceVerdiSessions is clamped to it). One seat each, so one until a pool exists.
+    public static let poolSize = 1
+
+    /// How long cmux waits for Verdi's answer: a click's request (about 0.1-2 s; more for the
+    /// first of a large design), and a background prefetch, which gives up much sooner.
+    public static func requestTimeout(background: Bool) -> TimeInterval { background ? 20 : 120 }
+
+    /// Whether a failed request marks the session unavailable (the next clicks go without Verdi
+    /// until the backoff passes): a click's does; a background prefetch's (a timeout among them)
+    /// doesn't.
+    public static func failureMarksSession(background: Bool) -> Bool { !background }
+
     /// The launcher's line on stderr while Verdi waits for a licence seat.
     public static let licenceQueueMarker = "cmux-verdi: waiting for a Verdi licence"
 
