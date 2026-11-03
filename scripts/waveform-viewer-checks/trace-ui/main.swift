@@ -1064,6 +1064,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return cmuxWaveform.trace === before && Object.isFrozen(before);
     """) as? Bool
     expect(tamper == true, "trace API is frozen and non-writable")
+    // The "when it last changed is unknown" reason fits every step it is on: an edge procedure's
+    // (the last clock edge) and a combinational or latch one's (the values at the time asked), in
+    // English and as the app's default.
+    let resources = assetRoot.deletingLastPathComponent()
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    let sinceEntry = ((catalog?["strings"] as? [String: Any])?["waveformTrace.reason.sinceUnknown"] as? [String: Any])?["localizations"] as? [String: Any]
+    let sinceEn = ((sinceEntry?["en"] as? [String: Any])?["stringUnit"] as? [String: Any])?["value"] as? String ?? ""
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    expect(sinceEn.contains("clock edge") && sinceEn.contains("combinational") && sinceEn.contains("latch")
+             && traceSwift.contains("defaultValue: \"\(sinceEn)\"") && (sinceEntry?.count ?? 0) == 9,
+           "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
     snap()
   }
