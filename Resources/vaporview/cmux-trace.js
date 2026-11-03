@@ -256,7 +256,7 @@
     // ---- statements ----
     function newCtx(m, vals, mode) {
       return { m, vals, mode: mode || 'optimistic', locals: new Map(), blocking: new Map(), writes: new Map(), decisions: [],
-        reasons: [], missing: new Set(), needElems: new Set(), elemsRead: new Set(), statements: 0, path: [] };
+        reasons: [], missing: new Set(), needElems: new Set(), elemsRead: new Set(), statements: 0, path: [], opaque: [] };
     }
     function fork(ctx) {
       return Object.assign({}, ctx, { locals: new Map(ctx.locals), blocking: new Map(ctx.blocking), writes: new Map([...ctx.writes].map(([k, v]) => [k, v.slice()])), decisions: ctx.decisions.slice(), path: ctx.path.slice() });
@@ -287,7 +287,12 @@
         }
         return;
       }
-      if (lhs.opaque !== undefined || !lhs.name) { ctx.reasons.push({ code: 'lvalue', src: lhs.opaque || s.src }); return; }
+      if (lhs.opaque !== undefined || !lhs.name) {
+        ctx.reasons.push({ code: 'lvalue', src: lhs.opaque || s.src });
+        // The variable it writes, when the model knows it: the write ran, its bits aren't modelled.
+        if (lhs.name) { ctx.opaque.push({ stmt: s, name: lhs.name }); }
+        return;
+      }
       const name = lhs.name;
       let target = name, lsb = lhs.lsb !== undefined ? lhs.lsb : 0;
       const full = lhs.full || widthOfTarget(ctx, name) || value.w;
@@ -339,6 +344,7 @@
         }
         case 'timed': ctx.reasons.push({ code: 'delay', src: s.src }); exec(s.stmt, ctx); return;
         case 'if': {
+          ranWrites(s, ctx);
           const c = evalExpr(s.c, ctx).value;
           const t = X.truthy(c);
           const unknown = !t && hasX(c);
@@ -356,6 +362,7 @@
           return;
         }
         case 'case': {
+          ranWrites(s, ctx);
           const sel = evalExpr(s.e, ctx).value;
           let hit = -1;
           // Items are compared as written (a width context would turn their z wildcards into x).
@@ -387,7 +394,13 @@
         }
         default:
           ctx.reasons.push({ code: 'statement', why: s.why, src: s.src });
+          ranWrites(s, ctx);
       }
+    }
+    // A statement that isn't re-executed (or a condition with side effects, such as a
+    // $value$plusargs output) ran: what the model says it writes.
+    function ranWrites(s, ctx) {
+      if (Array.isArray(s.writes)) { s.writes.forEach((w) => ctx.opaque.push({ stmt: s, name: w.name })); }
     }
 
     // X-propagation: run each branch from the same state and merge what they write, per bit
@@ -453,8 +466,11 @@
       if (lhs.concat) { return lhs.concat.some((x) => writesTo(x, name)); }
       return lhs.name === name;
     }
+    // What an opaque statement or a condition with side effects writes (the model's "writes").
+    const opaqueWrites = (s, name) => Array.isArray(s.writes) && s.writes.some((w) => w.name === name);
     function stmtWrites(s, name) {
       if (!s) { return false; }
+      if (opaqueWrites(s, name)) { return true; }
       switch (s.k) {
         case 'seq': return s.s.some((x) => stmtWrites(x, name));
         case 'asgn': return writesTo(s.lhs, name);
@@ -719,7 +735,7 @@
         case 'timed': collectWrites(s.stmt, name, out); return;
         case 'if': collectWrites(s.t, name, out); collectWrites(s.f, name, out); return;
         case 'case': s.items.forEach((it) => collectWrites(it.s, name, out)); collectWrites(s.dflt, name, out); return;
-        default:
+        default: if (opaqueWrites(s, name)) { out.push(s); }
       }
     }
 
@@ -918,6 +934,16 @@
         faninOf(m, e, readsOf(e, { m, vals: ctx.vals, locals: new Map(), blocking: new Map() }), r.sample, 'control', r.fanin);
       }
       if (!pick) {
+        // Written by a statement that isn't re-executed: that statement, its value unpredicted.
+        const sg = signalOf(m, name);
+        const base = sg && sg.element ? sg.element.array : name;
+        const ow = ctx.opaque.find((o) => o.name === base || o.name === name);
+        if (ow) {
+          r.stmt = { src: ow.stmt.src, loc: locOf(m, ow.stmt.loc) };
+          if (!r.reasons.some((x) => x.code === 'statement' || x.code === 'lvalue')) { r.reasons.push({ code: 'statement', why: ow.stmt.why, src: ow.stmt.src }); }
+          notDumped(r, ctx);
+          return r;
+        }
         r.wrote = false;
         r.stmt = { src: p.body.src, loc: locOf(m, p.loc) };
         r.reasons.push({ code: 'noWrite' });

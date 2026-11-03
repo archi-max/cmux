@@ -157,7 +157,7 @@ const TRACE_CASES = [
   // A loop-indexed comb write, per-lane counters in a loop, byte writes into memory words in a loop.
   { d: 'i', sig: 'tb_i.dut.pop', t: 30000, kind: 'proc', proc: 'AlwaysComb', file: 'i_drivers.sv', line: 23, stmt: 'for (int t = 0; t < 4; t++)',
     trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
-  { d: 'i', sig: 'tb_i.dut.lost[1]', t: 30000, kind: 'proc', proc: 'AlwaysFF', file: 'i_drivers.sv', line: 27, stmt: 'for (int c = 0; c < 4; c++) if (valid[c]',
+  { d: 'i', sig: 'tb_i.dut.lost[2]', t: 30000, kind: 'proc', proc: 'AlwaysFF', file: 'i_drivers.sv', line: 27, stmt: 'for (int c = 0; c < 4; c++) if (valid[c]',
     trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
   { d: 'i', sig: 'tb_i.dut.mem[0]', t: 30000, kind: 'proc', proc: 'Always', file: 'i_drivers.sv', line: 30, stmt: 'for (int b = 0; b < 4; b++)',
     trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },

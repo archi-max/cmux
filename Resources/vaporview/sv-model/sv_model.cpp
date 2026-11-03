@@ -52,6 +52,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +62,7 @@
 #include "slang/ast/EvalContext.h"
 #include "slang/ast/Expression.h"
 #include "slang/ast/Statement.h"
+#include "slang/ast/SystemSubroutine.h"
 #include "slang/ast/TimingControl.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
 #include "slang/ast/expressions/CallExpression.h"
@@ -82,6 +84,7 @@
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/driver/Driver.h"
 #include "slang/syntax/AllSyntax.h"
+#include "slang/syntax/SyntaxTree.h"
 #include "slang/text/Json.h"
 #include "slang/text/SourceManager.h"
 #include "slang/util/VersionInfo.h"
@@ -339,6 +342,79 @@ std::string sizedBits(const SVInt& v) {
     }
     return std::to_string(w) + (v.isSigned() ? "'sb" : "'b") + bits;
 }
+
+// A system task or function slang doesn't know (a simulator's own, such as $fsdbDumpvars): taken as
+// a function of any arguments returning int, so the procedure that calls it is still modelled
+// rather than dropped as an invalid statement.
+class UnknownSystemCall : public SystemSubroutine {
+public:
+    explicit UnknownSystemCall(std::string name) : SystemSubroutine(std::move(name), SubroutineKind::Function) {}
+    bool allowEmptyArgument(size_t) const final { return true; }
+    const Expression& bindArgument(size_t index, const ASTContext& context, const syntax::ExpressionSyntax& syntax,
+                                   const Args& previous) const final {
+        // A scope or variable name (a dump task's "what to dump"): any symbol, not a value.
+        if (syntax::NameSyntax::isKind(syntax.kind))
+            return ArbitrarySymbolExpression::fromSyntax(context.getCompilation(), syntax.as<syntax::NameSyntax>(), context);
+        return SystemSubroutine::bindArgument(index, context, syntax, previous);
+    }
+    const Type& checkArguments(const ASTContext& context, const Args&, SourceRange, const Expression*) const final {
+        return context.getCompilation().getIntType();
+    }
+    ConstantValue eval(EvalContext& context, const Args&, SourceRange range,
+                       const CallExpression::SystemCallInfo&) const final {
+        notConst(context, range);
+        return nullptr;
+    }
+};
+
+// The system names ($...) a syntax tree calls.
+void systemNames(const syntax::SyntaxNode& n, std::set<std::string>& out) {
+    for (size_t i = 0, count = n.getChildCount(); i < count; i++) {
+        if (auto child = n.childNode(i))
+            systemNames(*child, out);
+        else if (auto t = n.childToken(i); t && t.kind == parsing::TokenKind::SystemIdentifier)
+            out.emplace(t.valueText());
+    }
+}
+
+// The variables an expression or statement writes: assignment targets (output arguments of calls
+// are assignments too), x++ / x-- operands; the symbol under selects and member accesses.
+struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | VisitFlags::Expressions> {
+    std::vector<const Symbol*> out;
+    static const Symbol* base(const Expression* e) {
+        while (e) {
+            switch (e->kind) {
+                case ExpressionKind::NamedValue:
+                case ExpressionKind::HierarchicalValue: return &e->as<ValueExpressionBase>().symbol;
+                case ExpressionKind::ElementSelect: e = &e->as<ElementSelectExpression>().value(); break;
+                case ExpressionKind::RangeSelect: e = &e->as<RangeSelectExpression>().value(); break;
+                case ExpressionKind::MemberAccess: e = &e->as<MemberAccessExpression>().value(); break;
+                case ExpressionKind::Conversion: e = &e->as<ConversionExpression>().operand(); break;
+                default: return nullptr;
+            }
+        }
+        return nullptr;
+    }
+    void add(const Expression& lv) {
+        if (lv.kind == ExpressionKind::Concatenation) {
+            for (auto op : lv.as<ConcatenationExpression>().operands())
+                add(*op);
+            return;
+        }
+        if (auto sym = base(&lv); sym && std::find(out.begin(), out.end(), sym) == out.end())
+            out.push_back(sym);
+    }
+    void handle(const AssignmentExpression& a) {
+        add(a.left());
+        visitDefault(a);
+    }
+    void handle(const UnaryExpression& u) {
+        if (u.op == UnaryOperator::Preincrement || u.op == UnaryOperator::Predecrement ||
+            u.op == UnaryOperator::Postincrement || u.op == UnaryOperator::Postdecrement)
+            add(u.operand());
+        visitDefault(u);
+    }
+};
 
 class Model {
 public:
@@ -1111,6 +1187,14 @@ private:
         if (!win.ok || scratch.opaque.size()) {
             w.writeProperty("opaque");
             w.writeValue(text(e));
+            // The variable under it, so the write is still found as one to that variable.
+            if (auto sym = WriteFinder::base(&e)) {
+                auto n = relName(throughModport(*sym));
+                if (n.rfind("$local:", 0) != 0) {
+                    w.writeProperty("name");
+                    w.writeValue(n);
+                }
+            }
             w.writeProperty("width");
             w.writeValue(int64_t(e.type ? e.type->getBitWidth() : 0));
             w.endObject();
@@ -1300,14 +1384,40 @@ private:
         w.endObject();
     }
 
+    // "writes": [{name}...], the variables `f` finds written (procedural locals left out), if any.
+    void writeWrites(JsonWriter& w, const WriteFinder& f) {
+        std::vector<std::string> names;
+        for (auto sym : f.out) {
+            auto n = relName(throughModport(*sym));
+            if (n.rfind("$local:", 0) == 0 || std::find(names.begin(), names.end(), n) != names.end())
+                continue;
+            names.push_back(n);
+        }
+        if (names.empty())
+            return;
+        w.writeProperty("writes");
+        w.startArray();
+        for (auto& n : names) {
+            w.startObject();
+            w.writeProperty("name");
+            w.writeValue(n);
+            w.endObject();
+        }
+        w.endArray();
+    }
+
     void writeStmt(JsonWriter& w, const Statement& s) {
         w.startObject();
+        // Opaque statements (not re-executed) and conditions with side effects say what they
+        // write, so the driver search still finds them.
+        bool opq = false;
         switch (s.kind) {
             case StatementKind::Block: {
                 auto& b = s.as<BlockStatement>();
                 if (b.blockKind != StatementBlockKind::Sequential) {
                     w.writeProperty("k");
                     w.writeValue(std::string_view("opaque"));
+                    opq = true;
                     w.writeProperty("why");
                     w.writeValue(std::string_view("fork"));
                     break;
@@ -1366,6 +1476,7 @@ private:
                     if (a.isCompound() || a.timingControl) {
                         w.writeProperty("k");
                         w.writeValue(std::string_view("opaque"));
+                        opq = true;
                         w.writeProperty("why");
                         w.writeValue(a.timingControl ? std::string_view("intraDelay") : std::string_view("compound"));
                         break;
@@ -1382,6 +1493,7 @@ private:
                 else {
                     w.writeProperty("k");
                     w.writeValue(std::string_view("opaque"));
+                    opq = true;
                     w.writeProperty("why");
                     w.writeValue(e.kind == ExpressionKind::Call ? std::string_view("call") : std::string_view("expression"));
                 }
@@ -1392,6 +1504,7 @@ private:
                 if (c.conditions.size() != 1 || c.conditions[0].pattern) {
                     w.writeProperty("k");
                     w.writeValue(std::string_view("opaque"));
+                    opq = true;
                     w.writeProperty("why");
                     w.writeValue(std::string_view("pattern"));
                     break;
@@ -1443,9 +1556,27 @@ private:
             default:
                 w.writeProperty("k");
                 w.writeValue(std::string_view("opaque"));
+                opq = true;
                 w.writeProperty("why");
                 w.writeValue(toString(s.kind));
                 break;
+        }
+        {
+            WriteFinder f;
+            if (opq)
+                s.visit(f);
+            else if (s.kind == StatementKind::Conditional) {
+                for (auto& c : s.as<ConditionalStatement>().conditions)
+                    c.expr->visit(f);
+            }
+            else if (s.kind == StatementKind::Case) {
+                auto& c = s.as<CaseStatement>();
+                c.expr.visit(f);
+                for (auto& it : c.items)
+                    for (auto m : it.expressions)
+                        m->visit(f);
+            }
+            writeWrites(w, f);
         }
         w.writeProperty("src");
         auto src = text(s);
@@ -1611,6 +1742,14 @@ void load(Session& s, int64_t id, const JValue& req) {
         return;
     }
     s.comp = d.createCompilation();
+    {
+        std::set<std::string> names;
+        for (auto& tree : d.syntaxTrees)
+            systemNames(tree->root(), names);
+        for (auto& n : names)
+            if (!s.comp->getSystemSubroutine(n))
+                s.comp->addSystemSubroutine(std::make_shared<UnknownSystemCall>(n));
+    }
     auto& diags = s.comp->getAllDiagnostics();
     std::vector<std::string> messages;
     int64_t errors = 0;
