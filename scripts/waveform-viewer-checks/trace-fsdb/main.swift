@@ -14,6 +14,11 @@
 // <assetRoot>/fsdb-helper-v2, else v1); TRACE_FSDB_HOME=<dir> installs them under <dir> on the host
 // instead of the user's home, with v2's store cache in <dir>/index (so a test never replaces or
 // fills the helpers' in use). Default: helper v1.
+// TRACE_FSDB_START=<signal path> traces that signal (at <time>) and its fan-in instead of every
+// signal of <instance>; its step is the first step printed.
+// With TRACE_FSDB_VERDI=1 each step also prints Verdi's own time ([verdi time]: requests, the
+// session's service time, the wait behind earlier requests, port hops followed, fan-in leaves),
+// and the run ends with the Verdi session's memory on the host.
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
@@ -87,12 +92,25 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   /// What cmux answers the page's engine requests (WaveformTraceVerdi.answer).
+  /// Verdi's time for the step under way: the session answers one request at a time, so a request's
+  /// service starts when the one before it ended (or when it was sent), and the rest is waiting.
+  var verdiAsks = 0, verdiServiceMs = 0.0, verdiWaitMs = 0.0
+  var verdiBusyUntil = Date.distantPast
+
   func answerEngine(_ id: Int, _ body: [String: Any]) {
     guard let verdi, verdiReady, let signal = body["signal"] as? String, let t = (body["time"] as? NSNumber)?.int64Value else {
       answer(id, result: ["state": "none"])
       return
     }
+    let sent = Date()
     Task { @MainActor in
+      defer {
+        let end = Date(), start = max(sent, self.verdiBusyUntil)
+        self.verdiAsks += 1
+        self.verdiWaitMs += start.timeIntervalSince(sent) * 1000
+        self.verdiServiceMs += max(0, end.timeIntervalSince(start)) * 1000
+        self.verdiBusyUntil = end
+      }
       do {
         let r = try await verdi.request(["cmd": "active", "signal": signal, "time": t], timeout: 120)
         self.answer(id, result: ["state": "ready", "scope": r["scope"] ?? "", "file": r["file"] ?? "", "line": r["line"] ?? 0])
@@ -168,6 +186,19 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
   }
 
+  /// The Verdi session's processes on the host and their resident memory (ps rss, KiB summed).
+  static func verdiMemory() -> String {
+    let p = Process(), out = Pipe()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+    p.arguments = ["-o", "BatchMode=yes", "-T", "--", sshHost,
+                   "ps -u \"$(id -un)\" -o rss=,args= | grep -E '[N]ovas|[v]erdi -nogui|[v]erdi3' | awk '{s+=$1; n++} END {printf \"%d processes, %.0f MB\", n, s/1024}'"]
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return "unknown (\(error))" }
+    p.waitUntilExit()
+    return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+  }
+
   /// What cmux-sv-model's `writers` answers: the other instances with $abs: lvalues into `path`.
   static func writers(of path: String, in instances: [String: Any]) -> [String] {
     instances.compactMap { key, model -> String? in
@@ -184,7 +215,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return
     }
     // Breadth first: the instance's signals, then two more levels of their fan-in.
-    var queue = signals.keys.sorted().map { (instance + "." + $0, time, 0) }
+    let start = ProcessInfo.processInfo.environment["TRACE_FSDB_START"].flatMap { $0.isEmpty ? nil : $0 }
+    var queue = start.map { [($0, time, 0)] } ?? signals.keys.sorted().map { (instance + "." + $0, time, 0) }
+    var verdiTotals = (asks: 0, serviceMs: 0.0, waitMs: 0.0, hops: 0, leaves: 0, stepMs: 0.0)
     var seen = Set<String>()
     var trust: [String: Int] = [:], kinds: [String: Int] = [:], reasons: [String: Int] = [:]
     var times: [Double] = []
@@ -233,15 +266,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           return null
           """)
       }
+      verdiAsks = 0; verdiServiceMs = 0; verdiWaitMs = 0
       let t0 = Date()
       let shown = await call("return await cmuxWaveform.trace.driverOfDesign(argument)",
                              ["argument": ["designPath": path, "designPrefix": "", "dumpPrefix": "", "time": t]]) as? [String: Any]
       let ms = Date().timeIntervalSince(t0) * 1000
       // The step as shown is what is timed; Verdi's fill-in (after it) is waited for, timed apart.
       var step = shown
+      var fill = 0.0
       if shown != nil, let settled = await call("const t = cmuxWaveform.trace; if (!t.settled) { return null; } const t0 = performance.now(); const st = (await t.settled()).step; return { st, ms: performance.now() - t0 }") as? [String: Any] {
         step = settled["st"] as? [String: Any] ?? shown
-        verdiTimes.append(settled["ms"] as? Double ?? 0)
+        fill = settled["ms"] as? Double ?? 0
+        verdiTimes.append(fill)
       }
       guard let step else { errors += 1; print("ERROR tracing \(path) @\(t)"); continue }
       times.append(ms)
@@ -270,7 +306,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       }
       if times.count <= 12 || ms > 2000 {
         let src = ((step["stmt"] as? [String: Any])?["src"] as? String ?? "").prefix(70)
-        print(String(format: "%7.1f ms  %@ @%d = %@  %@ [%@] %@", ms, path, t, step["value"] as? String ?? "?", kind, step["trust"] as? String ?? "?", String(src)))
+        print(String(format: "%7.1f ms  %@ @%@ = %@  %@ [%@] %@", ms, path, "\(t)", step["value"] as? String ?? "?", kind, step["trust"] as? String ?? "?", String(src)))
+      }
+      if verdi != nil {
+        let hops = (step["via"] as? [Any])?.count ?? 0
+        let leaves = ((shown?["fanin"] ?? step["fanin"]) as? [[String: Any]] ?? []).filter { $0["path"] is String }.count
+        verdiTotals.asks += verdiAsks; verdiTotals.serviceMs += verdiServiceMs; verdiTotals.waitMs += verdiWaitMs
+        verdiTotals.hops += hops; verdiTotals.leaves += leaves; verdiTotals.stepMs += ms + fill
+        print(String(format: "[verdi time] %@: %d requests, %.0f ms Verdi, %.0f ms waiting, %d port hops, %d fan-in leaves; step %.0f ms + fill-in %.0f ms",
+                     path, verdiAsks, verdiServiceMs, verdiWaitMs, hops, leaves, ms, fill))
       }
       if depth < 2 {
         // The shown step's fan-in (ours), so Verdi on and off trace the same signals.
@@ -289,6 +333,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if !verdiTimes.isEmpty, verdiTimes.contains(where: { $0 > 0 }) {
       let v = verdiTimes.sorted()
       print(String(format: "Verdi fill-in after the shown step: median %.1f ms, max %.1f ms", v[v.count / 2], v.last ?? 0))
+    }
+    if verdi != nil, !times.isEmpty {
+      print(String(format: "Verdi share: %d requests, %.1f s Verdi (%.0f%% of %.1f s shown + fill-in), %.1f s waiting, %d port hops, %.1f fan-in leaves per step",
+                   verdiTotals.asks, verdiTotals.serviceMs / 1000, verdiTotals.stepMs > 0 ? verdiTotals.serviceMs / verdiTotals.stepMs * 100 : 0,
+                   verdiTotals.stepMs / 1000, verdiTotals.waitMs / 1000, verdiTotals.hops, Double(verdiTotals.leaves) / Double(times.count)))
+      print("[verdi memory]", Self.verdiMemory())
     }
     expect(errors == 0, "no trace threw (\(errors))")
     if !knownUndriven.isEmpty { print("undriven in the design (TRACE_FSDB_UNDRIVEN):", knownUndriven) }
