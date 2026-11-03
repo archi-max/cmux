@@ -86,7 +86,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       : [WaveformFSDBHelper.Install(protocolVersion: 1, resourceRoot: helperRoot)]
     print("[helper] \(installs.map { "v\($0.protocolVersion)" }.joined(separator: ", then "))\(home.isEmpty ? "" : ", own install folder")")
     helper = WaveformFSDBHelper(sshArguments: { cmd in
-      ["-o", "BatchMode=yes", "-T", "--", sshHost, home + "exec nice -n 10 bash -c " + shellQuoted(cmd)]
+      ["-o", "BatchMode=yes", "-T", "--", sshHost, "exec env " + home + "nice -n 10 bash -c " + shellQuoted(cmd)]
     }, installs: installs) { status in print("[status]", status) }
     web.load(URLRequest(url: WaveformViewerSchemeHandler.indexURL))
   }
@@ -154,6 +154,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
     guard m.name == "cmuxWaveform", let body = m.body as? [String: Any], let type = body["type"] as? String else { print("[\(m.name)]", m.body); return }
     if type != "trace" && type != "log" && type != "event" { print("[page]", type, (body["message"] as? String ?? "").prefix(200)) }
+    // With TRACE_FSDB_PROFILE=1, the page's own trace errors (a helper query that failed, say).
+    if type == "log", ProcessInfo.processInfo.environment["TRACE_FSDB_PROFILE"] == "1", let text = body["message"] as? String, text.contains("trace ") {
+      print("[page log]", text.prefix(300))
+    }
     if type == "trace", body["event"] as? String == "engine", let id = (body["id"] as? NSNumber)?.intValue {
       answerEngine(id, body)
     } else if type == "trace" {
@@ -191,7 +195,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let p = Process(), out = Pipe()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
     p.arguments = ["-o", "BatchMode=yes", "-T", "--", sshHost,
-                   "ps -u \"$(id -un)\" -o rss=,args= | grep -E '[N]ovas|[v]erdi -nogui|[v]erdi3' | awk '{s+=$1; n++} END {printf \"%d processes, %.0f MB\", n, s/1024}'"]
+                   "exec bash -c " + shellQuoted("ps -u \"$(id -un)\" -o rss=,args= | grep -E '[N]ovas|[v]erdi -nogui|[v]erdi3' | awk '{s+=$1; n++} END {printf \"%d processes, %.0f MB\", n, s/1024}'")]
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
     do { try p.run() } catch { return "unknown (\(error))" }
