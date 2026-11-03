@@ -37,6 +37,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var engineDelay: TimeInterval = 0
   /// cmux never answers engine requests (a hung Verdi session).
   var engineHang = false
+  /// Each engine request's signal and when it was asked and answered (seconds since start); how
+  /// many were under way at once at most (a pool of Verdi sessions answers in parallel).
+  var engineLog: [(signal: String, asked: Double, answered: Double?)] = []
+  var engineInFlight = 0
+  var engineMostInFlight = 0
+  /// Bumped when the log is emptied: an answer to a request from before it isn't logged.
+  var engineLogGen = 0
+  let engineEpoch = Date()
   /// The page's 'update' posts (a step filled in after it was shown).
   var updates = 0
   var checksStarted = false
@@ -885,6 +893,95 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     engineAnswer = nil
     _ = await call("delete cmuxWaveform.traceVerdiBudgetMs; return null")
 
+    // ---- Verdi prefetch (status/tracex-verdi-pool.md) ----
+    // Once a step's check has settled, Verdi is asked about the step's fan-in leaves; a click on
+    // one uses that answer (no new request). One session: nothing is prefetched while a check of
+    // ours asks; N sessions: up to N at once. No answer survives another dump, a closed panel, or
+    // a Verdi that wasn't ready.
+    func engineAsks(_ signal: String, since k: Int = 0) -> Int { engineLog[k...].filter { $0.signal == signal }.count }
+    func prefetchRun(sessions: Int, delay: TimeInterval) async -> (leaves: [[String: Any]], step: [String: Any]?) {
+      engineLog = []; engineLogGen += 1; engineMostInFlight = 0; engineDelay = delay
+      let r = await call("""
+        const t = cmuxWaveform.trace;
+        cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = \(sessions);
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        await t.settled();
+        await new Promise((r) => setTimeout(r, \(Int(delay * 1000) * 5 + 300)));
+        const st = t.state();
+        return { leaves: (st.step.fanin || []).filter((f) => f.path).map((f) => ({ path: f.path, time: f.time, role: f.role })), prefetch: st.prefetch };
+        """) as? [String: Any]
+      return (r?["leaves"] as? [[String: Any]] ?? [], r)
+    }
+    // A helper-backed dump (the page doesn't ask Verdi about a file it reads itself).
+    _ = await call("const b = cmuxWaveform.host.currentBackend; b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); }; return null")
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    let one = await prefetchRun(sessions: 1, delay: 0.25)
+    let firstAnswered = engineLog.first?.answered ?? 0
+    let prefetched = engineLog.dropFirst().map(\.signal)
+    let leafPaths = one.leaves.compactMap { $0["path"] as? String }
+    expect(!leafPaths.isEmpty && Set(prefetched) == Set(leafPaths.prefix(4)),
+           "prefetch: the shown step's fan-in leaves are asked of Verdi: \(prefetched) vs \(leafPaths)")
+    expect(engineLog.dropFirst().allSatisfy { $0.asked >= firstAnswered - 0.01 } && engineMostInFlight == 1,
+           "prefetch, one session: nothing is prefetched while our check asks, one at a time (at most \(engineMostInFlight))")
+    if let leaf = one.leaves.first, let path = leaf["path"] as? String, let time = leaf["time"] as? Int {
+      let k = engineLog.count
+      let used = await call("""
+        const t = cmuxWaveform.trace;
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        return t.state().prefetch
+        """) as? [String: Any]
+      expect(engineAsks(path, since: k) == 0 && used?["used"] as? Int == 1,
+             "prefetch: a click on a prefetched leaf uses Verdi's answer, no new request: \(engineAsks(path, since: k)) asked, \(String(describing: used))")
+      // Another dump (backendChanged): the answer isn't used.
+      _ = await prefetchRun(sessions: 1, delay: 0)
+      let k2 = engineLog.count
+      _ = await call("""
+        const t = cmuxWaveform.trace;
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        return null
+        """)
+      expect(engineAsks(path, since: k2) >= 1, "prefetch: after another dump, a leaf is asked again, not answered from before")
+      // A Verdi that wasn't ready (a seat refused): nothing kept.
+      engineAnswer = ["state": "unavailable", "reason": "licence", "message": "no seat"]
+      _ = await prefetchRun(sessions: 1, delay: 0)
+      let k3 = engineLog.count
+      _ = await call("""
+        const t = cmuxWaveform.trace;
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        return null
+        """)
+      expect(engineAsks(path, since: k3) == 1, "prefetch: an answer from a Verdi that wasn't ready is not kept (\(engineAsks(path, since: k3)) asked again)")
+      engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    } else {
+      expect(false, "prefetch: the step has fan-in leaves: \(one.leaves)")
+    }
+    // Two sessions: two prefetches at once.
+    _ = await prefetchRun(sessions: 2, delay: 0.3)
+    expect(engineMostInFlight == 2, "prefetch, two sessions: two requests at once (at most \(engineMostInFlight))")
+    // Closing the panel stops prefetching.
+    engineLog = []; engineLogGen += 1; engineDelay = 0.3
+    _ = await call("""
+      const t = cmuxWaveform.trace;
+      cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = 1;
+      t.backendChanged();
+      await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      await t.settled();
+      await new Promise((r) => setTimeout(r, 50));
+      t.close();
+      return null
+      """)
+    let closedAt = Date().timeIntervalSince(engineEpoch)
+    _ = await call("await new Promise((r) => setTimeout(r, 1500)); return null")
+    expect(engineLog.filter { $0.asked > closedAt + 0.05 }.isEmpty, "prefetch: nothing is asked after the panel closes: \(engineLog.map { ($0.signal, $0.asked) })")
+    engineDelay = 0
+    _ = await call("const b = cmuxWaveform.host.currentBackend; delete b.valuesAt; delete b.changes; delete cmuxWaveform.traceVerdiPrefetch; delete cmuxWaveform.traceVerdiSessions; cmuxWaveform.trace.backendChanged(); return null")
+    engineAnswer = nil
+
     // Status while cmux builds; close.
     _ = await call("cmuxWaveform.trace.status('Building…'); return null")
     expect(!(await panelText().contains("Building")), "status does not cover a shown step")
@@ -938,12 +1035,21 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       }
     case "engine":
       engineRequests += 1
+      let k = engineLog.count, gen = engineLogGen
+      engineLog.append((body["signal"] as? String ?? "", Date().timeIntervalSince(engineEpoch), nil))
       if engineHang { return }
+      engineInFlight += 1
+      engineMostInFlight = max(engineMostInFlight, engineInFlight)
       let result: [String: Any] = (body["signal"] as? String).flatMap { engineAnswers[$0] } ?? engineAnswer ?? ["state": "none"]
-      if engineDelay > 0 {
-        DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { self.answer(id, ok: true, result: result) }
-      } else {
+      let done = { [self] in
+        engineInFlight -= 1
+        if gen == engineLogGen, k < engineLog.count { engineLog[k].answered = Date().timeIntervalSince(engineEpoch) }
         answer(id, ok: true, result: result)
+      }
+      if engineDelay > 0 {
+        DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { done() }
+      } else {
+        done()
       }
     default:
       break
