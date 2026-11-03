@@ -569,8 +569,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             return { reply: { id: req.id, result: { cancelled: !!p } } };
           }
           const ids = req.signalIds || [req.signalId];
-          if (ids.some((id) => m.hang.has(id))) { return new Promise((resolve) => m.pending.set(req.id, resolve)); }
-          if (ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
+          if (ids.some((id) => m.hang.has(id))) { m.hung = (m.hung || 0) + 1; return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          if (req.cmd !== 'count' && ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
           if (req.cmd !== 'valueAt' && ids.some((id) => m.refuse.has(id))) { return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } }; }
           try { return { reply: { id: req.id, result: await m.answer(req) } }; }
           catch (error) { return { reply: { id: req.id, error: String(error.message) } }; }
@@ -823,12 +823,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // 20 times: the budget's boundary (the cancelled queries fall back in the same millisecond)
     // must not start a download.
     var cancelled: [String: Any]?
+    var roundsHung = 0
     for round in 0..<20 {
     cancelled = await call("""
       const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
       cmuxWaveform.traceVerdiBudgetMs = 800;
       try {
-        m.install(); m.downloads = 0; m.asked = []; m.cancels = [];
+        m.install(); m.downloads = 0; m.asked = []; m.cancels = []; m.hung = 0;
         t.backendChanged();
         for (const name of ['q', 'qd', 'clk', 'rst_n', 'in', 'mix']) {
           const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', name], true);
@@ -839,14 +840,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         if (t.settled) { await t.settled(); }
         await new Promise((r) => setTimeout(r, 100));
         return { shown: !!step, verdi: t.state().step && t.state().step.engine && t.state().step.engine.verdi,
-                 hungAtShown: hung, cancels: m.cancels.length, left: m.pending.size, downloads: m.downloads };
+                 hungAtShown: hung, hung: m.hung, cancels: m.cancels.length, left: m.pending.size, downloads: m.downloads };
       } finally { m.hang.clear(); m.pending.clear(); m.remove(); cmuxWaveform.traceVerdiBudgetMs = 1500; t.backendChanged(); }
       """) as? [String: Any]
     if round == 0 { print("[v2] cancel on budget: \(String(describing: cancelled))") }
-    let okCancel = cancelled?["verdi"] as? String == "timedOut" && (cancelled?["cancels"] as? Int ?? 0) > 0 && cancelled?["left"] as? Int == 0
+    // Every query left hanging is cancelled (a round whose check stopped before asking any has
+    // none; most rounds must have some).
+    if (cancelled?["hung"] as? Int ?? 0) > 0 { roundsHung += 1 }
+    let okCancel = cancelled?["verdi"] as? String == "timedOut" && cancelled?["cancels"] as? Int == cancelled?["hung"] as? Int && cancelled?["left"] as? Int == 0
+      && (round < 19 || roundsHung >= 10)
     let okNoDownload = cancelled?["downloads"] as? Int == 0
     if !okCancel || !okNoDownload || round == 19 {
-      expect(okCancel, "v2 helper: a Verdi check past its budget cancels its queries still with the helper (round \(round + 1) of 20): \(String(describing: cancelled))")
+      expect(okCancel, "v2 helper: a Verdi check past its budget cancels its queries still with the helper (round \(round + 1) of 20, \(roundsHung) with queries hanging): \(String(describing: cancelled))")
       expect(okNoDownload, "v2 helper: a timed-out Verdi check downloads nothing (round \(round + 1) of 20): \(String(describing: cancelled?["downloads"]))")
       break
     }
