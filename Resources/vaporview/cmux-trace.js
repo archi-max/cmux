@@ -763,6 +763,11 @@
     // The bits of the target a write covers, compared with the dump: undefined when not comparable.
     function consistentWith(rec, now, sig) {
       if (!now || !rec || !rec.value) { return undefined; }
+      if (rec.after && rec.after.length && rec.lsb === 0 && rec.width >= now.w) {
+        let v = fit(rec.value, now.w);
+        for (const a of rec.after) { if (!a.value || (a.lsb || 0) + a.width > now.w) { return undefined; } v = insert(v, a.lsb || 0, fit(a.value, a.width)); }
+        return same(v, now);
+      }
       if (rec.width >= now.w && rec.lsb === 0) { return same(fit(rec.value, now.w), now); }
       if (rec.lsb + rec.width > now.w) { return undefined; }
       return same(slice(now, rec.lsb, rec.width), rec.value);
@@ -895,7 +900,7 @@
           if (tl !== null && tl > since) {
             const tv = await fetch([ck.clock.path], tl);
             const lc = await runProc(m, p, tl - 1, new Map([[ck.clock.path, tv.get(ck.clock.path)]]), options.xprop === 'on' ? 'xprop' : 'optimistic');
-            const lw = pickWrite(lc, targetPath, s);
+            const lw = pickWrite(lc, targetPath, s, now);
             if (lw && consistentWith(lw, now, sig) === true) { te = tl; trigger = ck.clock; }
           }
         }
@@ -921,12 +926,12 @@
       }
       r.sample = sample;
       let ctx = await runProc(m, p, sample, extra, options.xprop === 'on' ? 'xprop' : 'optimistic');
-      let pick = pickWrite(ctx, targetPath, s);
+      let pick = pickWrite(ctx, targetPath, s, now);
       let consistent = pick ? consistentWith(pick, now, sig) : undefined;
       // X-propagation: an x condition on the path and a dump that disagrees: try merged branches.
       if (options.xprop === 'auto' && consistent === false && (ctx.decisions.some((d) => d.xCond) || ctx.sawXIndex)) {
         const merged = await runProc(m, p, sample, extra, 'xprop');
-        const mp = pickWrite(merged, targetPath, s);
+        const mp = pickWrite(merged, targetPath, s, now);
         if (mp && consistentWith(mp, now, sig) === true) {
           ctx = merged; pick = mp; consistent = true;
           r.reasons.push({ code: 'xprop' });
@@ -935,14 +940,14 @@
       // A same-time race: inputs changed at the edge itself; the post-edge values may explain it.
       if (edge && consistent === false && r.activation) {
         const late = await runProc(m, p, r.activation.time, extra, ctx.mode);
-        const lp = pickWrite(late, targetPath, s);
+        const lp = pickWrite(late, targetPath, s, now);
         if (lp && consistentWith(lp, now, sig) === true) { r.reasons.push({ code: 'race', time: r.activation.time }); ctx = late; pick = lp; consistent = true; }
       }
       // A comb procedure that didn't write the target on its path holds it (a latch): the
       // activation is when it last changed.
       if (!pick && !edge && since !== null && since !== undefined && since !== t) {
         const held = await runProc(m, p, since, extra, ctx.mode);
-        const hp = pickWrite(held, targetPath, s);
+        const hp = pickWrite(held, targetPath, s, now);
         if (hp) { r.reasons.push({ code: 'held', time: since }); ctx = held; pick = hp; consistent = consistentWith(hp, now, sig); r.sample = since; }
       }
       ctx.reasons.forEach((x) => r.reasons.push(x));
@@ -1015,10 +1020,26 @@
     }
 
     // The write that produced the target: the last one in the run that covers it.
-    function pickWrite(ctx, targetPath, s) {
+    // The write that made the value in effect: the last one, unless the value has x bits that a
+    // later partial write covered (s <= s0; s.chk <= f(s0.pkt) with s0.pkt x): then the write
+    // that made the most of the x bits (the later one on a tie), with the later writes it was
+    // overlaid by (`after`).
+    function pickWrite(ctx, targetPath, s, now) {
       const recs = ctx.writes.get(targetPath);
-      if (recs && recs.length) { return recs[recs.length - 1]; }
-      return null;
+      if (!recs || !recs.length) { return null; }
+      const last = recs[recs.length - 1];
+      if (!now || recs.length < 2 || !hasX(now)) { return last; }
+      const bits = shown(now), w = bits.length;
+      const isX = (k) => k >= 0 && k < w && /[xz]/.test(bits[w - 1 - k]);
+      const covered = new Set();
+      let best = -1, most = 0;
+      for (let i = recs.length - 1; i >= 0; i--) {
+        const r = recs[i], lo = r.lsb || 0, hi = Math.min(w, lo + (r.width || w));
+        let n = 0;
+        for (let k = lo; k < hi; k++) { if (!covered.has(k)) { if (isX(k)) { n++; } covered.add(k); } }
+        if (n > most) { most = n; best = i; }
+      }
+      return best < 0 || best === recs.length - 1 ? last : Object.assign({}, recs[best], { after: recs.slice(best + 1) });
     }
 
     return { active, model, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
