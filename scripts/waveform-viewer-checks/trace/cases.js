@@ -20,6 +20,7 @@ const TRACE_DUMPS = {
   f: ['plain', 'flowctrl', 'tmerge', 'course'],
   g: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   h: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
+  i: ['icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -151,6 +152,20 @@ const TRACE_CASES = [
   { d: 'h', sig: 'tb_h.din', t: 80000, kind: 'initial', file: 'tb_h.sv', line: 24, stmt: "din = 8'h76;", root: 'testbench' },
   // Several delay scales fit (#5 at 1000 ps per ns, #50 at 100): the largest, so the #5 write.
   { d: 'h', sig: 'tb_h.ms', t: 30000, kind: 'initial', file: 'tb_h.sv', line: 30, stmt: "ms = 8'h99;", root: 'testbench' },
+
+  // ---- I: writes that are found though not re-executed (approximate, never "no driver") ----
+  // A loop-indexed comb write, per-lane counters in a loop, byte writes into memory words in a loop.
+  { d: 'i', sig: 'tb_i.dut.pop', t: 30000, kind: 'proc', proc: 'AlwaysComb', file: 'i_drivers.sv', line: 23, stmt: 'for (int t = 0; t < 4; t++)',
+    trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
+  { d: 'i', sig: 'tb_i.dut.lost[1]', t: 30000, kind: 'proc', proc: 'AlwaysFF', file: 'i_drivers.sv', line: 27, stmt: 'for (int c = 0; c < 4; c++) if (valid[c]',
+    trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
+  { d: 'i', sig: 'tb_i.dut.mem[0]', t: 30000, kind: 'proc', proc: 'Always', file: 'i_drivers.sv', line: 30, stmt: 'for (int b = 0; b < 4; b++)',
+    trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
+  // The testbench: x++ in a clocked block; a $value$plusargs output and an initial block that also
+  // calls a dump task the elaborator doesn't know.
+  { d: 'i', sig: 'tb_i.settle', t: 30000, kind: 'proc', proc: 'Always', file: 'tb_i.sv', line: 14, stmt: 'settle++;', noReasons: ['noWrite'] },
+  { d: 'i', sig: 'tb_i.iters', t: 30000, kind: 'initial', root: 'testbench', file: 'tb_i.sv', line: 16 },
+  { d: 'i', sig: 'tb_i.epoch', t: 30000, kind: 'initial', root: 'testbench', file: 'tb_i.sv', line: 17, stmt: 'epoch = iters;' },
 ];
 
 function runTraceChecks() {
