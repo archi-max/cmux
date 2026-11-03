@@ -172,11 +172,15 @@ const TRACE_CASES = [
 
   // ---- J: an x through a blocking temp the block ends with tmp = 'bx; a default 'bx no later case item replaced ----
   // q <= tmp, tmp = go ? a : b earlier in the block: q's fan-in is a and go (what reached q), not just tmp.
-  { d: 'j', sig: 'tb_j.dut.q', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 17, stmt: 'q <= tmp;', act: 15000, value: 'xxxx0001',
+  { d: 'j', sig: 'tb_j.dut.q', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 19, stmt: 'q <= tmp;', act: 15000, value: 'xxxx0001',
     fanin: { 'tb_j.dut.a': 'xxxx0001', 'tb_j.dut.go': '1', 'tb_j.dut.tmp': '*' } },
   // y = 'bx, then case (1'b1) with x items: nothing matched, so the items are why y stayed x.
-  { d: 'j', sig: 'tb_j.dut.y', t: 10000, kind: 'proc', file: 'j_temps.sv', line: 26, stmt: "y = 'bx;",
+  { d: 'j', sig: 'tb_j.dut.y', t: 10000, kind: 'proc', file: 'j_temps.sv', line: 28, stmt: "y = 'bx;",
     fanin: { 'tb_j.dut.is_add': 'x', 'tb_j.dut.is_xor': 'x' } },
+  // zq went x at 15 (zq <= 8'bx) and was rewritten x from a2 at 25 and 35: the value in effect was
+  // written at the last edge, from a2, though its last change (since) is 15.
+  { d: 'j', sig: 'tb_j.dut.zq', t: 40000, kind: 'proc', file: 'j_temps.sv', line: 42, stmt: 'zq <= a2;', act: 35000, since: 15000,
+    fanin: { 'tb_j.dut.a2': XX } },
 ];
 
 function runTraceChecks() {
