@@ -601,6 +601,9 @@
       step.dumped = now !== undefined;
       if (now === undefined) { step.reasons.push({ code: 'targetNotDumped', path }); }
       step.since = now === undefined ? null : await dump.lastChange(path, t);
+      // Dumped, but when it last changed is unknown (the reader refused it): the activation found
+      // from the clock is a guess.
+      if (now !== undefined && step.since === null) { step.reasons.push({ code: 'sinceUnknown' }); }
       // The instance's own drivers, else statements of other instances that write into it.
       let cands = driversOf(m, name).map((d) => ({ m, d, name }));
       if (!cands.length) { cands = await outsideDrivers(m, name); }
@@ -657,7 +660,7 @@
 
     function trustOf(step) {
       if (step.consistent === false) { return 'inconsistent'; }
-      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation'].includes(r.code));
+      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown'].includes(r.code));
       if (approximate) { return 'approximate'; }
       return step.computed ? 'computed' : 'exact';
     }
