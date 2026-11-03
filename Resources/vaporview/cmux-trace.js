@@ -886,7 +886,22 @@
         // (x since the start, or no change) the last clock edge at or before t.
         let te = null;
         const xFromStart = now && hasX(now) && (since === 0 || since === null);
-        if (since !== null && since !== undefined && !xFromStart) {
+        // An x value may have been written again (x to x is no change): the value in effect came
+        // from the last edge that wrote it, which can have another cause than the first x (a CPU
+        // core's ALU result: an idle cycle's 'bx, later a jump's x operand). That edge, when its
+        // run writes the same value.
+        if (now && hasX(now) && !xFromStart && since && ck.clock) {
+          const tl = await dump.prevEdge(ck.clock.path, t, ck.clock.edge);
+          if (tl !== null && tl > since) {
+            const tv = await fetch([ck.clock.path], tl);
+            const lc = await runProc(m, p, tl - 1, new Map([[ck.clock.path, tv.get(ck.clock.path)]]), options.xprop === 'on' ? 'xprop' : 'optimistic');
+            const lw = pickWrite(lc, targetPath, s);
+            if (lw && consistentWith(lw, now, sig) === true) { te = tl; trigger = ck.clock; }
+          }
+        }
+        if (te !== null) {
+          // The last edge (above).
+        } else if (since !== null && since !== undefined && !xFromStart) {
           for (const ev of ck.all) {
             if (await dump.prevEdge(ev.path, since, ev.edge) === since) { te = since; trigger = ev; break; }
           }
