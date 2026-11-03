@@ -560,7 +560,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         }
         if (req.cmd === 'count') {
           const counts = [];
-          for (const id of req.signalIds) { const ch = await m.changes(id); counts.push({ signalId: id, count: ch.length, bits: m.widths.get(id) || 1 }); }
+          for (const id of req.signalIds) {
+            // Not stored yet (the helper's "unknown" without a walk); an exact count walks it, or fails.
+            if (m.uncounted && m.uncounted.has(id) && req.exact !== true) { counts.push({ signalId: id, unknown: true }); continue; }
+            if (m.uncounted && m.uncounted.has(id) && m.exactFails) { counts.push({ signalId: id, error: 'signal larger than 244 MB (worker store limit)' }); continue; }
+            const ch = await m.changes(id); counts.push({ signalId: id, count: ch.length, bits: m.widths.get(id) || 1 });
+          }
           return { counts };
         }
         throw new Error('not here: ' + req.cmd);
@@ -806,6 +811,28 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       """) as? [String: Any]
     expect(ceiling?["verdi"] as? String == "large" && ceiling?["downloads"] as? Int == 0 && ceiling?["counted"] as? Bool == true,
            "v2 helper: a check's read over the v2 memory ceiling is not made: \(String(describing: ceiling))")
+    // The helper doesn't know the count without a walk: an exact count is asked for, and a read
+    // whose exact count fails too isn't made either (unknown is not "under").
+    for exactFails in [false, true] {
+      let unknownCount = await call("""
+        const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+        cmuxWaveform.traceVerdiV2MaxBits = 1;
+        try {
+          m.install(); m.downloads = 0; m.asked = []; m.uncounted = new Set(); m.exactFails = \(exactFails);
+          t.backendChanged();
+          for (const name of ['q', 'qd', 'in', 'mix']) {
+            const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', name], true);
+            if (v) { m.fail.add(v.signalId); m.uncounted.add(v.signalId); }
+          }
+          await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          if (t.settled) { await t.settled(); }
+          const e = t.state().step && t.state().step.engine;
+          return { verdi: e && e.verdi, downloads: m.downloads, counts: m.asked.filter((c) => c === 'count').length };
+        } finally { m.fail.clear(); m.uncounted = null; m.exactFails = false; m.remove(); delete cmuxWaveform.traceVerdiV2MaxBits; t.backendChanged(); }
+        """) as? [String: Any]
+      expect(unknownCount?["verdi"] as? String == "large" && unknownCount?["downloads"] as? Int == 0 && (unknownCount?["counts"] as? Int ?? 0) >= 2,
+             "v2 helper: a check's read with an unknown count (exact count \(exactFails ? "fails" : "over")) is not made: \(String(describing: unknownCount))")
+    }
 
     // A dumped signal the helper refused (its last change unknown) is approximate, with a reason,
     // and isn't asked about again.
