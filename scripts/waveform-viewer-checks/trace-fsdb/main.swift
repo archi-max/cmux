@@ -355,7 +355,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   /// TRACE_FSDB_XCHAIN=1: follow the X backwards from (TRACE_FSDB_START or the instance, time), the
-  /// way an engineer does it: at each step trace every X fan-in (not the clock), take the one whose X
+  /// way an engineer does it: at each step trace every X fan-in (not the clock, nor a blocking temp:
+  /// its write's reads are listed instead), take the one whose X
   /// began earliest (its `since`), and go on from it. It stops when the step has no X fan-in (the X is
   /// made here), at the testbench, at a signal with no driver, at a repeat, or after 30 steps.
   func xchain() async {
@@ -397,7 +398,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       if st["root"] as? String == "testbench" { end = "testbench"; break }
       if kind == "none" { end = "noDriver"; break }
       if steps >= maxLen { break }
-      let cands = (st["fanin"] as? [[String: Any]] ?? []).filter { $0["path"] is String && $0["role"] as? String != "clock" && $0["dumped"] as? Bool != false && hasX($0["value"]) }
+      let cands = (st["fanin"] as? [[String: Any]] ?? []).filter { $0["path"] is String && $0["role"] as? String != "clock" && $0["dumped"] as? Bool != false && $0["blocking"] as? Bool != true && hasX($0["value"]) }
       if cands.isEmpty { end = "xMadeHere"; break }
       var best: (p: String, t: Int, step: [String: Any], ms: Double, since: Int)?
       for c in cands {
