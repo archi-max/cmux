@@ -478,9 +478,9 @@
     const hint = Array.isArray(known) ? known.length : undefined;
     const checkDump = guardedDump(stop, hint), checkSession = session;
     const engine = window.cmuxTrace.createEngine({ models: session.models, dump: checkDump, options: session.options });
+    let shown = step;
     const check = Promise.race([withVerdi(step, time, asked, stop, engine), limit]).then((out) => {
       if (gone()) { step.engine.verdi = 'dropped'; return; }
-      let shown = step;
       if (out === late || !out) {
         step.engine.verdi = 'timedOut';
       } else if (out.large) {
@@ -493,7 +493,11 @@
       if (history.steps[history.at] === shown) { render(); }
       host.toNative({ type: 'trace', event: 'update', step: plain(shown) });
     }).catch((error) => { host.log(error); step.engine.verdi = 'timedOut'; })
-      .finally(() => { done = true; clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check); });
+      .finally(() => {
+        done = true; clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check);
+        // (A filled-in step replaced `step` in the history: `shown` is the one still there.)
+        if (history.steps.includes(shown)) { prefetchLeaves(checkSession, shown); }
+      });
     checks.add(check);
   }
   // Resolves when every Verdi check under way has finished (cmux and the checks wait on this).
@@ -503,9 +507,69 @@
   }
   const sameFile = (a, b) => !!a && !!b && (a === b || String(a).split('/').pop() === String(b).split('/').pop());
   const isPort = (st) => !!st.driver && (st.driver.kind === 'portIn' || st.driver.kind === 'portOut');
-  // Verdi's answer (null when the request failed); the step's budget bounds the wait.
+  // Verdi's answer (null when the request failed); the step's budget bounds the wait. A prefetched
+  // answer for the same signal and time is used (status/tracex-verdi-pool.md, phase A).
   function askVerdi(signal, time) {
-    return request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; });
+    const s = session;
+    const key = signal + '@' + time;
+    const known = s.verdiAnswers && s.verdiAnswers.get(key);
+    if (known) {
+      s.verdiAnswers.delete(key);
+      s.prefetchHits = (s.prefetchHits || 0) + 1;
+      return known.then((r) => r || engineRequest(s, signal, time));
+    }
+    return engineRequest(s, signal, time);
+  }
+  function engineRequest(s, signal, time) {
+    s.verdiInFlight = (s.verdiInFlight || 0) + 1;
+    return request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; })
+      .finally(() => { s.verdiInFlight--; pumpPrefetch(s); });
+  }
+
+  // ---- Verdi prefetch (status/tracex-verdi-pool.md) ----
+  // Once a step's check has settled, Verdi is asked about the step's fan-in leaves (the next click's
+  // candidates) while it would sit idle: on one session only when no step or check of ours is
+  // asking, with N sessions (traceVerdiSessions) up to N requests at once. Answers are kept per
+  // trace session (a reload or another dump starts a new one), only when Verdi was ready.
+  // Off by default until the pool A/B (one session: a click can wait behind one prefetch call).
+  const VERDI_PREFETCH = 0;
+  const prefetchCount = () => {
+    const n = Number(waveform.traceVerdiPrefetch);
+    return waveform.traceVerdiPrefetch !== undefined && Number.isFinite(n) && n >= 0 ? Math.floor(n) : VERDI_PREFETCH;
+  };
+  const verdiSessions = () => { const n = Math.floor(Number(waveform.traceVerdiSessions)); return n >= 1 ? Math.min(n, 8) : 1; };
+  const ROLE_ORDER = { data: 0, index: 1, control: 2, clock: 3 };
+  function prefetchLeaves(s, step) {
+    if (s !== session || s.kind === 'local' || !step || !Array.isArray(step.fanin)) { return; }
+    const max = prefetchCount();
+    if (!max) { return; }
+    if (!s.verdiAnswers) { s.verdiAnswers = new Map(); }
+    const leaves = step.fanin.filter((f) => f.path && f.dumped !== false && Number.isFinite(Number(f.time)))
+      .sort((a, b) => (ROLE_ORDER[a.role] ?? 4) - (ROLE_ORDER[b.role] ?? 4));
+    const queue = [];
+    for (const f of leaves) {
+      const key = toDump(f.path) + '@' + f.time;
+      if (s.verdiAnswers.has(key) || queue.some((q) => q.key === key)) { continue; }
+      queue.push({ key, signal: toDump(f.path), time: f.time });
+      if (queue.length >= max) { break; }
+    }
+    // The newest step's leaves replace the ones still waiting.
+    s.prefetch = queue;
+    pumpPrefetch(s);
+  }
+  function pumpPrefetch(s) {
+    if (s !== session || !s.prefetch || !s.prefetch.length) { return; }
+    const n = verdiSessions();
+    while (s.prefetch.length && (s.verdiInFlight || 0) < n && (n > 1 || (!checks.size && !s.steps))) {
+      const { key, signal, time } = s.prefetch.shift();
+      if (s.verdiAnswers.has(key)) { continue; }
+      s.prefetched = (s.prefetched || 0) + 1;
+      const p = engineRequest(s, signal, time).then((r) => {
+        if (!r || r.state !== 'ready') { if (s.verdiAnswers.get(key) === p) { s.verdiAnswers.delete(key); } return null; }
+        return r;
+      });
+      s.verdiAnswers.set(key, p);
+    }
   }
   // `shown` with Verdi's answer merged in, as a new step (the shown one is left as it is); null
   // when `stop()` says the check is late or stale before the port hops are followed.
@@ -561,13 +625,16 @@
   function close() {
     running++;
     history.steps = []; history.at = -1;
+    // No more prefetching for a closed panel; its answers go too.
+    if (session) { session.prefetch = []; if (session.verdiAnswers) { session.verdiAnswers.clear(); } }
     if (panel) { panel.hidden = true; }
     host.toNative({ type: 'trace', event: 'closed' });
     return state();
   }
   function state() {
     const st = history.steps[history.at];
-    return { open: !!(panel && !panel.hidden), steps: history.steps.length, at: history.at, step: st ? plain(st) : null };
+    return { open: !!(panel && !panel.hidden), steps: history.steps.length, at: history.at, step: st ? plain(st) : null,
+      prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0 } };
   }
   const plain = (x) => JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   const number = (n) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString() : String(n));
