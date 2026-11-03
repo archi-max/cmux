@@ -78,16 +78,19 @@ export CMUX_VERDI_COMPILE_DIR
 IDLE=${CMUX_VERDI_IDLE_SECONDS:-1800}
 case $IDLE in ''|*[!0-9]*) IDLE=1800 ;; esac
 relay() {
-  local line part idle=0 status
+  local line part idle=0 status began
   trap '' PIPE
   while :; do
+    began=$SECONDS
     if IFS= read -r -t 1 part; then
       printf '%s\n' "$line$part" || return 0
       line= idle=0
     else
       status=$?
-      # A timeout (status over 128) keeps what came of a line; anything else is stdin's end.
-      [ "$status" -gt 128 ] || return 0
+      # A timeout keeps what came of a line; stdin's end returns at once. bash 4+ says a timeout
+      # with a status over 128; bash 3.2 (macOS) says 1 for both, so a read that took its second
+      # is a timeout too (an end misjudged at a second's boundary is seen at the next read).
+      [ "$status" -gt 128 ] || [ $((SECONDS - began)) -ge 1 ] || return 0
       line=$line$part
       idle=$((idle + 1))
       [ "$idle" -lt "$IDLE" ] || return 0
