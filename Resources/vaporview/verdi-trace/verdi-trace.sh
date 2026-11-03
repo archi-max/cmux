@@ -78,7 +78,7 @@ export CMUX_VERDI_COMPILE_DIR
 IDLE=${CMUX_VERDI_IDLE_SECONDS:-1800}
 case $IDLE in ''|*[!0-9]*) IDLE=1800 ;; esac
 relay() {
-  local line part idle=0 status began
+  local line part idle=0 status began pid
   trap '' PIPE
   while :; do
     began=$SECONDS
@@ -94,11 +94,24 @@ relay() {
       line=$line$part
       idle=$((idle + 1))
       [ "$idle" -lt "$IDLE" ] || return 0
+      # Verdi ended by itself (no licence seat, a crash): so does the relay, at once, so that the
+      # launcher reports why instead of holding the pipeline open until the idle limit.
+      pid=$(cat "$W/verdi.pid" 2>/dev/null)
+      [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || return 0
     fi
   done
 }
 # Only serve.tcl's lines reach cmux; the rest is kept for the failure message.
-relay | nice -n 10 verdi -nogui -dbdir "$DAIDIR" -ssf "$FSDB" -play "$W/serve.tcl" 2>&1 | tee -a "$W/verdi.out" | grep --line-buffered '^{"id":'
+# Verdi runs in the background (its pid for the relay) on the relay's output: fd 4, since an
+# asynchronous command's stdin is otherwise /dev/null.
+rm -f "$W/verdi.pid"
+relay | {
+  exec 4<&0
+  nice -n 10 verdi -nogui -dbdir "$DAIDIR" -ssf "$FSDB" -play "$W/serve.tcl" <&4 4<&- 2>&1 &
+  echo $! > "$W/verdi.pid"
+  exec 4<&-
+  wait $!
+} | tee -a "$W/verdi.out" | grep --line-buffered '^{"id":'
 if ! grep -q '^{"id":0,"ready":true' "$W/verdi.out"; then
   if grep -qi 'could not checkout.*licen[cs]e' "$W/verdi.out"; then
     fail licence "$(grep -i 'could not checkout' "$W/verdi.out" | tail -1)"
