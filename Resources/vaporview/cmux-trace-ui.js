@@ -104,9 +104,16 @@
     try { answer = await b.v2(Object.assign({ id }, req)); } finally { if (pending) { pending.delete(id); } }
     const r = answer && answer.reply;
     if (r && r.cancelled) { return undefined; }
+    if (r && r.error && /larger than|store limit/i.test(String(r.error)) && req.signalId !== undefined) {
+      // Over the helper's store limit: its whole read is capped as well, so it is not tried.
+      if (!session.refused) { session.refused = new Set(); }
+      session.refused.add(req.signalId);
+    }
     if (!r || r.error) { if (r && r.error) { host.log(new Error('trace ' + req.cmd + ': ' + r.error)); } return undefined; }
     return r.result;
   }
+  // A signal helper v2 refused to index (over its store limit): unknown rather than read whole.
+  const refusedByHelper = (v) => !!(session.refused && session.refused.has(v.signalId));
   // Cancels a Verdi check's queries the helper still has (it would keep a worker busy for nothing).
   function cancelPending(s, bg) {
     if (!bg || !bg.pending || !bg.pending.size || s.kind !== 'v2') { return; }
@@ -266,7 +273,7 @@
           const one = r && Array.isArray(r.values) ? r.values[0] : undefined;
           if (typeof one === 'string') { bits = one; }
         }
-        if (bits === undefined || bits === null) {
+        if ((bits === undefined || bits === null) && !(session.kind === 'v2' && refusedByHelper(v))) {
           const changes = await changesOf(v, background);
           const i = changes ? indexAt(changes, time) : -1;
           bits = i >= 0 ? changes[i][1] : (changes ? 'x'.repeat(width) : undefined);
@@ -282,6 +289,7 @@
         // Integer times: the last change at or before `time` is the last one before time + 1.
         const at = await v2Edge(v, Math.floor(time) + 1, 'any', background);
         if (at !== undefined) { return at === null ? 0 : at; }
+        if (refusedByHelper(v)) { return null; }
       }
       const changes = await changesOf(v, background);
       if (!changes) { return null; }
@@ -302,6 +310,7 @@
         const at = await v2WideEdge(v, width, time, edge, background);
         if (at !== undefined) { return at; }
       }
+      if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
       const changes = await changesOf(v, background);
       if (!changes) { return null; }
       for (let i = indexAt(changes, time); i > 0; i--) {
