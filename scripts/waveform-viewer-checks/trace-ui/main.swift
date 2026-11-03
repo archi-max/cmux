@@ -503,7 +503,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await call("""
       const h = cmuxWaveform.host, b = h.currentBackend;
       const own = b.signalChanges.bind(b);
-      const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), fail: new Set(), pending: new Map(), inFake: false };
+      const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), fail: new Set(), refuse: new Set(), pending: new Map(), inFake: false };
       const pad = (val, w) => { const t = String(val).toLowerCase(); return t.length >= w ? t : (t[0] === 'x' || t[0] === 'z' ? t[0] : '0').repeat(w - t.length) + t; };
       m.changes = async (id) => {
         m.inFake = true;
@@ -558,6 +558,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const ids = req.signalIds || [req.signalId];
           if (ids.some((id) => m.hang.has(id))) { return new Promise((resolve) => m.pending.set(req.id, resolve)); }
           if (ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
+          if (req.cmd !== 'valueAt' && ids.some((id) => m.refuse.has(id))) { return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } }; }
           try { return { reply: { id: req.id, result: await m.answer(req) } }; }
           catch (error) { return { reply: { id: req.id, error: String(error.message) } }; }
         };
@@ -610,6 +611,23 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "v2 helper, a failed value batch: the same step: \(String(describing: miss?["v2"])) vs \(String(describing: miss?["plain"]))")
     expect(miss?["downloads"] as? Int == 0 && (miss?["asked"] as? [String])?.contains("valueAt") == true,
            "v2 helper, a failed value batch: values asked again of the helper, none downloaded: \(String(describing: miss?["asked"])) downloads \(String(describing: miss?["downloads"]))")
+
+    // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
+    // whole read is capped too and only costs time; its last change is unknown.
+    let refused = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+      try {
+        m.install(); m.downloads = 0; m.asked = [];
+        t.backendChanged();
+        const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], true);
+        m.refuse.add(v.signalId);
+        const step = await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        return { shown: !!step, value: step && step.value, downloads: m.downloads, asked: [...new Set(m.asked)].sort() };
+      } finally { m.refuse.clear(); m.remove(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] refused signal: \(String(describing: refused))")
+    expect(refused?["shown"] as? Bool == true && refused?["downloads"] as? Int == 0,
+           "v2 helper: a signal over the helper's store limit is not downloaded instead: \(String(describing: refused))")
 
     // A Verdi check that runs out of budget while its port-hop queries are still with the helper
     // cancels them (they would keep a worker busy), and downloads nothing in their place.
