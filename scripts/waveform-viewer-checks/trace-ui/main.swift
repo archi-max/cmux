@@ -37,6 +37,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var engineDelay: TimeInterval = 0
   /// cmux never answers engine requests (a hung Verdi session).
   var engineHang = false
+  /// The signals of the engine requests the page marked as background (a prefetch).
+  var engineBackground: [String] = []
   /// Each engine request's signal and when it was asked and answered (seconds since start); how
   /// many were under way at once at most (a pool of Verdi sessions answers in parallel).
   var engineLog: [(signal: String, asked: Double, answered: Double?)] = []
@@ -916,7 +918,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // A helper-backed dump (the page doesn't ask Verdi about a file it reads itself).
     _ = await call("const b = cmuxWaveform.host.currentBackend; b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); }; return null")
     engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    engineBackground = []
     let one = await prefetchRun(sessions: 1, delay: 0.25)
+    let firstSignal = engineLog.first?.signal ?? ""
+    expect(engineBackground.count == engineLog.count - 1 && !engineBackground.isEmpty,
+           "prefetch: the leaves are asked as background requests, the step's own check isn't: \(engineBackground.count) of \(engineLog.count) (first \(firstSignal))")
     let firstAnswered = engineLog.first?.answered ?? 0
     let prefetched = engineLog.dropFirst().map(\.signal)
     let leafPaths = one.leaves.compactMap { $0["path"] as? String }
@@ -960,9 +966,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     } else {
       expect(false, "prefetch: the step has fan-in leaves: \(one.leaves)")
     }
-    // Two sessions: two prefetches at once.
+    // Two sessions asked for while cmux has one Verdi per dump (it says `pool: 1`, or nothing):
+    // one request at a time. Two only when cmux says it has two.
     _ = await prefetchRun(sessions: 2, delay: 0.3)
-    expect(engineMostInFlight == 2, "prefetch, two sessions: two requests at once (at most \(engineMostInFlight))")
+    expect(engineMostInFlight == 1, "prefetch, two sessions asked, one in cmux's pool: one request at a time (at most \(engineMostInFlight))")
+    engineAnswer?["pool"] = 1
+    _ = await prefetchRun(sessions: 2, delay: 0.3)
+    expect(engineMostInFlight == 1, "prefetch, two sessions asked, cmux says pool 1: one request at a time (at most \(engineMostInFlight))")
+    engineAnswer?["pool"] = 2
+    _ = await prefetchRun(sessions: 2, delay: 0.3)
+    expect(engineMostInFlight == 2, "prefetch, two sessions, cmux says pool 2: two requests at once (at most \(engineMostInFlight))")
+    engineAnswer?["pool"] = nil
     // Closing the panel stops prefetching.
     engineLog = []; engineLogGen += 1; engineDelay = 0.3
     _ = await call("""
@@ -1037,6 +1051,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       engineRequests += 1
       let k = engineLog.count, gen = engineLogGen
       engineLog.append((body["signal"] as? String ?? "", Date().timeIntervalSince(engineEpoch), nil))
+      if body["background"] as? Bool == true { engineBackground.append(body["signal"] as? String ?? "") }
       if engineHang { return }
       engineInFlight += 1
       engineMostInFlight = max(engineMostInFlight, engineInFlight)
