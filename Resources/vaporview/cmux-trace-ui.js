@@ -160,8 +160,10 @@
   // A Verdi check's reads (`bg`: { stop, maxBits, hint }) are background reads: they wait until no
   // step of ours is running and go one at a time (the v1 helper serves one read at a time, so a
   // step behind them would wait); one whose history would be larger than maxBits (width x changes,
-  // the changes estimated by `hint`, the traced signal's, which a port passes on) is refused. A
-  // signal only a Verdi check read is evicted before the ones our steps read.
+  // the changes estimated by `hint`, the traced signal's, which a port passes on) is refused on v1,
+  // whose single reader it would hold; on v2 it is read (only when the helper's queries can't answer,
+  // and the check's budget still bounds it). A signal only a Verdi check read is evicted before the
+  // ones our steps read.
   const VERDI_MAX_BITS = 64e6;
   function changesOf(v, bg) {
     const s = session, id = v.netlistId;
@@ -180,7 +182,7 @@
       const width = Number(v.width) || 1;
       const count = Number.isFinite(bg.hint) ? bg.hint : null;
       const bits = count !== null ? count * width : (width > 64 ? Infinity : 0);
-      if (bits > bg.maxBits) { return Promise.reject(Object.assign(new Error('large'), { code: 'large' })); }
+      if (s.kind !== 'v2' && bits > bg.maxBits) { return Promise.reject(Object.assign(new Error('large'), { code: 'large' })); }
       entry.promise = inLine(s, () => {
         if (bg.stop()) { throw Object.assign(new Error('stale'), { code: 'stale' }); }
         if (s.changes.has(id)) { return s.changes.get(id); }
