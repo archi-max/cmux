@@ -937,11 +937,24 @@
         const tp = r.activation.trigger.path;
         r.fanin.push({ role: 'clock', path: tp, name: relOf(m, tp), value: shown(extra.get(tp)), time: r.activation.time, dumped: extra.get(tp) !== undefined });
       }
-      // The conditions on the way to the write (or to nowhere: everything decided).
-      for (const dd of (pick ? pick.decisions : ctx.decisions)) {
+      // The conditions on the way to the write (or to nowhere: everything decided), and those of a
+      // later if or case that could have written the signal again but didn't (y = 'bx, then a
+      // case (1'b1) whose items all failed: the items are why y stayed x). A case's items count up
+      // to the one taken (all of them when none was).
+      const before = pick ? pick.decisions : ctx.decisions;
+      const sgw = signalOf(m, name);
+      const wname = sgw && sgw.element ? sgw.element.array : name;
+      const sameRun = pick && before.every((d, i) => ctx.decisions[i] === d);
+      const after = sameRun ? ctx.decisions.slice(before.length).filter((dd) => (dd.kind === 'if' || dd.kind === 'case') && stmtWrites(dd.stmt, wname)) : [];
+      const condCtx = { m, vals: ctx.vals, locals: new Map(), blocking: new Map() };
+      for (const dd of before.concat(after)) {
         if (dd.kind !== 'if' && dd.kind !== 'case') { continue; }
         const e = dd.kind === 'if' ? dd.stmt.c : dd.stmt.e;
-        faninOf(m, e, readsOf(e, { m, vals: ctx.vals, locals: new Map(), blocking: new Map() }), r.sample, 'control', r.fanin);
+        faninOf(m, e, readsOf(e, condCtx), r.sample, 'control', r.fanin);
+        if (dd.kind === 'case') {
+          const upto = typeof dd.taken === 'number' ? dd.taken + 1 : dd.stmt.items.length;
+          dd.stmt.items.slice(0, upto).forEach((it) => (it.m || []).forEach((x) => faninOf(m, x, readsOf(x, condCtx), r.sample, 'control', r.fanin)));
+        }
       }
       if (!pick) {
         // Written by a statement that isn't re-executed: that statement, its value unpredicted.
