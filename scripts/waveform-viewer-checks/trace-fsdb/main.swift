@@ -34,6 +34,8 @@ let modelFile = URL(fileURLWithPath: args[5])
 let instance = args[6]
 let time = Int(args[7]) ?? 0
 let out = URL(fileURLWithPath: args[8])
+/// When the harness started: TRACE_FSDB_XCHAIN reports the time to the first step from here.
+let processStart = Date()
 nonisolated(unsafe) var failures = 0
 
 func shellQuoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -213,6 +215,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   func run() async {
+    if ProcessInfo.processInfo.environment["TRACE_FSDB_XCHAIN"] == "1" { await xchain(); return }
     guard let model = instances[instance] as? [String: Any], let signals = model["signals"] as? [String: Any] else {
       expect(false, "instance \(instance) is in the model")
       finish()
@@ -348,6 +351,68 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if !knownUndriven.isEmpty { print("undriven in the design (TRACE_FSDB_UNDRIVEN):", knownUndriven) }
     expect(noDriver.isEmpty, "every traced design signal has a driver: \(noDriver.prefix(8))")
     expect(times.count > 0, "steps were traced")
+    finish()
+  }
+
+  /// TRACE_FSDB_XCHAIN=1: follow the X backwards from (TRACE_FSDB_START or the instance, time), the
+  /// way an engineer does it: at each step trace every X fan-in (not the clock), take the one whose X
+  /// began earliest (its `since`), and go on from it. It stops when the step has no X fan-in (the X is
+  /// made here), at the testbench, at a signal with no driver, at a repeat, or after 30 steps.
+  func xchain() async {
+    let maxLen = Int(ProcessInfo.processInfo.environment["TRACE_FSDB_XCHAIN_MAX"] ?? "") ?? 30
+    var path = ProcessInfo.processInfo.environment["TRACE_FSDB_START"].flatMap { $0.isEmpty ? nil : $0 } ?? instance
+    var t = time
+    var steps = 0, traced = 0, totalMs = 0.0
+    var firstAt: Double?
+    var seen = Set<String>()
+    func trace(_ p: String, _ at: Int) async -> (step: [String: Any]?, ms: Double) {
+      let t0 = Date()
+      let shown = await call("return await cmuxWaveform.trace.driverOfDesign(argument)",
+                             ["argument": ["designPath": p, "designPrefix": "", "dumpPrefix": "", "time": at]]) as? [String: Any]
+      var step = shown
+      if shown != nil, let settled = await call("const t = cmuxWaveform.trace; return t.settled ? (await t.settled()).step : null") as? [String: Any] { step = settled }
+      let ms = Date().timeIntervalSince(t0) * 1000
+      if firstAt == nil, shown != nil { firstAt = Date().timeIntervalSince(processStart) }
+      traced += 1; totalMs += ms
+      return (step, ms)
+    }
+    func hasX(_ v: Any?) -> Bool { (v as? String).map { $0.contains { "xXzZ".contains($0) } } ?? false }
+    func loc(_ st: [String: Any]) -> String {
+      let l = (st["stmt"] as? [String: Any])?["loc"] as? [String: Any]
+      return "\((l?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(l?["line"] ?? "")"
+    }
+    var (cur, ms) = await trace(path, t)
+    var end = "maxSteps"
+    while let st = cur {
+      steps += 1
+      let kind = (st["driver"] as? [String: Any])?["kind"] as? String ?? "none"
+      print(String(format: "[xchain] %2d %7.0f ms  %@ @%@ = %@  %@ %@ since %@ [%@]", steps, ms, path, "\(t)", String((st["value"] as? String ?? "?").prefix(24)),
+                   kind, loc(st), "\(st["since"] ?? "null")", st["trust"] as? String ?? "?"))
+      let fan = (st["fanin"] as? [[String: Any]] ?? []).map { f -> String in
+        let name = (f["path"] as? String).map { String($0.split(separator: ".").last ?? "") } ?? (f["name"] as? String ?? "?")
+        return "\(name)=\(String((f["value"] as? String ?? "?").prefix(12)))\(f["blocking"] as? Bool == true ? "(blocking)" : "")\(f["local"] as? Bool == true ? "(local)" : "")/\(f["role"] as? String ?? "")"
+      }
+      print("[xchain fanin] \(fan.joined(separator: " "))")
+      guard seen.insert("\(path)@\(t)").inserted else { end = "repeat"; break }
+      if st["root"] as? String == "testbench" { end = "testbench"; break }
+      if kind == "none" { end = "noDriver"; break }
+      if steps >= maxLen { break }
+      let cands = (st["fanin"] as? [[String: Any]] ?? []).filter { $0["path"] is String && $0["role"] as? String != "clock" && $0["dumped"] as? Bool != false && hasX($0["value"]) }
+      if cands.isEmpty { end = "xMadeHere"; break }
+      var best: (p: String, t: Int, step: [String: Any], ms: Double, since: Int)?
+      for c in cands {
+        let cp = c["path"] as! String, ct = (c["time"] as? NSNumber)?.intValue ?? t
+        let (cs, cms) = await trace(cp, ct)
+        guard let cs else { continue }
+        let since = (cs["since"] as? NSNumber)?.intValue ?? 0
+        if best == nil || since < best!.since { best = (cp, ct, cs, cms, since) }
+      }
+      guard let b = best else { end = "traceFailed"; break }
+      path = b.p; t = b.t; cur = b.step; ms = b.ms
+    }
+    if cur == nil { end = "traceFailed" }
+    print(String(format: "[xchain end] %@ after %d steps (%d traced), first step on screen %.1f s after start, %.1f s tracing", end, steps, traced, firstAt ?? -1, totalMs / 1000))
+    expect(steps > 0, "the X chain has a step")
     finish()
   }
 
