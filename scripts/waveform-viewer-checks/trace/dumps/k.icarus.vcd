@@ -1,5 +1,5 @@
 $date
-	Tue Nov  3 16:16:43 2026
+	Tue Nov  3 16:18:21 2026
 $end
 $version
 	Icarus Verilog
@@ -12,18 +12,21 @@ $var wire 8 ! fq [7:0] $end
 $var reg 8 " a [7:0] $end
 $var reg 1 # clk $end
 $var reg 1 $ go $end
+$var reg 8 % xa [7:0] $end
 $scope module dut $end
-$var wire 8 % a [7:0] $end
+$var wire 8 & a [7:0] $end
 $var wire 1 # clk $end
 $var wire 1 $ go $end
-$var reg 8 & fcnt [7:0] $end
-$var reg 8 ' fq [7:0] $end
-$var reg 8 ( ky [7:0] $end
-$var reg 8 ) kz [7:0] $end
-$var reg 8 * tq [7:0] $end
-$var reg 8 + vq [7:0] $end
+$var wire 8 ' xa [7:0] $end
+$var reg 8 ( fcnt [7:0] $end
+$var reg 8 ) fq [7:0] $end
+$var reg 8 * fr [7:0] $end
+$var reg 8 + ky [7:0] $end
+$var reg 8 , kz [7:0] $end
+$var reg 8 - tq [7:0] $end
+$var reg 8 . vq [7:0] $end
 $scope function bump $end
-$var reg 8 , v [7:0] $end
+$var reg 8 / v [7:0] $end
 $upscope $end
 $scope task clear_t $end
 $upscope $end
@@ -35,50 +38,61 @@ $dumpall
 $end
 #0
 $dumpvars
+bx /
+bx .
+bx -
 bx ,
 bx +
 bx *
 bx )
 bx (
-bx '
-bx &
-b0 %
+b11 '
+b0 &
+b11 %
 0$
 0#
 b0 "
 bx !
 $end
 #2000
-b10001 (
+b10001 +
 b10001 "
-b10001 %
+b10001 &
 #5000
 b10001 !
-b10001 '
-b10010 &
-b10001 ,
+b10001 )
+b11 *
+b10010 (
+b10001 /
 1#
 #10000
 0#
 #12000
-b10001 )
+b10001 ,
+bx %
+bx '
 1$
 #15000
-b0 *
-b10001 +
+bx *
+b0 -
+b10001 .
 1#
 #20000
 0#
 #22000
-b100010 (
+b100010 +
+bx *
+b101 %
+b101 '
 b100010 "
-b100010 %
+b100010 &
 0$
 #25000
 b100010 !
-b100010 '
-b100011 &
-b100010 ,
+b100010 )
+bx *
+b100011 (
+b100010 /
 1#
 #30000
 0#
