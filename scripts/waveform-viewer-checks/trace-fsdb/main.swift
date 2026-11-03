@@ -12,7 +12,8 @@
 // and on helper v2 its windowed requests by command (count, summed time).
 // TRACE_FSDB_V2=1 runs the helpers as cmux does by default (waveform.fsdbLoading auto: helper v2,
 // <assetRoot>/fsdb-helper-v2, else v1); TRACE_FSDB_HOME=<dir> installs them under <dir> on the host
-// instead of the user's home (so a test never replaces the helpers in use). Default: helper v1.
+// instead of the user's home, with v2's store cache in <dir>/index (so a test never replaces or
+// fills the helpers' in use). Default: helper v1.
 // Usage: trace-fsdb <assetRoot> <helperRoot> <sshHost> <remote.fsdb> <model.json> <instance> <time> <out.png>
 import AppKit
 import WebKit
@@ -72,7 +73,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     window.alphaValue = 0
     window.ignoresMouseEvents = true
     let env = ProcessInfo.processInfo.environment
-    let home = env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " " } ?? ""
+    // The helper's store cache too (FSDB_INDEX_DIR; by default a folder under /tmp shared with the
+    // helpers in use), so a test starts cold when the folder is new and never fills theirs.
+    let home = env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " FSDB_INDEX_DIR=" + shellQuoted($0 + "/index") + " " } ?? ""
     let installs = env["TRACE_FSDB_V2"] == "1"
       ? WaveformFSDBHelper.installs(v2Root: assetRoot.appendingPathComponent("fsdb-helper-v2", isDirectory: true), v1Root: helperRoot, loading: .auto)
       : [WaveformFSDBHelper.Install(protocolVersion: 1, resourceRoot: helperRoot)]
