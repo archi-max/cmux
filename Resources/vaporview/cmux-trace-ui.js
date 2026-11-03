@@ -218,14 +218,21 @@
     return entry.promise;
   }
   // Whether a check's whole read of `v` on v2 would be over the memory ceiling (width x changes):
-  // asked of the helper only when the width alone could get there.
+  // asked of the helper only when the width alone could get there. A count the helper doesn't
+  // know without a walk (not stored yet) is asked for exactly; one it can't give is taken as over.
   async function overV2Ceiling(v, bg) {
     const max = Number(waveform.traceVerdiV2MaxBits) > 0 ? Number(waveform.traceVerdiV2MaxBits) : V2_MAX_BITS;
     const width = Number(v.width) || 1;
     if (width * MAX_CHANGES <= max) { return false; }
-    const r = await v2({ cmd: 'count', signalIds: [v.signalId] }, bg);
-    const c = r && Array.isArray(r.counts) ? r.counts[0] : null;
-    if (!c || !Number.isFinite(Number(c.count))) { return false; }
+    const countOf = async (exact) => {
+      const r = await v2(exact ? { cmd: 'count', signalIds: [v.signalId], exact: true } : { cmd: 'count', signalIds: [v.signalId] }, bg);
+      const c = r && Array.isArray(r.counts) ? r.counts[0] : null;
+      return c && c.count !== null && c.count !== undefined && Number.isFinite(Number(c.count)) ? c : null;
+    };
+    // A stopped check isn't refused as large: its caller says it is stale.
+    const stopped = () => !!(bg && bg.stop && bg.stop());
+    const c = (await countOf(false)) || (stopped() ? null : await countOf(true));
+    if (!c) { return !stopped(); }
     // Over MAX_CHANGES the helper sends a count, no values: nothing to hold.
     const count = Number(c.count);
     return count <= MAX_CHANGES && count * (Number(c.bits) || width) > max;
