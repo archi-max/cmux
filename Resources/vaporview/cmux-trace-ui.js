@@ -91,23 +91,69 @@
     return b && typeof b.changes === 'function' ? 'whole' : 'local';
   }
   let nextV2Id = 1;
-  // One v2 query through the viewer's relay: its result, or undefined when the helper failed it.
-  async function v2(req) {
+  const v2Id = () => 2000000000 + nextV2Id++;
+  // One v2 query through the viewer's relay: its result, or undefined when the helper failed it
+  // (or it was cancelled). A Verdi check's (`bg`) queries are kept in bg.pending while the helper
+  // has them, so the check can cancel what is left when it ends.
+  async function v2(req, bg) {
     const b = session.backend;
-    const answer = await b.v2(Object.assign({ id: 2000000000 + nextV2Id++ }, req));
+    const id = v2Id();
+    const pending = bg && bg.pending;
+    if (pending) { pending.add(id); }
+    let answer;
+    try { answer = await b.v2(Object.assign({ id }, req)); } finally { if (pending) { pending.delete(id); } }
     const r = answer && answer.reply;
+    if (r && r.cancelled) { return undefined; }
     if (!r || r.error) { if (r && r.error) { host.log(new Error('trace ' + req.cmd + ': ' + r.error)); } return undefined; }
     return r.result;
   }
-  // The last time before `t` that `v` changed (edge 'any'), or rose/fell (1-bit), from the helper; cached.
-  async function v2Edge(v, t, kind) {
+  // Cancels a Verdi check's queries the helper still has (it would keep a worker busy for nothing).
+  function cancelPending(s, bg) {
+    if (!bg || !bg.pending || !bg.pending.size || s.kind !== 'v2') { return; }
+    for (const target of [...bg.pending]) {
+      Promise.resolve(s.backend.v2({ cmd: 'cancel', id: v2Id(), target })).catch(() => {});
+    }
+    bg.pending.clear();
+  }
+  // The last time before `t` that `v` changed (edge 'any'), or rose/fell (1-bit), from the helper;
+  // cached (a failed or cancelled query is not).
+  async function v2Edge(v, t, kind, bg) {
     const s = session;
     const key = v.netlistId + ':' + kind + ':' + t;
     if (s.edges.has(key)) { return s.edges.get(key); }
-    const r = await v2({ cmd: 'edge', signalId: v.signalId, t, dir: -1, kind });
-    const at = r === undefined ? undefined : (r.t === null || r.t === undefined ? null : Number(r.t));
+    const r = await v2({ cmd: 'edge', signalId: v.signalId, t, dir: -1, kind }, bg);
+    if (r === undefined) { return undefined; }
+    const at = r.t === null || r.t === undefined ? null : Number(r.t);
     s.edges.set(key, at);
     return at;
+  }
+  // The last `edge` of a wide signal's last bit at or before `time`, from the helper: from the
+  // run of the last bit in effect at `time`, back over the runs (the last change before a run
+  // whose last bit differs, by search; the run starts at the next change) until one starts with
+  // an edge. Undefined when the helper fails (the caller reads the changes instead).
+  async function v2WideEdge(v, width, time, edge, bg) {
+    const id = v.signalId, rest = '?'.repeat(width - 1);
+    const now = await v2({ cmd: 'valueAt', signalIds: [id], t: time }, bg);
+    const value = now && Array.isArray(now.values) ? now.values[0] : undefined;
+    if (typeof value !== 'string') { return undefined; }
+    let bit = bitsOf(value, width).slice(-1).toLowerCase();
+    let before = Math.floor(time) + 1;
+    for (let run = 0; run < 16; run++) {
+      let at = null, was = null;
+      for (const c of ['0', '1', 'x', 'z']) {
+        if (c === bit) { continue; }
+        const r = await v2({ cmd: 'search', signalId: id, t: before, dir: -1, value: rest + c, wildcard: '?' }, bg);
+        if (r === undefined) { return undefined; }
+        if (r.t !== null && r.t !== undefined && (at === null || Number(r.t) > at)) { at = Number(r.t); was = c; }
+      }
+      if (at === null) { return null; }
+      const start = await v2({ cmd: 'edge', signalId: id, t: at, dir: 1, kind: 'any' }, bg);
+      if (start === undefined || start.t === null || start.t === undefined) { return undefined; }
+      if (isEdge(was, bit, edge)) { return Number(start.t); }
+      bit = was;
+      before = at;
+    }
+    return undefined;
   }
 
   // One read per signal: a read already under way is shared (a step asks for its leaves together).
@@ -212,6 +258,12 @@
         if (!v) { return [p, undefined]; }
         const width = Number(v.width) || 1;
         let bits = raw.get(v.netlistId);
+        if ((bits === undefined || bits === null) && session.kind === 'v2') {
+          // The helper's batch had no value for it (or failed): asked again on its own.
+          const r = await v2({ cmd: 'valueAt', signalIds: [v.signalId], t: time }, background);
+          const one = r && Array.isArray(r.values) ? r.values[0] : undefined;
+          if (typeof one === 'string') { bits = one; }
+        }
         if (bits === undefined || bits === null) {
           const changes = await changesOf(v, background);
           const i = changes ? indexAt(changes, time) : -1;
@@ -226,7 +278,7 @@
       if (!v) { return null; }
       if (session.kind === 'v2') {
         // Integer times: the last change at or before `time` is the last one before time + 1.
-        const at = await v2Edge(v, Math.floor(time) + 1, 'any');
+        const at = await v2Edge(v, Math.floor(time) + 1, 'any', background);
         if (at !== undefined) { return at === null ? 0 : at; }
       }
       const changes = await changesOf(v, background);
@@ -239,9 +291,13 @@
       if (!v) { return null; }
       const width = Number(v.width) || 1;
       // The helper's rise/fall is a change to 1/0 (x to 1 counts, 0 to x does not); a wide
-      // clock (its last bit) is read from its changes.
+      // clock's edge (its last bit) is searched for.
       if (session.kind === 'v2' && width === 1) {
-        const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any');
+        const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any', background);
+        if (at !== undefined) { return at; }
+      }
+      if (session.kind === 'v2' && width > 1) {
+        const at = await v2WideEdge(v, width, time, edge, background);
         if (at !== undefined) { return at; }
       }
       const changes = await changesOf(v, background);
@@ -276,9 +332,10 @@
   // under way still finishes; the helper serves one at a time, so a step after it would wait).
   function guardedDump(stop, hint) {
     const max = Number(waveform.traceVerdiMaxBits) > 0 ? Number(waveform.traceVerdiMaxBits) : VERDI_MAX_BITS;
-    const d = makeDump({ stop, maxBits: max, hint });
+    const bg = { stop, maxBits: max, hint, pending: new Set() };
+    const d = makeDump(bg);
     const guard = (f) => (...args) => (stop() ? Promise.reject(Object.assign(new Error('stale'), { code: 'stale' })) : f(...args));
-    return { values: guard(d.values), lastChange: guard(d.lastChange), prevEdge: guard(d.prevEdge) };
+    return { values: guard(d.values), lastChange: guard(d.lastChange), prevEdge: guard(d.prevEdge), background: bg };
   }
 
   // ---- tracing ----
@@ -376,7 +433,8 @@
     const v = session.vars.get(step.signal);
     const known = v && session.changes.get(v.netlistId);
     const hint = Array.isArray(known) ? known.length : undefined;
-    const engine = window.cmuxTrace.createEngine({ models: session.models, dump: guardedDump(stop, hint), options: session.options });
+    const checkDump = guardedDump(stop, hint), checkSession = session;
+    const engine = window.cmuxTrace.createEngine({ models: session.models, dump: checkDump, options: session.options });
     const check = Promise.race([withVerdi(step, time, asked, stop, engine), limit]).then((out) => {
       if (gone()) { step.engine.verdi = 'dropped'; return; }
       let shown = step;
@@ -392,7 +450,7 @@
       if (history.steps[history.at] === shown) { render(); }
       host.toNative({ type: 'trace', event: 'update', step: plain(shown) });
     }).catch((error) => { host.log(error); step.engine.verdi = 'timedOut'; })
-      .finally(() => { clearTimeout(timer); checks.delete(check); });
+      .finally(() => { clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check); });
     checks.add(check);
   }
   // Resolves when every Verdi check under way has finished (cmux and the checks wait on this).
