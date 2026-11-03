@@ -154,6 +154,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
     guard m.name == "cmuxWaveform", let body = m.body as? [String: Any], let type = body["type"] as? String else { print("[\(m.name)]", m.body); return }
     if type != "trace" && type != "log" && type != "event" { print("[page]", type, (body["message"] as? String ?? "").prefix(200)) }
+    // With TRACE_FSDB_PROFILE=1, the page's own trace errors (a helper query that failed, say).
+    if type == "log", ProcessInfo.processInfo.environment["TRACE_FSDB_PROFILE"] == "1", let text = body["message"] as? String, text.contains("trace ") {
+      print("[page log]", text.prefix(300))
+    }
     if type == "trace", body["event"] as? String == "engine", let id = (body["id"] as? NSNumber)?.intValue {
       answerEngine(id, body)
     } else if type == "trace" {
