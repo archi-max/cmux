@@ -535,7 +535,10 @@
     // Values for display: a cmux value -> bits text.
     const shown = (v) => bitsOf(X, v);
 
-    function faninOf(m, e, reads, time, role, out) {
+    // A read of a temp written earlier in the same run (a local, or a variable written blocking) also
+    // lists what that write read: the temp's dumped value is not what was read (a block may end with
+    // tmp = 'bx), so following the temp alone would go astray. `through` names the temp.
+    function faninOf(m, e, reads, time, role, out, seen) {
       for (const r of reads) {
         if (r.src === 'opaque') { continue; }
         const entry = { role, time };
@@ -554,8 +557,15 @@
         else if (r.path) { entry.path = r.path; }
         entry.dumped = !(r.src === 'notDumped' || r.src === 'elemNotDumped' || r.src === 'notFetched');
         if (r.src === 'xIndex') { entry.xIndex = true; }
+        if (seen && seen.through) { entry.through = seen.through; }
         const key = (entry.path || entry.name) + '|' + role;
         if (!out.some((x) => (x.path || x.name) + '|' + x.role === key)) { out.push(entry); }
+        const w = (r.src === 'local' || r.src === 'blocking') && r.write;
+        const done = (seen && seen.writes) || new Set();
+        if (w && w.stmt && w.stmt.rhs && w.ctx && !done.has(w) && done.size < 16) {
+          done.add(w);
+          faninOf(m, w.stmt.rhs, readsOf(w.stmt.rhs, w.ctx, w.width), time, role, out, { writes: done, through: (seen && seen.through) || entry.path || entry.name });
+        }
       }
       return out;
     }
