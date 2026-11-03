@@ -52,6 +52,7 @@
 #   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
 #   ./run.sh trace                       driver tracing's engine (cmux-trace.js): active drivers on the
 #                                        trace fixtures' models and VCS/Icarus dumps, and the replay oracle
+#   ./run.sh verdi-launch                the Verdi launcher ends its session when nothing asks (a client that slept)
 #   ./run.sh trace-ui                    driver tracing's page (cmux-trace-ui.js): Trace Driver from a
 #                                        row and a path, the panel, fan-in clicks, Back/Forward, the row
 #                                        menu, errors; the harness answers as cmux from trace/models
@@ -269,6 +270,10 @@ case "${1:-}" in
     check '^{"id":3,"ok":true,"writers":\[\]}' 'writers: none'
     check '^{"id":4,"ok":false,"error":"noInstance"' 'writers of an unknown instance'
     [ "$fails" = 0 ] && echo "SV MODEL CHECKS PASSED" || { echo "SV MODEL CHECKS FAILED: $fails"; exit 1; }
+    ;;
+  verdi-launch)
+    # verdi-trace.sh's session lifetime against a stand-in verdi (no host, Verdi or licence needed).
+    "$HERE/verdi-launch/check.sh" "$ASSETS/verdi-trace/verdi-trace.sh"
     ;;
   trace-ui)
     swiftc -O "$HERE/trace-ui/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
