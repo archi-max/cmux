@@ -189,17 +189,19 @@ const TRACE_CASES = [
 
   // ---- K: writes that aren't re-executed: a driver that may have written, never a confident "nothing" ----
   // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
-  { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 20, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
+  { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 21, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
   // A task call whose body writes tq.
-  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 27, trust: 'approximate', reasons: ['statement'] },
+  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 28, trust: 'approximate', reasons: ['statement'] },
   // fq <= bump(a), and bump's body writes fcnt.
   // ky = a, then if (go) kz = a: the later if doesn't write ky, so go isn't in its fan-in.
-  { d: 'k', sig: 'tb_k.dut.ky', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 38, stmt: 'ky = a;', fanin: { 'tb_k.dut.a': '00100010' }, noFanin: ['tb_k.dut.go'] },
+  { d: 'k', sig: 'tb_k.dut.ky', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 39, stmt: 'ky = a;', fanin: { 'tb_k.dut.a': '00100010' }, noFanin: ['tb_k.dut.go'] },
   // fr went x at 15 (xa x), then the testbench forced it at 22: the runs at 25 and 35 write 05, so
   // the x in effect is still traced at 15, not moved to the last edge.
-  { d: 'k', sig: 'tb_k.dut.fr', t: 40000, kind: 'proc', file: 'k_writes.sv', line: 43, stmt: 'fr <= xa;', act: 15000, since: 15000, value: XX,
+  { d: 'k', sig: 'tb_k.dut.fr', t: 40000, kind: 'proc', file: 'k_writes.sv', line: 44, stmt: 'fr <= xa;', act: 15000, since: 15000, value: XX,
     fanin: { 'tb_k.dut.xa': XX } },
-  { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 34, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
+  // cnt is written only by its if's condition (cnt++ == 3), in a live procedure.
+  { d: 'k', sig: 'tb_k.dut.cnt', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 47, trust: 'approximate', reasons: ['statement'] },
+  { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 35, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
 ];
 
 function runTraceChecks() {

@@ -5,7 +5,8 @@
 // function called in an assignment's right side whose body writes one. Also guards: a later if in
 // the block that doesn't write the signal isn't why it has its value (ky), and a flop that went x
 // at an edge, then forced to x by the testbench: later edges, whose runs write known values,
-// didn't make the x in effect (fr).
+// didn't make the x in effect (fr). And a variable written only by a condition's side effect
+// (if (cnt++ == 3)) in a live procedure: its driver is that statement, approximate (cnt).
 module k_writes (
   input  logic       clk,
   input  logic       go,
@@ -41,4 +42,7 @@ module k_writes (
 
   logic [7:0] fr;
   always @(posedge clk) fr <= xa;
+
+  logic [7:0] cnt = 8'd0, kq;
+  always @(posedge clk) if (cnt++ == 8'd3) kq <= a;
 endmodule
