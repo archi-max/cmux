@@ -5,7 +5,7 @@
 // the dump). Fields of a case, each checked when present:
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
-//   fanin { path or local name: bits, or '*' for any value }, xIndex [fan-in names read through an x index],
+//   fanin { path or local name: bits, or '*' for any value }, roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
 //   trust, root, reasons [codes that must be there], viol [each decision's case violation or null],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
 /* global cmuxTrace, traceVcd, traceFiles */
@@ -180,7 +180,7 @@ const TRACE_CASES = [
   // zq went x at 15 (zq <= 8'bx) and was rewritten x from a2 at 25 and 35: the value in effect was
   // written at the last edge, from a2, though its last change (since) is 15.
   { d: 'j', sig: 'tb_j.dut.zq', t: 40000, kind: 'proc', file: 'j_temps.sv', line: 43, stmt: 'zq <= a2;', act: 35000, since: 15000,
-    fanin: { 'tb_j.dut.a2': XX } },
+    fanin: { 'tb_j.dut.a2': XX, 'tb_j.dut.zsel': '10' }, roles: { 'tb_j.dut.a2': 'data', 'tb_j.dut.zsel': 'control' } },
   // p1 <= p0 then p1[3:0] <= 4'h0: p1's x bits (the high nibble, from a) came from the whole write.
   { d: 'j', sig: 'tb_j.dut.p1', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 49, stmt: 'p1 <= p0;', value: 'xxxx000100100000',
     fanin: { 'tb_j.dut.p0': 'xxxx000100100010' } },
@@ -240,6 +240,10 @@ function runTraceChecks() {
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
       if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (v !== '*' && f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
+    }
+    for (const [k, v] of Object.entries(c.roles || {})) {
+      const f = (step.fanin || []).find((x) => (x.path === k || (x.local && x.name === k)) && x.role === v);
+      if (!f) { bad.push(`fan-in lacks ${k} as ${v} (roles ${(step.fanin || []).filter((x) => x.path === k || x.name === k).map((x) => x.role).join(', ') || 'none'})`); }
     }
     for (const k of c.xIndex || []) {
       if (!(step.fanin || []).some((x) => x.xIndex && (x.name === k || x.path === k))) { bad.push(`fan-in lacks an x-index read of ${k}`); }
