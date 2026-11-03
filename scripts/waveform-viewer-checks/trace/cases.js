@@ -5,7 +5,7 @@
 // the dump). Fields of a case, each checked when present:
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
-//   fanin { path or local name: bits }, xIndex [fan-in names read through an x index],
+//   fanin { path or local name: bits, or '*' for any value }, xIndex [fan-in names read through an x index],
 //   trust, root, reasons [codes that must be there], viol [each decision's case violation or null],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
 /* global cmuxTrace, traceVcd, traceFiles */
@@ -29,7 +29,7 @@ const TRACE_CASES = [
   { d: 'a', sig: 'tb_a.dut.dout', t: 60, kind: 'proc', proc: 'AlwaysFF', file: 'a_uninit.sv', line: 34, stmt: 'dout <= stage;',
     act: 55, sample: 54, since: 55, value: XX, dec: [['!rst_n', 'else']], fanin: { 'tb_a.dut.stage': XX, 'tb_a.dut.rst_n': '1', 'tb_a.dut.clk': '1' }, trust: 'exact' },
   { d: 'a', sig: 'tb_a.dut.stage', t: 54, kind: 'proc', proc: 'AlwaysComb', file: 'a_uninit.sv', line: 28, stmt: 'stage = tmp;',
-    since: 45, dec: [['valid_q', 'then']], fanin: { tmp: XX, 'tb_a.dut.valid_q': '1' }, trust: 'computed' },
+    since: 45, dec: [['valid_q', 'then']], fanin: { tmp: XX, 'tb_a.dut.valid_q': '1', 'tb_a.dut.sum': XX }, trust: 'computed' },
   { d: 'a', sig: 'tb_a.dut.sum', t: 54, kind: 'assign', file: 'a_uninit.sv', line: 23, stmt: 'sum = acc ^ {8{valid_q}}',
     since: 0, fanin: { 'tb_a.dut.acc': XX, 'tb_a.dut.valid_q': '1' }, trust: 'exact' },
   { d: 'a', sig: 'tb_a.dut.acc', t: 54, kind: 'proc', proc: 'AlwaysFF', file: 'a_uninit.sv', line: 21, stmt: 'acc <= acc + din;',
@@ -93,7 +93,9 @@ const TRACE_CASES = [
   { d: 'e', sig: 'tb_e.dut.lane[1].r', t: 35, kind: 'proc', proc: 'AlwaysFF', line: 64, stmt: 'r <= r + a;', act: 35, sample: 34, trust: 'exact' },
   { d: 'e', sig: 'tb_e.dut.pk', t: 35, kind: 'assign', line: 71, value: '00110100', fanin: { 'tb_e.dut.op': '0110' }, trust: 'exact' },
   { d: 'e', sig: 'tb_e.dut.asc', t: 35, kind: 'assign', line: 74, value: '01001000', trust: 'exact' },
-  { d: 'e', sig: 'tb_e.dut.t2', t: 40, kind: 'proc', line: 84, stmt: "t2 <= tmp2 + 8'd1;", act: 25, value: '00100111', trust: 'computed' },
+  { d: 'e', sig: 'tb_e.dut.t2', t: 40, kind: 'proc', line: 84, stmt: "t2 <= tmp2 + 8'd1;", act: 25, value: '00100111', trust: 'computed',
+    // A blocking temp's fan-in carries what its write read (tmp2 = a ^ b), not just the temp.
+    fanin: { 'tb_e.dut.tmp2': '*', 'tb_e.dut.a': '*', 'tb_e.dut.b': '*' } },
   // An if on x in a flop and in comb logic: x-optimistic sims take the else branch...
   { d: 'e', sig: 'tb_e.dut.xc', t: 75, kind: 'proc', proc: 'AlwaysComb', line: 56, stmt: 'xc = b;', value: '01111000', dec: [['sel', 'else']], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
   { d: 'e', sig: 'tb_e.dut.xf', t: 80, kind: 'proc', proc: 'AlwaysFF', line: 52, stmt: 'xf <= b;', act: 75, value: '01111000', dec: [['!rst_n', 'else'], ['sel', 'else']], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
@@ -221,7 +223,7 @@ function runTraceChecks() {
     if (c.root) { want('root', step.root, c.root); }
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
-      if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
+      if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (v !== '*' && f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
     }
     for (const k of c.xIndex || []) {
       if (!(step.fanin || []).some((x) => x.xIndex && (x.name === k || x.path === k))) { bad.push(`fan-in lacks an x-index read of ${k}`); }
