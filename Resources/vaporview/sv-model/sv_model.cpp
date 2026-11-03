@@ -79,6 +79,7 @@
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/AllTypes.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
@@ -377,10 +378,68 @@ void systemNames(const syntax::SyntaxNode& n, std::set<std::string>& out) {
     }
 }
 
+// A simulator's own task that only reads what it is given by name (a dump task's "what to dump").
+bool readsOnlyByName(std::string_view n) {
+    for (std::string_view p : {"$fsdb", "$vcdplus", "$vcd", "$dump", "$shm_", "$record", "$sdf", "$vpd", "$wlf", "$assert"})
+        if (n.substr(0, p.size()) == p)
+            return true;
+    return false;
+}
+
 // The variables an expression or statement writes: assignment targets (output arguments of calls
-// are assignments too), x++ / x-- operands; the symbol under selects and member accesses.
+// are assignments too), x++ / x-- operands; the symbol under selects and member accesses. Also what
+// it may write that isn't re-executed: a variable given by name to a simulator's own task (one
+// slang doesn't know, such as a vendor $deposit-style task), and the module variables a called
+// task's or function's body writes (followed a few calls deep, without recursion).
 struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | VisitFlags::Expressions> {
     std::vector<const Symbol*> out;
+    std::vector<const SubroutineSymbol*> calling;
+    static bool within(const Symbol& s, const Symbol& outer) {
+        for (auto scope = s.getParentScope(); scope; scope = scope->asSymbol().getParentScope())
+            if (&scope->asSymbol() == &outer)
+                return true;
+        return false;
+    }
+    // An input port's variable: a task given it by name reads it (writing an input is illegal).
+    static bool inputPort(const Symbol& sym) {
+        auto scope = sym.getParentScope();
+        if (!scope || scope->asSymbol().kind != SymbolKind::InstanceBody)
+            return false;
+        for (auto p : scope->asSymbol().as<InstanceBodySymbol>().getPortList())
+            if (p->kind == SymbolKind::Port && p->as<PortSymbol>().internalSymbol == &sym)
+                return p->as<PortSymbol>().direction == ArgumentDirection::In;
+        return false;
+    }
+    void addSymbol(const Symbol* sym) {
+        if (sym && std::find(out.begin(), out.end(), sym) == out.end())
+            out.push_back(sym);
+    }
+    void handle(const CallExpression& c) {
+        if (c.isSystemCall()) {
+            auto& info = std::get<CallExpression::SystemCallInfo>(c.subroutine);
+            if (dynamic_cast<const UnknownSystemCall*>(info.subroutine.get()) && !readsOnlyByName(c.getSubroutineName())) {
+                for (auto arg : c.arguments()) {
+                    if (arg->kind != ExpressionKind::ArbitrarySymbol)
+                        continue;
+                    auto sym = arg->as<ArbitrarySymbolExpression>().symbol;
+                    if (sym && (sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Net) && !inputPort(*sym))
+                        addSymbol(sym);
+                }
+            }
+        }
+        else if (auto sub = std::get<const SubroutineSymbol*>(c.subroutine);
+                 sub && calling.size() < 4 && std::find(calling.begin(), calling.end(), sub) == calling.end()) {
+            WriteFinder inner;
+            inner.calling = calling;
+            inner.calling.push_back(sub);
+            sub->getBody().visit(inner);
+            // Its own locals and arguments aren't the caller's variables.
+            for (auto sym : inner.out)
+                if (!within(*sym, *sub))
+                    addSymbol(sym);
+        }
+        visitDefault(c);
+    }
     static const Symbol* base(const Expression* e) {
         while (e) {
             switch (e->kind) {
@@ -401,8 +460,7 @@ struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | Vis
                 add(*op);
             return;
         }
-        if (auto sym = base(&lv); sym && std::find(out.begin(), out.end(), sym) == out.end())
-            out.push_back(sym);
+        addSymbol(base(&lv));
     }
     void handle(const AssignmentExpression& a) {
         add(a.left());
@@ -1575,6 +1633,11 @@ private:
                 for (auto& it : c.items)
                     for (auto m : it.expressions)
                         m->visit(f);
+            }
+            else if (s.kind == StatementKind::ExpressionStatement &&
+                     s.as<ExpressionStatement>().expr.kind == ExpressionKind::Assignment) {
+                // An assignment's right side: what the functions it calls write.
+                s.as<ExpressionStatement>().expr.as<AssignmentExpression>().right().visit(f);
             }
             writeWrites(w, f);
         }

@@ -340,6 +340,8 @@
           const w = lhs.concat ? lhs.width : (lhs.width || widthOfTarget(ctx, lhs.name) || s.rhs.width || 1);
           const v = evalExpr(s.rhs, ctx, w).value;
           write(ctx, s, lhs, v);
+          // What the functions its right side calls write (the model's "writes").
+          ranWrites(s, ctx);
           return;
         }
         case 'timed': ctx.reasons.push({ code: 'delay', src: s.src }); exec(s.stmt, ctx); return;
@@ -398,7 +400,8 @@
       }
     }
     // A statement that isn't re-executed (or a condition with side effects, such as a
-    // $value$plusargs output) ran: what the model says it writes.
+    // $value$plusargs output, or an assignment whose right side calls a function that writes a
+    // module variable) ran: what the model says it writes.
     function ranWrites(s, ctx) {
       if (Array.isArray(s.writes)) { s.writes.forEach((w) => ctx.opaque.push({ stmt: s, name: w.name })); }
     }
@@ -741,7 +744,7 @@
       if (!s) { return; }
       switch (s.k) {
         case 'seq': s.s.forEach((x) => collectWrites(x, name, out)); return;
-        case 'asgn': if (writesTo(s.lhs, name)) { out.push(s); } return;
+        case 'asgn': if (writesTo(s.lhs, name) || opaqueWrites(s, name)) { out.push(s); } return;
         case 'timed': collectWrites(s.stmt, name, out); return;
         case 'if': collectWrites(s.t, name, out); collectWrites(s.f, name, out); return;
         case 'case': s.items.forEach((it) => collectWrites(it.s, name, out)); collectWrites(s.dflt, name, out); return;

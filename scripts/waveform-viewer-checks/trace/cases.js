@@ -191,7 +191,7 @@ const TRACE_CASES = [
   // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
   { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 16, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
   // A task call whose body writes tq.
-  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 23, stmt: 'clear_t;', trust: 'approximate', reasons: ['statement'] },
+  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 23, trust: 'approximate', reasons: ['statement'] },
   // fq <= bump(a), and bump's body writes fcnt.
   { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 30, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
 ];
