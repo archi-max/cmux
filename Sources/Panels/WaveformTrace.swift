@@ -568,7 +568,7 @@ enum WaveformTrace {
             "traceReason_race": String(localized: "waveformTrace.reason.race", defaultValue: "Inputs changed at the activation time; the order is assumed."),
             "traceReason_targetNotDumped": String(localized: "waveformTrace.reason.targetNotDumped", defaultValue: "The signal is not dumped; its value is computed."),
             "traceReason_noActivation": String(localized: "waveformTrace.reason.noActivation", defaultValue: "No activation of the block was found before %@."),
-            "traceReason_sinceUnknown": String(localized: "waveformTrace.reason.sinceUnknown", defaultValue: "When the value last changed is unknown (the signal is too large for the waveform reader); the activation shown is the last clock edge."),
+            "traceReason_sinceUnknown": String(localized: "waveformTrace.reason.sinceUnknown", defaultValue: "When the value last changed is unknown (the signal is too large for the waveform reader): a clocked step uses the last clock edge, a combinational or latch step the values at the time asked."),
             "traceReason_initialValue": String(localized: "waveformTrace.reason.initialValue", defaultValue: "The value is the signal’s initial value."),
             "traceReason_noEdge": String(localized: "waveformTrace.reason.noEdge", defaultValue: "No clock edge before %@."),
             "traceReason_noWrite": String(localized: "waveformTrace.reason.noWrite", defaultValue: "The taken branch does not write the signal: it keeps its value."),
