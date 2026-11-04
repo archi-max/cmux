@@ -565,7 +565,9 @@
         if (!out.some((x) => (x.path || x.name) + '|' + x.role === key)) { out.push(entry); }
         const w = (r.src === 'local' || r.src === 'blocking') && r.write;
         const done = (seen && seen.writes) || new Set();
-        if (w && w.stmt && w.stmt.rhs && w.ctx && !done.has(w) && done.size < 16) {
+        if (w && w.stmt && w.stmt.rhs && w.ctx && !done.has(w)) {
+          // At most 16 temps' writes are followed; past that the fan-in is cut, and the step says so.
+          if (done.size >= 16) { out.limited = true; continue; }
           done.add(w);
           faninOf(m, w.stmt.rhs, readsOf(w.stmt.rhs, w.ctx, w.width), time, role, out, { writes: done, through: (seen && seen.through) || entry.path || entry.name });
         }
@@ -836,6 +838,7 @@
         // A delayed assignment's value at t is its right side's at t - d: not comparable at t.
         if (delayed && r.consistent === false) { r.consistent = undefined; }
         r.fanin = faninOf(m, d.a.rhs, ev.reads, t, 'data', []);
+        if (r.fanin.limited) { r.reasons.push({ code: 'limits', why: 'temps' }); }
         notDumped(r, ctx);
         if (r.consistent === false) { explainMismatch(r, ctx); }
         return r;
@@ -1034,6 +1037,7 @@
         r.stmt = { src: pick.stmt.src, loc: locOf(m, pick.stmt.loc), rhs: pick.stmt.rhs.src, rhsLoc: locOf(m, pick.stmt.rhs.loc), nb: !!pick.stmt.nb };
         const reads = readsOf(pick.stmt.rhs, pick.ctx, pick.lhs && pick.lhs.concat ? pick.lhs.width : pick.width);
         faninOf(m, pick.stmt.rhs, reads, r.sample, 'data', r.fanin);
+        if (r.fanin.limited) { r.reasons.push({ code: 'limits', why: 'temps' }); }
         if (pick.lhs && pick.lhs.elem) { faninOf(m, pick.lhs.elem, readsOf(pick.lhs.elem, pick.ctx), r.sample, 'index', r.fanin); }
         if (reads.some((x) => x.src === 'local' || x.src === 'blocking')) { r.computed = true; }
       }
