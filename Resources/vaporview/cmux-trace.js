@@ -495,6 +495,10 @@
       const s = signalOf(m, name);
       const base = s && s.element ? s.element.array : name;
       m.assigns.forEach((a, i) => { if (writesTo(a.lhs, base)) { out.push({ type: 'assign', a, i }); } });
+      // A net's declaration assignment (wire w = e) is a continuous assignment, not an initializer.
+      if (s && s.kind === 'net' && s.init && !s.element) {
+        out.push({ type: 'assign', i: -1, a: { lhs: { name, width: s.width, full: s.width, loc: s.loc }, rhs: s.init, src: `${name} = ${s.init.src}`, loc: s.init.loc } });
+      }
       m.procs.forEach((p) => { if (stmtWrites(p.body, base)) { out.push({ type: 'proc', p }); } });
       for (const port of m.ports) {
         if ((port.dir === 'In' || port.dir === 'InOut') && port.internal === base && port.conn && m.parent) { out.push({ type: 'portIn', port }); }
@@ -1082,5 +1086,94 @@
     return { active, model, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
   }
 
-  root.cmuxTrace = Object.freeze({ createEngine, MODEL_VERSION });
+  // ---- Trace X to Root ----
+  // From a value with x or z bits, the fan-in that brought the x, step by step, to where it was
+  // made. Each step follows the fan-in with x or z (data, condition or index; never the clock, a
+  // blocking temporary (the engine's fan-in has already gone through it to what it read) or an
+  // undumped signal) whose own x arrived earliest (the smallest `since`). It stops at:
+  //   noXInput   no input has x: the statement makes it ('bx, a default, an x index...)
+  //   uninit     never written since the start, or nothing but a declaration drives it
+  //   testbench  the testbench's stimulus sets it          input   a top-level input
+  //   force      a force or deposit from outside the instance
+  //   loop       the x would go round to a signal already in the chain
+  //   budget     maxSteps steps (no root)                  failed  a step could not be traced
+  //   cancelled  cancelled() said so (no root)             noX     the start has no x or z
+  //
+  //   xChain({ path, time }, { step(path, time) -> Promise<step>, probe?(path, time) -> Promise<step>,
+  //            onStep?(entry, index), cancelled?() -> bool, maxSteps?, maxProbes? })
+  //     -> { steps: [{ step, signal, time, value, since, trust, why }], end: { code, signal? },
+  //          root (index, -1 without one), approximate }
+  // `step` traces a step of the chain (the page confirms it with Verdi), `probe` a candidate
+  // (default: step). `why` says why a step follows the one before: start, only (the only input
+  // with x) or earliest (of `count` inputs with x); `limited` when more than maxProbes had x.
+  const X_CHAIN_STEPS = 30;
+  const X_CHAIN_PROBES = 16;
+  const xBits = (v) => v !== null && v !== undefined && /[xz]/i.test(String(v));
+  function xStop(st) {
+    const reasons = st.reasons || [];
+    const kind = st.driver ? st.driver.kind : 'none';
+    if (reasons.some((r) => r.code === 'force')) { return 'force'; }
+    if (st.root === 'testbench') { return 'testbench'; }
+    if (kind === 'topInput') { return 'input'; }
+    if (kind === 'none' || kind === 'undriven' || kind === 'initializer') { return 'uninit'; }
+    if (Number(st.since) === 0 && reasons.some((r) => r.code === 'noWrite' || r.code === 'initialValue')) { return 'uninit'; }
+    return null;
+  }
+  async function xChain(start, config) {
+    const c = config || {};
+    const step = c.step, probe = c.probe || c.step;
+    const cancelled = c.cancelled || (() => false);
+    const maxSteps = Number(c.maxSteps) >= 1 ? Math.floor(Number(c.maxSteps)) : X_CHAIN_STEPS;
+    const maxProbes = Number(c.maxProbes) >= 1 ? Math.floor(Number(c.maxProbes)) : X_CHAIN_PROBES;
+    const out = { steps: [], end: null, root: -1, approximate: false };
+    const finish = (code, extra) => {
+      out.end = Object.assign({ code }, extra || {});
+      if (!['budget', 'failed', 'cancelled', 'noX'].includes(code) && out.steps.length) { out.root = out.steps.length - 1; }
+      out.approximate = out.steps.some((e) => e.trust === 'approximate' || e.trust === 'inconsistent');
+      return out;
+    };
+    const add = (st, why) => {
+      const e = { step: st, signal: st.signal, time: st.time, value: st.value, since: st.since, trust: st.trust, why };
+      out.steps.push(e);
+      if (c.onStep) { c.onStep(e, out.steps.length - 1); }
+    };
+    let cur;
+    try { cur = await step(start.path, start.time); } catch (error) { cur = null; }
+    if (cancelled()) { return finish('cancelled'); }
+    if (!cur || cur.error) { if (cur) { add(cur, { code: 'start' }); } return finish('failed'); }
+    add(cur, { code: 'start' });
+    if (!xBits(cur.value)) { return finish('noX'); }
+    const seen = new Set([cur.signal]);
+    for (;;) {
+      const stop = xStop(cur);
+      if (stop) { return finish(stop); }
+      if (out.steps.length >= maxSteps) { return finish('budget'); }
+      const cands = (cur.fanin || []).filter((f) => typeof f.path === 'string' && f.path && f.role !== 'clock' && f.dumped !== false && !f.blocking && !f.local && xBits(f.value));
+      if (!cands.length) { return finish('noXInput'); }
+      let best = null;
+      for (const f of cands.slice(0, maxProbes)) {
+        let st;
+        try { st = await probe(f.path, f.time); } catch (error) { st = null; }
+        if (cancelled()) { return finish('cancelled'); }
+        if (!st || st.error) { continue; }
+        const since = st.since === null || st.since === undefined ? Infinity : Number(st.since);
+        if (!best || since < best.since) { best = { f, st, since }; }
+      }
+      if (!best) { return finish('failed'); }
+      if (seen.has(best.f.path)) { return finish('loop', { signal: best.f.path }); }
+      let next = best.st;
+      if (probe !== step) {
+        try { next = await step(best.f.path, best.f.time); } catch (error) { next = null; }
+        if (cancelled()) { return finish('cancelled'); }
+        if (!next || next.error) { return finish('failed'); }
+      }
+      const why = cands.length === 1 ? { code: 'only', role: best.f.role } : { code: 'earliest', role: best.f.role, count: cands.length };
+      if (cands.length > maxProbes) { why.limited = true; }
+      seen.add(next.signal);
+      add(next, why);
+      cur = next;
+    }
+  }
+
+  root.cmuxTrace = Object.freeze({ createEngine, xChain, MODEL_VERSION });
 })(typeof window !== 'undefined' ? window : globalThis);

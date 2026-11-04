@@ -14,6 +14,9 @@
 //   status(text)                  progress while cmux prepares the design model (a first build)
 //   back() | forward() | close() | state()
 //   settled()                     resolves (to state()) once the Verdi checks under way are done
+//   xRoot({ path, time } | { designPath, designPrefix, dumpPrefix, time })   Trace X to Root: the
+//                                 chain of steps the x came along (cmuxTrace.xChain), listed as
+//                                 they are found; resolves to { steps, end, root, approximate }
 // and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'update' | 'open' | 'closed', id?, ... }
 // ('update': a shown step filled in with Verdi's answer; cmux does not move the editor for it).
 (function () {
@@ -404,7 +407,9 @@
     return w && w.markerTime !== undefined && w.markerTime !== null ? Number(w.markerTime) : null;
   };
 
-  async function driver(query) {
+  // A waveform path (dump segments, null: the selected row) at a time (null: the marker), as a
+  // design query: cmux resolves it. Null (the panel says why) when it can't.
+  async function resolved(query) {
     const q = query || {};
     const path = Array.isArray(q.path) ? q.path.map(String) : waveform.link.selectedSignal();
     const time = q.time !== undefined && q.time !== null ? Number(q.time) : markerTime();
@@ -419,10 +424,17 @@
       showError(error.message || s.traceFailed);
       return null;
     }
-    return driverOfDesign(Object.assign({ time }, mapped));
+    return Object.assign({ time }, mapped);
   }
 
-  async function driverOfDesign(query) {
+  async function driver(query) {
+    stopChain();
+    const q = await resolved(query);
+    return q ? driverOfDesign(q) : null;
+  }
+
+  // The design query's time (null: the panel says why not), with the session for its dump.
+  function designQuery(query) {
     const q = query || {};
     const time = q.time !== undefined && q.time !== null ? Number(q.time) : markerTime();
     if (!q.designPath) { showError(S().traceNoSignal); return null; }
@@ -432,8 +444,88 @@
       session.options = { xprop: q.xprop || 'auto' };
       session.engine = window.cmuxTrace.createEngine({ models: sessionModels(session), dump, options: session.options });
     }
+    return time;
+  }
+
+  async function driverOfDesign(query) {
+    const time = designQuery(query);
+    if (time === null) { return null; }
+    stopChain();
     history.steps = history.steps.slice(0, history.at + 1);
-    return traceStep(q.designPath, time, true);
+    return traceStep(query.designPath, time, true);
+  }
+
+  // ---- Trace X to Root ----
+  // The chain shown (null: the panel shows the history's step). Its steps come as they are found;
+  // a new trace, Close or Cancel stops it.
+  let chain = null;
+  function stopChain() { if (chain) { chain.cancelled = true; chain = null; } }
+  async function xRoot(query) {
+    stopChain();
+    const q = query && query.designPath ? query : await resolved(query);
+    if (!q) { return null; }
+    const time = designQuery(q);
+    if (time === null) { return null; }
+    stopChain();
+    running++;
+    const s = session;
+    const c = { designPath: q.designPath, time, steps: [], end: null, root: -1, approximate: false, running: true, cancelled: false };
+    chain = c;
+    renderChain();
+    const live = () => !c.cancelled && chain === c && session === s;
+    // A candidate: our engine only. A step of the chain: confirmed by Verdi when the dump has it,
+    // within the step's Verdi budget (past it the step stays ours, "not checked").
+    const probe = async (path, at) => {
+      stepStarted(s);
+      try { return await s.engine.active(path, at); } finally { stepEnded(s); }
+    };
+    const step = async (path, at) => {
+      const dumpPath = toDump(path);
+      const verdi = s.kind === 'local' ? null : askVerdi(dumpPath, at);
+      let st = await probe(path, at);
+      st.dumpPath = dumpPath;
+      st.engine = { name: 'cmux' };
+      if (verdi && !st.error && live()) { st = await chainVerdi(s, st, at, verdi, live); }
+      return st;
+    };
+    // Each step says when it was found (ms after the start) and how long it took (with its candidates).
+    const t0 = Date.now();
+    let prev = t0;
+    const out = await window.cmuxTrace.xChain({ path: q.designPath, time }, {
+      step, probe, cancelled: () => !live(), maxSteps: waveform.traceXChainSteps,
+      onStep: (e) => {
+        const now = Date.now();
+        Object.assign(e, { dumpPath: e.step.dumpPath || toDump(e.signal), at: now - t0, ms: now - prev });
+        prev = now;
+        c.steps.push(e);
+        if (chain === c) { renderChain(); }
+      },
+    });
+    Object.assign(c, { end: out.end, root: out.root, approximate: out.approximate, running: false });
+    if (chain === c) { renderChain(); }
+    return plain({ steps: c.steps, end: c.end, root: c.root, approximate: c.approximate });
+  }
+  // A chain step with Verdi's answer merged in (withVerdi), or as it was, marked not checked.
+  async function chainVerdi(s, st, time, asked, live) {
+    const deadline = Date.now() + verdiBudget();
+    let timer;
+    const stop = () => !live() || Date.now() >= deadline;
+    const v = s.vars.get(st.signal);
+    const known = v && s.changes.get(v.netlistId);
+    const checkDump = guardedDump(stop, Array.isArray(known) ? known.length : undefined);
+    const engine = window.cmuxTrace.createEngine({ models: s.models, dump: checkDump, options: s.options });
+    const late = { timedOut: true };
+    const limit = new Promise((resolve) => { timer = setTimeout(() => resolve(late), verdiBudget()); });
+    try {
+      const out = await Promise.race([withVerdi(st, time, asked, stop, engine), limit]);
+      if (out && !out.large && out !== late) { return out; }
+      st.engine.verdi = out && out.large ? 'large' : 'timedOut';
+      return st;
+    } catch (error) {
+      host.log(error);
+      st.engine.verdi = 'timedOut';
+      return st;
+    } finally { clearTimeout(timer); cancelPending(s, checkDump.background); }
   }
 
   async function traceStep(designPath, time, push) {
@@ -653,11 +745,12 @@
     return step;
   }
 
-  function back() { if (history.at > 0) { history.at--; render(); post(); } return state(); }
-  function forward() { if (history.at < history.steps.length - 1) { history.at++; render(); post(); } return state(); }
+  function back() { stopChain(); if (history.at > 0) { history.at--; render(); post(); } return state(); }
+  function forward() { stopChain(); if (history.at < history.steps.length - 1) { history.at++; render(); post(); } return state(); }
   function post() { const st = history.steps[history.at]; if (st) { host.toNative({ type: 'trace', event: 'step', step: plain(st) }); } }
   function close() {
     running++;
+    stopChain();
     history.steps = []; history.at = -1;
     // No more prefetching for a closed panel; its answers go too.
     if (session) { session.prefetch = []; if (session.verdiAnswers) { session.verdiAnswers.clear(); } }
@@ -671,7 +764,8 @@
       prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0,
         kept: (session && session.verdiAnswers && session.verdiAnswers.size) || 0,
         queued: ((session && session.prefetch) || []).map((q) => q.signal) },
-      cache: { signals: session && session.changes ? session.changes.size : 0, bits: (session && session.cached) || 0 } };
+      cache: { signals: session && session.changes ? session.changes.size : 0, bits: (session && session.cached) || 0 },
+      chain: chain ? { running: chain.running, steps: chain.steps.length, end: chain.end ? chain.end.code : null } : null };
   }
   const plain = (x) => JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   const number = (n) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString() : String(n));
@@ -702,7 +796,11 @@
       #cmux-trace tr.fanin { cursor: pointer; }
       #cmux-trace tr.fanin:hover, #cmux-trace tr.fanin:focus { background: var(--vscode-list-hoverBackground); outline: none; }
       #cmux-trace .x { color: var(--vscode-editorError-foreground, #f14c4c); }
-      #cmux-trace ul { margin: 2px 0; padding-left: 16px; }`;
+      #cmux-trace ul { margin: 2px 0; padding-left: 16px; }
+      #cmux-trace tr.xstep { cursor: pointer; }
+      #cmux-trace tr.xstep:hover, #cmux-trace tr.xstep:focus { background: var(--vscode-list-hoverBackground); outline: none; }
+      #cmux-trace tr.xstep.root td { font-weight: 600; }
+      #cmux-trace tr.xstep.root { background: var(--vscode-list-inactiveSelectionBackground); }`;
     document.head.appendChild(style);
     panel = document.createElement('div');
     panel.id = 'cmux-trace';
@@ -817,6 +915,7 @@
   }
 
   function render() {
+    if (chain) { renderChain(); return; }
     const st = history.steps[history.at];
     busy = false;
     if (!st) { if (panel) { panel.hidden = true; } return; }
@@ -891,6 +990,73 @@
     p.append(body);
   }
 
+  // The chain: a row per step (signal = value at its time, its statement, why it follows the one
+  // before, trust), the root highlighted; a row opens its statement and shows the signal at its
+  // time in the waveform. Then why it ended, or how far it has got.
+  function renderChain() {
+    const c = chain;
+    if (!c) { return; }
+    busy = false;
+    const s = S();
+    const p = ensurePanel();
+    p.textContent = '';
+    const h = el('div', 'head');
+    h.append(el('span', 'title', format(s.traceXTitle, c.designPath, number(c.time))));
+    if (!c.running && c.steps.length) {
+      const trust = c.approximate ? 'approximate' : 'exact';
+      const b = el('span', 'badge ' + trust, s['traceTrust_' + trust] || trust);
+      b.title = s['traceTrustHelp_' + trust] || '';
+      h.append(b);
+    }
+    if (c.running) { const b = button(s.traceXCancel || '', s.traceXCancel, () => { c.cancelled = true; }); b.classList.add('xcancel'); h.append(b); }
+    if (c.steps.length) { const b = button(s.traceXAdd || '', s.traceXAdd, () => addChainSignals(c)); b.classList.add('xadd'); h.append(b); }
+    h.append(button('×', s.traceClose, close));
+    p.append(h);
+    const body = el('div', 'body');
+    const table = el('table');
+    c.steps.forEach((e, i) => {
+      const st = e.step || {};
+      const tr = el('tr', 'xstep' + (i === c.root ? ' root' : ''));
+      tr.tabIndex = 0;
+      tr.dataset.path = e.signal || '';
+      const loc = st.stmt && st.stmt.loc;
+      const whyText = e.why.code === 'earliest' ? format(s.traceXWhy_earliest, e.why.count) : s['traceXWhy_' + e.why.code] || e.why.code;
+      const role = e.why.role && e.why.code !== 'start' ? ' · ' + (s['traceRole_' + e.why.role] || e.why.role) : '';
+      tr.append(el('td', 'muted', String(i + 1)), el('td', 'code', e.signal), el('td', 'code' + (/[xz]/.test(String(e.value)) ? ' x' : ''), valueText(e.value)),
+        el('td', 'muted', '@' + number(e.time)), el('td', '', where(loc)), el('td', 'muted', whyText + role),
+        el('td', 'badge ' + (e.trust || ''), s['traceTrust_' + e.trust] || e.trust || ''));
+      if (i === c.root) { tr.append(el('td', 'badge', s.traceXRootBadge || '')); }
+      if (st.stmt && st.stmt.src) { tr.title = st.stmt.src; }
+      const go = () => { open(loc); showInWaveform(e); };
+      tr.addEventListener('click', go);
+      tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } });
+      table.append(tr);
+    });
+    body.append(table);
+    const endCode = c.end && c.end.code;
+    const last = c.steps[c.steps.length - 1];
+    const endText = c.running ? format(s.traceXRunning, c.steps.length)
+      : format(s['traceXEnd_' + endCode] || endCode || '', endCode === 'budget' ? String(c.steps.length) : endCode === 'noX' ? c.designPath : (c.end && c.end.signal) || '');
+    body.append(el('div', 'muted', endText));
+    if (last && !c.running && c.root >= 0) {
+      const reasons = ((last.step && last.step.reasons) || []).filter((r) => r.code !== 'multiDriven');
+      if (reasons.length) { const ul = el('ul', 'muted'); for (const r of reasons) { ul.append(el('li', '', reasonText(r))); } body.append(ul); }
+    }
+    p.append(body);
+    p.hidden = false;
+  }
+  // The step's signal in the waveform (added unless shown, selected) with the marker at its time.
+  async function showInWaveform(e) {
+    const path = dumpSegments(e.dumpPath || toDump(e.signal));
+    try { await waveform.link.addSignal(path); } catch (error) { host.log(error); }
+    waveform.link.setMarker(e.time);
+  }
+  async function addChainSignals(c) {
+    for (const e of c.steps) {
+      try { await waveform.link.addSignal(dumpSegments(e.dumpPath || toDump(e.signal))); } catch (error) { host.log(error); }
+    }
+  }
+
   // ---- the waveform row's menu ----
   function rowMenuItems(context) {
     const c = context || {};
@@ -898,7 +1064,8 @@
     const v = host.netlistItem(c.netlistId);
     if (!v) { return []; }
     const path = host.pathOf(v);
-    return [{ label: S().traceDriverMenu || '', keybinding: S().traceDriverKey || '', run: () => driver({ path }) }];
+    return [{ label: S().traceDriverMenu || '', keybinding: S().traceDriverKey || '', run: () => driver({ path }) },
+      { label: S().traceXRootMenu || '', keybinding: S().traceXRootKey || '', run: () => xRoot({ path }) }];
   }
 
   // A reload drops the session (its variables and changes are the old file's).
@@ -907,7 +1074,7 @@
   // Shown only while a trace is waiting (not over a step already shown).
   function status(text) { if (panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
 
-  const api = Object.freeze({ driver, driverOfDesign, reply, status, back, forward, close, state, settled, backendChanged });
+  const api = Object.freeze({ driver, driverOfDesign, xRoot, reply, status, back, forward, close, state, settled, backendChanged });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxTraceUI = { rowMenuItems };
 })();

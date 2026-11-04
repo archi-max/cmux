@@ -37,6 +37,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var engineDelay: TimeInterval = 0
   /// cmux never answers engine requests (a hung Verdi session).
   var engineHang = false
+  /// Model lookups answered after this long (a slow step).
+  var lookupDelay: TimeInterval = 0
   /// The signals of the engine requests the page marked as background (a prefetch).
   var engineBackground: [String] = []
   /// Each engine request's signal and when it was asked and answered (seconds since start); how
@@ -89,7 +91,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     let api = await call("return Object.keys(cmuxWaveform.trace).sort()") as? [String]
-    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "reply", "settled", "state", "status"], "trace API: \(String(describing: api))")
+    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
 
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
@@ -149,10 +151,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const v = await cmuxWaveform.host.findLinkItem(['tb_c', 'dut', 'q'], true);
       const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
       const none = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'scope' });
-      return { label: items[0] && items[0].label, key: items[0] && items[0].keybinding, count: items.length, none: none.length };
+      return { label: items[0] && items[0].label, key: items[0] && items[0].keybinding, count: items.length, none: none.length,
+        xLabel: items[1] && items[1].label, xKey: items[1] && items[1].keybinding };
     """) as? [String: Any]
-    expect(item?["count"] as? Int == 1 && item?["label"] as? String == "Trace Driver at Marker" && item?["key"] as? String == "⌃T" && item?["none"] as? Int == 0,
-           "row menu item on signal rows only: \(String(describing: item))")
+    expect(item?["count"] as? Int == 2 && item?["label"] as? String == "Trace Driver at Marker" && item?["key"] as? String == "⌃T" && item?["none"] as? Int == 0,
+           "row menu items on signal rows only: \(String(describing: item))")
+    expect(item?["xLabel"] as? String == "Trace X to Root" && item?["xKey"] as? String == "⌃⇧T", "the row menu has Trace X to Root, with its shortcut")
     // The selected row at the marker: what Ctrl+T in the viewer does.
     _ = await call("cmuxWaveform.link.setMarker(60); return null")
     await sleep(300)
@@ -1050,42 +1054,43 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // slow (500 ms): with one session nothing is prefetched between the step and its check's
     // Verdi request; with two (cmux says pool 2) the clicked leaf is asked once, by the click, not
     // prefetched as well.
-    func queuedClick(sessions: Int) async -> (asks: [String], last: String?, ok: Bool, info: Any?) {
+    func queuedClick(sessions: Int) async -> (asks: [String], last: String?, ok: Bool, info: [String: Any]?) {
       engineLog = []; engineLogGen += 1; engineDelay = 0.3
       engineAnswer?["pool"] = sessions
-      defer { engineDelay = 0; engineAnswer?["pool"] = nil }
-      let r = await call("""
-        const t = cmuxWaveform.trace, h = cmuxWaveform.host, b = h.currentBackend;
+      defer { engineDelay = 0; lookupDelay = 0; engineAnswer?["pool"] = nil }
+      let setup = await call("""
+        const t = cmuxWaveform.trace;
         cmuxWaveform.traceVerdiPrefetch = 6; cmuxWaveform.traceVerdiSessions = \(sessions);
         t.backendChanged();
         await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
         await t.settled();
         const leaves = (t.state().step.fanin || []).filter((f) => f.path).map((f) => ({ path: f.path, time: f.time }));
-        await new Promise((r) => setTimeout(r, \(sessions == 1 ? 450 : 150)));
-        const queuedNow = t.state().prefetch.queued || [];
-        const lastPath = queuedNow.length ? queuedNow[queuedNow.length - 1] : null;
-        const last = leaves.find((l) => l.path === lastPath);
-        if (!last) { return { leaves: leaves.map((l) => l.path), queuedNow }; }
-        const slowChanges = b.signalChanges, slowRaw = h.rawValuesAt;
-        const pause = () => new Promise((r) => setTimeout(r, 500));
-        if (slowChanges) { b.signalChanges = async (...a) => { await pause(); return slowChanges.apply(b, a); }; }
-        h.rawValuesAt = async (...a) => { await pause(); return slowRaw.apply(h, a); };
-        try {
-          await t.driverOfDesign({ designPath: last.path, designPrefix: '', dumpPrefix: '', time: last.time });
-          await t.settled();
-        } finally { if (slowChanges) { b.signalChanges = slowChanges; } h.rawValuesAt = slowRaw; }
-        await new Promise((r) => setTimeout(r, 2500));
-        return { leaves: leaves.map((l) => l.path), queuedNow, last: last.path };
+        await new Promise((r) => setTimeout(r, 150));
+        const pf = t.state().prefetch, queuedNow = pf.queued || [];
+        const last = queuedNow.length >= 2 ? leaves.find((l) => l.path === queuedNow[queuedNow.length - 1]) : null;
+        return { leaves: leaves.map((l) => l.path), queuedNow, asked: pf.asked, last: last || null };
         """) as? [String: Any]
-      let last = r?["last"] as? String
-      return (engineLog.map(\.signal), last, last != nil, r)
+      guard let last = setup?["last"] as? [String: Any], let path = last["path"] as? String, let time = last["time"] as? Int else {
+        return (engineLog.map(\.signal), nil, false, setup)
+      }
+      // The click's step is slow (its model lookup answers after 500 ms).
+      lookupDelay = 0.5
+      _ = await call("""
+        const t = cmuxWaveform.trace;
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        await new Promise((r) => setTimeout(r, 2500));
+        return null
+        """)
+      return (engineLog.map(\.signal), path, true, setup)
     }
     let qOne = await queuedClick(sessions: 1)
     if qOne.ok, let last = qOne.last {
-      // Asked first: the first step's check, then the prefetch in flight and the one after it
-      // (450 ms in at 300 ms each); the click's check is next, before any further prefetch.
+      // Asked first: the first step's check, then the prefetches already started when the click
+      // came (one in flight, at least two waiting); the click's check is next, before any other.
+      let started = qOne.info?["asked"] as? Int ?? -1
       let clickIndex = qOne.asks.firstIndex(of: last) ?? -1
-      expect(clickIndex >= 1 && clickIndex <= 3,
+      expect(started >= 1 && clickIndex == 1 + started,
              "prefetch, one session: no prefetch starts between a click's step and its check's request: \(qOne.asks) (clicked \(last))")
     } else {
       expect(false, "prefetch: a leaf is still queued when clicked (one session): \(String(describing: qOne.info))")
@@ -1142,8 +1147,109 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(sinceEn.contains("clock edge") && sinceEn.contains("combinational") && sinceEn.contains("latch")
              && traceSwift.contains("defaultValue: \"\(sinceEn)\"") && (sinceEntry?.count ?? 0) == 9,
            "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
+    await xRootChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
     snap()
+  }
+
+  /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
+  /// where it was made (designs J and K, the engine's own fixtures).
+  func xRootChecks() async {
+    _ = await trace("close()")
+    await reopen("j")
+    func chain(_ q: String) async -> [String: Any]? { await trace("xRoot(\(q))") }
+    func signals(_ c: [String: Any]?) -> [String] { (c?["steps"] as? [[String: Any]] ?? []).compactMap { $0["signal"] as? String } }
+    func end(_ c: [String: Any]?) -> String { (c?["end"] as? [String: Any])?["code"] as? String ?? "?" }
+    func why(_ c: [String: Any]?, _ i: Int) -> String {
+      let st = c?["steps"] as? [[String: Any]] ?? []
+      return i < st.count ? (st[i]["why"] as? [String: Any])?["code"] as? String ?? "?" : "-"
+    }
+    // q <= tmp, tmp = go ? a : b in the same block: the x came in on a (the blocking temp is gone
+    // through, go and b have none), through dut's input port, from the testbench.
+    let q = await chain("{ designPath: 'tb_j.dut.q', designPrefix: '', dumpPrefix: '', time: 20000 }")
+    expect(signals(q) == ["tb_j.dut.q", "tb_j.dut.a", "tb_j.a"] && end(q) == "testbench",
+           "J: q's x goes back through the temp to a, then the testbench: \(signals(q)) \(end(q))")
+    expect(why(q, 0) == "start" && why(q, 1) == "only" && why(q, 2) == "only" && q?["root"] as? Int == 2,
+           "J: each step says why it follows, the testbench step is the root: \(why(q, 1)) \(why(q, 2)) root \(String(describing: q?["root"]))")
+    expect(q?["approximate"] as? Bool == true, "J: a chain with an approximate step (the testbench's) is approximate")
+    let rows = await call("""
+      const rs = [...document.querySelectorAll('#cmux-trace tr.xstep')];
+      return { n: rs.length, root: rs.findIndex((r) => r.classList.contains('root')), text: document.getElementById('cmux-trace').innerText };
+    """) as? [String: Any]
+    let rowText = rows?["text"] as? String ?? ""
+    expect(rows?["n"] as? Int == 3 && rows?["root"] as? Int == 2, "J: the panel lists the 3 steps, the root highlighted: \(String(describing: rows?["n"])) root \(String(describing: rows?["root"]))")
+    expect(rowText.contains("X chain from tb_j.dut.q at 20,000") && rowText.contains("the only input with x or z") && rowText.contains("Root: the testbench sets the value.")
+             && rowText.contains("approximate") && rowText.contains("j_temps.sv:20"),
+           "J: the panel shows the title, why, the root's reason, trust and file:line: \(rowText.prefix(400))")
+    // A step's row opens its statement and shows its signal at its time in the waveform.
+    let opens = events.filter { $0["event"] as? String == "open" }.count
+    let stepTime = ((q?["steps"] as? [[String: Any]])?[1]["time"] as? NSNumber)?.intValue
+    _ = await call("const r = document.querySelectorAll('#cmux-trace tr.xstep')[1]; r.click(); return null")
+    await waitFor("the step's signal selected at its time") {
+      let sel = await self.call("return (cmuxWaveform.link.selectedSignal() || []).join('.')") as? String
+      let at = await self.call("return cmuxWaveform.link.markerTime()") as? NSNumber
+      return sel == "tb_j.dut.a" && at?.intValue == stepTime
+    }
+    let opened = events.filter { $0["event"] as? String == "open" }
+    let selected = await call("return (cmuxWaveform.link.selectedSignal() || []).join('.')") as? String
+    let marker = await call("return cmuxWaveform.link.markerTime()") as? NSNumber
+    expect(opened.count == opens + 1 && ((opened.last?["loc"] as? [String: Any])?["line"] as? Int) != nil, "J: a step's row opens its statement")
+    expect(selected == "tb_j.dut.a" && marker?.intValue == stepTime, "J: and selects its signal at its time in the waveform: \(String(describing: selected)) @\(String(describing: marker)) vs \(String(describing: stepTime))")
+    // Add Chain Signals to Waveform: every step's signal gets a row.
+    _ = await call("const b = document.querySelector('#cmux-trace button.xadd'); if (b) b.click(); return null")
+    await sleep(600)
+    let shown = await call("""
+      const v = await cmuxWaveform.link.valuesAt({ time: 20000, paths: [['tb_j', 'dut', 'q'], ['tb_j', 'dut', 'a'], ['tb_j', 'a']] });
+      return v.map((x) => x !== null && x !== undefined);
+    """) as? [Bool]
+    expect(shown == [true, true, true], "J: Add Chain Signals to Waveform shows each step's signal: \(String(describing: shown))")
+    // zq <= a2 with zsel 2: a2 was never written (its only write needs zsel 3): uninitialised.
+    let zq = await chain("{ designPath: 'tb_j.dut.zq', designPrefix: '', dumpPrefix: '', time: 40000 }")
+    expect(signals(zq) == ["tb_j.dut.zq", "tb_j.dut.a2"] && end(zq) == "uninit" && zq?["root"] as? Int == 1,
+           "J: zq's x comes from a2, never written: \(signals(zq)) \(end(zq))")
+    // A value without x or z: nothing to follow.
+    let go = await chain("{ designPath: 'tb_j.dut.go', designPrefix: '', dumpPrefix: '', time: 20000 }")
+    let noXText = await panelText()
+    expect(end(go) == "noX" && noXText.contains("has no x or z bits"), "J: a value without x: says so: \(end(go))")
+    // The step budget: the chain stops there, without a root.
+    _ = await call("cmuxWaveform.traceXChainSteps = 2; return null")
+    let short = await chain("{ designPath: 'tb_j.dut.q', designPrefix: '', dumpPrefix: '', time: 20000 }")
+    _ = await call("delete cmuxWaveform.traceXChainSteps; return null")
+    expect(signals(short) == ["tb_j.dut.q", "tb_j.dut.a"] && end(short) == "budget" && (short?["root"] as? Int ?? 0) < 0,
+           "J: a step budget of 2 stops after 2 steps, no root: \(signals(short)) \(end(short)) root \(String(describing: short?["root"]))")
+    expect(await panelText().contains("Stopped after 2 steps"), "J: the panel says the budget stopped it")
+
+    // K: steps show as they are found, and Cancel stops the chain.
+    _ = await trace("close()")
+    await reopen("k")
+    lookupDelay = 0.4
+    defer { lookupDelay = 0 }
+    _ = await call("window.__xr = cmuxWaveform.trace.xRoot({ designPath: 'tb_k.dut.fr', designPrefix: '', dumpPrefix: '', time: 40000 }); return null")
+    await waitFor("a first chain step", 15000) {
+      ((await self.call("return document.querySelectorAll('#cmux-trace tr.xstep').length") as? Int) ?? 0) >= 1
+    }
+    let mid = await trace("state()")
+    let midChain = mid?["chain"] as? [String: Any]
+    expect(midChain?["running"] as? Bool == true && (midChain?["steps"] as? Int ?? 0) >= 1, "K: steps are listed while the chain runs: \(String(describing: midChain))")
+    let cancelled = await call("""
+      const b = document.querySelector('#cmux-trace button.xcancel');
+      if (!b) return { button: false };
+      b.click();
+      const c = await window.__xr;
+      return { button: true, end: c && c.end && c.end.code, n: c && c.steps.length };
+    """) as? [String: Any]
+    expect(cancelled?["button"] as? Bool == true && cancelled?["end"] as? String == "cancelled" && (cancelled?["n"] as? Int ?? 9) < 3,
+           "K: Cancel stops the chain where it is: \(String(describing: cancelled))")
+    expect(await panelText().contains("Cancelled."), "K: the panel says it was cancelled")
+    lookupDelay = 0
+    // fr went x at 15 from xa (the force at 22 kept it x): the testbench's xa.
+    let fr = await chain("{ designPath: 'tb_k.dut.fr', designPrefix: '', dumpPrefix: '', time: 40000 }")
+    expect(signals(fr) == ["tb_k.dut.fr", "tb_k.dut.xa", "tb_k.xa"] && end(fr) == "testbench",
+           "K: fr's x comes from the testbench's xa: \(signals(fr)) \(end(fr))")
+    // The chain is the same code the trace-fsdb benchmark runs (its xchain mode calls xRoot).
+    let bench = (try? String(contentsOf: assetRoot.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("scripts/waveform-viewer-checks/trace-fsdb/main.swift"), encoding: .utf8)) ?? ""
+    expect(bench.contains("cmuxWaveform.trace.xRoot("), "trace-fsdb's X chain calls the page's xRoot")
+    _ = await trace("close()")
   }
 
   // MARK: cmux's side
@@ -1177,7 +1283,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         answer(id, ok: true, result: [String]())
       } else {
         let best = instances.keys.filter { path == $0 || path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
-        answer(id, ok: true, result: best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull())
+        let result: Any = best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull()
+        if lookupDelay > 0 {
+          DispatchQueue.main.asyncAfter(deadline: .now() + lookupDelay) { [self] in answer(id, ok: true, result: result) }
+        } else {
+          answer(id, ok: true, result: result)
+        }
       }
     case "engine":
       engineRequests += 1
@@ -1236,27 +1347,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if type == "event" || type == "sessionState" || type == "log" || type == "keyState" || type == "debugger" { return }
     print("[\(m.name)]", type)
     if type == "ready" {
-      let waveURL = traceDir.appendingPathComponent("dumps/c.plain.vcd")
-      let fileURL = scheme.serve(fileURL: waveURL)
-      let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
-      let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
-      // The English page strings cmux sends (WaveformTrace.pageStrings), the ones the checks read.
-      let strings: [String: String] = [
-        "netlist": "Netlist", "loading": "Loading…", "openFailed": "Could not open", "addSignal": "Add",
-        "traceTitle": "Trace Driver", "traceDriverMenu": "Trace Driver at Marker", "traceDriverKey": "⌃T",
-        "traceNoSignal": "Select a signal in the waveform first.", "traceNoMarker": "Place the marker at the time to trace first.",
-        "traceFailed": "Driver tracing failed.", "traceResolving": "Finding %@ in the design…", "traceRunning": "Tracing %1$@ at %2$@…",
-        "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
-        "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
-        "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
-        "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiChecking": "Verdi is checking…",
-        "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLarge": "Verdi: not checked (large signal)", "traceVerdiLastChange": "Verdi (driver of the last change):",
-        "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
-        "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
-      ]
-      let json = String(data: try! JSONSerialization.data(withJSONObject: strings), encoding: .utf8)!
-      web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(json)})")
+      openDump("c.plain.vcd")
     } else if type == "opened" {
+      opened += 1
       guard !checksStarted else { return }
       checksStarted = true
       Task { @MainActor in
@@ -1267,6 +1360,52 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       print("ERROR", body["message"] ?? "")
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.snap() }
     }
+  }
+
+  /// The English page strings cmux sends (WaveformTrace.pageStrings), the ones the checks read.
+  static let pageStrings: [String: String] = [
+    "netlist": "Netlist", "loading": "Loading…", "openFailed": "Could not open", "addSignal": "Add",
+    "traceTitle": "Trace Driver", "traceDriverMenu": "Trace Driver at Marker", "traceDriverKey": "⌃T",
+    "traceNoSignal": "Select a signal in the waveform first.", "traceNoMarker": "Place the marker at the time to trace first.",
+    "traceFailed": "Driver tracing failed.", "traceResolving": "Finding %@ in the design…", "traceRunning": "Tracing %1$@ at %2$@…",
+    "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
+    "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
+    "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
+    "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiChecking": "Verdi is checking…",
+    "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLarge": "Verdi: not checked (large signal)", "traceVerdiLastChange": "Verdi (driver of the last change):",
+    "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
+    "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
+    "traceXRootMenu": "Trace X to Root", "traceXRootKey": "⌃⇧T", "traceXTitle": "X chain from %1$@ at %2$@",
+    "traceXRunning": "Following the x back… (%@ steps)", "traceXCancel": "Cancel", "traceXAdd": "Add Chain Signals to Waveform",
+    "traceXRootBadge": "root", "traceXWhy_start": "the value traced", "traceXWhy_only": "the only input with x or z",
+    "traceXWhy_earliest": "the earliest x or z of %@ inputs", "traceXEnd_noXInput": "Root: this statement makes the x (no input has x or z).",
+    "traceXEnd_uninit": "Root: never written since the start (uninitialised storage or a declaration).",
+    "traceXEnd_testbench": "Root: the testbench sets the value.", "traceXEnd_input": "Root: an input of the top level.",
+    "traceXEnd_force": "Root: a force or deposit from outside the instance.", "traceXEnd_loop": "Stopped: the x goes round a loop through %@.",
+    "traceXEnd_budget": "Stopped after %@ steps (the step limit).", "traceXEnd_failed": "Stopped: a step could not be traced.",
+    "traceXEnd_cancelled": "Cancelled.", "traceXEnd_noX": "%@ has no x or z bits at this time.",
+    "traceTrust_approximate": "approximate", "traceTrust_computed": "computed",
+  ]
+
+  /// How many times the page said a dump opened.
+  var opened = 0
+  /// Opens `dump` (in trace/dumps) as cmux does, with the page strings.
+  func openDump(_ dump: String) {
+    let waveURL = traceDir.appendingPathComponent("dumps/\(dump)")
+    let fileURL = scheme.serve(fileURL: waveURL)
+    let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
+    let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
+    let json = String(data: try! JSONSerialization.data(withJSONObject: Harness.pageStrings), encoding: .utf8)!
+    web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(json)})")
+  }
+  /// Another design: its models answer, its Icarus dump is opened (the checks wait for it).
+  func reopen(_ design: String) async {
+    let data = try! Data(contentsOf: traceDir.appendingPathComponent("models/\(design).json"))
+    models = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let before = opened
+    openDump("\(design).icarus.vcd")
+    await waitFor("\(design) opened", 10000) { self.opened > before }
+    await sleep(500)
   }
 
   func snap() {
@@ -1285,5 +1424,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { h.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 90) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 150) { print("timeout"); exit(1) }
 app.run()

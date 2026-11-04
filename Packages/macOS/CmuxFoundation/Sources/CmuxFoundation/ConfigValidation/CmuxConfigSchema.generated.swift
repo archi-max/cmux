@@ -2712,6 +2712,7 @@ enum CmuxEmbeddedConfigSchema {
               "addSignalToWaveform",
               "revealWaveformSignalInSource",
               "traceWaveformDriver",
+              "traceWaveformXRoot",
               "navigateSourceBack",
               "navigateSourceForward",
               "stepWaveformCycleForward",

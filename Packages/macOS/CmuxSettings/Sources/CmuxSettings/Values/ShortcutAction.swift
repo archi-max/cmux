@@ -193,6 +193,9 @@ public enum ShortcutAction: String, CaseIterable, Sendable, Hashable, SettingCod
     /// Traces the active driver of the waveform's selected signal, or of the SystemVerilog
     /// editor's signal at the caret, at the waveform marker (driver tracing).
     case traceWaveformDriver
+    /// Follows the x in the waveform's selected signal at the marker back through the fan-in it
+    /// came by, to where it was made (Trace X to Root).
+    case traceWaveformXRoot
     /// Returns to where the file editor's last go-to-source jump started.
     case navigateSourceBack
     /// Redoes a jump undone with `navigateSourceBack`.
@@ -377,7 +380,7 @@ extension ShortcutAction {
             return .or(.atom(.browserFocus), .atom(.filePreviewTextEditorFocus))
         case .toggleFileEditorWordWrap, .addSignalToWaveform, .navigateSourceBack, .navigateSourceForward:
             return .atom(.filePreviewTextEditorFocus)
-        case .revealWaveformSignalInSource, .traceWaveformDriver, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
+        case .revealWaveformSignalInSource, .traceWaveformDriver, .traceWaveformXRoot, .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback,
              .reverseContinueWaveform, .toggleWaveformBreakpoint:
             return .and(.not(.atom(.browserFocus)), .not(.atom(.sidebarFocus)))
         case .markdownZoomIn, .markdownZoomOut, .markdownZoomReset:
