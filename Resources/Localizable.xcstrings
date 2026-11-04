@@ -713608,6 +713608,65 @@
         }
       }
     },
+    "waveformTrace.reason.force": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another instance writes this signal too (a testbench force or $deposit, or a hierarchical write), and its own drivers can't explain the value: that write is shown. It is not re-executed."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تكتب نسخة أخرى هذه الإشارة أيضًا (force أو $deposit من منصة الاختبار، أو كتابة هرمية)، ولا تستطيع مشغّلاتها الخاصة تفسير القيمة: تُعرض تلك الكتابة. لا يُعاد تنفيذها."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auch eine andere Instanz schreibt dieses Signal (ein force oder $deposit der Testbench oder ein hierarchischer Schreibzugriff), und seine eigenen Treiber erklären den Wert nicht: Dieser Schreibzugriff wird gezeigt. Er wird nicht erneut ausgeführt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otra instancia también escribe esta señal (un force o $deposit del banco de pruebas, o una escritura jerárquica) y sus propios controladores no explican el valor: se muestra esa escritura. No se vuelve a ejecutar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une autre instance écrit aussi ce signal (un force ou $deposit du banc de test, ou une écriture hiérarchique), et ses propres pilotes n’expliquent pas la valeur : cette écriture est affichée. Elle n’est pas réexécutée."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "別のインスタンスもこの信号に書き込んでおり（テストベンチの force や $deposit、または階層参照による書き込み）、信号自身のドライバでは値を説明できません。その書き込みを表示しています。再実行はされません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다른 인스턴스도 이 신호에 씁니다(테스트벤치의 force나 $deposit, 또는 계층 참조 쓰기). 신호 자신의 드라이버로는 값을 설명할 수 없어 그 쓰기를 표시합니다. 다시 실행되지 않습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一个实例也写入该信号（测试平台的 force 或 $deposit，或层次化写入），而信号自身的驱动无法解释该值：显示的是那次写入。它不会重新执行。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一個實例也寫入此訊號（測試平台的 force 或 $deposit，或階層式寫入），而訊號本身的驅動無法解釋該值：顯示的是那次寫入。它不會重新執行。"
+          }
+        }
+      }
+    },
     "waveformTrace.reason.held": {
       "extractionState": "manual",
       "localizations": {

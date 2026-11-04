@@ -564,6 +564,7 @@ enum WaveformTrace {
             "traceReason_budget": String(localized: "waveformTrace.reason.budget", defaultValue: "The re-execution stopped at its step limit."),
             "traceReason_notDumped": String(localized: "waveformTrace.reason.notDumped", defaultValue: "Not in the dump: %@"),
             "traceReason_testbench": String(localized: "waveformTrace.reason.testbench", defaultValue: "Driven by testbench code, which is not re-executed."),
+            "traceReason_force": String(localized: "waveformTrace.reason.force", defaultValue: "Another instance writes this signal too (a testbench force or $deposit, or a hierarchical write), and its own drivers can't explain the value: that write is shown. It is not re-executed."),
             "traceReason_xprop": String(localized: "waveformTrace.reason.xprop", defaultValue: "The simulator propagated x through a condition (X-propagation)."),
             "traceReason_race": String(localized: "waveformTrace.reason.race", defaultValue: "Inputs changed at the activation time; the order is assumed."),
             "traceReason_targetNotDumped": String(localized: "waveformTrace.reason.targetNotDumped", defaultValue: "The signal is not dumped; its value is computed."),

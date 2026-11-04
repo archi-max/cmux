@@ -646,26 +646,8 @@
         step.trust = 'exact';
         return step;
       }
-      if (!live.length) {
-        // Only stimulus: the testbench (tracing stops here by default).
-        const c = cands.find((x) => x.d.type === 'proc') || cands[0];
-        const d = c.d, cm = c.m;
-        step.driver = { kind: 'initial', procKind: d.p.kind, loc: locOf(cm, d.p.loc) };
-        if (cm !== m) { step.driver.writer = cm.path; }
-        const writes = [];
-        collectWrites(d.p.body, c.name, writes);
-        // The write in effect at t (its #delays summed), else the body's last write.
-        const at = d.p.kind === 'Initial' ? writeAt(d.p.body, c.name, step.since, t) : null;
-        const shownWrite = at || writes[writes.length - 1];
-        step.stmt = shownWrite ? { src: shownWrite.src, loc: locOf(cm, shownWrite.loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
-        // Unchanged since 0 and no write at 0: the declaration's initializer.
-        if (!at && Number(step.since) === 0 && sig.init && d.p.kind === 'Initial') { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
-        step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(cm, s.loc) }));
-        step.root = 'testbench';
-        step.trust = 'approximate';
-        step.reasons.push({ code: 'testbench' });
-        return step;
-      }
+      // Only stimulus: the testbench (tracing stops here by default).
+      if (!live.length) { return stimulusStep(step, cands, m, name, sig, t); }
       if (live.length > 1) { step.reasons.push({ code: 'multiDriven', count: live.length }); }
       // Each live driver is tried; the one whose prediction agrees with the dump is the active one.
       let best = null;
@@ -675,8 +657,56 @@
         if (!best || rank(r) > rank(best)) { best = r; }
         if (rank(r) >= 3) { break; }
       }
+      // The instance's own drivers can't explain the value (inconsistent, or no write): another
+      // instance's write into it can (a testbench's force or $deposit, a hierarchical write). Its
+      // statement is shown, approximate ('force'), with the own driver's answer as a candidate.
+      if (rank(best) <= 1 && cands.every((c) => c.m === m)) {
+        const outs = await outsideDrivers(m, name);
+        const outLive = outs.filter((c) => c.d.type !== 'proc' || !isStimulus(c.d.p));
+        let out = null;
+        for (const c of outLive) {
+          const r = await runDriver(c.m, c.d, c.name, sig, t, now, step.since, o);
+          r.driver.writer = c.m.path;
+          if (rank(r) >= 2 && (!out || rank(r) > rank(out))) { out = r; }
+        }
+        const own = best.stmt ? [{ src: best.stmt.src, loc: best.stmt.loc }] : [];
+        if (out) {
+          Object.assign(step, out, { reasons: step.reasons.concat(out.reasons || [], [{ code: 'force' }]) });
+          step.candidates = own;
+          step.trust = trustOf(step);
+          return step;
+        }
+        if (outs.length) {
+          const r = stimulusStep(step, outs, m, name, sig, t);
+          r.reasons.push({ code: 'force' });
+          r.candidates = own.concat(r.candidates || []).slice(0, 32);
+          return r;
+        }
+      }
       Object.assign(step, best, { reasons: step.reasons.concat(best.reasons || []) });
       step.trust = trustOf(step);
+      return step;
+    }
+
+    // A testbench's statements write the signal (only stimulus, or another instance's force or
+    // $deposit): the write in effect at t, approximate.
+    function stimulusStep(step, cands, m, name, sig, t) {
+      const c = cands.find((x) => x.d.type === 'proc') || cands[0];
+      const d = c.d, cm = c.m;
+      step.driver = { kind: 'initial', procKind: d.p.kind, loc: locOf(cm, d.p.loc) };
+      if (cm !== m) { step.driver.writer = cm.path; }
+      const writes = [];
+      collectWrites(d.p.body, c.name, writes);
+      // The write in effect at t (its #delays summed), else the body's last write.
+      const at = d.p.kind === 'Initial' ? writeAt(d.p.body, c.name, step.since, t) : null;
+      const shownWrite = at || writes[writes.length - 1];
+      step.stmt = shownWrite ? { src: shownWrite.src, loc: locOf(cm, shownWrite.loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
+      // Unchanged since 0 and no write at 0: the declaration's initializer.
+      if (!at && Number(step.since) === 0 && sig.init && d.p.kind === 'Initial') { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
+      step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(cm, s.loc) }));
+      step.root = 'testbench';
+      step.trust = 'approximate';
+      step.reasons.push({ code: 'testbench' });
       return step;
     }
 
@@ -689,7 +719,7 @@
 
     function trustOf(step) {
       if (step.consistent === false) { return 'inconsistent'; }
-      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown'].includes(r.code));
+      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown', 'force'].includes(r.code));
       if (approximate) { return 'approximate'; }
       return step.computed ? 'computed' : 'exact';
     }

@@ -678,6 +678,21 @@ private:
             return "$local:" + std::string(sym.name);
         return rel(sym.getHierarchicalPath());
     }
+    // A written variable's name: one declared in another instance (a testbench's force, $deposit
+    // or hierarchical write into dut) by its $abs: path, so that instance's drivers can find it.
+    std::string writtenName(const Symbol& sym) const {
+        auto scope = sym.getParentScope();
+        if (scope && scope->isProceduralContext())
+            return "$local:" + std::string(sym.name);
+        for (auto sc = scope; sc; sc = sc->asSymbol().getParentScope()) {
+            if (sc->asSymbol().kind == SymbolKind::InstanceBody) {
+                if (cur && &sc->asSymbol() != &cur->body)
+                    return "$abs:" + sym.getHierarchicalPath();
+                break;
+            }
+        }
+        return relName(sym);
+    }
     static const Symbol& throughModport(const Symbol& sym) {
         const Symbol* s = &sym;
         while (s->kind == SymbolKind::ModportPort) {
@@ -1446,7 +1461,7 @@ private:
     void writeWrites(JsonWriter& w, const WriteFinder& f) {
         std::vector<std::string> names;
         for (auto sym : f.out) {
-            auto n = relName(throughModport(*sym));
+            auto n = writtenName(throughModport(*sym));
             if (n.rfind("$local:", 0) == 0 || std::find(names.begin(), names.end(), n) != names.end())
                 continue;
             names.push_back(n);
