@@ -51,4 +51,12 @@ module k_writes (
   logic [7:0] gq, dq;
   always @(posedge clk) gq <= a;
   always @(posedge clk) if (go) dq <= a;
+
+  // A chain of 18 blocking temps: the fan-in follows at most 16 of their writes, then says so (lq).
+  logic [7:0] lq;
+  always @(posedge clk) begin : chain
+    logic [7:0] c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17;
+    c0 = a; c1 = c0; c2 = c1; c3 = c2; c4 = c3; c5 = c4; c6 = c5; c7 = c6; c8 = c7; c9 = c8; c10 = c9; c11 = c10; c12 = c11; c13 = c12; c14 = c13; c15 = c14; c16 = c15; c17 = c16;
+    lq <= c17;
+  end
 endmodule
