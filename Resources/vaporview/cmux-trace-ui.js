@@ -533,6 +533,8 @@
       s.prefetchHits = (s.prefetchHits || 0) + 1;
       return known.then((r) => r || engineRequest(s, signal, time));
     }
+    // Asked now: not prefetched as well later.
+    if (s.prefetch) { s.prefetch = s.prefetch.filter((q) => q.key !== key); }
     return engineRequest(s, signal, time);
   }
   // A background request (a prefetch) gets a shorter timeout natively, and its failure doesn't
@@ -559,6 +561,9 @@
     return waveform.traceVerdiPrefetch !== undefined && Number.isFinite(n) && n >= 0 ? Math.floor(n) : VERDI_PREFETCH;
   };
   // traceVerdiSessions, at most the pool cmux reported for this dump (one until it says more).
+  // Prefetched answers kept per trace session, the oldest going first (traceVerdiAnswers for tests).
+  const VERDI_ANSWERS = 64;
+  const answersKept = () => (Number(waveform.traceVerdiAnswers) >= 1 ? Math.floor(Number(waveform.traceVerdiAnswers)) : VERDI_ANSWERS);
   const verdiSessions = (s) => {
     const n = Math.floor(Number(waveform.traceVerdiSessions));
     return Math.min(n >= 1 ? Math.min(n, 8) : 1, (s && s.verdiPool) || 1);
@@ -594,6 +599,10 @@
         return r;
       });
       s.verdiAnswers.set(key, p);
+      for (const k of s.verdiAnswers.keys()) {
+        if (s.verdiAnswers.size <= answersKept()) { break; }
+        s.verdiAnswers.delete(k);
+      }
     }
   }
   // `shown` with Verdi's answer merged in, as a new step (the shown one is left as it is); null
@@ -659,7 +668,9 @@
   function state() {
     const st = history.steps[history.at];
     return { open: !!(panel && !panel.hidden), steps: history.steps.length, at: history.at, step: st ? plain(st) : null,
-      prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0 },
+      prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0,
+        kept: (session && session.verdiAnswers && session.verdiAnswers.size) || 0,
+        queued: ((session && session.prefetch) || []).map((q) => q.signal) },
       cache: { signals: session && session.changes ? session.changes.size : 0, bits: (session && session.cached) || 0 } };
   }
   const plain = (x) => JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
