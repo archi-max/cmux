@@ -205,6 +205,8 @@ const TRACE_CASES = [
   // testbench deposited 44 at 27: the testbench's statement, approximate ('force'), never exact.
   { d: 'k', sig: 'tb_k.dut.gq', t: 30000, kind: 'initial', file: 'tb_k.sv', stmt: 'force dut.gq', since: 27000, value: '01110111', trust: 'approximate', reasons: ['force'] },
   { d: 'k', sig: 'tb_k.dut.dq', t: 30000, kind: 'initial', file: 'tb_k.sv', stmt: '$deposit(dut.dq', since: 27000, value: '01000100', trust: 'approximate', reasons: ['force'] },
+  // lq <= c17 through 18 blocking temps: the fan-in stops at 16 of them, with a 'limits' reason.
+  { d: 'k', sig: 'tb_k.dut.lq', t: 20000, kind: 'proc', file: 'k_writes.sv', stmt: 'lq <= c17;', trust: 'approximate', reasons: ['limits'] },
   { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 35, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
 ];
 
