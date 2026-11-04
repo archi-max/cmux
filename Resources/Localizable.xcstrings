@@ -713791,55 +713791,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "An expression is too large to evaluate."
+            "value": "A limit was reached (an expression too large to evaluate, or more than 16 blocking temporaries on the way to the fan-in): the result may be incomplete."
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "التعبير أكبر من أن يُقيَّم."
+            "value": "تم بلوغ حدّ (تعبير أكبر من أن يُقيَّم، أو أكثر من 16 متغيرًا مؤقتًا حاجبًا في الطريق إلى المدخلات): قد تكون النتيجة ناقصة."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ein Ausdruck ist zu groß zum Auswerten."
+            "value": "Ein Limit wurde erreicht (ein Ausdruck ist zu groß zum Auswerten, oder mehr als 16 blockierende Zwischenvariablen auf dem Weg zu den Eingängen): Das Ergebnis ist eventuell unvollständig."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Una expresión es demasiado grande para evaluarla."
+            "value": "Se alcanzó un límite (una expresión demasiado grande para evaluar, o más de 16 temporales bloqueantes en el camino hacia las entradas): el resultado puede estar incompleto."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Une expression est trop grande pour être évaluée."
+            "value": "Une limite a été atteinte (une expression trop grande pour être évaluée, ou plus de 16 temporaires bloquants jusqu’aux entrées) : le résultat peut être incomplet."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "式が大きすぎて評価できません。"
+            "value": "上限に達しました（評価するには大きすぎる式、または入力に至るまでに 16 を超えるブロッキング一時変数）。結果は不完全な可能性があります。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "식이 너무 커서 평가할 수 없습니다."
+            "value": "한도에 도달했습니다(평가하기에 너무 큰 식이거나, 입력까지 16개를 넘는 블로킹 임시 변수). 결과가 불완전할 수 있습니다."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "表达式太大，无法求值。"
+            "value": "已达到上限（表达式太大无法求值，或通往输入的阻塞临时变量超过 16 个）：结果可能不完整。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "運算式太大，無法求值。"
+            "value": "已達到上限（運算式太大無法求值，或通往輸入的阻塞暫存變數超過 16 個）：結果可能不完整。"
           }
         }
       }

@@ -556,7 +556,7 @@ enum WaveformTrace {
     private static func reasonStrings() -> [String: String] {
         [
             "traceReason_opaque": String(localized: "waveformTrace.reason.opaque", defaultValue: "Part of the statement is not modelled: %@"),
-            "traceReason_limits": String(localized: "waveformTrace.reason.limits", defaultValue: "An expression is too large to evaluate."),
+            "traceReason_limits": String(localized: "waveformTrace.reason.limits", defaultValue: "A limit was reached (an expression too large to evaluate, or more than 16 blocking temporaries on the way to the fan-in): the result may be incomplete."),
             "traceReason_evaluator": String(localized: "waveformTrace.reason.evaluator", defaultValue: "An expression could not be evaluated: %@"),
             "traceReason_statement": String(localized: "waveformTrace.reason.statement", defaultValue: "A statement kind is not re-executed: %@"),
             "traceReason_delay": String(localized: "waveformTrace.reason.delay", defaultValue: "The block has delays; timing is approximate."),
