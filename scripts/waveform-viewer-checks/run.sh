@@ -95,6 +95,15 @@
 #                                        launch, privacy refusals (86), 87,
 #                                        rebuild of a non-private install, a
 #                                        build stopping when its ssh goes away
+#   ./run.sh fsdb-values <ssh-host> <remote-dir>
+#                                        string, real and event variables through
+#                                        the real helper v2, built on the host by
+#                                        build.sh, over a fixture written there
+#                                        with the FSDB writer: values, windows,
+#                                        edges, searchText, permanent errors
+#                                        (optional real dump: FSDB_VALUES_DUMP and
+#                                        FSDB_VALUES_EXPECT=<path>=<value>, see
+#                                        fsdb-values/check.sh)
 #   ./run.sh parity                      terminal-link matcher (50k-char lines),
 #                                        link misses fall through, settings
 #                                        clamps, no page-named save path,
@@ -358,6 +367,11 @@ case "${1:-}" in
     shift
     if [ $# -lt 2 ]; then echo "windowed-launcher: needs <ssh-host> <remote-dir>"; exit 2; fi
     bash "$HERE/windowed-fsdb/launcher-check.sh" "$ASSETS/fsdb-helper-v2" "$1" "$2"
+    ;;
+  fsdb-values)
+    shift
+    if [ $# -lt 2 ]; then echo "fsdb-values: needs <ssh-host> <remote-dir>"; exit 2; fi
+    bash "$HERE/fsdb-values/check.sh" "$ASSETS/fsdb-helper-v2" "$HERE/fsdb-values" "$1" "$2"
     ;;
   windowed-fsdb)
     shift
