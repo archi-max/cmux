@@ -199,6 +199,26 @@ import Testing
         #expect(rule == nil)
     }
 
+    @Test func aMemoryWordInfersItsDesignRoot() async {
+        // An FSDB lists a memory's words by index (`mem[3]`); the design has the memory `mem`.
+        // Traced from the waveform under another top name, the word still finds its root.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"]! += [.init(name: "mem[0]", isScope: false, width: 32), .init(name: "mem[3]", isScope: false, width: 32)]
+        let rule = await HierarchyPrefixInference.designRule(
+            forDumpPath: "top_tb.dut.mem[3]",
+            designRoots: ["cpu": Self.cpuChildren + [.init(name: "mem", isScope: false)]],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(rule == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true))
+        // A word of a memory the design root doesn't have is no reason to map onto it.
+        let other = await HierarchyPrefixInference.designRule(
+            forDumpPath: "top_tb.dut.mem[3]",
+            designRoots: ["cpu": Self.cpuChildren],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(other == nil)
+    }
+
     @Test func aRangeNamedDumpSignalNextToTheExactNameIsNotIt() async {
         // pc and pc[0:0] in one scope: the design's pc is the exact pc (as host.js finds it), so
         // pc[0:0] is not mapped back onto it.
