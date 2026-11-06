@@ -102,6 +102,24 @@ public final class SVModelSidecar: @unchecked Sendable {
         case building
     }
 
+    /// Where a first-time build is: the upload of the sources (`bytes`), then build.sh's own
+    /// stages (its `cmux-sv-model-build: stage …` lines), the compile with its `percent`.
+    public struct BuildProgress: Sendable, Equatable {
+        public enum Stage: String, Sendable {
+            case upload, fetch, configure, compile, install
+        }
+
+        public var stage: Stage
+        public var percent: Int?
+        public var bytes: Int?
+
+        public init(stage: Stage, percent: Int? = nil, bytes: Int? = nil) {
+            self.stage = stage
+            self.percent = percent
+            self.bytes = bytes
+        }
+    }
+
     public enum Failure: Error, Sendable, Equatable {
         /// The install command failed with this exit code (build.sh's codes) and stderr tail.
         case setupFailed(code: Int32, detail: String)
@@ -128,6 +146,7 @@ public final class SVModelSidecar: @unchecked Sendable {
     private let installSource: URL?
     private let lock = NSLock()
     private var statusHandler: (@Sendable (Status) -> Void)?
+    private var progressHandler: (@Sendable (BuildProgress) -> Void)?
     private var startTask: Task<Void, any Error>?
     private var process: Process?
     private var input: FileHandle?
@@ -162,6 +181,47 @@ public final class SVModelSidecar: @unchecked Sendable {
 
     private func report(_ status: Status) {
         lock.withLock { statusHandler }?(status)
+    }
+
+    /// Called as a first-time build goes (on a background queue).
+    public var onBuildProgress: (@Sendable (BuildProgress) -> Void)? {
+        get { lock.withLock { progressHandler } }
+        set { lock.withLock { progressHandler = newValue } }
+    }
+
+    private func report(_ progress: BuildProgress) {
+        lock.withLock { progressHandler }?(progress)
+    }
+
+    /// One of build.sh's progress lines (`cmux-sv-model-build: stage configure`,
+    /// `cmux-sv-model-build: progress 42`), else nil.
+    public static func buildProgress(fromLine line: String) -> BuildProgress? {
+        let prefix = "cmux-sv-model-build: "
+        guard line.hasPrefix(prefix) else { return nil }
+        let words = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
+        guard words.count == 2 else { return nil }
+        switch words[0] {
+        case "stage":
+            guard let stage = BuildProgress.Stage(rawValue: String(words[1])), stage != .upload else { return nil }
+            return BuildProgress(stage: stage, percent: stage == .compile ? 0 : nil)
+        case "progress":
+            guard words[1].allSatisfy(\.isNumber), let percent = Int(words[1]), (0...100).contains(percent) else { return nil }
+            return BuildProgress(stage: .compile, percent: percent)
+        default:
+            return nil
+        }
+    }
+
+    /// The bytes of the files under `folder` (what the install sends as a tar, near enough).
+    static func size(of folder: URL) -> Int {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else { return 0 }
+        var total = 0
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if values?.isRegularFile == true { total += values?.fileSize ?? 0 }
+        }
+        return total
     }
 
     /// The shell commands for the bundled sidecar folder `source` installed under
@@ -464,6 +524,10 @@ public final class SVModelSidecar: @unchecked Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         let log = SVModelInstallLog()
+        report(BuildProgress(stage: .upload, bytes: installSource.map(Self.size(of:)) ?? 0))
+        log.onLine = { [weak self] line in
+            if let progress = Self.buildProgress(fromLine: line) { self?.report(progress) }
+        }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty { handle.readabilityHandler = nil } else { log.append(data) }
@@ -541,13 +605,25 @@ public final class SVModelSidecar: @unchecked Sendable {
 private final class SVModelInstallLog: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
+    private var partial = Data()
     private var didTimeOut = false
+    /// Each whole line of the log as it arrives (build.sh's progress lines among them).
+    var onLine: (@Sendable (String) -> Void)?
 
     func append(_ data: Data) {
-        lock.withLock {
+        let lines: [String] = lock.withLock {
             buffer.append(data)
             if buffer.count > 64 * 1024 { buffer = buffer.suffix(32 * 1024) }
+            partial.append(data)
+            var out: [String] = []
+            while let newline = partial.firstIndex(of: 0x0A) {
+                out.append(String(decoding: partial[partial.startIndex..<newline], as: UTF8.self))
+                partial = Data(partial[(newline + 1)...])
+            }
+            if partial.count > 4096 { partial = Data() }
+            return out
         }
+        if let onLine { lines.forEach(onLine) }
     }
 
     var data: Data { lock.withLock { buffer } }

@@ -45,6 +45,8 @@ enum WaveformTrace {
     }
 
     private static var designs: [String: Design] = [:]
+    /// When each design's first-time sidecar build started (ms since 1970, the page's clock), while it builds.
+    private static var buildStarts: [String: Double] = [:]
     /// The design each viewer last traced in, for the page's model requests.
     private static let activeDesigns = NSMapTable<FilePreviewPanel, Design>.weakToStrongObjects()
     /// Sidecars kept at most: each holds an elaborated design in memory.
@@ -110,10 +112,27 @@ enum WaveformTrace {
         }
         if let waveform { activeDesigns.setObject(design, forKey: waveform) }
         let host = editor.linkRemoteRoute?.configuration.destination
+        let key = design.key
         design.sidecar.onStatus = { status in
-            guard status == .building, let waveform else { return }
             Task { @MainActor in
-                _ = await waveform.nativeViewSessions.waveform.callTrace("status", argument: buildingMessage(host: host))
+                switch status {
+                case .building:
+                    buildStarts[key] = Date().timeIntervalSince1970 * 1000
+                    if let waveform {
+                        _ = await waveform.nativeViewSessions.waveform.callTrace("status", argument: buildingMessage(host: host))
+                    }
+                case .connecting:
+                    // After the install: the sidecar starts again and loads the design.
+                    buildProgress("load", key: key, host: host, waveform: waveform)
+                }
+            }
+        }
+        design.sidecar.onBuildProgress = { report in
+            Task { @MainActor in
+                var extra: [String: Any] = [:]
+                if let percent = report.percent { extra["percent"] = percent }
+                if let bytes = report.bytes { extra["sourceBytes"] = bytes }
+                buildProgress(report.stage.rawValue, key: key, host: host, waveform: waveform, extra)
             }
         }
         let load = design.load ?? Task { @MainActor in
@@ -122,6 +141,10 @@ enum WaveformTrace {
         design.load = load
         do {
             let reply = try await load.value
+            if buildStarts[key] != nil {
+                buildProgress("done", key: key, host: host, waveform: waveform)
+                buildStarts[key] = nil
+            }
             guard let tops = reply["tops"] as? [String], !tops.isEmpty else {
                 throw Failure(message: loadFailedMessage(reply))
             }
@@ -130,9 +153,34 @@ enum WaveformTrace {
             throw error
         } catch {
             design.load = nil
+            if buildStarts[key] != nil {
+                // The build failed: the panel shows why with the log's last lines and Retry, which
+                // starts over with a new sidecar.
+                let detail: String
+                let message: String
+                if case .setupFailed(let code, let tail)? = error as? SVModelSidecar.Failure {
+                    detail = tail
+                    message = sidecarMessage(SVModelSidecar.Failure.setupFailed(code: code, detail: ""), host: host)
+                } else {
+                    detail = ""
+                    message = sidecarMessage(error, host: host)
+                }
+                buildProgress("failed", key: key, host: host, waveform: waveform, ["message": message, "log": detail])
+                buildStarts[key] = nil
+                if designs[key] === design { designs.removeValue(forKey: key) }
+                design.sidecar.stop()
+            }
             throw Failure(message: sidecarMessage(error, host: host))
         }
         return design
+    }
+
+    /// The first-time build's progress, for the page's build panel (cmux-trace-ui.js progress()).
+    private static func buildProgress(_ stage: String, key: String, host: String?, waveform: FilePreviewPanel?, _ extra: [String: Any] = [:]) {
+        guard let waveform, let startedAt = buildStarts[key] else { return }
+        var argument: [String: Any] = ["stage": stage, "startedAt": startedAt, "host": host ?? NSNull()]
+        argument.merge(extra) { _, new in new }
+        Task { @MainActor in _ = await waveform.nativeViewSessions.waveform.callTrace("progress", argument: argument) }
     }
 
     /// The `"build"` (and `"buildRelativePaths"`) of the folder's local server.json, then its
@@ -391,12 +439,24 @@ enum WaveformTrace {
         case "engine":
             guard let id = (body["id"] as? NSNumber)?.intValue else { return }
             WaveformTraceVerdi.answer(body, id: id, waveform: waveform) { result in reply(page, id: id, result: result) }
+        case "buildInfo":
+            openBuildDoc(near: waveform)
         case "step", "open":
             let loc = body["event"] as? String == "open" ? body["loc"] : ((body["step"] as? [String: Any])?["stmt"] as? [String: Any])?["loc"]
             if let location = location(fromPage: loc) { open(location, near: waveform) }
         default:
             break
         }
+    }
+
+    /// The bundled doc on what the first-time build makes (trace-design-model.md), in a markdown
+    /// pane of the waveform's workspace.
+    private static func openBuildDoc(near waveform: FilePreviewPanel) {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("vaporview/trace-design-model.md"),
+              FileManager.default.fileExists(atPath: url.path),
+              let workspace = AppDelegate.shared?.workspaceContainingPanel(panelId: waveform.id, preferredWorkspaceId: waveform.workspaceId)?.workspace,
+              let paneId = workspace.paneId(forPanelId: waveform.id) else { return }
+        _ = workspace.newMarkdownSurface(inPane: paneId, filePath: url.path, focus: true)
     }
 
     private static func reply(_ page: FilePreviewWaveformSession, id: Int, result: Any) {
@@ -569,6 +629,21 @@ enum WaveformTrace {
             "traceWriter": String(localized: "waveformTrace.page.writer", defaultValue: "in %@, through its interface port"),
             "traceEngineCmux": String(localized: "waveformTrace.page.engine.cmux", defaultValue: "Traced by cmux (slang design model)"),
             "traceEngineVerdi": String(localized: "waveformTrace.page.engine.verdi", defaultValue: "Traced by Verdi, re-executed by cmux"),
+            "traceBuildTitle": String(localized: "waveformTrace.page.build.title", defaultValue: "Building the design model on %@"),
+            "traceBuildTitleLocal": String(localized: "waveformTrace.page.build.titleLocal", defaultValue: "Building the design model on this Mac"),
+            "traceBuildStage_upload": String(localized: "waveformTrace.page.build.stage.upload", defaultValue: "Upload the model’s sources (%@)"),
+            "traceBuildStage_fetch": String(localized: "waveformTrace.page.build.stage.fetch", defaultValue: "Download slang and its libraries"),
+            "traceBuildStage_configure": String(localized: "waveformTrace.page.build.stage.configure", defaultValue: "Configure (CMake)"),
+            "traceBuildStage_compile": String(localized: "waveformTrace.page.build.stage.compile", defaultValue: "Compile"),
+            "traceBuildStage_install": String(localized: "waveformTrace.page.build.stage.install", defaultValue: "Install"),
+            "traceBuildStage_load": String(localized: "waveformTrace.page.build.stage.load", defaultValue: "Loading the design"),
+            "traceBuildElapsed": String(localized: "waveformTrace.page.build.elapsed", defaultValue: "%@ so far"),
+            "traceBuildOnce": String(localized: "waveformTrace.page.build.once", defaultValue: "Built once per host and cmux version."),
+            "traceBuildWhat": String(localized: "waveformTrace.page.build.what", defaultValue: "What is being built?"),
+            "traceBuildFailedTitle": String(localized: "waveformTrace.page.build.failedTitle", defaultValue: "The design model could not be built on %@"),
+            "traceBuildFailedTitleLocal": String(localized: "waveformTrace.page.build.failedTitleLocal", defaultValue: "The design model could not be built on this Mac"),
+            "traceBuildLog": String(localized: "waveformTrace.page.build.log", defaultValue: "Last lines of the build log:"),
+            "traceBuildRetry": String(localized: "waveformTrace.page.build.retry", defaultValue: "Retry"),
             "traceVerdiStarting": String(localized: "waveformTrace.page.verdi.starting", defaultValue: "Verdi is starting on the host"),
             "traceVerdiChecking": String(localized: "waveformTrace.page.verdi.checking", defaultValue: "Verdi is checking…"),
             "traceVerdiTimedOut": String(localized: "waveformTrace.page.verdi.timedOut", defaultValue: "Verdi: not checked (timed out)"),
