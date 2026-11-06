@@ -171,7 +171,7 @@ struct FilePreviewLanguageDocumentContext {
                   providerIdentity.hasPrefix("ssh:"),
                   let configuration = workspace?.remoteConfiguration,
                   configuration.transport == .ssh,
-                  let launch = await remoteServerLaunch(languageId: languageId, configuration: configuration) else {
+                  LanguageToolRegistry.languageServer(forLanguage: languageId, remoteDestination: configuration.destination) != nil else {
                 return nil
             }
             // The terminal directory is often the remote home, where the server
@@ -180,6 +180,11 @@ struct FilePreviewLanguageDocumentContext {
             var root = containingDirectory(pinned, of: remotePath)
             if root == nil { root = await discoveredRemoteRoot(for: remotePath, configuration: configuration) }
             let resolvedRoot = root ?? (remotePath as NSString).deletingLastPathComponent
+            // One server per route, root and language (LanguageServerPool), so
+            // one carrier session each.
+            guard let launch = await remoteServerLaunch(
+                languageId: languageId, configuration: configuration, rootPath: resolvedRoot
+            ) else { return nil }
             return FilePreviewLanguageDocumentContext(
                 documentURI: URL(fileURLWithPath: remotePath),
                 rootURI: URL(fileURLWithPath: resolvedRoot, isDirectory: true),
@@ -209,16 +214,20 @@ struct FilePreviewLanguageDocumentContext {
     /// `ssh` arguments, on the Files explorer's route. The server runs for the
     /// whole session: on a connection of its own, or, on a host that takes
     /// only the terminal's sign-in, on one of the carrier's long-lived
-    /// sessions (``RemoteLanguageServerSessions``). Nil when it can't have one.
+    /// sessions (``RemoteLanguageServerSessions``), one per server. Nil when
+    /// it can't have one.
     private static func remoteServerLaunch(
         languageId: String,
-        configuration: WorkspaceRemoteConfiguration
+        configuration: WorkspaceRemoteConfiguration,
+        rootPath: String
     ) async -> LanguageToolLaunch? {
         guard case .ssh(_, _, let remoteCommand)? = LanguageToolRegistry.languageServer(
             forLanguage: languageId,
             remoteDestination: configuration.destination
         ) else { return nil }
-        guard let session = try? await RemoteLanguageServerSessions.shared.session(for: configuration) else {
+        guard let session = try? await RemoteLanguageServerSessions.session(
+            for: configuration, rootPath: rootPath, languageId: languageId
+        ) else {
             return nil
         }
         let arguments = configuration.batchSSHCommandArguments(
@@ -458,24 +467,31 @@ final class FilePreviewLanguageHoverViewController: NSViewController {
     }
 }
 
-/// The carrier sessions remote language servers hold, one per host: the
-/// pooled server lives as long as the app, so its session does too. A host
-/// whose one-off masters work holds none (its server has its own connection).
-actor RemoteLanguageServerSessions {
-    static let shared = RemoteLanguageServerSessions()
+/// The carrier sessions remote language servers hold. ``LanguageServerPool``
+/// runs one server per launch, root and language, and a server lives as long
+/// as the app (a restart reuses its slot), so each holds one session that
+/// long, keyed by its route (destination, port, identity file and options:
+/// another workspace's key never gets this one's carrier), root and
+/// language. A host whose one-off masters work holds none (its servers have
+/// connections of their own).
+enum RemoteLanguageServerSessions {
+    static let shared = HeldLongLivedSessions<LongLivedSSHSession>()
 
-    private var held: [String: LongLivedSSHSession] = [:]
-    private var pending: [String: Task<LongLivedSSHSession, Error>] = [:]
-
-    func session(for configuration: WorkspaceRemoteConfiguration) async throws -> LongLivedSSHSession {
-        let key = configuration.destination + "|" + (configuration.port.map(String.init) ?? "")
-        if let session = held[key] { return session }
-        if let task = pending[key] { return try await task.value }
-        let task = Task { try await configuration.longLivedSession() }
-        pending[key] = task
-        defer { pending[key] = nil }
-        let session = try await task.value
-        if session.lease != nil { held[key] = session }
-        return session
+    static func session(
+        for configuration: WorkspaceRemoteConfiguration,
+        rootPath: String,
+        languageId: String
+    ) async throws -> LongLivedSSHSession {
+        let options = configuration.fileOperationSSHOptions
+        let route = SSHMasterPool.Route(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: options
+        )?.key ?? ([configuration.destination, configuration.port.map(String.init) ?? "",
+                    configuration.identityFile ?? ""] + options).joined(separator: "\u{1F}")
+        return try await shared.session(
+            for: HeldLongLivedSessions<LongLivedSSHSession>.key(route: route, rootPath: rootPath, languageId: languageId),
+            keep: { $0.lease != nil },
+            make: { try await configuration.longLivedSession() }
+        )
     }
 }

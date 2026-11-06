@@ -1024,7 +1024,9 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
                 outputURL: raw
             )
             return try await Self.runChild(
-                limit: maxBytes == nil ? Self.downloadHoldLimit(writingTo: raw) : Self.commandHoldLimit,
+                // Capped or not, it is a download (a capped preview can be
+                // 32 MiB): ended when bytes stop coming, not at a total.
+                limit: Self.downloadHoldLimit(writingTo: raw),
                 run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
             )
         }
