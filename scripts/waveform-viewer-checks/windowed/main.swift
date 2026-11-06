@@ -93,7 +93,7 @@ final class StatusLog: @unchecked Sendable {
 }
 
 // Not searchText: the page's searchText must pass the relay's own list (pageCommands).
-let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats", "textControl", "textStats"])
+let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats", "textControl", "textStats", "loadControl", "loadStats"])
 
 func makeHelper(home: URL, loading: WaveformFSDBHelper.Loading, v2Root: URL = v2Root, hostKey: String = "local",
                 allowedFile: String? = nil, readyTimeout: TimeInterval = 20, log: StatusLog? = nil, env: String = "") -> WaveformFSDBHelper {
@@ -1162,6 +1162,29 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// The reader's ARRAY scopes (helper-v2 replies with them inline): the netlist shows each
   /// array as a node holding its elements, nested by dimension; an element's path stays
   /// scope.name (adding by path, the link's scope listing, search, reveal).
+  /// Signals added together each draw as soon as their own first load is answered, not when
+  /// the slowest one is: on a big dump a reader load costs 1 ms to 10 s per signal, and one
+  /// request for all of them showed every row dashed until the last load finished. A first
+  /// load that takes longer than the window timeout (10 s) is waited for, not cancelled and
+  /// asked again. Dump synth:ms=1,buses=6,wide=0: clk 0, rst 1, bus0..bus5 2..7, state 8.
+  func firstLoadChecks() async {
+    _ = await mock(["cmd": "loadControl", "firstLoadMs": ["3": 4000, "7": 12500]])
+    let t0 = Date()
+    let added = await call("return await cmuxWaveform.link.addScope({ path: ['tb', 'dut'], confirmed: true })") as? [String: Any]
+    expect((added?["added"] as? Int ?? 0) >= 7, "Add All in Scope adds dut's 7 signals at once: \(String(describing: added))")
+    func drawn(_ id: Int) async -> Bool { await wc("(() => { const s = w.signals.get(\(id)); return !!(s && s.firstDrawMs !== null); })()") as? Bool == true }
+    let fast = await waitFor(3000) { var all = true; for id in [2, 4, 5, 6] { if !(await drawn(id)) { all = false } }; return all }
+    let fastMs = Int(Date().timeIntervalSince(t0) * 1000)
+    let slowYet = await drawn(3)
+    print("first loads: windows", (await mock(["cmd": "loadStats"]))["windows"] ?? "nil")
+    expect(fast && !slowYet, "the fast signals draw before the slow first load (4 s) is answered: fast \(fast) at \(fastMs) ms, slow drawn \(slowYet)")
+    let slow = await waitFor(8000) { await drawn(3) }
+    expect(slow, "the 4 s first load draws when it is answered")
+    let slowest = await waitFor(20000) { await drawn(7) }
+    let cancels = ((await mock(["cmd": "loadStats"]))["cancels"] as? [String: Any])?["7"] as? Int ?? 0
+    expect(slowest && cancels == 0, "a 12.5 s first load is waited for, not cancelled at the 10 s window timeout: drawn \(slowest), cancels \(cancels)")
+  }
+
   func arrayChecks() async {
     let r = await call("""
       const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -1252,6 +1275,11 @@ func run() async {
     expect(ok4, "a page with packed arrays opened")
     if ok4 { await arrays.arrayChecks() }
     arrays.close()
+    let firsts = Page(loading: .auto, dump: "synth:ms=1,buses=6,wide=0")
+    let ok5 = await firsts.open(home: home)
+    expect(ok5, "a page for first loads opened")
+    if ok5 { await firsts.firstLoadChecks() }
+    firsts.close()
     let vcdURL = scratch.appendingPathComponent("small.vcd")
     try Data("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n#20\n0!\n".utf8)
       .write(to: vcdURL)
