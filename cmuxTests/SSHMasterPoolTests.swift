@@ -34,6 +34,9 @@ struct SSHMasterPoolTests {
         var onlyFirstMasterStarts = false
         /// Masters past the first are refused as a login (the host rations them).
         var refuseLaterMasters = false
+        /// Starts get no answer in time (a login stalled on the host, or a
+        /// security key waiting for a touch).
+        var startStalls = false
         var entered: [String] = []
 
         /// A socket per route: `%C` hashes the destination and port.
@@ -47,6 +50,7 @@ struct SSHMasterPoolTests {
             return lock.withLock {
                 starts.append(path)
                 if loginRefused || (refuseLaterMasters && path != route.basePath) { return .unavailable }
+                if startStalls { return .stalled }
                 guard !startFails, !(onlyFirstMasterStarts && path != route.basePath) else { return .failed }
                 alive.insert(Self.id(route.destination, path, port: route.port))
                 return .started
@@ -1213,21 +1217,32 @@ struct SSHMasterPoolTests {
         #expect(pool.sessionsInUse(route, path: Self.base) == 0)
     }
 
-    /// The network watch recycles on a change of path, not on the monitor's
-    /// first report or a repeat of the same path.
+    /// The network watch recycles once a changed path has settled: not on
+    /// the monitor's first report, a reordering of the same interfaces, or a
+    /// flap that comes back to the same path within the settle time.
     @Test
-    func testTheNetworkWatchFiresOnlyOnAChange() {
+    func testTheNetworkWatchFiresOnceAChangedPathSettles() async {
         typealias W = SSHMasterPool.NetworkWatch
-        let watch = W()
-        let home = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["192.0.2.1"])
+        let fired = ResultList()
+        let watch = W(settle: 0.1) { fired.add("recycle") }
+        let home = W.signature(satisfied: true, interfaces: ["en0", "utun3"], gateways: ["192.0.2.1"])
+        let reordered = W.signature(satisfied: true, interfaces: ["utun3", "en0"], gateways: ["192.0.2.1"])
         let away = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["198.51.100.1"])
-        let vpn = W.signature(satisfied: true, interfaces: ["en0", "utun3"], gateways: ["192.0.2.1"])
-        #expect(!watch.changed(to: home))
-        #expect(!watch.changed(to: home))
-        #expect(watch.changed(to: away))
-        #expect(watch.changed(to: vpn))
-        #expect(W.signature(satisfied: true, interfaces: [], gateways: ["b", "a"])
-                == W.signature(satisfied: true, interfaces: [], gateways: ["a", "b"]))
+        let down = W.signature(satisfied: false, interfaces: [], gateways: [])
+        #expect(home == reordered)
+        watch.report(home)
+        watch.report(down)
+        watch.report(home)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(fired.values.isEmpty)
+        watch.report(away)
+        watch.report(home)
+        watch.report(away)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(fired.values == ["recycle"])
+        watch.report(down)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(fired.values == ["recycle"])
     }
 
     /// A later master being stopped isn't started again (adopting the old
@@ -1286,16 +1301,97 @@ struct SSHMasterPoolTests {
         #expect(start.contains("ServerAliveCountMax=3"))
     }
 
-    /// A batch start that got no answer in time (a security key waiting for
-    /// a touch, an agent asking to confirm) counts as refused, so runs use
-    /// the carrier instead of each asking again on a connection of its own.
+    /// A batch start that got no answer in time is its own outcome: the
+    /// host uses the carrier for now, but it isn't a refused login.
     @Test
-    func testATimedOutStartCountsAsRefused() {
+    func testATimedOutStartIsAStall() {
         typealias P = SSHMasterPool.ProcessControl
-        #expect(P.startOutcome(status: nil, timedOut: true, stderr: "") == .unavailable)
+        #expect(P.startOutcome(status: nil, timedOut: true, stderr: "") == .stalled)
         #expect(P.startOutcome(status: 255, timedOut: false, stderr: "Permission denied (publickey).") == .unavailable)
         #expect(P.startOutcome(status: 255, timedOut: false, stderr: "connect to host x port 22: Network is unreachable") == .failed)
         #expect(P.startOutcome(status: nil, timedOut: false, stderr: "") == .failed)
+    }
+
+    /// A stalled start (a slow login, a security key) puts the host on the
+    /// carrier's master for now, then tries the master again after a while:
+    /// once it starts, runs leave the carrier.
+    @Test
+    func testAStalledStartUsesTheCarrierThenRetries() async throws {
+        let sshd = MockSSHD()
+        sshd.startStalls = true
+        let pool = SSHMasterPool(control: sshd, healthInterval: .milliseconds(20), maxWait: .milliseconds(50),
+                                 carrierMaxWait: .milliseconds(200), stallRetry: .milliseconds(150))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let stalled = await Self.waitUntil { pool.carrierPathIfMastersFail(route) == Self.carrier }
+        #expect(stalled)
+        let onCarrier = try await Self.session(pool)
+        #expect(SSHMasterPool.controlPath(in: onCarrier) == Self.carrier)
+        sshd.lock.withLock { sshd.startStalls = false }
+        let back = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(back)
+        #expect(pool.carrierPathIfMastersFail(route) == nil)
+        let used = try await Self.session(pool)
+        #expect(SSHMasterPool.controlPath(in: used) == Self.base)
+    }
+
+    /// A wake or a network change retries a stalled host's master at once.
+    @Test
+    func testARecycleRetriesAStalledHost() async throws {
+        let sshd = MockSSHD()
+        sshd.startStalls = true
+        let pool = SSHMasterPool(control: sshd, healthInterval: .seconds(60), maxWait: .milliseconds(50),
+                                 stallRetry: .seconds(600))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let stalled = await Self.waitUntil { pool.carrierPathIfMastersFail(route) == Self.carrier }
+        #expect(stalled)
+        sshd.lock.withLock { sshd.startStalls = false }
+        pool.recycleMasters()
+        let back = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(back)
+        #expect(pool.carrierPathIfMastersFail(route) == nil)
+    }
+
+    /// A refused login (a password-only host) stays on the carrier: neither
+    /// the retry interval nor a recycle tries the master again.
+    @Test
+    func testARefusedLoginStaysOnTheCarrier() async throws {
+        let sshd = MockSSHD()
+        sshd.loginRefused = true
+        let pool = SSHMasterPool(control: sshd, healthInterval: .milliseconds(20), maxWait: .milliseconds(50),
+                                 stallRetry: .milliseconds(50))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let refused = await Self.waitUntil { pool.carrierPathIfMastersFail(route) == Self.carrier }
+        #expect(refused)
+        pool.recycleMasters()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(sshd.lock.withLock { sshd.starts }.count == 1)
+        #expect(pool.carrierPathIfMastersFail(route) == Self.carrier)
+    }
+
+    /// A stop that gets no answer (a wedged master) is followed by `-O exit`
+    /// and the socket's removal, so the restart can't adopt the old master.
+    @Test
+    func testAWedgedStopExitsAndRemovesTheSocket() async throws {
+        typealias P = SSHMasterPool.ProcessControl
+        let route = try Self.route()
+        let calls = ResultList()
+        let removed = ResultList()
+        await P.stop(route, path: Self.base, run: { arguments, _ in
+            calls.add(arguments.prefix(2).joined(separator: " "))
+            return (nil, "", arguments.contains("stop"))
+        }, remove: { removed.add($0) })
+        #expect(calls.values == ["-O stop", "-O exit"])
+        #expect(removed.values == [Self.base])
+
+        let quiet = ResultList()
+        await P.stop(route, path: Self.base, run: { arguments, _ in
+            quiet.add(arguments.prefix(2).joined(separator: " "))
+            return (0, "", false)
+        }, remove: { quiet.add("removed " + $0) })
+        #expect(quiet.values == ["-O stop"])
     }
 
     /// A route queued while it resolves as a borrowed route, then registered
@@ -1397,6 +1493,14 @@ struct SSHMasterPoolTests {
         let unpooled = try await Self.session(pool)
         #expect(unpooled == Self.options)
     }
+}
+
+/// Values added from other tasks, in order.
+private final class ResultList: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    func add(_ value: String) { lock.withLock { stored.append(value) } }
+    var values: [String] { lock.withLock { stored } }
 }
 
 /// A value set once from another task.
