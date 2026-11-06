@@ -1923,6 +1923,27 @@ extension Harness {
         await sleep(400);
         R.neverRows = tr();
         H.findItem = findItem;
+        // The limit counts from when the lookup started: an Add All alone in
+        // such a restore waits the hold limit in all, not its settle wait and
+        // then the hold limit again.
+        C.holdLimitMs = 3000; C.settleTimeoutMs = 2000;
+        let alone = null, aloneStart = 0;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          aloneStart = Date.now();
+          H.findItem = () => new Promise(() => {});
+          restoreState(m);
+          await sleep(100);
+          alone = link.addScope({ path: ['top', 'core'] });
+        };
+        const aloneT0 = Date.now();
+        window.cmuxWaveform.reload({});
+        while (!alone && Date.now() - aloneT0 < 10000) { await sleep(50); }
+        R.aloneScope = JSON.stringify(alone ? await Promise.race([alone, sleep(9000).then(() => 'pending')]) : 'no restore');
+        R.aloneMs = Date.now() - aloneStart;
+        await sleep(400);
+        R.aloneRows = tr();
+        H.findItem = findItem;
         C.holdLimitMs = holdCap; C.settleTimeoutMs = settleCap;
         """) { r in
           let s = { (k: String) in r[k] as? String ?? "nil" }
@@ -1941,6 +1962,9 @@ extension Harness {
           let neverMs = r["neverMs"] as? Int ?? -1
           check(s("neverScope").contains(#""added":1"#) && neverMs < 6000 && s("neverRows").contains("top.core.acc") && s("neverRows").contains("top.clk"),
                 "a restore whose lookups never settle holds Add All and a pick by name only for the hold limit: \(s("neverScope")) after \(neverMs) ms -> \(s("neverRows"))")
+          let aloneMs = r["aloneMs"] as? Int ?? -1
+          check(s("aloneScope").contains(#""added":1"#) && aloneMs >= 2500 && aloneMs < 4200 && s("aloneRows").contains("top.core.acc"),
+                "the hold limit counts from the lookup's start, not after Add All's settle wait: \(s("aloneScope")) after \(aloneMs) ms (limit 3000, settle 2000) -> \(s("aloneRows"))")
           self.phaseAR()
         }
       }
