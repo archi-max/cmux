@@ -1219,34 +1219,157 @@ struct SSHMasterPoolTests {
 
     /// The network watch recycles once a changed path has settled: not on
     /// the monitor's first report, a reordering of the same interfaces, or a
-    /// flap that comes back to the same path within the settle time.
+    /// flap that comes back to the same path. The settle time is long here and
+    /// the test settles by hand, so no timing is involved.
     @Test
-    func testTheNetworkWatchFiresOnceAChangedPathSettles() async {
+    func testTheNetworkWatchFiresOnceAChangedPathSettles() {
         typealias W = SSHMasterPool.NetworkWatch
         let fired = ResultList()
-        let watch = W(settle: 0.1) { fired.add("recycle") }
+        let watch = W(settle: 3600) { fired.add("recycle") }
         let home = W.signature(satisfied: true, interfaces: ["en0", "utun3"], gateways: ["192.0.2.1"])
         let reordered = W.signature(satisfied: true, interfaces: ["utun3", "en0"], gateways: ["192.0.2.1"])
         let away = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["198.51.100.1"])
         let down = W.signature(satisfied: false, interfaces: [], gateways: [])
         #expect(home == reordered)
         watch.report(home)
+        watch.settleNow()
         watch.report(down)
-        try? await Task.sleep(nanoseconds: 30_000_000)
         watch.report(home)
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        watch.settleNow()
         #expect(fired.values.isEmpty)
         watch.report(away)
-        try? await Task.sleep(nanoseconds: 30_000_000)
         watch.report(home)
-        try? await Task.sleep(nanoseconds: 30_000_000)
         watch.report(away)
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        watch.settleNow()
         #expect(fired.values == ["recycle"])
         watch.report(down)
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        watch.settleNow()
+        watch.settleNow()
         #expect(fired.values == ["recycle"])
     }
+
+    /// A wake goes through the same settle as a path change, so a wake and
+    /// the path change that follows it recycle once; a wake while the
+    /// network is down recycles when it comes back up.
+    @Test
+    func testAWakeAndItsPathChangeRecycleOnce() {
+        typealias W = SSHMasterPool.NetworkWatch
+        let fired = ResultList()
+        let watch = W(settle: 3600) { fired.add("recycle") }
+        let home = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["192.0.2.1"])
+        let away = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["198.51.100.1"])
+        let down = W.signature(satisfied: false, interfaces: [], gateways: [])
+        watch.report(home)
+        watch.recycleSoon()
+        #expect(fired.values.isEmpty)
+        watch.report(down)
+        watch.report(away)
+        watch.settleNow()
+        #expect(fired.values == ["recycle"])
+        watch.settleNow()
+        #expect(fired.values == ["recycle"])
+
+        // Woken with the network still down: the recycle waits for it.
+        watch.report(down)
+        watch.settleNow()
+        watch.recycleSoon()
+        watch.settleNow()
+        #expect(fired.values == ["recycle"])
+        watch.report(away)
+        watch.settleNow()
+        #expect(fired.values == ["recycle", "recycle"])
+    }
+
+    /// A path ssh would still rewrite is expanded before the socket is
+    /// removed; a plain absolute one is used as it is.
+    @Test
+    func testOnlyPathsSSHRewritesAreExpanded() {
+        typealias P = SSHMasterPool.ProcessControl
+        #expect(!P.needsExpansion("/tmp/cmux/0123abcd"))
+        #expect(P.needsExpansion("~/.ssh/cm-%C"))
+        #expect(P.needsExpansion("/tmp/cm-%C"))
+        #expect(P.needsExpansion("${HOME}/.ssh/cm"))
+        #expect(P.needsExpansion("cm/socket"))
+    }
+
+    // MARK: Stalls
+
+    /// The stall backoff: ``stallRetry`` doubling with each stall in a row,
+    /// up to ten minutes (or ``stallRetry`` if that is longer).
+    @Test
+    func testTheStallBackoffDoublesUpToTenMinutes() {
+        typealias P = SSHMasterPool
+        #expect(P.stallBackoff(stalls: 1, base: .seconds(60)) == .seconds(60))
+        #expect(P.stallBackoff(stalls: 2, base: .seconds(60)) == .seconds(120))
+        #expect(P.stallBackoff(stalls: 3, base: .seconds(60)) == .seconds(240))
+        #expect(P.stallBackoff(stalls: 4, base: .seconds(60)) == .seconds(480))
+        #expect(P.stallBackoff(stalls: 5, base: .seconds(60)) == .seconds(600))
+        #expect(P.stallBackoff(stalls: 40, base: .seconds(60)) == .seconds(600))
+        #expect(P.stallBackoff(stalls: 2, base: .seconds(900)) == .seconds(900))
+    }
+
+    /// After three stalls in a row the timer stops retrying (a host whose
+    /// login waits on the user would ask again every few minutes): only a
+    /// recycle or the carrier's next connect tries again.
+    @Test
+    func testThreeStallsInARowStopTheRetries() async throws {
+        let sshd = MockSSHD()
+        sshd.startStalls = true
+        let pool = SSHMasterPool(control: sshd, healthInterval: .milliseconds(5), maxWait: .milliseconds(50),
+                                 stallRetry: .milliseconds(5))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let three = await Self.waitUntil { sshd.lock.withLock { sshd.starts.count } >= SSHMasterPool.maxStallsInARow }
+        #expect(three)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(sshd.lock.withLock { sshd.starts.count } == SSHMasterPool.maxStallsInARow)
+        #expect(pool.carrierPathIfMastersFail(route) == Self.carrier)
+
+        pool.recycleMasters()
+        let again = await Self.waitUntil { sshd.lock.withLock { sshd.starts.count } == SSHMasterPool.maxStallsInARow + 1 }
+        #expect(again)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        #expect(sshd.lock.withLock { sshd.starts.count } == SSHMasterPool.maxStallsInARow + 1)
+
+        sshd.lock.withLock { sshd.startStalls = false }
+        pool.warm(route, carrierPath: Self.carrier)
+        let back = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(back)
+        #expect(pool.carrierPathIfMastersFail(route) == nil)
+    }
+
+    /// A recycle while a stalled host's retry is still in flight isn't lost:
+    /// when that retry stalls, the master is tried again at once, and the
+    /// stall isn't counted (the backoff doesn't grow).
+    @Test
+    func testARecycleDuringAStalledRetryIsKept() async throws {
+        let sshd = MockSSHD()
+        sshd.startStalls = true
+        let pool = SSHMasterPool(control: sshd, healthInterval: .seconds(60), maxWait: .milliseconds(50),
+                                 stallRetry: .seconds(600))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let stalled = await Self.waitUntil { pool.carrierPathIfMastersFail(route) == Self.carrier }
+        #expect(stalled)
+        #expect(pool.stallsInARow(route) == 1)
+        sshd.lock.withLock { sshd.startDelayNanoseconds = 200_000_000 }
+        pool.recycleMasters()
+        let retrying = await Self.waitUntil { sshd.lock.withLock { sshd.events.filter { $0.hasPrefix("start") }.count } == 2 }
+        #expect(retrying)
+        // The network changed again while that retry runs.
+        pool.recycleMasters()
+        let stalledAgain = await Self.waitUntil { sshd.lock.withLock { sshd.starts.count } == 2 }
+        #expect(stalledAgain)
+        #expect(pool.stallsInARow(route) == 1)
+        sshd.lock.withLock {
+            sshd.startStalls = false
+            sshd.startDelayNanoseconds = 0
+        }
+        let back = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(back)
+        #expect(sshd.lock.withLock { sshd.starts.count } == 3)
+    }
+
 
     /// A later master being stopped isn't started again (adopting the old
     /// process at its socket) until its stop is done.

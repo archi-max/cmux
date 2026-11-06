@@ -215,6 +215,15 @@ final class SSHMasterPool: @unchecked Sendable {
     /// Sessions this app lends on the carrier's master when its own masters
     /// can't start: the one per-app cap, which can be lowered on its own.
     static let carrierCapacity = 3
+    /// Stalled starts in a row after which only a recycle retries.
+    static let maxStallsInARow = 3
+
+    /// The wait after `stalls` stalls in a row: `base` doubling with each,
+    /// up to ten minutes (or `base`, if longer).
+    static func stallBackoff(stalls: Int, base: Duration) -> Duration {
+        let backoff = base * (1 << min(max(stalls, 1) - 1, 10))
+        return min(backoff, max(base, .seconds(600)))
+    }
     /// Of those, the most long-lived runs may hold: one is always left for
     /// one-off runs.
     static var longLivedCarrierCapacity: Int { carrierCapacity - 1 }
@@ -276,7 +285,16 @@ final class SSHMasterPool: @unchecked Sendable {
         /// time), so the first master is tried again after a backoff
         /// (``stallRetry`` doubling, up to ten minutes) or at a recycle.
         var mastersStalled = false
+        /// Stalls in a row. At ``SSHMasterPool/maxStallsInARow`` the timer
+        /// stops retrying (``stallsExhausted``).
         var stalls = 0
+        /// Of ``mastersUnavailable``: the start stalled too often in a row,
+        /// so only a recycle (or the carrier connecting again) tries it.
+        var stallsExhausted = false
+        /// A recycle came while the first master's retry was starting: if that
+        /// start stalls (on the old network, perhaps), it is tried again at
+        /// once and the stall isn't counted.
+        var recycledDuringStart = false
         /// The route names the carrier's own path: it never gets masters of
         /// its own, and its runs count against the carrier's cap while a
         /// master is there.
@@ -395,6 +413,8 @@ final class SSHMasterPool: @unchecked Sendable {
             hosts[key]?.carrierPath = carrierPath
             hosts[key]?.mastersUnavailable = false
             hosts[key]?.mastersStalled = false
+            hosts[key]?.stallsExhausted = false
+            hosts[key]?.recycledDuringStart = false
             hosts[key]?.stalls = 0
             if let host = hosts[key], !host.carrierOnly, !host.masters.contains(where: \.live) {
                 // Whether the masters log in now is unknown until this start answers.
@@ -421,8 +441,13 @@ final class SSHMasterPool: @unchecked Sendable {
             for key in hosts.keys {
                 // A host on the carrier's master has no live master of its own.
                 guard var host = hosts[key], !host.carrierOnly, !host.borrowed, !host.resolving else { continue }
-                if host.mastersStalled, !host.masters.contains(where: \.live) {
-                    // A stall may have been the old network: try now.
+                if host.mastersStalled || host.stallsExhausted, !host.masters.contains(where: \.live) {
+                    // A stall may have been the old network: try now (once
+                    // more, after the timer gave up). A retry already starting
+                    // may be on the old network: it goes again if it stalls.
+                    host.mastersStalled = true
+                    host.stallsExhausted = false
+                    if host.masters[0].starting { host.recycledDuringStart = true }
                     host.masters[0].retryAt = nil
                     hosts[key] = host
                     startIfNeeded(key, index: 0)
@@ -577,6 +602,11 @@ final class SSHMasterPool: @unchecked Sendable {
     /// The carrier's ControlPath while `route`'s masters can't start, for a
     /// long-lived run that would otherwise open its own connection (which
     /// can't log in either).
+    /// Stalled starts in a row for `route`'s host (for tests).
+    func stallsInARow(_ route: Route) -> Int {
+        lock.withLock { hosts[entryKey(route.key)]?.stalls ?? 0 }
+    }
+
     func carrierPathIfMastersFail(_ route: Route) -> String? {
         lock.withLock {
             guard let host = hosts[entryKey(route.key)], host.usesCarrier else { return nil }
@@ -945,6 +975,8 @@ final class SSHMasterPool: @unchecked Sendable {
             let ok = outcome == .started
             host.masters[index].starting = false
             host.masters[index].live = ok
+            let recycledDuringStart = index == 0 && host.recycledDuringStart
+            if index == 0 { host.recycledDuringStart = false }
             if index == 0, host.awaitingFirstOutcome {
                 host.awaitingFirstOutcome = false
                 host.modeKnownAt = clock.now
@@ -956,23 +988,40 @@ final class SSHMasterPool: @unchecked Sendable {
             if outcome == .unavailable, noneLive {
                 host.mastersUnavailable = true
                 host.mastersStalled = false
+                host.stallsExhausted = false
             }
+            var retryNow = false
             if ok {
                 host.masters[index].failures = 0
                 host.masters[index].retryAt = nil
                 host.mastersUnavailable = false
                 host.mastersStalled = false
+                host.stallsExhausted = false
                 host.stalls = 0
+            } else if outcome == .stalled, noneLive, recycledDuringStart {
+                // The network changed while this start ran: try again now.
+                host.mastersUnavailable = true
+                host.mastersStalled = true
+                host.stallsExhausted = false
+                host.masters[index].retryAt = nil
+                retryNow = true
             } else if outcome == .stalled, noneLive {
                 // A login that stalled (a slow home directory on the host, a
                 // security key) may pass: the carrier's master serves runs
                 // meanwhile, and the first master is tried again later.
                 host.mastersUnavailable = true
-                host.mastersStalled = true
                 host.stalls += 1
                 host.masters[index].failures += 1
-                let backoff = stallRetry * (1 << min(host.stalls - 1, 10))
-                host.masters[index].retryAt = clock.now + min(backoff, max(stallRetry, .seconds(600)))
+                if host.stalls >= Self.maxStallsInARow {
+                    // A login that waits on the user (a key, a prompt) would
+                    // be asked again every few minutes: stop until a recycle.
+                    host.mastersStalled = false
+                    host.stallsExhausted = true
+                    host.masters[index].retryAt = nil
+                } else {
+                    host.mastersStalled = true
+                    host.masters[index].retryAt = clock.now + Self.stallBackoff(stalls: host.stalls, base: stallRetry)
+                }
             } else {
                 host.masters[index].failures += 1
                 // 1, 2, 4 … 60 seconds. A refused login isn't retried at all
@@ -981,6 +1030,7 @@ final class SSHMasterPool: @unchecked Sendable {
                 host.masters[index].retryAt = clock.now + .seconds(seconds)
             }
             hosts[key] = host
+            if retryNow { startIfNeeded(key, index: index) }
             // A new master serves the queue; one that can't start hands it the
             // carrier, or sends it direct when nothing else could serve it.
             return (drainWaiters(key), releaseHopelessWaiters(key))
@@ -1162,14 +1212,17 @@ extension SSHMasterPool {
                 await Self.run(arguments, timeout: timeout, stderrToFile: true)
             }, remove: { [self] path in
                 // A master path is the resolved socket; one with tokens left is expanded first.
-                let socket = path.contains("%") || path.hasPrefix("~") ? await socketPath(route, path: path) : path
+                let socket = Self.needsExpansion(path) ? await socketPath(route, path: path) : path
                 if let socket { try? FileManager.default.removeItem(atPath: socket) }
             })
         }
 
         /// `-O stop`; when that gets no answer (a wedged master), `-O exit`
         /// and the socket removed, so the master started next at that path
-        /// can't find the old one alive and adopt it.
+        /// can't find the old one alive and adopt it. `-O exit` ends the
+        /// sessions still on it too: a master that can't answer a stop in five
+        /// seconds is taken as wedged even if it is only slow, since its
+        /// sessions would hang until the keepalive ends it anyway.
         static func stop(
             _ route: Route, path: String,
             run: (_ arguments: [String], _ timeout: TimeInterval) async -> (status: Int32?, output: String, timedOut: Bool),
@@ -1178,6 +1231,12 @@ extension SSHMasterPool {
             guard await run(stopArguments(route, path: path), 5).timedOut else { return }
             _ = await run(exitArguments(route, path: path), 5)
             await remove(path)
+        }
+
+        /// Whether ssh would rewrite `path` before using it (tokens, `~`,
+        /// environment variables, or a relative path).
+        static func needsExpansion(_ path: String) -> Bool {
+            path.contains("%") || path.contains("$") || !path.hasPrefix("/")
         }
 
         static func exitArguments(_ route: Route, path: String) -> [String] {
@@ -1285,13 +1344,19 @@ extension SSHMasterPool {
     /// differs from the last settled one, and only while the network is up;
     /// a flap back to the same path, or the same interfaces in another
     /// order, is no change. The app starts one for ``shared``; waking from
-    /// sleep recycles too.
+    /// sleep asks for a recycle through it (``recycleSoon()``), so a wake and
+    /// the path change that comes with it recycle once.
     final class NetworkWatch: @unchecked Sendable {
         private let monitor = NWPathMonitor()
         private let settle: TimeInterval
         private let queue = DispatchQueue(label: "com.cmuxterm.ssh-master-pool.network")
         private let lock = NSLock()
         private var settled: String?
+        /// The last path reported.
+        private var latest: String?
+        /// A recycle was asked for (a wake): the next settle while the network
+        /// is up recycles even if the path is the one settled before.
+        private var forced = false
         private var pending: DispatchWorkItem?
         private var started = false
         private var onChange: (@Sendable () -> Void)?
@@ -1326,21 +1391,48 @@ extension SSHMasterPool {
         /// A path as the monitor reported it. The first is the baseline.
         func report(_ signature: String) {
             lock.withLock {
+                latest = signature
                 guard settled != nil else {
                     settled = signature
                     return
                 }
-                pending?.cancel()
-                let work = DispatchWorkItem { [weak self] in self?.settle(on: signature) }
-                pending = work
-                queue.asyncAfter(deadline: .now() + settle, execute: work)
+                schedule()
             }
         }
 
-        private func settle(on signature: String) {
+        /// Recycles once the path has settled (or at once if no path was
+        /// reported yet, and then only once it is up), whether or not it
+        /// changed. A path change before then shares this recycle.
+        func recycleSoon() {
+            lock.withLock {
+                forced = true
+                schedule()
+            }
+        }
+
+        /// Settles now on the last path reported, as the timer would.
+        func settleNow() {
+            lock.withLock { pending?.cancel(); pending = nil }
+            settleLatest()
+        }
+
+        /// Called under the lock.
+        private func schedule() {
+            pending?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.settleLatest() }
+            pending = work
+            queue.asyncAfter(deadline: .now() + settle, execute: work)
+        }
+
+        private func settleLatest() {
             let fire: (@Sendable () -> Void)? = lock.withLock {
-                defer { settled = signature }
-                return settled != signature && signature.hasPrefix("up,") ? onChange : nil
+                // No report yet (a wake before the monitor's first): assume up.
+                let up = latest.map { $0.hasPrefix("up,") } ?? true
+                let changed = latest != nil && settled != latest
+                if latest != nil { settled = latest }
+                guard up, forced || changed else { return nil }
+                forced = false
+                return onChange
             }
             fire?()
         }
