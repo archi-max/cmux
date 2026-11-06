@@ -16,6 +16,10 @@
 // fills the helpers' in use). Default: helper v1.
 // TRACE_FSDB_START=<signal path> traces that signal (at <time>) and its fan-in instead of every
 // signal of <instance>; its step is the first step printed.
+// TRACE_FSDB_ROWS=<path>,<path>... instead runs Trace Driver from each signal's waveform row (the
+// row menu item, as a user does), the harness answering the page's resolve as cmux does for a
+// dump that names the design the same way, and checks the path the page resolves is the row's
+// signal and that its step is traced (no error).
 // With TRACE_FSDB_VERDI=1 each step also prints Verdi's own time ([verdi time]: requests, the
 // session's service time, the wait behind earlier requests, port hops followed, fan-in leaves),
 // and the run ends with the Verdi session's memory on the host.
@@ -97,6 +101,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// Verdi's time for the step under way: the session answers one request at a time, so a request's
   /// service starts when the one before it ended (or when it was sent), and the rest is waiting.
   var verdiAsks = 0, verdiServiceMs = 0.0, verdiWaitMs = 0.0
+  /// The dump paths of the page's resolve requests (TRACE_FSDB_ROWS).
+  var resolved: [[String]] = []
   var verdiBusyUntil = Date.distantPast
 
   func answerEngine(_ id: Int, _ body: [String: Any]) {
@@ -160,7 +166,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if type == "log", ProcessInfo.processInfo.environment["TRACE_FSDB_PROFILE"] == "1", let text = body["message"] as? String, text.contains("trace ") {
       print("[page log]", text.prefix(300))
     }
-    if type == "trace", body["event"] as? String == "engine", let id = (body["id"] as? NSNumber)?.intValue {
+    if type == "trace", body["event"] as? String == "resolve", let id = (body["id"] as? NSNumber)?.intValue {
+      let dumpPath = (body["dumpPath"] as? [Any])?.map { "\($0)" } ?? []
+      resolved.append(dumpPath)
+      answer(id, result: ["designPath": dumpPath.joined(separator: "."), "designPrefix": "", "dumpPrefix": ""])
+    } else if type == "trace", body["event"] as? String == "engine", let id = (body["id"] as? NSNumber)?.intValue {
       answerEngine(id, body)
     } else if type == "trace" {
       guard let id = (body["id"] as? NSNumber)?.intValue, body["event"] as? String == "model" else { return }
@@ -216,6 +226,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     if ProcessInfo.processInfo.environment["TRACE_FSDB_XCHAIN"] == "1" { await xchain(); return }
+    if let rows = ProcessInfo.processInfo.environment["TRACE_FSDB_ROWS"], !rows.isEmpty { await traceRows(rows.split(separator: ",").map(String.init)); return }
     guard let model = instances[instance] as? [String: Any], let signals = model["signals"] as? [String: Any] else {
       expect(false, "instance \(instance) is in the model")
       finish()
@@ -351,6 +362,31 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if !knownUndriven.isEmpty { print("undriven in the design (TRACE_FSDB_UNDRIVEN):", knownUndriven) }
     expect(noDriver.isEmpty, "every traced design signal has a driver: \(noDriver.prefix(8))")
     expect(times.count > 0, "steps were traced")
+    finish()
+  }
+
+  /// TRACE_FSDB_ROWS: Trace Driver from each signal's row menu, at <time>.
+  func traceRows(_ paths: [String]) async {
+    for path in paths {
+      let before = resolved.count
+      let r = await call("""
+        const h = cmuxWaveform.host, t = cmuxWaveform.trace;
+        const v = await h.findLinkItem(path.split('.'), true);
+        if (!v) { return { missing: true }; }
+        await cmuxWaveform.link.addSignal(path);
+        const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
+        if (!items.length) { return { noItem: true, row: h.pathOf(v) }; }
+        cmuxWaveform.link.setMarker && cmuxWaveform.link.setMarker(time);
+        await t.driver({ path: h.pathOf(v), time });
+        await t.settled();
+        const st = t.state().step;
+        return { row: h.pathOf(v), error: st ? st.error || null : 'no step', name: st ? st.name : null, value: st ? st.value : null, kind: st && st.driver ? st.driver.kind : null };
+        """, ["path": path, "time": time]) as? [String: Any]
+      let asked = resolved.count > before ? resolved[before].joined(separator: ".") : "(none)"
+      print("[row] \(path): resolve \(asked); \(String(describing: r))")
+      expect(asked == path, "Trace Driver from the row of \(path) resolves that signal (\(asked))")
+      expect(r?["error"] is NSNull && r?["missing"] == nil, "Trace Driver from the row of \(path) traces it: \(String(describing: r))")
+    }
     finish()
   }
 
