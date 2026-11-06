@@ -9,6 +9,9 @@ without VS Code.
 - License: GNU General Public License v3.0 (`LICENSE`, copied from upstream)
 - Author: Lloyd Ramseyer (GitHub `Lramseyer`) and the VaporView contributors
 
+This file records how each bundled file was built. For what cmux changed and added, feature by
+feature, see [docs/vaporview/README.md](../../docs/vaporview/README.md).
+
 ## How these files were built
 
 From a clean checkout of the commit above, with Rust (`wasm32-unknown-unknown`),
