@@ -1,4 +1,5 @@
 import AppKit
+import CmuxCore
 import CmuxSyntaxHighlighting
 
 /// The waveform viewer's state machine pane (cmux-fsm.js): Show State Machine on a row asks for
@@ -92,9 +93,17 @@ enum WaveformFSMEngines {
     private static func verdiEngine(waveform: FilePreviewPanel, scope: String, signal: String) -> (@Sendable () async -> VerdiFsmEngine.Outcome)? {
         guard !scope.isEmpty, let remote = FilePreviewWaveformSession.RemoteFSDB.resolve(panel: waveform),
               let script = bundledScript("cmux-fsm-verdi.sh") else { return nil }
-        let arguments = remote.sshArguments(VerdiFsmEngine.remoteCommand(fsdb: remote.remotePath, scope: scope, signal: signal))
+        let command = VerdiFsmEngine.remoteCommand(fsdb: remote.remotePath, scope: scope, signal: signal)
+        let configuration = remote.configuration
         return {
-            // KDB load and the analysis take about 20 s for a small design.
+            // A long-lived run (KDB load and the analysis take about 20 s for a
+            // small design): its own connection, or a long-lived carrier session.
+            let session: LongLivedSSHSession
+            do { session = try await configuration.longLivedSession() } catch {
+                return .unavailable(reason: "failed", detail: error.localizedDescription)
+            }
+            defer { session.release() }
+            let arguments = configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: session.sshOptions)
             guard let result = try? await FsmProcess.run("/usr/bin/ssh", arguments, input: script, timeout: 900) else {
                 return .unavailable(reason: "failed", detail: "ssh")
             }
@@ -122,14 +131,21 @@ enum WaveformFSMEngines {
                 }
             }
         }
-        guard let route = sshRoute(waveform: waveform), let runner = bundledScript("cmux-fsm-yosys.sh") else { return nil }
+        guard let configuration = sshConfiguration(waveform: waveform), let runner = bundledScript("cmux-fsm-yosys.sh") else { return nil }
         return { context in
             let script = { (slang: Bool) in
                 YosysFsm.script(files: context.files, module: context.module, parameters: literalParameters(context),
                                 signal: signal, force: true, slangFrontend: slang, output: "fsm.json")
             }
             let command = YosysFsm.remoteCommand(slangScript: script(true), nativeScript: script(false), yosys: configured)
-            guard let result = try? await FsmProcess.run("/usr/bin/ssh", route(command), input: runner, timeout: 600) else {
+            // A long-lived run: its own connection, or a long-lived carrier session.
+            let session: LongLivedSSHSession
+            do { session = try await configuration.longLivedSession() } catch {
+                return .failure(.failed(error.localizedDescription))
+            }
+            defer { session.release() }
+            let arguments = configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: session.sshOptions)
+            guard let result = try? await FsmProcess.run("/usr/bin/ssh", arguments, input: runner, timeout: 600) else {
                 return .failure(.failed("ssh"))
             }
             switch YosysFsm.remoteOutcome(ofOutput: result.output) {
@@ -154,13 +170,12 @@ enum WaveformFSMEngines {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    /// The batch ssh route of the waveform's workspace (the `cmux ssh` ControlPath), as the
-    /// remote FSDB and language server use.
-    private static func sshRoute(waveform: FilePreviewPanel) -> WaveformFSDBHelper.SSHArguments? {
+    /// The SSH configuration of the waveform's workspace, whose batch route the
+    /// remote FSDB and language server use too.
+    private static func sshConfiguration(waveform: FilePreviewPanel) -> WorkspaceRemoteConfiguration? {
         guard let configuration = AppDelegate.shared?.workspaceFor(tabId: waveform.workspaceId)?.remoteConfiguration,
               configuration.transport == .ssh else { return nil }
-        let options = configuration.fileOperationSSHOptions
-        return { command in configuration.batchSSHCommandArguments(command: command, effectiveSSHOptions: options) }
+        return configuration
     }
 
     private static func bundledScript(_ name: String) -> Data? {

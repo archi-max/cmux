@@ -38,7 +38,9 @@ extension FileSearchController {
 
     /// Runs Find in Files on an SSH workspace's host and streams matches like the local search.
     ///
-    /// The search reuses the Files panel's ssh options (its ControlPath master),
+    /// The search runs on a session the app's one-off master lends
+    /// (``SSHMasterPool/lease(destination:port:identityFile:sshOptions:)``),
+    /// waited for first and given back when the ssh child exits,
     /// is cancelled by a newer query through the generation guard and
     /// ``stopAndAdvanceGeneration()`` (which terminates the ssh child), stops at
     /// ``maxResults`` with a `.limited` note, and fails after
@@ -55,6 +57,43 @@ extension FileSearchController {
         let searchGeneration = generation
         emit(status: .searching, isSearching: true)
 
+        let connection = provider.connection
+        // Waits for a session the app's one-off master lends; a newer query
+        // cancels the wait (``stopAndAdvanceGeneration()``) as it ends a run.
+        searchTask = Task { [weak self] in
+            let lease: SSHMasterPool.Lease
+            do {
+                lease = try await SSHMasterPool.shared.lease(
+                    destination: connection.destination, port: connection.port,
+                    identityFile: connection.identityFile, sshOptions: connection.sshOptions
+                )
+            } catch {
+                guard let self, self.generation == searchGeneration, !(error is CancellationError) else { return }
+                self.emit(
+                    status: .failed(String(localized: "fileExplorer.error.sshFailed", defaultValue: "SSH command failed")),
+                    isSearching: false
+                )
+                return
+            }
+            guard let self, self.generation == searchGeneration, !Task.isCancelled else {
+                lease.release()
+                return
+            }
+            self.launchSSHSearch(
+                connection: connection, lease: lease, query: query, rootPath: rootPath, searchGeneration: searchGeneration
+            )
+        }
+    }
+
+    /// Starts the search's ssh child on `lease`'s session, which goes back
+    /// when the child exits.
+    private func launchSSHSearch(
+        connection: SSHFileExplorerConnection,
+        lease: SSHMasterPool.Lease,
+        query: String,
+        rootPath: String,
+        searchGeneration: Int
+    ) {
         let timeoutSeconds = Self.sshSearchTimeoutSeconds
         let command = SSHFileSearchCommand.contentSearch(
             query: query,
@@ -64,7 +103,10 @@ extension FileSearchController {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = ProcessSSHFileExplorerTransport.sshArguments(
-            connection: provider.connection,
+            connection: SSHFileExplorerConnection(
+                destination: connection.destination, port: connection.port,
+                identityFile: connection.identityFile, sshOptions: lease.sshOptions
+            ),
             command: command.command
         )
         // An open pipe nobody writes to: ssh never reads the app's stdin, and
@@ -82,6 +124,7 @@ extension FileSearchController {
         )
         let terminationSignal = FileSearchTerminationSignal()
         process.terminationHandler = { process in
+            lease.release()
             let status = process.terminationStatus
             Task {
                 await terminationSignal.complete(status: status)
@@ -91,6 +134,7 @@ extension FileSearchController {
         do {
             try process.run()
         } catch {
+            lease.release()
             process.standardInput = nil
             process.standardOutput = nil
             process.standardError = nil
