@@ -64,6 +64,10 @@ Napi::Value cacheExport(const Napi::CallbackInfo &info) {
   if (!CHECK_LENGTH(env, info, 2) || !CHECK_STRING(env, info[1])) return env.Undefined();
   SigStore *s = storeGet(env, info[0]);
   if (!s) return env.Undefined();
+  if (s->kind != kBits) {  // (store files hold bit planes only)
+    Napi::Error::New(env, std::string("a ") + kindName(s->kind) + " signal can't be an expression operand").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
   if (!writeStoreFile(s, info[1].As<Napi::String>().Utf8Value())) {
     Napi::Error::New(env, "cannot write export").ThrowAsJavaScriptException();
     return env.Undefined();
@@ -151,6 +155,7 @@ Napi::Value cacheDerive(const Napi::CallbackInfo &info) {
     } else {
       auto it = g_store.find(argI64(o.Get("id")));
       if (it == g_store.end()) { cleanup(); return fail("operand not loaded"); }
+      if (it->second->kind != kBits) { cleanup(); return fail(std::string("a ") + kindName(it->second->kind) + " signal can't be an expression operand"); }
       it->second->lastUsed = ++g_clock;
       ops.push_back(it->second);
     }

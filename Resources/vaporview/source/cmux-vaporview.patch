@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..5bb1829
+index 0000000..7b1c227
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,263 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -252,6 +252,21 @@ index 0000000..5bb1829
 +signal's elements and their elements in one batch, one undo step. The context's
 +`cmuxDeclared` is true on a netlist variable (a dump signal the design declares) and false on
 +a slice.
++
++## FSDB strings and reals; permanent per-signal errors (windowed)
++
++In `src/webview/window_cache.ts`. The FSDB helper v2 now reads SystemVerilog string and real
++variables. A window of one says `text: true`, and its records are `[u64 delta][u32 byte
++length][UTF-8 text]` instead of one character per bit; `parseRecords` decodes them into the
++same `[time, text]` changes the VCD (wellen) path gives those rows, so they draw, show values
++and search with the string format unchanged. A value search in the string format asks the
++helper's `searchText` with `format: 'string'` (a case-insensitive regex over the text, the
++format's own rule), else scans exact chunks as before.
++
++A per-signal window error the helper marks `permanent: true` (an encoding the reader can't
++give, a 0-bit alias, over the store cap) is shown at once as `unreadable: <reason>` and the
++signal is not asked again; only other errors back off and say `(retrying)`.
++`placeholderLabel` is the row's placeholder text (cmux's `run.sh windowed` reads it).
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2888,10 +2903,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..22e4a44
+index 0000000..66e0ae4
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1917 @@
+@@ -0,0 +1,1955 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3008,6 +3023,7 @@ index 0000000..22e4a44
 +  fails     = 0;
 +  failUntil = 0;
 +  failMsg   = '';
++  permanent = false; // cmux: the helper said this error won't go away (unsupported value encoding, 0-bit alias): shown once, never asked again
 +  timeouts  = 0;     // window requests that timed out in a row: back off only (a slow helper isn't a failing one)
 +  slowUntil = 0;
 +  painted   = new Set<string>(); // window keys the last render drew from (kept by evict)
@@ -3060,7 +3076,24 @@ index 0000000..22e4a44
 +}
 +
 +// Records are [u64 LE delta time][width ASCII chars]; the first delta is from 0.
-+function parseRecords(raw: Uint8Array, width: number): ValueChange[] {
++// cmux: a string or real signal's window says `text: true`; its records are
++// [u64 LE delta][u32 LE byte length][UTF-8 text], the text being the value as the viewer
++// shows a VCD's strings and reals (formatString), so they draw and search unchanged.
++const utf8 = new TextDecoder('utf-8');
++function parseRecords(raw: Uint8Array, width: number, text = false): ValueChange[] {
++  if (text) {
++    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
++    const out: ValueChange[] = [];
++    let t = 0;
++    for (let o = 0; o + 12 <= raw.length;) {
++      t += dv.getUint32(o, true) + dv.getUint32(o + 4, true) * 4294967296;
++      const len = dv.getUint32(o + 8, true);
++      if (o + 12 + len > raw.length) {break;}
++      out.push([t, utf8.decode(raw.subarray(o + 12, o + 12 + len))]);
++      o += 12 + len;
++    }
++    return out;
++  }
 +  const rec = 8 + width;
 +  const n   = Math.floor(raw.length / rec);
 +  const dv  = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -3221,7 +3254,19 @@ index 0000000..22e4a44
 +  // A window request for this signal failed: back off (0.5 s, 1 s, 2 s ... at most a minute).
 +  // It is also asked for alone from now on, so a slow or failing signal can't delay the
 +  // replies for the others in its batch.
-+  private fail(s: SignalWindows, msg: string) {
++  private fail(s: SignalWindows, msg: string, permanent = false) {
++    if (s.permanent) {return;}
++    if (permanent) {
++      // Shown at once and for good: no backoff, no retry, no "(retrying)".
++      s.permanent = true;
++      s.fails = Math.max(s.fails, FAIL_SHOW_AFTER);
++      s.solo = true;
++      s.failMsg = msg;
++      s.failUntil = Infinity;
++      vscodeWrapper.outputLog('window: signal ' + s.signalId + ' unreadable: ' + msg + ' (permanent)');
++      this.scheduleRedraw();
++      return;
++    }
 +    s.fails++;
 +    s.solo = true;
 +    s.failMsg = msg;
@@ -3235,6 +3280,14 @@ index 0000000..22e4a44
 +  }
 +
 +  private unreadable(s: SignalWindows) {return s.fails >= FAIL_SHOW_AFTER;}
++
++  // The text drawn where a row has no data. Unreadable: the host keeps failing for this
++  // signal; a transient failure is retried with backoff ("(retrying)"), a permanent one
++  // (the helper's `permanent: true`) is not.
++  placeholderLabel(s: SignalWindows): string {
++    if (this.unreadable(s)) {return 'unreadable: ' + s.failMsg + (s.permanent ? '' : ' (retrying)');}
++    return s.timeouts > 0 ? 'loading (helper is slow)' : '';
++  }
 +
 +  // A window request timed out: the helper is slow (busy, cold walks), not failing. Wait
 +  // longer before asking again (1 s doubling to a minute), but don't send the signal alone
@@ -3612,7 +3665,7 @@ index 0000000..22e4a44
 +      if (d.h.error) {final(); return;}
 +      if (d.err !== null || d.raw === null) {this.hybridLater(s, 'known'); return;}
 +      if (!d.h.exact) {final(); return;}
-+      const records = parseRecords(d.raw, s.width);
++      const records = parseRecords(d.raw, s.width, !!d.h.text);
 +      if (records.length === 0 || records[0][0] !== 0) {this.hybridLater(s, 'known'); return;}
 +      const est = s.hybridEst;
 +      this.unpend(s);
@@ -3845,8 +3898,8 @@ index 0000000..22e4a44
 +      answered.add(s.signalId);
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
 +      if (this.hybrid && typeof h.total === 'number') {this.decideCount(s, h.total);} // the helper knows its whole count
-+      if (err !== null || raw === null) {this.fail(s, err || 'no data'); return;}
-+      const all = parseRecords(raw, s.width);
++      if (err !== null || raw === null) {this.fail(s, err || 'no data', !!h.permanent); return;}
++      const all = parseRecords(raw, s.width, !!h.text);
 +      // The first record must be the value at the request's t0 (L4).
 +      if (all.length === 0 || all[0][0] !== f.tiles[0].t0) {this.fail(s, 'window does not start with the value at t0'); return;}
 +      if (s.windows.size === 0) {firstWindow.push(s);}
@@ -3865,7 +3918,7 @@ index 0000000..22e4a44
 +        s.bytes += w.bytes;
 +        stored++;
 +      });
-+      s.fails = 0; s.failUntil = 0; s.failMsg = ''; s.solo = false; s.timeouts = 0; s.slowUntil = 0;
++      s.fails = 0; s.failUntil = 0; s.failMsg = ''; s.solo = false; s.timeouts = 0; s.slowUntil = 0; s.permanent = false;
 +      s.min = h.min ?? 0; s.max = h.max ?? 1;
 +      this.evict(s);
 +    });
@@ -3956,8 +4009,7 @@ index 0000000..22e4a44
 +    const segs = this.segments(s, L, R);
 +    let drewData = false;
 +    s.painted.clear();
-+    // Unreadable: the host keeps failing for this signal; it is retried with backoff.
-+    const label = this.unreadable(s) ? 'unreadable: ' + s.failMsg + ' (retrying)' : s.timeouts > 0 ? 'loading (helper is slow)' : '';
++    const label = this.placeholderLabel(s);
 +
 +    for (let i = 0; i < segs.length; i++) {
 +      const sg = segs[i];
@@ -4599,6 +4651,7 @@ index 0000000..22e4a44
 +    const ok = (p: string | undefined): p is string => typeof p === 'string' && p.length > 0 && p.length <= TEXT_MAX_PATTERN;
 +    if (TEXT_FORMATS.has(formatId)) {return ok(parsed) ? {format: formatId, pattern: parsed} : null;}
 +    if (formatId === 'ascii') {return ok(raw) ? {format: 'ascii', pattern: raw} : null;}
++    if (formatId === 'string') {return ok(parsed) ? {format: 'string', pattern: parsed} : null;} // cmux: string/real rows
 +    if (formatId.startsWith('alias:')) {
 +      const table = formatId.slice('alias:'.length);
 +      const source = aliasSearchSource(table);
@@ -4678,7 +4731,7 @@ index 0000000..22e4a44
 +        span = Math.max(1, Math.floor((t1 - t0) * (SCAN_BUCKETS * 1.6) / Math.max(1, count)));
 +        continue;
 +      }
-+      const recs = parseRecords(d.raw, s.width);
++      const recs = parseRecords(d.raw, s.width, !!d.h.text);
 +      if (recs.length === 0 || recs[0][0] !== t0) {throw new Error('value search: window does not start at t0');}
 +      this.keepScanWindow(s, t0, t1, d.h, recs);
 +      if (dir > 0) {
@@ -4749,7 +4802,7 @@ index 0000000..22e4a44
 +        if (err !== null || raw === null) {vscodeWrapper.outputLog('WaveDrom: ' + h.signalId + ' left out: ' + err); return;}
 +        const width = widthOf.get(h.signalId);
 +        if (width === undefined) {return;}
-+        if (h.exact) {exact.set(h.signalId, parseRecords(raw, width));}
++        if (h.exact) {exact.set(h.signalId, parseRecords(raw, width, !!h.text));}
 +        else {dense.push({id: h.signalId, counts: counts!, count: Number(h.count) || 0});}
 +      });
 +      return dense;

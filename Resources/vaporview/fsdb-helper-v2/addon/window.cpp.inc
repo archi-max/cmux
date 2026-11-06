@@ -30,20 +30,35 @@
 #include <cstdint>
 #include <zlib.h>
 
+// Value kinds. Bit vectors (1 byte per bit in the reader) are the planes above. The other
+// kinds hold one fixed-size key per change in `val` and are answered as text, the way
+// VaporView shows a VCD's string and real variables (wellen): kReal is the IEEE double
+// (stride 8; a 4-byte float is widened and remembered in f32 so it prints as a float),
+// kString is a u32 index into `strs` (stride 4), interned per store, so equal strings
+// have equal keys and normalization, distinct values and edges work on the keys.
+enum : uint8_t { kBits = 0, kReal = 1, kString = 2 };
+
 struct SigStore {
   uint32_t bits = 0;
   uint32_t stride = 0;  // bytes per change in each plane
+  uint8_t kind = kBits;
+  bool f32 = false;      // kReal read from a 4-byte float
+  bool repeats = false;  // events: a change to the same value is still a change
   std::vector<uint64_t> times;
   std::vector<uint8_t> val;
   std::vector<uint8_t> xz;  // empty unless some change holds x or z
+  std::vector<std::string> strs;  // kString: the distinct strings
+  size_t strBytes = 0;            // their characters plus per-string overhead (in bytes())
+  double rmin = 0, rmax = 0;      // kReal: as wellen's (min/max of 0 and every finite value)
   uint64_t lastUsed = 0;
   // searchText: each change's index into the signal's distinct values (built on first
   // use, accounted in bytes(); dgen names this table, so JS memos keyed on it go stale
   // when the store is rebuilt). dfirst[d] = the first change holding distinct value d.
   std::vector<uint32_t> vidx, dfirst;
   uint64_t dgen = 0;
-  size_t bytes() const { return times.capacity() * 8 + val.capacity() + xz.capacity() + (vidx.capacity() + dfirst.capacity()) * 4 + sizeof(SigStore); }
+  size_t bytes() const { return times.capacity() * 8 + val.capacity() + xz.capacity() + (vidx.capacity() + dfirst.capacity()) * 4 + strBytes + strs.capacity() * sizeof(std::string) + sizeof(SigStore); }
 };
+static const char *kindName(uint8_t k) { return k == kReal ? "real" : k == kString ? "string" : "bits"; }
 
 static std::unordered_map<int64_t, SigStore *> g_store;
 static uint64_t g_clock = 0;
@@ -365,7 +380,8 @@ static inline uint8_t packLow(uint64_t w) {
 // The normalized change stream every answer uses (WINDOWING.md, "Change
 // normalization"): changes at one time collapse to the last one, a change to
 // the value already in effect is dropped, and with initialX the value before
-// the first change is all x (so a first change to all x is dropped too).
+// the first change is all x (so a first change to all x is dropped too). Events (repeats)
+// keep a change to the same value: each one is an occurrence.
 // In place; also drops the x/z plane if nothing left in it is x or z.
 static void normalizeStore(SigStore *s, bool initialX) {
   const size_t n = s->times.size(), st = s->stride;
@@ -384,7 +400,7 @@ static void normalizeStore(SigStore *s, bool initialX) {
   size_t kept = 0;
   for (size_t i = 0; i < n; i++) {
     if (i + 1 < n && s->times[i + 1] == s->times[i]) continue;  // not the last at its time
-    if (kept ? same(i, kept - 1) : (initialX && same(i, SIZE_MAX))) continue;
+    if (kept ? !s->repeats && same(i, kept - 1) : (initialX && same(i, SIZE_MAX))) continue;
     if (i != kept) {
       s->times[kept] = s->times[i];
       memmove(&s->val[kept * st], &s->val[i * st], st);
@@ -474,13 +490,153 @@ static size_t processRss() {
 }
 static std::string capError(size_t cap) { return "signal larger than " + std::to_string(cap >> 20) + " MB (worker store limit)"; }
 
+// ---- value kinds from the reader ----
+// What a traverse handle's values are (probed on VCS and writer-made dumps): 1 byte per bit
+// is a bit vector (one FSDB_BT_VCD_* per bit); a string variable (FSDB_VT_STRING) has 4 bytes
+// per bit, 1 bit, and its value is a NUL-terminated byte string; a real is an 8-byte
+// double, or a 4-byte float for a 4-byte FSDB_VT_VCD_REAL. Anything else (2 bytes per bit,
+// memory-range indices, other 4-byte values) can't be shown, and never will be from this
+// file: such errors say "unsupported", which the coordinator and viewer treat as permanent.
+static const size_t kMaxText = 1u << 20;  // one string value
+static int valueKind(ffrVCTrvsHdl h, bool &f32, std::string &err) {
+  const fsdbBytesPerBit b = h->ffrGetBytesPerBit();
+  const fsdbVarType vt = h->ffrGetVarType();
+  f32 = false;
+  if (b == FSDB_BYTES_PER_BIT_1B) {
+    if (h->ffrGetBitSize() == 0) { err = "reader reports 0 bits (alias?)"; return -1; }
+    return kBits;
+  }
+  const bool depth = vt == FSDB_VT_VCD_MEMORY_DEPTH || vt == FSDB_VT_VHDL_MEMORY_DEPTH;
+  if (b == FSDB_BYTES_PER_BIT_4B && vt == FSDB_VT_STRING) return kString;
+  if (b == FSDB_BYTES_PER_BIT_8B && !depth) return kReal;
+  if (b == FSDB_BYTES_PER_BIT_4B && vt == FSDB_VT_VCD_REAL) { f32 = true; return kReal; }
+  const int bytes = b == FSDB_BYTES_PER_BIT_2B ? 2 : b == FSDB_BYTES_PER_BIT_4B ? 4 : b == FSDB_BYTES_PER_BIT_8B ? 8 : 0;
+  err = "unsupported encoding (" + (bytes ? std::to_string(bytes) + " bytes per bit" : std::string("unknown bytes per bit")) +
+        ", var type " + std::to_string((int)vt) + ")";
+  return -1;
+}
+
+// A real as wellen (Rust's f64 Display) prints it, which is what the viewer shows for a VCD's
+// reals: the shortest digits that read back as the same number, never an exponent
+// (1e300 is 1 followed by 300 zeros, 1e-7 is 0.0000001), -0 for negative zero, NaN, inf.
+// A float (f32) gets the shortest digits that read back as the same float.
+static std::string realText(double d, bool f32) {
+  if (std::isnan(d)) return "NaN";
+  const bool neg = std::signbit(d);
+  if (std::isinf(d)) return neg ? "-inf" : "inf";
+  if (d == 0) return neg ? "-0" : "0";
+  char buf[64];
+  int p = 1;
+  for (; p < 17; p++) {
+    snprintf(buf, sizeof buf, "%.*e", p - 1, d);
+    if (f32 ? strtof(buf, nullptr) == (float)d : strtod(buf, nullptr) == d) break;
+  }
+  if (p == 17) snprintf(buf, sizeof buf, "%.16e", d);
+  // buf = [-]D.DDDDe[+-]XX -> digits and the decimal exponent of the first digit
+  std::string digits;
+  const char *c = buf + (neg ? 1 : 0);
+  for (; *c && *c != 'e'; c++) if (*c >= '0' && *c <= '9') digits += *c;
+  const int e10 = *c == 'e' ? atoi(c + 1) : 0;
+  while (digits.size() > 1 && digits.back() == '0') digits.pop_back();
+  const int n = (int)digits.size(), point = e10 + 1;  // digits before the decimal point
+  std::string out = neg ? "-" : "";
+  if (point <= 0) out += "0." + std::string(-point, '0') + digits;
+  else if (point >= n) out += digits + std::string(point - n, '0');
+  else out += digits.substr(0, point) + "." + digits.substr(point);
+  return out;
+}
+
+// One reader value of a non-bit kind -> its key bytes (kReal: the double) or string.
+static inline double vcReal(const byte_T *vc, bool f32) {
+  if (f32) { float f; memcpy(&f, vc, 4); return (double)f; }
+  double d; memcpy(&d, vc, 8); return d;
+}
+static inline size_t vcStrLen(const byte_T *vc) { return strnlen((const char *)vc, kMaxText + 1); }
+static std::string vcText(const byte_T *vc, int kind, bool f32) {
+  if (kind == kReal) return realText(vcReal(vc, f32), f32);
+  return std::string((const char *)vc, std::min(vcStrLen(vc), kMaxText));
+}
+
+// Walk a string or real signal (kind from valueKind) into a new store; as walkSignal.
+static SigStore *walkText(ffrVCTrvsHdl h, int kind, bool f32, std::string &err, bool ranged, uint64_t s0, uint64_t e0) {
+  SigStore *s = new SigStore();
+  s->kind = (uint8_t)kind;
+  s->f32 = f32;
+  s->stride = kind == kString ? 4 : 8;
+  s->bits = s->stride * 8;
+  const size_t per = 8 + s->stride;
+  std::unordered_map<std::string, uint32_t> intern;
+  const size_t internPer = 64;  // map node, hash bucket and the key copy's overhead (transient)
+  auto over = [&]() { return g_signalCap && s->times.size() * per + s->strBytes * 2 + intern.size() * internPer > g_signalCap; };
+  if (h->ffrHasIncoreVC()) {
+    fsdbTag64 time;
+    h->ffrGetMinXTag((void *)&time);
+    bool any = true;
+    if (ranged && s0 > combineTime(time.H, time.L)) {
+      fsdbTag64 at;
+      setTag(at, s0);
+      if (FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&at)) {
+        for (;;) {
+          h->ffrGetXTag(&at);
+          if (combineTime(at.H, at.L) < s0 || FSDB_RC_SUCCESS != h->ffrGotoPrevVC()) break;
+        }
+      } else {
+        any = false;
+      }
+    } else {
+      h->ffrGotoXTag((void *)&time);
+    }
+    size_t k = 0;
+    if (any) do {
+      byte_T *vc;
+      h->ffrGetXTag(&time);
+      const uint64_t tnow = combineTime(time.H, time.L);
+      if (tnow < s0) continue;
+      if (tnow >= e0) break;
+      h->ffrGetVC(&vc);
+      s->times.push_back(tnow);
+      s->val.resize((k + 1) * s->stride);
+      if (kind == kReal) {
+        const double d = vcReal(vc, f32);
+        memcpy(&s->val[k * 8], &d, 8);
+      } else {
+        const size_t len = vcStrLen(vc);
+        if (len > kMaxText) { delete s; err = "unsupported encoding (a string value over 1 MB)"; return nullptr; }
+        auto ins = intern.emplace(std::string((const char *)vc, len), (uint32_t)s->strs.size());
+        if (ins.second) { s->strs.push_back(ins.first->first); s->strBytes += len + 1; }
+        const uint32_t idx = ins.first->second;
+        memcpy(&s->val[k * 4], &idx, 4);
+      }
+      k++;
+      if (over()) { delete s; err = capError(g_signalCap); return nullptr; }
+      if ((k & 4095) == 0 && bgStop()) { delete s; err = "yielded"; return nullptr; }
+    } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
+    normalizeStore(s, false);
+    s->times.shrink_to_fit();
+    s->val.shrink_to_fit();
+    s->strs.shrink_to_fit();
+  }
+  if (kind == kReal) {
+    for (size_t k = 0; k < s->times.size(); k++) {
+      double d;
+      memcpy(&d, &s->val[k * 8], 8);
+      if (std::isfinite(d)) { s->rmin = std::min(s->rmin, d); s->rmax = std::max(s->rmax, d); }
+    }
+  }
+  return s;
+}
+
 // Walk one signal (already loaded into the reader) into a new store; with
 // ranged, only the changes with s <= time < e (a time slice of a split walk).
 static SigStore *walkSignal(fsdbVarIdcode id, std::string &err, bool ranged = false, uint64_t s0 = 0, uint64_t e0 = UINT64_MAX) {
   ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
   if (!h) { err = "no traverse handle"; return nullptr; }
-  if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) { h->ffrFree(); err = "unsupported encoding"; return nullptr; }
+  bool f32 = false;
+  const int kind = valueKind(h, f32, err);
+  if (kind < 0) { h->ffrFree(); return nullptr; }
+  if (kind != kBits) { SigStore *t = walkText(h, kind, f32, err, ranged, s0, e0); h->ffrFree(); return t; }
   SigStore *s = new SigStore();
+  s->repeats = h->ffrGetVarType() == FSDB_VT_VCD_EVENT;
   s->bits = h->ffrGetBitSize();
   // Some signals (port-connected aliases, it seems) have changes but a traverse
   // handle with 0 bits and no value bytes; VaporView's reader shows them empty.
@@ -584,7 +740,41 @@ static inline void putChars(const SigStore *s, size_t k, uint8_t *out) {
   }
 }
 
+// The value of change k as the viewer gets it (k < 0: before the first change). Bit vectors:
+// one character per bit, all x before the first change. Strings and reals: their text
+// ("x" before the first change).
+static std::string valueText(const SigStore *s, ptrdiff_t k) {
+  if (s->kind == kBits) {
+    std::string v(s->bits, 'x');
+    if (k >= 0) putChars(s, (size_t)k, (uint8_t *)&v[0]);
+    return v;
+  }
+  if (k < 0) return "x";
+  if (s->kind == kString) {
+    uint32_t idx;
+    memcpy(&idx, &s->val[(size_t)k * 4], 4);
+    return idx < s->strs.size() ? s->strs[idx] : std::string();
+  }
+  double d;
+  memcpy(&d, &s->val[(size_t)k * 8], 8);
+  return realText(d, s->f32);
+}
+
+// Records: [u64 LE delta][bits chars] for bit vectors; for strings and reals (window
+// header `text: true`) [u64 LE delta][u32 LE byte length][the text's bytes].
 static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k) {
+  if (s->kind != kBits) {
+    const std::string v = valueText(s, k);
+    const size_t o = out.size();
+    const uint64_t delta = t - prev;
+    const uint32_t len = (uint32_t)v.size();
+    prev = t;
+    out.resize(o + 12 + len);
+    memcpy(&out[o], &delta, 8);
+    memcpy(&out[o + 8], &len, 4);
+    if (len) memcpy(&out[o + 12], v.data(), len);
+    return;
+  }
   const size_t o = out.size();
   out.resize(o + 8 + s->bits);
   const uint64_t delta = t - prev;
@@ -673,6 +863,7 @@ Napi::Value cacheLoad(const Napi::CallbackInfo &info) {
     o.Set("bits", Napi::Number::New(env, s->bits));
     o.Set("bytes", Napi::Number::New(env, (double)s->bytes()));
     o.Set("xz", Napi::Boolean::New(env, !s->xz.empty()));
+    if (s->kind != kBits) o.Set("kind", Napi::String::New(env, kindName(s->kind)));
     o.Set("loadMs", Napi::Number::New(env, cached ? 0 : loadMs));
     o.Set("walkMs", Napi::Number::New(env, walkMs));
     result.Set(i, o);
@@ -711,7 +902,7 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1);
   Napi::Object o = Napi::Object::New(env);
   if (exact) {
-    rec.reserve((count + 1) * (8 + s->bits));
+    rec.reserve((count + 1) * (8 + (s->kind == kBits ? s->bits : 16)));
     for (size_t k = first; k < hi; k++) putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
   } else {
     std::vector<uint32_t> counts(B);
@@ -733,6 +924,11 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   o.Set("exact", Napi::Boolean::New(env, exact));
   o.Set("count", Napi::Number::New(env, (double)count));
   o.Set("records", Napi::Buffer<uint8_t>::Copy(env, rec.data(), rec.size()));
+  if (s->kind != kBits) {
+    o.Set("text", Napi::Boolean::New(env, true));
+    o.Set("kind", Napi::String::New(env, kindName(s->kind)));
+  }
+  if (s->kind == kReal) { o.Set("min", Napi::Number::New(env, s->rmin)); o.Set("max", Napi::Number::New(env, s->rmax)); }
   return o;
 }
 
@@ -743,7 +939,7 @@ Napi::Value cacheRecords(const Napi::CallbackInfo &info) {
   SigStore *s = storeGet(env, info[0]);
   if (!s) return env.Undefined();
   std::vector<uint8_t> rec;
-  rec.reserve(s->times.size() * (8 + s->bits));
+  rec.reserve(s->times.size() * (8 + (s->kind == kBits ? s->bits : 16)));
   uint64_t prev = 0;
   for (size_t k = 0; k < s->times.size(); k++) putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
   return Napi::Buffer<uint8_t>::Copy(env, rec.data(), rec.size());
@@ -756,9 +952,7 @@ Napi::Value cacheValueAt(const Napi::CallbackInfo &info) {
   SigStore *s = storeGet(env, info[0]);
   if (!s) return env.Undefined();
   const size_t k = upperIdx(s, argTime(info[1]), 0, s->times.size());
-  std::string out(s->bits, 'x');
-  if (k > 0) putChars(s, k - 1, (uint8_t *)&out[0]);
-  return Napi::String::New(env, out);
+  return Napi::String::New(env, valueText(s, (ptrdiff_t)k - 1));
 }
 
 // cacheEdge(id, t, dir, kind) -> time of the next (dir 1, time > t) or previous
@@ -773,7 +967,7 @@ Napi::Value cacheEdge(const Napi::CallbackInfo &info) {
   const uint64_t t = argTime(info[1]);
   const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
   int kind = info[3].As<Napi::Number>().Int32Value();
-  if (s->bits != 1) kind = 0;
+  if (s->bits != 1 || s->kind != kBits) kind = 0;  // strings and reals: every change is an edge
   const size_t n = s->times.size();
   auto bit2 = [&](size_t k) -> int {  // 0..3 like the reader's bit types
     int b = s->val[k] & 1;
@@ -852,6 +1046,10 @@ Napi::Value cacheSearch(const Napi::CallbackInfo &info) {
   if (!CHECK_LENGTH(env, info, 4) || !CHECK_STRING(env, info[3])) return env.Undefined();
   SigStore *s = storeGet(env, info[0]);
   if (!s) return env.Undefined();
+  if (s->kind != kBits) {
+    Napi::Error::New(env, std::string("search: a ") + kindName(s->kind) + " signal has no bit pattern (use searchText, format string)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
   const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
   const uint64_t bound = info.Length() > 4 ? argTime(info[4]) : (dir > 0 ? UINT64_MAX : 0);
   uint64_t hit;
@@ -991,18 +1189,14 @@ Napi::Value cacheTextScan(const Napi::CallbackInfo &info) {
       o.Set("t", Napi::Number::New(env, (double)tk));
       o.Set("k", Napi::Number::New(env, (double)k));
       o.Set("d", Napi::Number::New(env, d));
-      std::string v(s->bits, 'x');
-      putChars(s, (size_t)k, (uint8_t *)&v[0]);
-      o.Set("v", Napi::String::New(env, v));
+      o.Set("v", Napi::String::New(env, valueText(s, (ptrdiff_t)k)));
       return o;
     }
     if (m == 0 && seen.insert(d).second) {
       if (needK < 0) needK = k;
-      std::string v(s->bits, 'x');
-      putChars(s, s->dfirst[d], (uint8_t *)&v[0]);
       Napi::Object e = Napi::Object::New(env);
       e.Set("d", Napi::Number::New(env, d));
-      e.Set("v", Napi::String::New(env, v));
+      e.Set("v", Napi::String::New(env, valueText(s, (ptrdiff_t)s->dfirst[d])));
       need.Set(need.Length(), e);
       if (seen.size() >= maxNew) break;
     }
@@ -1032,6 +1226,7 @@ Napi::Value indexWrite(const Napi::CallbackInfo &info) {
   fsdb_obj->ffrUnloadSignals(id);
   Napi::Object o = Napi::Object::New(env);
   if (!s) { o.Set("error", Napi::String::New(env, err)); return o; }
+  if (s->kind != kBits) { delete s; o.Set("error", Napi::String::New(env, "string and real signals are not indexed")); return o; }
   const uint64_t raw = 17 + s->times.size() * 8 + s->val.size() + s->xz.size();
   uint64_t bytes = 0;
   const bool ok = writeIndexFile(s, info[1].As<Napi::String>().Utf8Value(), bytes);
@@ -1107,6 +1302,7 @@ Napi::Value cacheStats(const Napi::CallbackInfo &info) {
     e.Set("bits", Napi::Number::New(env, kv.second->bits));
     e.Set("bytes", Napi::Number::New(env, (double)kv.second->bytes()));
     e.Set("xz", Napi::Boolean::New(env, !kv.second->xz.empty()));
+    if (kv.second->kind != kBits) e.Set("kind", Napi::String::New(env, kindName(kv.second->kind)));
     sigs.Set(i++, e);
   }
   o.Set("bytes", Napi::Number::New(env, (double)g_bytes));
@@ -1142,6 +1338,7 @@ Napi::Value cacheWalkSlice(const Napi::CallbackInfo &info) {
   scope.unload((fsdbVarIdcode)id);
   readerWindowAll();
   if (!s) { Napi::Error::New(env, err).ThrowAsJavaScriptException(); return env.Undefined(); }
+  if (s->kind != kBits) { delete s; Napi::Error::New(env, "string and real signals are not split").ThrowAsJavaScriptException(); return env.Undefined(); }
   const std::string path = info[3].As<Napi::String>().Utf8Value();
   const uint64_t n = s->times.size();
   const uint8_t hasXz = !s->xz.empty();
@@ -1264,9 +1461,14 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
     ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
     if (!h) { o.Set("error", Napi::String::New(env, "no traverse handle")); scope.unload(id); continue; }
     const uint32_t bits = h->ffrGetBitSize();
-    if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B || bits == 0) {
-      o.Set("error", Napi::String::New(env, bits ? "unsupported encoding" : "reader reports 0 bits (alias?)"));
-      h->ffrFree(); scope.unload(id); continue;
+    {
+      bool f32;
+      std::string kerr;
+      const int kind = valueKind(h, f32, kerr);
+      if (kind != kBits) {
+        o.Set("error", Napi::String::New(env, kind < 0 ? kerr : std::string("not a bit signal (") + kindName((uint8_t)kind) + ")"));
+        h->ffrFree(); scope.unload(id); continue;
+      }
     }
     const std::string p = patternBits(pat0, bits);
     std::vector<uint32_t> care;
@@ -1485,16 +1687,17 @@ Napi::Value coldValueAt(const Napi::CallbackInfo &info) {
   forBatches(ids, [&](size_t k, double) {
     ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(ids[k]);
     std::string err;
+    bool f32 = false;
+    int kind = -1;
     if (!h) err = "no traverse handle";
-    else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
-    else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
-    if (!err.empty()) {
+    else kind = valueKind(h, f32, err);
+    if (kind < 0) {
       Napi::Object o = Napi::Object::New(env);
       o.Set("error", Napi::String::New(env, err));
       out.Set((uint32_t)k, o);
     } else {
       const uint32_t bits = h->ffrGetBitSize();
-      std::string v(bits, 'x');
+      std::string v = kind == kBits ? std::string(bits, 'x') : std::string("x");
       fsdbTag64 g;
       setTag(g, t);
       bool on = h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g);
@@ -1514,7 +1717,8 @@ Napi::Value coldValueAt(const Napi::CallbackInfo &info) {
         if (combineTime(g.H, g.L) <= t) {
           byte_T *vc;
           h->ffrGetVC(&vc);
-          for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
+          if (kind != kBits) v = vcText(vc, kind, f32);
+          else for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
         }
       }
       out.Set((uint32_t)k, Napi::String::New(env, v));
@@ -1619,6 +1823,7 @@ Napi::Value cacheWriteIndex(const Napi::CallbackInfo &info) {
   auto it = g_store.find(argI64(info[0]));
   if (it == g_store.end()) { o.Set("error", Napi::String::New(env, "signal not loaded")); return o; }
   const SigStore *s = it->second;
+  if (s->kind != kBits) { o.Set("error", Napi::String::New(env, "string and real signals are not persisted")); return o; }
   uint64_t bytes = 0;
   bool yielded = false;
   if (!writeIndexFile(s, info[1].As<Napi::String>().Utf8Value(), bytes, &yielded)) {

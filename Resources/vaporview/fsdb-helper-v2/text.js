@@ -30,7 +30,10 @@ const MASK_BYTES = Number(process.env.FSDB_TEXT_MASK_MB || 64) * 1e6;
 const DEFAULT_BUDGET = 5000, MAX_BUDGET = 60000;
 const ROUND = 4096;          // distinct values judged per addon round
 
-const FORMATS = new Set(['riscv', 'riscv_numeric', 'riscv_noalias', 'riscv_numeric_noalias', 'alias', 'ascii']);
+// 'string': the viewer's string format (formatString), used for string and real signals: the
+// value is its own text and the pattern is a regex over it, case-insensitive (upstream's
+// regexMatchBinary); a pattern that isn't a valid regex matches nothing, as in the page.
+const FORMATS = new Set(['riscv', 'riscv_numeric', 'riscv_noalias', 'riscv_numeric_noalias', 'alias', 'ascii', 'string']);
 const NUMERIC = new Set(['hex', 'bin', 'dec', 'sdec']);
 const is2 = (v) => !F.valueIs9State(v);
 
@@ -79,6 +82,7 @@ function formatter(p) {
     const name = p.alias.table;
     return { key: `alias\0${name}\0${key}`, fmt: (v) => F.formatWithTable(tables, name, v) };
   }
+  if (f === 'string') { return { key: f, fmt: (v) => v }; }
   return { key: f, fmt: numeric(f) };
 }
 
@@ -89,6 +93,11 @@ function matcher(p) {
     const bits = F.formatAscii.parseSearchValue(pat);
     let re;
     try { re = new RegExp(bits, 'ig'); } catch (e) { re = null; }
+    return (v) => { if (!re) { return false; } re.lastIndex = 0; return v.match(re) !== null; };
+  }
+  if (p.format === 'string') {
+    let re;
+    try { re = new RegExp(pat, 'ig'); } catch (e) { re = null; }
     return (v) => { if (!re) { return false; } re.lastIndex = 0; return v.match(re) !== null; };
   }
   let re = null;

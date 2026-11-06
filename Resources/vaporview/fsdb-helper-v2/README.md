@@ -84,8 +84,21 @@ What is streamed, and when:
   signal, 512 MB in total), and is then an ordinary local signal. Only big or dense signals stay windowed.
 - A signal not yet in a worker's store is read "cold": a small time range is read directly from the file, and the
   full walk continues in the background.
-- *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
-  the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
+- `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
+  the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch). Format `string`
+  matches a string or real signal's text with a case-insensitive regular expression.
+
+Variable kinds:
+- **Bit vectors** (1 byte per bit: wires, regs, integers, enums...) are sent as `[u64 delta][value]` records.
+- **Strings** (SystemVerilog `string`) and **reals** (8-byte double, 4-byte float) come as text records,
+  `[u64 delta][u32 length][UTF-8]`; the window header says `text: true` and `kind`, and a real's also carries
+  `min`/`max` for the analog view. A real reads as Rust's `f64` text (shortest round-trip digits, `-0`, `NaN`,
+  `inf`), the same as a VCD real in the viewer. A string or real change is an edge; a bit pattern `search` and
+  expressions refuse them, and they are walked whole, never split or saved to the store cache.
+- **Events** keep every occurrence, repeats included.
+- Any other encoding (for example 2 bytes per bit) is an error for that signal alone. Errors that can't
+  change on a retry (unsupported encoding, 0 bits, larger than the store, not a bit signal) come with
+  `permanent: true`: the viewer labels the row once, without "(retrying)", and doesn't ask again.
 
 ## Timeouts and recovery
 
