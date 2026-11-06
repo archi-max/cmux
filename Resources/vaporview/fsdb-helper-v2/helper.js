@@ -122,7 +122,7 @@ const zlib = require('node:zlib');
 const { fork } = require('node:child_process');
 const crypto = require('node:crypto');
 const expr = require('./expr.js');
-const { readScopeTree } = require('./tree.js');
+const { scopeTree } = require('./tree.js');
 
 const OUT = 3;
 const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Release/fsdb_reader.node');
@@ -194,6 +194,8 @@ try { addon = require(addonPath); } catch (e) {
   send({ id: 0, error: 'failed to load FSDB reader: ' + e.message });
   process.exit(1);
 }
+// One netlist node per scope path (tree.js): port trees that re-enter a path are merged.
+const scopes = scopeTree(addon);
 
 // ---- worker pool ----
 // Each worker has a FIFO queue and at most one task in flight, so `cancel`
@@ -610,6 +612,8 @@ function getIndex() {
       // The reader gives plain reg/wire for `logic signed`; only integer-like types are known signed.
       const signed = /^(integer|int|shortint|longint|byte)$/i.test(String(type));
       const v = { path: p + '.' + stripRange(name, width, msb, lsb), signalId, width, msb, lsb, encoding, type, signed };
+      // A path another scope tree re-enters (a modport port's own tree) is listed once.
+      if (byPath.has(v.path)) { return; }
       list.push(v);
       if (!byPath.has(v.path)) { byPath.set(v.path, v); }
       if (!byId.has(signalId)) { byId.set(signalId, v); }
@@ -1421,7 +1425,7 @@ const handlers = {
         { scopeCount: scopecount, netlistIdCount: varcount, timeScale: timescale, timeUnit: timeunit }),
       (chunksize, timeend) => Object.assign(metadata, { timeEnd: Number(timeend), timeTableLoaded: true }));
     timeEnd = metadata.timeEnd;
-    const top = addon.readScopes().filter((s) => !s.name.startsWith('$'));
+    const top = scopes.top();
     // The hierarchy index (paths, widths) is built now, while the workers open,
     // not by the first request (count's latency target; ~8-16 ms on this dump).
     try { getIndex(); } catch (e) { /* rebuilt on demand */ }
@@ -1436,20 +1440,11 @@ const handlers = {
   },
 
   async children({ scopeOffsetIdx, scopePath }) {
-    const scopes = [];
-    let start = 0, remaining = Infinity, guard = 256;
-    while (remaining > 0 && guard-- > 0) {
-      const r = addon.getScopeChildren(scopeOffsetIdx, start);
-      scopes.push(...r.scopes);
-      remaining = r.remainingItems;
-      start += r.totalReturned;
-      if (!r.totalReturned) { break; }
-    }
-    // The reader's arrays come as scopes holding their elements (tree.js).
-    const tree = readScopeTree(addon, scopePath, scopeOffsetIdx,
+    // The reader's arrays come as scopes holding their elements (tree.js); a scope that
+    // other trees re-enter lists every member's children, each name once.
+    return scopes.children(scopeOffsetIdx, scopePath,
       (name, type, encoding, varPath, netlistId, signalId, width, msb, lsb) =>
         { widthOf.set(signalId, width); return { name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }; });
-    return { scopes: scopes.filter((s) => !s.name.startsWith('$')).concat(tree.scopes), vars: tree.vars };
   },
 
   // Header {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs}]};
