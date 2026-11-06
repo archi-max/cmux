@@ -30,6 +30,8 @@ enum WaveformTrace {
         let hostIdentity: String
         var load: Task<SVModelSidecar.Reply, any Error>?
         var hierarchy: (tops: [String], instances: [String])?
+        /// slang's messages from loading the design (its errors first), for a row below a module it left out.
+        var loadMessages: [String] = []
 
         init(key: String, sidecar: SVModelSidecar, args: [String], root: String, hostIdentity: String) {
             self.key = key
@@ -125,6 +127,7 @@ enum WaveformTrace {
             guard let tops = reply["tops"] as? [String], !tops.isEmpty else {
                 throw Failure(message: loadFailedMessage(reply))
             }
+            design.loadMessages = reply["messages"] as? [String] ?? []
         } catch let error as Failure {
             design.load = nil
             throw error
@@ -160,6 +163,7 @@ enum WaveformTrace {
         var mapping = key.map(WaveformSourceLink.mapping(forKey:)) ?? HierarchyPathMapping()
         let dump = HierarchyPathMapping.join(dumpPath)
         var designPath = mapping.designPath(forDumpPath: dump)
+        let mappedPath = designPath
         if await !isSignal(designPath, in: design) {
             let roots = try await designRoots(of: design)
             if let rule = await HierarchyPrefixInference.designRule(
@@ -171,6 +175,10 @@ enum WaveformTrace {
                 designPath = mapping.designPath(forDumpPath: dump)
             }
             guard await isSignal(designPath, in: design) else {
+                // The path as the mapping gives it (the dump's own hierarchy) first: inference may have moved it.
+                if let missing = await missingInstance(mappedPath, in: design) {
+                    throw Failure(message: notElaboratedMessage(missing, messages: design.loadMessages))
+                }
                 throw Failure(message: String(
                     format: String(
                         localized: "waveformTrace.notInDesign",
@@ -188,9 +196,39 @@ enum WaveformTrace {
         return ["designPath": designPath, "designPrefix": prefixes.designPrefix, "dumpPrefix": prefixes.dumpPrefix]
     }
 
+    /// Whether the design has a signal (or a memory word) at `path`: the sidecar's lookup names the
+    /// rest below the deepest instance for any path, so the instance model decides.
     private static func isSignal(_ path: String, in design: Design) async -> Bool {
-        guard let reply = try? await design.sidecar.request(["cmd": "lookup", "path": path]) else { return false }
-        return (reply["name"] as? String)?.isEmpty == false
+        guard let found = await lookup(path, in: design) else { return false }
+        return SVModelLoad.isSignal(found.name, inModel: found.model)
+    }
+
+    /// The deepest instance of the design on `path`, the rest of the path below it, and its model.
+    private static func lookup(_ path: String, in design: Design) async -> (instance: String, name: String, model: [String: Any])? {
+        guard let found = try? await design.sidecar.request(["cmd": "lookup", "path": path]),
+              let instance = found["instance"] as? String, let name = found["name"] as? String, !name.isEmpty,
+              let model = try? await design.sidecar.request(["cmd": "instance", "path": instance])["model"] as? [String: Any]
+        else { return nil }
+        return (instance, name, model)
+    }
+
+    /// The instance on `path` the design model lacks (a module slang left out), if that is why
+    /// the path is not a signal of it.
+    private static func missingInstance(_ path: String, in design: Design) async -> String? {
+        guard let found = await lookup(path, in: design) else { return nil }
+        return SVModelLoad.missingInstance(below: found.instance, name: found.name, inModel: found.model)
+    }
+
+    private static func notElaboratedMessage(_ instance: String, messages: [String]) -> String {
+        let text = String(
+            format: String(
+                localized: "waveformTrace.notElaborated",
+                defaultValue: "%@ is not in the design model: slang could not elaborate it. Check the editor’s slang profile (.f build file) or top level, which driver tracing loads."
+            ),
+            instance
+        )
+        let first = messages.prefix(3).joined(separator: "\n")
+        return first.isEmpty ? text : text + "\n\n" + first
     }
 
     /// Each design top and its children (child instances, then its signals), for inference.
