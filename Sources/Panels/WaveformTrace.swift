@@ -231,6 +231,17 @@ enum WaveformTrace {
         return features.traceDriverUnderCaret()
     }
 
+    /// Ctrl+Shift+T and View > Trace X to Root: the focused viewer's selected row at its marker,
+    /// followed back along the fan-in its x came by. False (the key goes on) without a viewer.
+    static func performXRootFromShortcut(window: NSWindow?) -> Bool {
+        guard let waveform = WaveformSourceLink.focusedWaveformPanel(in: window),
+              !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
+        Task { @MainActor in
+            _ = await waveform.nativeViewSessions.waveform.callTrace("xRoot", argument: ["path": NSNull(), "time": NSNull()])
+        }
+        return true
+    }
+
     /// Traces the viewer's selected row at its marker (the page asks for the design path).
     static func traceSelectedSignal(in waveform: FilePreviewPanel) {
         Task { @MainActor in
@@ -485,6 +496,26 @@ enum WaveformTrace {
             "traceTitle": String(localized: "waveformTrace.page.title", defaultValue: "Trace Driver"),
             "traceDriverMenu": String(localized: "waveformTrace.page.menu", defaultValue: "Trace Driver at Marker"),
             "traceDriverKey": KeyboardShortcutSettings.shortcut(for: .traceWaveformDriver).displayString,
+            "traceXRootMenu": String(localized: "shortcut.traceWaveformXRoot.label", defaultValue: "Trace X to Root"),
+            "traceXRootKey": KeyboardShortcutSettings.shortcut(for: .traceWaveformXRoot).displayString,
+            "traceXTitle": String(localized: "waveformTrace.page.x.title", defaultValue: "X chain from %1$@ at %2$@"),
+            "traceXRunning": String(localized: "waveformTrace.page.x.running", defaultValue: "Following the x back… (%@ steps)"),
+            "traceXCancel": String(localized: "waveformTrace.page.x.cancel", defaultValue: "Cancel"),
+            "traceXAdd": String(localized: "waveformTrace.page.x.add", defaultValue: "Add Chain Signals to Waveform"),
+            "traceXRootBadge": String(localized: "waveformTrace.page.x.rootBadge", defaultValue: "root"),
+            "traceXWhy_start": String(localized: "waveformTrace.page.x.why.start", defaultValue: "the value traced"),
+            "traceXWhy_only": String(localized: "waveformTrace.page.x.why.only", defaultValue: "the only input with x or z"),
+            "traceXWhy_earliest": String(localized: "waveformTrace.page.x.why.earliest", defaultValue: "the earliest x or z of %@ inputs"),
+            "traceXEnd_noXInput": String(localized: "waveformTrace.page.x.end.noXInput", defaultValue: "Root: this statement makes the x (no input has x or z)."),
+            "traceXEnd_uninit": String(localized: "waveformTrace.page.x.end.uninit", defaultValue: "Root: never written since the start (uninitialised storage or a declaration)."),
+            "traceXEnd_testbench": String(localized: "waveformTrace.page.x.end.testbench", defaultValue: "Root: the testbench sets the value."),
+            "traceXEnd_input": String(localized: "waveformTrace.page.x.end.input", defaultValue: "Root: an input of the top level."),
+            "traceXEnd_force": String(localized: "waveformTrace.page.x.end.force", defaultValue: "Root: a force or deposit from outside the instance."),
+            "traceXEnd_loop": String(localized: "waveformTrace.page.x.end.loop", defaultValue: "Stopped: the x goes round a loop through %@."),
+            "traceXEnd_budget": String(localized: "waveformTrace.page.x.end.budget", defaultValue: "Stopped after %@ steps (the step limit)."),
+            "traceXEnd_failed": String(localized: "waveformTrace.page.x.end.failed", defaultValue: "Stopped: a step could not be traced."),
+            "traceXEnd_cancelled": String(localized: "waveformTrace.page.x.end.cancelled", defaultValue: "Cancelled."),
+            "traceXEnd_noX": String(localized: "waveformTrace.page.x.end.noX", defaultValue: "%@ has no x or z bits at this time."),
             "traceNoSignal": String(localized: "waveformTrace.page.noSignal", defaultValue: "Select a signal in the waveform first."),
             "traceNoMarker": String(localized: "waveformTrace.page.noMarker", defaultValue: "Place the marker at the time to trace first."),
             "traceFailed": String(localized: "waveformTrace.failed", defaultValue: "Driver tracing failed."),
