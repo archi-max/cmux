@@ -33,7 +33,7 @@ struct TraceWaveformDriverShortcutTests {
         for action in ShortcutAction.allCases where action != .traceWaveformDriver {
             let effective = action.effectivePersistedShortcut(nil)
             let clash = effective?.first.key == "t" && effective?.first.control == true && effective?.first.command == false
-                && effective?.first.option == false && effective?.second == nil
+                && effective?.first.option == false && effective?.first.shift == false && effective?.second == nil
             #expect(!clash, "\(action) also defaults to a Ctrl+T")
         }
     }
