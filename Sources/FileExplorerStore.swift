@@ -1275,19 +1275,12 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         let command = SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: expectedStamp).command
-        let timeout = Self.writeFileTimeout
-        let result = try await withThrowingTaskGroup(of: SSHCommandResult.self) { group in
-            group.addTask {
-                try await Self.runSSHProcess(connection: connection, command: command, input: contents)
-            }
-            group.addTask {
-                // A genuine transfer deadline; cancelling the upload terminates ssh.
-                try await Task.sleep(for: timeout)
-                throw FileExplorerError.sshCommandFailed("timed out")
-            }
-            defer { group.cancelAll() }
-            return try await group.next()!
-        }
+        // A genuine transfer deadline, counted from when the pool lends the
+        // session (a wait in its queue isn't the transfer's); running out
+        // terminates ssh.
+        let result = try await Self.runSSHProcess(
+            connection: connection, command: command, input: contents, limit: .total(Self.writeFileTimeout)
+        )
         switch result.terminationStatus {
         case 0:
             guard let stamp = SSHRemoteFileStamp(statOutput: result.stdout) else {
@@ -1578,12 +1571,13 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     private static func runSSHProcess(
         connection: SSHFileExplorerConnection,
         command: String,
-        input: Data? = nil
+        input: Data? = nil,
+        limit: HoldLimit = commandHoldLimit
     ) async throws -> SSHCommandResult {
         let result = try await SSHMasterPool.shared.withSession(connection) { leased in
             let commandProcess = SSHCommandProcess(connection: leased, command: command, input: input)
             return try await runChild(
-                limit: commandHoldLimit, run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+                limit: limit, run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
             )
         }
         return result
@@ -1980,6 +1974,13 @@ final class FileExplorerStore: ObservableObject {
             return
         }
         let connection = (provider as? SSHFileExplorerProvider)?.connection
+        if connection != nil, gitStatusRunsInFlight > 0 {
+            // Each remote run holds a lent SSH session (up to its time limit,
+            // on a hung mount): one at a time, and the latest ask runs when it
+            // ends. The bump above already drops the running one's result.
+            gitStatusRerunQueued = true
+            return
+        }
         gitStatusRunsInFlight += 1
         Task { [weak self] in
             let status = await Task.detached(priority: .utility) {

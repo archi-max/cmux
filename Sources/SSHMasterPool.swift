@@ -1,18 +1,25 @@
 import CryptoKit
 import Foundation
+import Network
 
 /// Pre-warmed ControlMasters for this app's one-off `ssh` runs to a host
 /// (Files listings, reads, writes and downloads, previews, probes, search,
 /// git status, Go to File, file drops), kept apart from the carrier's.
 ///
 /// sshd allows 10 sessions on one connection by default and refuses the rest
-/// ("Session open refused by peer", exit 255) without falling back to a direct
-/// connection. So the pool:
+/// ("Session open refused by peer"). OpenSSH's client then falls back to a
+/// login of its own, which works on a host that takes a key but not where a
+/// batch login can't sign in (a password-only host, the carrier's master), and
+/// a refused session on the carrier's master can refuse a carrier's reconnect.
+/// So the pool:
 /// - opens the first master as soon as the host's carrier connects
 ///   (``warm(_:carrierPath:)``), so the first one-off run doesn't pay the
 ///   handshake;
-/// - keeps it alive (ServerAliveInterval 15, CountMax 4), checks it with
+/// - keeps it alive (ServerAliveInterval 5, CountMax 3), checks it with
 ///   `ssh -O check` and, when it dies, starts it again with backoff;
+/// - after a sleep or a network change (``recycleMasters()``), stops its
+///   masters (`ssh -O stop`) and starts the first afresh, since `-O check`
+///   only asks the local process and can't see a connection that is gone;
 /// - lends at most ``capacity`` sessions per master (10 less a reserve of 2),
 ///   opens another master (`…-2`, `…-3`) when they are all in use, and queues a
 ///   run when it can't;
@@ -142,7 +149,7 @@ final class SSHMasterPool: @unchecked Sendable {
             case .longLivedLimit:
                 return String(
                     localized: "ssh.pool.longLivedLimit",
-                    defaultValue: "This host accepts only the terminal's sign-in, and cmux's background tools there (language server, waveform helpers) already use all the SSH sessions they may. Close a waveform viewer and try again."
+                    defaultValue: "This host accepts only the terminal's sign-in, and cmux's background tools there (language servers, waveform helpers, driver tracing) already use all the SSH sessions they may. Close a waveform viewer, or restart cmux to end its language servers, and try again."
                 )
             case .signingIn:
                 return String(
@@ -214,6 +221,9 @@ final class SSHMasterPool: @unchecked Sendable {
         var starting = false
         var failures = 0
         var retryAt: ContinuousClock.Instant?
+        /// Being stopped by ``recycleMasters()``: not started again until
+        /// its old process gave up the socket.
+        var stopping = false
     }
 
     /// Where a lent session is, so its release counts down the same place
@@ -380,9 +390,54 @@ final class SSHMasterPool: @unchecked Sendable {
         }
     }
 
-    /// Starts every host's masters afresh after a sleep or a network change.
-    /// Not yet: a no-op.
-    func recycleMasters() {}
+    /// Starts every host's masters afresh, after a sleep or a network change.
+    /// A master's process can outlive its connection: `-O check` asks the
+    /// local process, so it still answers, while sessions opened on it hang
+    /// until the keepalive ends it. So each live master stops taking new
+    /// sessions (`ssh -O stop`; runs already on it carry on, or fail as they
+    /// would have) and counts as down, and the first starts again once the old
+    /// one gave up its socket. Sessions lent before stay counted until they
+    /// end. Hosts on the carrier's master are left alone: the carrier
+    /// reconnects (``warm(_:carrierPath:)``).
+    func recycleMasters() {
+        lock.withLock {
+            for key in hosts.keys {
+                // A host on the carrier's master has no live master of its own.
+                guard var host = hosts[key], !host.carrierOnly, !host.borrowed, !host.resolving else { continue }
+                let live = host.masters.indices.filter { host.masters[$0].live }
+                guard !live.isEmpty else { continue }
+                let paths = live.map { masterPath(host, index: $0) }
+                for index in live {
+                    host.masters[index].live = false
+                    host.masters[index].retryAt = nil
+                    host.masters[index].failures = 0
+                    if index != 0 { host.masters[index].stopping = true }
+                }
+                let restart = !host.masters[0].starting
+                if restart { host.masters[0].starting = true }
+                hosts[key] = host
+                let route = host.route
+                let first = masterPath(host, index: 0)
+                let later = live.filter { $0 != 0 }
+                let control = control
+                Task { [weak self] in
+                    for path in paths { await control.stop(route, path: path) }
+                    self?.stopped(key, indices: later)
+                    guard restart else { return }
+                    let outcome = await control.start(route, path: first)
+                    self?.started(key, index: 0, outcome: outcome)
+                }
+            }
+        }
+    }
+
+    private func stopped(_ key: String, indices: [Int]) {
+        lock.withLock {
+            for index in indices where hosts[key]?.masters.indices.contains(index) == true {
+                hosts[key]?.masters[index].stopping = false
+            }
+        }
+    }
 
     /// Registers a carrier's route as soon as its path is known, before it
     /// connects (and ``warm(_:carrierPath:)``). Only a route at the carrier's
@@ -390,16 +445,21 @@ final class SSHMasterPool: @unchecked Sendable {
     /// first one, rather than ride a master another app's carrier left there
     /// uncounted. The warm then checks whether a master is there at all.
     func registerCarrier(_ route: Route, carrierPath: String?) {
-        lock.withLock {
-            guard route.basePath == carrierPath else { return }
+        let handoffs: [(CheckedContinuation<Grant, Error>, Grant)] = lock.withLock {
+            guard route.basePath == carrierPath else { return [] }
             warmedPaths.insert(route.basePath)
             let key = entryKey(route.key)
-            guard hosts[key] == nil || hosts[key]?.borrowed == true else { return }
+            guard hosts[key] == nil || hosts[key]?.borrowed == true else { return [] }
             var host = Host(route: route, carrierPath: carrierPath, lastInterest: clock.now)
             host.carrierOnly = true
             host.awaitingFirstOutcome = false
+            // Runs queued while it resolved as a borrowed route stay queued
+            // (its resolution then finds it registered), and get the carrier's.
+            host.waiters = hosts[key]?.waiters ?? []
             hosts[key] = host
+            return drainWaiters(key)
         }
+        for (continuation, grant) in handoffs { continuation.resume(returning: grant) }
     }
 
     /// Called under the lock: whether a master is at a carrier-only route's
@@ -658,6 +718,7 @@ final class SSHMasterPool: @unchecked Sendable {
     /// (or the first again).
     private func startMore(_ key: String) {
         guard let host = hosts[key], !host.resolving else { return }
+        // (One being stopped is picked too; startIfNeeded holds it back.)
         if let index = host.masters.indices.first(where: { !host.masters[$0].live && !host.masters[$0].starting }) {
             startIfNeeded(key, index: index)
         } else if host.masters.count < Self.maxMasters, !host.masters.contains(where: \.starting) {
@@ -840,7 +901,7 @@ final class SSHMasterPool: @unchecked Sendable {
         guard var host = hosts[key], host.masters.indices.contains(index),
               !host.resolving, !host.borrowed, !host.carrierOnly, !host.mastersUnavailable else { return }
         let master = host.masters[index]
-        guard !master.live, !master.starting else { return }
+        guard !master.live, !master.starting, !master.stopping else { return }
         if let retryAt = master.retryAt, clock.now < retryAt { return }
         host.masters[index].starting = true
         hosts[key] = host
@@ -992,7 +1053,9 @@ extension SSHMasterPool {
         static func startArguments(_ route: Route, path: String) -> [String] {
             ["-T", "-N", "-f",
              "-o", "ControlMaster=yes", "-o", "ControlPersist=" + String(controlPersistSeconds),
-             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
+             // A dead connection ends within 15 s: these carry no
+             // interactive state, so a short keepalive costs nothing.
+             "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
                 + batchArguments(route)
                 + routeArguments(route, path: path)
         }
@@ -1001,9 +1064,14 @@ extension SSHMasterPool {
             ["-O", "stop"] + batchArguments(route) + routeArguments(route, path: path)
         }
 
-        /// What a start's exit says. Not yet: a timeout is a failure.
+        /// What a start's exit says. A refused login, or a batch start that
+        /// got no answer in time, is ``StartOutcome/unavailable``: the latter
+        /// is a login waiting on the user (a security key's touch, an agent's
+        /// confirm), which every run on a connection of its own would ask for
+        /// again; the carrier's master asked once. Else ``StartOutcome/failed``.
         static func startOutcome(status: Int32?, timedOut: Bool, stderr: String) -> StartOutcome {
-            status == 255 && isRefusedLogin(stderr) ? .unavailable : .failed
+            if timedOut { return .unavailable }
+            return status == 255 && isRefusedLogin(stderr) ? .unavailable : .failed
         }
 
         static func checkArguments(_ route: Route, path: String) -> [String] {
@@ -1043,7 +1111,11 @@ extension SSHMasterPool {
             if FileManager.default.fileExists(atPath: expanded) { try? FileManager.default.removeItem(atPath: expanded) }
             let result = await Self.run(Self.startArguments(route, path: path), timeout: 25, stderrToFile: true)
             if result.status == 0 { return await check(route, path: path) == .alive ? .started : .failed }
-            return result.status == 255 && Self.isRefusedLogin(result.output) ? .unavailable : .failed
+            return Self.startOutcome(status: result.status, timedOut: result.timedOut, stderr: result.output)
+        }
+
+        func stop(_ route: Route, path: String) async {
+            _ = await Self.run(Self.stopArguments(route, path: path), timeout: 5, stderrToFile: true)
         }
 
         /// `<directory of socket>/<40 hex digits>`: the digest of the expanded
@@ -1087,7 +1159,7 @@ extension SSHMasterPool {
             timeout: TimeInterval,
             capturesOutput: Bool = false,
             stderrToFile: Bool = false
-        ) async -> (status: Int32?, output: String) {
+        ) async -> (status: Int32?, output: String, timedOut: Bool) {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     let process = Process()
@@ -1107,7 +1179,7 @@ extension SSHMasterPool {
                     process.standardError = errorHandle ?? FileHandle.nullDevice
                     do { try process.run() } catch {
                         try? errorHandle?.close()
-                        continuation.resume(returning: (nil, ""))
+                        continuation.resume(returning: (nil, "", false))
                         return
                     }
                     let fired = TimerFlag()
@@ -1125,7 +1197,7 @@ extension SSHMasterPool {
                     let output = errorURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
                         ?? String(decoding: data, as: UTF8.self)
                     // A run the timer ended proves nothing about the master.
-                    continuation.resume(returning: (timedOut ? nil : process.terminationStatus, timedOut ? "" : output))
+                    continuation.resume(returning: (timedOut ? nil : process.terminationStatus, timedOut ? "" : output, timedOut))
                 }
             }
         }
@@ -1138,6 +1210,52 @@ extension SSHMasterPool.Control {
     func masterPath(_ route: SSHMasterPool.Route, socket: String, index: Int) -> String {
         route.path(ofMaster: index)
     }
+}
+
+extension SSHMasterPool {
+    /// Recycles a pool's masters (``recycleMasters()``) when the network path
+    /// changes: another Wi-Fi, a VPN coming up or down, a cable. The app
+    /// starts one for ``shared``; waking from sleep recycles too.
+    final class NetworkWatch: @unchecked Sendable {
+        private let monitor = NWPathMonitor()
+        private let lock = NSLock()
+        private var last: String?
+        private var started = false
+
+        func start(recycling pool: SSHMasterPool) {
+            let begin: Bool = lock.withLock {
+                defer { started = true }
+                return !started
+            }
+            guard begin else { return }
+            monitor.pathUpdateHandler = { [weak self, weak pool] path in
+                guard let self else { return }
+                let signature = Self.signature(
+                    satisfied: path.status == .satisfied,
+                    interfaces: path.availableInterfaces.map(\.name),
+                    gateways: path.gateways.map { "\($0)" }
+                )
+                if self.changed(to: signature), path.status == .satisfied { pool?.recycleMasters() }
+            }
+            monitor.start(queue: DispatchQueue(label: "com.cmuxterm.ssh-master-pool.network"))
+        }
+
+        /// What identifies a path for this purpose.
+        static func signature(satisfied: Bool, interfaces: [String], gateways: [String]) -> String {
+            ([satisfied ? "up" : "down"] + interfaces + ["|"] + gateways.sorted()).joined(separator: ",")
+        }
+
+        /// Whether `signature` differs from the last one seen; the first one
+        /// (the monitor's initial report) is no change.
+        func changed(to signature: String) -> Bool {
+            lock.withLock {
+                defer { last = signature }
+                return last != nil && last != signature
+            }
+        }
+    }
+
+    static let networkWatch = NetworkWatch()
 }
 
 /// Set once by a timer, read by the thread it may have interrupted.

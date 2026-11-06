@@ -62,6 +62,12 @@ enum WaveformTrace {
     /// Sidecars kept at most: each holds an elaborated design in memory.
     private static let maxDesigns = 4
 
+    /// At ``maxDesigns``, stops one design (and gives back its SSH session).
+    private static func evictOldestDesign() {
+        guard designs.count >= maxDesigns, let oldest = designs.keys.sorted().first else { return }
+        designs.removeValue(forKey: oldest)?.stop()
+    }
+
     static func bundledSource(bundle: Bundle = .main) -> URL? {
         guard let url = bundle.resourceURL?.appendingPathComponent("vaporview/sv-model", isDirectory: true),
               FileManager.default.fileExists(atPath: url.appendingPathComponent("build.sh").path) else { return nil }
@@ -102,7 +108,10 @@ enum WaveformTrace {
             if let remote = editor.linkRemoteRoute {
                 let configuration = remote.configuration
                 // The sidecar runs as long as its design is kept: a
-                // long-lived run, never on a one-off master's session.
+                // long-lived run, never on a one-off master's session. Make
+                // room first, so a design past the limit doesn't wait for a
+                // session the oldest one holds.
+                evictOldestDesign()
                 let held: LongLivedSSHSession
                 do { held = try await configuration.longLivedSession() } catch {
                     throw Failure(message: error.localizedDescription)
@@ -129,9 +138,7 @@ enum WaveformTrace {
             let sidecar = SVModelSidecar(runner: runner, launchCommand: commands.launch, installCommand: commands.install, installSource: source)
             design = Design(key: key, sidecar: sidecar, args: args, root: root, hostIdentity: editor.linkHostIdentity,
                             session: session)
-            if designs.count >= maxDesigns, let oldest = designs.keys.sorted().first {
-                designs.removeValue(forKey: oldest)?.stop()
-            }
+            evictOldestDesign()
             designs[key] = design
         }
         if let waveform { activeDesigns.setObject(design, forKey: waveform) }

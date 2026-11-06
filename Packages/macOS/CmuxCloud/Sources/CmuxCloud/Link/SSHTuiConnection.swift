@@ -22,6 +22,7 @@ public struct SSHTuiConnection: Sendable {
         self.configuration = configuration
         inheritedEnvironment = environment
         remoteTag = Self.remoteTag(bundleIdentifier: bundleIdentifier)
+        operationsControlPathSuffix = Self.operationsControlPathSuffix(bundleIdentifier: bundleIdentifier)
     }
 
     public let configuration: WorkspaceRemoteConfiguration
@@ -137,8 +138,9 @@ public struct SSHTuiConnection: Sendable {
     /// They keep the carrier's route but not its master: every session over a
     /// master counts against the server's per-connection `MaxSessions` (10 by
     /// default), every app's carrier for a host shares one master, and a
-    /// refused session gets no fallback, so one-off runs there could refuse a
-    /// carrier's reconnect. They name this app's own one-off master instead,
+    /// refused session falls back to a batch login of its own, which can't sign
+    /// in where only the carrier's master could, so one-off runs there could
+    /// refuse a carrier's reconnect. They name this app's own one-off master instead,
     /// the carrier's ControlPath plus ``operationsControlPathSuffix``, which the
     /// app opens when the carrier connects and lends sessions on (a batch run
     /// never starts a master itself); while that master can't start, as on a
@@ -181,12 +183,16 @@ public struct SSHTuiConnection: Sendable {
     }
 
     /// Appended to the carrier's ControlPath for this app's one-off masters:
-    /// `-ops`, plus a short digest of the build's tag, so two installed apps
-    /// never lend sessions on one master without counting each other's. Kept
-    /// short: the master's socket path must fit in `sun_path`.
-    public var operationsControlPathSuffix: String {
-        guard let remoteTag else { return "-ops" }
-        let digest = SHA256.hash(data: Data(remoteTag.utf8)).prefix(3).map { String(format: "%02x", $0) }.joined()
+    /// `-ops` for the release (or an unknown bundle), else `-ops-` and a short
+    /// digest of the bundle identifier, so two installed apps (release,
+    /// nightly, rc, staging, each DEV tag) never lend sessions on one master
+    /// without counting each other's. Kept short: the master's path must fit
+    /// in `sun_path` before its socket is resolved.
+    public let operationsControlPathSuffix: String
+
+    public static func operationsControlPathSuffix(bundleIdentifier: String?) -> String {
+        guard let bundleIdentifier, bundleIdentifier != "com.cmuxterm.app" else { return "-ops" }
+        let digest = SHA256.hash(data: Data(bundleIdentifier.utf8)).prefix(3).map { String(format: "%02x", $0) }.joined()
         return "-ops-" + digest
     }
 
