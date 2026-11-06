@@ -27,15 +27,26 @@ enum WaveformTraceVerdi {
     final class Session {
         let key: String
         let sidecar: SVModelSidecar
+        /// Verdi runs while its viewer is open: a long-lived run, on a
+        /// connection of its own or one of the carrier's long-lived sessions,
+        /// taken before it starts and held until it stops.
+        let ssh: FSDBHelperSession
         var state: State = .starting
         /// Failed requests (or starts) in a row; after one, Verdi is asked again once
         /// `VerdiTraceLaunch.retryDelay(failures:)` has passed.
         var failures = 0
         var retryAt: Date?
 
-        init(key: String, sidecar: SVModelSidecar) {
+        init(key: String, sidecar: SVModelSidecar, ssh: FSDBHelperSession) {
             self.key = key
             self.sidecar = sidecar
+            self.ssh = ssh
+        }
+
+        /// Stops Verdi and gives its SSH session back.
+        func stop() {
+            sidecar.stop()
+            ssh.release()
         }
     }
 
@@ -66,17 +77,18 @@ enum WaveformTraceVerdi {
             if case .unavailable = known.state, let at = known.retryAt, Date() >= at { probe(known, host: remote.host) }
             return known
         }
-        let sshArguments = remote.sshArguments
+        let ssh = FSDBHelperSession(configuration: remote.configuration)
+        let sshArguments = ssh.arguments
         let sidecar = SVModelSidecar(
             runner: { command in .init(executable: "/usr/bin/ssh", arguments: sshArguments("sh -c '\(command)'")) },
             launchCommand: VerdiTraceLaunch.command(launcher: scripts.launcher, serve: scripts.serve, fsdbPath: remote.remotePath),
             installCommand: nil
         )
-        let session = Session(key: key, sidecar: sidecar)
+        let session = Session(key: key, sidecar: sidecar, ssh: ssh)
         sessions[key] = session
         order.use(key)
         for gone in order.evict(keeping: maxSessions) {
-            sessions.removeValue(forKey: gone)?.sidecar.stop()
+            sessions.removeValue(forKey: gone)?.stop()
         }
         viewerSessions.setObject(session, forKey: waveform)
         probe(session, host: remote.host)
@@ -92,6 +104,9 @@ enum WaveformTraceVerdi {
         Task { @MainActor in
             var retry = false
             do {
+                // Its session first: on a host that takes only the terminal's
+                // sign-in, a connection of its own couldn't log in.
+                try await session.ssh.prepare()
                 let info = try await session.sidecar.request(["cmd": "info"], timeout: requestTimeout)
                 session.state = VerdiTraceLaunch.unitsMatch(info) ? .ready
                     : .unavailable(code: "units", message: "\(info["fileUnit"] ?? "") / \(info["windowUnit"] ?? "")")
@@ -135,7 +150,7 @@ enum WaveformTraceVerdi {
             sessions.removeValue(forKey: session.key)
             order.remove(session.key)
         }
-        session.sidecar.stop()
+        session.stop()
     }
 
     /// `{type: 'trace', event: 'engine', id, cmd: 'active', signal (dump path), time}` from the page.

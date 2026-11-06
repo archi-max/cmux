@@ -1717,10 +1717,19 @@ final class SSHFileChannelRegistry: @unchecked Sendable {
             .joined(separator: "\u{0}") + "\u{0}" + connection.sshOptions.joined(separator: "\u{1f}")
     }
 
+    /// The channel runs for minutes at a time: a long-lived run, so it opens
+    /// a connection of its own (`ControlPath=none`) rather than hold one of a
+    /// shared master's sessions uncounted. Where that can't log in (a host
+    /// that takes only the terminal's sign-in) the channel stays down and
+    /// reads use the per-exec path, which the pool lends sessions for.
     private static func launch(_ connection: SSHFileExplorerConnection) -> SSHFileChannel.Launch {
-        { command in
+        let own = SSHFileExplorerConnection(
+            destination: connection.destination, port: connection.port, identityFile: connection.identityFile,
+            sshOptions: SSHMasterPool.replacingControlPath(in: connection.sshOptions, with: "none")
+        )
+        return { command in
             (URL(fileURLWithPath: "/usr/bin/ssh"),
-             ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command))
+             ProcessSSHFileExplorerTransport.sshArguments(connection: own, command: command))
         }
     }
 }
