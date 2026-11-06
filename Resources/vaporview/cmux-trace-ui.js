@@ -81,7 +81,7 @@
   function dumpSegments(path) { return segs(path); }
 
   // How the open dump answers history questions:
-  //  'v2'     a windowed FSDB helper (WINDOWING.md): edge queries in the helper, nothing downloaded;
+  //  'v2'     a windowed FSDB helper (protocol 2): edge queries in the helper, nothing downloaded;
   //  'whole'  a v1 FSDB helper: whole signals, so each signal is read once (values from its changes
   //           too, not a second read through rawValuesAt);
   //  'local'  a file the page reads itself (VCD, FST, GHW): rawValuesAt plus changes.

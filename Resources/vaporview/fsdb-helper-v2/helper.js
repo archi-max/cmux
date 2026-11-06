@@ -1524,7 +1524,7 @@ const handlers = {
 
   // searchText {signalId, t, dir, inclusive?, format, pattern, caseSensitive?, alias?, budgetMs?}: the first
   // change from t (as search) whose value, formatted as the viewer formats it, matches the
-  // pattern (WINDOWING.md "searchText"). -> {t, value, text, distinct, formatted} | {t: null}
+  // pattern. -> {t, value, text, distinct, formatted} | {t: null}
   // | {t: null, incomplete: {timedOut: true, at}}
   async searchText(req) {
     const t = checkTime('t', req.t);
