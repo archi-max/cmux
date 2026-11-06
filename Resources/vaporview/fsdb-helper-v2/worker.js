@@ -143,8 +143,12 @@ function readVarTree() {
 }
 
 // String and real signals: their records are text ([u64 delta][u32 length][bytes]), and a
-// real's window says the signal's min and max (the viewer's analog scale), as wellen's do.
-const textHead = (w) => (w.text ? { text: true, kind: w.kind, ...(w.kind === 'real' ? { min: w.min, max: w.max } : {}) } : {});
+// real's window says the signal's min and max (the viewer's analog scale), as wellen's do;
+// not a ranged (cold slice) window, whose range is only the slice's. A string's says the
+// mean text bytes per change as windows send it (textMean: the viewer's whole-load estimate).
+const textHead = (w, ranged = false) => (w.text ? { text: true, kind: w.kind,
+  ...(w.kind === 'real' && !ranged ? { min: w.min, max: w.max } : {}),
+  ...(typeof w.textMean === 'number' ? { textMean: +w.textMean.toFixed(1) } : {}) } : {});
 
 const ops = {
   open({ file, cacheBytes }) {
@@ -167,6 +171,7 @@ const ops = {
       const l = info.get(signalId);
       if (l.error) { return { signalId, error: l.error }; }
       const w = addon.cacheWindow(signalId, t0, t1, buckets);
+      if (w.error) { return { signalId, error: w.error }; }  // over the text reply budget
       return { signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
         counts: w.counts || null, cached: l.cached, loadMs: l.loadMs, walkMs: l.walkMs, total: w.total, ...(l.fromFile ? { file: true } : {}), ...textHead(w) };
     });
@@ -188,7 +193,7 @@ const ops = {
   windowCold({ signalIds, t0, t1, buckets }) {
     return addon.cacheWindowCold(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
       : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
-        counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs, ...textHead(w) }));
+        counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs, ...textHead(w, true) }));
   },
 
   // Background whole walk after a ranged first draw: yields to interactive work.
