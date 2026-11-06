@@ -12,12 +12,16 @@
 //   driverOfDesign({ designPath, designPrefix, dumpPrefix, time })   from the editor (cmux mapped it)
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
+//   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log? })   the first-time
+//                                 design model build: stage upload | fetch | configure | compile |
+//                                 install | load | done | failed. While it builds the panel shows
+//                                 it, and another trace asks nothing new (it points at the panel).
 //   back() | forward() | close() | state()
 //   settled()                     resolves (to state()) once the Verdi checks under way are done
 //   xRoot({ path, time } | { designPath, designPrefix, dumpPrefix, time })   Trace X to Root: the
 //                                 chain of steps the x came along (cmuxTrace.xChain), listed as
 //                                 they are found; resolves to { steps, end, root, approximate }
-// and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'update' | 'open' | 'closed', id?, ... }
+// and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'update' | 'open' | 'closed' | 'buildInfo', id?, ... }
 // ('update': a shown step filled in with Verdi's answer; cmux does not move the editor for it).
 (function () {
   const waveform = window.cmuxWaveform;
@@ -44,7 +48,7 @@
     const id = nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(Object.assign(new Error('timeout'), { code: 'timeout' })); }, REQUEST_TIMEOUT_MS);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { resolve, reject, timer, event });
       host.toNative(Object.assign({ type: 'trace', event, id }, body));
     });
   }
@@ -54,6 +58,8 @@
     if (!p) { return false; }
     pending.delete(Number(a.id));
     clearTimeout(p.timer);
+    // A design answer means the design model is up: a build under way is over (its done may come later).
+    if (a.ok && (p.event === 'resolve' || p.event === 'model') && building()) { endBuild(); }
     if (a.ok) { p.resolve(a.result); } else { p.reject(Object.assign(new Error(a.message || a.error || 'failed'), { code: a.error, message: a.message })); }
     return true;
   }
@@ -421,16 +427,24 @@
     try {
       mapped = await request('resolve', { dumpPath: path });
     } catch (error) {
-      showError(error.message || s.traceFailed);
+      if (build && build.failed) { renderBuild(); } else { showError(error.message || s.traceFailed); }
       return null;
     }
     return Object.assign({ time }, mapped);
   }
 
   async function driver(query) {
+    if (heldByBuild()) { return null; }
+    lastEntry = () => driver(query);
     stopChain();
     const q = await resolved(query);
     return q ? driverOfDesign(q) : null;
+  }
+  // From the editor (cmux mapped the path); a click while the design model builds points at it.
+  function fromEditor(query) {
+    if (heldByBuild()) { return null; }
+    lastEntry = () => fromEditor(query);
+    return driverOfDesign(query);
   }
 
   // The design query's time (null: the panel says why not), with the session for its dump.
@@ -461,6 +475,8 @@
   let chain = null;
   function stopChain() { if (chain) { chain.cancelled = true; chain = null; } }
   async function xRoot(query) {
+    if (heldByBuild()) { return null; }
+    lastEntry = () => xRoot(query);
     stopChain();
     const q = query && query.designPath ? query : await resolved(query);
     if (!q) { return null; }
@@ -800,7 +816,19 @@
       #cmux-trace tr.xstep { cursor: pointer; }
       #cmux-trace tr.xstep:hover, #cmux-trace tr.xstep:focus { background: var(--vscode-list-hoverBackground); outline: none; }
       #cmux-trace tr.xstep.root td { font-weight: 600; }
-      #cmux-trace tr.xstep.root { background: var(--vscode-list-inactiveSelectionBackground); }`;
+      #cmux-trace tr.xstep.root { background: var(--vscode-list-inactiveSelectionBackground); }
+      #cmux-trace ul.stages { list-style: none; padding-left: 2px; }
+      #cmux-trace li.stage .mark { display: inline-block; width: 14px; }
+      #cmux-trace li.stage.pending { color: var(--vscode-descriptionForeground); }
+      #cmux-trace li.stage.current { font-weight: 600; }
+      #cmux-trace li.stage.done .mark { color: var(--vscode-testing-iconPassed, #73c991); }
+      #cmux-trace .bar { display: inline-block; width: 120px; height: 4px; margin-left: 8px; vertical-align: middle; border-radius: 2px;
+        background: var(--vscode-widget-border); overflow: hidden; }
+      #cmux-trace .bar .fill { display: block; height: 100%; background: var(--vscode-progressBar-background, #0e70c0); }
+      #cmux-trace pre.build-log { margin: 2px 0 6px; max-height: 12em; overflow: auto; }
+      #cmux-trace .build-actions { display: flex; align-items: center; gap: 10px; }
+      #cmux-trace.pulse { animation: cmux-trace-pulse 0.6s ease-in-out 2; }
+      @keyframes cmux-trace-pulse { 50% { box-shadow: 0 0 0 3px var(--vscode-focusBorder, #007fd4); } }`;
     document.head.appendChild(style);
     panel = document.createElement('div');
     panel.id = 'cmux-trace';
@@ -1072,9 +1100,148 @@
   function backendChanged() { session = null; }
 
   // Shown only while a trace is waiting (not over a step already shown).
-  function status(text) { if (panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
+  function status(text) { if (!build && panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
 
-  const api = Object.freeze({ driver, driverOfDesign, xRoot, reply, status, back, forward, close, state, settled, backendChanged });
+  // ---- the first-time design model build ----
+  // cmux builds cmux-sv-model once per host and cmux version; its progress calls come while the
+  // trace's resolve (or model request) waits. The build is the page's own state so that another
+  // click while it builds shows it again rather than "Finding…".
+  const STAGES = ['upload', 'fetch', 'configure', 'compile', 'install', 'load'];
+  let build = null;
+  let buildDone = null;
+  let lastEntry = null;
+  const building = () => !!build && !build.failed;
+  // A new trace while the design model builds asks nothing new and points at the build; after a
+  // failed build it starts over (the failure is shown again if it fails again).
+  function heldByBuild() {
+    if (build && build.failed) { build = null; }
+    if (!building()) { return false; }
+    focusBuild();
+    return true;
+  }
+  const sizeText = (n) => {
+    const b = Number(n) || 0;
+    if (b < 1024) { return `${b} B`; }
+    if (b < 1024 * 1024) { return `${Math.round(b / 1024)} KB`; }
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  };
+  const elapsedText = (startedAt) => {
+    const sec = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  };
+  function endBuild() {
+    stopTicking();
+    if (build) { buildDone = build.startedAt; }
+    build = null;
+  }
+  function stopTicking() { if (build && build.timer) { clearInterval(build.timer); build.timer = null; } }
+  function progress(p) {
+    const q = p || {};
+    const stage = String(q.stage || '');
+    const startedAt = Number.isFinite(Number(q.startedAt)) ? Number(q.startedAt) : null;
+    if (stage === 'done') {
+      if (startedAt !== null && build && build.startedAt !== startedAt) { return true; }
+      buildDone = startedAt !== null ? startedAt : build && build.startedAt;
+      endBuild();
+      return true;
+    }
+    if (stage !== 'failed' && startedAt !== null && startedAt === buildDone) { return true; }
+    if (!build || (startedAt !== null && build.startedAt !== startedAt)) {
+      stopTicking();
+      build = { startedAt: startedAt !== null ? startedAt : Date.now(), stage: 'upload', percent: null, sourceBytes: null };
+    }
+    build.host = q.host === undefined ? build.host : q.host;
+    if (stage === 'failed') {
+      stopTicking();
+      build.failed = { message: String(q.message || ''), log: String(q.log || '') };
+    } else if (STAGES.includes(stage)) {
+      build.failed = null;
+      build.stage = stage;
+      build.percent = Number.isFinite(Number(q.percent)) && q.percent !== null ? Math.max(0, Math.min(100, Math.round(Number(q.percent)))) : (stage === 'compile' ? build.percent : null);
+      if (q.sourceBytes !== undefined) { build.sourceBytes = Number(q.sourceBytes); }
+      if (!build.timer) {
+        build.timer = setInterval(() => {
+          const e = panel && panel.querySelector('.build-elapsed');
+          if (e && build) { e.textContent = format(S().traceBuildElapsed || '%@', elapsedText(build.startedAt)); }
+        }, 1000);
+      }
+    } else {
+      return false;
+    }
+    renderBuild();
+    return true;
+  }
+  function focusBuild() {
+    renderBuild();
+    const p = ensurePanel();
+    p.classList.remove('pulse');
+    void p.offsetWidth;
+    p.classList.add('pulse');
+    setTimeout(() => p.classList.remove('pulse'), 1200);
+    p.focus();
+  }
+  function buildInfoLink() {
+    const a = el('a', 'buildinfo', S().traceBuildWhat || '');
+    a.href = '#';
+    a.addEventListener('click', (e) => { e.preventDefault(); host.toNative({ type: 'trace', event: 'buildInfo' }); });
+    return a;
+  }
+  function renderBuild() {
+    if (!build) { return; }
+    const s = S();
+    const local = !build.host;
+    busy = false;
+    if (build.failed) {
+      const p = head(local ? s.traceBuildFailedTitleLocal : format(s.traceBuildFailedTitle, build.host));
+      const body = el('div', 'body');
+      if (build.failed.message) { body.append(el('div', '', build.failed.message)); }
+      const lines = build.failed.log.split('\n').filter((l) => l.trim()).slice(-20);
+      if (lines.length) {
+        body.append(el('div', 'muted', s.traceBuildLog || ''));
+        body.append(el('pre', 'code build-log', lines.join('\n')));
+      }
+      const row = el('div', 'build-actions');
+      const retry = button(s.traceBuildRetry || '', '', () => {
+        const again = lastEntry;
+        build = null;
+        if (again) { again(); }
+      });
+      retry.classList.add('retry');
+      row.append(retry, buildInfoLink());
+      body.append(row);
+      p.append(body);
+      return;
+    }
+    const p = head(local ? s.traceBuildTitleLocal : format(s.traceBuildTitle, build.host));
+    const body = el('div', 'body');
+    const list = el('ul', 'stages');
+    const at = STAGES.indexOf(build.stage);
+    STAGES.forEach((name, i) => {
+      const state = i < at ? 'done' : i === at ? 'current' : 'pending';
+      const label = name === 'upload' ? format(s.traceBuildStage_upload, sizeText(build.sourceBytes || 0)) : (s['traceBuildStage_' + name] || name);
+      const li = el('li', 'stage ' + state);
+      li.dataset.stage = name;
+      li.dataset.state = state;
+      li.append(el('span', 'mark', state === 'done' ? '✓' : state === 'current' ? '›' : '·'), el('span', '', label));
+      if (name === 'compile' && state === 'current' && build.percent !== null) {
+        li.append(el('span', 'muted', ` ${build.percent}%`));
+        const bar = el('span', 'bar');
+        const fill = el('span', 'fill');
+        fill.style.width = `${build.percent}%`;
+        bar.append(fill);
+        li.append(bar);
+      }
+      list.append(li);
+    });
+    body.append(list);
+    body.append(el('div', 'muted build-elapsed', format(s.traceBuildElapsed || '%@', elapsedText(build.startedAt))));
+    const foot = el('div', 'muted');
+    foot.append(el('span', '', (s.traceBuildOnce || '') + ' '), buildInfoLink());
+    body.append(foot);
+    p.append(body);
+  }
+
+  const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxTraceUI = { rowMenuItems };
 })();
