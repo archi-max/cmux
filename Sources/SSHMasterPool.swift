@@ -114,6 +114,8 @@ final class SSHMasterPool: @unchecked Sendable {
             case carrierBusy
             /// Long-lived runs already hold their share of the carrier's sessions.
             case longLivedLimit
+            /// The host's first master start had no answer within ``startMaxWait``.
+            case signingIn
         }
 
         let cause: Cause
@@ -130,6 +132,11 @@ final class SSHMasterPool: @unchecked Sendable {
                     localized: "ssh.pool.longLivedLimit",
                     defaultValue: "This host accepts only the terminal's sign-in, and cmux's background tools there (language server, waveform helpers) already use all the SSH sessions they may. Close a waveform viewer and try again."
                 )
+            case .signingIn:
+                return String(
+                    localized: "ssh.pool.signingIn",
+                    defaultValue: "cmux is still connecting to this host. Try again in a moment."
+                )
             }
         }
     }
@@ -142,6 +149,9 @@ final class SSHMasterPool: @unchecked Sendable {
         func check(_ route: Route, path: String) async -> Liveness
         /// The socket `path` names for `route` once ssh expands it, or nil.
         func socketPath(_ route: Route, path: String) async -> String?
+        /// Where master `index` of a route whose base path expands to
+        /// `socket` listens. By default ``Route/path(ofMaster:)``.
+        func masterPath(_ route: Route, socket: String, index: Int) -> String
     }
 
     /// A lent session for a run whose process outlives one scope
@@ -271,6 +281,7 @@ final class SSHMasterPool: @unchecked Sendable {
         healthInterval: Duration = .seconds(30),
         maxWait: Duration = .seconds(5),
         carrierMaxWait: Duration = .seconds(20),
+        startMaxWait: Duration = .seconds(25),
         idleTimeout: Duration = .seconds(30 * 60)
     ) {
         self.control = control
@@ -318,6 +329,9 @@ final class SSHMasterPool: @unchecked Sendable {
             self?.resolved(route.key, socket: socket)
         }
     }
+
+    /// Registers a carrier's route before it connects. Not yet: a no-op.
+    func registerCarrier(_ route: Route, carrierPath: String?) {}
 
     /// Runs `body` with `options`, their ControlPath swapped for a master with
     /// a free session (the carrier's when the masters can't start, or `none`, a
@@ -851,6 +865,10 @@ extension SSHMasterPool {
             return result.status == 255 && Self.isRefusedLogin(result.output) ? .unavailable : .failed
         }
 
+        static func masterPath(socket: String, index: Int) -> String? {
+            index == 0 ? socket : socket + "-" + String(index + 1)
+        }
+
         func check(_ route: Route, path: String) async -> Liveness {
             let result = await Self.run(Self.checkArguments(route, path: path), timeout: 5, stderrToFile: true)
             return Self.liveness(status: result.status, stderr: result.output)
@@ -927,4 +945,38 @@ private final class TimerFlag: @unchecked Sendable {
     private var value = false
     func set() { lock.withLock { value = true } }
     var isSet: Bool { lock.withLock { value } }
+}
+
+extension SSHMasterPool.Control {
+    func masterPath(_ route: SSHMasterPool.Route, socket: String, index: Int) -> String {
+        route.path(ofMaster: index)
+    }
+}
+
+/// Long-lived sessions held as long as the app runs. Not yet per server: one
+/// per route.
+actor HeldLongLivedSessions<Session: Sendable> {
+    private var held: [String: Session] = [:]
+    private var pending: [String: Task<Session, Error>] = [:]
+
+    init() {}
+
+    static func key(route: String, rootPath: String, languageId: String) -> String { route }
+
+    func session(
+        for key: String,
+        keep: @Sendable (Session) -> Bool,
+        make: @escaping @Sendable () async throws -> Session
+    ) async throws -> Session {
+        if let session = held[key] { return session }
+        if let task = pending[key] { return try await task.value }
+        let task = Task { try await make() }
+        pending[key] = task
+        defer { pending[key] = nil }
+        let session = try await task.value
+        if keep(session) { held[key] = session }
+        return session
+    }
+
+    var heldCount: Int { held.count }
 }
