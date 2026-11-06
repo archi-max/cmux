@@ -37,6 +37,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var engineDelay: TimeInterval = 0
   /// cmux never answers engine requests (a hung Verdi session).
   var engineHang = false
+  /// Resolve requests held unanswered (a first-time design model build under way), by id.
+  var holdResolves = false
+  var heldResolves: [(id: Int, path: String)] = []
   /// Model lookups answered after this long (a slow step).
   var lookupDelay: TimeInterval = 0
   /// The signals of the engine requests the page marked as background (a prefetch).
@@ -91,7 +94,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     let api = await call("return Object.keys(cmuxWaveform.trace).sort()") as? [String]
-    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
+    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "progress", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
 
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
@@ -1161,8 +1164,123 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
              && traceSwift.contains("defaultValue: \"\(sinceEn)\"") && (sinceEntry?.count ?? 0) == 9,
            "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
     await xRootChecks()
+    await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
     snap()
+  }
+
+  /// The first-time design model build (cmux's progress calls while a trace's resolve waits): the
+  /// panel shows its stages, the compile's percent, the host and the time so far; another click
+  /// asks nothing new and points at the panel; "What is being built?" asks cmux for its doc; a
+  /// failure shows the log's last lines and Retry.
+  func buildChecks() async {
+    _ = await trace("close()")
+    await reopen("c")
+    let q = "{ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 }"
+    func resolves() -> Int { events.filter { $0["event"] as? String == "resolve" }.count }
+    func progress(_ p: String) async { _ = await call("cmuxWaveform.trace.progress(\(p)); return null") }
+    holdResolves = true
+    defer { holdResolves = false }
+    let before = resolves()
+    _ = await call("window.__drv = cmuxWaveform.trace.driver(\(q)); return null")
+    await waitFor("the resolve") { resolves() == before + 1 }
+    let started = Date().timeIntervalSince1970 * 1000 - 65_000
+    await progress("{ stage: 'upload', host: 'build-host', startedAt: \(started), sourceBytes: 92160 }")
+    await progress("{ stage: 'fetch', host: 'build-host', startedAt: \(started) }")
+    await progress("{ stage: 'configure', host: 'build-host', startedAt: \(started) }")
+    await progress("{ stage: 'compile', percent: 42, host: 'build-host', startedAt: \(started) }")
+    var text = await panelText()
+    expect(text.contains("Building the design model on build-host") && text.contains("42%") && !text.contains("Finding"),
+           "build: the panel shows the build on its host and the compile's percent, not Finding: \(text.prefix(400))")
+    expect(text.contains("Upload") && text.contains("90 KB") && text.contains("Configur") && text.contains("Install") && text.contains("Load"),
+           "build: the panel lists the stages (upload with its size, configure, compile, install, load): \(text.prefix(400))")
+    let marks = await call("""
+      return [...document.querySelectorAll('#cmux-trace li.stage')].map((li) => li.dataset.stage + ':' + li.dataset.state).join(' ')
+      """) as? String ?? ""
+    expect(marks.hasPrefix("upload:done fetch:done configure:done compile:current install:pending load:pending"),
+           "build: stages before the compile are done, the compile is current, the rest wait: \(marks)")
+    // The time so far (m:ss) in seconds; a slow run may be a few seconds on, so it is a range.
+    func elapsed() async -> Int? {
+      let t = await call("const e = document.querySelector('#cmux-trace .build-elapsed'); return e ? e.textContent : ''") as? String ?? ""
+      guard let m = t.range(of: #"\d+:\d\d"#, options: .regularExpression) else { return nil }
+      let parts = t[m].split(separator: ":").compactMap { Int($0) }
+      return parts.count == 2 ? parts[0] * 60 + parts[1] : nil
+    }
+    let shownAt = await elapsed()
+    expect(shownAt.map { (65...75).contains($0) } == true, "build: the elapsed time is shown as m:ss: \(String(describing: shownAt))")
+    await sleep(2100)
+    let laterAt = await elapsed()
+    expect(shownAt != nil && laterAt.map { $0 >= shownAt! + 1 } == true, "build: the elapsed time goes on while it builds: \(String(describing: shownAt)) then \(String(describing: laterAt))")
+    // The "Finding…" bug: another click while it builds starts nothing and keeps the build shown.
+    _ = await call("const r = cmuxWaveform.trace.driver(\(q)); window.__again = r; return null")
+    await sleep(200)
+    let pulsed = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    text = await panelText()
+    expect(resolves() == before + 1 && heldResolves.count == 1, "build: another Trace Driver while it builds asks nothing new (\(resolves() - before) resolves)")
+    expect(pulsed == true && text.contains("Building the design model") && !text.contains("Finding"),
+           "build: and points at the build's panel (highlighted), not Finding: \(String(describing: pulsed)) \(text.prefix(200))")
+    _ = await call("cmuxWaveform.trace.xRoot(\(q)); return null")
+    await sleep(100)
+    expect(resolves() == before + 1, "build: Trace X to Root while it builds asks nothing new either")
+    // A row menu's Trace Driver goes the same way.
+    let rowAsked = await call("""
+      const h = cmuxWaveform.host, v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], true);
+      const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
+      items[0].run(); return true
+      """) as? Bool
+    await sleep(100)
+    expect(rowAsked == true && resolves() == before + 1, "build: the row menu's Trace Driver while it builds asks nothing new")
+    // What is being built? asks cmux for the doc.
+    let infos = events.filter { $0["event"] as? String == "buildInfo" }.count
+    _ = await call("const a = document.querySelector('#cmux-trace .buildinfo'); if (a) a.click(); return null")
+    await sleep(100)
+    expect(events.filter { $0["event"] as? String == "buildInfo" }.count == infos + 1, "build: What is being built? asks cmux to open its doc")
+    // Install, load, then done: the trace goes on to its step.
+    await progress("{ stage: 'install', host: 'build-host', startedAt: \(started) }")
+    await progress("{ stage: 'load', host: 'build-host', startedAt: \(started) }")
+    text = await panelText()
+    expect(text.contains("Loading the design"), "build: loading the design is shown: \(text.prefix(300))")
+    await progress("{ stage: 'done', host: 'build-host', startedAt: \(started) }")
+    // A progress call that arrives after done (sent before it) doesn't bring the build back.
+    await progress("{ stage: 'compile', percent: 99, host: 'build-host', startedAt: \(started) }")
+    for held in heldResolves { answer(held.id, ok: true, result: ["designPath": held.path, "designPrefix": "", "dumpPrefix": ""]) }
+    heldResolves = []
+    _ = await call("await window.__drv; return null")
+    text = await panelText()
+    expect(text.contains("q <= mix") && !text.contains("Building"), "build: when it is done the step is shown: \(text.prefix(200))")
+    // A failed build: the message, the log's last lines and Retry, which asks again.
+    let before2 = resolves()
+    _ = await call("window.__drv = cmuxWaveform.trace.driver(\(q)); return null")
+    await waitFor("the second resolve") { resolves() == before2 + 1 }
+    await progress("{ stage: 'upload', host: 'build-host', startedAt: \(Date().timeIntervalSince1970 * 1000), sourceBytes: 92160 }")
+    await progress("{ stage: 'failed', host: 'build-host', message: 'The design model could not be compiled on build-host.', log: 'error: one\\nerror: two\\nmake: *** [all] Error 2' }")
+    for held in heldResolves { answer(held.id, ok: false, error: "resolve", message: "The design model could not be compiled on build-host.") }
+    heldResolves = []
+    _ = await call("await window.__drv; return null")
+    text = await panelText()
+    let retry = await call("return !!document.querySelector('#cmux-trace button.retry')") as? Bool
+    expect(text.contains("could not be compiled") && text.contains("error: two") && text.contains("Error 2") && retry == true,
+           "build: a failure shows the message, the log's last lines and Retry: \(text.prefix(400))")
+    holdResolves = false
+    _ = await call("document.querySelector('#cmux-trace button.retry').click(); return null")
+    await waitFor("Retry's resolve") { resolves() == before2 + 2 }
+    _ = await call("await cmuxWaveform.trace.settled(); return null")
+    await sleep(300)
+    text = await panelText()
+    expect(resolves() == before2 + 2 && text.contains("q <= mix"), "build: Retry traces again (asking cmux anew): \(resolves() - before2) \(text.prefix(200))")
+    // Every page string of the build panel is sent by cmux and localized.
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let keys = Harness.pageStrings.keys.filter { $0.hasPrefix("traceBuild") }.sorted()
+    let missing = keys.filter { key in
+      guard let r = traceSwift.range(of: "\"\(key)\": String(localized: \""),
+            let id = traceSwift[r.upperBound...].split(separator: "\"").first,
+            let entry = (catalog[String(id)] as? [String: Any])?["localizations"] as? [String: Any] else { return true }
+      return entry.count != 9
+    }
+    expect(keys.count >= 12 && missing.isEmpty, "build: the panel's \(keys.count) strings come from cmux in 9 locales (missing: \(missing))")
   }
 
   /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
@@ -1285,6 +1403,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     case "resolve":
       if let resolveError { answer(id, ok: false, error: "resolve", message: resolveError); return }
       let path = (body["dumpPath"] as? [String] ?? []).joined(separator: ".")
+      if holdResolves { heldResolves.append((id, path)); return }
       answer(id, ok: true, result: ["designPath": path, "designPrefix": "", "dumpPrefix": ""])
     case "model":
       modelRequests += 1
@@ -1398,6 +1517,13 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     "traceXEnd_budget": "Stopped after %@ steps (the step limit).", "traceXEnd_failed": "Stopped: a step could not be traced.",
     "traceXEnd_cancelled": "Cancelled.", "traceXEnd_noX": "%@ has no x or z bits at this time.",
     "traceTrust_approximate": "approximate", "traceTrust_computed": "computed",
+    "traceBuildTitle": "Building the design model on %@", "traceBuildTitleLocal": "Building the design model on this Mac",
+    "traceBuildStage_upload": "Upload the model's sources (%@)", "traceBuildStage_fetch": "Download slang and its libraries",
+    "traceBuildStage_configure": "Configure (CMake)", "traceBuildStage_compile": "Compile", "traceBuildStage_install": "Install",
+    "traceBuildStage_load": "Loading the design", "traceBuildElapsed": "%@ so far", "traceBuildOnce": "Built once per host and cmux version.",
+    "traceBuildWhat": "What is being built?", "traceBuildFailedTitle": "The design model could not be built on %@",
+    "traceBuildFailedTitleLocal": "The design model could not be built on this Mac", "traceBuildLog": "Last lines of the build log:",
+    "traceBuildRetry": "Retry",
   ]
 
   /// How many times the page said a dump opened.
