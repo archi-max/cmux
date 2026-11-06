@@ -4674,7 +4674,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.restartSocketListenerIfEnabled(source: "workspace.didWake")
                 self?.rearmRemoteSessionsAfterSystemWake()
                 // One-off SSH masters may have outlived their connections.
-                SSHMasterPool.shared.recycleMasters()
+                // Through the network watch, so the path change that comes
+                // with a wake doesn't recycle a second time.
+                SSHMasterPool.networkWatch.recycleSoon()
             }
         )
         SSHMasterPool.networkWatch.start(recycling: .shared)
