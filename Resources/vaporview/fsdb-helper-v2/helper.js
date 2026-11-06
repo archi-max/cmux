@@ -25,7 +25,15 @@
 //     a real reopen (a new epoch, as below).
 //   children {scopeOffsetIdx, scopePath} -> {scopes, vars}
 //   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?}
-//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?} | {signalId, error}]}
+//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?, text?, kind?, min?, max?}
+//                   | {signalId, error, permanent?}]}
+//     (permanent: the error won't go away for this file (an encoding the reader can't give, a
+//     0-bit alias, over the store cap); the viewer shows it once and stops asking.)
+//     (text: a string or real signal (kind 'string' | 'real'): its records are
+//     [u64 LE delta][u32 LE byte length][UTF-8 text] instead, the text the viewer shows for a
+//     VCD's strings and reals (reals as Rust/wellen print them: shortest digits, no exponent);
+//     "x" before the first change. Reals also carry the signal's min and max (of 0 and every
+//     finite value, as wellen). Edges: every change; search (bit patterns) refuses them.)
 //     (total: the signal's whole normalized change count, when it came from the store;
 //     absent for ranged answers. Same number as `count`'s.)
 //     (ranged: a cold signal over a range <= FSDB_COLD_RANGE (0.25) of the file was answered
@@ -59,6 +67,8 @@
 //     as search (inclusive: >= t / <= t), but the value is formatted the way the viewer formats
 //     it (format riscv*, alias, ascii; text.js) and the pattern is matched against the text.
 //     Numeric formats (hex/bin/dec/sdec) are refused: they are value searches (`search`).
+//     format 'string' (string and real signals, the viewer's string format): the pattern is a
+//     case-insensitive regex over the value's text (upstream's rule); an invalid one matches nothing.
 //   cancel {id}                    -> the target's reply becomes {id, cancelled: true};
 //     queued parts are dropped, running ones finish and are discarded (background
 //     ones are told to stop). If `id` isn't running, one {id, cancelled: false} line.
@@ -454,6 +464,14 @@ function broadcast(op, extra) {
 
 // ---- split walks ----
 const widthOf = new Map();  // signalId -> bits, learned from children and window requests
+// Signals never split-walked: strings and reals (their stores aren't bit planes, so slices
+// can't be handed over) and events (a slice join would drop repeated occurrences).
+const noSplit = new Set();
+const learnKind = (signalId, encoding, type) => { if (encoding !== 'BitVector' || type === 'event') { noSplit.add(signalId); } };
+// Per-signal errors that will not go away for this file (an encoding the reader can't give,
+// a 0-bit alias, over the store cap): window headers mark them `permanent: true`, so the
+// viewer shows them once instead of retrying (and the coordinator doesn't walk them again).
+const PERMANENT = /unsupported|0 bits|larger than|not a bit signal|are not split/;
 const splitting = new Map();  // signalId -> Promise<{ms, slices}>
 let timeEnd = 0;
 
@@ -475,6 +493,7 @@ function splitWalks(req, ids) {
   const waits = [];
   const coldIds = ids.filter((id) => !splitting.has(id) && !workerFor(id).state.cached.includes(id));
   for (const id of ids) {
+    if (noSplit.has(id) && !splitting.has(id)) { continue; }
     if (splitting.has(id)) {
       const q = splitting.get(id);
       q.sp.reqs.add(req); (req.splits || (req.splits = [])).push(q.sp);
@@ -600,6 +619,7 @@ let index = null;  // {byPath, byId, list: [{path, signalId, width, msb, lsb, en
 // SystemVerilog strings (FSDB varType 63, 2 bytes per bit) are listed as width-1 BitVectors of type
 // 'unknown_var_type'; the reader can't give them as bit vectors, so they're never search or
 // warm-up candidates (they made every search containing them incomplete).
+// (Older reader trees listed SystemVerilog strings as width-1 BitVectors of type 'unknown_var_type'.)
 const bitVector = (v) => v.encoding === 'BitVector' && v.type !== 'unknown_var_type';
 function getIndex() {
   if (index) { return index; }
@@ -614,6 +634,7 @@ function getIndex() {
       if (!byPath.has(v.path)) { byPath.set(v.path, v); }
       if (!byId.has(signalId)) { byId.set(signalId, v); }
       widthOf.set(signalId, width);
+      learnKind(signalId, encoding, type);
     }, () => {}, () => {}, () => {}, () => {});
     let start = 0, rem = 1, guard = 256;
     while (rem > 0 && guard-- > 0) {
@@ -631,6 +652,8 @@ function getIndex() {
 // Expression reference -> {signalId, width, msb, lsb, path, sel}. A path may
 // carry its own index brackets (pc_rdata[0]); the longest bracket prefix that
 // names a variable wins and the rest are selects. A unique suffix also works.
+// Expressions work on bit vectors: a string or real operand is an error, not 64 bits of a double.
+const bitOperand = (v) => { if (v.encoding !== 'BitVector') { throw new Error(`${v.path} is a ${String(v.encoding).toLowerCase()} signal: expressions need bit vectors`); } return v; };
 const fmtSel = ([m, l]) => (m === l ? `[${m}]` : `[${m}:${l}]`);
 function resolveRef(r) {
   const idx = getIndex();
@@ -639,17 +662,17 @@ function resolveRef(r) {
     if (d) { return { signalId: d.id, width: d.width, msb: d.width - 1, lsb: 0, signed: d.signed, path: d.name || `#${d.id}`, sel: r.sel }; }
     const v = idx.byId.get(r.id);
     if (!v) { throw new Error(`unknown signal #${r.id}`); }
-    return { ...v, sel: r.sel };
+    return { ...bitOperand(v), sel: r.sel };
   }
   for (let k = r.sel.length; k >= 0; k--) {
     const name = r.path + r.sel.slice(0, k).map(fmtSel).join('');
     const d = derivedByName.get(name);
     if (d) { return { signalId: d.id, width: d.width, msb: d.width - 1, lsb: 0, signed: d.signed, path: name, sel: r.sel.slice(k) }; }
     const v = idx.byPath.get(name);
-    if (v) { return { ...v, sel: r.sel.slice(k) }; }
+    if (v) { return { ...bitOperand(v), sel: r.sel.slice(k) }; }
     const hits = idx.list.filter((e) => e.path.endsWith('.' + name));
     const ids = [...new Set(hits.map((e) => e.signalId))];
-    if (ids.length === 1) { return { ...hits[0], sel: r.sel.slice(k) }; }
+    if (ids.length === 1) { return { ...bitOperand(hits[0]), sel: r.sel.slice(k) }; }
     if (ids.length > 1) { throw new Error(`ambiguous signal ${name}: ${hits.slice(0, 3).map((e) => e.path).join(', ')}${hits.length > 3 ? ', ...' : ''}`); }
   }
   throw new Error(`unknown signal ${r.path}`);
@@ -1391,6 +1414,7 @@ const handlers = {
     epoch++;
     splitting.clear();
     widthOf.clear();
+    noSplit.clear();
     index = null;
     derived.clear(); derivedByKey.clear(); derivedByName.clear();
     if (activeSearch) {  // ends with its terminal line {id, cancelled: true, reason: 'reopened'} (verify F1)
@@ -1448,7 +1472,7 @@ const handlers = {
     // The reader's arrays come as scopes holding their elements (tree.js).
     const tree = readScopeTree(addon, scopePath, scopeOffsetIdx,
       (name, type, encoding, varPath, netlistId, signalId, width, msb, lsb) =>
-        { widthOf.set(signalId, width); return { name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }; });
+        { widthOf.set(signalId, width); learnKind(signalId, encoding, type); return { name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }; });
     return { scopes: scopes.filter((s) => !s.name.startsWith('$')).concat(tree.scopes), vars: tree.vars };
   },
 
@@ -1479,14 +1503,20 @@ const handlers = {
     const res = ids.map((id) => byId.get(id));
     const head = [], bins = [];
     for (const r of res) {
-      if (r.error) { head.push({ signalId: r.signalId, error: r.error, bytes: 0, bucketBytes: 0 }); continue; }
+      if (r.error) {
+        const permanent = PERMANENT.test(r.error);
+        if (permanent && r.signalId < DERIVED_BASE) { bgFailed.set(r.signalId, r.error); }
+        head.push({ signalId: r.signalId, error: r.error, bytes: 0, bucketBytes: 0, ...(permanent ? { permanent: true } : {}) });
+        continue;
+      }
       const rec = asBuf(r.records);
       let cnt = asBuf(r.counts);
       if (cnt && deflateCounts) { cnt = zlib.deflateRawSync(cnt, { level: 1 }); }
       const sp = req.split && req.split.get(r.signalId);
       head.push({ signalId: r.signalId, exact: r.exact, count: r.count, bytes: rec.length, bucketBytes: cnt ? cnt.length : 0,
         cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
-        ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
+        ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}),
+        ...(r.text ? { text: true, kind: r.kind } : {}), ...(r.kind === 'real' ? { min: r.min, max: r.max } : {}) });
       bins.push(rec);
       if (cnt) { bins.push(cnt); }
     }
@@ -1625,13 +1655,13 @@ const handlers = {
       }
       // A signal whose walk already failed for good (bgFailed: over the store cap,
       // unreadable) is reported from memory, not walked again.
-      for (const id of need) { if (bgFailed.has(id) && /larger than|0 bits|unsupported|limit/.test(bgFailed.get(id))) { errors.set(id, bgFailed.get(id)); } }
+      for (const id of need) { if (bgFailed.has(id) && (PERMANENT.test(bgFailed.get(id)) || /limit/.test(bgFailed.get(id)))) { errors.set(id, bgFailed.get(id)); } }
       const real = need.filter((x) => !derived.has(x) && !errors.has(x));
       if (real.length) {
         try { const sp = prep(req, real); if (sp) { await sp; } } catch (e) { /* a failed split: the load below reports it per signal */ }
         const res = await scatter(req, 'load', real, {}, (m) => m.result);
         for (const r of res) {  // (load's results carry their ids)
-          if (r && r.error) { errors.set(r.signalId, r.error); if (/larger than|0 bits|unsupported/.test(r.error)) { bgFailed.set(r.signalId, r.error); } }
+          if (r && r.error) { errors.set(r.signalId, r.error); if (PERMANENT.test(r.error)) { bgFailed.set(r.signalId, r.error); } }
         }
       }
     }

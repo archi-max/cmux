@@ -1,5 +1,6 @@
 // VaporView's src/fsdb_reader.cpp at 59107c6 (https://github.com/Lramseyer/vaporview),
-// GPL-3.0 (see ../../LICENSE), unmodified below this header; cmux's FSDB helper v2 builds it.
+// GPL-3.0 (see ../../LICENSE); cmux's FSDB helper v2 builds it. Changed by cmux only where marked
+// `cmux:` (2026-11-06: SystemVerilog string variables are listed and read as strings).
 #include <napi.h>
 
 #include <cstdint>
@@ -669,6 +670,11 @@ static void __DumpVar(fsdbTreeCBDataVar *var) {
       type = (str_T) "wor";
       break;
 
+    case FSDB_VT_STRING:  // cmux: SystemVerilog string variables (4 bytes per bit, a C string)
+      type = (str_T) "string";
+      encoding = "String";
+      break;
+
     case FSDB_VT_VHDL_SIGNAL:
       type = (str_T) "signal";
       break;
@@ -934,6 +940,16 @@ static void __PrintTimeValChng(ffrVCTrvsHdl vc_trvs_hdl, fsdbTag64 *time,
           // fprintf(stderr, "  end: %d\n", *((int *)vc_ptr));
           break;
 
+        case FSDB_VT_STRING:  // cmux: the value is a C string
+          vc_trvs_hdl->ffrGetVC(&vc_ptr);
+          valueChange = Napi::Array::New(env, 2);
+          valueChange.Set((uint32_t)0, Napi::Number::New(
+                                           env, combineTime(time->H, time->L)));
+          valueChange.Set((uint32_t)1, Napi::String::New(env, std::string((const char *)vc_ptr, strnlen((const char *)vc_ptr, 1u << 20))));
+          len = result.Length();
+          result.Set(len, valueChange);
+          break;
+
         default:
           vc_trvs_hdl->ffrGetVC(&vc_ptr);
           // fprintf(stderr, "time: (%u %u)  val chg: %f\n", time->H, time->L,
@@ -1059,6 +1075,11 @@ std::string getOneValue(ffrVCTrvsHdl vc_trvs_hdl, byte_T *vc_ptr) {
           // fprintf(stderr, "  begin: %d", *((int *)vc_ptr));
           vc_ptr = vc_ptr + sizeof(uint_T);
           // fprintf(stderr, "  end: %d\n", *((int *)vc_ptr));
+          break;
+
+        case FSDB_VT_STRING:  // cmux: the value is a C string
+          vc_trvs_hdl->ffrGetVC(&vc_ptr);
+          value_str = std::string((const char *)vc_ptr, strnlen((const char *)vc_ptr, 1u << 20));
           break;
 
         default:

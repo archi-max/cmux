@@ -88,7 +88,7 @@ function load(ids, evict = true) {
   if (rest.length) {
     for (const r of addon.cacheLoad(rest, false)) {
       info.set(r.signalId, r);
-      if (!r.error && !r.cached) { walkedNow.push(r.signalId); }
+      if (!r.error && !r.cached && !r.kind) { walkedNow.push(r.signalId); }  // (string/real stores aren't persisted)
     }
   }
   if (evict) { addon.cacheEvict(ids); }
@@ -142,6 +142,10 @@ function readVarTree() {
   return { vars, ms: +(performance.now() - t0).toFixed(1) };
 }
 
+// String and real signals: their records are text ([u64 delta][u32 length][bytes]), and a
+// real's window says the signal's min and max (the viewer's analog scale), as wellen's do.
+const textHead = (w) => (w.text ? { text: true, kind: w.kind, ...(w.kind === 'real' ? { min: w.min, max: w.max } : {}) } : {});
+
 const ops = {
   open({ file, cacheBytes }) {
     sizesKey = '';  // the coordinator dropped its copy: send them with this reply
@@ -164,7 +168,7 @@ const ops = {
       if (l.error) { return { signalId, error: l.error }; }
       const w = addon.cacheWindow(signalId, t0, t1, buckets);
       return { signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
-        counts: w.counts || null, cached: l.cached, loadMs: l.loadMs, walkMs: l.walkMs, total: w.total, ...(l.fromFile ? { file: true } : {}) };
+        counts: w.counts || null, cached: l.cached, loadMs: l.loadMs, walkMs: l.walkMs, total: w.total, ...(l.fromFile ? { file: true } : {}), ...textHead(w) };
     });
   },
 
@@ -184,7 +188,7 @@ const ops = {
   windowCold({ signalIds, t0, t1, buckets }) {
     return addon.cacheWindowCold(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
       : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
-        counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs }));
+        counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs, ...textHead(w) }));
   },
 
   // Background whole walk after a ranged first draw: yields to interactive work.
