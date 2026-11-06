@@ -235,6 +235,14 @@ public enum HierarchyPrefixInference {
         return String(name[..<open])
     }
 
+    /// `mem` for a word `mem[3]` (an index, not a range or a scope's `gen[0]`), else nil.
+    static func memoryName(ofWord name: String) -> String? {
+        guard name.hasSuffix("]"), !name.hasPrefix("\\"), let open = name.lastIndex(of: "["), open > name.startIndex else { return nil }
+        let digits = name[name.index(after: open)..<name.index(before: name.endIndex)]
+        guard !digits.isEmpty, digits.count <= 10, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return String(name[..<open])
+    }
+
     /// The signal names that exactly one of `kids` strips to, other than its own name and other
     /// than a kid's exact name: a bit-blasted dump (`pc[0:0]`, `pc[1:1]`) has no single `pc`, and
     /// beside an exact `pc` the ranged one is not it. The same rule as host.js.
@@ -333,9 +341,13 @@ public enum HierarchyPrefixInference {
             // The design names the signal without the range a dump may give it (`pc[0:0]`).
             let name = path[length]
             var designName = name
-            if length == path.count - 1, let kid = kids.first(where: { $0.name == name }),
-               uniqueSignalNames(kids).contains(signalName(kid)) {
-                designName = signalName(kid)
+            if length == path.count - 1, let kid = kids.first(where: { $0.name == name }) {
+                if uniqueSignalNames(kids).contains(signalName(kid)) {
+                    designName = signalName(kid)
+                } else if !kid.isScope, let memory = memoryName(ofWord: kid.name) {
+                    // A memory's word (`mem[3]`): the design has the memory, `mem`.
+                    designName = memory
+                }
             }
             for (root, rootChildren) in designRoots.sorted(by: { $0.key < $1.key })
             where rootChildren.contains(where: { $0.name == name || $0.name == designName }) {
