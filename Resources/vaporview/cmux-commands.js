@@ -872,16 +872,34 @@
   // order. Each answers a promise of its result (0 when dropped); null: not
   // held. A reload or open drops them and stops counting the lookups of the
   // load before (their views are stale): a lookup that never settles can't
-  // hold the next load's adds, or an Add All waiting on one.
+  // hold the next load's adds, or an Add All waiting on one. Within a load,
+  // an add held for holdLimitMs (a lookup that never settles: an SSH host gone
+  // quiet) stops waiting: the held adds run, and the lookups running then stop
+  // being counted (if one lands later, its view lands as it would have).
   let resolving = 0;
   let resolveEpoch = 0;
   let deferredAdds = [];
+  let holdLimitMs = 15000;
+  let holdTimer = null;
+  function clearHoldTimer() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+  function holdLimitReached() {
+    holdTimer = null;
+    if (!resolving || !deferredAdds.length) { return; }
+    host().log('a view still looking up its rows after ' + holdLimitMs + ' ms: the held adds run');
+    resolveEpoch++;
+    viewGeneration++;
+    resolving = 0;
+    flushDeferredAdds();
+  }
   // Views posted (or dropped) so far: an Add All that read the rows before a
   // view came and went reads them again.
   let viewGeneration = 0;
   let settleWaiters = [];
   function deferWhileApplying(add) {
     if (!resolving) { return null; }
+    if (!holdTimer) { holdTimer = setTimeout(holdLimitReached, holdLimitMs); }
     return new Promise((resolve) => { deferredAdds.push({ add, resolve }); });
   }
   // Null when no view is looking up its rows; else a promise of true once none
@@ -892,6 +910,7 @@
   }
   function flushDeferredAdds() {
     if (resolving) { return; }
+    clearHoldTimer();
     const list = deferredAdds;
     deferredAdds = [];
     list.forEach((d) => {
@@ -905,6 +924,7 @@
     resolveEpoch++;
     viewGeneration++;
     resolving = 0;
+    clearHoldTimer();
     const list = deferredAdds;
     deferredAdds = [];
     list.forEach((d) => d.resolve(0));
@@ -1860,6 +1880,9 @@
     withSettledViews,
     get settleTimeoutMs() { return settleTimeoutMs; },
     set settleTimeoutMs(ms) { settleTimeoutMs = ms; },
+    // How long an add waits for a view's lookups before it runs anyway.
+    get holdLimitMs() { return holdLimitMs; },
+    set holdLimitMs(ms) { holdLimitMs = ms; },
     // Whether the viewer answers an apply-state (it has asked for its state),
     // and whether a context is such an answer.
     viewerAnswersViews: () => restoreAsked,
