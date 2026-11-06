@@ -171,7 +171,7 @@ struct FilePreviewLanguageDocumentContext {
                   providerIdentity.hasPrefix("ssh:"),
                   let configuration = workspace?.remoteConfiguration,
                   configuration.transport == .ssh,
-                  let launch = remoteServerLaunch(languageId: languageId, configuration: configuration) else {
+                  LanguageToolRegistry.languageServer(forLanguage: languageId, remoteDestination: configuration.destination) != nil else {
                 return nil
             }
             // The terminal directory is often the remote home, where the server
@@ -180,6 +180,11 @@ struct FilePreviewLanguageDocumentContext {
             var root = containingDirectory(pinned, of: remotePath)
             if root == nil { root = await discoveredRemoteRoot(for: remotePath, configuration: configuration) }
             let resolvedRoot = root ?? (remotePath as NSString).deletingLastPathComponent
+            // One server per route, root and language (LanguageServerPool), so
+            // one carrier session each.
+            guard let launch = await remoteServerLaunch(
+                languageId: languageId, configuration: configuration, rootPath: resolvedRoot
+            ) else { return nil }
             return FilePreviewLanguageDocumentContext(
                 documentURI: URL(fileURLWithPath: remotePath),
                 rootURI: URL(fileURLWithPath: resolvedRoot, isDirectory: true),
@@ -206,19 +211,28 @@ struct FilePreviewLanguageDocumentContext {
     }
 
     /// Runs the registry's remote command through the workspace's own batch
-    /// `ssh` arguments, the same route the Files explorer uses: it reuses the
-    /// `cmux ssh` ControlPath, so password-only hosts work too.
+    /// `ssh` arguments, on the Files explorer's route. The server runs for the
+    /// whole session: on a connection of its own, or, on a host that takes
+    /// only the terminal's sign-in, on one of the carrier's long-lived
+    /// sessions (``RemoteLanguageServerSessions``), one per server. Nil when
+    /// it can't have one.
     private static func remoteServerLaunch(
         languageId: String,
-        configuration: WorkspaceRemoteConfiguration
-    ) -> LanguageToolLaunch? {
+        configuration: WorkspaceRemoteConfiguration,
+        rootPath: String
+    ) async -> LanguageToolLaunch? {
         guard case .ssh(_, _, let remoteCommand)? = LanguageToolRegistry.languageServer(
             forLanguage: languageId,
             remoteDestination: configuration.destination
         ) else { return nil }
+        guard let session = try? await RemoteLanguageServerSessions.session(
+            for: configuration, rootPath: rootPath, languageId: languageId
+        ) else {
+            return nil
+        }
         let arguments = configuration.batchSSHCommandArguments(
             command: remoteCommand,
-            effectiveSSHOptions: configuration.fileOperationSSHOptions
+            effectiveSSHOptions: session.sshOptions
         )
         return .remote(executablePath: "/usr/bin/ssh", arguments: arguments)
     }
@@ -287,11 +301,17 @@ struct FilePreviewLanguageDocumentContext {
         input: Data? = nil,
         timeout: TimeInterval = remoteProbeTimeout
     ) async -> FilePreviewRemoteShellResult? {
-        let arguments = configuration.batchSSHCommandArguments(
-            command: SlangWorkspaceRoot.posixShellCommand(script),
-            effectiveSSHOptions: configuration.fileOperationSSHOptions
-        )
-        return await runProbe(arguments: arguments, input: input, timeout: timeout)
+        // A short run: on a session the one-off master lends (or its own connection).
+        return try? await SSHMasterPool.shared.withSession(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: configuration.fileOperationSSHOptions
+        ) { options in
+            let arguments = configuration.batchSSHCommandArguments(
+                command: SlangWorkspaceRoot.posixShellCommand(script),
+                effectiveSSHOptions: options
+            )
+            return await runProbe(arguments: arguments, input: input, timeout: timeout)
+        }
     }
 
     /// Runs `/usr/bin/ssh arguments`; its exit status and stdout, or nil when it can't start or after
@@ -444,5 +464,34 @@ final class FilePreviewLanguageHoverViewController: NSViewController {
             }
         }
         return output
+    }
+}
+
+/// The carrier sessions remote language servers hold. ``LanguageServerPool``
+/// runs one server per launch, root and language, and a server lives as long
+/// as the app (a restart reuses its slot), so each holds one session that
+/// long, keyed by its route (destination, port, identity file and options:
+/// another workspace's key never gets this one's carrier), root and
+/// language. A host whose one-off masters work holds none (its servers have
+/// connections of their own).
+enum RemoteLanguageServerSessions {
+    static let shared = HeldLongLivedSessions<LongLivedSSHSession>()
+
+    static func session(
+        for configuration: WorkspaceRemoteConfiguration,
+        rootPath: String,
+        languageId: String
+    ) async throws -> LongLivedSSHSession {
+        let options = configuration.fileOperationSSHOptions
+        let route = SSHMasterPool.Route(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: options
+        )?.key ?? ([configuration.destination, configuration.port.map(String.init) ?? "",
+                    configuration.identityFile ?? ""] + options).joined(separator: "\u{1F}")
+        return try await shared.session(
+            for: HeldLongLivedSessions<LongLivedSSHSession>.key(route: route, rootPath: rootPath, languageId: languageId),
+            keep: { $0.lease != nil },
+            make: { try await configuration.longLivedSession() }
+        )
     }
 }

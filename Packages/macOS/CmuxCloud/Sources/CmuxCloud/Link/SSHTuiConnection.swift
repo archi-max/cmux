@@ -131,19 +131,74 @@ public struct SSHTuiConnection: Sendable {
         return arguments
     }
 
-    /// The SSH options for a one-off `ssh`, `scp` or `sftp` beside the carrier,
-    /// such as a file drop, the Files explorer or a file preview.
+    /// The SSH options for a short one-off `ssh`, `scp` or `sftp` beside the
+    /// carrier, such as a file drop, a Files listing or a file preview.
     ///
-    /// They keep the carrier's route and the ControlPath of its authenticated
-    /// master: those batch-mode runs can log in to a password-only host only
-    /// through it. `ControlMaster` and `ControlPersist` are left out so a
-    /// one-off run never becomes the master itself.
+    /// They keep the carrier's route but not its master: every session over a
+    /// master counts against the server's per-connection `MaxSessions` (10 by
+    /// default), every app's carrier for a host shares one master, and a
+    /// refused session gets no fallback, so one-off runs there could refuse a
+    /// carrier's reconnect. They name this app's own one-off master instead,
+    /// the carrier's ControlPath plus ``operationsControlPathSuffix``, which the
+    /// app opens when the carrier connects and lends sessions on (a batch run
+    /// never starts a master itself); while that master can't start, as on a
+    /// host that only takes a password, the app lends the carrier's
+    /// (``carrierSSHOptions``) instead.
+    ///
+    /// A carrier that shares nothing (`ControlPath=none`) keeps them unshared.
+    /// One whose options say `ControlMaster=no`, or whose path ends in a `%`
+    /// that a suffix would turn into an unknown token, gets
+    /// ``carrierSSHOptions`` as they are.
     public var fileOperationSSHOptions: [String] {
+        let resolver = SSHAgentSocketResolver(environment: [:])
+        let options = sshOptions
+        let route = options.filter { option in
+            let key = resolver.optionKey(option)
+            return key != "controlmaster" && key != "controlpersist" && key != "controlpath"
+        }
+        guard let path = resolver.optionValue(named: "ControlPath", in: options)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+            return route
+        }
+        guard path.lowercased() != "none" else { return route + ["ControlPath=none"] }
+        let master = resolver.optionValue(named: "ControlMaster", in: options)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trailingPercents = path.reversed().prefix { $0 == "%" }.count
+        guard master != "no", trailingPercents % 2 == 0 else { return carrierSSHOptions }
+        return route + ["ControlPath=" + path + operationsControlPathSuffix]
+    }
+
+    /// The carrier's route and ControlPath, without the options that would let
+    /// a run become a master: what one-off runs used before they had masters
+    /// of their own, and what they fall back to on a host where those can't
+    /// log in.
+    public var carrierSSHOptions: [String] {
         let resolver = SSHAgentSocketResolver(environment: [:])
         return sshOptions.filter { option in
             let key = resolver.optionKey(option)
             return key != "controlmaster" && key != "controlpersist"
         }
+    }
+
+    /// Appended to the carrier's ControlPath for this app's one-off masters:
+    /// `-ops`, plus a short digest of the build's tag, so two installed apps
+    /// never lend sessions on one master without counting each other's. Kept
+    /// short: the master's socket path must fit in `sun_path`.
+    public var operationsControlPathSuffix: String {
+        guard let remoteTag else { return "-ops" }
+        let digest = SHA256.hash(data: Data(remoteTag.utf8)).prefix(3).map { String(format: "%02x", $0) }.joined()
+        return "-ops-" + digest
+    }
+
+    /// The SSH options for a long-lived run beside the carrier, such as a
+    /// language server or a waveform helper: the carrier's route on a
+    /// connection of its own, so it holds no session on a shared master.
+    public var longLivedSSHOptions: [String] {
+        let resolver = SSHAgentSocketResolver(environment: [:])
+        return sshOptions.filter { option in
+            let key = resolver.optionKey(option)
+            return key != "controlmaster" && key != "controlpersist" && key != "controlpath"
+        } + ["ControlMaster=no", "ControlPath=none"]
     }
 
     /// The caller's options plus cmux's shared ControlMaster, as 0.64.25's

@@ -29,7 +29,7 @@ struct SSHTuiCarrierRoutesTests {
     /// carries the user's own ssh_config ControlPath; with an agent that
     /// caller-owned path becomes `ControlPath=none`, and that open's Files,
     /// preview and language-server runs then logged in afresh every time.
-    @Test("A later open with its own control options still uses the carrier's master")
+    @Test("A later open with its own control options still uses the machine's one-off master")
     func laterOpenUsesCarrierMaster() throws {
         let carrier = SSHTuiConnection(configuration: configuration(options: []), environment: Self.environment)
         let laterOpen = configuration(options: [
@@ -43,8 +43,29 @@ struct SSHTuiCarrierRoutesTests {
         routes.record(carrier)
         let options = routes.fileOperationSSHOptions(for: laterOpen)
 
-        #expect(controlPaths(options) == [carrierPath])
-        #expect(!options.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
+        #expect(controlPaths(options) == [carrierPath + carrier.operationsControlPathSuffix])
+    }
+
+    /// The machine's carrier master is shared by every app's carrier for the
+    /// host, and sshd refuses a session past its per-connection limit with no
+    /// fallback; a one-off run or long-lived helper there could refuse a
+    /// carrier's reconnect. So no option set here ever names it.
+    @Test("One-off and long-lived runs never use the carrier's ControlPath")
+    func runsNeverUseTheCarrierControlPath() throws {
+        let carrier = SSHTuiConnection(configuration: configuration(options: []), environment: Self.environment)
+        let carrierPath = try #require(controlPaths(carrier.preflightArguments).first)
+        let routes = SSHTuiCarrierRoutes()
+        routes.record(carrier)
+        let workspace = configuration(options: ["ControlPath=/tmp/cmux-routes-user/%r@%h:%p"])
+
+        let oneOff = routes.fileOperationSSHOptions(for: workspace)
+        let longLived = routes.longLivedSSHOptions(for: workspace)
+        #expect(!oneOff.contains(carrierPath))
+        #expect(!longLived.contains(carrierPath))
+        #expect(controlPaths(oneOff) == [carrierPath + carrier.operationsControlPathSuffix])
+        #expect(!oneOff.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
+        #expect(controlPaths(longLived) == ["ControlPath=none"])
+        #expect(longLived.contains("ControlMaster=no"))
     }
 
     /// A carrier the user opened with `--ssh-option ControlPath=none` shares
@@ -99,8 +120,8 @@ struct SSHTuiCarrierRoutesTests {
     }
 
     /// The carrier is shared per machine, agent included, as its terminals are;
-    /// a one-off run still never becomes a master.
-    @Test("A different agent on the same machine never starts a master")
+    /// a one-off run still never rides the carrier's own master.
+    @Test("A different agent on the same machine uses the carrier's one-off master")
     func aDifferentAgentOnTheSameMachine() {
         let carrier = SSHTuiConnection(configuration: configuration("alice@a.invalid", options: []), environment: Self.environment)
         let other = configuration("alice@a.invalid", options: [], agent: "/tmp/cmux-routes-agent-B.sock")
@@ -108,6 +129,6 @@ struct SSHTuiCarrierRoutesTests {
         routes.record(carrier)
         let options = routes.fileOperationSSHOptions(for: other)
         #expect(controlPaths(options) == controlPaths(carrier.fileOperationSSHOptions))
-        #expect(!options.contains { $0.hasPrefix("ControlMaster=") || $0.hasPrefix("ControlPersist=") })
+        #expect(!options.contains { controlPaths(carrier.preflightArguments).contains($0) })
     }
 }
