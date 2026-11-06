@@ -114,6 +114,9 @@ final class SSHMasterPool: @unchecked Sendable {
         case unavailable
         /// Something that may pass (the network, say); try again later.
         case failed
+        /// No answer in time: a login stalled on the host, or waiting on
+        /// the user (a security key's touch, an agent's confirm).
+        case stalled
     }
 
     /// What `ssh -O check` said about a master.
@@ -330,6 +333,7 @@ final class SSHMasterPool: @unchecked Sendable {
         maxWait: Duration = .seconds(5),
         carrierMaxWait: Duration = .seconds(20),
         startMaxWait: Duration = .seconds(25),
+        stallRetry: Duration = .seconds(60),
         idleTimeout: Duration = .seconds(30 * 60)
     ) {
         self.control = control
@@ -927,7 +931,7 @@ final class SSHMasterPool: @unchecked Sendable {
             // A refused later master while another is live (a host that
             // rations logins, say) only backs off: the flag would also stop
             // the first master from coming back when it dies.
-            if outcome == .unavailable, !host.masters.contains(where: \.live) { host.mastersUnavailable = true }
+            if outcome == .unavailable || outcome == .stalled, !host.masters.contains(where: \.live) { host.mastersUnavailable = true }
             if ok {
                 host.masters[index].failures = 0
                 host.masters[index].retryAt = nil
@@ -1115,7 +1119,18 @@ extension SSHMasterPool {
         }
 
         func stop(_ route: Route, path: String) async {
-            _ = await Self.run(Self.stopArguments(route, path: path), timeout: 5, stderrToFile: true)
+            await Self.stop(route, path: path, run: { arguments, timeout in
+                await Self.run(arguments, timeout: timeout, stderrToFile: true)
+            }, remove: { try? FileManager.default.removeItem(atPath: $0) })
+        }
+
+        /// Not yet: a stop that times out is left at that.
+        static func stop(
+            _ route: Route, path: String,
+            run: (_ arguments: [String], _ timeout: TimeInterval) async -> (status: Int32?, output: String, timedOut: Bool),
+            remove: (String) -> Void
+        ) async {
+            _ = await run(stopArguments(route, path: path), 5)
         }
 
         /// `<directory of socket>/<40 hex digits>`: the digest of the expanded
@@ -1216,42 +1231,45 @@ extension SSHMasterPool {
     /// Recycles a pool's masters (``recycleMasters()``) when the network path
     /// changes: another Wi-Fi, a VPN coming up or down, a cable. The app
     /// starts one for ``shared``; waking from sleep recycles too.
+    /// Not yet settled: every change fires at once.
     final class NetworkWatch: @unchecked Sendable {
         private let monitor = NWPathMonitor()
         private let lock = NSLock()
         private var last: String?
         private var started = false
+        private var onChange: (@Sendable () -> Void)?
+
+        init(settle: TimeInterval = 2, onChange: (@Sendable () -> Void)? = nil) {
+            self.onChange = onChange
+        }
 
         func start(recycling pool: SSHMasterPool) {
             let begin: Bool = lock.withLock {
                 defer { started = true }
+                if onChange == nil { onChange = { [weak pool] in pool?.recycleMasters() } }
                 return !started
             }
             guard begin else { return }
-            monitor.pathUpdateHandler = { [weak self, weak pool] path in
-                guard let self else { return }
-                let signature = Self.signature(
+            monitor.pathUpdateHandler = { [weak self] path in
+                self?.report(Self.signature(
                     satisfied: path.status == .satisfied,
                     interfaces: path.availableInterfaces.map(\.name),
                     gateways: path.gateways.map { "\($0)" }
-                )
-                if self.changed(to: signature), path.status == .satisfied { pool?.recycleMasters() }
+                ))
             }
             monitor.start(queue: DispatchQueue(label: "com.cmuxterm.ssh-master-pool.network"))
         }
 
-        /// What identifies a path for this purpose.
         static func signature(satisfied: Bool, interfaces: [String], gateways: [String]) -> String {
             ([satisfied ? "up" : "down"] + interfaces + ["|"] + gateways.sorted()).joined(separator: ",")
         }
 
-        /// Whether `signature` differs from the last one seen; the first one
-        /// (the monitor's initial report) is no change.
-        func changed(to signature: String) -> Bool {
-            lock.withLock {
+        func report(_ signature: String) {
+            let fire: (@Sendable () -> Void)? = lock.withLock {
                 defer { last = signature }
-                return last != nil && last != signature
+                return last != nil && last != signature && signature.hasPrefix("up") ? onChange : nil
             }
+            fire?()
         }
     }
 
