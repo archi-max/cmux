@@ -1102,8 +1102,8 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// text=1 dump: tb.dut.msg (string, a word every 2000 ps, 500k changes: windowed),
   /// level (real, 1000 changes: loaded whole), bad (a permanent error), flaky (a transient one).
   func textValueChecks() async {
-    let msgId = 4, levelId = 5, badId = 6, flakyId = 7
-    for name in ["msg", "level", "bad", "flaky"] {
+    let msgId = 4, levelId = 5, badId = 6, flakyId = 7, bannerId = 8, tornId = 9, swingId = 10
+    for name in ["msg", "level", "bad", "flaky", "banner", "torn", "swing"] {
       let added = await call("return await cmuxWaveform.link.addSignal(['tb','dut','\(name)'])")
       if added as? Bool != true { print("[add]", name, String(describing: added)) }
     }
@@ -1150,6 +1150,12 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await wc("(w.goToNextTransition(0, 1, []), 1)")
     let next = await waitFor(5000) { await self.markerNow() == wantEdge }
     expect(next && (wantEdge ?? 0) > times[2], "next edge on a string row: marker \(String(describing: await markerNow())), the helper's \(String(describing: wantEdge))")
+    // A string has no rising edge: "next rising" on it is its next change.
+    _ = await call("cmuxWaveform.link.setMarker(\(times[2])); return null")
+    await sleep(300)
+    _ = await wc("(w.goToNextTransition(0, 1, ['1']), 1)")
+    let nextRise = await waitFor(5000) { await self.markerNow() == wantEdge }
+    expect(nextRise, "next rising edge on a string row is its next change: marker \(String(describing: await markerNow())), want \(String(describing: wantEdge))")
     // Value search in the string format: the helper's searchText (format string).
     let s0 = await textStats()
     let found = await valueSearch(["tb", "dut", "msg"], "needle", from: 0)
@@ -1174,6 +1180,19 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "a permanent error shows without (retrying) and isn't asked again: \(badLabel), asks \(bad0)->\(bad1)")
     expect(flakyLabel == "unreadable: mock: worker restarted (retrying)" && flaky1 > flaky0,
            "a transient error says (retrying) and is retried: \(flakyLabel), asks \(flaky0)->\(flaky1)")
+    // A torn reply (records end mid-record) fails the window and is retried; it isn't drawn short.
+    let tornLabel = await label(tornId)
+    expect(tornLabel.hasPrefix("unreadable") && tornLabel.hasSuffix("(retrying)"), "a torn text reply fails its window (retried): \(tornLabel)")
+    // Few changes but long text (the header's textMean): too big to load whole, stays windowed.
+    let bannerState = await wc("(() => { const s = w.signals.get(\(bannerId)); return s ? s.hybrid + ',' + w.isWindowed(\(bannerId)) : 'none'; })()") as? String ?? "?"
+    expect(bannerState == "windowed,true", "a string row with 1000 changes of 200 KB text stays windowed: \(bannerState)")
+    // A real's scale is the widest range its windows have said, not the last window's.
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 0, endTime: 100000000 }); return null")
+    await sleep(1500)
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 900000000, endTime: 1000000000 }); return null")
+    await sleep(1500)
+    let swing = await wc("(() => { const s = w.signals.get(\(swingId)); return s ? [s.min, s.max] : []; })()") as? [Double] ?? []
+    expect(swing.count == 2 && swing[0] <= -109 && swing[1] >= 9, "a real row's scale keeps the widest range seen while panning: \(swing)")
   }
 
   func jsString(_ s: String) -> String {

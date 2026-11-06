@@ -63,6 +63,9 @@ class Sig {
     this.min = opts.min ?? 0; this.max = opts.max ?? 1;
     this.kind = opts.kind || null; // 'string' | 'real': text records (helper-v2's `text: true`)
     this.error = opts.error || null; // {message, permanent}: every window of it fails (helper-v2's per-signal error)
+    this.textMean = opts.textMean ?? null; // text: the header's mean text bytes per change (helper-v2's textMean)
+    this.torn = !!opts.torn;          // every window's records end mid-record (a torn reply)
+    this.sliceRange = !!opts.sliceRange; // real: min/max of each window's own records, not the signal's
   }
   value(i) { return i < 0 ? (this.kind ? 'x' : 'x'.repeat(this.width)) : this.valueFn(i); }
   // first index with time >= t
@@ -87,7 +90,8 @@ function normalize(sig) {
   if (keep.length === sig.n) { return sig; }
   const idx = Int32Array.from(keep);
   return new Sig(sig.width, Float64Array.from(keep, (i) => sig.times[i]), (j) => sig.valueFn(idx[j]),
-    { num: sig.num ? (j) => sig.num(idx[j]) : null, min: sig.min, max: sig.max, kind: sig.kind, error: sig.error });
+    { num: sig.num ? (j) => sig.num(idx[j]) : null, min: sig.min, max: sig.max, kind: sig.kind, error: sig.error,
+      textMean: sig.textMean, torn: sig.torn, sliceRange: sig.sliceRange });
 }
 
 function hash32(a, b) {
@@ -166,6 +170,11 @@ function makeSynth(spec) {
   //   level (real): every 1e6 ps (1000 changes, loaded whole); values like -12.5 .. 37.25
   //   bad (8-bit): every window fails with a permanent error (an encoding the reader can't give)
   //   flaky (8-bit): every window fails with a transient error (retried)
+  //   banner (string): 1000 changes, but its headers say 200 KB of text per change (textMean),
+  //     too much to load whole
+  //   torn (string): every window reply ends mid-record
+  //   swing (real): 400k changes (windowed), 0..9 in the first half, -109..-100 in the second;
+  //     each window says only its own records' min/max (as a ranged slice would)
   if (p.text) {
     const t = periodic(2000), far = Math.floor(t.length * MSG_FAR);
     addVar('msg', 1, new Sig(1, t, (i) => (i === 0 ? 'boot' : i === far ? 'needle-far' : MSG_WORDS[hash32(21, i) % MSG_WORDS.length]), { kind: 'string' }), 'string', 'String');
@@ -175,6 +184,10 @@ function makeSynth(spec) {
     addVar('level', 1, new Sig(1, lt, lv, { kind: 'real', min: mn, max: mx }), 'real', 'Real');
     addVar('bad', 8, new Sig(8, periodic(4000), (i) => bin32(i & 255, 8), { error: { message: 'unsupported encoding (2 bytes per bit, var type 4)', permanent: true } }));
     addVar('flaky', 8, new Sig(8, periodic(4000), (i) => bin32(i & 255, 8), { error: { message: 'mock: worker restarted', permanent: false } }));
+    addVar('banner', 1, new Sig(1, periodic(1e6), (i) => 'banner ' + i, { kind: 'string', textMean: 200000 }), 'string', 'String');
+    addVar('torn', 1, new Sig(1, periodic(4000), (i) => 'w' + (i % 7), { kind: 'string', torn: true }), 'string', 'String');
+    const st = periodic(2500), half = st.length / 2;
+    addVar('swing', 1, new Sig(1, st, (i) => String(i < half ? i % 10 : -100 - (i % 10)), { kind: 'real', sliceRange: true }), 'real', 'Real');
   }
   const own = vars.length;
   // arrays=1: packed arrays as helper-v2 reports the reader's ARRAY scopes (tree.js): a scope
@@ -278,9 +291,12 @@ function windowQuery({ signals, t0, t1, buckets }) {
         lo = hi;
       }
     }
-    const packed = packRecords(recs, s.width, !!s.kind);
-    const head = { signalId, exact, count, bytes: packed.length, bucketBytes: counts ? counts.length : 0, min: s.min, max: s.max,
-      ...(s.kind ? { text: true, kind: s.kind } : {}) };
+    let packed = packRecords(recs, s.width, !!s.kind);
+    if (s.torn) { const raw = zlib.inflateRawSync(packed); packed = zlib.deflateRawSync(raw.subarray(0, raw.length - 2), { level: 1 }); }
+    let mn = s.min, mx = s.max;
+    if (s.sliceRange) { const xs = recs.map((r) => Number(r[1])).filter(Number.isFinite); mn = Math.min(...xs); mx = Math.max(...xs); }
+    const head = { signalId, exact, count, bytes: packed.length, bucketBytes: counts ? counts.length : 0, min: mn, max: mx,
+      ...(s.kind ? { text: true, kind: s.kind } : {}), ...(s.textMean !== null ? { textMean: s.textMean } : {}) };
     if (known) { head.total = s.n; } // whole-dump change count, once stored
     out.push(head);
     parts.push(packed); if (counts) { parts.push(counts); }
