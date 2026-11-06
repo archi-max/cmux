@@ -873,16 +873,28 @@
   // held. A reload or open drops them and stops counting the lookups of the
   // load before (their views are stale): a lookup that never settles can't
   // hold the next load's adds, or an Add All waiting on one. Within a load,
-  // an add held for holdLimitMs (a lookup that never settles: an SSH host gone
-  // quiet) stops waiting: the held adds run, and the lookups running then stop
-  // being counted (if one lands later, its view lands as it would have).
+  // once the oldest lookup still running has run for holdLimitMs (one that
+  // never settles: an SSH host gone quiet), the held adds stop waiting: they
+  // run, and the lookups running then stop being counted (if one lands later,
+  // its view lands as it would have). The limit counts from the lookup's
+  // start, so an Add All that waited for the views to settle first doesn't
+  // wait the whole limit again.
   let resolving = 0;
   let resolveEpoch = 0;
   let deferredAdds = [];
+  // When each lookup counted in `resolving` started (one entry per lookup).
+  const lookupStarts = new Map();
   let holdLimitMs = 15000;
   let holdTimer = null;
   function clearHoldTimer() {
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+  // (Re)arms the timer for the oldest lookup still running, while adds are held.
+  function armHoldTimer() {
+    clearHoldTimer();
+    if (!resolving || !deferredAdds.length || !lookupStarts.size) { return; }
+    const oldest = Math.min(...lookupStarts.values());
+    holdTimer = setTimeout(holdLimitReached, Math.max(0, oldest + holdLimitMs - Date.now()));
   }
   function holdLimitReached() {
     holdTimer = null;
@@ -891,6 +903,7 @@
     resolveEpoch++;
     viewGeneration++;
     resolving = 0;
+    lookupStarts.clear();
     flushDeferredAdds();
   }
   // Views posted (or dropped) so far: an Add All that read the rows before a
@@ -899,8 +912,9 @@
   let settleWaiters = [];
   function deferWhileApplying(add) {
     if (!resolving) { return null; }
-    if (!holdTimer) { holdTimer = setTimeout(holdLimitReached, holdLimitMs); }
-    return new Promise((resolve) => { deferredAdds.push({ add, resolve }); });
+    const held = new Promise((resolve) => { deferredAdds.push({ add, resolve }); });
+    if (!holdTimer) { armHoldTimer(); }
+    return held;
   }
   // Null when no view is looking up its rows; else a promise of true once none
   // is (after the held adds ran), or false when a reload or open dropped them.
@@ -909,7 +923,8 @@
     return new Promise((resolve) => { settleWaiters.push(resolve); });
   }
   function flushDeferredAdds() {
-    if (resolving) { return; }
+    // A lookup settled but others still run: the limit follows the oldest left.
+    if (resolving) { if (deferredAdds.length) { armHoldTimer(); } return; }
     clearHoldTimer();
     const list = deferredAdds;
     deferredAdds = [];
@@ -924,6 +939,7 @@
     resolveEpoch++;
     viewGeneration++;
     resolving = 0;
+    lookupStarts.clear();
     clearHoldTimer();
     const list = deferredAdds;
     deferredAdds = [];
@@ -976,13 +992,16 @@
 
   async function postSession(session, stateChangeType) {
     const epoch = resolveEpoch;
+    const lookup = {};
     viewGeneration++;
     resolving++;
+    lookupStarts.set(lookup, Date.now());
     try {
       return await resolveAndPostSession(session, stateChangeType);
     } finally {
       if (epoch === resolveEpoch) {
         resolving--;
+        lookupStarts.delete(lookup);
         flushDeferredAdds();
       }
     }
