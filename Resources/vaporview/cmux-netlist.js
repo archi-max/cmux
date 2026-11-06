@@ -16,6 +16,8 @@
 //   focusSearch(scopeItem?)     Cmd+F / Search Scope
 //   setDisplayed(netlistIds)    mark the variables shown in the viewer
 //   selectedItems()
+//
+// cmux: reveal and focusSearch open the pane when it is collapsed (cmux-netlist-pane.js).
 
 (function () {
   const host = () => window.cmuxWaveform.host;
@@ -239,6 +241,8 @@
   async function reveal(netlistId) {
     const item = host().netlistItem(netlistId);
     if (!item) { return false; }
+    // cmux: Show in Netlist opens a collapsed pane (cmux-netlist-pane.js).
+    if (window.cmuxNetlistPane) { window.cmuxNetlistPane.show(); }
     clearSearch();
     let items = topItems;
     for (const name of item.scopePath) {
@@ -288,6 +292,8 @@
   function focusSearch(scope) {
     init();
     if (scope !== undefined) { setSearchScope(scope && scope.kind === 'scope' ? scope : null); }
+    // cmux: searching opens a collapsed pane, so the field can take focus.
+    if (window.cmuxNetlistPane) { window.cmuxNetlistPane.show(); }
     searchInput.focus();
     searchInput.select();
   }

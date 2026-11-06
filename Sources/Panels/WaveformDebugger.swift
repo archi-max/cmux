@@ -40,6 +40,8 @@ enum WaveformDebugger {
         case toggleMachineState
         /// Load ELF…: the program image memory starts from.
         case loadELF
+        /// Show or Hide Netlist: collapses the viewer's netlist pane to a rail, or opens it again.
+        case toggleNetlist
     }
 
     static let shortcutCommands: [(KeyboardShortcutSettings.Action, Command)] = [
@@ -245,6 +247,8 @@ enum WaveformDebugger {
                 }
             case .loadELF:
                 WaveformMachineStateLoader.chooseELF(for: waveform)
+            case .toggleNetlist:
+                _ = await page.callNetlistPane("toggle")
             }
         }
     }

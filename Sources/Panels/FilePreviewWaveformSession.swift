@@ -936,6 +936,11 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         await callPage(api: "split", function, argument: argument)
     }
 
+    /// Like `callLink`, on `window.cmuxWaveform.netlistPane` (cmux-netlist-pane.js).
+    func callNetlistPane(_ function: String, argument: Any? = nil) async -> Any? {
+        await callPage(api: "netlistPane", function, argument: argument)
+    }
+
     /// Like `callLink`, on `window.cmuxWaveform.fsm` (cmux-fsm.js).
     func callFsm(_ function: String, argument: Any? = nil) async -> Any? {
         await callPage(api: "fsm", function, argument: argument)
