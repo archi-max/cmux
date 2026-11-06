@@ -164,6 +164,9 @@ final class SSHMasterPool: @unchecked Sendable {
         /// Where master `index` of a route whose base path expands to
         /// `socket` listens. By default ``Route/path(ofMaster:)``.
         func masterPath(_ route: Route, socket: String, index: Int) -> String
+        /// `ssh -O stop` on the master at `path`: it takes no new sessions
+        /// and gives up its socket; sessions on it carry on.
+        func stop(_ route: Route, path: String) async
     }
 
     /// A lent session for a run whose process outlives one scope
@@ -376,6 +379,10 @@ final class SSHMasterPool: @unchecked Sendable {
             startIfNeeded(key, index: 0)
         }
     }
+
+    /// Starts every host's masters afresh after a sleep or a network change.
+    /// Not yet: a no-op.
+    func recycleMasters() {}
 
     /// Registers a carrier's route as soon as its path is known, before it
     /// connects (and ``warm(_:carrierPath:)``). Only a route at the carrier's
@@ -990,6 +997,15 @@ extension SSHMasterPool {
                 + routeArguments(route, path: path)
         }
 
+        static func stopArguments(_ route: Route, path: String) -> [String] {
+            ["-O", "stop"] + batchArguments(route) + routeArguments(route, path: path)
+        }
+
+        /// What a start's exit says. Not yet: a timeout is a failure.
+        static func startOutcome(status: Int32?, timedOut: Bool, stderr: String) -> StartOutcome {
+            status == 255 && isRefusedLogin(stderr) ? .unavailable : .failed
+        }
+
         static func checkArguments(_ route: Route, path: String) -> [String] {
             ["-O", "check"] + batchArguments(route) + routeArguments(route, path: path)
         }
@@ -1117,6 +1133,8 @@ extension SSHMasterPool {
 }
 
 extension SSHMasterPool.Control {
+    func stop(_ route: SSHMasterPool.Route, path: String) async {}
+
     func masterPath(_ route: SSHMasterPool.Route, socket: String, index: Int) -> String {
         route.path(ofMaster: index)
     }

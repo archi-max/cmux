@@ -14,7 +14,8 @@ struct GitStatusProvider: Sendable {
     init(
         gitExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/git"),
         sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sshTimeout: TimeInterval = 60
     ) {
         self.gitExecutableURL = gitExecutableURL
         self.sshExecutableURL = sshExecutableURL

@@ -102,6 +102,24 @@ struct SSHTuiAgentOptionsTests {
         #expect(Set([release, tagged, other].map(\.fileOperationSSHOptions)).count == 3)
     }
 
+    /// Release, nightly, rc and staging builds have no remote tag but are
+    /// separate apps: each counts only its own sessions, so each needs its
+    /// own one-off master.
+    @Test("Every installed build gets its own one-off master suffix")
+    func everyBuildHasItsOwnSuffix() {
+        let configuration = plainConfiguration(options: ["ControlPath=/tmp/cmux-test-cm"])
+        let bundles = ["com.cmuxterm.app", "com.cmuxterm.app.nightly", "com.cmuxterm.app.rc",
+                       "com.cmuxterm.app.staging", "com.cmuxterm.app.debug.other", "com.example.fork"]
+        let suffixes = bundles.map {
+            SSHTuiConnection(configuration: configuration, environment: [:], bundleIdentifier: $0).operationsControlPathSuffix
+        }
+        #expect(suffixes[0] == "-ops")
+        #expect(Set(suffixes).count == bundles.count)
+        #expect(suffixes.allSatisfy { $0.hasPrefix("-ops") && $0.count <= 11 })
+        let none = SSHTuiConnection(configuration: configuration, environment: [:], bundleIdentifier: nil)
+        #expect(none.operationsControlPathSuffix == "-ops")
+    }
+
     /// Options that ask for no master, or a path a suffix would break, keep
     /// the carrier's options as they are.
     @Test("An explicit ControlMaster=no or a trailing % keeps the carrier's options")

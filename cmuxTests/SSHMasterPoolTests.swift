@@ -76,6 +76,17 @@ struct SSHMasterPoolTests {
             lock.withLock { namesMastersFromSocket } ? socket + "#" + String(index) : route.path(ofMaster: index)
         }
 
+        /// `ssh -O stop` calls; a stopped master takes no new sessions and
+        /// its socket goes.
+        var stops: [String] = []
+
+        func stop(_ route: SSHMasterPool.Route, path: String) async {
+            lock.withLock {
+                stops.append(path)
+                _ = alive.remove(Self.id(route.destination, path, port: route.port))
+            }
+        }
+
         func kill(_ path: String, destination: String = SSHMasterPoolTests.destination) {
             lock.withLock { _ = alive.remove(Self.id(destination, path)) }
         }
@@ -1150,6 +1161,114 @@ struct SSHMasterPoolTests {
         let back = await Self.waitUntil { sshd.lock.withLock { sshd.starts.filter { $0 == Self.base }.count } == 2 }
         #expect(back)
         #expect(pool.carrierPathIfMastersFail(route) == nil)
+    }
+
+    // MARK: Sleep and network changes
+
+    /// After a wake or a network change a master can answer `-O check` while
+    /// its connection is gone: recycling stops every live master and starts
+    /// the first afresh, and no run is lent the old one meanwhile.
+    @Test
+    func testRecyclingStopsTheMastersAndStartsAFreshOne() async throws {
+        let sshd = MockSSHD()
+        let pool = SSHMasterPool(control: sshd, healthInterval: .seconds(60), maxWait: .seconds(2))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let ready = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(ready)
+        sshd.lock.withLock { sshd.startDelayNanoseconds = 200_000_000 }
+        pool.recycleMasters()
+        let lease = try await Self.lease(pool)
+        #expect(SSHMasterPool.controlPath(in: lease.sshOptions) == Self.base)
+        // Lent only once the fresh master started, after the old one stopped.
+        #expect(sshd.lock.withLock { sshd.stops } == [Self.base])
+        #expect(sshd.lock.withLock { sshd.starts } == [Self.base, Self.base])
+        lease.release()
+        #expect(pool.sessionsInUse(route, path: Self.base) == 0)
+    }
+
+    /// Sessions lent before a recycle stay counted until they end, and a
+    /// stopped later master isn't started again while it stops.
+    @Test
+    func testRecyclingKeepsCountingSessionsAlreadyLent() async throws {
+        let sshd = MockSSHD()
+        let pool = SSHMasterPool(control: sshd, healthInterval: .seconds(60), maxWait: .seconds(2))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        let ready = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(ready)
+        let held = try await Self.lease(pool)
+        pool.recycleMasters()
+        let restarted = await Self.waitUntil { sshd.lock.withLock { sshd.starts.count == 2 } }
+        #expect(restarted)
+        #expect(pool.sessionsInUse(route, path: Self.base) == 1)
+        held.release()
+        #expect(pool.sessionsInUse(route, path: Self.base) == 0)
+    }
+
+    /// A host on the carrier (its masters can't log in) has nothing to recycle.
+    @Test
+    func testRecyclingLeavesACarrierHostAlone() async throws {
+        let sshd = MockSSHD()
+        let (pool, route) = try await Self.carrierPool(sshd)
+        pool.recycleMasters()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        #expect(sshd.lock.withLock { sshd.stops }.isEmpty)
+        #expect(sshd.lock.withLock { sshd.starts }.count == 1)
+        #expect(pool.carrierPathIfMastersFail(route) == Self.carrier)
+    }
+
+    /// The real masters: `ssh -O stop` on the route's argv, and a keepalive
+    /// that ends a dead connection within 15 seconds.
+    @Test
+    func testMastersStopOnTheirRouteAndNoticeADeadConnectionSoon() throws {
+        let route = try Self.route(port: 2222)
+        let stop = SSHMasterPool.ProcessControl.stopArguments(route, path: Self.base)
+        #expect(Array(stop.prefix(2)) == ["-O", "stop"])
+        #expect(stop.contains("ControlPath=" + Self.base))
+        #expect(stop.contains("2222"))
+        let start = SSHMasterPool.ProcessControl.startArguments(route, path: Self.base)
+        #expect(start.contains("ServerAliveInterval=5"))
+        #expect(start.contains("ServerAliveCountMax=3"))
+    }
+
+    /// A batch start that got no answer in time (a security key waiting for
+    /// a touch, an agent asking to confirm) counts as refused, so runs use
+    /// the carrier instead of each asking again on a connection of its own.
+    @Test
+    func testATimedOutStartCountsAsRefused() {
+        typealias P = SSHMasterPool.ProcessControl
+        #expect(P.startOutcome(status: nil, timedOut: true, stderr: "") == .unavailable)
+        #expect(P.startOutcome(status: 255, timedOut: false, stderr: "Permission denied (publickey).") == .unavailable)
+        #expect(P.startOutcome(status: 255, timedOut: false, stderr: "connect to host x port 22: Network is unreachable") == .failed)
+        #expect(P.startOutcome(status: nil, timedOut: false, stderr: "") == .failed)
+    }
+
+    /// A route queued while it resolves as a borrowed route, then registered
+    /// as a carrier's own path, keeps its queued runs.
+    @Test
+    func testRegisteringABorrowedRouteKeepsItsWaiters() async throws {
+        let sshd = MockSSHD()
+        let pool = SSHMasterPool(control: sshd, healthInterval: .seconds(60), maxWait: .milliseconds(50),
+                                 carrierMaxWait: .milliseconds(500))
+        let route = try Self.route()
+        pool.warm(route, carrierPath: Self.carrier)
+        sshd.lock.withLock { sshd.socketDelayNanoseconds = 300_000_000 }
+        let other = try Self.route(identityFile: "/tmp/other-key")
+        let result = ResultBox()
+        let run = Task {
+            let used = try? await pool.withSession(
+                destination: Self.destination, port: nil, identityFile: "/tmp/other-key", sshOptions: Self.options
+            ) { $0 }
+            result.set(used.flatMap { SSHMasterPool.controlPath(in: $0) } ?? "failed")
+        }
+        let queued = await Self.waitUntil { pool.runsWaiting(other) == 1 }
+        #expect(queued)
+        pool.registerCarrier(other, carrierPath: Self.base)
+        let served = await Self.waitUntil { result.value != nil }
+        #expect(served)
+        #expect(result.value == Self.base)
+        if served { _ = await run.value }
     }
 
     // MARK: Socket names and early carriers

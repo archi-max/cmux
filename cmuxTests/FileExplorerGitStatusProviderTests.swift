@@ -162,6 +162,32 @@ struct FileExplorerGitStatusProviderTests {
         )
     }
 
+    /// A remote `git status` stuck on a hung mount holds a lent SSH session:
+    /// it ends at its time limit, with no status.
+    @Test
+    func sshStatusQueryEndsAtItsTimeLimit() throws {
+        let repoURL = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: repoURL) }
+        let fakeSSHURL = try Self.writeExecutableScript(
+            "#!/bin/sh\nexec sleep 30\n",
+            named: "fake-ssh",
+            in: repoURL
+        )
+        let began = Date()
+        let status = GitStatusProvider(
+            sshExecutableURL: fakeSSHURL,
+            sshTimeout: 1
+        ).fetchStatusSSH(
+            directory: repoURL.path,
+            destination: "example.invalid",
+            port: nil,
+            identityFile: nil,
+            sshOptions: []
+        )
+        #expect(status.isEmpty)
+        #expect(Date().timeIntervalSince(began) < 10)
+    }
+
     @Test
     func sshStatusQueryOverridesHostConfiguredRemoteCommand() throws {
         // The remote git status runs as an ssh command-line command, which
