@@ -33,6 +33,22 @@ public enum SVModelLoad {
         }
     }
 
+    /// Whether `name` (a path's rest below its instance, as the sidecar's `lookup` gives it) is a
+    /// signal of the instance `model` (its `instance` reply): one of its signals, or a word of one
+    /// of its arrays within the array's range (`mem[3]`), as the trace engine's signalOf reads it.
+    /// The lookup alone answers for any name below an instance.
+    public static func isSignal(_ name: String, inModel model: [String: Any]) -> Bool {
+        guard !name.isEmpty, !name.hasPrefix("$"), let signals = model["signals"] as? [String: Any] else { return false }
+        if signals[name] != nil { return true }
+        guard name.hasSuffix("]"), let open = name.lastIndex(of: "["), open > name.startIndex else { return false }
+        let base = String(name[..<open])
+        let digits = name[name.index(after: open)..<name.index(before: name.endIndex)]
+        guard let index = Int(digits), digits.count <= 10,
+              let array = (signals[base] as? [String: Any])?["array"] as? [String: Any],
+              let lo = (array["lo"] as? NSNumber)?.intValue, let hi = (array["hi"] as? NSNumber)?.intValue else { return false }
+        return min(lo, hi) <= index && index <= max(lo, hi)
+    }
+
     /// The prefixes that map design paths onto the dump for one traced signal: what is left of
     /// each path once their common trailing segments are dropped (whole segments, either empty).
     public static func prefixes(dumpPath: [String], designPath: [String]) -> (designPrefix: String, dumpPrefix: String) {

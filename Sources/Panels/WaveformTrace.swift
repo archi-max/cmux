@@ -188,9 +188,14 @@ enum WaveformTrace {
         return ["designPath": designPath, "designPrefix": prefixes.designPrefix, "dumpPrefix": prefixes.dumpPrefix]
     }
 
+    /// Whether the design has a signal (or a memory word) at `path`: the sidecar's lookup names the
+    /// rest below the deepest instance for any path, so the instance model decides.
     private static func isSignal(_ path: String, in design: Design) async -> Bool {
-        guard let reply = try? await design.sidecar.request(["cmd": "lookup", "path": path]) else { return false }
-        return (reply["name"] as? String)?.isEmpty == false
+        guard let found = try? await design.sidecar.request(["cmd": "lookup", "path": path]),
+              let instance = found["instance"] as? String, let name = found["name"] as? String, !name.isEmpty,
+              let model = try? await design.sidecar.request(["cmd": "instance", "path": instance])["model"] as? [String: Any]
+        else { return false }
+        return SVModelLoad.isSignal(name, inModel: model)
     }
 
     /// Each design top and its children (child instances, then its signals), for inference.
