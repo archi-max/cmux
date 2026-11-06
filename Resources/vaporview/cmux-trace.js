@@ -495,6 +495,10 @@
       const s = signalOf(m, name);
       const base = s && s.element ? s.element.array : name;
       m.assigns.forEach((a, i) => { if (writesTo(a.lhs, base)) { out.push({ type: 'assign', a, i }); } });
+      // A net's declaration assignment (wire w = e) is a continuous assignment, not an initializer.
+      if (s && s.kind === 'net' && s.init && !s.element) {
+        out.push({ type: 'assign', i: -1, a: { lhs: { name, width: s.width, full: s.width, loc: s.loc }, rhs: s.init, src: `${name} = ${s.init.src}`, loc: s.init.loc } });
+      }
       m.procs.forEach((p) => { if (stmtWrites(p.body, base)) { out.push({ type: 'proc', p }); } });
       for (const port of m.ports) {
         if ((port.dir === 'In' || port.dir === 'InOut') && port.internal === base && port.conn && m.parent) { out.push({ type: 'portIn', port }); }
