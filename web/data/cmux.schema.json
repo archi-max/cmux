@@ -2702,6 +2702,7 @@
               "addSignalToWaveform",
               "revealWaveformSignalInSource",
               "traceWaveformDriver",
+              "traceWaveformXRoot",
               "navigateSourceBack",
               "navigateSourceForward",
               "stepWaveformCycleForward",

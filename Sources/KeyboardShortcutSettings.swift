@@ -205,7 +205,7 @@ enum KeyboardShortcutSettings {
 
         // Panels
         case saveFilePreview, toggleFileEditorWordWrap
-        case addSignalToWaveform, revealWaveformSignalInSource, traceWaveformDriver
+        case addSignalToWaveform, revealWaveformSignalInSource, traceWaveformDriver, traceWaveformXRoot
         case navigateSourceBack, navigateSourceForward
         case stepWaveformCycleForward, stepWaveformCycleBack, toggleWaveformPlayback, reverseContinueWaveform, toggleWaveformBreakpoint
         case openBrowser
@@ -390,6 +390,7 @@ enum KeyboardShortcutSettings {
             case .addSignalToWaveform: return String(localized: "shortcut.addSignalToWaveform.label", defaultValue: "Add Signal to Waveform")
             case .revealWaveformSignalInSource: return String(localized: "shortcut.revealWaveformSignalInSource.label", defaultValue: "Show Waveform Signal in Source")
             case .traceWaveformDriver: return String(localized: "shortcut.traceWaveformDriver.label", defaultValue: "Trace Driver")
+            case .traceWaveformXRoot: return String(localized: "shortcut.traceWaveformXRoot.label", defaultValue: "Trace X to Root")
             case .navigateSourceBack: return String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")
             case .navigateSourceForward: return String(localized: "shortcut.navigateSourceForward.label", defaultValue: "Go Forward in Editor")
             case .stepWaveformCycleForward: return String(localized: "shortcut.stepWaveformCycleForward.label", defaultValue: "Step Forward One Cycle")
@@ -713,6 +714,8 @@ enum KeyboardShortcutSettings {
             // Verdi's Alt+Shift+D "trace driver"; only claimed while a waveform viewer is focused.
             case .revealWaveformSignalInSource: return StoredShortcut(key: "d", command: false, shift: true, option: true, control: false)
             case .traceWaveformDriver: return StoredShortcut(key: "t", command: false, shift: false, option: false, control: true)
+            // Trace Driver's key with Shift: follows the x back to where it was made.
+            case .traceWaveformXRoot: return StoredShortcut(key: "t", command: false, shift: true, option: false, control: true)
             // VS Code's Go Back / Go Forward; only claimed in a file editor with history to go to.
             case .navigateSourceBack: return StoredShortcut(key: "-", command: false, shift: false, option: false, control: true)
             case .navigateSourceForward: return StoredShortcut(key: "-", command: false, shift: true, option: false, control: true)

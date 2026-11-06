@@ -89,7 +89,7 @@ extension KeyboardShortcutSettings {
 
         let shortcut = shortcut(for: action)
         switch action {
-        case .addSignalToWaveform, .revealWaveformSignalInSource, .traceWaveformDriver, .navigateSourceBack, .navigateSourceForward,
+        case .addSignalToWaveform, .revealWaveformSignalInSource, .traceWaveformDriver, .traceWaveformXRoot, .navigateSourceBack, .navigateSourceForward,
              .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback, .reverseContinueWaveform,
              .toggleWaveformBreakpoint:
             // Ctrl+W, Opt+Shift+D, Ctrl+T, Ctrl+-, F10 and F5 are everyday terminal keys

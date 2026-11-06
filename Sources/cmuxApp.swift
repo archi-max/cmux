@@ -1244,6 +1244,11 @@ struct cmuxApp: App {
                     NSSound.beep()
                 }
             }
+            Button(String(localized: "shortcut.traceWaveformXRoot.label", defaultValue: "Trace X to Root")) {
+                if !WaveformTrace.performXRootFromShortcut(window: NSApp.keyWindow ?? NSApp.mainWindow) {
+                    NSSound.beep()
+                }
+            }
             Button(String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")) {
                 if appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
                     .languageFeatures?.navigateBack() != true {
