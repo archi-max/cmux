@@ -1232,11 +1232,14 @@ struct SSHMasterPoolTests {
         #expect(home == reordered)
         watch.report(home)
         watch.report(down)
+        try? await Task.sleep(nanoseconds: 30_000_000)
         watch.report(home)
         try? await Task.sleep(nanoseconds: 300_000_000)
         #expect(fired.values.isEmpty)
         watch.report(away)
+        try? await Task.sleep(nanoseconds: 30_000_000)
         watch.report(home)
+        try? await Task.sleep(nanoseconds: 30_000_000)
         watch.report(away)
         try? await Task.sleep(nanoseconds: 300_000_000)
         #expect(fired.values == ["recycle"])
@@ -1333,6 +1336,12 @@ struct SSHMasterPoolTests {
         #expect(pool.carrierPathIfMastersFail(route) == nil)
         let used = try await Self.session(pool)
         #expect(SSHMasterPool.controlPath(in: used) == Self.base)
+        // Back to normal: the pool grows a second master again.
+        var held: [SSHMasterPool.Lease] = []
+        for _ in 0..<SSHMasterPool.capacity { held.append(try await Self.lease(pool)) }
+        let overflow = try await Self.lease(pool)
+        #expect(SSHMasterPool.controlPath(in: overflow.sshOptions) == route.path(ofMaster: 1))
+        withExtendedLifetime((held, overflow)) {}
     }
 
     /// A wake or a network change retries a stalled host's master at once.
