@@ -2888,10 +2888,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..22e4a44
+index 0000000..64451a8
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1917 @@
+@@ -0,0 +1,1929 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2946,6 +2946,7 @@ index 0000000..22e4a44
 +const LONG_QUERY_MS     = 120000; // edge / search / WaveDrom windows: may scan a long dump; Escape cancels
 +const WINDOW_TIMEOUT_MS = 10000;  // a window request older than this is cancelled and retried
 +const WINDOW_TIMEOUT_CAP = 180000; // ... but never waits longer than this (a lost reply must not hold tiles for ever)
++const FIRST_LOAD_TIMEOUT_MS = 60000; // cmux: a signal's first window: the helper's reader load (up to ~10 s each on a big dump, queued behind the others added with it)
 +const ADAPTIVE_TIMEOUT_CAP = 120000; // the RTT-based part alone: slow replies must not feed it without bound
 +const FAIL_SHOW_AFTER   = 3;      // failures in a row before a row says "unreadable"
 +const FAIL_MAX_BACKOFF  = 60000;  // a failing signal is retried at most once a minute
@@ -3013,6 +3014,7 @@ index 0000000..22e4a44
 +  painted   = new Set<string>(); // window keys the last render drew from (kept by evict)
 +  orphanSince: number | null = null;
 +  solo      = false; // failed (alone or in a batch): ask for it alone until it succeeds
++  answered  = false; // cmux: a window reply named it (data or error); until then it is asked for alone
 +  // Hybrid mode: unknown -> asking -> known -> loading -> local (loaded whole), or windowed.
 +  hybrid: 'unknown' | 'asking' | 'known' | 'loading' | 'local' | 'windowed' = 'windowed';
 +  hybridTries   = 0;
@@ -3110,6 +3112,7 @@ index 0000000..22e4a44
 +  debounceMs          = 16;
 +  windowTimeoutMs     = WINDOW_TIMEOUT_MS;
 +  windowTimeoutCap    = WINDOW_TIMEOUT_CAP;
++  firstLoadTimeoutMs  = FIRST_LOAD_TIMEOUT_MS;
 +  longQueryMs         = LONG_QUERY_MS;
 +  hybrid              = true;
 +  prefetch            = true; // edge / search-match prefetch (tile prefetch is always on)
@@ -3162,13 +3165,15 @@ index 0000000..22e4a44
 +    slow: [] as {ms: number; helperMs: number; workerMs: number; signals: SignalId[]; level: number; priority: number; at: number}[], // replies over 300 ms (last 50)
 +  };
 +
-+  configure(message: {enabled: boolean; maxBytesPerSignal?: number; maxWindowsPerSignal?: number; debounceMs?: number; windowTimeoutMs?: number;
++  configure(message: {enabled: boolean; maxBytesPerSignal?: number; maxWindowsPerSignal?: number; debounceMs?: number; windowTimeoutMs?: number; firstLoadTimeoutMs?: number;
 +    hybrid?: boolean; hybridMaxChanges?: number; hybridMaxBytes?: number; hybridBudget?: number; prefetch?: boolean}) {
 +    this.enabled = !!message.enabled;
 +    if (message.maxBytesPerSignal)   {this.maxBytesPerSignal   = message.maxBytesPerSignal;}
 +    if (message.maxWindowsPerSignal) {this.maxWindowsPerSignal = message.maxWindowsPerSignal;}
 +    if (message.debounceMs !== undefined) {this.debounceMs = message.debounceMs;}
 +    if (message.windowTimeoutMs) {this.windowTimeoutMs = message.windowTimeoutMs;}
++    // (a harness that shortens the window timeout shortens first loads' too, unless it says otherwise)
++    if (message.firstLoadTimeoutMs || message.windowTimeoutMs) {this.firstLoadTimeoutMs = message.firstLoadTimeoutMs || message.windowTimeoutMs!;}
 +    if (message.hybrid !== undefined) {this.hybrid = !!message.hybrid;}
 +    if (message.prefetch !== undefined) {this.prefetch = !!message.prefetch;}
 +    if (message.hybridMaxChanges !== undefined) {this.hybridMaxChanges = message.hybridMaxChanges;}
@@ -3257,6 +3262,9 @@ index 0000000..22e4a44
 +      const recent = r.slice(-200).sort((a, b) => a - b);
 +      ms = Math.max(ms, Math.min(ADAPTIVE_TIMEOUT_CAP, 5 * recent[Math.floor(recent.length * 0.95)]));
 +    }
++    // cmux: a first load is the helper walking the signal (seconds each on a big dump, after
++    // the others added with it); cancelling it at 10 s only asked for it again at the back.
++    if (who.some((s) => !s.answered)) {ms = Math.max(ms, this.firstLoadTimeoutMs);}
 +    const t = Math.min(8, Math.max(0, ...who.map((s) => s.timeouts)));
 +    return Math.min(this.windowTimeoutCap, ms * 2 ** t);
 +  }
@@ -3417,7 +3425,10 @@ index 0000000..22e4a44
 +      const g = sigs.filter((s) => bucketsFor(s.width) === buckets);
 +      // A batch that timed out twice is split in half, and again for each further timeout
 +      // (still batched, not solo), so one slow wide signal can't hold up the rest (N2).
-+      groups.push({buckets, sigs: g.filter((s) => !s.solo && s.timeouts < 2)});
++      // cmux: a signal no reply has named yet goes alone, so each added signal draws when its
++      // own first load is done; one request for 20 drew none until the slowest load (~10 s).
++      g.filter((s) => !s.solo && !s.answered && s.timeouts < 2).forEach((s) => groups.push({buckets, sigs: [s]}));
++      groups.push({buckets, sigs: g.filter((s) => !s.solo && s.answered && s.timeouts < 2)});
 +      // Each timeout level is split on its own (2^(t-1) parts), so signals that just became
 +      // slow are halved, not cut as finely as one that has timed out many times.
 +      const levels = new Map<number, SignalWindows[]>();
@@ -3771,7 +3782,7 @@ index 0000000..22e4a44
 +      vscodeWrapper.outputLog('window request failed: ' + (reply.error || 'no result'));
 +      f.signals.forEach((sid) => {
 +        const s = this.signals.get(sid);
-+        if (s) {this.fail(s, reply.error || 'no result');}
++        if (s) {s.answered = true; this.fail(s, reply.error || 'no result');}
 +      });
 +      return;
 +    }
@@ -3843,6 +3854,7 @@ index 0000000..22e4a44
 +      const s = this.signals.get(h.signalId);
 +      if (!s || !f.signals.includes(h.signalId)) {return;}
 +      answered.add(s.signalId);
++      s.answered = true;
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
 +      if (this.hybrid && typeof h.total === 'number') {this.decideCount(s, h.total);} // the helper knows its whole count
 +      if (err !== null || raw === null) {this.fail(s, err || 'no data'); return;}
