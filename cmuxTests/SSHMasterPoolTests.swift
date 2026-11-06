@@ -42,6 +42,7 @@ struct SSHMasterPoolTests {
         }
 
         func start(_ route: SSHMasterPool.Route, path: String) async -> SSHMasterPool.StartOutcome {
+            lock.withLock { events.append("start " + path) }
             if startDelayNanoseconds > 0 { try? await Task.sleep(nanoseconds: startDelayNanoseconds) }
             return lock.withLock {
                 starts.append(path)
@@ -79,10 +80,16 @@ struct SSHMasterPoolTests {
         /// `ssh -O stop` calls; a stopped master takes no new sessions and
         /// its socket goes.
         var stops: [String] = []
+        var stopDelayNanoseconds: UInt64 = 0
+        /// Starts as they begin and stops as they end, in order.
+        var events: [String] = []
 
         func stop(_ route: SSHMasterPool.Route, path: String) async {
+            let delay = lock.withLock { stopDelayNanoseconds }
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             lock.withLock {
                 stops.append(path)
+                events.append("stop " + path)
                 _ = alive.remove(Self.id(route.destination, path, port: route.port))
             }
         }
@@ -1204,6 +1211,53 @@ struct SSHMasterPoolTests {
         #expect(pool.sessionsInUse(route, path: Self.base) == 1)
         held.release()
         #expect(pool.sessionsInUse(route, path: Self.base) == 0)
+    }
+
+    /// The network watch recycles on a change of path, not on the monitor's
+    /// first report or a repeat of the same path.
+    @Test
+    func testTheNetworkWatchFiresOnlyOnAChange() {
+        typealias W = SSHMasterPool.NetworkWatch
+        let watch = W()
+        let home = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["192.0.2.1"])
+        let away = W.signature(satisfied: true, interfaces: ["en0"], gateways: ["198.51.100.1"])
+        let vpn = W.signature(satisfied: true, interfaces: ["en0", "utun3"], gateways: ["192.0.2.1"])
+        #expect(!watch.changed(to: home))
+        #expect(!watch.changed(to: home))
+        #expect(watch.changed(to: away))
+        #expect(watch.changed(to: vpn))
+        #expect(W.signature(satisfied: true, interfaces: [], gateways: ["b", "a"])
+                == W.signature(satisfied: true, interfaces: [], gateways: ["a", "b"]))
+    }
+
+    /// A later master being stopped isn't started again (adopting the old
+    /// process at its socket) until its stop is done.
+    @Test
+    func testARecycledLaterMasterWaitsForItsStop() async throws {
+        let sshd = MockSSHD()
+        let pool = SSHMasterPool(control: sshd, healthInterval: .seconds(60), maxWait: .seconds(2))
+        let route = try Self.route()
+        let second = route.path(ofMaster: 1)
+        pool.warm(route, carrierPath: Self.carrier)
+        let ready = await Self.waitUntil { sshd.lock.withLock { sshd.alive.contains(MockSSHD.id(Self.destination, Self.base)) } }
+        #expect(ready)
+        var held: [SSHMasterPool.Lease] = []
+        for _ in 0..<SSHMasterPool.capacity { held.append(try await Self.lease(pool)) }
+        held.append(try await Self.lease(pool))
+        #expect(SSHMasterPool.controlPath(in: held.last!.sshOptions) == second)
+        for lease in held { lease.release() }
+        held = []
+        let before = sshd.lock.withLock {
+            sshd.stopDelayNanoseconds = 200_000_000
+            return sshd.events.count
+        }
+        pool.recycleMasters()
+        let lease = try await Self.lease(pool)
+        let events = sshd.lock.withLock { sshd.events }
+        let stopped = try #require(events.firstIndex(of: "stop " + second))
+        let restartedEarly = events.indices.contains { $0 >= before && $0 < stopped && events[$0] == "start " + second }
+        #expect(!restartedEarly, "\(events)")
+        lease.release()
     }
 
     /// A host on the carrier (its masters can't log in) has nothing to recycle.

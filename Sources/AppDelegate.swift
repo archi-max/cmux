@@ -4673,8 +4673,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             onDidWake: { [weak self] in
                 self?.restartSocketListenerIfEnabled(source: "workspace.didWake")
                 self?.rearmRemoteSessionsAfterSystemWake()
+                // One-off SSH masters may have outlived their connections.
+                SSHMasterPool.shared.recycleMasters()
             }
         )
+        SSHMasterPool.networkWatch.start(recycling: .shared)
         lifecycleSnapshotObservers.append(contentsOf: remotePowerObservers)
 
         registerDisplayReconfigurationCallbackIfNeeded()
