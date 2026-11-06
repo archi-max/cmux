@@ -40,6 +40,23 @@ import Testing
 
     // MARK: Prefixes
 
+    @Test func aSignalIsANameTheInstanceModelHas() {
+        // The sidecar's lookup names the rest of a path below its deepest instance, signal or
+        // not: whether it is a signal is the instance model's say.
+        let model: [String: Any] = ["signals": [
+            "rdata": ["width": 32, "kind": "var"],
+            "box": ["width": 0, "kind": "var", "array": ["lo": 0, "hi": 63, "elemWidth": 32]],
+            "rev": ["width": 0, "kind": "var", "array": ["lo": 7, "hi": 0, "elemWidth": 8]],
+        ]]
+        for name in ["rdata", "box", "box[0]", "box[8]", "box[63]", "rev[0]", "rev[7]"] {
+            #expect(SVModelLoad.isSignal(name, inModel: model), "\(name)")
+        }
+        for name in ["", "box[64]", "box[-1]", "box(8)", "box[8][31:0]", "u_mbox.box[8]", "rdata[3]", "nope", "rev[8]", "$local:k"] {
+            #expect(!SVModelLoad.isSignal(name, inModel: model), "\(name)")
+        }
+        #expect(!SVModelLoad.isSignal("rdata", inModel: [:]))
+    }
+
     @Test func samePathsHaveNoPrefixes() {
         let p = SVModelLoad.prefixes(dumpPath: ["tb", "dut", "x"], designPath: ["tb", "dut", "x"])
         #expect(p.designPrefix == "" && p.dumpPrefix == "")
