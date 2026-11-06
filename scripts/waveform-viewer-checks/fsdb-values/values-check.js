@@ -4,20 +4,22 @@
 // exact and decimated windows, edges, search, searchText, count, derive, searchAll, and a
 // permanent per-signal error for a value encoding the reader can't give.
 // Optionally a real dump too: FSDB_VALUES_DUMP=<file> FSDB_VALUES_EXPECT=<path>=<value at 0>
-// (no defaults: both or neither).
-// Usage: node values-check.js <installed helper dir> <fixture.fsdb>
+// (no defaults: both or neither). A second fixture (big.fsdb: long repeated text) checks that
+// text windows are bounded. One worker per helper, one helper at a time (host memory).
+// cap.fsdb is the fixture again under another name, so nothing of it is in the store cache.
+// Usage: node values-check.js <installed helper dir> <fixture.fsdb> <big.fsdb> <cap.fsdb>
 'use strict';
 const { spawn } = require('node:child_process');
 const zlib = require('node:zlib');
 const path = require('node:path');
 
-const [dir, fixture] = process.argv.slice(2);
+const [dir, fixture, bigFixture, capFixture] = process.argv.slice(2);
 let fails = 0, passes = 0;
 const check = (ok, what) => { if (ok) { passes++; console.log('ok   ' + what); } else { fails++; console.log('FAIL ' + what); } };
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-function startHelper() {
-  const p = spawn('bash', [path.join(dir, 'cmux-helper-v2.sh'), '--workers', '2'], { stdio: ['pipe', 'pipe', 'ignore'] });
+function startHelper(extra = []) {
+  const p = spawn('bash', [path.join(dir, 'cmux-helper-v2.sh'), '--workers', '1', ...extra], { stdio: ['pipe', 'pipe', 'ignore'] });
   let buf = Buffer.alloc(0), want = null, nextId = 1;
   const pending = new Map();
   let ready;
@@ -51,7 +53,8 @@ function startHelper() {
     pending.set(id, resolve);
     p.stdin.write(JSON.stringify({ id, cmd, ...args }) + '\n');
   });
-  return { req, ready: readyP, stop: () => { p.stdin.end(); setTimeout(() => p.kill(), 3000).unref(); } };
+  const gone = new Promise((r) => p.on('exit', r));
+  return { req, ready: readyP, stop: () => { p.stdin.end(); setTimeout(() => p.kill(), 3000).unref(); return gone; } };
 }
 
 // The window reply's signals, records decoded the way the page decodes them.
@@ -98,6 +101,8 @@ async function findVar(h, top, fullPath) {
 
 const LONG = Array.from({ length: 300 }, (_, i) => String.fromCharCode(97 + (i % 26))).join('');
 const NAIVE = 'naïve ü';
+const EURO = '\u20ac'.repeat(2000);           // big.fsdb's long value: 6000 bytes
+const EURO_SHOWN = '\u20ac'.repeat(1365) + '\u2026';  // as a window shows it: 4 KB at a character boundary, then an ellipsis
 
 async function main() {
   const h = startHelper();
@@ -134,6 +139,7 @@ async function main() {
   check(rg[0].h && rg[0].h.ranged === true && rg[0].h.text === true && eq(rg[0].recs, [[40, LONG], [50, NAIVE]]),
     `a ranged cold window of msg is text: ${JSON.stringify(rg[0].h)} ${JSON.stringify(rg[0].recs).slice(0, 120)}`);
   check(rg[1].h && rg[1].h.text === true && eq(rg[1].recs, [[40, '1' + '0'.repeat(300)], [50, '0.0000001']]), `... and of r: ${JSON.stringify(rg[1].recs).slice(0, 120)}`);
+  check(rg[1].h && rg[1].h.min === undefined && rg[1].h.max === undefined, `... a ranged real window has no min/max (a slice's range would rescale the row): ${JSON.stringify([rg[1].h.min, rg[1].h.max])}`);
   await new Promise((r) => setTimeout(r, 500));  // (the background whole walks)
 
   const names = ['msg', 'r', 'f', 'ev', 'n'];
@@ -174,12 +180,58 @@ async function main() {
   const cnt = await h.req('count', { signalIds: [id('msg'), id('r')], exact: true });
   check(cnt.m.result && cnt.m.result.counts[0].count === 6 && cnt.m.result.counts[1].count === 8, `count of msg and r: ${JSON.stringify(cnt.m.result)}`);
   const der = await h.req('derive', { expr: 'top.r + 1' });
-  check(/bit vectors/.test(der.m.error || ''), `a real in an expression is refused: ${der.m.error || 'derived'}`);
+  check(/real signal/.test(der.m.error || ''), `a real in an expression is refused: ${der.m.error || 'derived'}`);
+  check(eq(enc('P'), ['Real', 'parameter']) && eq(enc('tm'), ['Real', 'time']), `a parameter and a time var are listed as Real: ${JSON.stringify([enc('P'), enc('tm')])}`);
+  for (const e of ['top.P + 1', 'top.tm + 1']) {
+    const d = await h.req('derive', { expr: e });
+    check(!d.m.error, `... but they are bit vectors, and derive ${e}: ${d.m.error || 'ok'}`);
+  }
   const sa = await h.req('searchAll', { value: '1', t: 0, dir: 1, scope: 'top' });
   const fin = sa.m.result || {};
   check(sa.m.final === true && (fin.unreadable || []).length === 0 && !fin.errors && fin.matches && fin.matches.length > 0,
     `searchAll over the scope skips strings and reals: ${JSON.stringify({ matches: fin.matches && fin.matches.length, unreadable: fin.unreadable, errors: fin.errors, incomplete: fin.incomplete })}`);
-  h.stop();
+  await h.stop();
+
+  // A store cap smaller than any signal: the whole walk fails, but a short range still loads
+  // through the ranged cold path, so the error must not be final for the page.
+  const c = startHelper(['--cache-mb', '0.0002']);
+  await c.ready;
+  const co = await c.req('open', { file: capFixture });
+  check(!co.m.error, 'a helper with a tiny store opens the fixture: ' + (co.m.error || 'ok'));
+  const L1 = await c.req('searchAll', { value: '1', t: 20, dir: 1, scope: 'top' });
+  const evHit = ((L1.m.result || {}).matches || []).find((x) => x.signalId === id('ev'));
+  check(evHit && evHit.t === 35, `searchAll on a cold event finds a repeated occurrence (ev 1@15, 1@35, after 20): ${JSON.stringify(evHit)}`);
+  const big1 = decodeWindow(await c.req('window', { signals: [{ signalId: id('clk'), width: 1 }], t0: 0, t1: 201, buckets: 64 }))[0];
+  check(/larger than/.test(big1.h.error || '') && big1.h.permanent === undefined, `over the store cap: an error, not a permanent one: ${JSON.stringify(big1.h)}`);
+  const big2 = decodeWindow(await c.req('window', { signals: [{ signalId: id('clk'), width: 1 }], t0: 40, t1: 60, buckets: 64 }))[0];
+  check(!big2.h.error && big2.h.ranged === true && big2.recs.length === 4, `... and a zoomed-in range of it loads (ranged): ${JSON.stringify(big2.h)}`);
+  await c.stop();
+
+  // Long repeated text: a window carries at most 4 KB of each value (the store keeps it once).
+  const b = startHelper();
+  await b.ready;
+  const bo = await b.req('open', { file: bigFixture });
+  check(!bo.m.error, 'the helper opens the long-text fixture: ' + (bo.m.error || 'ok'));
+  if (!bo.m.error) {
+    const bk = await varsOf(b, { idx: bo.m.result.top[0].scopeOffsetIdx, path: bo.m.result.top[0].name });
+    const bid = (bk.vars || []).find((x) => x.name === 'big').signalId;
+    const short = decodeWindow(await b.req('window', { signals: [{ signalId: bid, width: 1 }], t0: 0, t1: 20, buckets: 64 }))[0];
+    check(eq(short.recs, [[0, EURO_SHOWN], [5, ''], [10, EURO_SHOWN], [15, '']]), `a window cuts long text at 4 KB on a character boundary and marks it: ${JSON.stringify(short.recs.map((x) => [x[0], x[1].length, x[1].slice(-2)]))}`);
+    const full = await b.req('valueAt', { signalIds: [bid], t: 2 });
+    check(full.m.result && full.m.result.values[0] === EURO, `valueAt keeps the whole text: ${full.m.result ? full.m.result.values[0].length : full.m.error}`);
+    const stx = await b.req('searchText', { signalId: bid, t: 1, dir: 1, inclusive: true, format: 'string', pattern: '\u20ac{2000}$' });
+    check(stx.m.result && stx.m.result.t === 10, `searchText matches the whole text: ${JSON.stringify(stx.m.result || stx.m.error)}`);
+    await new Promise((r) => setTimeout(r, 1500));  // the background whole walk
+    const dec2 = await b.req('window', { signals: [{ signalId: bid, width: 1 }], t0: 0, t1: 50000, buckets: 1024 });
+    const d2 = decodeWindow(dec2)[0];
+    const sent = d2.recs.reduce((a, x) => a + 12 + Buffer.byteLength(x[1]), 0);
+    check(!d2.h.error && !d2.h.exact && sent < 16e6 && d2.h.textMean > 2000 && d2.h.textMean < 2100,
+      `a decimated window of it is bounded and says the mean text per change: ${JSON.stringify({ exact: d2.h.exact, sent, textMean: d2.h.textMean })}`);
+    const ex = decodeWindow(await b.req('window', { signals: [{ signalId: bid, width: 1 }], t0: 0, t1: 50000, buckets: 6000 }))[0];
+    check(/text/.test(ex.h.error || '') && ex.h.permanent === undefined && ex.recs.length === 0,
+      `an exact window over the per-reply text budget is refused (retryable), not built: ${JSON.stringify(ex.h)}`);
+  }
+  await b.stop();
 
   const dump = process.env.FSDB_VALUES_DUMP, expect = process.env.FSDB_VALUES_EXPECT;
   if (dump && expect) {
@@ -200,7 +252,7 @@ async function main() {
       const again = decodeWindow(await g.req('window', { signals: [{ signalId: sv.signalId, width: sv.width }], t0: 0, t1: end + 1, buckets: 1024 }))[0];
       check(again.h && !again.h.error && eq(again.recs, w.recs), 'asked again, the same answer (no "retrying" error)');
     }
-    g.stop();
+    await g.stop();
   }
 }
 
