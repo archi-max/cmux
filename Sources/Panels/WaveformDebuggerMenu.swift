@@ -9,6 +9,7 @@ extension WaveformDebugger.Command {
         .togglePlay, .faster, .slower, .useSelectedAsClock, .defaultClock, .stop, .evaluateExpression, .addWatch,
         .addInstructionBreakpoint, .showInstructionInListing,
         .toggleMachineState, .loadELF,
+        .toggleNetlist,
     ]
 
     var title: String {
@@ -51,6 +52,8 @@ extension WaveformDebugger.Command {
             return String(localized: "waveformDebugger.command.toggleMachineState", defaultValue: "Show or Hide Machine State")
         case .loadELF:
             return String(localized: "waveformDebugger.command.loadELF", defaultValue: "Load ELF for Machine State…")
+        case .toggleNetlist:
+            return String(localized: "filePreview.waveform.command.toggleNetlist", defaultValue: "Show or Hide Netlist")
         }
     }
 
@@ -75,6 +78,7 @@ extension WaveformDebugger.Command {
         case .showInstructionInListing: return "palette.waveformDebugger.showInstructionInListing"
         case .toggleMachineState: return "palette.waveformDebugger.toggleMachineState"
         case .loadELF: return "palette.waveformDebugger.loadELF"
+        case .toggleNetlist: return "palette.waveformDebugger.toggleNetlist"
         }
     }
 
@@ -101,6 +105,7 @@ extension WaveformDebugger.Command {
         case .showInstructionInListing: return common + ["instruction", "listing", "objdump", "disassembly", "pc", "reveal", "riscv"]
         case .toggleMachineState: return common + ["machine", "registers", "memory", "riscv", "rvfi", "commit", "instruction"]
         case .loadELF: return common + ["elf", "program", "image", "symbols", "memory", "riscv"]
+        case .toggleNetlist: return common + ["netlist", "hierarchy", "signals", "sidebar", "pane", "show", "hide", "toggle", "collapse"]
         }
     }
 }
@@ -124,7 +129,7 @@ struct WaveformDebuggerMenu: View {
     var body: some View {
         Menu(String(localized: "menu.view.waveformDebugger", defaultValue: "Waveform Debugger")) {
             ForEach(Array(WaveformDebugger.Command.all.enumerated()), id: \.offset) { index, command in
-                if index == 4 || index == 7 || index == 10 || index == 12 || index == 13 || index == 15 { Divider() }
+                if index == 4 || index == 7 || index == 10 || index == 12 || index == 13 || index == 15 || index == 19 { Divider() }
                 Button(command.title) {
                     WaveformDebugger.performFromMenu(command, window: NSApp.keyWindow ?? NSApp.mainWindow)
                 }

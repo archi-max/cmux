@@ -75,6 +75,8 @@
       {command: "vaporview.saveViewerSession", group: "4_saveLoad@1"},
       {command: "vaporview.loadViewerSession", group: "4_saveLoad@2"},
       {submenu: "vaporview.waveDrom", group: "5_waveDrom", when: "webviewSection != 'control-bar' && webviewSection != 'ruler' && !inputFocus"},
+      // cmux addition: the netlist pane (cmux-netlist-pane.js).
+      {command: "cmux.toggleNetlist", group: "6_layout@1"},
     ],
     "view/item/context": [
       {command: "vaporview.addVariable", group: "inline@2", when: "viewItem == 'netlistVar' && view == 'waveformViewerNetlistView'"},
@@ -555,6 +557,17 @@
     return state && aliasFiles.length ? Object.assign(state, { cmuxValueAliases: aliasEntries(budget) }) : state;
   }
 
+  // cmux addition: the netlist pane's width and whether it is collapsed (cmux-netlist-pane.js),
+  // in cmux's copy of the session and in the session file. Not part of undo.
+  const netlistPane = () => window.cmuxNetlistPane || null;
+  function withLayout(state) {
+    return state && netlistPane() ? Object.assign(state, { cmuxNetlist: netlistPane().state() }) : state;
+  }
+  function applyLayout(session) {
+    if (session && session.cmuxNetlist && netlistPane()) { netlistPane().apply(session.cmuxNetlist); }
+  }
+  if (netlistPane()) { netlistPane().onChange(() => scheduleSessionSnapshot()); }
+
   // A session's files (cmuxValueAliases): only well-formed entries. Older
   // sessions name a file by fileName only.
   function sessionAliasFiles(session) {
@@ -709,7 +722,7 @@
   function sendSessionSnapshot() {
     clearTimeout(snapshotTimer);
     snapshotScheduled = false;
-    const state = plainJSON(withAliasFiles(contextSession(webviewContext)));
+    const state = plainJSON(withLayout(withAliasFiles(contextSession(webviewContext))));
     if (state && !restorePending) { host().toNative({ type: 'sessionState', state, dirty }); }
   }
   function scheduleSessionSnapshot() {
@@ -757,6 +770,8 @@
       displayedSignals: withoutLocals(w.displayedSignals || []),
       // cmux addition: the value alias files the rows' alias formats need.
       ...(aliasFiles.length ? { cmuxValueAliases: aliasEntries(ALIAS_EMBED_BYTES) } : {}),
+      // cmux addition: the netlist pane.
+      ...(netlistPane() ? { cmuxNetlist: netlistPane().state() } : {}),
     };
   }
 
@@ -987,6 +1002,7 @@
     // The alias tables first: the viewer handles messages in order, so the
     // rows' alias formats find them.
     loadSessionAliasFiles(session);
+    applyLayout(session);
     host().toWebview({ command: 'apply-state', stateChangeType, state: {
       extensionVersion: session.extensionVersion, displayedSignals, markerTime: session.markerTime,
       altMarkerTime: session.altMarkerTime, displayTimeUnit: session.displayTimeUnit, selectedSignal,
@@ -1606,6 +1622,7 @@
     'vaporview.removeValueAlias': (e) => displayFormat(e, { numberFormat: 'hexadecimal' }),
     'vaporview.valueAliasesLoaded': (result) => valueAliasesLoaded(result),
     'vaporview.reloadFile': () => host().toNative({ type: 'reload' }),
+    'cmux.toggleNetlist': () => { if (window.cmuxNetlistPane) { window.cmuxNetlistPane.toggle(); } },
     'cmux.undo': () => undo(undoStack, redoStack, StateChangeType.Undo),
     'cmux.redo': () => undo(redoStack, undoStack, StateChangeType.Redo),
   };
@@ -1872,7 +1889,7 @@
     valueAliasFilesRead,
     applySessionFile: ({ text, path, error }) => (error
       ? ui().toast(format(S().messageSessionLoadFailed, error), 'error') : loadSessionText(text, path, true)),
-    sessionSnapshot: () => ({ state: plainJSON(withAliasFiles(contextSession(webviewContext))), dirty }),
+    sessionSnapshot: () => ({ state: plainJSON(withLayout(withAliasFiles(contextSession(webviewContext)))), dirty }),
     undoDepth: () => undoStack.length,
     commandIds: () => Object.keys(COMMANDS),
     menuContext,

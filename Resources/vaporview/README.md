@@ -129,6 +129,13 @@ keybindings, netlist view, settings, sessions and terminal links).
 - `cmux-netlist.js` (new, adapted from `src/extension_core/tree_view.ts` and
   the netlist search quick pick): the netlist panel, a lazy tree with
   multi-select, add/remove/reveal, drag into the viewer and search.
+- `cmux-netlist-pane.js` (new, written for cmux): the netlist pane's size. Its
+  right edge drags to resize it (in place of the CSS corner grip); dragged
+  under about 60 px or double-clicked, the pane collapses to a 6 px rail that
+  a click opens again at its last width. Show or Hide Netlist is in the
+  viewer's menu, cmux's View > Waveform Debugger and the command palette.
+  Searching and Show in Netlist open a collapsed pane. Its width and state are
+  kept in the session as `cmuxNetlist` (`cmux-commands.js`), outside undo.
 - `cmux-ui.js` (new): the menu, dialog, quick pick and toast widgets VS Code
   draws natively.
 - Where cmux's port behaves differently from VaporView in VS Code:

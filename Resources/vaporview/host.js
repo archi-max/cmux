@@ -865,6 +865,7 @@
     strings = config.strings || {};
     window.cmuxWaveform.strings = strings;
     document.getElementById('netlist-title').textContent = strings.netlist || '';
+    if (window.cmuxNetlistPane) { window.cmuxNetlistPane.refresh(); }
     document.getElementById('status-unsaved').title = strings.statusUnsaved || '';
     document.querySelector('#status-reload .text').textContent = strings.messageFileChanged || '';
     document.querySelector('#status-reload button').textContent = strings['command.reloadFile'] || '';
@@ -1337,6 +1338,8 @@
     valueAliasFilesRead: (m) => window.cmuxCommands.valueAliasFilesRead(m),
     setSessionFile: (m) => window.cmuxCommands.setSessionFile(m) };
   Object.defineProperty(window.cmuxWaveform, 'split', { value: window.cmuxCommands.split, writable: false, configurable: false, enumerable: true });
+  // The netlist pane (cmux-netlist-pane.js), for Show or Hide Netlist from cmux's menus.
+  Object.defineProperty(window.cmuxWaveform, 'netlistPane', { value: window.cmuxNetlistPane, writable: false, configurable: false, enumerable: true });
   // Fixed before the viewer frame loads, so a script in it can't swap the link cmux trusts.
   Object.defineProperty(window.cmuxWaveform, 'link', { value: link, writable: false, configurable: false, enumerable: true });
   Object.defineProperty(window, 'cmuxWaveform', { value: window.cmuxWaveform, writable: false, configurable: false });
