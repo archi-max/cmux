@@ -109,6 +109,7 @@
 #                                        copy, nesting, collapse, undo, removal, and
 #                                        session save/load, reload, restore
 #   ./run.sh fsdb-array                  the FSDB helper nests the reader's arrays (a stand-in addon, no FSDB)
+#   ./run.sh fsdb-scopes                 the FSDB helper lists each scope path once (port trees merged; no FSDB)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -416,6 +417,11 @@ case "${1:-}" in
     # fsdb-helper-v2's tree.js against the reader's callbacks for a dump with packed arrays (no FSDB needed).
     node "$HERE/fsdb-array/check.js" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-array.log"
     grep -q '^FSDB ARRAY CHECKS PASSED' "$OUT/fsdb-array.log"
+    ;;
+  fsdb-scopes)
+    # fsdb-helper-v2's tree.js scopeTree: scope trees that re-enter a path are one node (no FSDB needed).
+    node "$HERE/fsdb-scopes/check.js" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-scopes.log"
+    grep -q '^FSDB SCOPES CHECKS PASSED' "$OUT/fsdb-scopes.log"
     ;;
   split)
     swiftc -O "$HERE/split/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
