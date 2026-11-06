@@ -666,15 +666,30 @@
   // held. A reload or open drops them and stops counting the lookups of the
   // load before (their views are stale): a lookup that never settles can't
   // hold the next load's adds, or an Add All waiting on one.
+  // A lookup that hasn't settled after holdLimitMs (an SSH host gone quiet)
+  // stops holding: the adds run, and later lookups of that load don't wait
+  // on it.
   let resolving = 0;
   let resolveEpoch = 0;
   let deferredAdds = [];
+  let holdTimer = null;
   function deferWhileApplying(add) {
     if (!resolving) { return null; }
+    if (!holdTimer) {
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        if (!deferredAdds.length) { return; }
+        host().log('a view still looking up its rows after ' + cmuxCommands.holdLimitMs + ' ms: held adds run');
+        resolveEpoch++;
+        resolving = 0;
+        flushDeferredAdds();
+      }, cmuxCommands.holdLimitMs);
+    }
     return new Promise((resolve) => { deferredAdds.push({ add, resolve }); });
   }
   function flushDeferredAdds() {
     if (resolving) { return; }
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
     const list = deferredAdds;
     deferredAdds = [];
     list.forEach((d) => {
@@ -684,6 +699,7 @@
   function dropDeferredAdds() {
     resolveEpoch++;
     resolving = 0;
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
     const list = deferredAdds;
     deferredAdds = [];
     list.forEach((d) => d.resolve(0));
@@ -1374,7 +1390,7 @@
     failedReload = false;
   }
 
-  window.cmuxCommands = {
+  const cmuxCommands = window.cmuxCommands = {
     run, attachFrame, showNetlistMenu, settings, configMessage, onContextUpdate, restoreState, handleDrop,
     addSignalByName, fileChanged, willReload, updateSetting,
     frameUnloaded: () => { if (reloading) { frameGone = true; } },
@@ -1384,6 +1400,8 @@
     // A reload or restore has not come back yet (Undo/Redo wait for it).
     isRestoring: () => reloading || restorePending,
     deferWhileApplying,
+    // How long a held add waits for a view's lookups (settable for checks).
+    holdLimitMs: 15000,
     // Whether the viewer answers an apply-state (it has asked for its state),
     // and whether a context is such an answer.
     viewerAnswersViews: () => restoreAsked,

@@ -1892,6 +1892,24 @@ extension Harness {
         H.findItem = findItem;
         await sleep(800);
         R.lateRows = tr();
+        // A reload's restore whose lookups never settle (its answer never
+        // comes) holds an Add All only for holdLimitMs.
+        C.holdLimitMs = 1500;
+        let never = null;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          H.findItem = () => new Promise(() => {});
+          restoreState(m);
+          await sleep(100);
+          never = link.addScope({ path: ['top', 'core'] });
+        };
+        window.cmuxWaveform.reload({});
+        const t0 = Date.now();
+        while (!never && Date.now() - t0 < 10000) { await sleep(50); }
+        R.neverScope = JSON.stringify(never ? await Promise.race([never, sleep(6000).then(() => 'pending')]) : 'no restore');
+        R.neverMs = Date.now() - t0;
+        H.findItem = findItem;
+        C.holdLimitMs = 15000;
         """) { r in
           let s = { (k: String) in r[k] as? String ?? "nil" }
           check(r["undoScopeClk"] as? Int == 1, "Add All during an Undo that restores top.clk leaves it once: \(s("undoScopeRows"))")
@@ -1906,6 +1924,7 @@ extension Harness {
                 "and adds after the reload aren't held: \(s("afterStuck")) -> \(s("afterStuckRows"))")
           check(s("lateBefore") == "top.clk,top.core.acc" && s("lateScope").contains(#""added":0"#) && s("lateRows") == "top.clk,top.core.acc",
                 "an old load's Undo settling during the restore doesn't release the restore's held add: \(s("lateBefore")) -> \(s("lateScope")) -> \(s("lateRows"))")
+          check(s("neverScope").contains(#""added":1"#), "a restore that never settles holds Add All only for its limit: \(s("neverScope")) after \(r["neverMs"] ?? "nil") ms")
           self.phaseAR()
         }
       }
