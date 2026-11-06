@@ -25,15 +25,20 @@
 //     a real reopen (a new epoch, as below).
 //   children {scopeOffsetIdx, scopePath} -> {scopes, vars}
 //   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?}
-//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?, text?, kind?, min?, max?}
+//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?, text?, kind?, min?, max?, textMean?}
 //                   | {signalId, error, permanent?}]}
 //     (permanent: the error won't go away for this file (an encoding the reader can't give, a
-//     0-bit alias, over the store cap); the viewer shows it once and stops asking.)
+//     0-bit alias); the viewer shows it once and stops asking. Over the store cap is not
+//     permanent: a zoomed-in (ranged) window of that signal still loads.)
 //     (text: a string or real signal (kind 'string' | 'real'): its records are
 //     [u64 LE delta][u32 LE byte length][UTF-8 text] instead, the text the viewer shows for a
 //     VCD's strings and reals (reals as Rust/wellen print them: shortest digits, no exponent);
-//     "x" before the first change. Reals also carry the signal's min and max (of 0 and every
-//     finite value, as wellen). Edges: every change; search (bit patterns) refuses them.)
+//     "x" before the first change. A window carries at most 4 KB of each value, cut at a
+//     character boundary and ended with U+2026 (valueAt and searchText use the whole text),
+//     and at most 16 MB of records (past it: an error; a narrower window fits). Reals also
+//     carry the signal's min and max (of 0 and every finite value, as wellen), but not on a
+//     ranged answer (a slice's range). Strings carry textMean, the mean bytes of text per
+//     change as windows send it. Edges: every change; search (bit patterns) refuses them.)
 //     (total: the signal's whole normalized change count, when it came from the store;
 //     absent for ranged answers. Same number as `count`'s.)
 //     (ranged: a cold signal over a range <= FSDB_COLD_RANGE (0.25) of the file was answered
@@ -467,11 +472,17 @@ const widthOf = new Map();  // signalId -> bits, learned from children and windo
 // Signals never split-walked: strings and reals (their stores aren't bit planes, so slices
 // can't be handed over) and events (a slice join would drop repeated occurrences).
 const noSplit = new Set();
-const learnKind = (signalId, encoding, type) => { if (encoding !== 'BitVector' || type === 'event') { noSplit.add(signalId); } };
+// Strings, reals and events are never split. The reader lists parameters and time vars as Real
+// too, but most are bit vectors (1 byte per bit), so only type real is taken for a real here.
+const learnKind = (signalId, encoding, type) => { if (encoding === 'String' || (encoding === 'Real' && type === 'real') || type === 'event') { noSplit.add(signalId); } };
 // Per-signal errors that will not go away for this file (an encoding the reader can't give,
-// a 0-bit alias, over the store cap): window headers mark them `permanent: true`, so the
-// viewer shows them once instead of retrying (and the coordinator doesn't walk them again).
+// a 0-bit alias, over the store cap): the coordinator doesn't walk them again, and window
+// headers mark those in PAGE_PERMANENT `permanent: true`, so the viewer shows them once
+// instead of retrying.
 const PERMANENT = /unsupported|0 bits|larger than|not a bit signal|are not split/;
+// What the page is told is permanent: not "larger than" (over the store cap), since a
+// zoomed-in range of that signal still loads through the ranged cold path.
+const PAGE_PERMANENT = /unsupported|0 bits|not a bit signal|are not split/;
 const splitting = new Map();  // signalId -> Promise<{ms, slices}>
 let timeEnd = 0;
 
@@ -653,7 +664,6 @@ function getIndex() {
 // carry its own index brackets (pc_rdata[0]); the longest bracket prefix that
 // names a variable wins and the rest are selects. A unique suffix also works.
 // Expressions work on bit vectors: a string or real operand is an error, not 64 bits of a double.
-const bitOperand = (v) => { if (v.encoding !== 'BitVector') { throw new Error(`${v.path} is a ${String(v.encoding).toLowerCase()} signal: expressions need bit vectors`); } return v; };
 const fmtSel = ([m, l]) => (m === l ? `[${m}]` : `[${m}:${l}]`);
 function resolveRef(r) {
   const idx = getIndex();
@@ -662,17 +672,17 @@ function resolveRef(r) {
     if (d) { return { signalId: d.id, width: d.width, msb: d.width - 1, lsb: 0, signed: d.signed, path: d.name || `#${d.id}`, sel: r.sel }; }
     const v = idx.byId.get(r.id);
     if (!v) { throw new Error(`unknown signal #${r.id}`); }
-    return { ...bitOperand(v), sel: r.sel };
+    return { ...v, sel: r.sel };
   }
   for (let k = r.sel.length; k >= 0; k--) {
     const name = r.path + r.sel.slice(0, k).map(fmtSel).join('');
     const d = derivedByName.get(name);
     if (d) { return { signalId: d.id, width: d.width, msb: d.width - 1, lsb: 0, signed: d.signed, path: name, sel: r.sel.slice(k) }; }
     const v = idx.byPath.get(name);
-    if (v) { return { ...bitOperand(v), sel: r.sel.slice(k) }; }
+    if (v) { return { ...v, sel: r.sel.slice(k) }; }
     const hits = idx.list.filter((e) => e.path.endsWith('.' + name));
     const ids = [...new Set(hits.map((e) => e.signalId))];
-    if (ids.length === 1) { return { ...bitOperand(hits[0]), sel: r.sel.slice(k) }; }
+    if (ids.length === 1) { return { ...hits[0], sel: r.sel.slice(k) }; }
     if (ids.length > 1) { throw new Error(`ambiguous signal ${name}: ${hits.slice(0, 3).map((e) => e.path).join(', ')}${hits.length > 3 ? ', ...' : ''}`); }
   }
   throw new Error(`unknown signal ${r.path}`);
@@ -1504,8 +1514,8 @@ const handlers = {
     const head = [], bins = [];
     for (const r of res) {
       if (r.error) {
-        const permanent = PERMANENT.test(r.error);
-        if (permanent && r.signalId < DERIVED_BASE) { bgFailed.set(r.signalId, r.error); }
+        if (PERMANENT.test(r.error) && r.signalId < DERIVED_BASE) { bgFailed.set(r.signalId, r.error); }
+        const permanent = PAGE_PERMANENT.test(r.error);
         head.push({ signalId: r.signalId, error: r.error, bytes: 0, bucketBytes: 0, ...(permanent ? { permanent: true } : {}) });
         continue;
       }

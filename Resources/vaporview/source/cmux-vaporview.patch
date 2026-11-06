@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..7b1c227
+index 0000000..a38b05d
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,272 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -264,9 +264,18 @@ index 0000000..7b1c227
 +format's own rule), else scans exact chunks as before.
 +
 +A per-signal window error the helper marks `permanent: true` (an encoding the reader can't
-+give, a 0-bit alias, over the store cap) is shown at once as `unreadable: <reason>` and the
++give, a 0-bit alias) is shown at once as `unreadable: <reason>` and the
 +signal is not asked again; only other errors back off and say `(retrying)`.
 +`placeholderLabel` is the row's placeholder text (cmux's `run.sh windowed` reads it).
++
++Follow-ups from review:
++- A reply that ends mid-record (torn) fails its window (retried) instead of drawing short;
++  `parseRecords` returns null for it, on every caller.
++- A string's window headers say `textMean` (mean text bytes per change, as windows send it).
++  The whole-load estimate counts it, and a string row waits for it before deciding, so few
++  changes of long text stay windowed.
++- A real row's scale is the widest min/max the helper has sent; a ranged answer sends none.
++- "Next rising/falling edge" on a string row is its next change (and prefetch asks only that).
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2903,10 +2912,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..66e0ae4
+index 0000000..1da6b85
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1955 @@
+@@ -0,0 +1,1982 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2989,7 +2998,9 @@ index 0000000..66e0ae4
 +// Estimated webview bytes per change of a whole-loaded signal: the [time, value] array, its
 +// number and string, and the upstream formatted-value cache. Fitted to the measured RSS
 +// growth (about 300 B per change for 1- to 5-bit signals, more for 32-bit ones).
-+const hybridBytesFor = (count: number, width: number) => count * (256 + 8 * width);
++// cmux: a string's text adds its UTF-16 copy per change (textMean: the helper's mean text
++// bytes per change), so few changes of long text aren't taken for a small signal.
++const hybridBytesFor = (count: number, width: number, textMean = 0) => count * (256 + 8 * width + 2 * textMean);
 +const pushStat = (arr: number[], v: number) => { arr.push(v); if (arr.length > STATS_KEEP) {arr.splice(0, arr.length - STATS_KEEP / 2);} };
 +
 +interface Tile { level: number; index: number; t0: number; t1: number; key: string; priority: number; }
@@ -3024,6 +3035,9 @@ index 0000000..66e0ae4
 +  failUntil = 0;
 +  failMsg   = '';
 +  permanent = false; // cmux: the helper said this error won't go away (unsupported value encoding, 0-bit alias): shown once, never asked again
++  text      = false; // cmux: a string or real signal (its windows say `text: true`)
++  textMean: number | null = null; // cmux: a string's mean text bytes per change (window headers)
++  rangeSeen = false; // cmux: min/max hold a range the helper sent (widened, never narrowed)
 +  timeouts  = 0;     // window requests that timed out in a row: back off only (a slow helper isn't a failing one)
 +  slowUntil = 0;
 +  painted   = new Set<string>(); // window keys the last render drew from (kept by evict)
@@ -3080,22 +3094,25 @@ index 0000000..66e0ae4
 +// [u64 LE delta][u32 LE byte length][UTF-8 text], the text being the value as the viewer
 +// shows a VCD's strings and reals (formatString), so they draw and search unchanged.
 +const utf8 = new TextDecoder('utf-8');
-+function parseRecords(raw: Uint8Array, width: number, text = false): ValueChange[] {
++// A reply that ends mid-record (torn) gives null: the caller fails it (retried), rather than
++// drawing it short with the last value stretched to the window's end.
++function parseRecords(raw: Uint8Array, width: number, text = false): ValueChange[] | null {
 +  if (text) {
 +    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
 +    const out: ValueChange[] = [];
-+    let t = 0;
-+    for (let o = 0; o + 12 <= raw.length;) {
++    let t = 0, o = 0;
++    while (o + 12 <= raw.length) {
 +      t += dv.getUint32(o, true) + dv.getUint32(o + 4, true) * 4294967296;
 +      const len = dv.getUint32(o + 8, true);
 +      if (o + 12 + len > raw.length) {break;}
 +      out.push([t, utf8.decode(raw.subarray(o + 12, o + 12 + len))]);
 +      o += 12 + len;
 +    }
-+    return out;
++    return o === raw.length ? out : null;
 +  }
 +  const rec = 8 + width;
-+  const n   = Math.floor(raw.length / rec);
++  if (raw.length % rec !== 0) {return null;}
++  const n   = raw.length / rec;
 +  const dv  = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
 +  const s   = latin1.decode(raw); // one string, values are substrings of it
 +  const out: ValueChange[] = new Array(n);
@@ -3583,7 +3600,9 @@ index 0000000..66e0ae4
 +
 +  private decideCount(s: SignalWindows, count: number) {
 +    if (s.hybrid !== 'unknown' && s.hybrid !== 'asking') {return;}
-+    const est = hybridBytesFor(count, s.width);
++    // A string's text size is known from its window headers; until then, ask again later.
++    if (s.textMean === null && this.rowsOf(s.signalId).some((it) => it.encoding === 'String')) {this.hybridLater(s); return;}
++    const est = hybridBytesFor(count, s.width, s.textMean ?? 0);
 +    if (count > this.hybridMaxChanges || est > this.hybridMaxBytes || this.hybridBytes + est > this.hybridBudget) {
 +      s.hybrid = 'windowed';
 +      return;
@@ -3666,7 +3685,7 @@ index 0000000..66e0ae4
 +      if (d.err !== null || d.raw === null) {this.hybridLater(s, 'known'); return;}
 +      if (!d.h.exact) {final(); return;}
 +      const records = parseRecords(d.raw, s.width, !!d.h.text);
-+      if (records.length === 0 || records[0][0] !== 0) {this.hybridLater(s, 'known'); return;}
++      if (records === null || records.length === 0 || records[0][0] !== 0) {this.hybridLater(s, 'known'); return;}
 +      const est = s.hybridEst;
 +      this.unpend(s);
 +      this.promote(s, records, d.h.min ?? 0, d.h.max ?? 1, est);
@@ -3897,9 +3916,12 @@ index 0000000..66e0ae4
 +      if (!s || !f.signals.includes(h.signalId)) {return;}
 +      answered.add(s.signalId);
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
++      if (h.text) {s.text = true;}
++      if (typeof h.textMean === 'number') {s.textMean = h.textMean;}
 +      if (this.hybrid && typeof h.total === 'number') {this.decideCount(s, h.total);} // the helper knows its whole count
 +      if (err !== null || raw === null) {this.fail(s, err || 'no data', !!h.permanent); return;}
 +      const all = parseRecords(raw, s.width, !!h.text);
++      if (all === null) {this.fail(s, 'torn window reply'); return;}
 +      // The first record must be the value at the request's t0 (L4).
 +      if (all.length === 0 || all[0][0] !== f.tiles[0].t0) {this.fail(s, 'window does not start with the value at t0'); return;}
 +      if (s.windows.size === 0) {firstWindow.push(s);}
@@ -3919,7 +3941,14 @@ index 0000000..66e0ae4
 +        stored++;
 +      });
 +      s.fails = 0; s.failUntil = 0; s.failMsg = ''; s.solo = false; s.timeouts = 0; s.slowUntil = 0; s.permanent = false;
-+      s.min = h.min ?? 0; s.max = h.max ?? 1;
++      // A real's scale: the widest range the helper has sent (a ranged answer sends none).
++      if (typeof h.min === 'number' && typeof h.max === 'number') {
++        const widened = s.rangeSeen && (h.min < s.min || h.max > s.max);
++        s.min = s.rangeSeen ? Math.min(s.min, h.min) : h.min;
++        s.max = s.rangeSeen ? Math.max(s.max, h.max) : h.max;
++        s.rangeSeen = true;
++        if (widened) {this.rowsOf(s.signalId).forEach((item) => {if (item.encoding === "Real") {item.min = s.min; item.max = s.max;}});}
++      }
 +      this.evict(s);
 +    });
 +    // A signal the reply left out would otherwise be asked for again at once, forever (H2).
@@ -4554,7 +4583,7 @@ index 0000000..66e0ae4
 +        if (!(item instanceof NetlistVariable) || !this.isWindowed(item.signalId) || seen.has(item.signalId!) || seen.size >= PREFETCH_ROWS) {return;}
 +        seen.add(item.signalId!);
 +        const s = this.signals.get(item.signalId!)!;
-+        const kinds: ('any' | 'rise' | 'fall')[] = s.width === 1 ? ['any', this.lastEdgeKind] : ['any'];
++        const kinds: ('any' | 'rise' | 'fall')[] = s.width === 1 && !s.text ? ['any', this.lastEdgeKind] : ['any']; // cmux: strings/reals have no rise/fall
 +        kinds.forEach((kind) => {
 +          this.prefetchChain(s, {cmd: 'edge', kind}, 1, start, PREFETCH_AHEAD, epoch);
 +          this.prefetchChain(s, {cmd: 'edge', kind}, -1, start, PREFETCH_BACK, epoch);
@@ -4577,9 +4606,11 @@ index 0000000..66e0ae4
 +          return item ? item.getNextEdge(start, direction, edge) : null;
 +        }
 +        const s = this.signals.get(item.signalId!)!;
-+        const local = this.localEdge(s, start, direction, pred);
++        // cmux: a string or real row has no rising or falling edge: its next change instead.
++        const rowKind = s.text || item.encoding === 'String' ? 'any' : kind;
++        const local = this.localEdge(s, start, direction, rowKind === 'any' ? null : pred);
 +        if (local !== undefined) {return local;}
-+        return this.hostNav(s, {cmd: 'edge', kind}, direction, start, false, false);
++        return this.hostNav(s, {cmd: 'edge', kind: rowKind}, direction, start, false, false);
 +      }));
 +      const found = times.filter((t): t is number => t !== null && t !== undefined);
 +      if (found.length === 0 || gen !== this.generation) {return;}
@@ -4732,6 +4763,7 @@ index 0000000..66e0ae4
 +        continue;
 +      }
 +      const recs = parseRecords(d.raw, s.width, !!d.h.text);
++      if (recs === null) {throw new Error('value search: torn window reply');}
 +      if (recs.length === 0 || recs[0][0] !== t0) {throw new Error('value search: window does not start at t0');}
 +      this.keepScanWindow(s, t0, t1, d.h, recs);
 +      if (dir > 0) {
@@ -4802,7 +4834,11 @@ index 0000000..66e0ae4
 +        if (err !== null || raw === null) {vscodeWrapper.outputLog('WaveDrom: ' + h.signalId + ' left out: ' + err); return;}
 +        const width = widthOf.get(h.signalId);
 +        if (width === undefined) {return;}
-+        if (h.exact) {exact.set(h.signalId, parseRecords(raw, width, !!h.text));}
++        if (h.exact) {
++          const recs = parseRecords(raw, width, !!h.text);
++          if (recs === null) {vscodeWrapper.outputLog('WaveDrom: ' + h.signalId + ' left out: torn window reply'); return;}
++          exact.set(h.signalId, recs);
++        }
 +        else {dense.push({id: h.signalId, counts: counts!, count: Number(h.count) || 0});}
 +      });
 +      return dense;
