@@ -38,6 +38,7 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
         self.carrierRoutes = carrierRoutes
         self.masterPool = masterPool
         carrierRoutes?.record(connection)
+        Self.registerCarrier(connection, in: masterPool)
         self.clientURL = clientURL
         self.paths = paths
         self.isEnabled = isEnabled
@@ -140,6 +141,20 @@ actor SSHTuiLinkManager: RemoteTuiLinkManaging {
         guard current === observed, connecting == nil else { return }
         connection = replacement
         carrierRoutes?.record(replacement)
+        Self.registerCarrier(replacement, in: masterPool)
+    }
+
+    /// One-off runs learn the carrier's options when it is recorded, before
+    /// it connects: where they name the carrier's own path, the pool counts
+    /// them from the first (``SSHMasterPool/registerCarrier(_:carrierPath:)``).
+    private static func registerCarrier(_ connection: SSHTuiConnection, in masterPool: SSHMasterPool?) {
+        guard let masterPool else { return }
+        let configuration = connection.configuration
+        guard let route = SSHMasterPool.Route(
+            destination: configuration.destination, port: configuration.port,
+            identityFile: configuration.identityFile, sshOptions: connection.fileOperationSSHOptions
+        ) else { return }
+        masterPool.registerCarrier(route, carrierPath: SSHMasterPool.controlPath(in: connection.carrierSSHOptions))
     }
 
     func link(machineID: String) -> CloudMachineLink? {
