@@ -1901,6 +1901,29 @@ extension Harness {
         H.findItem = findItem;
         await sleep(800);
         R.lateRows = tr();
+        // A reload's restore whose lookups never settle (an SSH host gone
+        // quiet) holds an Add All and a pick by name only for the hold limit;
+        // then they run (verify-parity-fu H1).
+        const holdCap = C.holdLimitMs, settleCap = C.settleTimeoutMs;
+        C.holdLimitMs = 1500; C.settleTimeoutMs = 1000;
+        let never = null;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          H.findItem = () => new Promise(() => {});
+          restoreState(m);
+          await sleep(100);
+          never = link.addScope({ path: ['top', 'core'] });
+          await link.addSignal(['top', 'clk']);
+        };
+        const neverStart = Date.now();
+        window.cmuxWaveform.reload({});
+        while (!never && Date.now() - neverStart < 10000) { await sleep(50); }
+        R.neverScope = JSON.stringify(never ? await Promise.race([never, sleep(6000).then(() => 'pending')]) : 'no restore');
+        R.neverMs = Date.now() - neverStart;
+        await sleep(400);
+        R.neverRows = tr();
+        H.findItem = findItem;
+        C.holdLimitMs = holdCap; C.settleTimeoutMs = settleCap;
         """) { r in
           let s = { (k: String) in r[k] as? String ?? "nil" }
           check(r["undoScopeClk"] as? Int == 1, "Add All during an Undo that restores top.clk leaves it once: \(s("undoScopeRows"))")
@@ -1915,6 +1938,9 @@ extension Harness {
                 "and adds after the reload aren't held: \(s("afterStuck")) -> \(s("afterStuckRows"))")
           check(s("lateBefore") == "top.clk,top.core.acc" && s("lateScope").contains(#""added":0"#) && s("lateRows") == "top.clk,top.core.acc",
                 "an old load's Undo settling during the restore doesn't release the restore's held add: \(s("lateBefore")) -> \(s("lateScope")) -> \(s("lateRows"))")
+          let neverMs = r["neverMs"] as? Int ?? -1
+          check(s("neverScope").contains(#""added":1"#) && neverMs < 6000 && s("neverRows").contains("top.core.acc") && s("neverRows").contains("top.clk"),
+                "a restore whose lookups never settle holds Add All and a pick by name only for the hold limit: \(s("neverScope")) after \(neverMs) ms -> \(s("neverRows"))")
           self.phaseAR()
         }
       }
