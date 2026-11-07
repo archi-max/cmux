@@ -345,7 +345,12 @@ const NEXT_CASES = [
 //     under that condition (upper);
 // oursOnly
 //   assignmentPattern: a read inside an assignment pattern ('{a: x, ...}), which Verdi does not list;
-//   localInitializer: a procedural block local's declaration initializer, which Verdi does not list.
+//   localInitializer: a procedural block local's declaration initializer, which Verdi does not list;
+//   lvalueIndex: an index read in a two-level target select in a loop (mem[widx][8*b +: 8] <=),
+//     which Verdi does not list (it does list mem[waddr] <=);
+//   increment: x++ reads x; Verdi does not list it.
+// Statements slang leaves opaque (loops, calls) are listed when their text names the signal
+// (role 'opaque', maybe): Verdi's loads inside for and repeat loops match them.
 const LOAD_ORACLE_DIFFS = [
   'verdiOnly f tb_f.bus.addr port:tb_f.bus.mem.addr modport',
   'verdiOnly f tb_f.bus.clk port:tb_f.bus.ctrl.clk modport',
@@ -364,6 +369,9 @@ const LOAD_ORACLE_DIFFS = [
   'oursOnly c tb_c.dut.u_src.id_q c_struct.sv:37 assignmentPattern',
   'oursOnly c tb_c.dut.u_src.valid_q c_struct.sv:37 assignmentPattern',
   'oursOnly j tb_j.dut.b j_temps.sv:71 localInitializer',
+  'oursOnly i tb_i.dut.widx i_drivers.sv:30 lvalueIndex',
+  'oursOnly i tb_i.settle tb_i.sv:14 increment',
+  'oursOnly l tb_l.settle tb_l.sv:34 increment',
 ];
 
 function staleModel(all, invalidInitial) {
@@ -582,7 +590,7 @@ function runTraceChecks() {
           for (const x of direct) { if (ok.has(keyVerdi(x))) { counts.match++; } else { seen.push(`verdiOnly ${d} ${sig} ${keyVerdi(x)}`); } }
           for (const y of ours) { if (!vk.has(keyOurs(y))) { seen.push(`oursOnly ${d} ${sig} ${keyOurs(y)}`); } }
           // An upper statement's signal read in a condition or event of ours.
-          const ctl = ours.some((y) => y.role === 'condition' || y.role === 'sensitivity');
+          const ctl = ours.some((y) => y.role === 'condition' || y.role === 'sensitivity' || y.role === 'opaque');
           for (const x of o.stop.filter((z) => z.upper)) { counts.upper++; if (!ctl) { seen.push(`upper ${d} ${sig} ${keyVerdi(x)}`); } }
           // Through ports: ours followed through each port connection, transitively.
           const closure = new Set();

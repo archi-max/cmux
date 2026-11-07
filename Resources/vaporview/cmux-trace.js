@@ -1173,7 +1173,8 @@
 
     // ---- loads (load trace: who reads a signal) ----
     // Whether expression e (in m) reads the signal at `sig`: 'yes', 'maybe' (it reads the array
-    // `sig` is an element of, at an index the model doesn't fix), or ''.
+    // `sig` is an element of, at an index the model doesn't fix), or ''. An element select of an
+    // unpacked array (`elems`: mem[i]) reads the array: 'yes' for the array, 'maybe' for an element.
     function readsSig(m, e, sig) {
       if (!e) { return ''; }
       let found = '';
@@ -1184,6 +1185,11 @@
         if (sig.startsWith(p + '[')) { found = 'maybe'; }
       }
       for (const el of e.elems || []) {
+        if (el.array && !isLocal(el.array)) {
+          const a = absOf(m.path, el.array);
+          if (a === sig) { return 'yes'; }
+          if (sig.startsWith(a + '[')) { found = 'maybe'; }
+        }
         const r = readsSig(m, el.index, sig);
         if (r === 'yes') { return r; }
         if (r) { found = r; }
@@ -1217,6 +1223,19 @@
       return out;
     }
     const exprText = (e) => (e ? (e.src || leafText(e)) : '');
+    // Whether source text (comments and strings dropped) names sig as an identifier of instance m
+    // (sig is one of m's own signals: m.path + '.' + a plain name), other than as an assignment's
+    // target (`sig[..] <=` / `sig =`; an index inside the target still counts).
+    function namedIn(m, text, sig) {
+      if (!text || !sig.startsWith(m.path + '.')) { return false; }
+      const name = sig.slice(m.path.length + 1);
+      if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) { return false; }
+      const code = String(text).replace(/\/\/[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      const id = name.replace(/\$/g, '\\$');
+      const target = new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + '((\\s*\\[[^\\]]*\\])*)\\s*(<=|=)(?!=)', 'g');
+      const reads = code.replace(target, (all, pre, sel) => pre + ' ' + (sel || ''));
+      return new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + '(?![A-Za-z0-9_$])').test(reads);
+    }
     const EDGE_WORD = { PosEdge: 'posedge ', NegEdge: 'negedge ', BothEdges: 'edge ' };
     // The readers of `sig` inside instance m: assigns, declaration initializers, statements (data,
     // condition, index), procedures' sensitivity, and the child input ports it connects. `opaque`
@@ -1288,7 +1307,27 @@
               st.items.forEach((it) => visit(it.s)); visit(st.dflt);
               return;
             }
-            case 'opaque': limits.opaque++; return;
+            case 'opaque': {
+              // slang left it unelaborated (a loop, a call...): its reads are unknown. Named in its
+              // text, the signal may be read there: listed as maybe (role 'opaque').
+              limits.opaque++;
+              ref = { p, st, e: null };
+              // (slang's text can carry the trivia before it, on one line: a one-line statement's
+              // text is its last endCol - startCol characters)
+              let text = String(st.src || '');
+              const one = Array.isArray(st.loc) && st.loc[1] === st.loc[3] && st.loc[4] > st.loc[2];
+              if (one && !text.includes('\n') && text.length > st.loc[4] - st.loc[2]) { text = text.slice(-(st.loc[4] - st.loc[2])); }
+              if (namedIn(m, text, sig)) {
+                const t = new Set(); writtenBy(m, st, t);
+                // (a text starting with comment lines: the place is its first code line)
+                const trivia = (text.match(/^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*/) || [''])[0];
+                const lead = trivia.split('\n').length - 1;
+                const src = text.slice(trivia.length);
+                const l = lead && Array.isArray(st.loc) ? [st.loc[0], st.loc[1] + lead, 1].concat(st.loc.slice(3)) : st.loc;
+                push(Object.assign({ kind: 'stmt', role: 'opaque', src, targets: [...t] }, proc), l, 'maybe');
+              }
+              return;
+            }
             default:
           }
         };
@@ -1421,6 +1460,7 @@
       const p = ref.p;
       if (!p) { return { status: 'notEvaluated', reasons: [{ code: 'unknown' }] }; }
       if (isStimulus(p)) { return { status: 'stimulus', reasons }; }
+      if (e.role === 'opaque') { return { status: 'notEvaluated', reasons: [{ code: 'opaque', what: e.src }], trust: 'approximate' }; }
       const edge = isEdgeProc(p);
       if (e.kind === 'event') {
         if (!edge || !ref.ev || !ref.ev.edge) { return { status: 'notEvaluated', reasons: [{ code: 'evaluator' }] }; }

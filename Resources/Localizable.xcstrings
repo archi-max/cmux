@@ -487351,6 +487351,65 @@
         }
       }
     },
+    "waveformTrace.loads.role.opaque": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "maybe (in a statement not modelled)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可能性あり（モデル化されていない文の中）"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "möglich (in einer nicht modellierten Anweisung)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "possible (dans une instruction non modélisée)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "محتمل (في عبارة غير منمذجة)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "posible (en una sentencia no modelada)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可能（位於未建模的敘述中）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可能（位于未建模的语句中）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "가능성 있음(모델링되지 않은 문 안)"
+          }
+        }
+      }
+    },
     "waveformTrace.loads.role.sensitivity": {
       "extractionState": "manual",
       "localizations": {

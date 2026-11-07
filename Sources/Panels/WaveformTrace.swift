@@ -880,6 +880,7 @@ enum WaveformTrace {
             "traceLoadsRole_index": String(localized: "waveformTrace.loads.role.index", defaultValue: "index"),
             "traceLoadsRole_sensitivity": String(localized: "waveformTrace.loads.role.sensitivity", defaultValue: "sensitivity"),
             "traceLoadsRole_connection": String(localized: "waveformTrace.loads.role.connection", defaultValue: "port connection"),
+            "traceLoadsRole_opaque": String(localized: "waveformTrace.loads.role.opaque", defaultValue: "maybe (in a statement not modelled)"),
             "traceLoadsStatus_propagated": String(localized: "waveformTrace.loads.status.propagated", defaultValue: "propagated"),
             "traceLoadsStatus_noChange": String(localized: "waveformTrace.loads.status.noChange", defaultValue: "no change"),
             "traceLoadsStatus_notRun": String(localized: "waveformTrace.loads.status.notRun", defaultValue: "not run"),
