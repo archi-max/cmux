@@ -165,13 +165,13 @@ const ops = {
   },
 
   // -> [{signalId, exact, count, records (deflated), counts?, cached, loadMs, walkMs} | {signalId, error}]
-  window({ signalIds, t0, t1, buckets }) {
+  window({ signalIds, t0, t1, buckets, textBudget }) {
     const info = ensure(signalIds);  // throws DERIVED_EVICTED for an evicted derived signal
     return signalIds.map((signalId) => {
       const l = info.get(signalId);
       if (l.error) { return { signalId, error: l.error }; }
-      const w = addon.cacheWindow(signalId, t0, t1, buckets);
-      if (w.error) { return { signalId, error: w.error }; }  // over the text reply budget
+      const w = addon.cacheWindow(signalId, t0, t1, buckets, textBudget);
+      if (w.error) { return { signalId, error: w.error }; }  // over its text reply budget
       return { signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
         counts: w.counts || null, cached: l.cached, loadMs: l.loadMs, walkMs: l.walkMs, total: w.total, ...(l.fromFile ? { file: true } : {}), ...textHead(w) };
     });
@@ -190,8 +190,8 @@ const ops = {
 
   // A short range of signals that aren't stored: load and walk only [t0 - 1, t1]
   // into a scratch store (same answer as the whole signal; nothing kept).
-  windowCold({ signalIds, t0, t1, buckets }) {
-    return addon.cacheWindowCold(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
+  windowCold({ signalIds, t0, t1, buckets, textBudget }) {
+    return addon.cacheWindowCold(signalIds, t0, t1, buckets, textBudget).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
       : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
         counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs, ...textHead(w, true) }));
   },

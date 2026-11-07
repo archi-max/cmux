@@ -34,8 +34,10 @@
 //     [u64 LE delta][u32 LE byte length][UTF-8 text] instead, the text the viewer shows for a
 //     VCD's strings and reals (reals as Rust/wellen print them: shortest digits, no exponent);
 //     "x" before the first change. A window carries at most 4 KB of each value, cut at a
-//     character boundary and ended with U+2026 (valueAt and searchText use the whole text),
-//     and at most 16 MB of records (past it: an error; a narrower window fits). Reals also
+//     character boundary and ended with U+2026 (valueAt and searchText use the whole text).
+//     A reply's string records stay within 16 MB (--text-budget-mb, FSDB_TEXT_BUDGET_MB),
+//     shared by its strings (each at least a quarter of it): the cut shrinks, down to 256 bytes, so
+//     the window fits; one that can't is a retryable error (a narrower window fits). Reals also
 //     carry the signal's min and max (of 0 and every finite value, as wellen), but not on a
 //     ranged answer (a slice's range). Strings carry textMean, the mean bytes of text per
 //     change as windows send it. Edges: every change; search (bit patterns) refuses them.)
@@ -474,7 +476,21 @@ const widthOf = new Map();  // signalId -> bits, learned from children and windo
 const noSplit = new Set();
 // Strings, reals and events are never split. The reader lists parameters and time vars as Real
 // too, but most are bit vectors (1 byte per bit), so only type real is taken for a real here.
-const learnKind = (signalId, encoding, type) => { if (encoding === 'String' || (encoding === 'Real' && type === 'real') || type === 'event') { noSplit.add(signalId); } };
+// Strings are also counted for the text reply budget (stringIds).
+const stringIds = new Set();
+const learnKind = (signalId, encoding, type) => {
+  if (encoding === 'String' || (encoding === 'Real' && type === 'real') || type === 'event') { noSplit.add(signalId); }
+  if (encoding === 'String') { stringIds.add(signalId); }
+};
+// A window reply's string records stay within TEXT_BUDGET in all (16 MB): each string in the
+// request gets an equal share (at least a quarter of it), and the addon cuts each value
+// shorter (4 KB down to 256 bytes) to fit its share; a window that can't fit even then is a
+// retryable error. Reals' texts are short and aren't counted.
+const TEXT_BUDGET = Math.max(1, arg('--text-budget-mb', 'FSDB_TEXT_BUDGET_MB', 16)) * 1048576;
+const textShare = (ids) => {
+  const n = new Set(ids.filter((id) => stringIds.has(id))).size;
+  return Math.floor(Math.max(TEXT_BUDGET / 4, TEXT_BUDGET / Math.max(1, n)));
+};
 // Per-signal errors that will not go away for this file (an encoding the reader can't give,
 // a 0-bit alias, over the store cap): the coordinator doesn't walk them again, and window
 // headers mark those in PAGE_PERMANENT `permanent: true`, so the viewer shows them once
@@ -1424,7 +1440,7 @@ const handlers = {
     epoch++;
     splitting.clear();
     widthOf.clear();
-    noSplit.clear();
+    noSplit.clear(); stringIds.clear();
     index = null;
     derived.clear(); derivedByKey.clear(); derivedByName.clear();
     if (activeSearch) {  // ends with its terminal line {id, cancelled: true, reason: 'reopened'} (verify F1)
@@ -1505,9 +1521,10 @@ const handlers = {
     // load below reports it for that signal only.
     if (sp) { try { await sp; } catch (e) { if (req.cancelled || /reopened|closed/.test(String(e && e.message))) { throw e; } } }
     if (req.cancelled) { return {}; }
+    const textBudget = textShare(ids);
     const [warmRes, coldRes] = await Promise.all([
-      warmIds.length ? scatter(req, 'window', warmIds, { t0, t1, buckets }, (m) => m.result) : [],
-      cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets }, true) : []]);
+      warmIds.length ? scatter(req, 'window', warmIds, { t0, t1, buckets, textBudget }, (m) => m.result) : [],
+      cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets, textBudget }, true) : []]);
     const byId = new Map([...warmRes, ...coldRes].map((r) => [r.signalId, r]));
     for (const r of coldRes) { if (!r.error) { scheduleBgLoad(r.signalId); } }
     const res = ids.map((id) => byId.get(id));

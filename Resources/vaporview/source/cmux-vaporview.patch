@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..a38b05d
+index 0000000..7d0e92d
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,276 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -276,6 +276,10 @@ index 0000000..a38b05d
 +  changes of long text stay windowed.
 +- A real row's scale is the widest min/max the helper has sent; a ranged answer sends none.
 +- "Next rising/falling edge" on a string row is its next change (and prefetch asks only that).
++- A real row takes the helper's range whenever it changes, the first one included, so a row first
++  drawn from a ranged answer (no min/max) doesn't keep the 0..1 defaults.
++- A whole load whose reply is torn is tried TORN_LOAD_TRIES (2) times, then the signal stays
++  windowed, instead of retrying every 30 s for good.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2912,10 +2916,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..1da6b85
+index 0000000..debff65
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1982 @@
+@@ -0,0 +1,1989 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2986,6 +2990,7 @@ index 0000000..1da6b85
 +const HYBRID_LOADS       = 2;                 // whole loads in flight at once
 +const COUNT_BATCH        = 32;                // signals per count request
 +const MAX_HOST_BUCKETS   = 4194304;          // the helper clamps `buckets` to this
++const TORN_LOAD_TRIES    = 2;     // cmux: whole loads with a torn reply before a signal stays windowed
 +const SCAN_BUCKETS       = 32768; // formatted value search: exact chunks of up to 65536 changes
 +const TEXT_BUDGET_MS     = 5000;  // searchText: helper time per request; an unfinished one is resumed
 +const TEXT_MAX_PATTERN   = 4096;  // searchText's limit; longer searches use the page scan
@@ -3038,6 +3043,7 @@ index 0000000..1da6b85
 +  text      = false; // cmux: a string or real signal (its windows say `text: true`)
 +  textMean: number | null = null; // cmux: a string's mean text bytes per change (window headers)
 +  rangeSeen = false; // cmux: min/max hold a range the helper sent (widened, never narrowed)
++  tornLoads = 0;     // cmux: whole loads whose reply was torn (after TORN_LOAD_TRIES: stays windowed)
 +  timeouts  = 0;     // window requests that timed out in a row: back off only (a slow helper isn't a failing one)
 +  slowUntil = 0;
 +  painted   = new Set<string>(); // window keys the last render drew from (kept by evict)
@@ -3685,6 +3691,9 @@ index 0000000..1da6b85
 +      if (d.err !== null || d.raw === null) {this.hybridLater(s, 'known'); return;}
 +      if (!d.h.exact) {final(); return;}
 +      const records = parseRecords(d.raw, s.width, !!d.h.text);
++      // A torn reply won't heal on its own (a helper bug or a cut stream): try again a bounded
++      // number of times, then stay windowed.
++      if (records === null && ++s.tornLoads >= TORN_LOAD_TRIES) {final(); return;}
 +      if (records === null || records.length === 0 || records[0][0] !== 0) {this.hybridLater(s, 'known'); return;}
 +      const est = s.hybridEst;
 +      this.unpend(s);
@@ -3942,12 +3951,14 @@ index 0000000..1da6b85
 +      });
 +      s.fails = 0; s.failUntil = 0; s.failMsg = ''; s.solo = false; s.timeouts = 0; s.slowUntil = 0; s.permanent = false;
 +      // A real's scale: the widest range the helper has sent (a ranged answer sends none).
++      // The rows take it whenever it changes, the first range included: a row first drawn from
++      // a ranged answer (no min/max) was given the 0..1 defaults by onFirstWindow.
 +      if (typeof h.min === 'number' && typeof h.max === 'number') {
-+        const widened = s.rangeSeen && (h.min < s.min || h.max > s.max);
-+        s.min = s.rangeSeen ? Math.min(s.min, h.min) : h.min;
-+        s.max = s.rangeSeen ? Math.max(s.max, h.max) : h.max;
-+        s.rangeSeen = true;
-+        if (widened) {this.rowsOf(s.signalId).forEach((item) => {if (item.encoding === "Real") {item.min = s.min; item.max = s.max;}});}
++        const mn = s.rangeSeen ? Math.min(s.min, h.min) : h.min;
++        const mx = s.rangeSeen ? Math.max(s.max, h.max) : h.max;
++        const changed = !s.rangeSeen || mn !== s.min || mx !== s.max;
++        s.min = mn; s.max = mx; s.rangeSeen = true;
++        if (changed) {this.rowsOf(s.signalId).forEach((item) => {if (item.encoding === "Real") {item.min = s.min; item.max = s.max;}});}
 +      }
 +      this.evict(s);
 +    });

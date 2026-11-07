@@ -501,13 +501,16 @@ static std::string capError(size_t cap) { return "signal larger than " + std::to
 static const size_t kMaxText = 1u << 20;  // one string value
 // Windows carry at most kWinText bytes of each text (cut at a UTF-8 character boundary and
 // marked with an ellipsis): the store keeps each distinct string once, but a window repeats
-// it per record. valueAt and searchText keep the whole text. A window's records stop at
-// kTextBudget bytes: past it the window is refused (retryable; a narrower one fits).
+// it per record. valueAt and searchText keep the whole text. A window also has a text budget
+// (the coordinator's share of its per-reply budget, kTextBudget by default): the cut shrinks
+// to budget / records (down to kMinText), so a bucket-bounded window always fits; one that
+// doesn't fit even at kMinText is refused (retryable; a narrower one fits).
 static const size_t kWinText = 4096;
+static const size_t kMinText = 256;
 static const size_t kTextBudget = 16u << 20;
-static size_t shownLen(const std::string &v) {
-  if (v.size() <= kWinText) return v.size();
-  size_t cut = kWinText;
+static size_t shownLen(const std::string &v, size_t lim = kWinText) {
+  if (v.size() <= lim) return v.size();
+  size_t cut = lim;
   while (cut > 0 && ((uint8_t)v[cut] & 0xC0) == 0x80) cut--;
   return cut + 3;
 }
@@ -781,10 +784,10 @@ static std::string valueText(const SigStore *s, ptrdiff_t k) {
 
 // Records: [u64 LE delta][bits chars] for bit vectors; for strings and reals (window
 // header `text: true`) [u64 LE delta][u32 LE byte length][the text's bytes].
-static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k) {
+static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k, size_t lim = kWinText) {
   if (s->kind != kBits) {
     std::string v = valueText(s, k);
-    const size_t n = shownLen(v);
+    const size_t n = shownLen(v, lim);
     if (n != v.size()) { v.resize(n - 3); v += "\xe2\x80\xa6"; }  // cut, then U+2026
     const size_t o = out.size();
     const uint64_t delta = t - prev;
@@ -893,8 +896,13 @@ Napi::Value cacheLoad(const Napi::CallbackInfo &info) {
   return result;
 }
 
-// cacheWindow(id, t0, t1, buckets) -> {exact, count, records: Buffer, counts?: Buffer}
-static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint64_t t1, uint32_t B);
+// cacheWindow(id, t0, t1, buckets, textBudget?) -> {exact, count, records: Buffer, counts?: Buffer}
+static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint64_t t1, uint32_t B, size_t budget);
+static size_t argBudget(const Napi::CallbackInfo &info, size_t i) {
+  if (info.Length() <= i || !info[i].IsNumber()) return kTextBudget;
+  const double b = info[i].As<Napi::Number>().DoubleValue();
+  return b >= 1 && b < 9e15 ? (size_t)b : kTextBudget;
+}
 Napi::Value cacheWindow(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 4)) return env.Undefined();
@@ -904,11 +912,11 @@ Napi::Value cacheWindow(const Napi::CallbackInfo &info) {
   if (t1 < t0) std::swap(t0, t1);
   uint32_t B = info[3].As<Napi::Number>().Uint32Value();
   if (B == 0) B = 1;
-  Napi::Object o = windowOf(env, s, t0, t1, B);
+  Napi::Object o = windowOf(env, s, t0, t1, B, argBudget(info, 4));
   o.Set("total", Napi::Number::New(env, (double)s->times.size()));  // whole-signal (normalized) count
   return o;
 }
-static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint64_t t1, uint32_t B) {
+static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint64_t t1, uint32_t B, size_t budget) {
   const size_t n = s->times.size();
   auto lowerIdx = [&](uint64_t t, size_t from) {
     return (size_t)(std::lower_bound(s->times.begin() + from, s->times.end(), t) - s->times.begin());
@@ -918,20 +926,30 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   const size_t hi = t1 > t0 ? lowerIdx(t1, first) : lo;
   const size_t count = hi - lo;
   const bool exact = count <= 2 * (size_t)B;
+  const bool text = s->kind != kBits;
+  // Text: the records this window sends (the value at t0, then up to 2 per bucket), and the
+  // cut that makes them fit the budget (12 bytes of header and 3 of ellipsis per record).
+  size_t lim = kWinText;
+  if (text) {
+    const size_t later = hi > first ? hi - first : 0;
+    const size_t sends = 1 + (exact ? later : std::min(later, 2 * (size_t)B));
+    lim = std::max(kMinText, std::min(kWinText, budget / sends > 15 ? budget / sends - 15 : 0));
+  }
   std::vector<uint8_t> rec;
   uint64_t prev = 0;
-  putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1);
+  putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1, lim);
   Napi::Object o = Napi::Object::New(env);
-  const bool text = s->kind != kBits;
   auto overBudget = [&]() {
-    o.Set("error", Napi::String::New(env, "text window over the " + std::to_string(kTextBudget >> 20) + " MB reply budget (a narrower window fits)"));
+    char mb[32];
+    snprintf(mb, sizeof mb, "%.1f", budget / 1048576.0);
+    o.Set("error", Napi::String::New(env, std::string("text window over its ") + mb + " MB reply budget (a narrower window fits)"));
     return o;
   };
   if (exact) {
     rec.reserve(text ? 4096 : (count + 1) * (8 + s->bits));
     for (size_t k = first; k < hi; k++) {
-      putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
-      if (text && rec.size() > kTextBudget) return overBudget();
+      putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k, lim);
+      if (text && rec.size() > budget) return overBudget();
     }
   } else {
     std::vector<uint32_t> counts(B);
@@ -943,9 +961,9 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
       counts[k] = (uint32_t)(b - a);
       const size_t f = std::max(a, first);
       if (b > f) {
-        putRecord(s, rec, prev, s->times[f], (ptrdiff_t)f);
-        if (b - f >= 2) putRecord(s, rec, prev, s->times[b - 1], (ptrdiff_t)(b - 1));
-        if (text && rec.size() > kTextBudget) return overBudget();
+        putRecord(s, rec, prev, s->times[f], (ptrdiff_t)f, lim);
+        if (b - f >= 2) putRecord(s, rec, prev, s->times[b - 1], (ptrdiff_t)(b - 1), lim);
+        if (text && rec.size() > budget) return overBudget();
       }
       a = b;
     }
@@ -1774,6 +1792,7 @@ Napi::Value cacheWindowCold(const Napi::CallbackInfo &info) {
   if (t1 < t0) std::swap(t0, t1);
   uint32_t B = info[3].As<Napi::Number>().Uint32Value();
   if (B == 0) B = 1;
+  const size_t budget = argBudget(info, 4);
   std::vector<fsdbVarIdcode> ids;
   for (uint32_t i = 0; i < arr.Length(); i++) ids.push_back((fsdbVarIdcode)argI64(arr.Get(i)));
   using clk = std::chrono::steady_clock;
@@ -1785,7 +1804,7 @@ Napi::Value cacheWindowCold(const Napi::CallbackInfo &info) {
     auto tw = clk::now();
     std::string err;
     SigStore *s = walkSignal(ids[k], err);
-    Napi::Object o = s ? windowOf(env, s, t0, t1, B) : Napi::Object::New(env);
+    Napi::Object o = s ? windowOf(env, s, t0, t1, B, budget) : Napi::Object::New(env);
     o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
     if (!s) o.Set("error", Napi::String::New(env, err));
     o.Set("loadMs", Napi::Number::New(env, loadMs));
