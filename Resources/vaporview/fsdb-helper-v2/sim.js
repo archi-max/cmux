@@ -9,11 +9,15 @@
 // The stub does nothing unless the worker sets SIMCTL_LIB, so that build runs as before without cmux.
 //
 // Requests (each answered once, as the other commands: {id, result, ms} or {id, error}):
-//   sim.open {dir, clock?}  dir: the folder holding novas_dump.log (cmux pins it to the panel file's
+//   sim.open {dir, clock?, forkSave?}  dir: the folder holding novas_dump.log (cmux pins it to the panel file's
 //       folder); clock: a 1-bit signal whose period makes the cycles of run/until (without it, by time only).
+//       forkSave (default false): the run's mode. Off ("ucli"): the simulator runs with its command line, so
+//       sim.checkpoint/sim.restore work and sim.forksave is refused. On ("forkSave"): it runs without (worker
+//       --no-ucli), so sim.forksave works and sim.checkpoint/sim.restore are refused. A fork-save child of a
+//       simulation with its command line is stopped by it (measured; see the worker).
 //       The simulator is novas_dump.log's option[0] (relative to dir) and its run arguments are
 //       the options before the compiler entry, without +fsdb*, -l <file>, -ucli, -ucli2Proc.
-//       -> {t, precision, period, simv, args, dumpFile}. Refused without the stub in <simv>.daidir's
+//       -> {t, precision, period, simv, args, dumpFile, mode: 'ucli' | 'forkSave'}. Refused without the stub in <simv>.daidir's
 //       build record, with {needsFlag} and the line to add in the error. The replay runs in a private copy
 //       of `dir` (sim-worker.js "run directory": inputs copied, nested folders kept, outputs left out, an
 //       optional cmux-replay.json naming cwd/inputs/env); a run folder it can't copy is the open's error.
@@ -33,6 +37,11 @@
 //       is reported once; a consumer must show it as missing, not as the value before it.
 //       notices: [{event: 'missingInput', file, message, hint}]: the simulator could not open an input in
 //       the replay's copy of the run folder (each once).
+//       mode: the run's mode; saves: [{pid, file, t, status, ok, bytes, timeout?, error?}] fork-saves ended
+//       since the last poll (ok: the image is there; restore offline with `simv -r <file>`).
+//   sim.forksave {file}             -> {t, pid, forkMs, file} (forkSave runs; the build needs the simctl_saver
+//       top); file: a name in the run's scratch. Its end comes in a poll's `saves`.
+//   sim.checkpoint {}               -> {cp, t, ...}, sim.restore {cp} -> {t, watches} (ucli runs)
 //   sim.close {}                    -> {} (the simulation is ended and its processes killed)
 // Times are in the simulator's precision (10^precision s).
 'use strict';
@@ -46,7 +55,7 @@ const LIB = process.env.CMUX_SIM_LIB || path.join(__dirname, 'simctl/libsimctl.s
 const STUB = process.env.CMUX_SIM_STUB || path.join(os.homedir(), '.cache/cmux/simctl/libsimctl_stub.so');
 const simBuffer = () => Number(process.env.CMUX_SIM_BUFFER) || 64 * 1024 * 1024;   // read each time (tests shrink it)
 const MAX_WAIT_MS = 2000;
-const PAGE_COMMANDS = new Set(['sim.open', 'sim.run', 'sim.until', 'sim.stop', 'sim.read', 'sim.watch', 'sim.unwatch', 'sim.poll', 'sim.close']);
+const PAGE_COMMANDS = new Set(['sim.open', 'sim.run', 'sim.until', 'sim.stop', 'sim.read', 'sim.watch', 'sim.unwatch', 'sim.poll', 'sim.close', 'sim.forksave', 'sim.checkpoint', 'sim.restore']);
 
 // ---- novas_dump.log, the build record
 // The FSDB dumper writes the run's command line into novas_dump.log in the run folder:
@@ -96,16 +105,17 @@ function buildRecord(simv) {
 let cur = null;   // {proc, ready, pending: Map, nextId, buf, hdr, records: [{simSignal, t, value}] , bytes, dropped, stop, running, waiters, t, widths}
 const flagLine = () => `-load ${STUB}:simctl_register`;
 
-function startWorker(simv, args, clock, runDir) {
+function startWorker(simv, args, clock, runDir, forkSave = false) {
   const scratch = fs.mkdtempSync(path.join(process.env.CMUX_SIM_SCRATCH || process.cwd() || os.tmpdir(), 'sim-'));
   fs.chmodSync(scratch, 0o700);
   // The replay runs in a private copy of the original run's folder: novas_dump.log's, where the dumper ran.
   const wargs = [WORKER, '--simv', simv, '--lib', LIB, '--scratch', scratch, '--run', 'run', '--cwd', runDir];
   if (clock) wargs.push('--clock', clock);
+  if (forkSave) wargs.push('--no-ucli');
   wargs.push('--', ...args);
   const proc = spawn(process.execPath, wargs, { stdio: ['pipe', 'pipe', 'pipe'], detached: false });
   const s = { proc, scratch, pending: new Map(), nextId: 1, buf: Buffer.alloc(0), hdr: null, batches: [], bytes: 0, dropped: 0, gaps: new Map(), notices: [], setupError: null,
-    stop: null, running: false, waiters: [], t: 0, widths: new Map(), exited: null, stderr: '' };
+    stop: null, running: false, waiters: [], t: 0, widths: new Map(), exited: null, stderr: '', mode: forkSave ? 'forkSave' : 'ucli', saves: [] };
   s.ready = new Promise((resolve, reject) => { s.readyRes = resolve; s.readyRej = reject; });
   proc.stderr.on('data', (d) => { s.stderr = (s.stderr + d).slice(-4000); });
   proc.stdout.on('data', (d) => onData(s, d));
@@ -138,6 +148,9 @@ function onData(s, d) {
       if (m.event === 'changes') { if (m.binLength) { s.hdr = m; } continue; }
       if (m.event === 'ready') { s.t = m.t; s.period = Number(m.period) || 0; s.readyRes(m); }
       if (m.event === 'finish') { s.t = m.t; }
+      if (m.event === 'saved' && s.saves.length < 100) {
+        s.saves.push({ pid: m.pid, file: m.file, t: m.t, status: m.status, ok: m.ok === true, bytes: m.bytes || 0, ...(m.timeout ? { timeout: true } : {}), ...(m.error ? { error: String(m.error) } : {}) }); wake(s);
+      }
       if (m.event === 'setupError') { s.setupError = String(m.message || 'the run folder could not be set up'); }
       if (m.event === 'missingInput' && s.notices.length < 50) {
         s.notices.push({ event: 'missingInput', file: m.file || null, message: String(m.message || ''), hint: String(m.hint || '') }); wake(s);
@@ -262,11 +275,11 @@ const handlers = {
     }
     if (!fs.existsSync(LIB)) throw new Error('live simulation is not built on this host (it needs VCS when cmux builds its helper)');
     const args = runArgs(parsed.args);
-    const s = startWorker(simv, args, req.clock ? names([req.clock])[0] : '', path.resolve(dir));
+    const s = startWorker(simv, args, req.clock ? names([req.clock])[0] : '', path.resolve(dir), req.forkSave === true);
     cur = s;
     let ready;
     try { ready = await s.ready; } catch (e) { kill(s); cur = null; throw e; }
-    return { t: ready.t, precision: ready.precision, period: ready.period, simv, args, dumpFile: dumpFileOf(parsed.args), stub };
+    return { t: ready.t, precision: ready.precision, period: ready.period, simv, args, dumpFile: dumpFileOf(parsed.args), stub, mode: s.mode };
   },
   'sim.run'(req) {
     const s = needSim();
@@ -303,16 +316,36 @@ const handlers = {
   async 'sim.poll'(req) {
     const s = needSim();
     const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, Number(req.waitMs) || 0));
-    if (!s.batches.length && !s.gaps.size && !s.notices.length && !s.stop && !s.exited) {
+    if (!s.batches.length && !s.gaps.size && !s.notices.length && !s.saves.length && !s.stop && !s.exited) {
       await new Promise((resolve) => { const t = setTimeout(resolve, waitMs); s.waiters.push(() => { clearTimeout(t); resolve(); }); });
     }
     const { signals, bin } = takeChanges(s);
     const stop = s.stop; s.stop = null;
     const dropped = s.dropped; s.dropped = 0;
     const notices = s.notices; s.notices = [];
+    const saves = s.saves; s.saves = [];
     const gaps = [...s.gaps].filter(([id]) => s.widths.has(id)).map(([simSignal, g]) => ({ simSignal, from: g.from, through: g.through }));
     s.gaps.clear();
-    return { result: { t: s.t, running: s.running, stop, signals, dropped, gaps, notices, exited: s.exited }, bin };
+    return { result: { t: s.t, running: s.running, stop, signals, dropped, gaps, notices, saves, mode: s.mode, exited: s.exited }, bin };
+  },
+  async 'sim.forksave'(req) {
+    const s = needSim();
+    if (s.mode !== 'forkSave') throw new Error('sim.forksave needs a run opened with forkSave: true (this one is in ucli mode, with checkpoints)');
+    const file = String(req.file || '');
+    if (!/^[A-Za-z0-9._/-]{1,512}$/.test(file) || file.split('/').includes('..') || file.startsWith('/')) throw new Error('forksave: file must be a relative name of [A-Za-z0-9._/-] in the run\'s scratch');
+    return call(s, 'forksave', { file });
+  },
+  async 'sim.checkpoint'() {
+    const s = needSim();
+    if (s.mode !== 'ucli') throw new Error('sim.checkpoint needs a run opened without forkSave (this one is in forkSave mode: no command line)');
+    return call(s, 'checkpoint');
+  },
+  async 'sim.restore'(req) {
+    const s = needSim();
+    if (s.mode !== 'ucli') throw new Error('sim.restore needs a run opened without forkSave (this one is in forkSave mode: restore its saves offline with simv -r)');
+    const cp = Number(req.cp);
+    if (!Number.isSafeInteger(cp) || cp < 0) throw new Error('restore: cp must be a checkpoint number');
+    return call(s, 'restore', { cp });
   },
   async 'sim.close'() {
     if (cur) { const s = cur; cur = null; kill(s); }
