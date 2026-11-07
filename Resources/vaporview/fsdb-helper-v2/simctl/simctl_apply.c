@@ -128,6 +128,7 @@ static int apply_req(long id, char **tok, int nt, int ctx) {
   }
   char *arg;
   if (unhex(tok[4], &arg)) { reply_err(id, "apply: malformed arg"); return 0; }
+  if (serve && hold_st && hold_nw) { free(arg); reply_err(id, "apply: " HOLD_NW_MSG); return 0; }
   if (ctx == CTX_SYSTF && !hold_st) { free(arg); reply_err(id, "apply: the testbench's $simctl_serve has no (st, rel) arguments, so it can't be held: call it through simctl_hold.sv"); return 0; }
   if (serve && ctx == CTX_RO && !held) {
     free(arg);
@@ -138,7 +139,7 @@ static int apply_req(long id, char **tok, int nt, int ctx) {
   if (serve && ctx == CTX_SYSTF) return apply_at_serve();
   if (serve) { hold_later(2); return 1; }            /* RO park, TB held: wake it into $simctl_serve at t+1 */
   /* next: from a callback one time unit later; the TB (if serving) stays held meanwhile */
-  if (ctx == CTX_SYSTF) { hold_put(hold_st, 1, 0); held = 1; }
+  if (ctx == CTX_SYSTF && !hold_nw) { hold_put(hold_st, 1, 0); held = 1; }   /* an unwritable hold: the TB goes on, not held */
   vpiHandle h = after(1, apply_rtn); if (h) vpi_release_handle(h);
   return 1;
 }

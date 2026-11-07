@@ -315,6 +315,8 @@ static int ro_pending, need_serve, cond_dirty, in_ro, quick_pending;
 static char serve_reason[16];
 /* apply + settle state (simctl_apply.c) */
 static vpiHandle hold_st, hold_rel, hold_pulse; static int held, serving_hold, discarded; static long long released_at;
+static int hold_nw;   /* the TB's hold can't be written in this build (no write access on simctl_hold): it can't hold */
+#define HOLD_NW_MSG "simctl_hold has no write access in this build, so the testbench can't be held at its serve point (a checkpoint or an apply at serve there would never come back): give it write access (-debug_access+w with -debug_region covering the hold instance, or acc+=rw:<tb>.<hold>.st,<tb>.<hold>.rel,<tb>.<hold>.pulse in a tab file) and rebuild"
 static void hold_wake(int st); static void hold_put(vpiHandle h, int v, int scalar); static void hold_later(int st);
 static void settle_reply(void);
 static long settle_id;
@@ -472,16 +474,30 @@ static PLI_INT32 poll_rtn(p_cb_data d) { if (fs_child) return 0; if (fs_alive) f
  * Known race: one time unit is the simulation's precision. When the design's own delays are that small (e.g.
  * 1ns/1ns with #1 clocks), t+1 can be a time the design also acts at, and the order of the write against that
  * activity is the simulator's; the reply's value is what settled. */
-typedef struct { char op; int sig; long id; char *val; } wr_t;
+typedef struct { char op; int sig; long id; char *val; int ok; } wr_t;
 static wr_t *wq; static int nwq, capwq;
 static long *wdone; static int nwdone, capwdone;
+/* A VPI write the build gives no access for has no effect and raises no VPI error: read it back at once. Only a
+ * value of 0s and 1s is checked (an x/z written to a 2-state variable reads back as 0). */
 static void apply_write(wr_t *w) {
   simsig_t *s = &sigs[w->sig];
   s_vpi_value val; val.format = vpiBinStrVal; val.value.str = w->val;
-  if (w->op == 'L') { getbin(s, w->val); w->val[s->width] = 0; vpi_put_value(s->h, &val, NULL, vpiReleaseFlag); }
-  else vpi_put_value(s->h, &val, NULL, w->op == 'F' ? vpiForceFlag : vpiNoDelay);
+  w->ok = 1;
+  if (w->op == 'L') { getbin(s, w->val); w->val[s->width] = 0; vpi_put_value(s->h, &val, NULL, vpiReleaseFlag); return; }
+  vpi_put_value(s->h, &val, NULL, w->op == 'F' ? vpiForceFlag : vpiNoDelay);
+  if (strspn(w->val, "01") != (size_t)s->width) return;
+  char *rb = malloc(s->width + 1); getbin(s, rb); rb[s->width] = 0;
+  w->ok = !strcmp(rb, w->val); free(rb);
+}
+static void reply_noaccess(long id, int si, char op) {
+  bfmt(&ob, "{\"id\":%ld,\"error\":", id);
+  char m[1024];
+  snprintf(m, sizeof m, "no write access to %.400s in this build: the %s had no effect. Rebuild with write access there (-debug_access+w for variables, +f to force nets, -debug_region covering it, or acc+=rw,frc:<signal> in a tab file)",
+    sigs[si].name, op == 'F' ? "force" : "deposit");
+  bjson(&ob, m); bstr(&ob, ",\"needsRebuild\":true}"); send_ob();
 }
 static void reply_write(long id, int si) {
+  if (si < 0) return;   /* see reply_wq */
   simsig_t *s = &sigs[si];
   bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"value\":\"", id, (unsigned long long)now());
   bgrow(&ob, s->width); getbin(s, ob.p + ob.n); ob.n += s->width; bstr(&ob, "\"}"); send_ob();
@@ -491,7 +507,7 @@ static PLI_INT32 write_rtn(p_cb_data d) { if (fs_child) return 0;
   for (int i = 0; i < nwq; i++) {
     apply_write(&wq[i]); free(wq[i].val);
     if (nwdone + 2 > capwdone) { capwdone = capwdone ? capwdone * 2 : 64; wdone = realloc(wdone, capwdone * sizeof *wdone); }
-    wdone[nwdone++] = wq[i].id; wdone[nwdone++] = wq[i].sig;
+    wdone[nwdone++] = wq[i].id; wdone[nwdone++] = wq[i].ok ? wq[i].sig : -2 - (wq[i].op == 'F') - 2 * (long)wq[i].sig;
   }
   nwq = 0;
   snprintf(serve_reason, sizeof serve_reason, "write");
@@ -732,7 +748,11 @@ static void serve(int ctx) {
     bstr(&ob, "}"); send_ob();
     run_id = -1; released_at = -1;
   }
-  for (int i = 0; i < nwdone; i += 2) reply_write(wdone[i], (int)wdone[i + 1]);
+  for (int i = 0; i < nwdone; i += 2) {
+    long e = wdone[i + 1];
+    if (e >= 0) reply_write(wdone[i], (int)e);
+    else { e = -2 - e; reply_noaccess(wdone[i], (int)(e / 2), e % 2 ? 'F' : 'D'); }
+  }
   nwdone = 0;
   if (stop_id >= 0) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", stop_id, (unsigned long long)now()); send_ob(); stop_id = -1; }
   static char *tok[MAXTOK];
@@ -810,7 +830,7 @@ static void serve(int ctx) {
       if (ctx == CTX_SYSTF) {
         for (int i = 0; i < nwq; i++) { apply_write(&wq[i]); free(wq[i].val); }
         flush_dirty(); send_recs();
-        for (int i = 0; i < nwq; i++) reply_write(wq[i].id, wq[i].sig);
+        for (int i = 0; i < nwq; i++) { if (wq[i].ok) reply_write(wq[i].id, wq[i].sig); else reply_noaccess(wq[i].id, wq[i].sig, wq[i].op); }
         nwq = 0; break;
       }
       vpiHandle h = after(1, write_rtn); if (h) vpi_release_handle(h);
@@ -822,6 +842,7 @@ static void serve(int ctx) {
       if (!poll_dt) poll_dt = 1;
       bfmt(&ob, "{\"id\":%ld,\"poll\":%llu}", id, (unsigned long long)poll_dt); send_ob(); break;
     case 'P':
+      if (ctx == CTX_SYSTF && hold_st && hold_nw) { reply_err(id, HOLD_NW_MSG); break; }
       if (ctx == CTX_SYSTF && !hold_st) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"parked\":true}", id, (unsigned long long)t); send_ob(); return; }
       if (ctx == CTX_SYSTF) { hold_put(hold_st, 1, 0); held = 1; }   /* the TB waits; resume_rtn wakes it back in */
       if (ctx == CTX_SYSTF && hold_pulse) {   /* activity now: the stop takes effect at this time (resume_now) */
@@ -860,6 +881,21 @@ static PLI_INT32 ro_rtn(p_cb_data d) { if (fs_child) return 0; if (fs_alive) fs_
   return 0;
 }
 /* $simctl_serve [(st, rel)]: the TB hands the controller its procedural context here (simctl_hold.sv) */
+/* Whether the hold's st can be written in this build: write a different value, read it back, put the old one back
+ * (inside $simctl_serve no process waits on st; the TB reads it only after the call returns) */
+static int hold_writable(vpiHandle h) {
+  s_vpi_value v; v.format = vpiBinStrVal; v.value.str = NULL; vpi_get_value(h, &v);
+  if (!v.value.str) return 0;
+  char *old = strdup(v.value.str), *t = strdup(old);
+  size_t n = strlen(t); if (!n) { free(old); free(t); return 0; }
+  t[n - 1] = t[n - 1] == '1' ? '0' : '1';
+  v.format = vpiBinStrVal; v.value.str = t; vpi_put_value(h, &v, NULL, vpiNoDelay);
+  s_vpi_value b; b.format = vpiBinStrVal; b.value.str = NULL; vpi_get_value(h, &b);
+  int ok = b.value.str && !strcmp(b.value.str, t);
+  v.value.str = old; vpi_put_value(h, &v, NULL, vpiNoDelay);
+  free(old); free(t);
+  return ok;
+}
 static vpiHandle arg_by_name(vpiHandle a) {
   char *nm = a ? vpi_get_str(vpiFullName, a) : NULL;
   vpiHandle h = nm ? vpi_handle_by_name(nm, NULL) : NULL;
@@ -874,6 +910,7 @@ PLI_INT32 simctl_serve_calltf(PLI_BYTE8 *ud) { (void)ud; if (fs_child) return 0;
   hold_st = a2 ? arg_by_name(a1) : NULL; hold_rel = a2 ? arg_by_name(a2) : NULL;
   vpiHandle sc = hold_rel ? vpi_handle(vpiScope, hold_rel) : NULL;
   hold_pulse = sc ? vpi_handle_by_name("pulse", sc) : NULL;
+  hold_nw = hold_st && !hold_writable(hold_st);
   held = 0;   /* serving, not waiting */
   need_serve = 0;
   if (running) {   /* the TB reached its serve point during a run: the run ends here */

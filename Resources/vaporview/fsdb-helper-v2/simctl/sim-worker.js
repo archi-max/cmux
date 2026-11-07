@@ -303,10 +303,11 @@ sim.stdout.on('data', (d) => {
 });
 // While parked (checkpoint/restore), a prompt that never comes (a command-line error with no prompt) would wedge
 // every later request: after --ucli-timeout-ms the request errors and the simulation is ended (its state is unknown).
-const nextPrompt = (ms = 0) => new Promise((res, rej) => {
+const nextPrompt = (ms = 0) => { let cancel; const p = new Promise((res, rej) => {
   let tm = null;
   const w = (text) => { if (tm) clearTimeout(tm); res(text); };
   ucliWaiters.push(w);
+  cancel = () => { if (tm) clearTimeout(tm); const i = ucliWaiters.indexOf(w); if (i >= 0) ucliWaiters.splice(i, 1); };
   if (ms > 0) tm = setTimeout(() => {
     const i = ucliWaiters.indexOf(w); if (i >= 0) ucliWaiters.splice(i, 1);
     const message = `the simulator's command line gave no prompt within ${ms} ms; the simulation is ended`;
@@ -314,7 +315,7 @@ const nextPrompt = (ms = 0) => new Promise((res, rej) => {
     rej(Object.assign(new Error(message), { wedged: true }));
     setTimeout(() => { killGroup(); process.exit(1); }, 100);   // after the request's error reply is out
   }, ms);
-});
+}); p.cancel = cancel; return p; };
 const ucli = (cmd) => { const p = nextPrompt(UCLI_MS); sim.stdin.write(cmd + '\n'); return p; };
 
 // ---------------------------------------------------------------- library channel
@@ -485,6 +486,8 @@ async function park(work) {
   const prompt = nextPrompt(UCLI_MS);
   prompt.catch(() => {});             // handled below; never an unhandled rejection while P is in flight
   const pr = await libCall('P', '');
+  // refused (e.g. a hold the build can't write): the simulation never stops, so no prompt is coming
+  if (pr.error) { prompt.cancel(); parked = false; throw new Error(pr.error); }
   await prompt;                       // a wedged command line throws (the simulation is being ended)
   let result;
   try { result = await work(); } catch (e) { if (e.wedged) throw e; result = { error: String(e.message || e) }; }
@@ -535,7 +538,7 @@ function writeGroup(list) {
     lines.push(`${op} ${lid} ${sig}${op === 'L' ? '' : ' ' + val}`);
   }
   if (lines.length) libIn.write(lines.join('\n') + `\nY ${libId++}\n`);
-  return Promise.all(waits).then((rs) => rs.map((m) => (m.error ? { error: m.error } : { t: m.t, value: m.value })));
+  return Promise.all(waits).then((rs) => rs.map((m) => (m.error ? { error: m.error, ...(m.needsRebuild ? { needsRebuild: true } : {}) } : { t: m.t, value: m.value })));
 }
 // A run's length in ticks, or an error. `time` is in ticks (0: a zero-time no-op). `cycles` are periods of the
 // clock named at start (--clock, measured as the time between two rising edges, or --period): a whole number
@@ -679,7 +682,7 @@ async function handle(r) {
     case 'force': case 'deposit': case 'release': {
       if (busyRun()) return;   // the library applies writes only between runs: refused, not held (a stop must get through)
       const [w] = await writeGroup([{ op: r.cmd, signal: r.signal, value: r.value }]);
-      out(w.error ? { id, error: w.error } : { id, result: w }); return;
+      out(w.error ? { id, ...w } : { id, result: w }); return;
     }
     case 'writes': {
       if (busyRun()) return;
