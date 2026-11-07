@@ -156,6 +156,27 @@ trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"; discard "$STAGE"' EXIT
 mkdir -p "$STAGE/addon/build/Release" \
   && cp "$WORK/fsdb_reader.node" "$STAGE/addon/build/Release/" \
   && cp "$SRC/helper.js" "$SRC/worker.js" "$SRC/expr.js" "$SRC/text.js" "$SRC/formats.js" "$SRC/tree.js" "$SRC/cmux-helper-v2.sh" "$STAGE/" || exit 15
+# Live simulation (optional; sim.js says so when it is missing): the simctl VPI library, compiled
+# against this host's own VCS headers ($VCS_HOME/include, never shipped with cmux), and the stub a
+# simulator names at elaboration (-load <stub>:simctl_register), at a path that outlives versions.
+cp "$SRC/sim.js" "$STAGE/" && mkdir -p "$STAGE/simctl" && cp "$SRC/simctl/sim-worker.js" "$STAGE/simctl/" || exit 15
+build_simctl() {
+  vcs_home=${VCS_HOME:-}
+  if [ -z "$vcs_home" ] && v=$(command -v vcs 2>/dev/null); then vcs_home=$(cd "$(dirname "$v")/.." && pwd); fi
+  [ -n "$vcs_home" ] && [ -f "$vcs_home/include/vpi_user.h" ] || { say "live simulation: no VCS headers (set VCS_HOME); skipped"; return 0; }
+  cc=$(command -v gcc 2>/dev/null || command -v cc 2>/dev/null) || { say "live simulation: no C compiler; skipped"; return 0; }
+  nice -n 10 "$cc" -O2 -fPIC -shared -Wall -Wno-unused-parameter -I"$vcs_home/include" \
+    -o "$STAGE/simctl/libsimctl.so" "$SRC/simctl/simctl_vpi.c" >>"$WORK/build.log" 2>&1 \
+    || { rm -f "$STAGE/simctl/libsimctl.so"; say "live simulation: the VPI library did not compile; skipped"; return 0; }
+  stubdir=$HOME/.cache/cmux/simctl
+  mkdir -p "$stubdir" && chmod 700 "$stubdir" || return 0
+  "$cc" -O2 -fPIC -shared -Wall -o "$WORK/libsimctl_stub.so" "$SRC/simctl/simctl_stub.c" -ldl >>"$WORK/build.log" 2>&1 || return 0
+  # A simulator built against the stub loads it on every run: replace it only when it differs, by rename.
+  cmp -s "$WORK/libsimctl_stub.so" "$stubdir/libsimctl_stub.so" \
+    || { cp "$WORK/libsimctl_stub.so" "$stubdir/.stub.$$" && chmod 755 "$stubdir/.stub.$$" && mv -f "$stubdir/.stub.$$" "$stubdir/libsimctl_stub.so"; }
+  say "live simulation: built (stub: $stubdir/libsimctl_stub.so)"
+}
+build_simctl
 # Single-quoted for the shell that sources it; a ' in a path becomes '\''.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 printf 'NODE=%s\nVERDI_HOME=%s\n' "$(quote "$NODE")" "$(quote "$VERDI")" > "$STAGE/helper.env"
