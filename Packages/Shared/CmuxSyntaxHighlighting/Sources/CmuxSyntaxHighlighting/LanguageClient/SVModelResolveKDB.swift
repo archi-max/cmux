@@ -62,6 +62,8 @@ extension SVModelResolve {
         }
         func module(_ path: String) async -> String? { await slangModel(path)?["module"] as? String }
         func below(_ path: String, _ prefix: String) -> String { path == prefix ? "" : String(path.dropFirst(prefix.count + 1)) }
+        // A relative name with its generate indices dropped (g[3].u_dut -> g[].u_dut).
+        func indexFree(_ name: String) -> String { name.replacingOccurrences(of: #"\[[0-9]+\]"#, with: "[]", options: .regularExpression) }
         // slang's instance chain for the row from `candidate` (standing for chain[level]) down: each
         // level under the same relative name as the KDB's, with the KDB's module. Where slang lacks
         // that name, the one child of the KDB's module stands for it when the KDB's parent also has
@@ -90,8 +92,10 @@ extension SVModelResolve {
                             if known.contains(q) { up = q; break }
                         }
                         guard up == slangParent, await module(p) == kdbModule else { continue }
-                        // slang's namesake of another of the KDB parent's children is that child, retyped: no stand-in.
-                        if kdb.instance(parent + "." + below(p, slangParent)) != nil { continue }
+                        // slang's namesake of another of the KDB parent's children is that child, retyped, and another
+                        // generate index (g[0] for g[3]) is another instance: neither stands for it.
+                        let name = below(p, slangParent)
+                        if kdb.instance(parent + "." + name) != nil || indexFree(name) == indexFree(below(path, parent)) { continue }
                         slangSame.append(p)
                     }
                     guard kdbSame.count == 1, slangSame.count == 1 else { return (paths, .notInSlang, renamed) }
