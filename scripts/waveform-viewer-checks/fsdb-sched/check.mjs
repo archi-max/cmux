@@ -1396,6 +1396,31 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     `a ready descriptor answers ${reqs.length} windows (${bucketed} bucketed) byte for byte as windowOf: ${info.state}, ${bad.length} differ ${JSON.stringify(bad.slice(0, 2))}, ${fromDesc} from the descriptor (served ${st.clock && st.clock.served})`);
 }
 
+// 43d. A descriptor window is bounded in the coordinator (review M1): clockdesc.window runs on the
+// helper's main thread and builds every record, so a protocol client's 2^22-bucket window over a
+// fast clock (here 1 M changes) blocked a parallel stats request and grew the helper's memory
+// (huge: 9.1 s, 1.8 GB). Windows of more than 65,536 buckets go to the reader worker instead.
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 2 }), FSDB_CLOCK_DESC: '1', STUB_CLOCK_BPC: '0', FSDB_CLOCK_SEGMENTS: '256' };
+  const h = await start(1, {}, env);
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const rss = () => { try { return Number(execFileSync('ps', ['-o', 'rss=', '-p', String(h.pid)]).toString().trim()) * 1024; } catch (e) { return 0; } };
+  const r0 = rss();
+  const w = h.send('window', { signals: [{ signalId: 5, width: 1 }], t0: 0, t1: 1000000, buckets: 1 << 22 }).reply;
+  await wait(20);
+  const t = performance.now();
+  await h.send('stats').reply;
+  const statsMs = performance.now() - t;
+  const r = await w;
+  const r1 = rss();
+  const small = await h.send('window', { signals: [{ signalId: 5, width: 1 }], t0: 0, t1: 10000, buckets: 1024 }).reply;
+  h.close();
+  check(info.state === 'ready' && !r.error && statsMs < 100 && r1 - r0 < 100e6 && small.result && small.result.signals[0].clock,
+    `(${info.state} ${info.error || ""}) a 2^22-bucket window over a 1 M-change clock doesn't block the coordinator: stats waited ${Math.round(statsMs)} ms (want < 100), helper RSS +${Math.round((r1 - r0) / 1e6)} MB (want < 100), from the descriptor ${!!(r.result && r.result.signals[0].clock)}; a 1024-bucket tile still is ${!!(small.result && small.result.signals[0].clock)}`);
+}
+
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
 // changes, 755 MB, against a 244 MB store gave "signal larger than 244 MB"): answered from
 // ranged reads that grow from t until the first hit, never a whole load's cap error. Signal 5 is

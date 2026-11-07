@@ -121,7 +121,8 @@ module.exports = {
     if (!(b > a)) { return { error: 'empty range' }; }
     if (!CLOCK[id]) { return { error: 'clock: a 1-bit signal only' }; }
     const dev = (JSON.parse(process.env.STUB_CLOCK_DEV || '{}')[id] || []).map(([t, v]) => ({ t, v, dev: true }));
-    const base = changesIn(id, 0, TIME_END).map((c) => ({ t: c.t, v: c.v }));
+    // (the clock's changes from a period before a: the value in effect at a is the last one before it)
+    const base = changesIn(id, Math.max(0, a - Number(CLOCK[id])), b).map((c) => ({ t: c.t, v: c.v }));
     const all = [...base, ...dev].sort((x, y) => x.t - y.t || (x.dev ? 1 : 0) - (y.dev ? 1 : 0));
     const norm = []; let pv = 'x';
     for (let k = 0; k < all.length; k++) { if (k + 1 < all.length && all[k + 1].t === all[k].t) { continue; } if (all[k].v !== pv) { norm.push(all[k]); pv = all[k].v; } }
