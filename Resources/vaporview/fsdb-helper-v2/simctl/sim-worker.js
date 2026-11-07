@@ -40,7 +40,7 @@
 //                                                 at requestedAt)
 //   restore {cp}                                -> {t, watches} and a full-value changes event
 //   save {file} / restoreFile {file}            file-based save/restore, for comparison
-//   stats {}                                    -> {pids, pssMb, memAvailMb, licence?}
+//   stats {}                                    -> {pids, pssMb, memAvailMb, licence?, skippedLinks, vmemKb}
 //   quit {}
 // Names, values and expressions must not contain control characters, and names and values no whitespace;
 // `file` must be a path inside --scratch of [A-Za-z0-9._/-]; `cp` an integer. Anything else is refused.
@@ -115,8 +115,15 @@ const plan = [];   // [src, rel, bytes]
 const dirReal = fs.realpathSync(dir), scratchReal = fs.realpathSync(SCRATCH);
 const cwdReal = (() => { try { return fs.realpathSync(RUN_CWD); } catch { return RUN_CWD; } })();
 const cwdInScratch = cwdReal.startsWith(scratchReal + path.sep);
-function walk(abs, rel, depth) {
+// A symlinked folder (often a link to a big shared tree) is not walked into unless the manifest names it;
+// it is listed in skippedLinks (stats, and the missing-input hint). A symlinked file is copied by content.
+const skippedLinks = [];
+function walk(abs, rel, depth, named = false) {
   let st; try { st = fs.statSync(abs); } catch { return; }
+  if (st.isDirectory() && !named && depth > 0) {
+    let link = false; try { link = fs.lstatSync(abs).isSymbolicLink(); } catch { return; }
+    if (link) { if (skippedLinks.length < 100) skippedLinks.push(rel); return; }
+  }
   if (st.isDirectory()) {
     if (depth > 8 || plan.length > 20000) return;
     let real; try { real = fs.realpathSync(abs); } catch { return; }
@@ -135,14 +142,15 @@ if (manifest && manifest.inputs) {
     const abs = path.resolve(RUN_CWD, inp), rel = path.relative(RUN_CWD, abs);
     if (rel.startsWith('..') || path.isAbsolute(rel)) setupFail(`cmux-replay.json: input ${JSON.stringify(inp)} is outside ${RUN_CWD}`);
     if (!fs.existsSync(abs)) setupFail(`cmux-replay.json names ${inp}, which is missing in ${RUN_CWD}`);
-    walk(abs, rel, 0);
+    walk(abs, rel, 0, true);
   }
 } else walk(RUN_CWD, '', 0);
 const total = plan.reduce((a, x) => a + x[2], 0);
 if (total > COPY_MB * 1024 * 1024) {
   const big = [...plan].sort((a, b) => b[2] - a[2]).slice(0, 5).map(([, rel, n]) => `${rel} (${(n / 1048576).toFixed(1)} MB)`);
   setupFail(`the run folder ${RUN_CWD} holds ${(total / 1048576).toFixed(0)} MB to copy (limit ${COPY_MB} MB), largest: ${big.join(', ')}. ` +
-    `List the inputs the simulation reads in ${path.join(RUN_CWD, 'cmux-replay.json')} ({"inputs": ["..."]}), or raise --copy-mb.`);
+    `List the inputs the simulation reads in ${path.join(RUN_CWD, 'cmux-replay.json')} ({"inputs": ["..."]}), or raise --copy-mb.` +
+    (skippedLinks.length ? ` Linked folders were not counted (named inputs only): ${skippedLinks.slice(0, 5).join(', ')}.` : ''));
 }
 for (const [src, rel] of plan) {
   const dst = path.join(dir, rel);
@@ -165,7 +173,8 @@ function scanMissing(d) {
     if (missingSeen.has(file) || missingSeen.size > 100) continue;
     missingSeen.add(file);
     event('missingInput', { file, message: `${scanHead ? scanHead + ' ' : ''}${line.trim()}`.slice(0, 400), cwd: RUN_CWD,
-      hint: `the replay runs in a copy of ${RUN_CWD}; if ${file} lives elsewhere, name it in ${path.join(RUN_CWD, 'cmux-replay.json')}` });
+      hint: `the replay runs in a copy of ${RUN_CWD}; if ${file} lives elsewhere, name it in ${path.join(RUN_CWD, 'cmux-replay.json')}` +
+        (skippedLinks.length ? ` (linked folders are not copied unless named there: ${skippedLinks.slice(0, 5).join(', ')})` : '') });
     scanHead = '';
   }
 }
@@ -175,7 +184,16 @@ const ucli2 = !flag('--no-ucli2proc');
 const args = ['-n', '10', SIMV, '-ucli', ...(ucli2 ? ['-ucli2Proc'] : []), ...simArgs];
 // sh sets the hard memory limit, then execs nice, which execs the simulator (with -ucli2Proc it runs the design
 // in a child process). detached: a new session, whose process group holds all of the simulation's processes.
-const sim = spawn('/bin/sh', ['-c', 'if [ "$1" -gt 0 ]; then ulimit -v "$1" || exit 70; fi; shift; exec nice "$@"', 'simctl', String(VMEM_MB * 1024), ...args], {
+// The limit cannot go above the hard limit the worker was started under: then that one is used (and said).
+let VMEM_KB = VMEM_MB > 0 ? VMEM_MB * 1024 : 0;
+if (VMEM_KB > 0) {
+  let hard = NaN; try { hard = Number(require('node:child_process').execFileSync('/bin/sh', ['-c', 'ulimit -H -v'], { encoding: 'latin1' }).trim()); } catch { /* unknown */ }
+  if (Number.isSafeInteger(hard) && hard > 0 && hard < VMEM_KB) {
+    event('notice', { message: `--vmem-mb ${VMEM_MB} is above the hard ulimit -v this worker runs under (${hard} KB); the simulator gets ${hard} KB` });
+    VMEM_KB = hard;
+  }
+}
+const sim = spawn('/bin/sh', ['-c', 'if [ "$1" -gt 0 ]; then ulimit -v "$1" || exit 70; fi; shift; exec nice "$@"', 'simctl', String(VMEM_KB), ...args], {
   cwd: dir,
   stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
   env: { ...process.env, ...replayEnv, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1' },
@@ -202,6 +220,7 @@ for (const st of [libIn, libOut, sim.stdin]) st.on('error', (e) => event('error'
 libOut.on('close', () => { for (const [, p] of pending) if (!p.resolve) out({ id: p.id, error: 'library channel closed' }); });
 sim.stderr.on('data', (d) => { simLog.write(d); scanMissing(d); });
 sim.on('exit', (code, signal) => {
+  if (code === 70 && !isReady) event('setupError', { message: `the simulator's memory limit (ulimit -v ${VMEM_KB} KB) could not be set; lower --vmem-mb` });
   event('exit', { code, signal, ms: Date.now() - t0 });
   for (const [, p] of pending) out({ id: p.id, error: 'simulation exited' });
   pending.clear();
@@ -277,6 +296,7 @@ function onChanges(n, bin) {
   lastT = Math.max(lastT, tmax);
   out({ id: 0, event: 'changes', t0: tmin, t1: tmax, signals: sigs, binLength: all.length }, all);
 }
+let isReady = false;
 let readyResolve; const ready = new Promise((r) => (readyResolve = r));
 function onLib(m) {
   if (m.ev === 'ready') { readyResolve(m); return; }
@@ -507,7 +527,7 @@ async function handle(r) {
       out({ id, result: res, ms: +(performance.now() - s0).toFixed(1) });
       return;
     }
-    case 'stats': out({ id, result: { ...memStats(true), period, lastT, unwatchedKept: unwatchedWidth.size } }); return;
+    case 'stats': out({ id, result: { ...memStats(true), period, lastT, unwatchedKept: unwatchedWidth.size, skippedLinks, vmemKb: VMEM_KB } }); return;
     case 'quit': lib('Q', id, ''); setTimeout(() => { try { sim.stdin.write('quit\n'); sim.stdin.end(); } catch {} }, 200);
       setTimeout(() => killGroup(), 10000).unref();
       return;
@@ -542,5 +562,6 @@ rl.on('close', () => { if (sim.exitCode === null) handle({ id: 0, cmd: 'quit' })
   }
   if (period && POLL_CYCLES) await libCall('O', `poll ${period * POLL_CYCLES}`);
   const t = await libCall('T', '');
+  isReady = true;
   event('ready', { t: t.t, precision: r.precision, period, startupMs: Date.now() - t0, dir, ucli2Proc: ucli2 });
 })();
