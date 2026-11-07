@@ -4,7 +4,8 @@
 // started without -ucli, as `sim-worker.js --no-ucli` does: no prompts, and the library side starts at once),
 // the library's line protocol on fd 3 (requests in) and fd 4 (replies out), as simctl_vpi.c speaks it:
 //   T/G/W/X/I/N/O/E/V answered at once, also during a run (the library's poll points); R/U run for FAKE_RUN_MS
-//   (default 1500) or until an S; F/D/L ... Y (writes), P, Q and anything else wait for the run's end, in order.
+//   (default 1500) or until an S; F/D/L ... Y (writes), P, Q, H (describe), A (apply) and anything else wait for
+//   the run's end, in order.
 // Toy design: time unit 1; tb.cnt (8 bits) = floor(t / 10) mod 256. Every library line received is appended to
 // FAKE_SIMV_LOG (one per line), so a test can see what reached "the library".
 'use strict';
@@ -62,6 +63,10 @@ function line(l) {
     case 'F': case 'D': case 'L': writes.push(id); return;
     case 'Y': t += 1; for (const w of writes) send({ id: w, t, value: cnt() }); writes = []; return;
     case 'P': send({ id, t, parked: true }); process.stdout.write('ucli% '); return;
+    // the reusable testbench: one simctl_cfg and one simctl_port in the toy design (simctl_describe.c's reply)
+    case 'H': send({ id, t, cfg: [{ path: 'tb.u_cfg', scenarios: 'smoke:plain adds' }], ports: [{ path: 'tb.u_in', name: 'in', kind: 'vr', width: 16, fields: 'hi[15:8] lo[7:0]' }], memories: [], memoriesTruncated: false }); return;
+    // apply: the hook ran and the design settled (simctl_apply.c's reply)
+    case 'A': send({ id, t, rc: 0, lastError: '', settled: true, held: false }); return;
     case 'Q': send({ id, t, quit: true }); setTimeout(() => process.exit(0), 20); return;
     default: send({ id, error: 'unknown op' });
   }

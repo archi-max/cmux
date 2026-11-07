@@ -204,6 +204,22 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(evs.length === 1 && evs[0].ok === false && evs[0].simExited === true, `M-a the simulation ended during a save: exactly one saved event, simExited: ${JSON.stringify(evs)} (reply ${JSON.stringify(xs)}, events ${JSON.stringify(w.events.slice(-4))})`);
     await w.quit().catch(() => {});
   }
+  // The reusable testbench and apply (carried in from the simctl library, prototype 6c1eb0c..056c4b8): describe
+  // answers the build's simctl_cfg/simctl_port instances; apply checks its arguments and reaches the library as
+  // one A line, and its reply comes back.
+  {
+    const w = start(['--period', '10']); await w.ready;
+    const d = await w.reply(w.send({ cmd: 'describe' }).id);
+    expect(!!d && !!d.result && d.result.cfg && d.result.cfg[0] && d.result.cfg[0].path === 'tb.u_cfg' && d.result.ports && d.result.ports[0] && d.result.ports[0].name === 'in',
+      `describe: the build's simctl_cfg and simctl_port: ${JSON.stringify(d)}`);
+    const bad = await w.reply(w.send({ cmd: 'apply', at: 'serve', symbol: 'not a symbol' }).id);
+    expect(!!bad && /C identifier/.test(bad.error || ''), `apply: a symbol that is not a C identifier is refused: ${JSON.stringify(bad)}`);
+    const a = await w.reply(w.send({ cmd: 'apply', at: 'serve', symbol: 'my_hook', arg: 'x', versionSymbol: null }).id);
+    const aLine = w.libLines().find((l) => l.startsWith('A '));
+    expect(!!a && !!a.result && a.result.rc === 0 && a.result.settled === true && !!aLine && / serve my_hook x78 - - 0 -$/.test(aLine),
+      `apply: one A line to the library, and its reply: ${JSON.stringify(a)} (${aLine})`);
+    await w.quit().catch(() => {});
+  }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
   // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
   {
