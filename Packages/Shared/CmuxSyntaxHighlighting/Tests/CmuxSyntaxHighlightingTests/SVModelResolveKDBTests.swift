@@ -271,6 +271,30 @@ import Testing
         #expect(mapping(try await resolve("tb.g[0].u_dut.u_core.x", design: design, kdb: kdb)) == .signal(designPath: "tb.g[0].u_dut.u_core.x", designPrefix: "", dumpPrefix: ""))
     }
 
+    /// slang's testbench is another module (tbx) with only g[0].dut: the KDB's tb.g[1].dut is no
+    /// stand-in for it. The whole name below the parent is compared (g[1].dut, not g[0].dut), not
+    /// its last segment (dut). With slang's own g[1], it maps there under the other top (tbx); under
+    /// slang's tb, another module at the dump's own path, nothing below is evaluated.
+    @Test func anotherTestbenchsOtherGenerateIndexIsNoStandIn() async throws {
+        var compiled: [(String, String, String?, [String], [String: Int])] = [("tb", "tb", nil, ["clk"], [:])]
+        for k in 0..<2 { compiled += [("tb.g[\(k)].dut", "dut", "tb", ["clk"], [:]), ("tb.g[\(k)].dut.u_core", "core", "tb.g[\(k)].dut", ["x"], ["x": 9])] }
+        let kdb = Self.kdb(compiled)
+        for top in ["tb", "tbx"] {
+            var models: [String: [String: Any]] = [top: Self.inst("tbx", ["clk"]), "\(top).g[0].dut": Self.inst("dut", ["clk"]), "\(top).g[0].dut.u_core": Self.inst("core", ["x"])]
+            let row = "tb.g[1].dut.u_core.x"
+            let got = try await resolve(row, design: Design(models: models, tops: [top]), kdb: kdb)
+            if case .compiledOnly(row, _, _) = got {} else { Issue.record("\(top): \(got)") }
+            models["\(top).g[1].dut"] = Self.inst("dut", ["clk"])
+            models["\(top).g[1].dut.u_core"] = Self.inst("core", ["x"])
+            let both = mapping(try await resolve(row, design: Design(models: models, tops: [top]), kdb: kdb))
+            if top == "tb" {
+                #expect(both == .compiledOnly(dumpPath: row, reason: .otherModule, writes: Self.writes(kdb, row)), "tb with g[1]: \(both)")
+            } else {
+                #expect(both == .signal(designPath: "tbx.g[1].dut.u_core.x", designPrefix: "tbx.g[1]", dumpPrefix: "tb.g[1]"), "tbx with g[1]: \(both)")
+            }
+        }
+    }
+
     /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
     /// anything below it.
     @Test func belowAnotherModuleNothingIsEvaluated() async throws {
