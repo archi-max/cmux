@@ -69,7 +69,7 @@ Times are integers in the dump's unit. The full list, with every field, is the h
 | --- | --- |
 | `open`, `children` | Metadata and top scopes; one scope's children |
 | `window {signals, t0, t1, buckets}` | A signal's changes in `[t0, t1)`. Exact when there are at most 2 × `buckets` changes; otherwise each bucket's first and last change plus a count per bucket. Sent as deflated `[u64 delta][value]` records |
-| `valueAt`, `edge`, `search` | The value at a time; the next or previous change, rise or fall; the next match of a value pattern |
+| `valueAt`, `edge`, `search` | The value at a time (with `prev: true`, also each signal's last real change at or before it, for trace-X); the next or previous change, rise or fall; the next match of a value pattern |
 | `count` | A signal's total change count, when known without a walk (the viewer uses it to load small signals whole) |
 | `cancel {id}` | Stops a request. Its reply becomes `{cancelled: true}` |
 | `signals` | The v1 whole-signal reply, for compatibility |
@@ -84,6 +84,7 @@ What is streamed, and when:
   signal, 512 MB in total), and is then an ordinary local signal. Only big or dense signals stay windowed.
 - A signal not yet in a worker's store is read "cold": a small time range is read directly from the file, and the
   full walk continues in the background.
+  Stored signals in one such read go to one worker in one call; rebuilt ones are spread over the other free workers.
 - A whole-dump load (a zoomed-out view, or the walk behind a cold read) is cut into time pieces that every worker
   takes from one shared queue, about 250 ms of work each (100 ms in the background). A cheap signal added after a
   heavy one waits for one piece at most, a heavy one is spread over the pool, and a pan never waits for a whole
