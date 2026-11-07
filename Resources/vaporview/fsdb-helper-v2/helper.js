@@ -1259,7 +1259,62 @@ const HOT_RSS = Number(process.env.FSDB_WARM_RSS_MB || 600) * 1e6;
 // warm call's cost is mostly its walk. Off by default: at 1% of a 10 GB dump, 10 rows went from
 // 201 to 184 ms with two (one heavy row's walk dominates), for a second ~250 MB process.
 const HOT_READERS = Math.max(1, Number(process.env.FSDB_WARM_READERS || 1));
-const hot = { readers: [], building: null, asked: new Map(), timer: null };  // building: [readers]; asked: id -> last ranged ask (ms)
+// Bounds (#5). A reader's own cap is FSDB_WARM_RSS_MB: its calls fail at twice that, and the
+// coordinator's watchdog (reading each process's RSS from outside, so a native call that can't
+// yield is seen too) kills it there. All warm processes together (ready, building, retiring) are
+// at most 2 x HOT_READERS processes and FSDB_WARM_TOTAL_MB (default 2 x HOT_READERS x the cap):
+// over it, retiring readers go first, then building ones. A call unanswered in FSDB_WARM_CALL_MS
+// ends its reader. A reader's RSS right after its first window is its baseline: only growth
+// past the cap and well past that baseline (a leak) rebuilds the same set; a set whose baseline
+// is over the cap can't be fixed so, and the next set is half its size (hot.limit, until the file
+// is reopened). A set (fingerprint: its sorted ids) that failed, or was oversized or rebuilt for
+// growth, waits FSDB_WARM_BACKOFF_MS before it is tried again, doubling each time (at most 5 min).
+const HOT_PROCS = 2 * HOT_READERS;
+const HOT_TOTAL = Number(process.env.FSDB_WARM_TOTAL_MB || 2 * HOT_READERS * HOT_RSS / 1e6) * 1e6;
+const HOT_CALL_MS = Number(process.env.FSDB_WARM_CALL_MS || 60000);
+const HOT_BACKOFF_MS = Number(process.env.FSDB_WARM_BACKOFF_MS || 5000);
+const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
+const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
+const hotProcs = () => [...hot.readers, ...(hot.building || []), ...hot.retiring].filter((r) => r.state !== 'dead');
+function hotFail(fp, why) {
+  const f = hot.fails.get(fp) || { n: 0 };
+  f.n++; f.why = why; f.until = performance.now() + Math.min(300000, HOT_BACKOFF_MS * 2 ** (f.n - 1));
+  hot.fails.set(fp, f);
+  if (DEBUG) { process.stderr.write(`[helper] warm set of ${fp.split(',').length}: ${why}, again in ${Math.round(f.until - performance.now())} ms\n`); }
+}
+// The RSS of each pid, read from outside the process (Linux /proc; elsewhere ps). -> Map pid -> bytes
+function procRss(pids) {
+  const out = new Map();
+  if (process.platform === 'linux') {
+    for (const pid of pids) { try { out.set(pid, Number(fs.readFileSync(`/proc/${pid}/statm`, 'utf8').split(' ')[1]) * 4096); } catch (e) { /* gone */ } }
+    return out;
+  }
+  try {
+    const t = require('node:child_process').execFileSync('ps', ['-o', 'pid=,rss=', '-p', pids.join(',')], { encoding: 'utf8' });
+    for (const l of t.trim().split('\n')) { const [pid, kb] = l.trim().split(/\s+/).map(Number); if (pid) { out.set(pid, kb * 1024); } }
+  } catch (e) { /* none left */ }
+  return out;
+}
+function hotWatch() {
+  const ps = hotProcs();
+  if (!ps.length) { clearInterval(hot.watch); hot.watch = null; hot.totalRss = 0; return; }
+  const rss = procRss(ps.map((r) => r.proc.pid));
+  for (const r of ps) { const v = rss.get(r.proc.pid); if (v !== undefined) { r.rss = v; } }
+  for (const r of ps) {
+    if (r.rss > 2 * HOT_RSS) { r.failed = true; r.oversize = true; hotFail(r.fp, `over ${Math.round(2 * HOT_RSS / 1e6)} MB`); hotKill(r); }
+    else if (r.state === 'retiring' && !r.pending.size) { hotKill(r); }  // (nothing left to answer)
+  }
+  let total = hotProcs().reduce((a, r) => a + r.rss, 0);
+  for (const r of [...hot.retiring, ...(hot.building || []), ...hot.readers]) {
+    if (total <= HOT_TOTAL) { break; }
+    if (r.state === 'dead') { continue; }
+    total -= r.rss;
+    if (r.state !== 'retiring') { r.failed = true; hotFail(r.fp, `warm readers over ${Math.round(HOT_TOTAL / 1e6)} MB together`); }
+    hotKill(r);
+  }
+  hot.totalRss = total; hot.peakRss = Math.max(hot.peakRss, total);
+}
 const hotReady = () => hot.readers.filter((r) => r.state === 'ready');
 // ids -> {parts: [[reader, ids]], rest}: the ids each ready warm reader holds, and the others
 function hotSplit(ids) {
@@ -1273,27 +1328,32 @@ function hotSplit(ids) {
 }
 const storedWhole = (id) => derived.has(id) || (route.has(id) && !floating.has(id) && workerFor(id).state.cached.includes(id));
 function hotStop() {
-  for (const r of [...hot.readers, ...(hot.building || [])]) { hotKill(r); }
-  hot.readers = []; hot.building = null; hot.asked.clear();
+  for (const r of [...hot.readers, ...(hot.building || []), ...hot.retiring]) { hotKill(r); }
+  hot.readers = []; hot.building = null; hot.retiring = []; hot.asked.clear();
+  hot.limit = HOT_MAX; hot.fails.clear(); hot.totalRss = 0; hot.peakRss = 0;
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
 }
 function hotKill(r) {
   r.state = 'dead';
+  hot.retiring = hot.retiring.filter((x) => x !== r);
   for (const p of r.pending.values()) { p({ error: 'warm reader retired' }); }
   r.pending.clear();
-  try { r.proc.kill(); } catch (e) { /* gone */ }
+  try { r.proc.kill('SIGKILL'); } catch (e) { /* gone */ }  // (one blocked in a native call can't run a handler; it keeps no store)
 }
 function hotCall(r, msg) {
   return new Promise((resolve) => {
     if (r.state === 'dead') { resolve({ error: 'warm reader retired' }); return; }
     const tid = r.tid++;
-    r.pending.set(tid, resolve);
-    r.proc.send({ ...msg, tid }, (e) => { if (e && r.pending.delete(tid)) { resolve({ error: e.message }); } });
+    // A call unanswered in HOT_CALL_MS (a native call stuck) ends the reader; its set backs off.
+    const timer = setTimeout(() => { if (r.pending.has(tid)) { r.failed = true; hotFail(r.fp, `${msg.op} unanswered in ${HOT_CALL_MS} ms`); hotKill(r); } }, HOT_CALL_MS);
+    r.pending.set(tid, (m) => { clearTimeout(timer); resolve(m); });
+    r.proc.send({ ...msg, tid }, (e) => { if (e && r.pending.delete(tid)) { clearTimeout(timer); resolve({ error: e.message }); } });
   });
 }
 function hotSpawn(ids) {
   const proc = fork(path.join(__dirname, 'worker.js'), [], { stdio: ['ignore', 2, 2, 'ipc'], serialization: 'advanced' });
-  const r = { proc, ids: new Set(ids), state: 'starting', pending: new Map(), tid: 1, epoch, rss: 0, ready: null };
+  const r = { proc, ids: new Set(ids), fp: hotKey(ids), state: 'starting', pending: new Map(), tid: 1, epoch, rss: 0, base: 0, ready: null };
+  if (!hot.watch) { hot.watch = setInterval(hotWatch, HOT_WATCH_MS); hot.watch.unref(); }
   r.ready = new Promise((resolve) => { r.onReady = resolve; });
   proc.on('message', (m) => {
     if (m.ready) { r.onReady(); return; }
@@ -1316,7 +1376,7 @@ function hotWanted() {
   // floor, but a rebuilt signal costs the same rebuild per window (~175 ms at 1% of 1.7 GB) and
   // in one warm process they would be read one after another instead of spread over workers.
   const ok = (id) => kinds.state !== 'ready' || kindOf(id) === 'p';
-  return [...hot.asked].filter(([id]) => ok(id) && !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).slice(0, HOT_MAX).map(([id]) => id);
+  return [...hot.asked].filter(([id]) => ok(id) && !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).slice(0, Math.min(HOT_MAX, hot.limit)).map(([id]) => id);
 }
 function hotNote(ids) {
   if (!HOT || !openFile) { return; }
@@ -1330,8 +1390,24 @@ function hotCheck() {
   if (!want.length) { return; }
   const cur = hotReady();
   const outside = want.filter((id) => !cur.some((r) => r.ids.has(id))).length;
-  const overRss = cur.some((r) => r.rss > HOT_RSS);
-  if (cur.length && !overRss && outside * 4 < want.length) { return; }
+  // Over the cap: a leak (well past the reader's baseline) rebuilds the same set; an oversized set
+  // (its baseline over the cap) is replaced by a smaller one (hot.limit, set by hotBuild).
+  const grown = cur.filter((r) => r.rss > HOT_RSS && r.rss > r.base + Math.max(64e6, r.base / 4));
+  const oversized = cur.some((r) => r.base > HOT_RSS) && hotKey(want) !== hotKey(cur.flatMap((r) => [...r.ids]));
+  if (cur.length && !grown.length && !oversized && outside * 4 < want.length) { return; }
+  const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
+  if (f && f.until > now) { if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, f.until - now + 10); } return; }
+  // At most HOT_PROCS warm processes with the new ones: idle retiring readers go first.
+  for (const x of [...hot.retiring]) { if (!x.pending.size) { hotKill(x); } }
+  if (hotProcs().length + Math.min(HOT_READERS, want.length) > HOT_PROCS) {
+    if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, 200); }
+    return;
+  }
+  grown.forEach((r) => { if (r.fp === fp) { hotFail(fp, `grew to ${Math.round(r.rss / 1e6)} MB from ${Math.round(r.base / 1e6)} MB`); } });
+  // A ready reader over its cap goes before its replacement is built (its rows are read cold
+  // meanwhile): kept, the two together could pass the total, and the new one would be killed.
+  const over = cur.filter((r) => r.base > HOT_RSS || grown.includes(r));
+  if (over.length) { hot.readers = hot.readers.filter((r) => !over.includes(r)); over.forEach(hotKill); }
   hotBuild(want);
 }
 // Greedy split of a set over k readers by estimated changes (kinds' counts; unknown: 1 each).
@@ -1347,7 +1423,7 @@ async function hotBuild(ids) {
   hot.building = rs;
   const one = async (r) => {
     await r.ready;
-    const o = await hotCall(r, { op: 'hotOpen', file });
+    const o = await hotCall(r, { op: 'hotOpen', file, rssCapMB: HOT_RSS / 1e6 });
     if (o.error) { throw new Error(o.error); }
     const part = [...r.ids];
     const l = await hotCall(r, { op: 'hotLoad', signalIds: part });
@@ -1360,16 +1436,29 @@ async function hotBuild(ids) {
       const p = await hotCall(r, { op: 'hotWindow', signalIds: [...r.ids], ...(hot.lastRange || { t0: 0, t1: Math.max(1, Math.floor((timeEnd || 1) / 100)), buckets: 1024 }) });
       if (p.error) { throw new Error(p.error); }
     }
+    // Its baseline: the navigation it keeps for its set (read from outside, as the watchdog does).
+    r.base = procRss([r.proc.pid]).get(r.proc.pid) || r.rss; r.rss = Math.max(r.rss, r.base);
   };
   try {
     const done = await Promise.allSettled(rs.map(one));
     done.forEach((d, k) => { if (d.status === 'rejected') { if (DEBUG) { process.stderr.write(`[helper] warm reader: ${(d.reason && d.reason.message) || d.reason}\n`); } hotKill(rs[k]); } });
     const ok = rs.filter((r) => r.state !== 'dead');
-    if (epoch !== ep || !ok.length) { rs.forEach(hotKill); return; }
+    const fp = hotKey(ids);
+    if (epoch !== ep || !ok.length) {
+      const why = done.filter((d) => d.status === 'rejected').map((d) => String((d.reason && d.reason.message) || d.reason));
+      if (epoch === ep && !rs.some((r) => r.failed)) { hotFail(fp, `no reader started: ${why[0] || 'killed'}`); }
+      // Out of memory starting (its own guard, or the watchdog's): the next set is half the size.
+      if (epoch === ep && (rs.some((r) => r.oversize) || why.some((m) => m.includes('memory limit')))) { hot.limit = Math.max(1, Math.floor(ids.length / 2)); }
+      rs.forEach(hotKill); return;
+    }
     ok.forEach((r) => { r.state = 'ready'; });
+    // Oversized: its baseline alone is over the cap, so the next set is half the size (it is used
+    // meanwhile; a set of one that is still over waits out its backoff).
+    if (ok.some((r) => r.base > HOT_RSS)) { hotFail(fp, `baseline ${Math.round(Math.max(...ok.map((r) => r.base)) / 1e6)} MB over the cap`); hot.limit = Math.max(1, Math.floor(ids.length / 2)); }
+    else if (ok.length === rs.length) { hot.fails.delete(fp); }
     const old = hot.readers;
     hot.readers = ok;
-    for (const x of old) { x.state = 'retiring'; setTimeout(() => hotKill(x), 5000); }
+    for (const x of old) { x.state = 'retiring'; hot.retiring.push(x); setTimeout(() => hotKill(x), 5000); }
   } finally {
     if (hot.building === rs) { hot.building = null; }
     if (epoch === ep) { setTimeout(hotCheck, 50); }
@@ -1419,7 +1508,10 @@ async function warmOrCold(req, ids, extra, op, coldOp, useWarm = true) {
       const a = await hotWindowBatched(r, mine, extra, op);
       if (a.error) { (await coldTask(req, coldOp, mine, extra, true)).forEach((x, k) => by.set(mine[k], x)); return; }
       if (op === 'hotWindow') { req.workerMs = Math.max(req.workerMs || 0, a.ms || 0); }
-      for (const x of a.result) { by.set(x.signalId, x); }
+      // (a row the warm reader refused, its memory bound say, is read cold)
+      const failed = a.result.filter((x) => x && x.error).map((x) => x.signalId);
+      for (const x of a.result) { if (!x || !x.error) { by.set(x.signalId, x); } }
+      if (failed.length) { (await coldTask(req, coldOp, failed, extra, true)).forEach((x, k) => by.set(failed[k], x)); }
     }),
     rest.length ? coldTask(req, coldOp, rest, extra, true).then((b) => rest.forEach((id, k) => by.set(id, b[k]))) : null]);
   return ids.map((id) => by.get(id));
@@ -2595,7 +2687,10 @@ const handlers = {
       coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
       pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
       warm: { ready: hotReady().flatMap((r) => [...r.ids]), readers: hotReady().length,
-        building: hot.building ? hot.building.flatMap((r) => [...r.ids]) : null, rss: hot.readers.map((r) => r.rss) },
+        building: hot.building ? hot.building.flatMap((r) => [...r.ids]) : null, rss: hot.readers.map((r) => r.rss), base: hot.readers.map((r) => r.base),
+        procs: hotProcs().length, retiring: hot.retiring.length, totalRss: hotProcs().reduce((a, r) => a + r.rss, 0), peakRss: hot.peakRss, limit: hot.limit,
+        caps: { reader: HOT_RSS, total: HOT_TOTAL, procs: HOT_PROCS },
+        backoff: [...hot.fails].map(([fp, f]) => ({ size: fp.split(',').length, n: f.n, why: f.why, inMs: Math.max(0, Math.round(f.until - performance.now())) })) },
       aliases: { running: aliasRunning, checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
         verified: [...aliases].filter(([, a]) => a.state === 'verified').map(([x, a]) => [x, a.p]), bad: [...aliases].filter(([, a]) => a.state === 'bad').map(([x, a]) => [x, a.p]), log: aliasLog },
       kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },

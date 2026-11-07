@@ -40,7 +40,7 @@ let rssFloor = 0, capRaised = null;
 const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6), rssFloor);
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
 const HOT_OPS = new Set(['hotLoad', 'hotWindow', 'hotNear']);
-let hotMode = false;
+let hotMode = false, warmCap = 0;
 const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
@@ -183,12 +183,16 @@ const ops = {
 
   // Warm readers (helper.js "warm readers"): the reader keeps the file's navigation DB, and
   // every signal this process reads is in its first load (hotLoad); nothing else is loaded.
-  hotOpen({ file }) {
+  // rssCapMB: the warm reader's own cap (#5). Its calls fail at twice that, and the addon undoes a
+  // load that leaves the process over it before walking (the cold path's hard bound).
+  hotOpen({ file, rssCapMB }) {
     addon.openFsdb(file);
     openFile = file;
     readVarTree();  // (as a worker's open: the reader's scope/var tree, before any load)
     addon.readerNavOnce();
     hotMode = true;
+    warmCap = Number(rssCapMB || 0) * 1e6;
+    if (warmCap) { addon.cacheSetBounds(0, 2 * warmCap); }
     return {};
   },
   hotLoad({ signalIds }) { return addon.warmLoad(signalIds); },
@@ -438,6 +442,9 @@ process.on('message', (task) => {
     if (!openFile && !NO_FILE_OK.has(task.op) && task.op !== 'hotOpen') { throw new Error('no file open'); }  // the addon needs a reader
     if (hotMode && !HOT_OPS.has(task.op)) { throw new Error(`${task.op} in a warm reader`); }  // (its first load fixed its signals)
     if (LOADS.has(task.op)) { memoryGuard(); }
+    if (hotMode && warmCap && process.memoryUsage.rss() > 2 * warmCap) {
+      throw new Error(`warm reader memory limit (${Math.round(process.memoryUsage.rss() / 1e6)} MB > ${Math.round(2 * warmCap / 1e6)} MB)`);
+    }
     taskFiles = task.files || null;
     walkedNow = []; badNow = [];
     reply = { tid: task.tid, result: fn(task) };
