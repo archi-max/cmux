@@ -12,6 +12,16 @@ public enum SVModelResolve {
         /// a module the editor's slang target does not bring in).
         case notElaborated(instance: String)
         case notInDesign
+        /// The row is the compiled design's (its KDB model's) only: slang's design lacks its instance,
+        /// or has it as another module. Its writes (driving statements), not evaluated.
+        case compiledOnly(dumpPath: String, reason: CompiledOnlyReason, writes: [KDBDesignModel.Write])
+    }
+
+    public enum CompiledOnlyReason: String, Equatable, Sendable {
+        /// slang's design has no instance for the row (a module its target leaves out).
+        case notInSlang
+        /// slang's design has the instance, as another module.
+        case otherModule
     }
 
     /// `lookup`'s answer for a design path: nil when no top starts it.

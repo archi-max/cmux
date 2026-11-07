@@ -303,7 +303,7 @@ enum WaveformTrace {
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix]
         case .notElaborated(let instance):
             throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
-        case .notInDesign:
+        case .notInDesign, .compiledOnly:
             throw Failure(message: String(
                 format: String(
                     localized: "waveformTrace.notInDesign",
