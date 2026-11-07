@@ -174,6 +174,7 @@ build_simctl() {
   # A simulator built against the stub loads it on every run: replace it only when it differs, by rename.
   cmp -s "$WORK/libsimctl_stub.so" "$stubdir/libsimctl_stub.so" \
     || { cp "$WORK/libsimctl_stub.so" "$stubdir/.stub.$$" && chmod 755 "$stubdir/.stub.$$" && mv -f "$stubdir/.stub.$$" "$stubdir/libsimctl_stub.so"; }
+  cp "$SRC/simctl/LICENSE" "$stubdir/LICENSE" 2>/dev/null || true   # the stub's licence notice, next to it
   say "live simulation: built (stub: $stubdir/libsimctl_stub.so)"
 }
 build_simctl

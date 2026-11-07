@@ -22,8 +22,8 @@
 //   stop {}                                     ends a run in flight (that run replies stopped: stop)
 // During a run, time/read/watch/unwatch/watches/list are served at the run's poll points (every --poll-cycles
 // cycles of simulated time), at that time step's ReadOnlySynch, and the run goes on: a read's t is the time it
-// observed, a new watch's first record (at its reply's t) is where its coverage starts. Other requests (writes,
-// checkpoints) wait for the run's end, and so does everything sent after them (requests keep their order).
+// observed, a new watch's first record (at its reply's t) is where its coverage starts. Writes, checkpoints and
+// another run are refused while a run is in flight (stop it first); a stop always reaches the run at once.
 //   time {}                                     -> {t}
 //   read {signals: [path]}                      -> {t, values: ['01xz..' | null]}
 //   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12 -> {t, value}
@@ -77,6 +77,8 @@ if (!SIMV || !LIB || !SCRATCH) { process.stderr.write('usage: worker.js --simv <
 const t0 = Date.now();
 const out = (obj, bin) => { process.stdout.write(JSON.stringify(obj) + '\n'); if (bin && bin.length) process.stdout.write(bin); };
 const event = (name, o = {}) => out({ id: 0, event: name, ...o });
+// The parent went away (EPIPE on stdout): nobody to serve. Quit; the exit handler ends the simulation.
+process.stdout.on('error', () => process.exit(0));
 
 // ---------------------------------------------------------------- run directory (the replay manifest)
 // The run is replayed in <scratch>/<run>, a private copy of the original run's folder (--cwd; default the
@@ -228,7 +230,7 @@ const pending = new Map();          // libId -> {id, cmd, sent, resolve?}
 let rbuf = Buffer.alloc(0), needBin = 0, chgHdr = null;
 const watches = new Map();          // wid -> {name, width}
 const unwatchedWidth = new Map();   // wid -> width, of watches dropped here (the library may still send some)
-let lastT = 0, inflightRun = null;
+let lastT = 0, inflightRun = null, pruneAtRunEnd = [];
 libOut.on('data', (d) => {
   rbuf = rbuf.length ? Buffer.concat([rbuf, d]) : d;
   for (;;) {
@@ -283,7 +285,15 @@ function onLib(m) {
   if (!p) return;
   pending.delete(m.id);
   if (m.t !== undefined) lastT = m.t;
-  if (p === inflightRun) inflightRun = null;
+  if (p === inflightRun) {
+    inflightRun = null;
+    // the run's end flushed every record: none of an unwatched signal can still come
+    for (const w of pruneAtRunEnd) unwatchedWidth.delete(w);
+    pruneAtRunEnd = [];
+  }
+  // an unwatch served between runs: its records were all sent before the reply; during a run (served at a poll
+  // point) records gathered before it may still follow, until the run ends
+  if (p.unwatch) { if (inflightRun) pruneAtRunEnd.push(...p.unwatch); else for (const w of p.unwatch) unwatchedWidth.delete(w); }
   if (p.resolve) { p.resolve(m); return; }
   if (m.error) { out({ id: p.id, error: m.error }); return; }
   delete m.id;
@@ -448,10 +458,12 @@ async function handle(r) {
     case 'time': lib('T', id, ''); return;
     case 'read': lib('G', id, names(r.signals || []).join(' ')); return;
     case 'force': case 'deposit': case 'release': {
+      if (busyRun()) return;   // the library applies writes only between runs: refused, not held (a stop must get through)
       const [w] = await writeGroup([{ op: r.cmd, signal: r.signal, value: r.value }]);
       out(w.error ? { id, error: w.error } : { id, result: w }); return;
     }
     case 'writes': {
+      if (busyRun()) return;
       if (!Array.isArray(r.writes) || !r.writes.length) return out({ id, error: 'writes: expected a non-empty list' });
       const ws = await writeGroup(r.writes);
       const t = ws.find((w) => !w.error);
@@ -461,7 +473,7 @@ async function handle(r) {
     case 'unwatch': {
       const ids = (r.signalIds || []).map(Number).filter(Number.isInteger);
       for (const w of ids) { const x = watches.get(w); if (x) { unwatchedWidth.set(w, x.width); watches.delete(w); } }
-      lib('X', id, ids.join(' ')); return;
+      lib('X', id, ids.join(' '), { unwatch: ids }); return;
     }
     case 'watches': lib('I', id, ''); return;
     case 'list': lib('N', id, `${token(r.scope, 'scope')} ${Math.max(1, Math.floor(Number(r.limit) || 10000))}`); return;
@@ -495,7 +507,7 @@ async function handle(r) {
       out({ id, result: res, ms: +(performance.now() - s0).toFixed(1) });
       return;
     }
-    case 'stats': out({ id, result: { ...memStats(true), period, lastT } }); return;
+    case 'stats': out({ id, result: { ...memStats(true), period, lastT, unwatchedKept: unwatchedWidth.size } }); return;
     case 'quit': lib('Q', id, ''); setTimeout(() => { try { sim.stdin.write('quit\n'); sim.stdin.end(); } catch {} }, 200);
       setTimeout(() => killGroup(), 10000).unref();
       return;
@@ -507,10 +519,11 @@ const rl = require('node:readline').createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   if (!line.trim()) return;
   let r; try { r = JSON.parse(line); } catch { out({ id: null, error: 'bad JSON' }); return; }
-  // Requests keep their order. A stop with nothing queued before it goes straight through, since it must
-  // reach a run in flight (which holds the chain only until the library has it); behind queued requests
-  // (a run not sent yet) it waits its turn, so it stops that run.
-  if (r.cmd === 'stop' && !parked && queued === 0) { handle(r); return; }
+  // Requests keep their order. A stop goes straight through when a run is in flight (whatever is queued behind
+  // it: during a run nothing in the chain waits for the library, since writes and checkpoints are refused then)
+  // or when nothing is queued; behind queued requests with no run in flight yet (a run not sent) it waits its
+  // turn, so it stops that run.
+  if (r.cmd === 'stop' && !parked && (inflightRun || queued === 0)) { handle(r); return; }
   queued++;
   chain = chain.then(() => handle(r)).catch((e) => out({ id: r.id, error: String((e && e.message) || e) })).finally(() => { queued--; });
 });
