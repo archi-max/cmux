@@ -97,4 +97,6 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     default: return out({ id, error: 'unknown cmd ' + r.cmd });
   }
 });
-setTimeout(() => out({ id: 0, event: 'ready', t: 0, precision: -12, period: PERIOD, startupMs: 1 }), 20);
+// FAKE_REPORT_PERIOD=0: a simulation whose clock period isn't known (no clock given or found).
+const REPORTED = process.env.FAKE_REPORT_PERIOD !== undefined ? Number(process.env.FAKE_REPORT_PERIOD) : PERIOD;
+setTimeout(() => out({ id: 0, event: 'ready', t: 0, precision: -12, period: REPORTED, startupMs: 1 }), 20);

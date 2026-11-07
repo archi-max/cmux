@@ -137,8 +137,22 @@ const widths = new Map();
   const after = await req('sim.poll', { waitMs: 10 });
   expect(!!after.error && /no simulation/.test(after.error), 'poll after close: no simulation');
 
-  const o2 = await req('sim.open', { dir: runDir });
+  process.env.FAKE_REPORT_PERIOD = '0';
+  const np = await req('sim.open', { dir: runDir });
+  delete process.env.FAKE_REPORT_PERIOD;
+  expect(!np.error && np.result.period === 0, 'open without a known clock period');
+  const npRun = await req('sim.run', { cycles: 5 });
+  expect(!!npRun.error && /clock/.test(npRun.error), 'run by cycles without a period is refused, naming the clock: ' + npRun.error);
+  const npTime = await req('sim.run', { time: 20 });
+  expect(!npTime.error, 'run by time still works without a period');
+  await pollUntilStop(new Map());
+  await req('sim.close', {});
+  await new Promise((res) => setTimeout(res, 300));
+
+  const o2 = await req('sim.open', { dir: runDir, clock: 'tb.clk' });
   expect(!o2.error, 'reopen after close');
+  const argv2 = JSON.parse(fs.readFileSync(workerLog, 'utf8')).argv;
+  expect(argv2[argv2.indexOf('--clock') + 1] === 'tb.clk', 'open {clock}: the worker measures that clock');
   const pid2 = sim.workerPid();
   sim.closeAll();
   await new Promise((res) => setTimeout(res, 500));

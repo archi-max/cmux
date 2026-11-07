@@ -251,6 +251,9 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let opened = await sim("S.open().then(() => 'opened', (e) => String(e.message || e))") as? String
     expect(opened == "opened", "live simulation opens: \(String(describing: opened))")
     let period = await sim("S.state().period") as? Int
+    let argv = (try? JSONSerialization.jsonObject(with: Data(contentsOf: workerLog)) as? [String: Any])?["argv"] as? [String] ?? []
+    let clock = argv.firstIndex(of: "--clock").map { argv[$0 + 1] }
+    expect(clock == "tb.clk", "the page names the dump's clock (the debugger's choice) to the simulation: \(String(describing: clock))")
     expect(period == 2000, "the clock period comes from the simulation: \(String(describing: period))")
     let vis = await visible()
     let w1 = await waitFor(5000) { let w = await self.watched(); return !w.isEmpty && w == vis.filter { $0 != "tb.dut.bus0" } }
