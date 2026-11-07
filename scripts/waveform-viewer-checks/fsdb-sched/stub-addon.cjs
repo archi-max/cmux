@@ -110,5 +110,5 @@ module.exports = {
     fs.writeFileSync(path, Buffer.alloc(Math.min(10 * n, 1048576), 120));  // (at most 1 MB a piece)
     return { count: n, xz: false, loadMs: ms, walkMs: 0 };
   },
-  cacheAdopt(id) { store.set(id, true); return { count: 2, bytes: 16 }; },
+  cacheAdopt(id) { sleep(Number(process.env.STUB_ADOPT_MS || 0)); store.set(id, true); return { count: 2, bytes: 16 }; },  // STUB_ADOPT_MS: a join's cost
 };

@@ -765,7 +765,9 @@ function dropAlias(s, why) {
 }
 const sameWin = (x, y) => !!x && !!y && !x.error && !y.error && x.count === y.count && x.exact === y.exact
   && Buffer.compare(zlib.inflateRawSync(asBuf(x.records)), zlib.inflateRawSync(asBuf(y.records))) === 0;
+let aliasRunning = 0;  // comparisons in flight (stats)
 async function checkAlias(s, p) {
+  aliasRunning++;
   const ep = epoch, a = aliases.get(s);
   const req = { id: `alias-${s}`, cmd: 'alias', internal: true };
   const live = () => epoch === ep && aliases.get(s) === a && a.state !== 'bad';
@@ -798,6 +800,7 @@ async function checkAlias(s, p) {
     // and a later hint checks it again)
     if (live() && /freed/.test(m)) { aliases.delete(s); aliasNote(s, p, 'freed during the comparison'); } else if (live() && !/reopened|closed/.test(m)) { dropAlias(s, `check failed: ${m}`); }
   } finally {
+    aliasRunning--;
     for (const sp of req.splits || []) { sp.reqs.delete(req); }
   }
 }
@@ -2549,7 +2552,7 @@ const handlers = {
       pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
       warm: { ready: (hot.readers.find((r) => r.state === 'ready') || { ids: new Set() }).ids.size ? [...hot.readers.find((r) => r.state === 'ready').ids] : [],
         building: hot.building ? [...hot.building.ids] : null, rss: hot.readers.map((r) => r.rss) },
-      aliases: { checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
+      aliases: { running: aliasRunning, checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
         verified: [...aliases].filter(([, a]) => a.state === 'verified').map(([x, a]) => [x, a.p]), bad: [...aliases].filter(([, a]) => a.state === 'bad').map(([x, a]) => [x, a.p]), log: aliasLog },
       kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),

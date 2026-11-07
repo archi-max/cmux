@@ -567,6 +567,23 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 33. Review L1 (N3, e4213c7): a load freed while its pieces are being joined settles its
+// promise, so what waits for it in the background (an alias comparison) ends instead of hanging
+// for the session.
+{
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const h = await start(4, { 1: 50, 3: 300 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER_FULL: '[3]', STUB_ADOPT_MS: '1500' });
+  await kindsOf(h);
+  await h.send('aliasHints', { pairs: [[3, 1]] }).reply;
+  await wait(1000);  // the rebuilt row's pieces are done (~300 ms) and being joined (1.5 s)
+  await h.send('free', { signalIds: [3] }).reply;
+  let st = null;
+  for (let k = 0; k < 60; k++) { st = await al(h); if (st && st.running === 0) { break; } await wait(50); }
+  check(st && st.running === 0, `a load freed during its join ends what waits for it: ${JSON.stringify(st && st.running)} comparison(s) still running`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
