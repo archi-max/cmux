@@ -15,6 +15,10 @@ extension SVModelResolve {
     /// - None: the compiled design's row only (`.compiledOnly`, its KDB writes, not evaluated):
     ///   `.otherModule` when slang has the dump's own path as other modules, else `.notInSlang`.
     /// A row the KDB lacks: today's answer.
+    /// A mapped row is `.signal` (exact) only when the compiled design and slang's agree on it
+    /// (KDBAgreement: parameters down its chain, its shape, ports and write lines, no source newer
+    /// than the compile, by `sourceTimes`: slang's source files and their times, nil: unknown);
+    /// otherwise `.approximate` with what differs.
     public static func resolve(
         dumpPath: [String],
         mapping: HierarchyPathMapping,
@@ -25,6 +29,7 @@ extension SVModelResolve {
         dumpChildren: HierarchyPrefixInference.Children,
         kdb: KDBDesignModel?,
         instances: @escaping () async throws -> [String],
+        sourceTimes: (() async -> [String: Int64]?)? = nil,
         log: (String) -> Void = { _ in },
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Outcome {
@@ -45,13 +50,14 @@ extension SVModelResolve {
         let slang = try await instances()
         let known = Set(slang)
         let tops = slang.filter { !$0.contains(".") }
-        var modules: [String: String] = [:]
-        func module(_ path: String) async -> String? {
-            if let known = modules[path] { return known }
-            let found = await model(path)?["module"] as? String
-            if let found { modules[path] = found }
+        var models: [String: [String: Any]] = [:]
+        func slangModel(_ path: String) async -> [String: Any]? {
+            if let known = models[path] { return known }
+            let found = await model(path)
+            if let found { models[path] = found }
             return found
         }
+        func module(_ path: String) async -> String? { await slangModel(path)?["module"] as? String }
         func below(_ path: String, _ prefix: String) -> String { path == prefix ? "" : String(path.dropFirst(prefix.count + 1)) }
         var otherModule = false
         for (level, prefix) in chain.enumerated() {
@@ -90,8 +96,19 @@ extension SVModelResolve {
             let designPath = designPrefix + "." + rest
             let designInstance = below(instance, prefix).isEmpty ? designPrefix : designPrefix + "." + below(instance, prefix)
             if let found = await lookup(designPath), found.instance == designInstance,
-               let instanceModel = await model(found.instance), SVModelLoad.isSignal(found.name, inModel: instanceModel) {
-                return result(designPath: designPath, dumpPath: rowSegments)
+               let instanceModel = await slangModel(found.instance), SVModelLoad.isSignal(found.name, inModel: instanceModel) {
+                let mapped = result(designPath: designPath, dumpPath: rowSegments)
+                var levels: [KDBAgreement.Level] = []
+                for path in chain[level...] {
+                    let rest = below(path, prefix)
+                    guard let compiled = kdb.instance(path), let slang = await slangModel(rest.isEmpty ? designPrefix : designPrefix + "." + rest) else { continue }
+                    levels.append(KDBAgreement.Level(path: path, compiled: compiled, slang: slang))
+                }
+                let times = await sourceTimes?()
+                let differences = KDBAgreement.differences(chain: levels, signal: name, compiledAt: kdb.compiledAt, sourceTimes: times)
+                guard !differences.isEmpty, case .signal(let p, let dp, let up) = mapped else { return mapped }
+                log("KDB mapping of \(row): approximate (\(differences.map(\.kind).joined(separator: ", ")))")
+                return .approximate(designPath: p, designPrefix: dp, dumpPrefix: up, differences: differences)
             }
             return .compiledOnly(dumpPath: row, reason: .notInSlang, writes: kdb.writes(of: row))
         }

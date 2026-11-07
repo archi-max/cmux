@@ -14,7 +14,9 @@
 //                                 KDB) has, shown as one approximate step, not evaluated.
 //   driverOfDesign({ designPath, designPrefix, dumpPrefix, time, designId })   from the editor (cmux mapped it)
 //                                 designId (also in a resolve's answer): the design cmux traced in,
-//                                 sent back with every model request; another one starts a new session
+//                                 sent back with every model request; another one starts a new session.
+//                                 A resolve's kdbDiffers (text): the KDB mapped the row, and the compiled
+//                                 design and slang's differ there; the steps are approximate and say so
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
 //   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log?, focus?, entry? })
@@ -605,7 +607,19 @@
       session.options = { xprop: q.xprop || 'auto' };
       session.engine = window.cmuxTrace.createEngine({ models: sessionModels(session), dump, options: session.options });
     }
+    // This row's (each trace resolves anew): what differs from the compiled design, if anything.
+    session.kdbDiffers = q.kdbDiffers ? String(q.kdbDiffers) : '';
     return time;
+  }
+
+  // A step in a design whose row cmux mapped with the KDB where the compiled design and slang's
+  // differ (resolve's kdbDiffers says what): slang's statements may not be what ran, so the step
+  // is approximate and says why.
+  function kdbMark(s, step) {
+    if (!s || !s.kdbDiffers || !step || step.error) { return step; }
+    step.reasons = (step.reasons || []).concat([{ code: 'kdbDiffers', why: s.kdbDiffers }]);
+    if (step.trust === 'exact' || step.trust === 'computed') { step.trust = 'approximate'; }
+    return step;
   }
 
   async function driverOfDesign(query) {
@@ -681,7 +695,7 @@
       st.dumpPath = dumpPath;
       st.engine = { name: 'cmux' };
       if (verdi && !st.error && live()) { st = await chainVerdi(s, st, at, verdi, live); }
-      return st;
+      return kdbMark(s, st);
     };
     // Each step says when it was found (ms after the start) and how long it took (with its candidates).
     const t0 = Date.now();
@@ -743,6 +757,7 @@
     if (run !== running) { return null; }
     step.dumpPath = dumpPath;
     step.engine = { name: 'cmux' };
+    kdbMark(session, step);
     // Ours is shown now; Verdi's answer fills the step in later (verdiCheck), never before.
     if (verdi && !step.error) { step.engine.verdi = 'checking'; verdiCheck(step, time, verdi); }
     if (push) { history.steps.push(step); history.at = history.steps.length - 1; }

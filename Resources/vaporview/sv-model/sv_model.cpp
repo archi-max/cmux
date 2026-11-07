@@ -22,6 +22,7 @@
 //   {"id":6,"cmd":"stale"} -> {"id":6,"ok":true,"changed":false,"fingerprint":"..."}: whether a file the
 //       load read (sources, includes, library and command files) has another size or time now,
 //       or was written while the load read it; cmux then loads the design again
+//   {"id":7,"cmd":"sources"} -> {"id":7,"ok":true,"sources":[{"path":"/abs/a.sv","mtime":<ms since 1970>},...]}
 //   {"id":4,"cmd":"version"}
 // A load's reply also has "fingerprint": a hash of its command line, folder and the text of every
 // file it read, so a load of unchanged text is known to be the same design.
@@ -52,6 +53,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <sys/stat.h>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -541,6 +543,25 @@ public:
         writeLocProp(w, "loc", inst.location, inst.name.size());
         w.writeProperty("ports");
         writePorts(w, inst, parent);
+        // Value parameters and localparams of the body (not its generate blocks'): integers without
+        // x/z as numbers, others as slang prints them; cmux compares them with the KDB's.
+        w.writeProperty("params");
+        w.startObject();
+        for (auto& member : inst.body.members()) {
+            if (member.kind != SymbolKind::Parameter)
+                continue;
+            auto& param = member.as<ParameterSymbol>();
+            auto& value = param.getValue();
+            w.writeProperty(param.name);
+            std::optional<int64_t> number;
+            if (value.isInteger() && !value.integer().hasUnknown())
+                number = value.integer().as<int64_t>();
+            if (number)
+                w.writeValue(*number);
+            else
+                w.writeValue(value.toString());
+        }
+        w.endObject();
         // Members (signals, assigns, procedures, children) in this body, with generate blocks.
         std::vector<const Symbol*> signals, assigns, procs, children;
         collect(inst.body, signals, assigns, procs, children);
@@ -1984,6 +2005,42 @@ void load(Session& s, int64_t id, const JValue& req) {
     reply(w);
 }
 
+// The files the last load read and their modification times (ms since 1970), for cmux's check
+// that none is newer than the compile a KDB came from.
+void sources(Session& s, int64_t id) {
+    if (s.fingerprint.empty()) {
+        fail(id, "notLoaded", "no design is loaded");
+        return;
+    }
+    JsonWriter w;
+    w.startObject();
+    w.writeProperty("id");
+    w.writeValue(id);
+    w.writeProperty("ok");
+    w.writeValue(true);
+    w.writeProperty("sources");
+    w.startArray();
+    for (auto& st : s.stamps) {
+        struct stat info;
+        if (::stat(st.path.c_str(), &info) != 0)
+            continue;
+#ifdef __APPLE__
+        auto ms = int64_t(info.st_mtimespec.tv_sec) * 1000 + info.st_mtimespec.tv_nsec / 1000000;
+#else
+        auto ms = int64_t(info.st_mtim.tv_sec) * 1000 + info.st_mtim.tv_nsec / 1000000;
+#endif
+        w.startObject();
+        w.writeProperty("path");
+        w.writeValue(st.path);
+        w.writeProperty("mtime");
+        w.writeValue(ms);
+        w.endObject();
+    }
+    w.endArray();
+    w.endObject();
+    reply(w);
+}
+
 // Whether a file the last load read changed on disk since (another size or time, gone, or
 // written while the load read it).
 void stale(Session& s, int64_t id) {
@@ -2038,6 +2095,10 @@ void handle(Session& s, const JValue& req) {
     }
     if (cmd == "stale") {
         stale(s, id);
+        return;
+    }
+    if (cmd == "sources") {
+        sources(s, id);
         return;
     }
     if (!s.model) {

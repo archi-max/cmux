@@ -15,6 +15,10 @@ public enum SVModelResolve {
         /// The row is the compiled design's (its KDB model's) only: slang's design lacks its instance,
         /// or has it as another module. Its writes (driving statements), not evaluated.
         case compiledOnly(dumpPath: String, reason: CompiledOnlyReason, writes: [KDBDesignModel.Write])
+        /// A row the KDB mapped to slang's design (as `signal`) where the compiled design and slang's
+        /// differ, or could not be checked (KDBAgreement): slang's statements evaluate it all the
+        /// same, so its steps are approximate.
+        case approximate(designPath: String, designPrefix: String, dumpPrefix: String, differences: [KDBDifference])
     }
 
     public enum CompiledOnlyReason: String, Equatable, Sendable {

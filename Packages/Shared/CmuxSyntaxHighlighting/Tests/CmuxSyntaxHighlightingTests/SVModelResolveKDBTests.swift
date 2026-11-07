@@ -32,7 +32,7 @@ import Testing
     }
 
     static func inst(_ module: String, _ signals: [String]) -> [String: Any] {
-        ["module": module, "signals": Dictionary(uniqueKeysWithValues: signals.map { ($0, ["width": 1, "kind": "var"] as [String: Any]) })]
+        ["module": module, "params": [String: Any](), "signals": Dictionary(uniqueKeysWithValues: signals.map { ($0, ["width": 1, "kind": "var"] as [String: Any]) })]
     }
 
     /// A KDB model: (path, module, parent, signals, writes {name: line}) in `file`.
@@ -40,14 +40,14 @@ import Testing
         var models: [String: Any] = [:]
         for (path, module, parent, signals, writes) in instances {
             models[path] = [
-                "path": path, "module": module, "parent": parent as Any, "ports": [], "files": [file],
+                "path": path, "module": module, "parent": parent as Any, "ports": [], "files": [file], "params": [String: Any](),
                 "signals": Dictionary(uniqueKeysWithValues: signals.map { ($0, ["width": 1, "kind": "var", "msb": 0, "lsb": 0] as [String: Any]) }),
                 "writes": writes.mapValues { [["kind": "nb", "loc": [0, $0, 0]]] },
                 "children": instances.filter { $0.2 == path }.map { ["path": $0.0, "name": String($0.0.dropFirst(path.count + 1)), "module": $0.1] },
             ] as [String: Any]
         }
         let tops = instances.filter { $0.2 == nil }.map(\.0)
-        let data = try! JSONSerialization.data(withJSONObject: ["tops": tops, "instances": models])
+        let data = try! JSONSerialization.data(withJSONObject: ["tops": tops, "instances": models, "compiled": 0])
         return KDBDesignModel(json: data)!
     }
 
@@ -63,6 +63,7 @@ import Testing
             dumpChildren: { dump[HierarchyPathMapping.join($0)] },
             kdb: kdb,
             instances: { design.instances },
+            sourceTimes: { [:] },
             log: log
         )
     }
@@ -158,7 +159,8 @@ import Testing
     }
 
     /// A real design (env KDB_MODEL: npi-model.py's export; SLANG_MODEL: cmux-sv-model's `--once '*'`
-    /// of the same design; skipped without them): every signal row of the KDB maps to slang's same path.
+    /// of the same design; skipped without them): every signal row of the KDB maps to slang's same path
+    /// (exact or approximate: the coverage line counts each).
     @Test func aRealDesignsRowsMapAsTheyAre() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let kdbPath = env["KDB_MODEL"], let slangPath = env["SLANG_MODEL"] else { return }
@@ -166,20 +168,24 @@ import Testing
         let slangObject = try #require(try JSONSerialization.jsonObject(with: try Data(contentsOf: URL(fileURLWithPath: slangPath))) as? [String: Any])
         let design = Design(models: try #require(slangObject["instances"] as? [String: [String: Any]]), tops: slangObject["tops"] as? [String] ?? [])
         var rows = 0, same = 0, other: [String] = []
+        var coverage = KDBCoverage()
         for path in kdb.instancePaths {
             for name in ((kdb.instance(path)?["signals"] as? [String: Any]) ?? [:]).keys.sorted() {
                 let row = path + "." + name
                 guard design.models[path].map({ ($0["signals"] as? [String: Any])?[name] != nil }) == true else { continue }
                 rows += 1
                 let got = try await resolve(row, design: design, kdb: kdb)
+                coverage.add(got)
                 if case .signal(let designPath, _, _) = got, designPath == row {
+                    same += 1
+                } else if case .approximate(let designPath, _, _, _) = got, designPath == row {
                     same += 1
                 } else if other.count < 5 {
                     other.append("\(row): \(got)")
                 }
             }
         }
-        print("[kdb resolve] \(rows) rows, \(same) as they are")
+        print("[kdb resolve] \(rows) rows, \(same) as they are; \(coverage.summary)")
         #expect(rows > 0 && same == rows, "\(other)")
     }
 

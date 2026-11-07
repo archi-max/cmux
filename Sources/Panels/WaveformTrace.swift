@@ -321,6 +321,10 @@ enum WaveformTrace {
         case .signal(let designPath, let designPrefix, let dumpPrefix):
             sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation)]
+        case .approximate(let designPath, let designPrefix, let dumpPrefix, let differences):
+            sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
+            return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation),
+                    "kdbDiffers": kdbDiffersText(differences)]
         case .notElaborated(let instance):
             throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
         case .compiledOnly(let row, let reason, let writes):
@@ -353,8 +357,38 @@ enum WaveformTrace {
             dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) },
             kdb: WaveformTraceKDB.model(for: waveform),
             instances: { try await session.hierarchy(generation: generation).instances },
+            sourceTimes: { (try? await session.sourceTimes(generation: generation)) ?? nil },
             log: { line in waveformTraceLogger.info("\(line, privacy: .public)") }
         )
+    }
+
+    /// What differs between the compiled design (KDB) and slang's for a row, for the page's
+    /// kdbDiffers reason (each part on its own; at most six, then how many more).
+    static func kdbDiffersText(_ differences: [KDBDifference]) -> String {
+        let none = String(localized: "waveformTrace.kdb.none", defaultValue: "none")
+        let parts: [String] = differences.map { difference in
+            switch difference {
+            case .parameter(let instance, let name, let compiled, let slang):
+                return String(format: String(localized: "waveformTrace.kdb.parameter", defaultValue: "parameter %1$@ of %2$@: %3$@ compiled, %4$@ in slang"),
+                              name, instance, compiled ?? none, slang ?? none)
+            case .shape(let signal):
+                return String(format: String(localized: "waveformTrace.kdb.shape", defaultValue: "the width or range of %@"), signal)
+            case .ports(let instance):
+                return String(format: String(localized: "waveformTrace.kdb.ports", defaultValue: "the ports of %@"), instance)
+            case .writes(let signal):
+                return String(format: String(localized: "waveformTrace.kdb.writes", defaultValue: "the lines that write %@"), signal)
+            case .sourceNewer(let file):
+                return String(format: String(localized: "waveformTrace.kdb.sourceNewer", defaultValue: "%@ changed after the compile"),
+                              (file as NSString).lastPathComponent)
+            case .notChecked(.parameters):
+                return String(localized: "waveformTrace.kdb.notCheckedParameters", defaultValue: "the parameters, which this export lacks (not checked)")
+            case .notChecked(.sources):
+                return String(localized: "waveformTrace.kdb.notCheckedSources", defaultValue: "whether a source changed after the compile (not checked)")
+            }
+        }
+        let shown = parts.prefix(6).joined(separator: "; ")
+        guard parts.count > 6 else { return shown }
+        return shown + "; " + String(format: String(localized: "waveformTrace.kdb.more", defaultValue: "%d more"), parts.count - 6)
     }
 
     static var designChangedMessage: String {
@@ -896,6 +930,7 @@ enum WaveformTrace {
             "traceReason_mismatch": String(localized: "waveformTrace.reason.mismatch", defaultValue: "Re-execution gives %2$@, not the dumped value."),
             "traceReason_held": String(localized: "waveformTrace.reason.held", defaultValue: "The latch holds the value it had at %@."),
             "traceReason_enginesDiffer": String(localized: "waveformTrace.reason.enginesDiffer", defaultValue: "Verdi names another statement: %@."),
+            "traceReason_kdbDiffers": String(localized: "waveformTrace.reason.kdbDiffers", defaultValue: "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@."),
         ]
     }
 }

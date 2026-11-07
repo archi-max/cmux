@@ -145,6 +145,48 @@ import Testing
                 == .approximate(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "", differences: [.notChecked(.sources)]))
     }
 
+    /// Real compiles (env KDB_AGREEMENT_DIR: a/ b/ c/ d/, each with fifo.sv as VCS compiled it and
+    /// npi-model.py's kdb.json, file times kept; CMUX_SV_MODEL_BIN: the sidecar): slang loads each
+    /// fifo.sv as it is, without defines. a: the same compile, exact. b: compiled with +define+ALT,
+    /// another statement writes q. c: compiled with -pvalue+tb.u_fifo.DEPTH=32 (NPI reports DEPTH
+    /// as the instance's 16, its localparam AW as 5). d: fifo.sv edited after the compile.
+    @Test func realCompilesAgreeOrSayWhatDiffers() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let dir = env["KDB_AGREEMENT_DIR"], let bin = env["CMUX_SV_MODEL_BIN"] else { return }
+        func outcome(_ variant: String) async throws -> SVModelResolve.Outcome {
+            let folder = dir + "/" + variant
+            let kdb = try #require(KDBDesignModel(json: try Data(contentsOf: URL(fileURLWithPath: folder + "/kdb.json"))))
+            let sidecar = SVModelSidecar(runner: { .init(executable: "/bin/sh", arguments: ["-c", $0]) }, launchCommand: "exec '\(bin)'", installCommand: nil)
+            defer { sidecar.stop() }
+            let session = SVDesignSession(sidecar: sidecar, args: ["--top", "tb", "fifo.sv"], cwd: folder)
+            let g = try await session.load().generation
+            return try await SVModelResolve.resolve(
+                dumpPath: ["tb", "u_fifo", "q"],
+                mapping: HierarchyPathMapping(),
+                lookup: { (try? await session.lookup($0, generation: g)) ?? nil },
+                model: { (try? await session.model($0, generation: g)) ?? nil },
+                designRoots: { [:] },
+                dumpChildren: { _ in nil },
+                kdb: kdb,
+                instances: { try await session.hierarchy(generation: g).instances },
+                sourceTimes: { (try? await session.sourceTimes(generation: g)) ?? nil }
+            )
+        }
+        var coverage = KDBCoverage()
+        let a = try await outcome("a"), b = try await outcome("b"), c = try await outcome("c"), d = try await outcome("d")
+        [a, b, c, d].forEach { coverage.add($0) }
+        print("[kdb agreement] a: \(a)\n  b: \(b)\n  c: \(c)\n  d: \(d)\n  \(coverage.summary)")
+        #expect(a == .signal(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: ""))
+        #expect(b == .approximate(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "", differences: [.writes(signal: "q")]))
+        #expect(c == .approximate(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "",
+                                  differences: [.parameter(instance: "tb.u_fifo", name: "AW", compiled: "5", slang: "4")]))
+        if case .approximate(_, _, _, let found) = d {
+            #expect(found.count == 1 && found.first?.kind == "sourceNewer", "\(found)")
+        } else {
+            Issue.record("d: \(d)")
+        }
+    }
+
     /// Integer values compare as numbers (VCS's 8 and slang's 32'sd8 alike); strings and others as text.
     @Test func parameterValuesCompareByValue() {
         #expect(KDBAgreement.sameValue(8, "8"))

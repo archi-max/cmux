@@ -35,6 +35,7 @@ public final class SVDesignSession: @unchecked Sendable {
     private var keptHierarchy: (tops: [String], instances: [String])?
     private var keptModels: [String: [String: Any]] = [:]
     private var keptMessages: [String] = []
+    private var keptSourceTimes: [String: Int64]?
 
     public init(sidecar: SVModelSidecar, args: [String], cwd: String) {
         self.sidecar = sidecar
@@ -100,6 +101,24 @@ public final class SVDesignSession: @unchecked Sendable {
         return model
     }
 
+    /// The files the design was loaded from and their modification times (ms since 1970), kept per
+    /// design; nil when the sidecar can't say.
+    public func sourceTimes(generation: Int) async throws -> [String: Int64]? {
+        if let known = try kept(generation, { $0.keptSourceTimes }) { return known }
+        let reply: SVModelSidecar.Reply
+        do {
+            reply = try await request(["cmd": "sources"], generation: generation)
+        } catch SVModelSidecar.Failure.request {
+            return nil
+        }
+        var times: [String: Int64] = [:]
+        for entry in reply["sources"] as? [[String: Any]] ?? [] {
+            if let path = entry["path"] as? String, let time = (entry["mtime"] as? NSNumber)?.int64Value { times[path] = time }
+        }
+        keep(generation) { $0.keptSourceTimes = times }
+        return times
+    }
+
     /// The deepest instance of the design on `path` and the rest below it (nil: none).
     public func lookup(_ path: String, generation: Int) async throws -> (instance: String, name: String)? {
         let reply: SVModelSidecar.Reply
@@ -132,6 +151,7 @@ public final class SVDesignSession: @unchecked Sendable {
             keptGeneration = generation
             keptHierarchy = nil
             keptModels = [:]
+            keptSourceTimes = nil
             keptMessages = messages ?? []
         }
     }

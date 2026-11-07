@@ -3,7 +3,9 @@
 # Verdi Python NPI (ours; it runs the user's installed Verdi and ships nothing of it). It writes the
 # model cmux-sv-model's `--once '*'` writes ({"tops", "instances": {path: model}}), from what VCS
 # elaborated: the instance tree, each instance's ports and signals (widths, ranges, arrays), and
-# where each signal is written (continuous assigns and procedural assignments: file and line), as
+# where each signal is written (continuous assigns and procedural assignments: file and line), each
+# instance's parameters and localparams (their elaborated values), and when the KDB was compiled
+# (`"compiled"`: its newest file's time, ms since 1970), as
 # `"source": "kdb"` models without statement trees (`"partial": true`: the engine's statements still
 # come from slang). NPI holds a Verdi licence seat from load_design to its end: everything is read
 # first, NPI is ended, then the JSON is written, so the seat is held for the load and the walk only.
@@ -72,6 +74,7 @@ def main():
         npisys.end()
         fail("walk", repr(error), seconds)
     npisys.end()
+    model["compiled"] = compiled_at(daidir)
     seconds["walk"] = round(time.time() - t2, 3)
     t3 = time.time()
     tmp = out + ".tmp"
@@ -82,6 +85,18 @@ def main():
     signals = sum(len(m["signals"]) for m in model["instances"].values())
     print(json.dumps({"ok": True, "seconds": seconds, "instances": len(model["instances"]), "signals": signals,
                       "cut": model.get("cut", False)}), flush=True)
+
+
+def compiled_at(daidir):
+    """The newest modification time of the KDB's files (ms since 1970): when VCS compiled it."""
+    newest = 0
+    for root, _, names in os.walk(os.path.join(daidir, "kdb.elab++")):
+        for name in names:
+            try:
+                newest = max(newest, os.stat(os.path.join(root, name)).st_mtime)
+            except OSError:
+                pass
+    return int(newest * 1000)
 
 
 def call(handle, method, *args):
@@ -136,6 +151,7 @@ class Walker:
             "version": MODEL_VERSION, "source": "kdb", "partial": True, "path": path,
             "module": call(handle, "def_name") or "", "parent": parent,
             "ports": [], "signals": {}, "assigns": [], "procs": [], "children": [], "files": files, "writes": {},
+            "params": {},
         }
         where = self.loc(files, handle)
         if where:
@@ -151,6 +167,14 @@ class Walker:
             if conn:
                 entry["conn"] = conn
             m["ports"].append(entry)
+        # Parameters and localparams of the instance itself (not its generate blocks', as slang's
+        # model): numbers as numbers, anything else as its text.
+        for param in call(handle, "parameter_handles") or []:
+            name = call(param, "name")
+            if not name:
+                continue
+            value = call(param, "value")
+            m["params"][name] = value if isinstance(value, (int, float)) and not isinstance(value, bool) else str(value)
         self.scope(handle, m, files, "", path)
         for entry in m["ports"]:
             # An unpacked-array port: NPI's size is its element count; width 0 as its signal's (and slang's).

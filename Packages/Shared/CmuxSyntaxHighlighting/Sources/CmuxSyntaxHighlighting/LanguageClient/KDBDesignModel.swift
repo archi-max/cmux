@@ -18,6 +18,8 @@ public struct KDBDesignModel: @unchecked Sendable {
     }
 
     public let tops: [String]
+    /// When VCS compiled the KDB (ms since 1970: its newest file), when the export says.
+    public let compiledAt: Int64?
     /// Every instance path, sorted.
     public let instancePaths: [String]
     private let instances: [String: [String: Any]]
@@ -26,6 +28,7 @@ public struct KDBDesignModel: @unchecked Sendable {
         guard let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
               let instances = object["instances"] as? [String: [String: Any]] else { return nil }
         self.tops = (object["tops"] as? [String] ?? []).sorted()
+        self.compiledAt = (object["compiled"] as? NSNumber)?.int64Value
         self.instances = instances
         self.instancePaths = instances.keys.sorted()
     }
