@@ -42,7 +42,8 @@ public enum SVModelResolve {
         if let rule = await HierarchyPrefixInference.designRule(
             forDumpPath: dump,
             designRoots: try await designRoots(),
-            dumpChildren: dumpChildren
+            dumpChildren: dumpChildren,
+            ties: .ambiguous
         ) {
             mapping.addInferredRule(designPrefix: rule.designPrefix, dumpPrefix: rule.dumpPrefix)
             if let found = await signal(dumpPath, mapping: mapping, lookup: lookup, model: model) { return found }

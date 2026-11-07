@@ -325,19 +325,19 @@ public enum HierarchyPrefixInference {
 
     /// Waveform → editor. `dumpPath` is not in the design as is; returns the
     /// rule mapping a design top (`designRoots`: name → its children) to the
-    /// prefix of `dumpPath` whose dump children overlap that top's enough: the best score one
-    /// rule alone has (roots tying for it are ambiguous), else nil.
+    /// prefix of `dumpPath` whose dump children overlap that top's enough, the best score's.
+    /// `ties`: which of the rules tying for a score wins (see `Ties`).
     public static func designRule(
         forDumpPath dumpPath: String,
         designRoots: [String: [HierarchyNode]],
         dumpChildren: Children,
+        ties: Ties = .first,
         isolation: isolated (any Actor)? = #isolation
     ) async -> HierarchyPathMapping.Rule? {
         let path = HierarchyPathMapping.segments(dumpPath)
         guard path.count >= 2 else { return nil }
-        // Each score's rules: two (copies of one module, `u_core0`/`u_core1`) are a tie, and the
-        // best score that one rule alone has wins.
-        var byScore: [Int: [HierarchyPathMapping.Rule]] = [:]
+        // Each score's rules, in the order found (shorter dump prefixes first), with the design path each maps the row to.
+        var byScore: [Int: [(rule: HierarchyPathMapping.Rule, designPath: String)]] = [:]
         for length in 1..<path.count {
             let prefix = Array(path.prefix(length))
             guard let kids = await dumpChildren(prefix) else { break }
@@ -357,10 +357,32 @@ public enum HierarchyPrefixInference {
                 let match = score(kids, against: rootChildren)
                 guard match.overlap >= requiredOverlap(childCount: Set(rootChildren.map(\.name)).count) else { continue }
                 let rule = HierarchyPathMapping.Rule(designPrefix: root, dumpPrefix: HierarchyPathMapping.join(prefix), isInferred: true)
-                if !(byScore[match.score] ?? []).contains(rule) { byScore[match.score, default: []].append(rule) }
+                let mapped = HierarchyPathMapping.join(HierarchyPathMapping.segments(root) + path[length...])
+                if !(byScore[match.score] ?? []).contains(where: { $0.rule == rule }) { byScore[match.score, default: []].append((rule, mapped)) }
             }
         }
-        return byScore.keys.sorted(by: >).lazy.compactMap { byScore[$0]!.count == 1 ? byScore[$0]![0] : nil }.first
+        let scores = byScore.keys.sorted(by: >)
+        switch ties {
+        case .first:
+            return scores.first.map { byScore[$0]![0].rule }
+        case .ambiguous:
+            // The first (broadest) rule of a score whose rules all map the row to one design path.
+            return scores.lazy.compactMap { score -> HierarchyPathMapping.Rule? in
+                let found = byScore[score]!
+                return Set(found.map(\.designPath)).count == 1 ? found[0].rule : nil
+            }.first
+        }
+    }
+
+    /// Rules tying for the best score.
+    public enum Ties: Sendable {
+        /// The first found (shortest dump prefix, then the design root by name): for a declaration,
+        /// where any instance of a module is the same.
+        case first
+        /// Ambiguous when they map the row to different design paths (`u_core0`/`u_core1`, copies of
+        /// one module): the next score down, else nil. Rules mapping it alike (a top and its own child
+        /// instance) agree, and the broadest wins.
+        case ambiguous
     }
 
     /// Whether `path` names an item in the hierarchy.
