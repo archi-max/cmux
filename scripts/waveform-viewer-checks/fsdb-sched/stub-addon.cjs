@@ -22,6 +22,10 @@ const FIRST_MS = Number(process.env.STUB_FIRST_MS || 0);
 const PRIMARY = new Set(JSON.parse(process.env.STUB_PRIMARY || '[]'));
 const FLOOR_MS = Number(process.env.STUB_FLOOR_MS || 0);
 const floorOf = (ids) => (FLOOR_MS && ids.some((id) => PRIMARY.has(id)) ? FLOOR_MS : 0);
+// STUB_CHANGE_AT {id: time}: the signal's one real change (to '1') for the last-change reads
+// (valueAt {prev: true}); STUB_NEAR_LOG gets a line per coldValueNear call: span and ids.
+const CHANGE_AT = JSON.parse(process.env.STUB_CHANGE_AT || '{}');
+const changeOf = (id) => (CHANGE_AT[id] === undefined ? null : Number(CHANGE_AT[id]));
 const seen = new Set();
 const first = (id) => (seen.has(id) ? 0 : (seen.add(id), FIRST_MS));
 const share = (id, s, e) => SLICE_MS + first(id) + cost(id) * Math.max(0, Math.min(Number(e), TIME_END) - Number(s)) / TIME_END;
@@ -53,6 +57,17 @@ module.exports = {
   cacheEvict() {},
   coldValueAt: (ids) => ids.map(() => '0'),
   cacheValueAt: () => '0',
+  cacheLastChange(id, t) { const c = changeOf(id); return c !== null && c <= t ? { t: c, value: '1' } : null; },
+  coldValueNear(ids, t, span) {
+    const lo = Math.max(0, t - span);
+    if (process.env.STUB_NEAR_LOG) { fs.appendFileSync(process.env.STUB_NEAR_LOG, JSON.stringify({ span, ids }) + '\n'); }
+    sleep(floorOf(ids));
+    return ids.map((id) => {
+      sleep(share(id, lo, t));
+      const c = changeOf(id), value = c !== null && c <= t ? '1' : 'x';
+      return c !== null && c <= t && c >= lo ? { t: c, value } : { none: true, value };
+    });
+  },
   cacheFree(id) { if (id === undefined) { store.clear(); } else { store.delete(id); } },
   cacheWindow(id, t0) {
     const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30;  // the value at t0: '0'
