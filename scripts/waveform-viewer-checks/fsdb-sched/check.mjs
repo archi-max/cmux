@@ -19,7 +19,7 @@ const check = (ok, what) => { console.log((ok ? 'ok   ' : 'FAIL ') + what); if (
 function helper(workers, env = {}) {
   const p = spawn(process.execPath, [path.join(dir, 'helper.js'), '--workers', String(workers), ...(env.ARGS ? env.ARGS.split(' ') : [])], {
     stdio: ['pipe', 'ignore', 'ignore', 'pipe'],
-    env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), FSDB_STORE_CACHE: '0', FSDB_INDEX_DIR: path.join(tmp, 'idx'), TMPDIR: tmp, ...env },
+    env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), FSDB_CLOCK_SEG_CMD: JSON.stringify([process.execPath, path.join(here, 'stub-clockseg.cjs')]), FSDB_STORE_CACHE: '0', FSDB_INDEX_DIR: path.join(tmp, 'idx'), TMPDIR: tmp, ...env },
   });
   let buf = Buffer.alloc(0), need = null, nid = 1, ready;
   const pend = new Map();

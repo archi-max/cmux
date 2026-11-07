@@ -11,7 +11,8 @@
 #
 # which compiles VaporView's addon/fsdb_reader.cpp plus cmux's additions
 # (packed.cpp.inc, window.cpp.inc, deval.h, derive.cpp.inc) into
-# addon/build/Release/fsdb_reader.node and installs it with helper.js,
+# addon/build/Release/fsdb_reader.node, and addon/clockseg.cpp into clockseg,
+# and installs them with helper.js,
 # worker.js, expr.js, text.js, formats.js, tree.js, cmux-helper-v2.sh and a
 # helper.env naming the Node.js and Verdi it was built for. The install is
 # private to the user (the launcher refuses to run one that others can write).
@@ -119,6 +120,15 @@ CC=$!
 wait "$CC" || { tail -20 "$WORK/build.log" >&2; say "compile failed"; exit 13; }
 CC=
 
+# clockseg: one segment of a clock descriptor's verify as its own native process (helper.js
+# "clock descriptors", off unless FSDB_CLOCK_DESC=1). Optional: without it a verify job aborts.
+$SETSID nice -n 10 "$CXX" -std=gnu++17 -O2 -pthread -I"$VERDI/share/FsdbReader" \
+  "$SRC/addon/clockseg.cpp" -o "$WORK/clockseg" \
+  -L"$LIBS" -Wl,-rpath,"$LIBS" -lnffr -lnsys -ldl -lz >"$WORK/clockseg.log" 2>&1 &
+CC=$!
+wait "$CC" || { tail -5 "$WORK/clockseg.log" >&2; say "clockseg did not compile (clock descriptors unavailable)"; rm -f "$WORK/clockseg"; }
+CC=
+
 LD_LIBRARY_PATH="$LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$NODE" -e '
   const a = require(process.argv[1]);
   if (typeof a.cacheWindow !== "function" || typeof a.cacheDerive !== "function" || typeof a.openFsdb !== "function") { process.exit(1); }
@@ -156,6 +166,7 @@ trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"; discard "$STAGE"' EXIT
 mkdir -p "$STAGE/addon/build/Release" \
   && cp "$WORK/fsdb_reader.node" "$STAGE/addon/build/Release/" \
   && cp "$SRC/helper.js" "$SRC/worker.js" "$SRC/expr.js" "$SRC/text.js" "$SRC/formats.js" "$SRC/tree.js" "$SRC/cmux-helper-v2.sh" "$STAGE/" || exit 15
+if [ -f "$WORK/clockseg" ]; then cp "$WORK/clockseg" "$STAGE/" || exit 15; fi
 # Single-quoted for the shell that sources it; a ' in a path becomes '\''.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 printf 'NODE=%s\nVERDI_HOME=%s\n' "$(quote "$NODE")" "$(quote "$VERDI")" > "$STAGE/helper.env"
