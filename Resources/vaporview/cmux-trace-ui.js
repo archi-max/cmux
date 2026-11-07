@@ -140,7 +140,7 @@
     } finally { if (pending) { pending.delete(id); } }
     const r = answer && answer.reply;
     if (r && r.cancelled) { return undefined; }
-    if (within && (!r || r.error)) { within.failed = true; }
+    if (within && (!r || r.error)) { within.failed = true; within.error = r && r.error ? String(r.error) : ''; }
     if (r && r.error && /larger than|store limit/i.test(String(r.error)) && req.signalId !== undefined) {
       // Over the helper's store limit (about 244 MB of history): a whole read, capped only by its
       // change count, would be about a GB of values in the page, so the signal stays unknown.
@@ -179,6 +179,7 @@
   // not asked again this session; the caller reads values and edges as before). Until a helper has
   // answered prev once, an error reply or no answer within twice the step's budget counts as no prev
   // too (the page never waits on a helper that doesn't know it); after that, it fails this read only.
+  // A store-limit error (one signal of the batch over it) fails this read only, always.
   // A signal it can't read (values[i] null) has no last change from it: read as before.
   // Values read so (by netlistId and time) are kept too: a step asks for a leaf at a time again and again.
   async function v2PointRead(list, time, bg) {
@@ -190,7 +191,9 @@
     if (ask.length) {
       const within = { ms: 2 * verdiBudget() };
       const r = await v2({ cmd: 'valueAt', signalIds: ask.map((v) => v.signalId), t: time, prev: true }, bg, within);
-      if ((within.timedOut || within.failed) && s.prevReads !== true) { s.prevReads = false; }
+      // (one signal over the helper's store limit fails the batch: the helper knows prev all the same)
+      const overLimit = within.failed && /larger than|store limit/i.test(within.error || '');
+      if ((within.timedOut || within.failed && !overLimit) && s.prevReads !== true) { s.prevReads = false; }
       if (!r || !Array.isArray(r.values) || r.values.length !== ask.length) { return null; }
       if (!Array.isArray(r.prev) || r.prev.length !== ask.length) { s.prevReads = false; return null; }
       s.prevReads = true;

@@ -9,7 +9,10 @@
 #   or a real, is skipped, counted, and at most --max-skipped of them pass);
 # - a write for every signal slang's model writes, at each of slang's lines (file and line; a line in
 #   the span of a statement slang keeps opaque, a for loop or a system task call; a file of the same
-#   name, which may be a copy).
+#   name, which may be a copy, when it is the only file of that name in both instances; those lines
+#   are counted);
+# - the same port aliases (the [port, net] pairs of ports bound to one whole net of the parent, both
+#   ways, as DesignAliasPairs makes them for the helper's aliasHints) per instance.
 # Signals and writes the KDB has beyond slang's are counted (at most --max-kdb-only signals pass).
 #
 # Usage: compare.py [--max-skipped N] [--max-kdb-only N] <kdb-model.json> <slang-model.json>
@@ -63,10 +66,44 @@ def kdb_lines(inst, name):
             if w.get("loc") and 0 <= w["loc"][0] < len(files)}
 
 
-def same_file(kdb_file, slang_file):
-    # The KDB names files as VCS read them (absolute); slang as its file list did (often relative).
-    # Or a copy of it: the same file name (bigwave compiled picorv32.v from another folder than slang).
-    return kdb_file == slang_file or kdb_file.endswith("/" + slang_file.lstrip("./")) or kdb_file.rsplit("/", 1)[-1] == slang_file.rsplit("/", 1)[-1]
+def base(path):
+    return path.rsplit("/", 1)[-1]
+
+
+def same_file(kdb_file, slang_file, kdb_files=None, slang_files=None):
+    """"path" when the KDB's file is slang's: VCS names files as it read them (absolute), slang as its
+    file list did (often relative). "name" for a copy of it (bigwave compiled picorv32.v from
+    another folder than slang): the same file name, when it is the only one of that name among the
+    instance's files in both models. None otherwise."""
+    if kdb_file == slang_file or kdb_file.endswith("/" + slang_file.lstrip("./")):
+        return "path"
+    name = base(slang_file)
+    if base(kdb_file) != name:
+        return None
+    if kdb_files is not None and sum(1 for f in kdb_files if base(f) == name) != 1:
+        return None
+    if slang_files is not None and sum(1 for f in slang_files if base(f) == name) != 1:
+        return None
+    return "name"
+
+
+def alias_pairs(path, inst):
+    """The instance's port aliases as DesignAliasPairs makes them: a port bound to one whole net of
+    its parent, of the same width -> (port signal, net) both ways."""
+    out = set()
+    parent = inst.get("parent")
+    if not parent:
+        return out
+    for port in inst.get("ports", []):
+        c = port.get("conn")
+        if not isinstance(c, dict):
+            continue
+        leaves, width = c.get("leaves") or [], port.get("width")
+        if len(leaves) != 1 or c.get("src") != leaves[0] or not isinstance(width, int) or width <= 0 or c.get("width") != width:
+            continue
+        inner, outer = path + "." + (port.get("internal") or port["name"]), parent + "." + leaves[0]
+        out |= {(inner, outer), (outer, inner)}
+    return out
 
 
 def shape(sig):
@@ -98,7 +135,8 @@ def compare(kdb, slang, max_skipped=1, max_kdb_only=None):
     if ki != si:
         failures.append(f"instances differ: only kdb {sorted(ki - si)[:3]}, only slang {sorted(si - ki)[:3]}")
     n = {k: 0 for k in ("signals", "missing", "shape", "skipped", "kdbOnly", "tree", "ports", "written",
-                        "unwritten", "lines", "lineMissing", "kdbOnlyWrites", "interfacePorts")}
+                        "unwritten", "lines", "lineMissing", "kdbOnlyWrites", "interfacePorts", "byName",
+                        "aliases", "aliasDiffs")}
     skipped = []
 
     def example(text):
@@ -112,6 +150,11 @@ def compare(kdb, slang, max_skipped=1, max_kdb_only=None):
                 n["tree"] += 1
                 example(f"{field} {path}: kdb {get(k)} slang {get(s)}")
         n["interfacePorts"] += sum(1 for p in k.get("ports", []) if p.get("interface"))
+        ka, sa = alias_pairs(path, k), alias_pairs(path, s)
+        n["aliases"] += len(sa)
+        if ka != sa:
+            n["aliasDiffs"] += 1
+            example(f"aliases {path}: kdb only {sorted(ka - sa)[:2]} slang only {sorted(sa - ka)[:2]}")
         if ports(k) != ports(s):
             n["ports"] += 1
             example(f"ports {path}: kdb {sorted(set(ports(k)) - set(ports(s)))[:3]} slang {sorted(set(ports(s)) - set(ports(k)))[:3]}")
@@ -141,7 +184,12 @@ def compare(kdb, slang, max_skipped=1, max_kdb_only=None):
             have = kdb_lines(k, name)
             for f, first, last in lines:
                 n["lines"] += 1
-                if not any(first <= kl <= last and same_file(kf, f) for kf, kl in have):
+                how = [same_file(kf, f, k.get("files", []), s.get("files", [])) for kf, kl in have if first <= kl <= last]
+                if "path" in how:
+                    continue
+                if "name" in how:
+                    n["byName"] += 1
+                else:
                     n["lineMissing"] += 1
                     example(f"no write line {path}.{name} {f}:{first}" + (f"-{last}" if last != first else ""))
         n["kdbOnlyWrites"] += len(set(k.get("writes", {})) - set(writes))
@@ -149,10 +197,11 @@ def compare(kdb, slang, max_skipped=1, max_kdb_only=None):
                f"skipped (no width or array) {n['skipped']}{' ' + ', '.join(skipped[:3]) if skipped else ''}; kdb only {n['kdbOnly']}")
     out.append(f"instances with another module, parent or children {n['tree']}, other ports {n['ports']}; kdb interface ports {n['interfacePorts']}")
     out.append(f"written in slang: {n['written']}, without a kdb write {n['unwritten']}; slang write lines {n['lines']}, "
-               f"not among the kdb's {n['lineMissing']}; written in the kdb only {n['kdbOnlyWrites']}")
+               f"not among the kdb's {n['lineMissing']} ({n['byName']} matched by file name only); written in the kdb only {n['kdbOnlyWrites']}")
+    out.append(f"port aliases in slang: {n['aliases']}; instances with other aliases in the kdb {n['aliasDiffs']}")
     for key, what in (("missing", "signals missing"), ("shape", "signals of another shape"), ("tree", "instances of another module, parent or children"),
                       ("ports", "instances with other ports"), ("unwritten", "slang-written signals without a kdb write"),
-                      ("lineMissing", "slang write lines not among the kdb's")):
+                      ("lineMissing", "slang write lines not among the kdb's"), ("aliasDiffs", "instances with other port aliases")):
         if n[key]:
             failures.append(f"{n[key]} {what}")
     if n["skipped"] > max_skipped:
@@ -306,8 +355,8 @@ def self_test(kdb, slang):
 def main():
     args = sys.argv[1:]
     opts = {"max_skipped": 1, "max_kdb_only": None}
-    while args and args[0].startswith("--max-"):
-        opts["max_skipped" if args[0] == "--max-skipped" else "max_kdb_only"] = int(args[1])
+    while args and args[0] in ("--max-skipped", "--max-kdb-only"):
+        opts[args[0][2:].replace("-", "_")] = int(args[1])
         args = args[2:]
     if args and args[0] == "--self-test":
         sys.exit(0 if self_test(json.load(open(args[1])), json.load(open(args[2]))) else 1)

@@ -65,7 +65,7 @@
 #   ./run.sh trace-kdb <ssh-host> <remote dump.fsdb or simv.daidir> <slang model.json>
 #                                        the KDB design model (Verdi's Python NPI on the host, a seat held
 #                                        for the export only) against cmux-sv-model's: instances, signals,
-#                                        widths, ranges, arrays, written signals and port connections;
+#                                        widths, ranges, arrays, written signals and port aliases;
 #                                        a second export comes from the host cache, without a seat
 #   ./run.sh trace-kdb-self-test         trace-kdb's comparison against its mutations, offline
 #   ./run.sh trace-kdb-launcher <ssh-host>
