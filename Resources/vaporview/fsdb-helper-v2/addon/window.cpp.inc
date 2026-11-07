@@ -784,11 +784,13 @@ static std::string valueText(const SigStore *s, ptrdiff_t k) {
 
 // Records: [u64 LE delta][bits chars] for bit vectors; for strings and reals (window
 // header `text: true`) [u64 LE delta][u32 LE byte length][the text's bytes].
-static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k, size_t lim = kWinText) {
+// Returns whether a text value was cut.
+static inline bool putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k, size_t lim = kWinText) {
   if (s->kind != kBits) {
     std::string v = valueText(s, k);
     const size_t n = shownLen(v, lim);
-    if (n != v.size()) { v.resize(n - 3); v += "\xe2\x80\xa6"; }  // cut, then U+2026
+    const bool cut = n != v.size();
+    if (cut) { v.resize(n - 3); v += "\xe2\x80\xa6"; }  // cut, then U+2026
     const size_t o = out.size();
     const uint64_t delta = t - prev;
     const uint32_t len = (uint32_t)v.size();
@@ -797,7 +799,7 @@ static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint6
     memcpy(&out[o], &delta, 8);
     memcpy(&out[o + 8], &len, 4);
     if (len) memcpy(&out[o + 12], v.data(), len);
-    return;
+    return cut;
   }
   const size_t o = out.size();
   out.resize(o + 8 + s->bits);
@@ -806,6 +808,7 @@ static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint6
   memcpy(&out[o], &delta, 8);
   if (k < 0) memset(&out[o + 8], 'x', s->bits);  // before the first change
   else putChars(s, (size_t)k, &out[o + 8]);
+  return false;
 }
 
 // Index of the first change with time > t.
@@ -937,7 +940,7 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   }
   std::vector<uint8_t> rec;
   uint64_t prev = 0;
-  putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1, lim);
+  bool cut = putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1, lim);
   Napi::Object o = Napi::Object::New(env);
   auto overBudget = [&]() {
     char mb[32];
@@ -948,7 +951,7 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   if (exact) {
     rec.reserve(text ? 4096 : (count + 1) * (8 + s->bits));
     for (size_t k = first; k < hi; k++) {
-      putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k, lim);
+      cut |= putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k, lim);
       if (text && rec.size() > budget) return overBudget();
     }
   } else {
@@ -961,8 +964,8 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
       counts[k] = (uint32_t)(b - a);
       const size_t f = std::max(a, first);
       if (b > f) {
-        putRecord(s, rec, prev, s->times[f], (ptrdiff_t)f, lim);
-        if (b - f >= 2) putRecord(s, rec, prev, s->times[b - 1], (ptrdiff_t)(b - 1), lim);
+        cut |= putRecord(s, rec, prev, s->times[f], (ptrdiff_t)f, lim);
+        if (b - f >= 2) cut |= putRecord(s, rec, prev, s->times[b - 1], (ptrdiff_t)(b - 1), lim);
         if (text && rec.size() > budget) return overBudget();
       }
       a = b;
@@ -975,6 +978,7 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   if (s->kind != kBits) {
     o.Set("text", Napi::Boolean::New(env, true));
     o.Set("kind", Napi::String::New(env, kindName(s->kind)));
+    if (cut) o.Set("cut", Napi::Boolean::New(env, true));  // a value was cut: the viewer doesn't load it whole
   }
   if (s->kind == kReal) { o.Set("min", Napi::Number::New(env, s->rmin)); o.Set("max", Napi::Number::New(env, s->rmax)); }
   if (s->kind == kString) o.Set("textMean", Napi::Number::New(env, s->textMean));

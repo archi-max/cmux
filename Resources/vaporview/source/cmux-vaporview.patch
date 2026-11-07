@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..7d0e92d
+index 0000000..ffa9712
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,279 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -280,6 +280,9 @@ index 0000000..7d0e92d
 +  drawn from a ranged answer (no min/max) doesn't keep the 0..1 defaults.
 +- A whole load whose reply is torn is tried TORN_LOAD_TRIES (2) times, then the signal stays
 +  windowed, instead of retrying every 30 s for good.
++- A window header with `cut: true` (the helper cut a value to fit its reply budget) keeps the
++  signal windowed: a whole load with cut text would become the row's local data, which the marker
++  value and the page's own value search read.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2916,10 +2919,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..debff65
+index 0000000..6d86a08
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1989 @@
+@@ -0,0 +1,1995 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3042,6 +3045,7 @@ index 0000000..debff65
 +  permanent = false; // cmux: the helper said this error won't go away (unsupported value encoding, 0-bit alias): shown once, never asked again
 +  text      = false; // cmux: a string or real signal (its windows say `text: true`)
 +  textMean: number | null = null; // cmux: a string's mean text bytes per change (window headers)
++  cut       = false; // cmux: a window cut a value to fit (header cut: true): never loaded whole, so search and values use the helper's whole text
 +  rangeSeen = false; // cmux: min/max hold a range the helper sent (widened, never narrowed)
 +  tornLoads = 0;     // cmux: whole loads whose reply was torn (after TORN_LOAD_TRIES: stays windowed)
 +  timeouts  = 0;     // window requests that timed out in a row: back off only (a slow helper isn't a failing one)
@@ -3607,6 +3611,7 @@ index 0000000..debff65
 +  private decideCount(s: SignalWindows, count: number) {
 +    if (s.hybrid !== 'unknown' && s.hybrid !== 'asking') {return;}
 +    // A string's text size is known from its window headers; until then, ask again later.
++    if (s.cut) {s.hybrid = 'windowed'; return;} // a whole load would hold cut text
 +    if (s.textMean === null && this.rowsOf(s.signalId).some((it) => it.encoding === 'String')) {this.hybridLater(s); return;}
 +    const est = hybridBytesFor(count, s.width, s.textMean ?? 0);
 +    if (count > this.hybridMaxChanges || est > this.hybridMaxBytes || this.hybridBytes + est > this.hybridBudget) {
@@ -3690,6 +3695,9 @@ index 0000000..debff65
 +      if (d.h.error) {final(); return;}
 +      if (d.err !== null || d.raw === null) {this.hybridLater(s, 'known'); return;}
 +      if (!d.h.exact) {final(); return;}
++      // Cut text (over the reply budget) would become the row's local data, which the marker
++      // value and the page's own value search read: stay windowed, using the helper's whole text.
++      if (d.h.cut) {s.cut = true; final(); return;}
 +      const records = parseRecords(d.raw, s.width, !!d.h.text);
 +      // A torn reply won't heal on its own (a helper bug or a cut stream): try again a bounded
 +      // number of times, then stay windowed.
@@ -3927,6 +3935,7 @@ index 0000000..debff65
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
 +      if (h.text) {s.text = true;}
 +      if (typeof h.textMean === 'number') {s.textMean = h.textMean;}
++      if (h.cut) {s.cut = true;}
 +      if (this.hybrid && typeof h.total === 'number') {this.decideCount(s, h.total);} // the helper knows its whole count
 +      if (err !== null || raw === null) {this.fail(s, err || 'no data', !!h.permanent); return;}
 +      const all = parseRecords(raw, s.width, !!h.text);

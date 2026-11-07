@@ -101,7 +101,8 @@ Variable kinds:
   within 16 MB (`--text-budget-mb`, `FSDB_TEXT_BUDGET_MB`), shared equally by the strings in the request.
   Each string gets at least a quarter, so a request for more than 4 strings can pass 16 MB in all. The cut
   shrinks, down to 256 bytes, so the window fits; a window that doesn't fit even then is a retryable error
-  (a narrower window fits). `valueAt` and `searchText` use the whole text. A string's header says
+  (a narrower window fits). A window that cut a value says `cut: true`, and the viewer then keeps the
+  signal windowed rather than loading it whole. `valueAt` and `searchText` use the whole text. A string's header says
   `textMean`, the mean text bytes per change, which the viewer counts before loading it whole.
 - **Events** keep every occurrence, repeats included, in stored and cold searches alike.
 - **Parameters and time vars** are listed as Real by the reader, but most are bit vectors and work as
