@@ -52,7 +52,7 @@ import Testing
     /// tb > u_fifo (fifo), as slang has it; the KDB's chain is the same unless a test says otherwise.
     func resolve(slang: [String: [String: Any]], kdb: KDBDesignModel,
                  sourceTimes: [String: Int64]? = [KDBAgreementTests.file: KDBAgreementTests.compiled - 10],
-                 sameFiles: Bool = false) async throws -> SVModelResolve.Outcome {
+                 sameFiles: Bool = false, checked: ((Set<String>) -> Void)? = nil) async throws -> SVModelResolve.Outcome {
         func lookup(_ path: String) -> (instance: String, name: String)? {
             let instance = slang.keys.filter { path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
             return instance.map { ($0, String(path.dropFirst($0.count + 1))) }
@@ -67,7 +67,8 @@ import Testing
             kdb: kdb,
             instances: { slang.keys.sorted() },
             sourceTimes: sourceTimes.map { times in { times } },
-            kdbSameFiles: sameFiles
+            kdbSameFiles: sameFiles,
+            kdbChecked: checked
         )
     }
 
@@ -134,6 +135,18 @@ import Testing
         #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: true) == Self.approximate([.writes(signal: "q")]))
         #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: false) == Self.mapped)
         #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(), sameFiles: true) == Self.mapped)
+    }
+
+    /// The instances a row's agreement covered (slang's paths of its chain, from the matched level
+    /// down), so a later step in another instance is not taken as checked (Refs #9 F3).
+    @Test func theChainsInstancesAreTheOnesChecked() async throws {
+        var checked: Set<String>?
+        _ = try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign()) { checked = $0 }
+        #expect(checked == ["tb", "tb.u_fifo"])
+        // Approximate too: the same instances were compared.
+        checked = nil
+        _ = try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(width: 16)) { checked = $0 }
+        #expect(checked == ["tb", "tb.u_fifo"])
     }
 
     /// An export whose KDB had no files to date it (compiled 0) has no compile time (Refs #9 L3).

@@ -1424,6 +1424,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await designChecks()
     await kdbDiffersChecks()
     await kdbPendingChecks()
+    await kdbCheckedChecks()
     await xRootChecks()
     await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
@@ -1748,6 +1749,42 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await trace("close()")
   }
 
+  /// Issue #9 F3: with a KDB model, cmux compared only the traced row's instance chain (resolve's
+  /// kdbChecked); a step in another instance is approximate and says it was not checked. No
+  /// kdbChecked (no KDB model): no such reason. An empty one (the editor's trace, not resolved
+  /// with the KDB): every step.
+  func kdbCheckedChecks() async {
+    _ = await trace("close()")
+    func codes(_ step: [String: Any]?) -> [String] { (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String } }
+    let row = "driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })"
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#1",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink"]]
+    let inside = await trace(row)
+    expect(inside != nil && !codes(inside).contains("kdbNotChecked"), "kdb checked: the row's own instance is checked: \(codes(inside))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#2", "kdbChecked": ["tb_c"]]
+    let outside = await trace(row)
+    let text = await panelText()
+    expect(outside?["trust"] as? String == "approximate" && codes(outside).contains("kdbNotChecked"),
+           "kdb checked: a step in an instance not checked is approximate: \(String(describing: outside?["trust"])) \(codes(outside))")
+    expect(text.contains("not checked against the compiled design (KDB)"), "kdb checked: the panel says so: \(text.prefix(300))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#3"]
+    let none = await trace(row)
+    expect(none != nil && !codes(none).contains("kdbNotChecked"), "kdb checked: without a KDB model no such reason: \(codes(none))")
+    resolveAnswer = nil
+    _ = await trace("driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, designId: 'c#4', kdbChecked: [] })")
+    let editorText = await panelText()
+    expect(editorText.contains("not checked against the compiled design (KDB)"), "kdb checked: the editor's trace with a KDB model is not checked: \(editorText.prefix(300))")
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let id = traceSwift.range(of: "\"traceReason_kdbNotChecked\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
+    let locales = id.flatMap { (catalog[String($0)] as? [String: Any])?["localizations"] as? [String: Any] }?.count ?? 0
+    expect(locales == 9, "kdb checked: the reason's string comes from cmux in 9 locales (\(locales))")
+    expect(traceSwift.contains("argument[\"kdbChecked\"]"), "kdb checked: the editor's trace says when a KDB model went unused")
+    _ = await trace("close()")
+  }
+
   /// Issue #8 F3: while the dump's KDB export runs (a viewer just opened or reloaded it), cmux
   /// traces with slang's design and says so: resolve's kdbPending marks each step (its trust is
   /// slang's own), and a row slang lacks says the compiled design is still loading, not that the
@@ -2045,6 +2082,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     "traceCompiledNoWrites": "The compiled design has no statement writing it here (it is driven through a port, or is an input).",
     "traceReason_kdbDiffers": "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@.",
     "traceReason_kdbPending": "The compiled design (KDB) is still loading, so this was traced with slang’s design.",
+    "traceReason_kdbNotChecked": "This instance was not checked against the compiled design (KDB), so slang’s statements may not be what ran.",
   ]
 
   /// How many times the page said a dump opened.
