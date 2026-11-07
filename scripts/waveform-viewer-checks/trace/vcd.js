@@ -39,11 +39,13 @@ function traceVcd(text) {
     const neg = (prev === '1' && now !== '1') || ((prev === 'x' || prev === 'z') && now === '0');
     return edge === 'PosEdge' ? pos : edge === 'NegEdge' ? neg : pos || neg;
   };
-  const stats = { values: 0, lastChange: 0, prevEdge: 0 };
+  const stats = { values: 0, lastChange: 0, prevEdge: 0, nextChange: 0 };
   const provider = {
     stats,
     async values(paths, at) { stats.values++; const out = new Map(); for (const p of paths) { const s = sig.get(p); out.set(p, s ? valueAt(s, at) : undefined); } return out; },
     async lastChange(p, at) { stats.lastChange++; const s = sig.get(p); if (!s) { return null; } const i = idx(s.changes, at); return i < 0 ? 0 : s.changes[i][0]; },
+    // The first change at or after `at` (null: none), as the page's providers answer it.
+    async nextChange(p, at) { stats.nextChange++; const s = sig.get(p); if (!s) { return null; } const c = s.changes.find((x) => x[0] >= at); return c ? c[0] : null; },
     async prevEdge(p, at, edge) {
       stats.prevEdge++;
       const s = sig.get(p);

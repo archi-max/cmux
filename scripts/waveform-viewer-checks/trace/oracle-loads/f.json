@@ -1,0 +1,855 @@
+{
+"signals": {
+"tb_f.a": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.a",
+"line": 31,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.a"
+],
+"text": "a",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.a",
+"line": 31,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.a"
+],
+"text": "a",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.a",
+"line": 32,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.addr"
+],
+"text": "assign bus.addr = a",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_f.bus.addr": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.addr",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.addr"
+],
+"text": "tb_f.bus.mem.addr",
+"type": "npiMpPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.addr",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.addr"
+],
+"text": "tb_f.bus.mem.addr",
+"type": "npiMpPort",
+"upper": false
+}
+]
+},
+"tb_f.bus.clk": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.clk",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.clk"
+],
+"text": "tb_f.bus.ctrl.clk",
+"type": "npiMpPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.clk",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.clk"
+],
+"text": "tb_f.bus.mem.clk",
+"type": "npiMpPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.clk",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.clk"
+],
+"text": "tb_f.bus.ctrl.clk",
+"type": "npiMpPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.clk",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.clk"
+],
+"text": "tb_f.bus.mem.clk",
+"type": "npiMpPort",
+"upper": false
+}
+]
+},
+"tb_f.bus.rdata": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.rdata",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.rdata"
+],
+"text": "tb_f.bus.ctrl.rdata",
+"type": "npiMpPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.rdata",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.rdata"
+],
+"text": "tb_f.bus.ctrl.rdata",
+"type": "npiMpPort",
+"upper": false
+}
+]
+},
+"tb_f.bus.req": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.req",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.req"
+],
+"text": "tb_f.bus.mem.req",
+"type": "npiMpPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.req",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.req"
+],
+"text": "tb_f.bus.mem.req",
+"type": "npiMpPort",
+"upper": false
+}
+]
+},
+"tb_f.bus.resp": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.resp",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.resp"
+],
+"text": "tb_f.bus.ctrl.resp",
+"type": "npiMpPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.resp",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.resp"
+],
+"text": "tb_f.bus.ctrl.resp",
+"type": "npiMpPort",
+"upper": false
+}
+]
+},
+"tb_f.clk": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.clk",
+"line": 6,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_f.sv",
+"from": "tb_f.clk",
+"line": 9,
+"scope": "tb_f",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.clk",
+"line": 6,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_f.sv",
+"from": "tb_f.clk",
+"line": 9,
+"scope": "tb_f",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.clk",
+"line": 11,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.ctrl.clk"
+],
+"text": "tb_f.bus.ctrl.clk",
+"type": "npiMpPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.bus.clk",
+"line": 12,
+"scope": "tb_f.bus",
+"scopeType": "npiInterface",
+"targets": [
+"tb_f.bus.mem.clk"
+],
+"text": "tb_f.bus.mem.clk",
+"type": "npiMpPort",
+"upper": false
+}
+]
+},
+"tb_f.dut.a": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.a",
+"line": 32,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.addr"
+],
+"text": "assign bus.addr = a",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.a",
+"line": 32,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.addr"
+],
+"text": "assign bus.addr = a",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_f.dut.q": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.q",
+"line": 31,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.q",
+"line": 31,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_f.dut.rst_n": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 33,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge bus.clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 34,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 35,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.req"
+],
+"text": "bus.req <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 36,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 38,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.req"
+],
+"text": "bus.req <= 'b1;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 39,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.q"
+],
+"text": "q <= bus.rdata;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 33,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge bus.clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 34,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 35,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.req"
+],
+"text": "bus.req <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 36,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 38,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.req"
+],
+"text": "bus.req <= 'b1;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 39,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.q"
+],
+"text": "q <= bus.rdata;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_f.q": {
+"stop": [],
+"through": []
+},
+"tb_f.rst_n": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.rst_n",
+"line": 15,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.rst_n",
+"line": 31,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.rst_n",
+"line": 15,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.rst_n",
+"line": 31,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 26,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge bus.clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 27,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 27,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.resp"
+],
+"text": "bus.resp <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 28,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.resp"
+],
+"text": "bus.resp <= bus.req;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 33,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge bus.clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 34,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 35,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.req"
+],
+"text": "bus.req <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 36,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 38,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.bus.req"
+],
+"text": "bus.req <= 'b1;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.dut.rst_n",
+"line": 39,
+"scope": "tb_f.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.dut.q"
+],
+"text": "q <= bus.rdata;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_f.u_mem.rst_n": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 26,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge bus.clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 27,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 27,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.resp"
+],
+"text": "bus.resp <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 28,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.resp"
+],
+"text": "bus.resp <= bus.req;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 26,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge bus.clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 27,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 27,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.resp"
+],
+"text": "bus.resp <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.rst_n",
+"line": 28,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.resp"
+],
+"text": "bus.resp <= bus.req;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_f.u_mem.store": {
+"stop": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.store",
+"line": 23,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.rdata"
+],
+"text": "bus.rdata = store[bus.addr[1:0]];",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "f_bus.sv",
+"from": "tb_f.u_mem.store",
+"line": 23,
+"scope": "tb_f.u_mem",
+"scopeType": "npiModule",
+"targets": [
+"tb_f.u_mem.bus.rdata"
+],
+"text": "bus.rdata = store[bus.addr[1:0]];",
+"type": "npiAssignment",
+"upper": false
+}
+]
+}
+}
+}

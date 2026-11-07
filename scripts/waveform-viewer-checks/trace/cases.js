@@ -285,6 +285,119 @@ const TRACE_CASES = [
 // The model an older cmux-sv-model gave (the one the Verdi oracle ran on): no statement lists what
 // it writes, and an initial block slang could not elaborate is one opaque statement.
 // ('nowrites': the write lists only.)
+// Load trace (who reads a signal: engine.loads): each case's entries, as
+// 'kind/role/line/targets' (targets joined by ','), in the order loads gives them; `page`
+// [offset, limit, total, next] checks one page.
+const LOAD_CASES = [
+  // A flop's output read by a continuous assign and as an always_comb's if condition.
+  { d: 'a', sig: 'tb_a.dut.valid_q', want: ['assign/data/23/tb_a.dut.sum', 'stmt/condition/28/tb_a.dut.stage'] },
+  // An input read as data (valid_q <= en) and as a condition (if (en) acc <= ...).
+  { d: 'a', sig: 'tb_a.dut.en', want: ['stmt/data/18/tb_a.dut.valid_q', 'stmt/condition/21/tb_a.dut.acc'] },
+  // A clock: each edge procedure's sensitivity, its writes the targets.
+  { d: 'a', sig: 'tb_a.dut.clk', want: ['event/sensitivity/16/tb_a.dut.valid_q', 'event/sensitivity/20/tb_a.dut.acc', 'event/sensitivity/32/tb_a.dut.dout'] },
+  { d: 'a', sig: 'tb_a.dut.clk', page: [1, 1, 3, 2], want: ['event/sensitivity/20/tb_a.dut.acc'] },
+  { d: 'a', sig: 'tb_a.dut.clk', page: [2, 64, 3, null], want: ['event/sensitivity/32/tb_a.dut.dout'] },
+  // The testbench's clock: its own toggle, and the DUT's input port it connects (the next hop down).
+  { d: 'a', sig: 'tb_a.clk', want: ['portIn/connection/6/tb_a.dut.clk', 'stmt/data/7/tb_a.clk'] },
+  // An output port: the parent's signal connected to it (the next hop up).
+  { d: 'a', sig: 'tb_a.dut.dout', want: ['portOut/connection/6/tb_a.dout'] },
+  // Read into a block-local temporary (tmp = sum + 1).
+  { d: 'a', sig: 'tb_a.dut.sum', want: ['stmt/data/27/$local:tmp'] },
+  // Read by nothing.
+  { d: 'a', sig: 'tb_a.dout', want: [] },
+];
+
+// Active loads at a time (engine.loadsAt): each entry as 'line/role/status' in loads' order;
+// `follow` { line: [path, time] }: where following that entry goes (the change it caused);
+// `trust` { line: trust }. The reader's last activation at or before t is judged (the dump is
+// searched backward, as driver tracing does): a flop whose input changed after its last edge is
+// 'pending'.
+const LOAD_AT_CASES = [
+  // valid_q went 0 -> 1 at 45: sum = acc ^ {8{valid_q}} stays x (no change); the always_comb's
+  // if (valid_q) takes its then branch.
+  { d: 'a', sig: 'tb_a.dut.valid_q', t: 50, want: ['23/data/noChange', '28/condition/taken'] },
+  { d: 'a', sig: 'tb_a.dut.valid_q', t: 30, want: ['23/data/noChange', '28/condition/untaken'] },
+  // en rose at 40, sampled at the edge at 45: valid_q <= en made valid_q's change at 45.
+  { d: 'a', sig: 'tb_a.dut.en', t: 50, want: ['18/data/propagated', '21/condition/taken'], follow: { 18: ['tb_a.dut.valid_q', 45] }, trust: { 18: 'exact' } },
+  // At 42 the last edge (35) came before en's change: not sampled yet.
+  { d: 'a', sig: 'tb_a.dut.en', t: 42, want: ['18/data/pending', '21/condition/pending'] },
+  // The clock's posedge at 45 triggered each edge procedure; its negedge at 50 none.
+  { d: 'a', sig: 'tb_a.dut.clk', t: 45, want: ['16/sensitivity/triggered', '20/sensitivity/triggered', '32/sensitivity/triggered'] },
+  { d: 'a', sig: 'tb_a.dut.clk', t: 50, want: ['16/sensitivity/notTriggered', '20/sensitivity/notTriggered', '32/sensitivity/notTriggered'] },
+  // din: read into acc at 45 (acc stays x), and stage = din is on the else branch, not run at 50.
+  { d: 'a', sig: 'tb_a.dut.din', t: 50, want: ['21/data/noChange', '29/data/notRun'] },
+  // The testbench clock: the DUT's clk port follows it at 50; its own toggle is stimulus.
+  { d: 'a', sig: 'tb_a.clk', t: 50, want: ['6/connection/propagated', '7/data/stimulus'], follow: { 6: ['tb_a.dut.clk', 50] } },
+  // An output port: the parent's dout changed with it at 25.
+  { d: 'a', sig: 'tb_a.dut.dout', t: 30, want: ['6/connection/propagated'], follow: { 6: ['tb_a.dout', 25] } },
+  // Into a block-local temporary (not dumped): read, nothing to follow.
+  { d: 'a', sig: 'tb_a.dut.sum', t: 50, want: ['27/data/read'] },
+];
+
+// Follow forward: an entry's target's first change at or after t (engine.nextOf), on a provider
+// with nextChange; without one, null (the page falls back to the change the read caused).
+// line: the load entry; want: [path, time] | null (no later change); back: the provider has no nextChange.
+const NEXT_CASES = [
+  // en rose at 40; at 42 its read is pending: valid_q takes it at the edge at 45.
+  { d: 'a', sig: 'tb_a.dut.en', t: 42, line: 18, want: ['tb_a.dut.valid_q', 45] },
+  // At a change itself: at or after, so the same time.
+  { d: 'a', sig: 'tb_a.clk', t: 50, line: 6, want: ['tb_a.dut.clk', 50] },
+  // No nextChange in the provider: no forward answer.
+  { d: 'a', sig: 'tb_a.dut.en', t: 42, line: 18, back: true, want: null },
+  // Into a block-local temporary: nothing dumped to follow.
+  { d: 'a', sig: 'tb_a.dut.sum', t: 50, line: 27, want: null },
+];
+
+// The load list against Verdi's (oracle-loads/<design>.json: npi-loads.py's lang.trace_load2 on
+// each design's VCS KDB, is_pass_thr off = `stop`, on = `through`). A load is keyed by file:line,
+// a port connection by the signals it reaches (Verdi places it at the child's port declaration, we
+// at the instance). Verdi's "load in an upper statement" entries (statements under a condition or
+// event that reads the signal) are ours as that condition or event entry. `through` is compared
+// with ours followed through each port connection. The differences left, each with its reason:
+// An interface's signal: Verdi lists each modport that takes it as an input (keyed by the
+// modport port, iface.modport.name); ours list those too, plus the reads through the interface
+// port in each instance it reaches (INTERFACE_READS), which Verdi does not list: counted, not listed.
+// verdiOnly (and upper: an upper statement with no condition or event of ours reading the signal
+//   whose procedure encloses it)
+//   dumpTask: $dumpvars naming the signal (a dump directive, not a design read);
+//   sysFunctionOutput: $value$plusargs's output argument (it writes the signal), and the statement
+//     under that condition (upper);
+// oursOnly
+//   assignmentPattern: a read inside an assignment pattern ('{a: x, ...}), which Verdi does not list;
+//   localInitializer: a procedural block local's declaration initializer, which Verdi does not list;
+//   lvalueIndex: an index read in a two-level target select in a loop (mem[widx][8*b +: 8] <=),
+//     which Verdi does not list (it does list mem[waddr] <=);
+//   increment: x++ reads x; Verdi does not list it.
+// Statements slang leaves opaque (loops, calls) are listed when their text names the signal
+// (role 'opaque', maybe): Verdi's loads inside for and repeat loops match them.
+const INTERFACE_READS = {
+  'tb_n.bus.data': ['tb_n.u_prod:20', 'tb_n.u_mid.u_leaf:28', 'tb_n.u_mon:36'],
+  'tb_n.bus.valid': ['tb_n:10', 'tb_n.u_mid.u_leaf:28', 'tb_n.u_mon:36'],
+  'tb_n.bus.clk': ['tb_n.u_prod:15', 'tb_n.u_mid.u_leaf:27'],
+  'tb_n.bus.ready': ['tb_n.u_prod:19'],
+  'tb_f.bus.addr': ['tb_f.u_mem:23'],
+  'tb_f.bus.req': ['tb_f.u_mem:23', 'tb_f.u_mem:28'],
+  'tb_f.bus.clk': ['tb_f.u_mem:26', 'tb_f.dut:33'],
+  'tb_f.bus.resp': ['tb_f.dut:39'],
+  'tb_f.bus.rdata': ['tb_f.dut:39'],
+};
+const LOAD_ORACLE_DIFFS = [
+  'verdiOnly h tb_h.dut.mem tb_h.sv:17 dumpTask',
+  'verdiOnly i tb_i.dut.lost tb_i.sv:25 dumpTask',
+  'verdiOnly i tb_i.dut.mem tb_i.sv:26 dumpTask',
+  'verdiOnly i tb_i.iters tb_i.sv:16 sysFunctionOutput',
+  'verdiOnly l tb_l.iters tb_l.sv:23 sysFunctionOutput',
+  'upper i tb_i.iters tb_i.sv:16 sysFunctionOutput',
+  'upper l tb_l.iters tb_l.sv:23 sysFunctionOutput',
+  'oursOnly c tb_c.dut.u_src.data_q c_struct.sv:37 assignmentPattern',
+  'oursOnly c tb_c.dut.u_src.id_q c_struct.sv:37 assignmentPattern',
+  'oursOnly c tb_c.dut.u_src.valid_q c_struct.sv:37 assignmentPattern',
+  'oursOnly j tb_j.dut.b j_temps.sv:71 localInitializer',
+  'oursOnly i tb_i.dut.widx i_drivers.sv:30 lvalueIndex',
+  'oursOnly i tb_i.settle tb_i.sv:14 increment',
+  'oursOnly l tb_l.settle tb_l.sv:34 increment',
+];
+
 function staleModel(all, invalidInitial) {
   const strip = (x) => {
     if (Array.isArray(x)) { x.forEach(strip); return; }
@@ -432,6 +545,231 @@ function runTraceChecks() {
           out.push(`ok   ${c.d}.${variant} ${c.sig} @${c.t}: ${step.driver.kind} ${step.stmt ? step.stmt.src : ''} [${step.trust}]`);
         }
       }
+    }
+    // Load trace: the static readers of a signal.
+    for (const c of LOAD_CASES) {
+      results.cases++;
+      const what = `loads ${c.d} ${c.sig}${c.page ? ' page ' + JSON.stringify(c.page) : ''}`;
+      let got;
+      try {
+        const opts = c.page ? { offset: c.page[0], limit: c.page[1] } : {};
+        got = await engineFor(c.d, 'icarus').engine.loads(c.sig, opts);
+      } catch (error) {
+        got = { error: String(error && error.message || error) };
+      }
+      const bad = [];
+      if (got.error) {
+        bad.push('error ' + got.error);
+      } else {
+        const lines = got.entries.map((e) => `${e.kind}/${e.role}/${e.loc ? e.loc.line : '?'}/${(e.targets || []).join(',')}`);
+        if (JSON.stringify(lines) !== JSON.stringify(c.want)) { bad.push(`entries ${JSON.stringify(lines)} != ${JSON.stringify(c.want)}`); }
+        if (c.page && (got.total !== c.page[2] || got.next !== c.page[3])) { bad.push(`total/next ${got.total}/${got.next} != ${c.page[2]}/${c.page[3]}`); }
+        for (const e of got.entries) {
+          if (!e.loc || !e.loc.file || !e.src) { bad.push(`entry without loc or src: ${JSON.stringify(e)}`); }
+        }
+      }
+      if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}: ${got.entries.length} of ${got.total}`); }
+    }
+    for (const c of LOAD_AT_CASES) {
+      results.cases++;
+      const what = `loadsAt ${c.d} ${c.sig} @${c.t}`;
+      let got;
+      try {
+        got = await engineFor(c.d, 'icarus').engine.loadsAt(c.sig, c.t);
+      } catch (error) {
+        got = { error: String(error && error.message || error) };
+      }
+      const bad = [];
+      if (got.error) {
+        bad.push('error ' + got.error);
+      } else {
+        const lines = got.entries.map((e) => `${e.loc ? e.loc.line : '?'}/${e.role}/${e.active ? e.active.status : '-'}`);
+        if (JSON.stringify(lines) !== JSON.stringify(c.want)) { bad.push(`entries ${JSON.stringify(lines)} != ${JSON.stringify(c.want)}`); }
+        for (const [line, [path, time]] of Object.entries(c.follow || {})) {
+          const e = got.entries.find((x) => x.loc && x.loc.line === Number(line));
+          const f = e && e.active && e.active.follow;
+          if (!f || f.path !== path || f.time !== time) { bad.push(`follow ${line}: ${JSON.stringify(f)} != ${path}@${time}`); }
+        }
+        for (const [line, trust] of Object.entries(c.trust || {})) {
+          const e = got.entries.find((x) => x.loc && x.loc.line === Number(line));
+          if (!e || !e.active || e.active.trust !== trust) { bad.push(`trust ${line}: ${e && e.active && e.active.trust} != ${trust}`); }
+        }
+      }
+      if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}`); }
+    }
+    // The load lists against Verdi's (LOAD_ORACLE_DIFFS).
+    {
+      const oracle = traceFiles.loadOracle || {};
+      const seen = [];
+      const counts = { match: 0, upper: 0, through: 0, throughMatch: 0 };
+      const keyOurs = (e) => (e.kind === 'portIn' || e.kind === 'portOut' || e.kind === 'modport' ? 'port:' + (e.targets || []).slice().sort().join(',') : base(e.loc && e.loc.file) + ':' + (e.loc && e.loc.line));
+      const keyVerdi = (x) => (/Port$/.test(x.type || '') ? 'port:' + x.targets.slice().sort().join(',') : x.file + ':' + x.line);
+      // (the model VCS compiled, without __ICARUS__: loads read no dump)
+      const oracleEngines = {};
+      const oracleEngine = (d) => {
+        if (oracleEngines[d]) { return oracleEngines[d]; }
+        const all = JSON.parse(traceFiles.models[d]);
+        const models = {
+          instance: async (p) => all.instances[p],
+          writers: async () => [],
+          lookup: async (p) => {
+            let best = null;
+            for (const k of Object.keys(all.instances)) { if ((p === k || p.startsWith(k + '.')) && (!best || k.length > best.length)) { best = k; } }
+            return best ? { instance: best, name: p.slice(best.length + 1) } : null;
+          },
+        };
+        const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
+        oracleEngines[d] = cmuxTrace.createEngine({ models, dump: none });
+        return oracleEngines[d];
+      };
+      const oursOf = async (d, sig) => ((await oracleEngine(d).loads(sig, { limit: 100000 })).entries || []);
+      for (const d of Object.keys(oracle).sort()) {
+        const signals = JSON.parse(oracle[d]).signals;
+        for (const sig of Object.keys(signals).sort()) {
+          results.cases++;
+          const o = signals[sig];
+          let ours;
+          try { ours = await oursOf(d, sig); } catch (error) { results.failures++; out.push(`FAIL load oracle ${d} ${sig}: ${error && error.message || error}`); continue; }
+          const ok = new Set(ours.map(keyOurs));
+          const direct = o.stop.filter((x) => !x.upper);
+          const vk = new Set(direct.map(keyVerdi));
+          for (const x of direct) { if (ok.has(keyVerdi(x))) { counts.match++; } else { seen.push(`verdiOnly ${d} ${sig} ${keyVerdi(x)}`); } }
+          // Reads through an interface port, in another instance than the interface's own.
+          const via = ours.filter((y) => y.via === 'interface');
+          const want = INTERFACE_READS[sig];
+          const got = [...new Set(via.map((y) => y.instance + ':' + (y.loc && y.loc.line)))].sort();
+          if (want && JSON.stringify(got) !== JSON.stringify(want.slice().sort())) { seen.push(`interfaceReads ${d} ${sig} ${JSON.stringify(got)}!=${JSON.stringify(want)}`); }
+          if (!want && via.length) { seen.push(`interfaceReads ${d} ${sig} unexpected ${JSON.stringify(got)}`); }
+          counts.interfaceRead = (counts.interfaceRead || 0) + via.length;
+          for (const y of ours) { if (y.via !== 'interface' && !vk.has(keyOurs(y))) { seen.push(`oursOnly ${d} ${sig} ${keyOurs(y)}`); } }
+          // An upper statement (one whose enclosing control reads the signal): a condition, event or
+          // opaque statement of ours reading it, in the same file, whose procedure (or own range, outside
+          // one) encloses the statement's line.
+          const encloses = (y, x) => {
+            const r = y.procLoc || y.loc;
+            return !!r && base(r.file) === x.file && r.line <= x.line && x.line <= (r.endLine || r.line);
+          };
+          const ctl = ours.filter((y) => y.role === 'condition' || y.role === 'sensitivity' || y.role === 'opaque');
+          for (const x of o.stop.filter((z) => z.upper)) { counts.upper++; if (!ctl.some((y) => encloses(y, x))) { seen.push(`upper ${d} ${sig} ${keyVerdi(x)}`); } }
+          // Through ports: ours followed through each port connection, transitively.
+          const closure = new Set();
+          const todo = [sig];
+          const done = new Set();
+          while (todo.length) {
+            const s0 = todo.pop();
+            if (done.has(s0)) { continue; }
+            done.add(s0);
+            let es = [];
+            try { es = await oursOf(d, s0); } catch (error) { es = []; }
+            for (const e of es) {
+              closure.add(keyOurs(e));
+              if (e.kind === 'portIn' || e.kind === 'portOut') { (e.targets || []).forEach((t) => todo.push(t)); }
+            }
+          }
+          for (const x of o.through.filter((z) => !z.upper)) {
+            counts.through++;
+            if (closure.has(keyVerdi(x))) { counts.throughMatch++; } else { seen.push(`through ${d} ${sig} ${keyVerdi(x)}`); }
+          }
+        }
+      }
+      // A through-only difference is fine when it is one of the stop differences (of a signal the ports reach).
+      const stopKeys = new Set(LOAD_ORACLE_DIFFS.map((l) => l.split(' ')[3]));
+      const left = seen.filter((l) => !(l.startsWith('through ') && stopKeys.has(l.split(' ')[3])));
+      const expected = LOAD_ORACLE_DIFFS.map((l) => l.split(' ').slice(0, 4).join(' '));
+      const extra = left.filter((l) => !expected.includes(l));
+      const gone = expected.filter((l) => !left.includes(l));
+      results.cases++;
+      if (Object.keys(oracle).length === 0) { results.failures++; out.push('FAIL load oracle: no fixtures'); }
+      else if (extra.length || gone.length) { results.failures++; out.push(`FAIL load oracle: ${counts.match} match, ${extra.length} unexplained: ${extra.join('; ')}${gone.length ? '; listed but not seen: ' + gone.join('; ') : ''}`); }
+      else { out.push(`ok   load oracle: ${counts.match} match, ${counts.upper} upper, through ${counts.throughMatch}/${counts.through}, ${counts.interfaceRead} interface reads, ${expected.length} listed differences`); }
+    }
+    // The interface walk follows the interface's connections, not everything under its parent: 600
+    // unrelated children of tb_n, ahead of the others, leave its reads listed and the walk uncapped.
+    {
+      results.cases++;
+      const bad = [];
+      try {
+        const all = JSON.parse(traceFiles.models.n);
+        const tb = all.instances.tb_n;
+        const fillers = [];
+        for (let i = 0; i < 600; i++) {
+          const path = `tb_n.u_fill${i}`;
+          all.instances[path] = { version: 1, path, module: 'n_fill', parent: 'tb_n', loc: tb.loc, ports: [], params: {}, signals: {}, assigns: [], procs: [], children: [], files: tb.files };
+          fillers.push({ path, name: `u_fill${i}`, module: 'n_fill', loc: tb.loc, ports: [] });
+        }
+        tb.children = fillers.concat(tb.children);
+        const models = {
+          instance: async (p) => all.instances[p],
+          writers: async () => [],
+          lookup: async (p) => {
+            let best = null;
+            for (const k of Object.keys(all.instances)) { if ((p === k || p.startsWith(k + '.')) && (!best || k.length > best.length)) { best = k; } }
+            return best ? { instance: best, name: p.slice(best.length + 1) } : null;
+          },
+        };
+        const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
+        const got = await cmuxTrace.createEngine({ models, dump: none }).loads('tb_n.bus.data', { limit: 512 });
+        const via = [...new Set((got.entries || []).filter((e) => e.via === 'interface').map((e) => e.instance + ':' + (e.loc && e.loc.line)))].sort();
+        const want = INTERFACE_READS['tb_n.bus.data'].slice().sort();
+        if (JSON.stringify(via) !== JSON.stringify(want)) { bad.push(`interface reads ${JSON.stringify(via)} != ${JSON.stringify(want)}`); }
+        const walk = got.limits && got.limits.interfaceWalk;
+        if (!walk || walk.capped) { bad.push(`interfaceWalk ${JSON.stringify(walk)}, not uncapped`); }
+      } catch (error) { bad.push('error ' + String(error && error.message || error)); }
+      if (bad.length) { results.failures++; out.push(`FAIL loads n tb_n.bus.data beside 600 unrelated instances: ${bad.join('; ')}`); } else { out.push('ok   loads n tb_n.bus.data beside 600 unrelated instances: the interface reads listed, the walk not capped'); }
+    }
+    // An opaque statement's text: `x <=` is an assignment only where a statement starts; inside a
+    // condition it is a comparison, a read (`if (pick <= 2'(t))` lists pick).
+    {
+      results.cases++;
+      const bad = [];
+      try {
+        const loc = [0, 3, 3, 3, 60];
+        const sig = (w) => ({ width: w, kind: 'var', msb: w - 1, lsb: 0, loc });
+        const opaque = (src) => ({ k: 'opaque', why: 'ForLoop', src, loc });
+        const inst = { version: 1, path: 'tb_o', module: 'tb_o', loc, ports: [], params: {}, signals: { pick: sig(2), pop: sig(4), valid: sig(4), q: sig(1), d: sig(1), c: sig(1), sel: sig(2), y: sig(1), wz: sig(1), wc: sig(1), wb: sig(1) },
+          assigns: [], children: [], files: ['o.sv'],
+          procs: [
+            { id: 0, kind: 'AlwaysComb', events: [], body: opaque("for (int t = 0; t < 4; t++) if (pick <= 2'(t)) pop[t] = valid[t];"), loc },
+            { id: 1, kind: 'AlwaysFF', events: [], body: opaque('for (int t = 0; t < 4; t++) begin q <= d; if (c) q <= 1\'b0; end'), loc },
+            // (a ternary's `:` starts no statement: sel <= 2'(t) there is a comparison)
+            { id: 2, kind: 'AlwaysComb', events: [], body: opaque("for (int t = 0; t < 4; t++) y = valid[t] ? 1'b0 : sel <= 2'(t);"), loc },
+            // (a `?` in a casez wildcard or a parenthesised case expression is no ternary; a named
+            // block's `begin : name` starts a statement: wz, wc and wb are only assigned)
+            { id: 3, kind: 'AlwaysFF', events: [], body: opaque("for (int t = 0; t < 4; t++) casez (t) 2'b1?: wz <= 1'b1; default: wz <= 1'b0; endcase"), loc },
+            { id: 4, kind: 'AlwaysFF', events: [], body: opaque("for (int t = 0; t < 4; t++) case (valid[t] ? t : 0) 0: wc <= 1'b1; endcase"), loc },
+            { id: 5, kind: 'AlwaysFF', events: [], body: opaque("for (int t = 0; t < 4; t++) begin : blk wb <= 1'b1; end"), loc },
+          ] };
+        const all = { instances: { tb_o: inst } };
+        const models = { instance: async (p) => all.instances[p], writers: async () => [], lookup: async (p) => (p.startsWith('tb_o.') ? { instance: 'tb_o', name: p.slice(5) } : null) };
+        const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
+        const eng = cmuxTrace.createEngine({ models, dump: none });
+        const count = async (s) => ((await eng.loads(s)).entries || []).length;
+        const got = { pick: await count('tb_o.pick'), q: await count('tb_o.q'), d: await count('tb_o.d'), c: await count('tb_o.c'), pop: await count('tb_o.pop'), sel: await count('tb_o.sel'), y: await count('tb_o.y'), wz: await count('tb_o.wz'), wc: await count('tb_o.wc'), wb: await count('tb_o.wb') };
+        const want = { pick: 1, q: 0, d: 1, c: 1, pop: 0, sel: 1, y: 0, wz: 0, wc: 0, wb: 0 };
+        if (JSON.stringify(got) !== JSON.stringify(want)) { bad.push(`opaque reads ${JSON.stringify(got)} != ${JSON.stringify(want)}`); }
+      } catch (error) { bad.push('error ' + String(error && error.message || error)); }
+      if (bad.length) { results.failures++; out.push(`FAIL loads in opaque text, <= as a comparison: ${bad.join('; ')}`); } else { out.push('ok   loads in opaque text: <= inside a condition is a read, at a statement start an assignment'); }
+    }
+    for (const c of NEXT_CASES) {
+      results.cases++;
+      const what = `nextOf ${c.d} ${c.sig} @${c.t} :${c.line}${c.back ? ' (no nextChange)' : ''}`;
+      const bad = [];
+      try {
+        const eng = engineFor(c.d, 'icarus');
+        const saved = eng.vcd.provider.nextChange;
+        if (c.back) { delete eng.vcd.provider.nextChange; }
+        try {
+          const got = await eng.engine.loadsAt(c.sig, c.t);
+          const e = got.entries.find((x) => x.loc && x.loc.line === c.line);
+          if (!e) { bad.push('no entry at line ' + c.line); } else {
+            const n = await eng.engine.nextOf(e, c.t);
+            const g = n && n.time !== null ? [n.path, n.time] : null;
+            if (JSON.stringify(g) !== JSON.stringify(c.want)) { bad.push(`next ${JSON.stringify(n)} != ${JSON.stringify(c.want)}`); }
+            if (n && n.direction !== 'forward') { bad.push('direction ' + n.direction); }
+          }
+        } finally { eng.vcd.provider.nextChange = saved; }
+      } catch (error) { bad.push('error ' + String(error && error.message || error)); }
+      if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}`); }
     }
     // The replay oracle: every change of every design signal at its change time.
     for (const d of Object.keys(TRACE_DUMPS)) {

@@ -65,6 +65,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -573,6 +574,61 @@ public:
         writeLocProp(w, "loc", inst.location, inst.name.size());
         w.writeProperty("ports");
         writePorts(w, inst, parent);
+        // An interface: its modports and each one's ports (direction, the interface signal it
+        // names), for load trace (a modport taking a signal as an input is a load of it).
+        if (inst.getDefinition().definitionKind == DefinitionKind::Interface) {
+            w.writeProperty("interface");
+            w.writeValue(true);
+            w.writeProperty("modports");
+            w.startArray();
+            for (auto& member : inst.body.members()) {
+                if (member.kind != SymbolKind::Modport)
+                    continue;
+                auto& modport = member.as<ModportSymbol>();
+                w.startObject();
+                w.writeProperty("name");
+                w.writeValue(modport.name);
+                writeLocProp(w, "loc", modport.location, modport.name.size());
+                w.writeProperty("ports");
+                w.startArray();
+                for (auto& pm : modport.members()) {
+                    if (pm.kind != SymbolKind::ModportPort)
+                        continue;
+                    auto& port = pm.as<ModportPortSymbol>();
+                    w.startObject();
+                    w.writeProperty("name");
+                    w.writeValue(port.name);
+                    w.writeProperty("dir");
+                    w.writeValue(toString(port.direction));
+                    if (port.internalSymbol) {
+                        w.writeProperty("internal");
+                        w.writeValue(port.internalSymbol->name);
+                    }
+                    writeLocProp(w, "loc", port.location, port.name.size());
+                    w.endObject();
+                }
+                w.endArray();
+                w.endObject();
+            }
+            w.endArray();
+            // The instances whose interface ports this interface is bound to, at any depth (through
+            // the interface ports passing it down): where its signals can be read through a port.
+            w.writeProperty("connections");
+            w.startArray();
+            for (auto& c : interfaceUsers(inst)) {
+                w.startObject();
+                w.writeProperty("instance");
+                w.writeValue(c.instance);
+                w.writeProperty("port");
+                w.writeValue(c.port);
+                if (!c.modport.empty()) {
+                    w.writeProperty("modport");
+                    w.writeValue(c.modport);
+                }
+                w.endObject();
+            }
+            w.endArray();
+        }
         // Value parameters and localparams of the body (not its generate blocks'): integers without
         // x/z as numbers, others as slang prints them; cmux compares them with the KDB's.
         w.writeProperty("params");
@@ -686,6 +742,52 @@ private:
                 indexArray(e->as<InstanceArraySymbol>(), owner);
         }
     }
+    // ---- interface port bindings: interface instance -> the instances whose interface port it is ----
+    struct InterfaceUser {
+        std::string instance, port, modport;
+    };
+    std::unordered_map<const InstanceSymbol*, std::vector<InterfaceUser>> ifaceUsers;
+    bool ifaceUsersBuilt = false;
+    // The interface instances a connection names: an instance, each element of an array, or (an
+    // interface port of the parent passed on) what that port is bound to.
+    static void interfaceInstances(const Symbol* sym, std::vector<const InstanceSymbol*>& out, int depth = 0) {
+        if (!sym || depth > 64)
+            return;
+        if (sym->kind == SymbolKind::Instance)
+            out.push_back(&sym->as<InstanceSymbol>());
+        else if (sym->kind == SymbolKind::InstanceArray) {
+            for (auto e : sym->as<InstanceArraySymbol>().elements)
+                interfaceInstances(e, out, depth + 1);
+        }
+        else if (sym->kind == SymbolKind::InterfacePort)
+            interfaceInstances(sym->as<InterfacePortSymbol>().getConnection().first, out, depth + 1);
+    }
+    const std::vector<InterfaceUser>& interfaceUsers(const InstanceSymbol& iface) {
+        if (!ifaceUsersBuilt) {
+            ifaceUsersBuilt = true;
+            for (auto& [path, inst] : instances) {
+                for (auto p : inst->body.getPortList()) {
+                    if (p->kind != SymbolKind::InterfacePort)
+                        continue;
+                    auto& port = p->as<InterfacePortSymbol>();
+                    auto conn = inst->getPortConnection(port);
+                    if (!conn)
+                        continue;
+                    auto [sym, modport] = conn->getIfaceConn();
+                    std::vector<const InstanceSymbol*> bound;
+                    interfaceInstances(sym, bound);
+                    for (auto b : bound)
+                        ifaceUsers[b].push_back({path, std::string(port.name), modport ? std::string(modport->name) : std::string(port.modport)});
+                }
+            }
+            for (auto& [_, users] : ifaceUsers)
+                std::sort(users.begin(), users.end(), [](auto& a, auto& b) { return std::tie(a.instance, a.port) < std::tie(b.instance, b.port); });
+        }
+        static const std::vector<InterfaceUser> none;
+        auto it = ifaceUsers.find(&iface);
+        return it == ifaceUsers.end() ? none : it->second;
+    }
+
     const InstanceSymbol* parentOf(const InstanceSymbol& inst) const {
         auto it = parents.find(&inst);
         return it == parents.end() ? nullptr : it->second;

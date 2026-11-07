@@ -95,20 +95,16 @@ enum WaveformTraceKDB {
         }
         for key in keys {
             guard let remote = remotes[key] else { continue }
-            switch schedule.retry(key, enabled: true) {
-            case .off:
-                return
-            case .join:
-                // The run after the one in flight asks with the retry.
-                retrying.insert(key)
-            case .start:
-                retrying.insert(key)
-                let open = viewers[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
-                let waiters = waiting[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
-                for viewer in open.allObjects { waiters.add(viewer) }
-                waiting[key] = waiters
-                export(key: key, remote: remote)
-            }
+            let decision = schedule.retry(key, enabled: true)
+            if case .off = decision { return }
+            retrying.insert(key)
+            // The open viewers wait for the retried run (they saw the failure), whether it starts now
+            // or is the run after the one in flight (.join), which asks with the retry.
+            let open = viewers[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+            let waiters = waiting[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+            for viewer in open.allObjects { waiters.add(viewer) }
+            waiting[key] = waiters
+            if case .start = decision { export(key: key, remote: remote) }
         }
     }
 

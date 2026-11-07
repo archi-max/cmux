@@ -9,7 +9,7 @@ mkdir -p "$OUT"
 cd "$HERE/designs"
 D="$(pwd -P)/"
 gen() { "$M" --once '*' "$@" | tail -1 | sed "s|$D||g"; }
-for d in ${DESIGNS:-a b c e f g h i j k l m}; do
+for d in ${DESIGNS:-a b c e f g h i j k l m n}; do
   gen --top tb_$d ${d}_*.sv tb_$d.sv > "$OUT/$d.json"
 done
 gen --top tb_c -D__ICARUS__ c_struct.sv tb_c.sv > "$OUT/c.icarus.json"

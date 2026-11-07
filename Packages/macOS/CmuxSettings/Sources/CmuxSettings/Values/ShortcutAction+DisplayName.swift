@@ -204,6 +204,8 @@ extension ShortcutAction {
             return String(localized: "shortcut.traceWaveformDriver.label", defaultValue: "Trace Driver")
         case .traceWaveformXRoot:
             return String(localized: "shortcut.traceWaveformXRoot.label", defaultValue: "Trace X to Root")
+        case .traceWaveformLoads:
+            return String(localized: "shortcut.traceWaveformLoads.label", defaultValue: "Trace Loads")
         case .navigateSourceBack:
             return String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")
         case .navigateSourceForward:

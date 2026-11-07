@@ -1,0 +1,2734 @@
+{
+"signals": {
+"tb_c.clk": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.clk",
+"line": 72,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_c.sv",
+"from": "tb_c.clk",
+"line": 7,
+"scope": "tb_c",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.clk",
+"line": 72,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_c.sv",
+"from": "tb_c.clk",
+"line": 7,
+"scope": "tb_c",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.clk",
+"line": 13,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.clk",
+"line": 62,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 27,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.clk",
+"line": 42,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.d": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.d",
+"line": 75,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.d",
+"line": 75,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.d",
+"line": 16,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.d",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_c.dut.clk": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.clk",
+"line": 13,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.clk",
+"line": 62,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.clk",
+"line": 13,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.clk",
+"line": 62,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 27,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.clk",
+"line": 42,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.d": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.d",
+"line": 16,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.d",
+"line": 16,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.d",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_c.dut.go": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.go",
+"line": 15,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.go",
+"line": 15,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 28,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (go) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.p": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.p",
+"line": 64,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.pin"
+],
+"text": "pin",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.p",
+"line": 64,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.pin"
+],
+"text": "pin",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.pin",
+"line": 44,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.in"
+],
+"text": "in",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 49,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.mix"
+],
+"text": "assign mix = (in.data + ({'b0000 , in.id}))",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 55,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (in.valid) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.q": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.q",
+"line": 76,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.q",
+"line": 76,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_c.dut.qd": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.qd",
+"line": 77,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.qd",
+"line": 77,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_c.dut.rst_n": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.rst_n",
+"line": 14,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.rst_n",
+"line": 63,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.rst_n",
+"line": 14,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.rst_n",
+"line": 63,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.rst_n",
+"line": 43,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 52,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_mid.clk": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.clk",
+"line": 42,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.clk",
+"line": 42,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_mid.pin": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.pin",
+"line": 44,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.in"
+],
+"text": "in",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.pin",
+"line": 44,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.in"
+],
+"text": "in",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 49,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.mix"
+],
+"text": "assign mix = (in.data + ({'b0000 , in.id}))",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 55,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (in.valid) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_mid.q": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.q",
+"line": 65,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.q",
+"line": 65,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.q",
+"line": 76,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_mid.qd": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.qd",
+"line": 66,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.qd",
+"line": 66,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.qd",
+"line": 77,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_mid.rst_n": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.rst_n",
+"line": 43,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.rst_n",
+"line": 43,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 52,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_mid.u_sink.clk": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.clk",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_mid.u_sink.in": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 49,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.mix"
+],
+"text": "assign mix = (in.data + ({'b0000 , in.id}))",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 55,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (in.valid) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 49,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.mix"
+],
+"text": "assign mix = (in.data + ({'b0000 , in.id}))",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 55,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (in.valid) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_mid.u_sink.mix": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.mix",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.mix",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_mid.u_sink.q": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.q",
+"line": 45,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.q",
+"line": 45,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.q",
+"line": 65,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.q",
+"line": 76,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_mid.u_sink.qd": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.qd",
+"line": 46,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.qd",
+"line": 46,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.qd",
+"line": 66,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.qd",
+"line": 77,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.qd"
+],
+"text": "qd",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_mid.u_sink.rst_n": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 52,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 52,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_src.clk": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 27,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 27,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.clk",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_src.d": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.d",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.d",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_src.data_q": {
+"stop": [],
+"through": []
+},
+"tb_c.dut.u_src.go": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 28,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (go) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 28,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (go) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_src.id_q": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.id_q",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.id_q",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_c.dut.u_src.out": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.out",
+"line": 17,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.p"
+],
+"text": "out",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.out",
+"line": 17,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.p"
+],
+"text": "out",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.p",
+"line": 64,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.pin"
+],
+"text": "pin",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.pin",
+"line": 44,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.in"
+],
+"text": "in",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 49,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.mix"
+],
+"text": "assign mix = (in.data + ({'b0000 , in.id}))",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 55,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (in.valid) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.in",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_src.rst_n": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.dut.u_src.valid_q": {
+"stop": [],
+"through": []
+},
+"tb_c.go": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.go",
+"line": 74,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.go",
+"line": 74,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.go",
+"line": 15,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 28,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (go) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 29,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.id_q"
+],
+"text": "id_q <= (id_q + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.go",
+"line": 30,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.data_q"
+],
+"text": "data_q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_c.q": {
+"stop": [],
+"through": []
+},
+"tb_c.qd": {
+"stop": [],
+"through": []
+},
+"tb_c.rst_n": {
+"stop": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.rst_n",
+"line": 73,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "c_struct.sv",
+"from": "tb_c.rst_n",
+"line": 73,
+"scope": "tb_c.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.rst_n",
+"line": 14,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.rst_n",
+"line": 63,
+"scope": "tb_c.dut.u_mid",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 23,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 24,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_src.rst_n",
+"line": 25,
+"scope": "tb_c.dut.u_src",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_src.valid_q"
+],
+"text": "valid_q <= go;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.rst_n",
+"line": 43,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 51,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 52,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 53,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 54,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 56,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.q"
+],
+"text": "q <= mix;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "c_struct.sv",
+"from": "tb_c.dut.u_mid.u_sink.rst_n",
+"line": 57,
+"scope": "tb_c.dut.u_mid.u_sink",
+"scopeType": "npiModule",
+"targets": [
+"tb_c.dut.u_mid.u_sink.qd"
+],
+"text": "qd <= in.data;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+}
+}
+}

@@ -572,6 +572,21 @@ enum WaveformTrace {
         return true
     }
 
+    /// Ctrl+L and View > Trace Loads: the readers of the focused viewer's selected row at its
+    /// marker, or of the signal at the caret of a SystemVerilog editor next to a viewer. False
+    /// (the key goes on) otherwise.
+    static func performLoadsFromShortcut(window: NSWindow?) -> Bool {
+        if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
+            guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
+            Task { @MainActor in
+                _ = await waveform.nativeViewSessions.waveform.callTrace("loads", argument: ["path": NSNull(), "time": NSNull()])
+            }
+            return true
+        }
+        guard let features = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window)?.languageFeatures else { return false }
+        return features.traceLoadsUnderCaret()
+    }
+
     /// Traces the viewer's selected row at its marker (the page asks for the design path).
     static func traceSelectedSignal(in waveform: FilePreviewPanel) {
         Task { @MainActor in
@@ -579,9 +594,11 @@ enum WaveformTrace {
         }
     }
 
-    /// The editor's Trace Driver: the signal at `position`, in the instance the user picks, at the
-    /// viewer's marker. Returns a message for the user when it could not, nil when the page traces.
+    /// The editor's Trace Driver (or, with `loads`, Trace Loads): the signal at `position`, in the
+    /// instance the user picks, at the viewer's marker. Returns a message for the user when it
+    /// could not, nil when the page traces.
     static func traceFromEditor(
+        loads: Bool = false,
         session: LanguageServerSession,
         documentURI: URL,
         position: LSPPosition,
@@ -653,18 +670,20 @@ enum WaveformTrace {
         editor.closeLinkProgress()
         // The build's done (queued behind its progress calls) before the trace, as the page expects.
         await buildSends[built.key]?.value
-        _ = await waveform.nativeViewSessions.waveform.callTrace("driverOfDesign", argument: argument)
+        _ = await waveform.nativeViewSessions.waveform.callTrace(loads ? "loadsOfDesign" : "driverOfDesign", argument: argument)
         return nil
     }
 
-    /// The editor's context menu item.
-    static func editorMenuItem(target: AnyObject, action: Selector) -> NSMenuItem {
+    /// The editor's context menu item (`loads`: Trace Loads).
+    static func editorMenuItem(target: AnyObject, action: Selector, loads: Bool = false) -> NSMenuItem {
         let item = NSMenuItem(
-            title: String(localized: "filePreview.language.traceDriver", defaultValue: "Trace Driver at Marker"),
+            title: loads
+                ? String(localized: "filePreview.language.traceLoads", defaultValue: "Trace Loads at Marker")
+                : String(localized: "filePreview.language.traceDriver", defaultValue: "Trace Driver at Marker"),
             action: action,
             keyEquivalent: ""
         )
-        let shortcut = KeyboardShortcutSettings.shortcut(for: .traceWaveformDriver)
+        let shortcut = KeyboardShortcutSettings.shortcut(for: loads ? .traceWaveformLoads : .traceWaveformDriver)
         if let key = shortcut.menuItemKeyEquivalent {
             item.keyEquivalent = key
             item.keyEquivalentModifierMask = shortcut.modifierFlags
@@ -873,6 +892,42 @@ enum WaveformTrace {
             "traceDriverMenu": String(localized: "waveformTrace.page.menu", defaultValue: "Trace Driver at Marker"),
             "traceDriverKey": KeyboardShortcutSettings.shortcut(for: .traceWaveformDriver).displayString,
             "traceXRootMenu": String(localized: "shortcut.traceWaveformXRoot.label", defaultValue: "Trace X to Root"),
+            "traceLoadsMenu": String(localized: "waveformTrace.loads.menu", defaultValue: "Trace Loads at Marker"),
+            "traceLoadsTitle": String(localized: "waveformTrace.loads.title", defaultValue: "Loads of %1$@ = %2$@ at %3$@"),
+            "traceLoadsRunning": String(localized: "waveformTrace.loads.running", defaultValue: "Finding the readers of %1$@ at %2$@…"),
+            "traceLoadsSummary": String(localized: "waveformTrace.loads.summary", defaultValue: "%1$@ readers in %2$@ instances"),
+            "traceLoadsSummaryOne": String(localized: "waveformTrace.loads.summaryOne", defaultValue: "%1$@ readers in 1 instance"),
+            "traceLoadsList": String(localized: "waveformTrace.loads.list", defaultValue: "List"),
+            "traceLoadsPage": String(localized: "waveformTrace.loads.page", defaultValue: "%1$@–%2$@ of %3$@"),
+            "traceLoadsNext": String(localized: "waveformTrace.loads.next", defaultValue: "Next"),
+            "traceLoadsPrev": String(localized: "waveformTrace.loads.previous", defaultValue: "Previous"),
+            "traceLoadsAdd": String(localized: "waveformTrace.loads.add", defaultValue: "Add to Waveform"),
+            "traceLoadsFollow": String(localized: "waveformTrace.loads.follow", defaultValue: "Follow"),
+            "traceLoadsGoto": String(localized: "waveformTrace.loads.goto", defaultValue: "Move Marker to %@"),
+            "traceLoadsNone": String(localized: "waveformTrace.loads.none", defaultValue: "Nothing in the design model reads this signal."),
+            "traceLoadsCompiledOnly": String(localized: "waveformTrace.loads.compiledOnly", defaultValue: "Only the compiled design has this signal, so its readers are not known."),
+            "traceLoadsLimits": String(localized: "waveformTrace.loads.limits", defaultValue: "Not listed: reads through hierarchical references from other instances."),
+            "traceLoadsOpaque": String(localized: "waveformTrace.loads.opaque", defaultValue: "%@ statements slang could not elaborate may read it too."),
+            "traceLoadsInterfaceCapped": String(localized: "waveformTrace.loads.interfaceCapped", defaultValue: "Interface reads past %@ instances are not listed."),
+            "traceLoadsRole_data": String(localized: "waveformTrace.loads.role.data", defaultValue: "data"),
+            "traceLoadsRole_condition": String(localized: "waveformTrace.loads.role.condition", defaultValue: "condition"),
+            "traceLoadsRole_index": String(localized: "waveformTrace.loads.role.index", defaultValue: "index"),
+            "traceLoadsRole_sensitivity": String(localized: "waveformTrace.loads.role.sensitivity", defaultValue: "sensitivity"),
+            "traceLoadsRole_connection": String(localized: "waveformTrace.loads.role.connection", defaultValue: "port connection"),
+            "traceLoadsRole_opaque": String(localized: "waveformTrace.loads.role.opaque", defaultValue: "maybe (in a statement not modelled)"),
+            "traceLoadsStatus_propagated": String(localized: "waveformTrace.loads.status.propagated", defaultValue: "propagated"),
+            "traceLoadsStatus_noChange": String(localized: "waveformTrace.loads.status.noChange", defaultValue: "no change"),
+            "traceLoadsStatus_notRun": String(localized: "waveformTrace.loads.status.notRun", defaultValue: "not run"),
+            "traceLoadsStatus_read": String(localized: "waveformTrace.loads.status.read", defaultValue: "read"),
+            "traceLoadsStatus_taken": String(localized: "waveformTrace.loads.status.taken", defaultValue: "taken"),
+            "traceLoadsStatus_untaken": String(localized: "waveformTrace.loads.status.untaken", defaultValue: "not taken"),
+            "traceLoadsStatus_merged": String(localized: "waveformTrace.loads.status.merged", defaultValue: "merged (X-propagation)"),
+            "traceLoadsStatus_triggered": String(localized: "waveformTrace.loads.status.triggered", defaultValue: "triggered"),
+            "traceLoadsStatus_notTriggered": String(localized: "waveformTrace.loads.status.notTriggered", defaultValue: "not triggered"),
+            "traceLoadsStatus_pending": String(localized: "waveformTrace.loads.status.pending", defaultValue: "not sampled yet (a later edge)"),
+            "traceLoadsStatus_stimulus": String(localized: "waveformTrace.loads.status.stimulus", defaultValue: "testbench stimulus"),
+            "traceLoadsStatus_start": String(localized: "waveformTrace.loads.status.start", defaultValue: "start value"),
+            "traceLoadsStatus_notEvaluated": String(localized: "waveformTrace.loads.status.notEvaluated", defaultValue: "not evaluated"),
             "traceXRootKey": KeyboardShortcutSettings.shortcut(for: .traceWaveformXRoot).displayString,
             "traceXTitle": String(localized: "waveformTrace.page.x.title", defaultValue: "X chain from %1$@ at %2$@"),
             "traceXRunning": String(localized: "waveformTrace.page.x.running", defaultValue: "Following the x back… (%@ steps)"),

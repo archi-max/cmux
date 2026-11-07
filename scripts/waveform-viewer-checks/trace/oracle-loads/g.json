@@ -1,0 +1,809 @@
+{
+"signals": {
+"tb_g.clk": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.clk",
+"line": 5,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_g.sv",
+"from": "tb_g.clk",
+"line": 7,
+"scope": "tb_g",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.clk",
+"line": 5,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_g.sv",
+"from": "tb_g.clk",
+"line": 7,
+"scope": "tb_g",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 12,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 15,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'h0f;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_g.d": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.d",
+"line": 8,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.d",
+"line": 8,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.d"
+],
+"text": "d",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.d",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.d",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.y"
+],
+"text": "y = (d ^ 'hff);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_g.dut.clk": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 12,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 15,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'h0f;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 12,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 15,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'h0f;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.clk",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_g.dut.d": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.d",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.d",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.y"
+],
+"text": "y = (d ^ 'hff);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.d",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.d",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.y"
+],
+"text": "y = (d ^ 'hff);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_g.dut.en": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.y"
+],
+"text": "y = (d ^ 'hff);",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.y"
+],
+"text": "y = (d ^ 'hff);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_g.dut.q": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.q",
+"line": 9,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.q",
+"line": 9,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_g.dut.rst_n": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 12,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 15,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'h0f;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 12,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 15,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'h0f;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_g.dut.y": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.y",
+"line": 10,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.y"
+],
+"text": "y",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.y",
+"line": 10,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.y"
+],
+"text": "y",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_g.en": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.en",
+"line": 7,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.en"
+],
+"text": "en",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.en",
+"line": 7,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.en"
+],
+"text": "en",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.en",
+"line": 21,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.y"
+],
+"text": "y = (d ^ 'hff);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_g.q": {
+"stop": [],
+"through": []
+},
+"tb_g.rst_n": {
+"stop": [
+{
+"file": "g_override.sv",
+"from": "tb_g.rst_n",
+"line": 6,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "g_override.sv",
+"from": "tb_g.rst_n",
+"line": 6,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 12,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 13,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 15,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= 'h0f;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "g_override.sv",
+"from": "tb_g.dut.rst_n",
+"line": 16,
+"scope": "tb_g.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_g.dut.q"
+],
+"text": "q <= d;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_g.y": {
+"stop": [],
+"through": []
+}
+}
+}

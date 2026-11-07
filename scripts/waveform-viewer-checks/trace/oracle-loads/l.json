@@ -1,0 +1,1377 @@
+{
+"signals": {
+"tb_l.a": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.a",
+"line": 11,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.a"
+],
+"text": "a",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.a",
+"line": 11,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.a"
+],
+"text": "a",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 18,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((a == 'hff)) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.b": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.b",
+"line": 12,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.b"
+],
+"text": "b",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.b",
+"line": 12,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.b"
+],
+"text": "b",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.b",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.b",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_l.c": {
+"stop": [],
+"through": []
+},
+"tb_l.clk": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.clk",
+"line": 7,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 7,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 26,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 33,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 40,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 34,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.clk",
+"line": 7,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 7,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 26,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 33,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 40,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.clk",
+"line": 34,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 27,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 33,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.dut.a": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 18,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((a == 'hff)) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 18,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((a == 'hff)) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.a",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.dut.b": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.b",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.b",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.b",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.b",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_l.dut.c": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.c",
+"line": 15,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.c"
+],
+"text": "c",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.c",
+"line": 15,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.c"
+],
+"text": "c",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_l.dut.clk": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 27,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 33,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 27,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 33,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.clk",
+"line": 34,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.k"
+],
+"text": "k <= b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.dut.go": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.go",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((go || (!rst_n))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.go",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.c"
+],
+"text": "c = 'b0;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.go",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((go || (!rst_n))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.go",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.c"
+],
+"text": "c = 'b0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.dut.k": {
+"stop": [],
+"through": []
+},
+"tb_l.dut.r": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.r",
+"line": 14,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.r"
+],
+"text": "r",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.r",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.r",
+"line": 14,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.r"
+],
+"text": "r",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.r",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_l.dut.rst_n": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((go || (!rst_n))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.c"
+],
+"text": "c = 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((go || (!rst_n))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.c"
+],
+"text": "c = 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.dut.sel": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.sel",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.sel",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = b;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.sel",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.sel",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.dut.y": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.y",
+"line": 13,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.y"
+],
+"text": "y",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.y",
+"line": 13,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.y"
+],
+"text": "y",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_l.epoch_iters": {
+"stop": [],
+"through": []
+},
+"tb_l.go": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.go",
+"line": 10,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.go",
+"line": 10,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.go"
+],
+"text": "go",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.go",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((go || (!rst_n))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.go",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.c"
+],
+"text": "c = 'b0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.iters": {
+"stop": [
+{
+"file": "tb_l.sv",
+"from": "tb_l.iters",
+"line": 23,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!$value$plusargs(\"iters=%d\", iters))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.iters",
+"line": 24,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.epoch_iters"
+],
+"text": "epoch_iters = iters;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.iters",
+"line": 23,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.iters"
+],
+"text": "iters = 4;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "tb_l.sv",
+"from": "tb_l.iters",
+"line": 23,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!$value$plusargs(\"iters=%d\", iters))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.iters",
+"line": 24,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.epoch_iters"
+],
+"text": "epoch_iters = iters;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.iters",
+"line": 23,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.iters"
+],
+"text": "iters = 4;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.mode2": {
+"stop": [
+{
+"file": "tb_l.sv",
+"from": "tb_l.mode2",
+"line": 40,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((mode2 != 0)) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.mode2",
+"line": 40,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$display",
+"type": "npiSysTaskCall",
+"upper": false
+}
+],
+"through": [
+{
+"file": "tb_l.sv",
+"from": "tb_l.mode2",
+"line": 40,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((mode2 != 0)) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.mode2",
+"line": 40,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$display",
+"type": "npiSysTaskCall",
+"upper": false
+}
+]
+},
+"tb_l.mode4": {
+"stop": [],
+"through": []
+},
+"tb_l.r": {
+"stop": [],
+"through": []
+},
+"tb_l.rst_n": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.rst_n",
+"line": 8,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.rst_n",
+"line": 34,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (rst_n) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.rst_n",
+"line": 34,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.rst_n",
+"line": 8,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.rst_n",
+"line": 34,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (rst_n) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_l.sv",
+"from": "tb_l.rst_n",
+"line": 34,
+"scope": "tb_l",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((go || (!rst_n))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 24,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.c"
+],
+"text": "c = 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 28,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.rst_n",
+"line": 29,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.r"
+],
+"text": "r <= (r + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.sel": {
+"stop": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.sel",
+"line": 9,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "l_oracle.sv",
+"from": "tb_l.sel",
+"line": 9,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.sel",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "l_oracle.sv",
+"from": "tb_l.dut.sel",
+"line": 19,
+"scope": "tb_l.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_l.dut.y"
+],
+"text": "y = b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_l.settle": {
+"stop": [],
+"through": []
+},
+"tb_l.y": {
+"stop": [],
+"through": []
+}
+}
+}

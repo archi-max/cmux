@@ -62,6 +62,8 @@ extension SVModelResolve {
         }
         func module(_ path: String) async -> String? { await slangModel(path)?["module"] as? String }
         func below(_ path: String, _ prefix: String) -> String { path == prefix ? "" : String(path.dropFirst(prefix.count + 1)) }
+        // A relative name with its generate indices dropped (g[3].u_dut -> g[].u_dut).
+        func indexFree(_ name: String) -> String { name.replacingOccurrences(of: #"\[[0-9]+\]"#, with: "[]", options: .regularExpression) }
         // slang's instance chain for the row from `candidate` (standing for chain[level]) down: each
         // level under the same relative name as the KDB's, with the KDB's module. Where slang lacks
         // that name, the one child of the KDB's module stands for it when the KDB's parent also has
@@ -89,7 +91,12 @@ extension SVModelResolve {
                             let q = HierarchyPathMapping.join(segments)
                             if known.contains(q) { up = q; break }
                         }
-                        if up == slangParent, await module(p) == kdbModule { slangSame.append(p) }
+                        guard up == slangParent, await module(p) == kdbModule else { continue }
+                        // slang's namesake of another of the KDB parent's children is that child, retyped, and another
+                        // generate index (g[0] for g[3]) is another instance: neither stands for it.
+                        let name = below(p, slangParent)
+                        if kdb.instance(parent + "." + name) != nil || indexFree(name) == indexFree(below(path, parent)) { continue }
+                        slangSame.append(p)
                     }
                     guard kdbSame.count == 1, slangSame.count == 1 else { return (paths, .notInSlang, renamed) }
                     renamed.append(.matchedByModuleType(compiled: path, slang: slangSame[0]))
@@ -158,9 +165,10 @@ extension SVModelResolve {
             // below it) those with the same child instance below.
             var candidates: Set<String> = known.contains(prefix) ? [prefix] : []
             var sameBelow: Set<String> = []
-            if suffix.isEmpty {
-                candidates.formUnion(tops)
-            } else {
+            // Every top too: one of the scope's module lacking the row's child could stand for it as well
+            // (`--top` twice), so the scope's rows get one answer.
+            candidates.formUnion(tops)
+            if !suffix.isEmpty {
                 sameBelow = Set(slang.compactMap { $0.hasSuffix("." + suffix) ? String($0.dropLast(suffix.count + 1)) : nil }.filter { known.contains($0) })
                 let child = below(chain[level + 1], prefix)
                 candidates.formUnion(sameBelow)

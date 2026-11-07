@@ -317,6 +317,58 @@ import Testing
         }
     }
 
+    /// `--top` twice again, each top lacking a different part: soc has u_a and u_b but no u_a.u_core,
+    /// soc_copy has u_a.u_core but no u_b. Either could stand for the dump's tb.dut, so every row of
+    /// it is decided alike: by the inferred rule (tb.dut is soc, which has the dump's u_b), not u_b.z
+    /// alone evaluated against the KDB through soc (the reviewer's u2b). soc has no u_a.u_core.
+    @Test func twoTopsEachLackingAPartGiveTheDumpsInstanceOneAnswer() async throws {
+        let design = Design(models: [
+            "soc": Self.inst("soc", ["clk"]), "soc.u_a": Self.inst("a", ["y"]), "soc.u_b": Self.inst("b", ["z"]),
+            "soc_copy": Self.inst("soc", ["clk"]), "soc_copy.u_a": Self.inst("a", ["y"]),
+            "soc_copy.u_a.u_core": Self.inst("core", ["x"]),
+        ], tops: ["soc", "soc_copy"])
+        let dump: [String: [HierarchyNode]] = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true)],
+            "tb.dut": [HierarchyNode(name: "u_a", isScope: true), HierarchyNode(name: "u_b", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+            "tb.dut.u_a": [HierarchyNode(name: "u_core", isScope: true), HierarchyNode(name: "y", isScope: false, width: 1)],
+            "tb.dut.u_b": [HierarchyNode(name: "z", isScope: false, width: 1)],
+            "tb.dut.u_a.u_core": [HierarchyNode(name: "x", isScope: false, width: 1)],
+        ]
+        let kdb = Self.kdb([("tb", "tb", nil, [], [:]), ("tb.dut", "soc", "tb", ["clk"], [:]), ("tb.dut.u_a", "a", "tb.dut", ["y"], [:]),
+                            ("tb.dut.u_b", "b", "tb.dut", ["z"], [:]), ("tb.dut.u_a.u_core", "core", "tb.dut.u_a", ["x"], ["x": 3])])
+        #expect(try await resolve("tb.dut.u_a.u_core.x", design: design, dump: dump, kdb: kdb) == .notInDesign)
+        for (row, rest) in [("tb.dut.u_a.y", "u_a.y"), ("tb.dut.u_b.z", "u_b.z"), ("tb.dut.clk", "clk")] {
+            let got = try await resolve(row, design: design, dump: dump, kdb: kdb)
+            #expect(got == .signal(designPath: "soc." + rest, designPrefix: "soc", dumpPrefix: "tb.dut"), "\(row): \(got)")
+        }
+    }
+
+    /// The KDB has tb.u_dut (dut) and tb.u_b (dut_b); slang has only tb.u_b, now of module dut. slang's
+    /// u_b is the KDB's u_b retyped, not a stand-in for the KDB's u_dut (the reviewer's c_collision).
+    @Test func aNamesakeOfAnotherCompiledChildIsNoStandIn() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.u_b": Self.inst("dut", ["clk"]), "tb.u_b.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
+            ("tb.u_b", "dut_b", "tb", ["clk"], [:]),
+        ])
+        #expect(try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.u_dut.u_core.x")))
+    }
+
+    /// A lone g[3].u_dut in the KDB and a lone g[0].u_dut in slang: another generate index is no
+    /// stand-in, even with one on each side (the genvar is no parameter, so nothing else shows it).
+    @Test func aLoneOtherGenerateIndexIsNoStandIn() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.g[0].u_dut": Self.inst("dut", ["clk"]), "tb.g[0].u_dut.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.g[3].u_dut", "dut", "tb", ["clk"], [:]), ("tb.g[3].u_dut.u_core", "core", "tb.g[3].u_dut", ["x"], ["x": 9]),
+        ])
+        #expect(try await resolve("tb.g[3].u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.g[3].u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.g[3].u_dut.u_core.x")))
+    }
+
     /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
     /// anything below it.
     @Test func belowAnotherModuleNothingIsEvaluated() async throws {

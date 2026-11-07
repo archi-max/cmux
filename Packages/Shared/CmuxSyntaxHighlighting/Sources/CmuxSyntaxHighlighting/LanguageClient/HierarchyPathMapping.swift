@@ -331,7 +331,7 @@ public enum HierarchyPrefixInference {
     /// by their scopes only (a shared clk and rst say nothing), and a row that is a dump signal matches a root
     /// listing no signals by its scopes. `maxScoredRoots`: past that many roots below the tops, only whole
     /// depths (the shallowest first) are scored; with `.ambiguous`, a winner that a root left unscored could
-    /// tie (its scope count allows the score, its names hold the row's) is no winner.
+    /// tie (its names hold the row's and its score reaches the winner's) is no winner.
     public static func designRule(
         forDumpPath dumpPath: String,
         designRoots: [String: [HierarchyNode]],
@@ -346,7 +346,7 @@ public enum HierarchyPrefixInference {
         // Past the cap, whole depths only (a depth cut through would keep one copy of a module, and a
         // row of the other copy would match the kept one alone). The rest are kept by name, unscored.
         var scoredRoots = designRoots
-        var unscored: [String: [(root: String, scopes: Int)]] = [:]
+        var unscored: [String: [(root: String, children: [HierarchyNode])]] = [:]
         let below = designRoots.keys.filter { HierarchyPathMapping.segments($0).count > 1 }
             .map { (path: $0, depth: HierarchyPathMapping.segments($0).count) }
             .sorted { ($0.depth, $0.path) < ($1.depth, $1.path) }
@@ -354,11 +354,24 @@ public enum HierarchyPrefixInference {
             let cut = below[maxScoredRoots].depth
             for root in below where root.depth >= cut {
                 let children = scoredRoots.removeValue(forKey: root.path) ?? []
-                let scopes = Set(children.filter(\.isScope).map(\.name))
-                for name in Set(children.map(\.name)) { unscored[name, default: []].append((root.path, scopes.count)) }
+                for name in Set(children.map(\.name)) { unscored[name, default: []].append((root.path, children)) }
             }
         }
-        // Each unscored root that could match the row: the most it could score, and where it maps it.
+        // A root's score against a dump scope's children, nil when it can't match there.
+        let scoreOf = { (kids: [HierarchyNode], rootChildren: [HierarchyNode]) -> Int? in
+            var match = score(kids, against: rootChildren)
+            guard match.overlap >= requiredOverlap(childCount: Set(rootChildren.map(\.name)).count) else { return nil }
+            if !signalsListed, rootChildren.contains(where: \.isScope) {
+                let scopes = Set(rootChildren.filter(\.isScope).map(\.name))
+                let shared = Set(kids.filter(\.isScope).map(\.name)).intersection(scopes).count
+                guard shared > 0 else { return nil }
+                match.score = 2 * shared
+            }
+            return match.score
+        }
+        // Each unscored root that could match the row: its score, and where it maps it. Only the unscored
+        // roots holding the row's name are scored (one set intersection each, against this dump scope), so a
+        // root sharing one name with the dump scope can't tie.
         var couldTie: [(score: Int, designPath: String)] = []
         // Each score's rules, in the order found (shorter dump prefixes first), with the design path each maps the row to.
         var byScore: [Int: [(rule: HierarchyPathMapping.Rule, designPath: String)]] = [:]
@@ -378,25 +391,19 @@ public enum HierarchyPrefixInference {
                 }
             }
             if !unscored.isEmpty {
-                let dumpScopes = kids.filter(\.isScope).count
                 for candidate in (unscored[name] ?? []) + (designName == name ? [] : unscored[designName] ?? []) {
-                    couldTie.append((2 * min(candidate.scopes, dumpScopes), HierarchyPathMapping.join(HierarchyPathMapping.segments(candidate.root) + path[length...])))
+                    if let score = scoreOf(kids, candidate.children) {
+                        couldTie.append((score, HierarchyPathMapping.join(HierarchyPathMapping.segments(candidate.root) + path[length...])))
+                    }
                 }
             }
             for (root, rootChildren) in scoredRoots.sorted(by: { $0.key < $1.key })
             where rootChildren.contains(where: { $0.name == name || $0.name == designName })
                 || (!signalsListed && isSignalRow && !rootChildren.isEmpty && rootChildren.allSatisfy(\.isScope)) {
-                var match = score(kids, against: rootChildren)
-                guard match.overlap >= requiredOverlap(childCount: Set(rootChildren.map(\.name)).count) else { continue }
-                if !signalsListed, rootChildren.contains(where: \.isScope) {
-                    let scopes = Set(rootChildren.filter(\.isScope).map(\.name))
-                    let shared = Set(kids.filter(\.isScope).map(\.name)).intersection(scopes).count
-                    guard shared > 0 else { continue }
-                    match.score = 2 * shared
-                }
+                guard let score = scoreOf(kids, rootChildren) else { continue }
                 let rule = HierarchyPathMapping.Rule(designPrefix: root, dumpPrefix: HierarchyPathMapping.join(prefix), isInferred: true)
                 let mapped = HierarchyPathMapping.join(HierarchyPathMapping.segments(root) + path[length...])
-                if !(byScore[match.score] ?? []).contains(where: { $0.rule == rule }) { byScore[match.score, default: []].append((rule, mapped)) }
+                if !(byScore[score] ?? []).contains(where: { $0.rule == rule }) { byScore[score, default: []].append((rule, mapped)) }
             }
         }
         let scores = byScore.keys.sorted(by: >)
