@@ -234,6 +234,48 @@ async function start(workers, costs, env = {}) {
   h.close();
 }
 
+// 16. Removing rows drops their loads: `free` stops the background loads of cancelled
+// requests for those signals (nobody waits for them), so the pool goes idle and nothing is
+// stored again. (30 cancelled adds then free{} kept 5 workers busy ~24 s and stored 25 signals.)
+{
+  const costs = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((id) => [id, 1500]));
+  const h = await start(4, costs);
+  const qs = [1, 2, 3, 4, 5, 6, 7, 8].map((id) => h.send('window', win([id])));
+  await wait(150);
+  for (const q of qs) { h.send('cancel', { target: q.id }); }
+  await h.send('free', {}).reply;
+  await wait(600);  // the pieces running at the free end (<= 2 x 250 ms)
+  const st = (await h.send('stats').reply).result;
+  check(st.loads.length === 0 && st.workers.every((w) => !w.busy), `free {} after cancelling 8 loads: no load left, pool idle: ${st.loads.length} loads, busy ${st.workers.map((w) => w.busy)}`);
+  await wait(1500);
+  const n = await loaded(h);
+  check(n === 0, `... and none of them is stored afterwards: ${n}`);
+  // free {signalIds} drops only those signals' loads
+  const a = h.send('window', win([1])), b = h.send('window', win([2]));
+  await wait(150);
+  h.send('cancel', { target: a.id }); h.send('cancel', { target: b.id });
+  await h.send('free', { signalIds: [1] }).reply;
+  await wait(2500);
+  const st2 = (await h.send('stats').reply).result;
+  const has = (id) => st2.workers.some((w) => w.loaded.includes(id));
+  check(!has(1) && has(2), `free {signalIds: [1]} drops 1's load, 2's goes on: 1 ${has(1)}, 2 ${has(2)}`);
+  h.close();
+}
+
+// 17. Cancelled loads kept in the background are bounded: a burst of cancels (rows removed
+// without a free, a file switch) doesn't keep the pool busy for every one of them.
+{
+  const costs = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((id) => [id, 800]));
+  const h = await start(4, costs, { STUB_SIGNALS: '16' });
+  const qs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((id) => h.send('window', win([id])));
+  await wait(60);
+  for (const q of qs) { h.send('cancel', { target: q.id }); }
+  for (let t = 0; t < 60; t++) { const st = (await h.send('stats').reply).result; if (!st.loads.length && st.workers.every((w) => !w.busy)) { break; } await wait(100); }
+  const n = await loaded(h);
+  check(n <= 8, `14 cancelled loads: at most 8 go on in the background: ${n} stored`);
+  h.close();
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
