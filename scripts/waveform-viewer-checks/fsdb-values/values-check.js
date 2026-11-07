@@ -160,6 +160,7 @@ async function main() {
   const counts = dec.h.bucketBytes === 4;
   check(!dec.h.exact && dec.h.count === 6 && counts && eq(dec.recs, [[0, 'idle'], [10, 'store'], [60, 'idle']]),
     `a decimated window of msg: the bucket's first and last change, as text: ${JSON.stringify(dec.h)} ${JSON.stringify(dec.recs)}`);
+  check(dec.h.cut === undefined, `a window with no value cut says nothing of a cut: ${JSON.stringify(dec.h.cut)}`);
 
   const edge = async (n, t, dir, kind) => { const r = await h.req('edge', { signalId: id(n), t, dir, kind }); return r.m.result ? r.m.result.t : r.m.error; };
   const edges = [await edge('msg', 10, 1, 'any'), await edge('msg', 50, -1, 'any'), await edge('msg', 10, 1, 'rise'), await edge('r', 60, 1, 'fall'), await edge('ev', 15, 1, 'any')];
@@ -218,6 +219,7 @@ async function main() {
     const bk = await varsOf(b, { idx: bo.m.result.top[0].scopeOffsetIdx, path: bo.m.result.top[0].name });
     const bid = (bk.vars || []).find((x) => x.name === 'big').signalId;
     const short = decodeWindow(await b.req('window', { signals: [{ signalId: bid, width: 1 }], t0: 0, t1: 20, buckets: 64 }))[0];
+    check(short.h.cut === true, `a window with a value cut says so in its header (cut: true): ${JSON.stringify(short.h)}`);
     check(eq(short.recs, [[0, EURO_SHOWN], [5, ''], [10, EURO_SHOWN], [15, '']]), `a window cuts long text at 4 KB on a character boundary and marks it: ${JSON.stringify(short.recs.map((x) => [x[0], x[1].length, x[1].slice(-2)]))}`);
     const full = await b.req('valueAt', { signalIds: [bid], t: 2 });
     check(full.m.result && full.m.result.values[0] === EURO, `valueAt keeps the whole text: ${full.m.result ? full.m.result.values[0].length : full.m.error}`);
@@ -278,6 +280,21 @@ async function main() {
         `two long-text strings in one 3072-bucket request share the reply budget: ${JSON.stringify({ errs: both.map((d) => d.h.error), sum })}`);
     }
     await L.stop();
+
+    // Cold (ranged) text windows take the request's share of a non-default budget too: two
+    // strings under 1 MB get 512 KB each, so each value is cut to about 500 bytes.
+    const C = startHelper(['--text-budget-mb', '1']);
+    await C.ready;
+    const co2 = await C.req('open', { file: longFixture });
+    if (!co2.m.error) {
+      const ck = await varsOf(C, { idx: co2.m.result.top[0].scopeOffsetIdx, path: co2.m.result.top[0].name });
+      const cid = (n) => (ck.vars || []).find((x) => x.name === n).signalId;
+      const cw = decodeWindow(await C.req('window', { signals: [{ signalId: cid('big'), width: 1 }, { signalId: cid('big2'), width: 1 }], t0: 0, t1: 12000, buckets: 512 }));
+      const csum = cw.reduce((a, d) => a + sentOf(d), 0);
+      check(cw.length === 2 && cw.every((d) => !d.h.error && d.h.ranged === true && d.h.cut === true && cutOk(d, 1024)) && csum <= (1 << 20),
+        `two cold strings in one ranged window share a 1 MB budget: ${JSON.stringify({ heads: cw.map((d) => ({ err: d.h.error, ranged: d.h.ranged, cut: d.h.cut })), sum: csum })}`);
+    } else { check(false, 'a 1 MB-budget helper opens the all-long-text fixture: ' + co2.m.error); }
+    await C.stop();
   }
 
   const dump = process.env.FSDB_VALUES_DUMP, expect = process.env.FSDB_VALUES_EXPECT;

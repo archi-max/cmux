@@ -68,6 +68,7 @@ class Sig {
     this.sliceRange = !!opts.sliceRange; // real: min/max of each window's own records, not the signal's
     this.coldRange = !!opts.coldRange; // real: no min/max on its first, ranged (cold) window, as helper-v2's ranged replies
     this.tornWhole = !!opts.tornWhole; // only whole-dump exact windows (the page's whole load) end mid-record
+    this.cut = !!opts.cut;            // the whole load's header says cut: true (helper-v2 cut its values to fit the budget)
   }
   value(i) { return i < 0 ? (this.kind ? 'x' : 'x'.repeat(this.width)) : this.valueFn(i); }
   // first index with time >= t
@@ -93,7 +94,7 @@ function normalize(sig) {
   const idx = Int32Array.from(keep);
   return new Sig(sig.width, Float64Array.from(keep, (i) => sig.times[i]), (j) => sig.valueFn(idx[j]),
     { num: sig.num ? (j) => sig.num(idx[j]) : null, min: sig.min, max: sig.max, kind: sig.kind, error: sig.error,
-      textMean: sig.textMean, torn: sig.torn, sliceRange: sig.sliceRange, coldRange: sig.coldRange, tornWhole: sig.tornWhole });
+      textMean: sig.textMean, torn: sig.torn, sliceRange: sig.sliceRange, coldRange: sig.coldRange, tornWhole: sig.tornWhole, cut: sig.cut });
 }
 
 function hash32(a, b) {
@@ -180,6 +181,8 @@ function makeSynth(spec) {
   //   coldlvl (real): 400k changes (windowed), -50..-11; its first window, if ranged, has no
   //     min/max (helper-v2 sends none on a ranged answer), later ones say -50..0
   //   tornwhole (string): 1000 short changes (loaded whole), but the whole load's reply is torn
+  //   cutlong (string): 1000 changes, small enough to load whole, but the whole load's reply says
+  //     its values were cut (cut: true), so the page keeps it windowed (search uses the whole text)
   if (p.text) {
     const t = periodic(2000), far = Math.floor(t.length * MSG_FAR);
     addVar('msg', 1, new Sig(1, t, (i) => (i === 0 ? 'boot' : i === far ? 'needle-far' : MSG_WORDS[hash32(21, i) % MSG_WORDS.length]), { kind: 'string' }), 'string', 'String');
@@ -194,6 +197,7 @@ function makeSynth(spec) {
     const st = periodic(2500), half = st.length / 2;
     addVar('swing', 1, new Sig(1, st, (i) => String(i < half ? i % 10 : -100 - (i % 10)), { kind: 'real', sliceRange: true }), 'real', 'Real');
     addVar('coldlvl', 1, new Sig(1, periodic(2500), (i) => String(-50 + (i % 40)), { kind: 'real', min: -50, max: 0, coldRange: true }), 'real', 'Real');
+    addVar('cutlong', 1, new Sig(1, periodic(1e6), (i) => 'c' + (i % 5) + '\u2026', { kind: 'string', textMean: 2, cut: true }), 'string', 'String');
     addVar('tornwhole', 1, new Sig(1, periodic(1e6), (i) => 't' + (i % 5), { kind: 'string', textMean: 2, tornWhole: true }), 'string', 'String');
   }
   const own = vars.length;
@@ -306,7 +310,7 @@ function windowQuery({ signals, t0, t1, buckets }) {
     if (s.tornWhole && whole) { textStats.tornWholeLoads = (textStats.tornWholeLoads || 0) + 1; }
     if (s.sliceRange) { const xs = recs.map((r) => Number(r[1])).filter(Number.isFinite); mn = Math.min(...xs); mx = Math.max(...xs); }
     const head = { signalId, exact, count, bytes: packed.length, bucketBytes: counts ? counts.length : 0, min: mn, max: mx,
-      ...(s.kind ? { text: true, kind: s.kind } : {}), ...(s.textMean !== null ? { textMean: s.textMean } : {}) };
+      ...(s.kind ? { text: true, kind: s.kind } : {}), ...(s.textMean !== null ? { textMean: s.textMean } : {}), ...(s.cut && whole ? { cut: true } : {}) };
     if (known) { head.total = s.n; } // whole-dump change count, once stored
     out.push(head);
     parts.push(packed); if (counts) { parts.push(counts); }
@@ -439,7 +443,9 @@ const handlers = {
   valueAt({ signalIds, t }) { return { values: signalIds.map((id) => { const s = sig(id); return s.error ? null : s.value(s.upper(t) - 1); }) }; },
   edge({ signalId, t, dir, kind }) {
     const s = sig(signalId);
-    const want = s.kind ? null : kind === 'rise' ? '1' : kind === 'fall' ? '0' : null; // strings/reals: every change
+    // rise/fall literally, strings and reals too (helper-v2 maps them to 'any' for text, but
+    // the page must ask 'any' itself: a string row asking 'rise' here finds nothing).
+    const want = kind === 'rise' ? '1' : kind === 'fall' ? '0' : null;
     const ok = (i) => want === null || s.value(i) === want;
     if (dir >= 0) { for (let i = s.upper(t); i < s.n; i++) { if (ok(i)) { return { t: s.times[i] }; } } }
     else { for (let i = s.lower(t) - 1; i >= 0; i--) { if (ok(i)) { return { t: s.times[i] }; } } }
