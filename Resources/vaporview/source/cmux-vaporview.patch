@@ -746,10 +746,10 @@ index 51613df..dacb442 100644
        const element = this.labels.querySelector(`#label-${rowId}`);
 diff --git a/src/webview/live.ts b/src/webview/live.ts
 new file mode 100644
-index 0000000..7bf2877
+index 0000000..88e18f1
 --- /dev/null
 +++ b/src/webview/live.ts
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,221 @@
 +// cmux: live simulation. The page (cmux-sim.js, outside this frame) runs a simulation through
 +// cmux's FSDB helper and hands its value changes in here through window.__vvLive:
 +//   rows()                      the shown signal rows: {rowId, signalId, netlistId, width, path, visible}
@@ -779,6 +779,7 @@ index 0000000..7bf2877
 +const live = new Set<SignalId>();
 +type Hole = [number, number | null];          // [from, to): to null = open, until the next record
 +const holes = new Map<SignalId, Hole[]>();
++const pendingGap = new Set<SignalId>();         // a gap came before the row's first append
 +let limit = 1000000;
 +let simEnd = 0;
 +let drawnSegments = 0;
@@ -861,8 +862,12 @@ index 0000000..7bf2877
 +    live.add(signalId);
 +    const list: ValueChange[] = [[0, 'x'.repeat(width)]];
 +    data = dataManager.valueChangeData[signalId] = {valueChangeData: list, formattedValues: {}, signalWidth: width, min: 0, max: 1};
-+    holes.set(signalId, from > 0 ? [[0, from]] : []);
-+    if (from > 0) {push(list, from, 'x'.repeat(width));}
++    // A gap before the first append (the batch with the row's first records was dropped): nothing is known
++    // of the row before the first delivered record, so it is missing from 0 until then.
++    const early = pendingGap.has(signalId);
++    pendingGap.delete(signalId);
++    holes.set(signalId, early ? [[0, null]] : from > 0 ? [[0, from]] : []);
++    if (from > 0 && !early) {push(list, from, 'x'.repeat(width));}
 +  }
 +  const list = data.valueChangeData;
 +  if (records.length) {closeHole(signalId, records[0][0]);}
@@ -875,7 +880,7 @@ index 0000000..7bf2877
 +// From t on there is no record of the signal: x underneath, missing on screen and to queries.
 +function missingFrom(signalId: SignalId, t: number) {
 +  const data = dataManager.valueChangeData[signalId];
-+  if (!live.has(signalId) || data === undefined) {return;}
++  if (!live.has(signalId) || data === undefined) {pendingGap.add(signalId); return;}
 +  push(data.valueChangeData, t, 'x'.repeat(data.signalWidth));
 +  openHole(signalId, t);
 +  data.formattedValues = {};
@@ -950,6 +955,7 @@ index 0000000..7bf2877
 +export function endLive() {
 +  live.clear();
 +  holes.clear();
++  pendingGap.clear();
 +  simEnd = 0;
 +}
 +
