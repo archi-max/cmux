@@ -342,6 +342,19 @@ import Testing
         }
     }
 
+    /// The KDB has tb.u_dut (dut) and tb.u_b (dut_b); slang has only tb.u_b, now of module dut. slang's
+    /// u_b is the KDB's u_b retyped, not a stand-in for the KDB's u_dut (the reviewer's c_collision).
+    @Test func aNamesakeOfAnotherCompiledChildIsNoStandIn() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.u_b": Self.inst("dut", ["clk"]), "tb.u_b.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
+            ("tb.u_b", "dut_b", "tb", ["clk"], [:]),
+        ])
+        #expect(try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.u_dut.u_core.x")))
+    }
+
     /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
     /// anything below it.
     @Test func belowAnotherModuleNothingIsEvaluated() async throws {
