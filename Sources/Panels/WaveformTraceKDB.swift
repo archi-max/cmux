@@ -55,6 +55,7 @@ enum WaveformTraceKDB {
     /// read the KDB before the simulation that this open follows rewrote it).
     static func waveformOpened(_ waveform: FilePreviewPanel) {
         guard let (key, remote) = key(for: waveform) else { return }
+        pruneClosed()
         let all = Self.viewers[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
         all.add(waveform)
         Self.viewers[key] = all
@@ -70,6 +71,16 @@ enum WaveformTraceKDB {
         case .start:
             waiting[key] = viewers
             export(key: key, remote: remote)
+        }
+    }
+
+    /// Drops the KDBs no viewer has open any more, unless an export of one is in flight or its
+    /// failure is one Retry KDB Export may ask for again (their host is kept for that).
+    private static func pruneClosed() {
+        let failed = Set(schedule.failed)
+        for (key, open) in viewers where open.allObjects.isEmpty && !schedule.pending(key) && !failed.contains(key) {
+            viewers.removeValue(forKey: key)
+            remotes.removeValue(forKey: key)
         }
     }
 
