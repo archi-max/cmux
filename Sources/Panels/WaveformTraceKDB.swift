@@ -117,10 +117,18 @@ enum WaveformTraceKDB {
         }
         let command = KDBModelLaunch.command(launcher: scripts.launcher, exporter: scripts.exporter, fsdbPath: remote.remotePath,
                                              retry: retrying.remove(key) != nil)
-        let arguments = remote.sshArguments("sh -c '\(command)'")
+        let configuration = remote.configuration
         Task { @MainActor in
             // The export and its alias pairs (a sort over every instance) off the main actor.
             let (outcome, pairs) = await Task.detached(priority: .utility) { () -> (KDBModelLaunch.Outcome, [[String]]) in
+                // A long-lived run (Verdi loads the KDB, up to the host's time cap): its own
+                // connection or one of the carrier's long-lived sessions, held until it ends.
+                let session: LongLivedSSHSession
+                do { session = try await configuration.longLivedSession() } catch {
+                    return (.unavailable(code: "start", message: error.localizedDescription), [])
+                }
+                defer { session.release() }
+                let arguments = configuration.batchSSHCommandArguments(command: "sh -c '\(command)'", effectiveSSHOptions: session.sshOptions)
                 let outcome = await Self.run(arguments: arguments)
                 guard case .model(let model, _) = outcome else { return (outcome, []) }
                 return (outcome, model.aliasPairs(limit: maxAliasPairs))
