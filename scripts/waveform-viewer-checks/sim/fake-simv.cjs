@@ -98,5 +98,7 @@ if (UCLI) require('node:readline').createInterface({ input: process.stdin }).on(
   if (c === 'run') { if (!started) { started = true; send({ ev: 'ready', t, precision: -12 }); } return; }
   if (c === 'quit') process.exit(0);
   if (c.startsWith('checkpoint -add')) { if (!process.env.FAKE_UCLI_STUCK) process.stdout.write('1\nucli% '); return; }   // STUCK: no prompt ever
+  // a file save the simulator refuses (as VCS does at a $stop, which a held serve point is): names with "refuse"
+  if (c.startsWith('save ') && /refuse/.test(c)) { process.stdout.write("Error-[UCLI-SAVE-STOP] Save at $stop\n  Cannot save the state when the simulation is stopped at the $stop() task.\nucli% "); return; }
   process.stdout.write('ucli% ');
 });

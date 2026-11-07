@@ -233,6 +233,22 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
       `apply: a bad applySymbols manifest entry is a setup error: ${JSON.stringify(e2)} exit ${JSON.stringify(x2)}`);
     if (!w2.exited) w2.p.kill('SIGKILL');
   }
+  // File save / restoreFile (simctl library, prototype ece8cd0..): the simulator's own refusal is an error with its
+  // text, and restoreFile is refused at once with the reason (a VCS file restore cuts the controller off), the
+  // run going on serving.
+  {
+    const w = start(['--period', '10']); await w.ready;
+    const sr = await w.reply(w.send({ cmd: 'save', file: 'refuse.save' }).id);
+    expect(!!sr && /UCLI-SAVE-STOP/.test(sr.error || '') && !sr.result, `save: the simulator's refusal is an error: ${JSON.stringify(sr)}`);
+    const so = await w.reply(w.send({ cmd: 'save', file: 'ok.save' }).id);
+    const t0 = Date.now();
+    const rf = await w.reply(w.send({ cmd: 'restoreFile', file: 'ok.save' }).id);
+    const ms = Date.now() - t0;
+    const tm = await w.reply(w.send({ cmd: 'time' }).id);
+    expect(!!so && !!so.result && !!rf && /restoreFile is not supported/.test(rf.error || '') && /\/dev\/null/.test(rf.error || '') && ms < 2000 && !!tm && !!tm.result,
+      `restoreFile is refused at once (${ms} ms) with the reason, and the run still answers: save ${JSON.stringify(so && (so.result || so.error))}, ${JSON.stringify(rf)}, time ${JSON.stringify(tm && (tm.result || tm.error))}`);
+    await w.quit().catch(() => {});
+  }
   // Write access (from the simctl library, prototype ae742cc): a write the build gives no access for is an error
   // that says a rebuild is needed; a park the library refuses (an unwritable hold) errors at once, and the
   // simulation goes on (no wait for a prompt that can't come).
