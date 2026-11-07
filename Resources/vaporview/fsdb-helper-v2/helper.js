@@ -587,7 +587,8 @@ function runTask(w, task, front) {
 //   over PIECE_MS / 2 takes the rest in one piece, but no piece is longer than 2 * PIECE_MS at
 //   the plain rate of the job's longest piece. Background jobs aim at BG_PIECE_MS instead.
 // - Cancelling every request of a job keeps it going in the background (asking again finds it
-//   done or further along). A job over the store cap is stopped as soon as its pieces say so.
+//   done or further along), at most CANCEL_KEEP such loads (the furthest along); `free` of the
+//   signal (or free {}) drops a load nobody waits for. A job over the store cap is stopped as soon as its pieces say so.
 //   A signal the reader can't read fails once and is remembered (bgFailed), not loaded again.
 const PIECE_MS = Number(process.env.FSDB_PIECE_MS || 250);
 // Background pieces are shorter: a request for a signal stored on that worker waits for one.
@@ -710,6 +711,8 @@ function finishJob(j, w) {
   task.done = (m) => {
     for (const p of pieces) { rmPiece(p); }
     if (j.epoch !== epoch) { return; }
+    // freed while it was being joined: drop what it stored
+    if (j.dropped) { if (!m.error) { runTask(owner, { op: 'free', signalIds: [j.id] }).catch(() => {}); } return; }
     if (m.error) { failJob(j, m.error); return; }
     endJob(j);
     // The requests waiting for it ask the owner next (promise callbacks, before setImmediate):
@@ -729,6 +732,28 @@ function failJob(j, error) {
   endJob(j);
   if (permanent(error) && j.epoch === epoch) { bgFailed.set(j.id, error); }
   j.reject(new Error(error));
+}
+// A load nobody waits for any more (free of its signal, or too many cancelled ones): queued
+// pieces are dropped, running ones end and delete their files, nothing is stored.
+function dropJob(j) {
+  if (j.reqs.size || j.dropped) { return false; }
+  j.dropped = true;
+  if (j.adopting) { endJob(j); return true; }  // finishJob drops what the join stores
+  j.failed = true;
+  for (const p of j.pieces) { if (p.state !== 'running') { rmPiece(p); } }
+  endJob(j);
+  j.reject(new Error('freed'));
+  return true;
+}
+// Cancelled loads kept going in the background (asking again finds them further along): at
+// most CANCEL_KEEP, the furthest along first, so a burst of cancels can't keep the pool busy.
+const CANCEL_KEEP = Number(process.env.FSDB_CANCEL_KEEP ?? 8);
+let demoteSeq = 0;
+function capDemoted() {
+  const kept = [...jobs.values()].filter((j) => j.demoted && !j.reqs.size && !j.adopting && !j.dropped);
+  if (kept.length <= CANCEL_KEEP) { return; }
+  kept.sort((a, b) => (b.doneLen / b.end) - (a.doneLen / a.end) || b.demoted - a.demoted);
+  for (const j of kept.slice(CANCEL_KEEP)) { dropJob(j); }
 }
 function clearJobs() {
   for (const j of jobs.values()) { j.failed = true; for (const p of j.pieces) { if (p.state !== 'running') { rmPiece(p); } } j.reject(new Error('file reopened')); }
@@ -1887,6 +1912,8 @@ const handlers = {
   },
 
   async free(req) {
+    // (a load of a freed signal that nobody waits for is dropped, not stored again later)
+    for (const j of [...jobs.values()]) { if (!req.signalIds || req.signalIds.includes(j.id)) { dropJob(j); } }
     if (!req.signalIds) { await broadcast('free', {}); return {}; }
     await scatter(req, 'free', req.signalIds, {}, (m, ids) => ids.map(() => true));
     return {};
@@ -1940,8 +1967,9 @@ const handlers = {
     // finds it stored or further along. Its running pieces are counted as running.
     for (const sp of req.splits || []) {
       sp.reqs.delete(req);
-      if (!sp.reqs.size && sp.running) { running += sp.running; }
+      if (!sp.reqs.size) { sp.demoted = ++demoteSeq; if (sp.running) { running += sp.running; } }
     }
+    capDemoted();
     req.cancelled = true;
     if (req.onCancel) { req.onCancel(); }
     inflight.delete(target);

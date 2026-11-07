@@ -87,7 +87,7 @@ What is streamed, and when:
 - A whole-dump load (a zoomed-out view, or the walk behind a cold read) is cut into time pieces that every worker
   takes from one shared queue, about 250 ms of work each (100 ms in the background). A cheap signal added after a
   heavy one waits for one piece at most, a heavy one is spread over the pool, and a pan never waits for a whole
-  load. Cancelling a load's last request keeps it going in the background.
+  load. Cancelling a load's last request keeps it going in the background (at most 8 such loads, the furthest along); `free` of the signal drops it.
 - *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
   the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
 
