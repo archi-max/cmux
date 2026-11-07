@@ -1353,10 +1353,12 @@ const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000, HOT_PAUSE_MS = 1000;
 // row's own cost is the call's growth over the set without it (the reader before, same span
 // within HOT_LEVEL_TOL), over HOT_TRIAL_N calls, a reader's first HOT_TRIAL_SKIP calls after its
 // load not counted (they are slower). It stays if it adds at most max(HOT_TRIAL_SLACK_MS,
-// HOT_TRIAL_FRAC of the call without it) plus the baseline's noise, the proven unknowns together
-// stay within that bound of the primaries-only call, and the call with it isn't slower than its
-// own cold read.
-const HOT_TRIAL_N = 3, HOT_TRIAL_SKIP = 2, HOT_TRIAL_SLACK_MS = 10, HOT_TRIAL_FRAC = 0.25, HOT_LEVEL_TOL = 0.1;
+// HOT_WARM_BOUND_FRAC of the call without it), the proven unknowns together stay within that
+// bound of the primaries-only call, both plus a noise margin (the p75 - p25 of the primaries-only
+// calls over that span, at most HOT_NOISE_CAP_MS), and the call with it isn't slower than its own
+// cold read. The bound protects the primaries' latency: max(10%, 10 ms) over primaries-only.
+const HOT_TRIAL_N = 3, HOT_TRIAL_SKIP = 2, HOT_TRIAL_SLACK_MS = 10, HOT_LEVEL_TOL = 0.1, HOT_NOISE_CAP_MS = 5;
+const HOT_WARM_BOUND_FRAC = Number(process.env.FSDB_WARM_BOUND_FRAC || 0.10);
 const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
 const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, forced: 0, trial: null, calls: new Map(), lastFrac: null, alive: new Set(), replacing: false, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
@@ -1642,8 +1644,8 @@ function hotWindowBatched(r, ids, range, op = 'hotWindow', prefetch = false) {
 // Unknowns (#7) are judged one at a time, by what each adds (review M2 round 2; L7): a warm call
 // loads its whole set, so a row's cost there is the call's growth over the set without it (the
 // reader before: r.baseCalls, the same span within HOT_LEVEL_TOL), over HOT_TRIAL_N calls. A row
-// that adds more than max(HOT_TRIAL_SLACK_MS, HOT_TRIAL_FRAC x the call without it) plus the
-// baseline's spread slows every row of its set (a rebuilt one adds its rebuild to each call), and
+// that adds more than max(HOT_TRIAL_SLACK_MS, HOT_WARM_BOUND_FRAC x the call without it) plus a
+// noise margin slows every row of its set (a rebuilt one adds its rebuild to each call), and
 // so do proven rows that together add more than that over the primaries-only call (kinds.warmCost:
 // each one's cost when proven; review M2 round 2, addendum 2). A row whose call is slower than
 // its own cold read (hot.cold, scaled; a tiny one) is better read cold: both are warmSlow, with the
@@ -1686,19 +1688,23 @@ function hotJudge(r, range, ms) {
   }
   // (a cold cost that is a share of a batched read is a lower bound: only solo reads compare)
   const c = hot.cold.get(id);
-  r.marg.push({ m: ms - b.ms, ms, W: b.ms, noise: b.noise, c: c && !c.share ? near2x([c], frac) : null });
+  r.marg.push({ m: ms - b.ms, ms, W: b.ms, c: c && !c.share ? near2x([c], frac) : null });
   if (r.marg.length < HOT_TRIAL_N) { return; }
   const m = median(r.marg.map((x) => x.m)), w = median(r.marg.map((x) => x.W)), all = median(r.marg.map((x) => x.ms));
-  const noise = median(r.marg.map((x) => x.noise));
+  // (the primaries-only calls over this span, when measured: the bound's base and its noise)
+  const pOnly = sameLevel(hot.calls.get(hotKey([...r.ids].filter((x) => kindOf(x) === 'p'))) || [], frac);
+  const measured = pOnly.n >= HOT_TRIAL_N;
+  const noise = measured ? Math.min(HOT_NOISE_CAP_MS, pOnly.noise) : 0;
   const cs = r.marg.map((x) => x.c).filter((x) => x !== null), cold = cs.length ? median(cs) : null;
   if (r.baseCalls === 'none' && cold === null) { return; }  // (alone: nothing to compare yet)
   // (what the unknowns proven before it add, in the set without it: the primaries-only call is
   // w minus that, and all of them together are held to the same bound)
   const prior = [...r.ids].filter((x) => x !== id && kinds.warmProven.has(x)).reduce((a, x) => a + (kinds.warmCost.get(x) || 0), 0);
-  const bound = (base) => Math.max(HOT_TRIAL_SLACK_MS, HOT_TRIAL_FRAC * base) + noise;
+  const bound = (base) => Math.max(HOT_TRIAL_SLACK_MS, HOT_WARM_BOUND_FRAC * base) + noise;
   const none = r.baseCalls === 'none';
+  const P = measured ? pOnly.ms : w - prior, total = measured ? all - pOnly.ms : m + prior;
   if (!none && m > bound(w)) { kinds.warmSlow.set(id, `measured: adds ~${Math.round(m)} ms to each warm call of its set (~${Math.round(w)} ms without it)`); }
-  else if (!none && prior > 0 && m + prior > bound(w - prior)) { kinds.warmSlow.set(id, `measured: adds ~${Math.round(m)} ms; with the unknowns already kept, ~${Math.round(m + prior)} ms over the primaries-only call (~${Math.round(w - prior)} ms)`); }
+  else if (!none && total > bound(P)) { kinds.warmSlow.set(id, `measured: adds ~${Math.round(m)} ms; with the unknowns already kept, ~${Math.round(total)} ms over the primaries-only call (~${Math.round(P)} ms${measured ? '' : ', estimated'})`); }
   else if (cold !== null && all > cold) { kinds.warmSlow.set(id, `measured: a warm call of its set took ~${Math.round(all)} ms, its own cold read ~${Math.round(cold)} ms`); }
   else { kinds.warmProven.add(id); kinds.warmCost.set(id, Math.max(0, none ? 0 : m)); }
   hotSoon(0);
