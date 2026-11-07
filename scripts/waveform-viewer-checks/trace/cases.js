@@ -318,6 +318,20 @@ const LOAD_AT_CASES = [
   { d: 'a', sig: 'tb_a.dut.sum', t: 50, want: ['27/data/read'] },
 ];
 
+// Follow forward: an entry's target's first change at or after t (engine.nextOf), on a provider
+// with nextChange; without one, null (the page falls back to the change the read caused).
+// line: the load entry; want: [path, time] | null (no later change); back: the provider has no nextChange.
+const NEXT_CASES = [
+  // en rose at 40; at 42 its read is pending: valid_q takes it at the edge at 45.
+  { d: 'a', sig: 'tb_a.dut.en', t: 42, line: 18, want: ['tb_a.dut.valid_q', 45] },
+  // At a change itself: at or after, so the same time.
+  { d: 'a', sig: 'tb_a.clk', t: 50, line: 6, want: ['tb_a.dut.clk', 50] },
+  // No nextChange in the provider: no forward answer.
+  { d: 'a', sig: 'tb_a.dut.en', t: 42, line: 18, back: true, want: null },
+  // Into a block-local temporary: nothing dumped to follow.
+  { d: 'a', sig: 'tb_a.dut.sum', t: 50, line: 27, want: null },
+];
+
 function staleModel(all, invalidInitial) {
   const strip = (x) => {
     if (Array.isArray(x)) { x.forEach(strip); return; }
@@ -493,6 +507,27 @@ function runTraceChecks() {
           if (!e || !e.active || e.active.trust !== trust) { bad.push(`trust ${line}: ${e && e.active && e.active.trust} != ${trust}`); }
         }
       }
+      if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}`); }
+    }
+    for (const c of NEXT_CASES) {
+      results.cases++;
+      const what = `nextOf ${c.d} ${c.sig} @${c.t} :${c.line}${c.back ? ' (no nextChange)' : ''}`;
+      const bad = [];
+      try {
+        const eng = engineFor(c.d, 'icarus');
+        const saved = eng.vcd.provider.nextChange;
+        if (c.back) { delete eng.vcd.provider.nextChange; }
+        try {
+          const got = await eng.engine.loadsAt(c.sig, c.t);
+          const e = got.entries.find((x) => x.loc && x.loc.line === c.line);
+          if (!e) { bad.push('no entry at line ' + c.line); } else {
+            const n = await eng.engine.nextOf(e, c.t);
+            const g = n && n.time !== null ? [n.path, n.time] : null;
+            if (JSON.stringify(g) !== JSON.stringify(c.want)) { bad.push(`next ${JSON.stringify(n)} != ${JSON.stringify(c.want)}`); }
+            if (n && n.direction !== 'forward') { bad.push('direction ' + n.direction); }
+          }
+        } finally { eng.vcd.provider.nextChange = saved; }
+      } catch (error) { bad.push('error ' + String(error && error.message || error)); }
       if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}`); }
     }
     // The replay oracle: every change of every design signal at its change time.
