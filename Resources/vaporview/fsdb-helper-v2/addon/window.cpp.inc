@@ -1554,6 +1554,45 @@ Napi::Value cacheLastChange(const Napi::CallbackInfo &info) {
 // so whatever the reader gives before lo (its synthetic first change) is the value in effect
 // on entry; with lo = 0 that is all x. A rebuilt signal's cost scales with the span; a stored
 // one's mostly doesn't. Nothing is walked into the store or kept.
+// The value at t and the last real change in [lo, t] of one loaded signal (coldValueNear,
+// warmNear): {t, value} | {none: true, value} | {error}.
+static Napi::Object nearOf(Napi::Env env, fsdbVarIdcode id, uint64_t t, uint64_t lo) {
+  ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+  std::string err;
+  if (!h) err = "no traverse handle";
+  else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
+  else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
+  Napi::Object o = Napi::Object::New(env);
+  if (!err.empty()) {
+    o.Set("error", Napi::String::New(env, err));
+  } else {
+    const uint32_t bits = h->ffrGetBitSize();
+    std::string cur(bits, 'x'), grp, v(bits, 'x');
+    uint64_t gt = 0, lastT = 0;
+    bool have = false, found = false;
+    fsdbTag64 g;
+    if (h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGetMinXTag((void *)&g) && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g)) {
+      do {
+        h->ffrGetXTag(&g);
+        const uint64_t tt = combineTime(g.H, g.L);
+        if (tt > t) break;
+        byte_T *vc;
+        h->ffrGetVC(&vc);
+        for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
+        if (tt < lo) { cur = v; continue; }  // in effect on entry to [lo, t]
+        if (have && tt != gt && grp != cur) { cur = grp; lastT = gt; found = true; }
+        gt = tt; grp = v; have = true;
+      } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
+      if (have && grp != cur) { cur = grp; lastT = gt; found = true; }
+    }
+    if (found) o.Set("t", Napi::Number::New(env, (double)lastT));
+    else o.Set("none", Napi::Boolean::New(env, true));
+    o.Set("value", Napi::String::New(env, cur));
+  }
+  if (h) h->ffrFree();
+  return o;
+}
+
 Napi::Value coldValueNear(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 3) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
@@ -1565,42 +1604,7 @@ Napi::Value coldValueNear(const Napi::CallbackInfo &info) {
   Napi::Array out = Napi::Array::New(env);
   ReaderScope scope;
   readerWindow(lo > 0 ? lo - 1 : 0, t);
-  forBatches(ids, [&](size_t k, double) {
-    ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(ids[k]);
-    std::string err;
-    if (!h) err = "no traverse handle";
-    else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
-    else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
-    Napi::Object o = Napi::Object::New(env);
-    if (!err.empty()) {
-      o.Set("error", Napi::String::New(env, err));
-    } else {
-      const uint32_t bits = h->ffrGetBitSize();
-      std::string cur(bits, 'x'), grp, v(bits, 'x');
-      uint64_t gt = 0, lastT = 0;
-      bool have = false, found = false;
-      fsdbTag64 g;
-      if (h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGetMinXTag((void *)&g) && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g)) {
-        do {
-          h->ffrGetXTag(&g);
-          const uint64_t tt = combineTime(g.H, g.L);
-          if (tt > t) break;
-          byte_T *vc;
-          h->ffrGetVC(&vc);
-          for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
-          if (tt < lo) { cur = v; continue; }  // in effect on entry to [lo, t]
-          if (have && tt != gt && grp != cur) { cur = grp; lastT = gt; found = true; }
-          gt = tt; grp = v; have = true;
-        } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
-        if (have && grp != cur) { cur = grp; lastT = gt; found = true; }
-      }
-      if (found) o.Set("t", Napi::Number::New(env, (double)lastT));
-      else o.Set("none", Napi::Boolean::New(env, true));
-      o.Set("value", Napi::String::New(env, cur));
-    }
-    out.Set((uint32_t)k, o);
-    if (h) h->ffrFree();
-  });
+  forBatches(ids, [&](size_t k, double) { out.Set((uint32_t)k, nearOf(env, ids[k], t, lo)); });
   readerWindowAll();
   return out;
 }
@@ -1795,6 +1799,37 @@ Napi::Value warmWindow(const Napi::CallbackInfo &info) {
       o.Set("loadMs", Napi::Number::New(env, loadMs));
       o.Set("walkMs", Napi::Number::New(env, msSince(tw)));
       delete s;
+      out.Set((uint32_t)k, o);
+    }
+  } catch (...) {
+    fsdb_obj->ffrUnloadSignals();
+    throw;
+  }
+  fsdb_obj->ffrUnloadSignals();
+  return out;
+}
+
+// warmNear(ids[], t, span) -> as coldValueNear, for ids of the first load only (trace-X's
+// fan-in reads on a warm reader; span 0 is the value at t).
+Napi::Value warmNear(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 3) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  const uint64_t t = argTime(info[1]), span = argTime(info[2]);
+  const uint64_t lo = t > span ? t - span : 0;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    const fsdbVarIdcode id = (fsdbVarIdcode)argI64(arr.Get(i));
+    if (!g_hotSet.count(id)) { Napi::Error::New(env, "warmNear: signal not in the first load").ThrowAsJavaScriptException(); return env.Undefined(); }
+    ids.push_back(id);
+  }
+  Napi::Array out = Napi::Array::New(env);
+  readerWindow(lo > 0 ? lo - 1 : 0, t);
+  fsdb_obj->ffrLoadSignals();  // the whole set (its list is fixed)
+  try {
+    for (size_t k = 0; k < ids.size(); k++) {
+      Napi::Object o = nearOf(env, ids[k], t, lo);
+      o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
       out.Set((uint32_t)k, o);
     }
   } catch (...) {
