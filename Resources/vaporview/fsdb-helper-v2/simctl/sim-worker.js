@@ -4,7 +4,8 @@
 // simctl worker: launches one simulation under our VPI library and serves it as JSON lines on stdio.
 //
 //   node worker.js --simv <path> --lib <libsimctl.so> --scratch <dir> [--cwd <run folder>] [--run <name>] [--clock <sig>] [--period <t>]
-//                  [--rss-mb 2048] [--min-avail-mb 5120] [--poll-cycles 100] -- <simulator run arguments>
+//                  [--rss-mb 2048] [--min-avail-mb 5120] [--poll-cycles 100] [--vmem-mb 4096] [--ucli-timeout-ms 120000]
+//                  -- <simulator run arguments>
 //
 // The simv must have been elaborated with `-load <libsimctl_stub.so>:simctl_register` (a run-time simv -load
 // does not call VPI registration routines). The stub loads <lib> from SIMCTL_LIB, set here.
@@ -26,7 +27,7 @@
 // another run are refused while a run is in flight (stop it first); a stop always reaches the run at once.
 //   time {}                                     -> {t}
 //   read {signals: [path]}                      -> {t, values: ['01xz..' | null]}
-//   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12 -> {t, value}
+//   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12, 1_000 (any width) -> {t, value}
 //   writes {writes: [{op: force|deposit|release, signal, value}]}  -> {t, writes: [{t, value} | {error}]}
 //                                                 all of one request land at the same time step (t+1 of the
 //                                                 parked time); separate requests each get their own
@@ -71,6 +72,7 @@ if (!(Number.isSafeInteger(period) && period > 0)) period = 0;   // unknown: cyc
 const RSS_MB = Number(opt('--rss-mb', 2048));
 const MIN_AVAIL_MB = Number(opt('--min-avail-mb', 5120));
 const POLL_CYCLES = Number(opt('--poll-cycles', 100));
+const UCLI_MS = Number(opt('--ucli-timeout-ms', 120000));   // a checkpoint/restore's command-line work
 const VMEM_MB = Number(opt('--vmem-mb', 4096));   // hard limit (ulimit -v) per simulator process; 0: none
 if (!SIMV || !LIB || !SCRATCH) { process.stderr.write('usage: worker.js --simv <simv> --lib <lib.so> --scratch <dir> -- <args>\n'); process.exit(2); }
 
@@ -240,8 +242,21 @@ sim.stdout.on('data', (d) => {
     if (w) w(text);
   }
 });
-const nextPrompt = () => new Promise((res) => ucliWaiters.push(res));
-const ucli = (cmd) => { const p = nextPrompt(); sim.stdin.write(cmd + '\n'); return p; };
+// While parked (checkpoint/restore), a prompt that never comes (a command-line error with no prompt) would wedge
+// every later request: after --ucli-timeout-ms the request errors and the simulation is ended (its state is unknown).
+const nextPrompt = (ms = 0) => new Promise((res, rej) => {
+  let tm = null;
+  const w = (text) => { if (tm) clearTimeout(tm); res(text); };
+  ucliWaiters.push(w);
+  if (ms > 0) tm = setTimeout(() => {
+    const i = ucliWaiters.indexOf(w); if (i >= 0) ucliWaiters.splice(i, 1);
+    const message = `the simulator's command line gave no prompt within ${ms} ms; the simulation is ended`;
+    event('error', { message });
+    rej(Object.assign(new Error(message), { wedged: true }));
+    setTimeout(() => { killGroup(); process.exit(1); }, 100);   // after the request's error reply is out
+  }, ms);
+});
+const ucli = (cmd) => { const p = nextPrompt(UCLI_MS); sim.stdin.write(cmd + '\n'); return p; };
 
 // ---------------------------------------------------------------- library channel
 let libId = 1;
@@ -390,11 +405,12 @@ const queue = []; let parked = false;
 async function park(work) {
   // checkpoint/restore need the simulator's command line: park the library there, do the work, come back.
   parked = true;
-  const prompt = nextPrompt();
+  const prompt = nextPrompt(UCLI_MS);
+  prompt.catch(() => {});             // handled below; never an unhandled rejection while P is in flight
   const pr = await libCall('P', '');
-  await prompt;
+  await prompt;                       // a wedged command line throws (the simulation is being ended)
   let result;
-  try { result = await work(); } catch (e) { result = { error: String(e.message || e) }; }
+  try { result = await work(); } catch (e) { if (e.wedged) throw e; result = { error: String(e.message || e) }; }
   libIn.write(`K ${libId++}\n`);      // the library's resume callback serves again once it sees this
   sim.stdin.write('run\n');
   parked = false;
@@ -506,14 +522,15 @@ async function handle(r) {
       else if (r.cmd === 'restore') { if (!Number.isSafeInteger(r.cp) || r.cp < 0) return out({ id, error: 'restore: cp must be a checkpoint number' }); ucliCmd = `checkpoint -join ${r.cp}`; }
       else ucliCmd = `${r.cmd === 'save' ? 'save' : 'restore'} {${scratchFile(r.file)}}`;   // brace-quoted Tcl word, charset already safe
       const s0 = performance.now();
-      const res = await park(async () => {
+      let res;
+      try { res = await park(async () => {
         const u0 = performance.now();
         const txt = await ucli(ucliCmd);
         const ucliMs = performance.now() - u0;
         const o = { ucliMs: +ucliMs.toFixed(1), ucli: txt.trim().slice(-400) };
         if (r.cmd === 'checkpoint') { const m = /(\d+)\s*$/.exec(txt.trim()); o.cp = m ? Number(m[1]) : null; }
         return o;
-      });
+      }); } catch (e) { return out({ id, error: String(e.message || e) }); }
       if (r.cmd === 'restore' || r.cmd === 'restoreFile') {
         // the library's own state (watches, last values) rewinds with the simulation
         const info = await libCall('I', '');
