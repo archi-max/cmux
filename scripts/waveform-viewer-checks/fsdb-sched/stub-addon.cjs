@@ -29,7 +29,11 @@ const changeOf = (id) => (CHANGE_AT[id] === undefined ? null : Number(CHANGE_AT[
 const seen = new Set();
 const first = (id) => (seen.has(id) ? 0 : (seen.add(id), FIRST_MS));
 const share = (id, s, e) => SLICE_MS + first(id) + cost(id) * Math.max(0, Math.min(Number(e), TIME_END) - Number(s)) / TIME_END;
-const win1 = (id) => { const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30; return { signalId: id, exact: true, count: 1, records: rec, counts: null }; };
+// STUB_DIFFER: these signals' values differ from the others' in every window; STUB_DIFFER_FULL:
+// only their whole streams differ (cacheRecords), as an alias wrong outside the sampled windows.
+const DIFFER = new Set(JSON.parse(process.env.STUB_DIFFER || '[]'));
+const DIFFER_FULL = new Set(JSON.parse(process.env.STUB_DIFFER_FULL || '[]'));
+const win1 = (id) => { const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = DIFFER.has(id) ? 0x31 : 0x30; return { signalId: id, exact: true, count: 1, records: rec, counts: null }; };
 const sleep = (ms) => { if (ms > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } };
 const store = new Map();  // signalId -> true
 let limit = 0;
@@ -73,6 +77,7 @@ module.exports = {
     const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30;  // the value at t0: '0'
     return { exact: true, count: 1, records: rec, counts: null, total: 2 };
   },
+  cacheRecords: (id) => Buffer.from(DIFFER.has(id) || DIFFER_FULL.has(id) ? `other ${id}` : 'same'),
   cacheWindowCold(ids, t0, t1) { sleep(floorOf(ids)); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
   cacheWalkSlice(id, s, e, path) {
     const ms = share(id, s, e) + floorOf([id]);

@@ -436,6 +436,43 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 25. Aliases (a port rebuilt on every load that equals a stored net): the app names candidate
+// pairs (aliasHints). A pair whose sampled windows match is used at once: the rebuilt signal is
+// answered from the stored one (alias: its id). The whole streams are then compared in the
+// background: equal -> verified (kept for the next open), different -> dropped, and the next
+// reply with rows says so (aliasDropped) so the page asks again. Sampled windows that differ:
+// never used.
+{
+  const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER: '[4]', STUB_DIFFER_FULL: '[3]' };
+  const costs = { 1: 50, 2: 3000, 3: 3000, 4: 3000 };
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const has = (list, id) => !!list && list.some(([x]) => x === id);
+  const h = await start(4, costs, env);
+  await kindsOf(h);
+  const a = await h.send('aliasHints', { pairs: [[2, 1], [3, 1], [4, 1], [1, 2], [5, 5]] }).reply;
+  check(!a.error && a.result.accepted === 3 && a.result.refused.length === 2, `aliasHints takes rebuilt -> stored pairs only: ${a.error || JSON.stringify(a.result)}`);
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = await al(h); if (st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id))) { break; } await wait(30); }
+  check(st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id)), `... sampled windows decide: ${JSON.stringify(st)}`);
+  const r = await h.send('window', win([2])).reply;
+  const s0 = r.result && r.result.signals[0];
+  check(!r.error && s0 && s0.signalId === 2 && s0.alias === 1 && r.at < 1000, `a rebuilt signal with a matching alias is answered from the stored one: ${r.error || JSON.stringify(s0)} in ${Math.round(r.at)} ms (its own load: ~3 s)`);
+  const r4 = await h.send('window', win([4])).reply;
+  check(!r4.error && !r4.result.signals[0].alias, `... one whose windows differ is not: ${r4.error || JSON.stringify(r4.result.signals[0])}`);
+  for (let k = 0; k < 300; k++) { st = await al(h); if (!st || (has(st.verified, 2) && has(st.bad, 3))) { break; } await wait(50); }
+  check(st && has(st.verified, 2) && has(st.bad, 3), `... the whole streams verify one and drop the other: ${JSON.stringify(st)}`);
+  const r3 = await h.send('window', win([3])).reply;
+  check(!r3.error && r3.result && JSON.stringify(r3.result.aliasDropped) === '[3]' && !r3.result.signals[0].alias, `... the next reply with rows reports the drop: ${r3.error || JSON.stringify(r3.result)}`);
+  h.close();
+  const h2 = await start(4, costs, env);
+  await kindsOf(h2);
+  await h2.send('aliasHints', { pairs: [[2, 1]] }).reply;
+  const st2 = await al(h2);
+  check(st2 && has(st2.verified, 2), `... a verified pair is used at once on the next open: ${JSON.stringify(st2)}`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
