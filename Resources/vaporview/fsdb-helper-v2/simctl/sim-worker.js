@@ -44,8 +44,10 @@
 //   list {scope, limit}                         -> {vars: [{name, width}], truncated}
 //   checkpoint {}                               -> {cp, t, requestedAt}  (simulator checkpoint, -ucli2Proc)
 //                                                 t: the time of the state it holds, where a restore comes
-//                                                 back (the checkpoint lands after the next time step, not
-//                                                 at requestedAt)
+//                                                 back. With the TB held in its serve point (simctl_hold.sv)
+//                                                 and serving from it: t == requestedAt. Otherwise (no hold, or
+//                                                 the ReadOnlySynch park after an apply's settle) the stop takes
+//                                                 effect at the next activity: t > requestedAt; show t
 //   restore {cp}                                -> {t, watches} and a full-value changes event
 //   save {file} / restoreFile {file}            file-based save/restore, for comparison
 //   stats {}                                    -> {pids, pssMb, memAvailMb, licence?, skippedLinks, vmemKb}
@@ -489,8 +491,8 @@ async function park(work) {
   libIn.write(`K ${libId++}\n`);      // the library's resume callback serves again once it sees this
   sim.stdin.write('run\n');
   parked = false;
-  // where serving resumed: the time of the state a checkpoint taken here holds (the stop took effect after
-  // the next time step, not at the requested time)
+  // where serving resumed: the time of the state a checkpoint taken here holds (the requested time from a held
+  // serve point; otherwise where the stop took effect, later)
   const back = await libCall('T', '');
   tainted = !!back.tainted;           // a restore may have brought back a state from before a discard
   return { requestedAt: pr.t, t: back.t, ...result };

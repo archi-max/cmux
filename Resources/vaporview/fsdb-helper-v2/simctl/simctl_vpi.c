@@ -505,31 +505,55 @@ static PLI_INT32 write_rtn(p_cb_data d) { if (fs_child) return 0;
  * Why a delay of 1 and not cbNextSimTime: next-sim-time callbacks fire only when there is a next event, so with
  * no scheduled activity left (a quiet design while parked) they would never fire and the library would never
  * serve again. The 1-unit steps last only from P until the controller's K, a short window. */
-static PLI_INT32 resume_rtn(p_cb_data d) { if (fs_child) return 0;
-  (void)d;
-  if (fill(0) < 0) { lost_controller(); return 0; }
+static void resume_now(void);
+/* 1: the controller's K was there (taken, and serving resumes); 0: not yet; -1: the controller is gone */
+static int take_k(void) {
+  if (fill(0) < 0) { lost_controller(); return -1; }
   char *p = inb, *e = inb + inlen;
   while (p < e) {
     char *nl = memchr(p, '\n', e - p);
     if (!nl) break;
     if (p[0] == 'K' && (p[1] == ' ' || p[1] == '\n')) {
       memmove(p, nl + 1, e - nl - 1); inlen -= (nl + 1 - p);
-      if (held) { hold_wake(2); return 0; }   /* parked from a held TB: serve again inside its $simctl_serve */
+      if (held) { hold_wake(2); return 1; }   /* parked from a held TB: serve again inside its $simctl_serve */
       snprintf(serve_reason, sizeof serve_reason, "resume"); need_serve = 1; sched_ro();
-      return 0;
+      return 1;
     }
     p = nl + 1;
   }
+  return 0;
+}
+static PLI_INT32 resume_rtn(p_cb_data d) { if (fs_child) return 0;
+  (void)d;
+  if (take_k()) return 0;
   /* only here, while a park's stop is pending (P until K): the held TB makes no activity of its own, and the
    * stop takes effect only at some. Each step is one time unit (the reply's t shows it). Never otherwise. */
-  if (held && hold_pulse) {
+  if (held && hold_pulse) {   /* the stop takes effect at this activity; resume_now looks for the K in this step */
     s_vpi_value v; v.format = vpiScalarVal; vpi_get_value(hold_pulse, &v);
     v.value.scalar = v.value.scalar == vpi1 ? vpi0 : vpi1; vpi_put_value(hold_pulse, &v, NULL, vpiNoDelay);
+    resume_now();
+    return 0;
   }
   vpiHandle h = after(1, resume_rtn); if (h) vpi_release_handle(h);
   return 0;
 }
 
+/* A park from a held TB (P inside its $simctl_serve): the pulse is toggled in this same time step, so the stop
+ * takes effect here and a checkpoint holds the requested time. The command line's `run` comes back into this time
+ * step; this ReadWriteSynch callback then finds the K (written before `run`) and wakes the TB back into its serve
+ * point, still at the requested time. Without a K yet, the one-unit steps of resume_rtn take over. */
+static PLI_INT32 resume_now_rtn(p_cb_data d) { if (fs_child) return 0;
+  (void)d;
+  int k = take_k();
+  if (k == 0) { vpiHandle h = after(1, resume_rtn); if (h) vpi_release_handle(h); }
+  return 0;
+}
+static void resume_now(void) {
+  s_cb_data cb; memset(&cb, 0, sizeof cb);
+  s_vpi_time t; t.type = vpiSimTime; t.high = t.low = 0;
+  cb.reason = cbReadWriteSynch; cb.cb_rtn = resume_now_rtn; cb.time = &t;
+  vpiHandle h = vpi_register_cb(&cb); if (h) vpi_release_handle(h);
+}
 /* ---------------------------------------------------------------- serve loop */
 enum { CTX_RO, CTX_SYSTF };
 static char *nextline(void) {
@@ -800,6 +824,14 @@ static void serve(int ctx) {
     case 'P':
       if (ctx == CTX_SYSTF && !hold_st) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"parked\":true}", id, (unsigned long long)t); send_ob(); return; }
       if (ctx == CTX_SYSTF) { hold_put(hold_st, 1, 0); held = 1; }   /* the TB waits; resume_rtn wakes it back in */
+      if (ctx == CTX_SYSTF && hold_pulse) {   /* activity now: the stop takes effect at this time (resume_now) */
+        s_vpi_value v; v.format = vpiScalarVal; vpi_get_value(hold_pulse, &v);
+        v.value.scalar = v.value.scalar == vpi1 ? vpi0 : vpi1; vpi_put_value(hold_pulse, &v, NULL, vpiNoDelay);
+        resume_now();
+        vpi_control(vpiStop, 0);
+        bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"parked\":true}", id, (unsigned long long)t); send_ob();
+        return;
+      }
       {
         /* UCLI `call` can't reach a VPI-registered task, so come back by ourselves: one time unit after the
          * simulator's command line says `run` again (a checkpoint taken while parked keeps this callback too) */
