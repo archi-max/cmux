@@ -8,8 +8,10 @@
 # "walk", "message"}; with --print, the model's JSON (one line) follows an ok line.
 #
 # Models are kept in a cache of the user's own (CMUX_KDB_CACHE, default ~/.cache/cmux/kdb-model, the
-# newest 8), keyed by the KDB's path, its files' newest mtime and total size, and the exporter: a
-# model already there costs no licence seat. An export holds a Verdi seat for its load and walk only
+# newest 8), keyed by the KDB's path, its FILES' newest mtime and total size, and the exporter: a
+# model already there costs no licence seat. Not the kdb.elab++ folder's own mtime: load_design
+# creates and removes an entry there (the user's daidir is otherwise left as it was), which would
+# invalidate the key on every export. A daidir the user can't write to may not load. An export holds a Verdi seat for its load and walk only
 # (seconds); it is not retried here when the seat is denied. Guards: the host's MemAvailable
 # (CMUX_NPI_MIN_AVAILABLE_MB, default 5120), the exporter's RSS (CMUX_NPI_RSS_MB, default 2900) and
 # time (CMUX_NPI_SECONDS, default 120).
@@ -82,7 +84,11 @@ line=$(grep '^{' npi.out | tail -1)
 [ -n "$line" ] || say start "$(grep -i -m1 -E 'error|licen' npi.err)"
 case $line in
   '{"ok": true'*) ;;
-  *) echo "$line"; exit 0 ;;
+  *)
+    # Verdi's own words (a licence failure's) go with the exporter's error.
+    why=$(grep -i -m1 -E 'licen[cs]e|error' npi.err | tr -d '"\\' | tr '\000-\037' ' ' | cut -c1-300)
+    if [ -n "$why" ]; then echo "$line" | sed "s/\"message\": \"\([^\"]*\)\"/\"message\": \"\1 (Verdi: $(printf '%s' "$why" | sed 's/[&/|]/ /g'))\"/"; else echo "$line"; fi
+    exit 0 ;;
 esac
 mv -f "$W/model.json" "$MODEL.tmp" && mv -f "$MODEL.tmp" "$MODEL" || say start "could not keep the model in $CACHE"
 # The newest 8 models stay.

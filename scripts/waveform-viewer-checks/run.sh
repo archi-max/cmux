@@ -305,8 +305,9 @@ case "${1:-}" in
     # The KDB design model (npi-model.py through npi-model.sh, one export holding a Verdi seat for
     # seconds) against cmux-sv-model's of the same design (trace-kdb/compare.py), and compare.py's
     # self-test on the pair. Exported twice into a cache of the check's own: the second is the cache's
-    # (no seat; the first's load_design must not have changed the key). The remote scratch folder is
-    # removed however the check ends.
+    # (no seat; the first's load_design must not have changed the key), and a read-only copy of the
+    # daidir exports too (TRACE_KDB_SKIP_READONLY=1: not). The remote scratch folder is removed however
+    # the check ends.
     V="$ROOT/Resources/vaporview/verdi-trace"
     KDB_HOST=$1
     S=$(ssh "$KDB_HOST" 'umask 077; mktemp -d /tmp/cmux-trace-kdb.XXXXXX') || exit 1
@@ -322,6 +323,16 @@ case "${1:-}" in
         exit 1
       fi
     done
+    # A daidir the user can't write to (another user's, a read-only share): a copy, read-only, exports too.
+    if [ -z "${TRACE_KDB_SKIP_READONLY:-}" ]; then
+      ssh "$KDB_HOST" "D=\$(ls -d '$(dirname "$2")'/*.daidir 2>/dev/null | head -1); [ -d \"\$D/kdb.elab++\" ] || D='$2'; cp -r \"\$D\" '$S/ro.daidir' && chmod -R a-w '$S/ro.daidir' && mkdir -p '$S/w3' && cp '$S/npi-model.sh' '$S/npi-model.py' '$S/w3/' && CMUX_KDB_CACHE='$S/cache3' bash -l '$S/w3/npi-model.sh' '$S/w3' '$S/ro.daidir'; chmod -R u+w '$S/ro.daidir'" > "$OUT/trace-kdb.3" || true
+      head -1 "$OUT/trace-kdb.3" | sed 's/^/read-only daidir /'
+      if ! grep -q '"ok": *true' "$OUT/trace-kdb.3"; then
+        echo "FAIL a read-only daidir: $(head -c 400 "$OUT/trace-kdb.3")"
+        echo "TRACE KDB CHECKS FAILED"
+        exit 1
+      fi
+    fi
     sed -n 2p "$OUT/trace-kdb.1" > "$OUT/trace-kdb.json"
     sed -n 2p "$OUT/trace-kdb.2" > "$OUT/trace-kdb.cached.json"
     python3 "$HERE/trace-kdb/compare.py" "$OUT/trace-kdb.json" "$3" "$(cat "$OUT/trace-kdb.export1")" \

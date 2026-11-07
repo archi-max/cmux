@@ -142,12 +142,20 @@ class Walker:
             m["loc"] = where
         self.instances[path] = m
         for port in call(handle, "port_handles") or []:
+            high = call(port, "high_conn_handle")
             entry = {"name": call(port, "name"), "dir": direction(call(port, "direction")), "width": call(port, "size")}
-            conn = connection(call(port, "high_conn_handle"), parent)
+            if entry["dir"] is None and str(call(high, "type") or "") in ("npiRefObj", "npiInterface"):
+                # An interface port (slang's model lists none).
+                entry["interface"] = True
+            conn = connection(high, parent)
             if conn:
                 entry["conn"] = conn
             m["ports"].append(entry)
         self.scope(handle, m, files, "", path)
+        for entry in m["ports"]:
+            # An unpacked-array port: NPI's size is its element count; width 0 as its signal's (and slang's).
+            if (m["signals"].get(entry["name"]) or {}).get("array"):
+                entry["width"] = 0
 
     # The signals, writes and child instances of a scope: the instance itself (prefix "") or a
     # generate block inside it (prefix "g_blk." / "g[0].": its signals are the instance's, dotted).
@@ -202,7 +210,11 @@ class Walker:
             elif out["width"]:
                 # A scalar, a struct, several packed ranges: [width-1:0], as cmux-sv-model gives them.
                 out["msb"], out["lsb"] = out["width"] - 1, 0
-        if call(sig, "signed") == 1:
+        # The variable's own signedness, else its type's (an `integer`'s is the typespec's).
+        signed = call(sig, "signed")
+        if signed not in (0, 1) and spec is not None:
+            signed = call(spec, "signed")
+        if signed == 1:
             out["signed"] = True
         where = self.loc(files, sig)
         if where:
@@ -242,6 +254,12 @@ class Walker:
         typ = str(call(stmt, "type") or "")
         if typ in ("npiAssignment", "Assignment"):
             self.write(m, files, prefix, call(stmt, "lhs_handle"), stmt, "nb" if call(stmt, "blocking") == 0 else "proc")
+            return
+        if typ == "npiSysTaskCall":
+            # $readmemh/$readmemb(file, mem, ...) write their second argument.
+            args = call(stmt, "argument_handles") or []
+            if call(stmt, "name") in ("$readmemh", "$readmemb") and len(args) > 1:
+                self.write(m, files, prefix, args[1], stmt, "call")
             return
         # Each NPI call costs; a known statement kind asks for its own inner statements only.
         for method in INNER.get(typ, ALL_INNER):
