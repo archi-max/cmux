@@ -805,6 +805,7 @@ static PLI_INT32 start_rtn(p_cb_data d) { if (fs_child) return 0;
 static PLI_INT32 end_sim_rtn(p_cb_data d) { if (fs_child) return 0;
   (void)d;
   finished = 1;
+  fs_end_all();   /* saves still out end with the simulation: each reported once, simExited */
   flush_dirty(); send_recs();
   if (run_id >= 0) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"stopped\":\"finish\"}", run_id, (unsigned long long)now()); send_ob(); run_id = -1; }
   bfmt(&ob, "{\"ev\":\"finish\",\"t\":%llu}", (unsigned long long)now()); send_ob();

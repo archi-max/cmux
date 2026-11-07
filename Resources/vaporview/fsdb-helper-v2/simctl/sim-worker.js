@@ -231,14 +231,24 @@ const simLog = fs.createWriteStream(path.join(dir, 'sim.out'));
 const libIn = sim.stdio[3], libOut = sim.stdio[4];
 // a file-based `restore` brings back the simulation's memory but not these pipes: report it, don't crash
 for (const st of [libIn, libOut, sim.stdin]) st.on('error', (e) => event('error', { message: `library channel: ${e.code || e.message}` }));
-libOut.on('close', () => { for (const [, p] of pending) if (!p.resolve) out({ id: p.id, error: 'library channel closed' }); });
+libOut.on('close', () => { for (const [, p] of pending) if (!p.resolve) out({ id: p.id, error: 'library channel closed' }); chanGone = true; endSaves(); });
 sim.stderr.on('data', (d) => { simLog.write(d); scanMissing(d); });
+// a simulation that went before it could report its saves (killed, crashed): end each one, once, when both the
+// process has gone and everything it wrote on the channel has been read
+let simGone = false, chanGone = false;
+function endSaves() {
+  if (!simGone || !chanGone) return;
+  for (const [pid, s] of savesOut) event('saved', { pid, file: s.file, t: s.t, status: -1, ok: false, bytes: 0, simExited: true, error: 'simExited: the simulation ended during the save' });
+  savesOut.clear();
+}
 sim.on('exit', (code, signal) => {
+  simGone = true; setTimeout(endSaves, 0);
   if (code === 70 && !isReady) event('setupError', { message: `the simulator's memory limit (ulimit -v ${VMEM_KB} KB) could not be set; lower --vmem-mb` });
   event('exit', { code, signal, ms: Date.now() - t0 });
   for (const [, p] of pending) out({ id: p.id, error: 'simulation exited' });
   pending.clear();
-  setTimeout(() => process.exit(0), 50);
+  // the last chance for saves still out: whatever the channel had has been read by now, or never will be
+  setTimeout(() => { chanGone = true; endSaves(); process.exit(0); }, 50);
 });
 
 // ---------------------------------------------------------------- simulator command line (UCLI)
@@ -324,6 +334,7 @@ function onChanges(n, bin) {
   out({ id: 0, event: 'changes', t0: tmin, t1: tmax, signals: sigs, binLength: all.length }, all);
 }
 let isReady = false;
+const savesOut = new Map();   // forksave pid -> {file, t}: each gets exactly one saved event (the library's, or at exit)
 let readyResolve; const ready = new Promise((r) => (readyResolve = r));
 function onLib(m) {
   if (m.ev === 'ready') { readyResolve(m); return; }
@@ -331,10 +342,13 @@ function onLib(m) {
   if (m.ev === 'saved') {
     // ok only when the child said so (status 0: it checked the image) and the image is there and not empty
     let bytes = 0; try { bytes = fs.statSync(m.file).size; } catch { /* not there */ }
-    const ok = m.status === 0 && bytes > 0;
-    const why = m.timeout ? `still running after --forksave-timeout-ms ${FORKSAVE_MS}: ended` : m.status === 2 ? 'no image written' : m.status === 3 ? 'the simulator reported a save error (see <file>.log)'
+    // one outcome: a timeout or a simulation end is never ok, whatever is on disk
+    const ok = m.status === 0 && bytes > 0 && !m.timeout && !m.simExited;
+    if (!savesOut.delete(m.pid)) return;   // not ours, or already reported
+    const why = m.simExited ? 'simExited: the simulation ended during the save' : m.timeout ? `still running after --forksave-timeout-ms ${FORKSAVE_MS}: ended` : m.status === 2 ? 'no image written' : m.status === 3 ? 'the simulator reported a save error (see <file>.log)'
+      : m.status === 4 ? 'the checked image could not be moved to its name'
       : m.status !== 0 ? `the save child ended with status ${m.status}` : bytes > 0 ? '' : 'the image is missing or empty';
-    event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status, ok, bytes, ...(m.timeout ? { timeout: true } : {}), ...(why ? { error: why } : {}) });
+    event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status, ok, bytes, ...(m.timeout ? { timeout: true } : {}), ...(m.simExited ? { simExited: true } : {}), ...(why ? { error: why } : {}) });
     return;
   }
   const p = pending.get(m.id);
@@ -350,6 +364,7 @@ function onLib(m) {
   // an unwatch served between runs: its records were all sent before the reply; during a run (served at a poll
   // point) records gathered before it may still follow, until the run ends
   if (p.unwatch) { if (inflightRun) pruneAtRunEnd.push(...p.unwatch); else for (const w of p.unwatch) unwatchedWidth.delete(w); }
+  if (p.forksave && m.pid) savesOut.set(m.pid, { file: m.file, t: m.t });
   if (p.resolve) { p.resolve(m); return; }
   if (m.error) { out({ id: p.id, error: m.error }); return; }
   delete m.id;
@@ -517,7 +532,8 @@ async function handle(r) {
     // the simctl_saver top; at most two at once; the end comes as a `saved` event
     case 'forksave':
       if (!noUcli) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save does not complete: -ucli2Proc writes no image, -ucli an image simv -r does not finish)' });
-      lib('V', id, scratchFile(r.file)); return;
+      if (lowMem) return out({ id, error: 'paused: host memory low (a forksave forks the simulation)' });
+      lib('V', id, scratchFile(r.file), { forksave: true }); return;
     case 'read': lib('G', id, names(r.signals || []).join(' ')); return;
     case 'force': case 'deposit': case 'release': {
       if (busyRun()) return;   // the library applies writes only between runs: refused, not held (a stop must get through)
