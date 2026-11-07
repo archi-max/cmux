@@ -1987,6 +1987,41 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let features = src("Sources/Panels/FilePreviewLanguageFeatures.swift")
     expect(features.contains("func traceLoadsUnderCaret()") && features.contains("#selector(traceLoadsFromMenu(_:))"),
            "the editor has Trace Loads in its context menu and under the caret")
+    // Ctrl+L is the shell's clear-screen: claimed only by a focused waveform viewer, or by a
+    // SystemVerilog editor next to one. Every other focus (a terminal pane, any other editor, an
+    // SV editor with no viewer) gets false, so the key goes on. The chain, read from the sources:
+    func fn(_ text: String, _ marker: String) -> String {
+      guard let start = text.range(of: marker), let end = text[start.upperBound...].range(of: "\n    }\n") else { return "" }
+      return String(text[start.lowerBound..<end.upperBound])
+    }
+    let route = fn(swift, "static func performLoadsFromShortcut(")
+    let routeLines = route.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("//") }
+    expect(routeLines.count == 11
+             && routeLines[1] == "if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {"
+             && routeLines[8] == "guard let features = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window)?.languageFeatures else { return false }"
+             && routeLines[9] == "return features.traceLoadsUnderCaret()"
+             && routeLines[6] == "return true",
+           "Ctrl+L: a focused viewer, else a focused editor's SystemVerilog features, else false: \(routeLines)")
+    let context = src("Sources/KeyboardShortcutContext.swift")
+    let focused = fn(context, "func shortcutFocusedWaveformPanel(")
+    expect(focused.contains("let panelId = workspace.focusedPanelId") && focused.contains("panel.previewMode == .waveform")
+             && focused.contains("panel.nativeViewSessions.waveform.holdsResponder(responder)"),
+           "a viewer counts only as the focused panel holding the keyboard (a terminal pane never does)")
+    let caret = fn(features, "func traceLoadsUnderCaret()")
+    expect(caret.contains("guard canAddToWaveform, let textView else { return false }"),
+           "an SV editor with no viewer in its workspace gets false")
+    expect(fn(features, "static func sync(").contains("guard isSupported(filePath: filePath) else { return }")
+             && features.contains("LanguageCatalog().language(for: URL(fileURLWithPath: filePath)) == languageId")
+             && features.contains("private static let languageId = \"verilog\""),
+           "language features (and so Ctrl+L) attach to SystemVerilog files only")
+    expect(src("Sources/Panels/FilePreviewTextEditor.swift").contains("let traceLoads = KeyboardShortcutSettings.shortcut(for: .traceWaveformLoads)\n        if languageFeatures?.canAddToWaveform == true, !traceLoads.isUnbound {"),
+           "the editor's own key list adds Ctrl+L only with a viewer to trace in")
+    let lookup = fn(src("Sources/KeyboardShortcutSettingsLookup.swift"), "static func menuShortcut(for action: Action)")
+    expect(lookup.contains(".traceWaveformLoads, .navigateSourceBack") && lookup.range(of: ".traceWaveformLoads").map { lookup[$0.upperBound...].contains("return .unbound") } == true,
+           "no menu key equivalent for Ctrl+L (a menu equivalent fires whatever has focus)")
+    let viewMenu = src("Sources/cmuxApp.swift")
+    let loadsButton = viewMenu.range(of: "defaultValue: \"Trace Loads\")) {").map { String(viewMenu[$0.lowerBound...].prefix(260)) } ?? ""
+    expect(!loadsButton.isEmpty && !loadsButton.contains(".keyboardShortcut("), "View > Trace Loads has no key of its own")
     expect(locs("shortcut.traceWaveformLoads.label") == 9 && locs("filePreview.language.traceLoads") == 9,
            "the shortcut's label and the editor's menu item in 9 locales: \(locs("shortcut.traceWaveformLoads.label")) \(locs("filePreview.language.traceLoads"))")
     _ = await trace("close()")
