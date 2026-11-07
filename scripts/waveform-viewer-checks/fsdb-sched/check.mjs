@@ -953,7 +953,7 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   // (A)
   {
     const r = await run({ STUB_WARM_MS: '109', STUB_WARM_SIG_COST: '{"5":24,"6":24,"7":24}' }, [5, 6, 7], Array.from({ length: 70 }, () => () => ({ ids: [...P, 5, 6, 7] })));
-    check(r.proven.length <= 1 && r.slow.length + r.proven.length === 3 && r.p50Last < 109 * 1.25 + 10,
+    check(r.proven.length <= 1 && r.slow.length + r.proven.length === 3 && r.p50Last < 109 * 1.25 + 20,
       `(A) three unknowns of +24 ms on a 109 ms call don't all stay: proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}; primaries' p50 ${Math.round(r.p50Last)} ms (P only 109; all three ~181)`);
   }
   // (B) P alone for 40 pans (its reader long settled), then the free row 6 joins.
