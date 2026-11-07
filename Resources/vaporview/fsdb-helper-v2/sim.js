@@ -218,6 +218,9 @@ function expression(e) {
 
 function needSim() { if (!cur || cur.exited) throw new Error('no simulation'); return cur; }
 // Cycles need the clock's period, which the worker measures on the clock sim.open names.
+// time: whole ticks >= 0 (0: a zero-time no-op); cycles: a whole number >= 1 (never rounded).
+function ticks(v, what) { const n = Number(v); if (!Number.isSafeInteger(n) || n < 0) throw new Error(`${what} must be a whole number of ticks >= 0`); return n; }
+function cycles(v, what) { const n = Number(v); if (!Number.isSafeInteger(n) || n < 1) throw new Error(`${what} must be a whole number >= 1`); return n; }
 function needPeriod(s) { if (!s.period) throw new Error('no clock period known: open the simulation with a clock, or run by time'); }
 async function startRun(s, cmd, args) {
   if (s.running) throw new Error('a run is in flight; stop it first');
@@ -256,13 +259,14 @@ const handlers = {
   },
   'sim.run'(req) {
     const s = needSim();
-    if (req.time === undefined) needPeriod(s);
-    return startRun(s, 'run', req.time !== undefined ? { time: Number(req.time) } : { cycles: Number(req.cycles) });
+    if (req.time !== undefined) return startRun(s, 'run', { time: ticks(req.time, 'time') });
+    needPeriod(s);
+    return startRun(s, 'run', { cycles: cycles(req.cycles, 'cycles') });
   },
   'sim.until'(req) {
     const s = needSim();
     const a = { expr: expression(req.expr) };
-    if (req.maxTime !== undefined) a.maxTime = Number(req.maxTime); else { needPeriod(s); a.maxCycles = Number(req.maxCycles); }
+    if (req.maxTime !== undefined) a.maxTime = ticks(req.maxTime, 'maxTime'); else { needPeriod(s); a.maxCycles = cycles(req.maxCycles, 'maxCycles'); }
     return startRun(s, 'until', a);
   },
   async 'sim.stop'() {
