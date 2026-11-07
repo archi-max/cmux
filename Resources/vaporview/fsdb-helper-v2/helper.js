@@ -628,6 +628,15 @@ function kickPool(interactive) {
 }
 function pickJob(interactive) {
   let best = null, bk = null;
+  const over = shmBytes >= SHM_CAP;
+  if (over) {  // (the started load with the least work left, interactive or not)
+    for (const j of jobs.values()) {
+      if (j.failed || j.adopting || j.epoch !== epoch || !j.shm || (!j.redo.length && j.next >= j.end)) { continue; }
+      const rest = (j.doneMs / Math.max(1, j.doneLen)) * (j.end - j.next);
+      if (!best || rest < bk) { best = j; bk = rest; }
+    }
+    return best && (best.reqs.size > 0) === interactive ? best : null;
+  }
   for (const j of jobs.values()) {
     if (j.failed || j.adopting || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
     if (!j.redo.length && j.next >= j.end) { continue; }  // every piece handed out
@@ -678,7 +687,15 @@ function pullPiece(w, interactive) {
   w.queue.push(task);
   return true;
 }
-function rmPiece(p) { try { fs.rmSync(p.path, { force: true }); } catch (e) { /* gone */ } }
+// Piece files are in /dev/shm (RAM, outside every worker's RSS guard): their total is capped.
+// Above SHM_CAP only the started load with the least work left gets more pieces (its join
+// deletes its files), so the total stays under the cap plus one load and a piece per worker.
+const SHM_CAP = Number(process.env.FSDB_SHM_CAP || 512 * 1048576);
+let shmBytes = 0, shmPeak = 0;
+function rmPiece(p) {
+  if (p.bytes) { shmBytes -= p.bytes; p.bytes = 0; }
+  try { fs.rmSync(p.path, { force: true }); } catch (e) { /* gone */ }
+}
 function pieceDone(j, p, m, w) {
   j.running--;
   if (j.failed || j.epoch !== epoch) { rmPiece(p); return; }
@@ -690,6 +707,9 @@ function pieceDone(j, p, m, w) {
   }
   p.state = 'done';
   p.count = (m.result && m.result.count) || 0;
+  try { p.bytes = fs.statSync(p.path).size; } catch (e) { p.bytes = 0; }
+  shmBytes += p.bytes; j.shm = (j.shm || 0) + p.bytes;
+  if (shmBytes > shmPeak) { shmPeak = shmBytes; }
   j.doneMs += m.ms;
   j.doneLen += Math.min(p.e, j.end) - p.s;
   j.done.push({ len: Math.min(p.e, j.end) - p.s, ms: m.ms });
@@ -710,6 +730,7 @@ function finishJob(j, w) {
   const task = enqueue(owner, { op: 'adopt', signalId: j.id, paths: pieces.map((p) => p.path) }, j.reqs.size > 0);
   task.done = (m) => {
     for (const p of pieces) { rmPiece(p); }
+    setImmediate(() => kickPool(false));  // (pieces held back by the RAM cap)
     if (j.epoch !== epoch) { return; }
     // freed while it was being joined: drop what it stored
     if (j.dropped) { if (!m.error) { runTask(owner, { op: 'free', signalIds: [j.id] }).catch(() => {}); } return; }
@@ -1933,6 +1954,7 @@ const handlers = {
       splitting: [...splitting.keys()],
       firstLoads: floatQueue.length,  // first loads waiting for a free worker (floatQueue)
       coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
+      pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
     };

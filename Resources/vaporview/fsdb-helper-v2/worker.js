@@ -266,7 +266,13 @@ const ops = {
   // Split walk: this worker walks one time slice of a wide signal into a
   // store file; the owner then adopts all slices into its store.
   walkSlice({ signalId, s, e, path: file }) { return addon.cacheWalkSlice(signalId, s, e, file); },
-  adopt({ signalId, paths }) { const r = addon.cacheAdopt(signalId, paths); walkedNow.push(signalId); return r; },
+  adopt({ signalId, paths }) {
+    let r;
+    // (the pieces are in RAM: deleted as soon as they are joined, also when the join fails)
+    try { r = addon.cacheAdopt(signalId, paths); } finally { for (const p of paths) { try { fs.rmSync(p, { force: true }); } catch (e) { /* gone */ } } }
+    walkedNow.push(signalId);
+    return r;
+  },
 
   // Derived signals: operands are loaded here ('load') or loaded and written to
   // files for the worker that builds the result ('export'), then 'derive' merges.
