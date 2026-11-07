@@ -1878,8 +1878,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
   /// where it was made (designs J and K, the engine's own fixtures).
   /// Load trace (who reads a signal): the panel lists each reader with its source, file:line and what
-  /// it did at the time; follow goes to the change a read caused, selecting that row without moving the
-  /// marker (an agent's jump: true moves it); Back returns. Past the summary threshold the panel first
+  /// it did at the time; follow goes to where the reader's target goes next (its first change at or
+  /// after the time; the change the read caused when there is none), selecting that row without moving
+  /// the marker (an agent's jump: true moves it); Back returns. Past the summary threshold the panel first
   /// shows a count; pages; Add to Waveform; a reader in an instance the KDB did not check is approximate.
   func loadChecks() async {
     _ = await trace("close()")
@@ -1909,22 +1910,28 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "cmux hears a loads event, not a driver step")
     let hasAdd = await call("return document.querySelectorAll('#cmux-trace tr.load button[title=\"Add to Waveform\"]').length") as? Int
     expect(hasAdd == 3, "each reader has Add to Waveform: \(String(describing: hasAdd))")
-    // Follow: the change the read caused, its row selected, the marker where it was.
+    // Follow forward: qd's next change at or after 60 (75), its row selected, the marker where it was.
     _ = await call("cmuxWaveform.link.setMarker(60); return null")
     await sleep(200)
     let next = await trace("followLoad({ index: 2 })")
-    expect(next?["signal"] as? String == sink + ".qd" && next?["time"] as? Int == 55, "follow went to qd at 55: \(String(describing: next?["signal"])) @\(String(describing: next?["time"]))")
+    expect(next?["signal"] as? String == sink + ".qd" && next?["time"] as? Int == 75 && next?["direction"] as? String == "forward",
+           "follow went forward to qd at 75: \(String(describing: next?["signal"])) @\(String(describing: next?["time"])) \(String(describing: next?["direction"]))")
     let sel = await call("return (cmuxWaveform.link.selectedSignal() || []).join('.')") as? String
     let marker = await call("return cmuxWaveform.host.viewerContext.webview.markerTime") as? Int
     expect(sel == sink + ".qd" && marker == 60, "follow selects qd and leaves the marker: \(String(describing: sel)) \(String(describing: marker))")
-    expect(await panelText().contains("Move Marker to 55"), "the panel offers to move the marker to the change")
+    expect(await panelText().contains("Move Marker to 75"), "the panel offers to move the marker to the change")
     let st = await trace("state()")
     expect(st?["steps"] as? Int == 2 && st?["at"] as? Int == 1, "follow is a step in the history: \(String(describing: st?["steps"]))")
     let back = await trace("back()")
     expect((back?["step"] as? [String: Any])?["signal"] as? String == sink + ".in", "Back returns to the loads of in")
     _ = await trace("followLoad({ index: 2, jump: true })")
     let jumped = await call("return cmuxWaveform.host.viewerContext.webview.markerTime") as? Int
-    expect(jumped == 55, "jump: true moves the marker to the change: \(String(describing: jumped))")
+    expect(jumped == 75, "jump: true moves the marker to the change: \(String(describing: jumped))")
+    // Past qd's last change (85) nothing comes next: the change the read caused, labelled backward.
+    _ = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 90 })")
+    let late = await trace("followLoad({ index: 2 })")
+    expect(late?["signal"] as? String == sink + ".qd" && late?["time"] as? Int == 85 && late?["direction"] as? String == "backward",
+           "no later change: the backward follow, qd at 85: \(String(describing: late?["time"])) \(String(describing: late?["direction"]))")
     // Pages, and a count first past the summary threshold (the checks lower both).
     _ = await call("cmuxWaveform.traceLoadsPage = 2; cmuxWaveform.traceLoadsSummaryOver = 2; return null")
     let first = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 60 })")
