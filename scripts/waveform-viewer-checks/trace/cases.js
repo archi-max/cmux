@@ -269,6 +269,28 @@ const TRACE_CASES = [
 // The model an older cmux-sv-model gave (the one the Verdi oracle ran on): no statement lists what
 // it writes, and an initial block slang could not elaborate is one opaque statement.
 // ('nowrites': the write lists only.)
+// Load trace (who reads a signal: engine.loads): each case's entries, as
+// 'kind/role/line/targets' (targets joined by ','), in the order loads gives them; `page`
+// [offset, limit, total, next] checks one page.
+const LOAD_CASES = [
+  // A flop's output read by a continuous assign and as an always_comb's if condition.
+  { d: 'a', sig: 'tb_a.dut.valid_q', want: ['assign/data/23/tb_a.dut.sum', 'stmt/condition/28/tb_a.dut.stage'] },
+  // An input read as data (valid_q <= en) and as a condition (if (en) acc <= ...).
+  { d: 'a', sig: 'tb_a.dut.en', want: ['stmt/data/18/tb_a.dut.valid_q', 'stmt/condition/21/tb_a.dut.acc'] },
+  // A clock: each edge procedure's sensitivity, its writes the targets.
+  { d: 'a', sig: 'tb_a.dut.clk', want: ['event/sensitivity/16/tb_a.dut.valid_q', 'event/sensitivity/20/tb_a.dut.acc', 'event/sensitivity/32/tb_a.dut.dout'] },
+  { d: 'a', sig: 'tb_a.dut.clk', page: [1, 1, 3, 2], want: ['event/sensitivity/20/tb_a.dut.acc'] },
+  { d: 'a', sig: 'tb_a.dut.clk', page: [2, 64, 3, null], want: ['event/sensitivity/32/tb_a.dut.dout'] },
+  // The testbench's clock: its own toggle, and the DUT's input port it connects (the next hop down).
+  { d: 'a', sig: 'tb_a.clk', want: ['stmt/data/7/tb_a.clk', 'portIn/connection/6/tb_a.dut.clk'] },
+  // An output port: the parent's signal connected to it (the next hop up).
+  { d: 'a', sig: 'tb_a.dut.dout', want: ['portOut/connection/6/tb_a.dout'] },
+  // Read into a block-local temporary (tmp = sum + 1).
+  { d: 'a', sig: 'tb_a.dut.sum', want: ['stmt/data/27/$local:tmp'] },
+  // Read by nothing.
+  { d: 'a', sig: 'tb_a.dout', want: [] },
+];
+
 function staleModel(all, invalidInitial) {
   const strip = (x) => {
     if (Array.isArray(x)) { x.forEach(strip); return; }
@@ -394,6 +416,30 @@ function runTraceChecks() {
           out.push(`ok   ${c.d}.${variant} ${c.sig} @${c.t}: ${step.driver.kind} ${step.stmt ? step.stmt.src : ''} [${step.trust}]`);
         }
       }
+    }
+    // Load trace: the static readers of a signal.
+    for (const c of LOAD_CASES) {
+      results.cases++;
+      const what = `loads ${c.d} ${c.sig}${c.page ? ' page ' + JSON.stringify(c.page) : ''}`;
+      let got;
+      try {
+        const opts = c.page ? { offset: c.page[0], limit: c.page[1] } : {};
+        got = await engineFor(c.d, 'icarus').engine.loads(c.sig, opts);
+      } catch (error) {
+        got = { error: String(error && error.message || error) };
+      }
+      const bad = [];
+      if (got.error) {
+        bad.push('error ' + got.error);
+      } else {
+        const lines = got.entries.map((e) => `${e.kind}/${e.role}/${e.loc ? e.loc.line : '?'}/${(e.targets || []).join(',')}`);
+        if (JSON.stringify(lines) !== JSON.stringify(c.want)) { bad.push(`entries ${JSON.stringify(lines)} != ${JSON.stringify(c.want)}`); }
+        if (c.page && (got.total !== c.page[2] || got.next !== c.page[3])) { bad.push(`total/next ${got.total}/${got.next} != ${c.page[2]}/${c.page[3]}`); }
+        for (const e of got.entries) {
+          if (!e.loc || !e.loc.file || !e.src) { bad.push(`entry without loc or src: ${JSON.stringify(e)}`); }
+        }
+      }
+      if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}: ${got.entries.length} of ${got.total}`); }
     }
     // The replay oracle: every change of every design signal at its change time.
     for (const d of Object.keys(TRACE_DUMPS)) {
