@@ -169,10 +169,12 @@
   }
   // The last time before `t` that `v` changed (edge 'any'), or rose/fell (1-bit), from the helper;
   // cached (a failed or cancelled query is not).
-  async function v2Edge(v, t, kind, bg) {
+  // (`walk`: a clock walk's question for the change before one; the checks count those apart)
+  async function v2Edge(v, t, kind, bg, walk) {
     const s = session;
     const key = v.netlistId + ':' + kind + ':' + t;
     if (s.edges.has(key)) { return s.edges.get(key); }
+    if (walk && window.cmuxTraceChecks) { window.cmuxTraceChecks.walkQueries = (window.cmuxTraceChecks.walkQueries || 0) + 1; }
     const r = await v2({ cmd: 'edge', signalId: v.signalId, t, dir: -1, kind }, bg);
     if (r === undefined) { return undefined; }
     const at = r.t === null || r.t === undefined ? null : Number(r.t);
@@ -238,9 +240,13 @@
   // whatever the value before (x->1, z->0 too); one to x or z is an edge only from 0 (posedge) or
   // 1 (negedge). So: the last rise (fall; both for BothEdges), then the changes after it, newest
   // first, each a change to x/z (neither the last rise nor a fall at its time) checked against the
-  // change before it. The dump's first value (no change before it) is no edge. Undefined when the
-  // helper fails or past V2_EDGE_STEPS changes (the caller reads the changes instead).
+  // change before it. The helper's stream starts from all x (a leading x is not stored), so a first
+  // change is from x, unless it is at the dump's start (its first value: no edge). A clean clock
+  // takes one round trip (rise, fall, the last change: in parallel), or two when the last change is
+  // after the edge asked for. Undefined when the helper fails or past V2_EDGE_STEPS changes (the
+  // caller reads the changes instead).
   async function v2NarrowEdge(v, time, edge, bg) {
+    const start = dumpStart();
     const before = Math.floor(time) + 1;
     // What the change at `at` went to: '1', '0', or 'xz'.
     const to = async (at) => {
@@ -248,10 +254,18 @@
       if (r === undefined || f === undefined) { return undefined; }
       return r === at ? '1' : f === at ? '0' : 'xz';
     };
-    // (the last change: known from a point read's prev when there was one)
+    // The change before `at` (the walk's own question, counted apart from last-change searches).
+    const earlierThan = (at) => v2Edge(v, at, 'any', bg, true);
+    // The last change: known from a point read's prev when there was one, else one (a point read
+    // with prev, on a helper that has it: no edge search), else the helper's edge search.
     const known = knownSince(session, v, time);
-    const [rise, fall, last] = await Promise.all([v2Edge(v, before, 'rise', bg), v2Edge(v, before, 'fall', bg),
-      known !== undefined ? known : v2Edge(v, before, 'any', bg)]);
+    const lastChange = known !== undefined ? known
+      : session.prevReads !== false ? v2PointRead([v], time, bg).then(() => {
+        const read = knownSince(session, v, time);
+        return read !== undefined ? read : v2Edge(v, before, 'any', bg);
+      })
+        : v2Edge(v, before, 'any', bg);
+    const [rise, fall, last] = await Promise.all([v2Edge(v, before, 'rise', bg), v2Edge(v, before, 'fall', bg), lastChange]);
     if (rise === undefined || fall === undefined || last === undefined) { return undefined; }
     const later = (a, b) => (a === null ? b : b === null ? a : Math.max(a, b));
     const base = edge === 'PosEdge' ? rise : edge === 'NegEdge' ? fall : later(rise, fall);
@@ -261,22 +275,26 @@
       if (++steps > V2_EDGE_STEPS) { return undefined; }
       const went = at === last ? (fall === at ? '0' : rise === at ? '1' : 'xz') : await to(at);
       if (went === undefined) { return undefined; }
-      const earlier = await v2Edge(v, at, 'any', bg);
+      const earlier = await earlierThan(at);
       if (earlier === undefined) { return undefined; }
-      if (earlier === null) { return null; }
       if (went === 'xz') {
+        // (nothing before: from the stream's all x, or the dump's first value; neither is an edge to x/z)
+        if (earlier === null) { return null; }
         const was = await to(earlier);
         if (was === undefined) { return undefined; }
         if (from.includes(was)) { return at; }
+      } else if (earlier === null) {
+        // A change to 0/1 other than the edge's own kind, with nothing before it: no edge before it.
+        return null;
       }
       at = earlier;
     }
-    if (base === null) { return null; }
-    const first = await v2Edge(v, base, 'any', bg);
-    if (first === undefined) { return undefined; }
-    return first === null ? null : base;
+    // A change to 1 (0) is an edge from anything (x too), unless it is the dump's first value.
+    return base === null || base <= start ? null : base;
   }
   const V2_EDGE_STEPS = 32;
+  // The dump's start time (the host's metadata when its backend says, else 0).
+  const dumpStart = () => (typeof host.dumpStart === 'function' ? host.dumpStart() : 0);
 
   // The last `edge` of a wide signal's last bit at or before `time`, from the helper: from the
   // run of the last bit in effect at `time`, back over the runs (the last change before a run
@@ -300,7 +318,14 @@
         if (r === undefined) { return undefined; }
         if (r.t !== null && r.t !== undefined && (at === null || Number(r.t) > at)) { at = Number(r.t); was = c; }
       }
-      if (at === null) { return null; }
+      if (at === null) {
+        // The run is the stream's first: it starts from all x (a leading x is not stored), an
+        // edge unless it starts at the dump's start (its first value).
+        const first = await v2({ cmd: 'edge', signalId: id, t: dumpStart() - 1, dir: 1, kind: 'any' }, bg);
+        if (first === undefined) { return undefined; }
+        const t0 = first.t === null || first.t === undefined ? null : Number(first.t);
+        return t0 !== null && t0 > dumpStart() && isEdge('x', bit, edge) ? t0 : null;
+      }
       const start = await v2({ cmd: 'edge', signalId: id, t: at, dir: 1, kind: 'any' }, bg);
       if (start === undefined || start.t === null || start.t === undefined) { return undefined; }
       if (isEdge(was, bit, edge)) { return Number(start.t); }
@@ -488,27 +513,34 @@
     async prevEdge(p, time, edge) {
       const v = await varOf(p);
       if (!v) { return null; }
-      const width = Number(v.width) || 1;
+      // (no netlist width: not taken for 1-bit, whose helper store may be wider; the history says)
+      const known = Number(v.width) > 0;
+      const width = known ? Number(v.width) : 1;
       // SystemVerilog's edges (isEdge), from both values of each change: the helper's rise/fall
       // test the new bit only (a change to 1/0: 0 to x is none there), so a 1-bit clock's changes
       // are walked back with their values; a wide clock's edge (its last bit) is searched for.
       if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
-      if (session.kind === 'v2' && width === 1) {
+      if (session.kind === 'v2' && known && width === 1) {
         const at = await v2NarrowEdge(v, time, edge, background);
         if (at !== undefined) { return at; }
       }
-      if (session.kind === 'v2' && width > 1) {
+      if (session.kind === 'v2' && known && width > 1) {
         const at = await v2WideEdge(v, width, time, edge, background);
         if (at !== undefined) { return at; }
       }
       if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
       const changes = await changesOf(v, background);
       if (!changes) { return null; }
-      for (let i = indexAt(changes, time); i > 0; i--) {
+      const last = indexAt(changes, time);
+      for (let i = last; i > 0; i--) {
         const prev = bitsOf(changes[i - 1][1], width).slice(-1).toLowerCase();
         const now = bitsOf(changes[i][1], width).slice(-1).toLowerCase();
         if (isEdge(prev, now, edge)) { return Number(changes[i][0]); }
       }
+      // The first change: the dump's first value (no edge), except in helper v2's stream, which
+      // starts from all x (a leading x is not stored): there one after the dump's start is from x.
+      if (last >= 0 && session.kind === 'v2' && Number(changes[0][0]) > dumpStart()
+          && isEdge('x', bitsOf(changes[0][1], width).slice(-1).toLowerCase(), edge)) { return Number(changes[0][0]); }
       return null;
     },
   };
@@ -1493,5 +1525,9 @@
   const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged, aliasHints });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
   // prevEdge: the dump provider's, for the checks (the session of the last trace; null without one).
-  window.cmuxTraceUI = { rowMenuItems, prevEdge: (path, time, edge) => (session ? dump.prevEdge(String(path), Number(time), String(edge)) : null) };
+  window.cmuxTraceUI = { rowMenuItems };
+  // The checks' hook (window.cmuxTraceChecks, which only the checks define): the page's edge lookup.
+  if (window.cmuxTraceChecks && typeof window.cmuxTraceChecks === 'object') {
+    window.cmuxTraceChecks.prevEdge = (path, time, edge) => (session ? dump.prevEdge(String(path), Number(time), String(edge)) : null);
+  }
 })();
