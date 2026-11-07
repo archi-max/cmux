@@ -11,6 +11,9 @@
 #   answered from the cache.
 # - A launcher killed mid-export (kill -9: its watchdog is gone) leaves no exporter running past
 #   the time cap and a few seconds (the exporter runs under timeout -k).
+# - Verdi comes from PATH, $VERDI_HOME/bin or CMUX_VERDI_SETUP (the user's command) only: no
+#   site default such as a `module load` of a guessed module name; without them, noVerdi says
+#   which variables to set.
 # - Of several KDBs next to the dump, the first by name in C order is taken, whatever the locale
 #   (as verdi-trace.sh does).
 S=$1
@@ -102,6 +105,22 @@ else
   [ -n "$orphan" ] && kill -9 "$orphan" 2>/dev/null
 fi
 rm -f "$S/sleep"
+
+# Verdi with no site default: a `module` that would load one is not used unless CMUX_VERDI_SETUP
+# says so; VERDI_HOME alone finds it.
+mkdir -p "$S/bin2"
+cp "$S/bin/verdi" "$S/bin2/verdi"
+# (exported, so the path is written in: the launcher's shell has no $S; BASH_ENV unset, as a site's
+# module system may set it to redefine module in every bash)
+eval "module() { [ \"\$1\" = load ] && PATH=\"$S/bin2:\$PATH\"; return 0; }"
+export -f module
+plain() { env -u VERDI_HOME -u CMUX_VERDI_SETUP -u BASH_ENV CMUX_KDB_CACHE="$S/cache" "$@" bash "$S/w/npi-model.sh" "$S/w" "$S/sim/dump.fsdb" | head -1; }
+echo six > "$S/sim/simv.daidir/kdb.elab++/f.db"
+check "no Verdi on PATH, nothing set: noVerdi, not a guessed module" "$(plain)" '"error":"noVerdi".*VERDI_HOME.*CMUX_VERDI_SETUP' 6
+check "CMUX_VERDI_SETUP finds it" "$(plain CMUX_VERDI_SETUP='module load anything')" '"ok": true, "cached": false' 7
+echo seven > "$S/sim/simv.daidir/kdb.elab++/g.db"
+check "VERDI_HOME finds it" "$(plain VERDI_HOME="$S")" '"ok": true, "cached": false' 8
+unset -f module
 
 # Several KDBs next to the dump: the first in C order, in any locale.
 mkdir -p "$S/sim/Simv_gl.daidir/kdb.elab++"
