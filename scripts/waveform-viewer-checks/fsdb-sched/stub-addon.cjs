@@ -33,6 +33,7 @@ const CHANGE_AT = JSON.parse(process.env.STUB_CHANGE_AT || '{}');
 const COLD_MS = Number(process.env.STUB_COLD_MS || 0);
 const WARM_LOAD_MS = Number(process.env.STUB_WARM_LOAD_MS || 0), WARM_MS = Number(process.env.STUB_WARM_MS || 0);
 let navOnce = false, warmSet = null, warmFirst = false;
+const held = [];  // memory a warm reader keeps (STUB_WARM_MB_PER_SIG, STUB_WARM_BLOCK)
 const warmLog = (o) => { if (process.env.STUB_WARM_LOG) { fs.appendFileSync(process.env.STUB_WARM_LOG, JSON.stringify({ pid: process.pid, ...o }) + '\n'); } };
 const changeOf = (id) => (CHANGE_AT[id] === undefined ? null : Number(CHANGE_AT[id]));
 const seen = new Set();
@@ -89,14 +90,21 @@ module.exports = {
     return { exact: true, count: 1, records: rec, counts: null, total: 2 };
   },
   cacheRecords: (id) => Buffer.from(DIFFER.has(id) || DIFFER_FULL.has(id) ? `other ${id}` : 'same'),
-  readerNavOnce() { navOnce = true; },
+  // STUB_WARM_NAV_FAIL: a warm reader's init fails. Each start is logged ({op: 'nav'}).
+  readerNavOnce() { warmLog({ op: 'nav' }); if (process.env.STUB_WARM_NAV_FAIL) { throw new Error('navigation retention failed'); } navOnce = true; },
   warmLoad(ids) {
     if (!navOnce || warmSet) { throw new Error('warmLoad: not a fresh navDB-once reader'); }
     warmSet = new Set(ids); warmLog({ op: 'load', ids });
+    // STUB_WARM_MB_PER_SIG: resident memory the reader keeps per signal of its set (its navigation).
+    const mb = Number(process.env.STUB_WARM_MB_PER_SIG || 0) * ids.length;
+    if (mb) { held.push(Buffer.alloc(mb * 1048576).fill(1)); }
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { signalId: id }));
   },
   warmWindow(ids, t0, t1) {
     warmLog({ op: 'window', ids });
+    // STUB_WARM_BLOCK {mb, ms}: the first window takes mb of memory and blocks ms (a native call
+    // that can't yield, so only a watchdog outside the process sees it).
+    if (process.env.STUB_WARM_BLOCK && !warmFirst) { const b = JSON.parse(process.env.STUB_WARM_BLOCK); held.push(Buffer.alloc(b.mb * 1048576).fill(1)); sleep(b.ms); }
     if (!warmSet || ids.some((id) => !warmSet.has(id))) { throw new Error('warmWindow: signal not in the first load'); }
     sleep(WARM_MS + Number(process.env.STUB_WARM_SIG_MS || 0) * ids.length + (warmFirst ? 0 : WARM_LOAD_MS)); warmFirst = true;  // (the first window is the reader's first load; STUB_WARM_SIG_MS: the walk, per signal)
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: WARM_MS, walkMs: 0 }));

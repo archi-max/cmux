@@ -3,6 +3,7 @@
 // On a 1.7 GB dump one reader load costs 1 ms to 10 s, so the pool must balance work, not
 // signal counts, and keep what a cancelled request had asked for.
 // Usage: node check.mjs <fsdb-helper-v2 folder>
+import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -740,6 +741,79 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   lat.sort((a, b) => a - b);
   check(lat[2] < 240, `8 warm rows of 40 ms walk each: pan p50 ${Math.round(lat[2])} ms over ${st && st.readers} warm reader(s) (one: ~325; two: ~165)`);
   h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 37. Warm reader bounds (Refs #5). Warm readers are counted as the helper's children minus its
+// one load worker; their starts from the stub's log ({op: 'nav'}).
+{
+  const kids = (h) => { try { return execFileSync('pgrep', ['-P', String(h.pid), '-f', 'worker.js']).toString().trim().split('\n').filter(Boolean).length; } catch (e) { return 0; } };
+  const navs = (log) => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.op === 'nav') : []);
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const ask = (h, ids, t0) => Promise.all(ids.map((id) => h.send('window', near([id], t0)).reply));
+  const all = Array.from({ length: 16 }, (_, k) => k + 1);
+  const base = { STUB_COLD_MS: '20', STUB_WARM_LOAD_MS: '50', STUB_WARM_MS: '5', FSDB_WARM: '1', FSDB_BG_LOAD: '0' };
+
+  // (a) A cohort whose resident memory alone is over the cap (15 MB a signal, cap 150 MB): rebuilding
+  // it unchanged can't help. It is shrunk until it fits, then left alone.
+  {
+    const log = path.join(tmp, 'warm37a.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB_PER_SIG: '15', FSDB_WARM_RSS_MB: '150' });
+    const t0 = performance.now(); let lateNav = 0, k = 0;
+    while (performance.now() - t0 < 9000) { await ask(h, all, (k++ % 50) * 10000); await wait(250); if (performance.now() - t0 > 6000 && lateNav === 0) { lateNav = navs(log).length; } }
+    const n = navs(log).length, st = (await h.send('stats').reply).result.warm;
+    h.close();
+    check(n <= 4, `an oversized warm cohort is shrunk, not rebuilt as is: ${n} reader starts in 9 s (one per check before)`);
+    check(n === lateNav && st && st.ready.length > 0, `... and then left alone: ${n - lateNav} starts in the last 3 s, ready set of ${st && st.ready.length}`);
+  }
+  // (b) A warm reader whose init fails is not restarted at once, over and over: its cohort backs off.
+  {
+    const log = path.join(tmp, 'warm37b.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_NAV_FAIL: '1' });
+    const t0 = performance.now(); let k = 0, bad = 0;
+    while (performance.now() - t0 < 4000) { const rs = await ask(h, all.slice(0, 8), (k++ % 50) * 10000); bad += rs.filter((r) => r.error || r.result.signals[0].error).length; await wait(100); }
+    const n = navs(log).length;
+    h.close();
+    check(n <= 2 && bad === 0, `a warm cohort whose init fails backs off: ${n} reader starts in 4 s (every ~0.1 s before), ${bad} rows unanswered`);
+  }
+  // (c) Cohorts replaced back and forth: ready, building and retiring readers together stay within
+  // two processes (one reader), and their memory is accounted.
+  {
+    const log = path.join(tmp, 'warm37c.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB_PER_SIG: '2', FSDB_WARM_RECENT_MS: '500', FSDB_WARM_SIGNALS: '8' });
+    const t0 = performance.now(); let k = 0, most = 0, total = 0;
+    const poll = setInterval(() => { most = Math.max(most, kids(h) - 1); }, 50);
+    while (performance.now() - t0 < 8000) {
+      const ids = Math.floor((performance.now() - t0) / 1500) % 2 ? all.slice(8) : all.slice(0, 8);
+      await ask(h, ids, (k++ % 50) * 10000);
+      const st = (await h.send('stats').reply).result.warm;
+      total = Math.max(total, (st && st.totalRss) || 0);
+      await wait(100);
+    }
+    clearInterval(poll);
+    const n = navs(log).length;
+    h.close();
+    check(n >= 3, `alternating cohorts are still replaced: ${n} reader starts`);
+    check(most <= 2, `ready + building + retiring warm readers stay within 2 processes: at most ${most}`);
+    check(total > 0, `stats.warm.totalRss accounts their memory: ${Math.round(total / 1e6)} MB`);
+  }
+  // (d) A native call that grows past twice the cap and can't yield (300 MB, blocked 15 s): the
+  // coordinator's watchdog kills the reader from outside, rows are read cold, and the same cohort
+  // is not started again at once (smaller ones are, each once: here each blocks again).
+  {
+    const log = path.join(tmp, 'warm37d.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, FSDB_WARM_RSS_MB: '100', STUB_WARM_BLOCK: JSON.stringify({ mb: 300, ms: 15000 }) });
+    await ask(h, all.slice(0, 8), 0);
+    let seen = false, gone = null; const t0 = performance.now();
+    while (performance.now() - t0 < 20000) { const w = kids(h) - 1; if (w > 0) { seen = true; } else if (seen) { gone = performance.now() - t0; break; } await wait(100); }
+    const t1 = performance.now(); const rs = await ask(h, all.slice(0, 8), 20000); const ms = performance.now() - t1;
+    await wait(1500);
+    const sets = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'load').map((c) => [...c.ids].sort((x, y) => x - y).join(','));
+    h.close();
+    check(seen && gone !== null && gone < 5000, `a warm reader blocked over twice its cap is killed from outside: after ${gone === null ? 'never (20 s)' : Math.round(gone) + ' ms'}`);
+    check(rs.every((r) => !r.error && !r.result.signals[0].error) && ms < 3000, `... its rows are read cold meanwhile: ${Math.round(ms)} ms`);
+    check(new Set(sets).size === sets.length && sets.length <= 4, `... and the same cohort isn't started again at once, only smaller ones (halved): sets of ${sets.map((x) => x.split(',').length)}`);
+  }
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
