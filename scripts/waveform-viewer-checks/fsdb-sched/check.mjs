@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { refWindow } from './windowof-ref.mjs';
 
 const dir = path.resolve(process.argv[2]);
 const here = path.dirname(new URL(import.meta.url).pathname);
@@ -19,7 +21,7 @@ const check = (ok, what) => { console.log((ok ? 'ok   ' : 'FAIL ') + what); if (
 function helper(workers, env = {}) {
   const p = spawn(process.execPath, [path.join(dir, 'helper.js'), '--workers', String(workers), ...(env.ARGS ? env.ARGS.split(' ') : [])], {
     stdio: ['pipe', 'ignore', 'ignore', 'pipe'],
-    env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), FSDB_STORE_CACHE: '0', FSDB_INDEX_DIR: path.join(tmp, 'idx'), TMPDIR: tmp, ...env },
+    env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), FSDB_CLOCK_SEG_CMD: JSON.stringify([process.execPath, path.join(here, 'stub-clockseg.cjs')]), FSDB_STORE_CACHE: '0', FSDB_INDEX_DIR: path.join(tmp, 'idx'), TMPDIR: tmp, ...env },
   });
   let buf = Buffer.alloc(0), need = null, nid = 1, ready;
   const pend = new Map();
@@ -27,7 +29,7 @@ function helper(workers, env = {}) {
   p.stdio[3].on('data', (d) => {
     buf = Buffer.concat([buf, d]);
     for (;;) {
-      if (need) { if (buf.length < need.n) { break; } buf = buf.subarray(need.n); deliver(need.msg); need = null; continue; }
+      if (need) { if (buf.length < need.n) { break; } const bin = Buffer.from(buf.subarray(0, need.n)); buf = buf.subarray(need.n); deliver({ ...need.msg, bin }); need = null; continue; }
       const i = buf.indexOf(10); if (i < 0) { break; }
       const line = buf.subarray(0, i).toString(); buf = buf.subarray(i + 1);
       if (!line.trim()) { continue; }
@@ -1239,6 +1241,218 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     const m = o.result && o.result.metadata;
     check(!o.error && m && m.timeStart === want && m.timeEnd > want, `open's metadata has timeStart ${want}: ${JSON.stringify(m && { timeStart: m.timeStart, timeEnd: m.timeEnd })}`);
   }
+}
+
+// 43. Clock descriptors (FSDB_CLOCK_DESC=1; off by default): a verify job fits a 1-bit row's grid
+// from its first rises and checks its whole history in fresh segment processes (a rebuilt row's
+// reader keeps ~9 B per change read for the life of its process), each killed past
+// FSDB_CLOCK_RSS_MB, which aborts the job and never touches a reader. Aborted, not a clock: more
+// than FSDB_CLOCK_MAX_RECORDS changes off the grid, or deviations over 1% of the grid edges. One
+// job at a time, inside the reader budget, and a segment waits while visible work is queued.
+{
+  const clk = { 5: 1000, 6: 1000, 7: 1000, 8: 1000 };
+  const dev = { 6: [[100200, 'x'], [100300, '1']], 7: Array.from({ length: 40 }, (_, k) => [10000 * k + 200, '1']) };
+  const verify = async (h, id, ms = 20000) => {
+    const s = await h.send('clockVerify', { signalId: id }).reply;
+    if (s.error) { return { error: s.error }; }
+    const t0 = performance.now();
+    for (;;) { const i = (await h.send('clockInfo', { signalId: id }).reply).result; if (i.state !== 'verifying' || performance.now() - t0 > ms) { return i; } await wait(50); }
+  };
+  {
+    const h = await start(1, {}, { STUB_CLOCK: JSON.stringify(clk) });
+    const r = await h.send('clockVerify', { signalId: 5 }).reply;
+    h.close();
+    check(!!r.error && /off/.test(r.error), `clock descriptors are off by default: ${r.error || JSON.stringify(r.result)}`);
+  }
+  {
+    const log = path.join(tmp, 'clock43.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_DEV: JSON.stringify(dev), STUB_CLOCK_LOG: log, FSDB_CLOCK_SEGMENTS: '4' });
+    const a = await verify(h, 5), b = await verify(h, 6), c = await verify(h, 7);
+    const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const pids = new Set(calls.filter((x) => x.P).map((x) => x.pid));
+    const st = (await h.send('stats').reply).result;
+    h.close();
+    check(a.state === 'ready' && a.period === 1000 && a.high === 500 && a.firstRise === 500 && a.records === 1 && a.intervals === 1,
+      `a regular clock verifies: ${JSON.stringify(a)} (period 1000, high 500, first rise 500; before it, 0 at 0 verbatim)`);
+    check(b.state === 'ready' && b.records >= 2 && b.intervals >= 2, `... an x then a late rise is kept verbatim in an interval: ${JSON.stringify(b)}`);
+    check(c.state === 'aborted' && /1%/.test(c.why || ''), `... 40 glitches against ~2000 edges (2%) is not a clock: ${JSON.stringify(c)}`);
+    check(pids.size === 12 && !pids.has(st.workers[0].pid), `... each segment is its own process, not the worker: ${pids.size} verify processes for 3 rows x 4 segments`);
+  }
+  {
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_DEV: JSON.stringify(dev), FSDB_CLOCK_MAX_RECORDS: '1' });
+    const r = await verify(h, 6);
+    h.close();
+    check(r.state === 'aborted' && /more than 1 changes/.test(r.why || ''), `more than FSDB_CLOCK_MAX_RECORDS changes off the grid aborts: ${JSON.stringify(r)}`);
+  }
+  {
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_MB: '120', FSDB_CLOCK_RSS_MB: '100', STUB_CLOCK_MS: '300' });
+    const pid0 = (await h.send('stats').reply).result.workers[0].pid;
+    const r = await verify(h, 5);
+    const w = await h.send('window', win([5])).reply;
+    const pid1 = (await h.send('stats').reply).result.workers[0].pid;
+    h.close();
+    check(r.state === 'aborted' && /over 100 MB/.test(r.why || '') && pid0 === pid1 && !w.error,
+      `a segment process past FSDB_CLOCK_RSS_MB aborts the job, the worker is untouched: ${JSON.stringify(r)}, worker ${pid0 === pid1 ? 'same' : 'restarted'}, window ${w.error || 'ok'}`);
+  }
+  {
+    const log = path.join(tmp, 'clock43b.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, { 9: 1500 }, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_LOG: log, STUB_CLOCK_MS: '100', FSDB_BG_LOAD: '0' });
+    const busy = h.send('window', win([9])).reply;  // (visible work: 1.5 s)
+    await wait(30);
+    const t0 = performance.now();
+    const s1 = (await h.send('clockVerify', { signalId: 5 }).reply).result;
+    const s2 = (await h.send('clockVerify', { signalId: 6 }).reply).result;
+    await busy;
+    const tBusy = performance.now() - t0;
+    let first = null;
+    for (let k = 0; k < 100 && first === null; k++) { if (fs.existsSync(log)) { first = performance.now() - t0; } else { await wait(20); } }
+    const r = await verify(h, 5);
+    h.close();
+    check(s1.state === 'verifying' && s2.state === 'busy' && r.state === 'ready', `one verify job at a time: ${s1.state}, then ${s2.state} for another row; the first ends ${r.state}`);
+    check(first !== null && first >= tBusy - 50, `... and it waits for visible work: its first scan at ${Math.round(first)} ms, the visible read done at ${Math.round(tBusy)} ms`);
+  }
+  {
+    const log = path.join(tmp, 'clock43c.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_LOG: log, FSDB_READERS: '1' });
+    await h.send('clockVerify', { signalId: 5 }).reply;
+    await wait(600);
+    const ran = fs.existsSync(log);
+    const i = (await h.send('clockInfo', { signalId: 5 }).reply).result;
+    h.close();
+    check(!ran && i.state === 'verifying', `at the reader budget (FSDB_READERS=1, one worker) no segment process starts: ${ran ? 'ran' : 'waiting'}, ${i.state}`);
+  }
+  {
+    // Segments sized from the measurement: a segment's open baseline (STUB_CLOCK_OPEN_MB), its
+    // load setup (STUB_CLOCK_LOAD_MB, whatever it reads) and its per-change growth (STUB_CLOCK_BPC,
+    // 1 MB a change here) stay under FSDB_CLOCK_TARGET_MB after the first segment, which can only
+    // assume the reader's 9 B a change. Fixed at 32 segments, each would take ~62 MB over its open;
+    // the setup taken for growth would shrink the segments to nothing (~2000 changes in all here).
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_OPEN_MB: '100', STUB_CLOCK_LOAD_MB: '10', STUB_CLOCK_BPC: String(1 << 20), FSDB_CLOCK_TARGET_MB: '195', FSDB_CLOCK_RSS_MB: '400' });
+    const r = await verify(h, 5, 60000);
+    h.close();
+    const sp = r.segPeakMB || [];
+    check(r.state === 'ready' && r.segments > 32 && r.segments <= 400 && sp[1] > 0 && sp[1] <= 195 + 8 && r.openMB >= 100,
+      `segments sized from the measured open baseline, load setup and per-change growth: ${JSON.stringify({ state: r.state, why: r.why, segments: r.segments, openMB: r.openMB, setupMB: r.setupMB, bytesPerChange: r.bytesPerChange, segPeakMB: sp })} (33 to 400, every one after the first under 195 + 8 MB)`);
+  }
+}
+
+// 43b. A ready clock descriptor answers edge and search (clockdesc.js; FSDB_CLOCK_DESC=1 only),
+// exactly as the reader does without it: every edge kind and search value, both directions, at
+// times on, next to and between the grid's edges and past the end. (clockdesc-check.mjs compares
+// it with the store's answers on random gated/x/z/glitchy rows.)
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }) };
+  const qs = [];
+  for (const t of [0, 1, 250, 499, 500, 501, 750, 999, 1000, 1001, 123456, 500000, 999499, 999500, 999999, 1000000]) {
+    for (const dir of [1, -1]) {
+      for (const kind of ['any', 'rise', 'fall', 'posedge', 'negedge', 'edge']) { qs.push(['edge', { signalId: 5, t, dir, kind }]); }
+      for (const value of ['1', '0', 'x', '?']) { qs.push(['search', { signalId: 5, t, dir, value }]); }
+    }
+  }
+  const ask = async (h) => { const out = []; for (const [cmd, a] of qs) { const r = await h.send(cmd, a).reply; out.push(r.error ? { error: r.error } : { t: r.result.t }); } return out; };  // (the time only: `ranged` is how)
+  const ref = await start(1, {}, env);
+  const want = await ask(ref);
+  ref.close();
+  const h = await start(1, {}, { ...env, FSDB_CLOCK_DESC: '1' });
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const got = await ask(h);
+  const st = (await h.send('stats').reply).result;
+  h.close();
+  const diff = qs.map((q, k) => [q, want[k], got[k]]).filter(([, a, b]) => JSON.stringify(a) !== JSON.stringify(b));
+  check(info.state === 'ready' && !diff.length && st.clock && st.clock.served >= qs.length - 8,
+    `a ready descriptor answers ${qs.length} edge/search queries as the reader does: ${info.state}, ${diff.length} differ ${JSON.stringify(diff.slice(0, 3))}, ${st.clock ? st.clock.served : 'no'} from the descriptor`);
+}
+
+// 43c. A ready clock descriptor answers windows (clockdesc.js; FSDB_CLOCK_DESC=1 only), byte for
+// byte as the addon's windowOf over the row's changes: the page's tiles at every level (1024
+// buckets per tile, runs of tiles; bucketed where the period is under a bucket), odd spans, and
+// tiles past the dump's end. (clockdesc-check.mjs: the same on random gated/x/z/glitchy rows.)
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), FSDB_CLOCK_DESC: '1' };
+  const norm = []; for (let k = 0; k * 500 <= 1000000; k++) { norm.push([k * 500, k % 2 ? '1' : '0']); }
+  const reqs = [];
+  for (let L = 0; L <= 11; L++) { const span = 1024 * 2 ** L; reqs.push([0, span, 1024], [span, 3 * span, 2048], [Math.floor(999999 / span) * span, (Math.floor(999999 / span) + 1) * span, 1024], [span, 2 * span, 16]); }
+  reqs.push([123, 4567, 7], [0, 1000001, 1], [499, 501, 1024], [1000000, 1000000, 1024]);
+  const h = await start(1, {}, env);
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const bad = []; let bucketed = 0, fromDesc = 0;
+  for (const [t0, t1, buckets] of reqs) {
+    const r = await h.send('window', { signals: [{ signalId: 5, width: 1 }], t0, t1, buckets }).reply;
+    // (the reply's binary: deflate-raw records, then the u32 counts when bucketed)
+    const s0 = r.result && r.result.signals[0], w = refWindow(norm, t0, t1, buckets), want = Buffer.concat([w.records, w.counts || Buffer.alloc(0)]);
+    let gotBin = null;
+    try { gotBin = Buffer.concat([zlib.inflateRawSync(r.bin.subarray(0, s0.bytes)), r.bin.subarray(s0.bytes, s0.bytes + s0.bucketBytes)]); } catch (e) { gotBin = null; }
+    if (!w.exact) { bucketed++; }
+    if (s0 && s0.clock) { fromDesc++; }
+    if (!s0 || s0.exact !== w.exact || s0.count !== w.count || !gotBin || !gotBin.equals(want)) { bad.push({ t0, t1, buckets, got: s0 && { exact: s0.exact, count: s0.count, bytes: s0.bytes, bucketBytes: s0.bucketBytes }, want: { exact: w.exact, count: w.count, bytes: w.records.length } }); }
+  }
+  const st = (await h.send('stats').reply).result;
+  h.close();
+  check(info.state === 'ready' && !bad.length && fromDesc === reqs.length,
+    `a ready descriptor answers ${reqs.length} windows (${bucketed} bucketed) byte for byte as windowOf: ${info.state}, ${bad.length} differ ${JSON.stringify(bad.slice(0, 2))}, ${fromDesc} from the descriptor (served ${st.clock && st.clock.served})`);
+}
+
+// 43f. A descriptor row isn't a cold row to the page (review L6): its windows replied ranged: true,
+// so the page set it cold (prefetch narrowed to the view, grouped with the cold rows) and got no
+// total for its count decisions. They carry no ranged flag, and total: the row's whole normalized
+// change count, as a stored row's windows do (here 2001: the first value and 2000 edges).
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), FSDB_CLOCK_DESC: '1' };
+  const h = await start(1, {}, env);
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const r = await h.send('window', { signals: [{ signalId: 5, width: 1 }], t0: 0, t1: 10000, buckets: 1024 }).reply;
+  h.close();
+  const s0 = r.result && r.result.signals[0];
+  check(info.state === 'ready' && s0 && s0.clock && !s0.ranged && s0.total === 2001,
+    `a descriptor row's window isn't ranged and has its total: clock ${s0 && s0.clock}, ranged ${s0 && s0.ranged}, total ${s0 && s0.total} (want 2001)`);
+}
+
+// 43d. A descriptor window is bounded in the coordinator (review M1): clockdesc.window runs on the
+// helper's main thread and builds every record, so a protocol client's 2^22-bucket window over a
+// fast clock (here 1 M changes) blocked a parallel stats request and grew the helper's memory
+// (huge: 9.1 s, 1.8 GB). Windows of more than 65,536 buckets go to the reader worker instead.
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 2 }), FSDB_CLOCK_DESC: '1', STUB_CLOCK_BPC: '0', FSDB_CLOCK_SEGMENTS: '256' };
+  const h = await start(1, {}, env);
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const rss = () => { try { return Number(execFileSync('ps', ['-o', 'rss=', '-p', String(h.pid)]).toString().trim()) * 1024; } catch (e) { return 0; } };
+  const r0 = rss();
+  const w = h.send('window', { signals: [{ signalId: 5, width: 1 }], t0: 0, t1: 1000000, buckets: 1 << 22 }).reply;
+  await wait(20);
+  const t = performance.now();
+  await h.send('stats').reply;
+  const statsMs = performance.now() - t;
+  const r = await w;
+  const r1 = rss();
+  const small = await h.send('window', { signals: [{ signalId: 5, width: 1 }], t0: 0, t1: 10000, buckets: 1024 }).reply;
+  h.close();
+  check(info.state === 'ready' && !r.error && statsMs < 100 && r1 - r0 < 100e6 && small.result && small.result.signals[0].clock,
+    `(${info.state} ${info.error || ""}) a 2^22-bucket window over a 1 M-change clock doesn't block the coordinator: stats waited ${Math.round(statsMs)} ms (want < 100), helper RSS +${Math.round((r1 - r0) / 1e6)} MB (want < 100), from the descriptor ${!!(r.result && r.result.signals[0].clock)}; a 1024-bucket tile still is ${!!(small.result && small.result.signals[0].clock)}`);
+}
+
+// 43e. The helper's exit ends a running clock-verify segment too (review L4): shutdown() killed the
+// workers, fsdbdebug and the warm readers, but a clockseg process (here one call of 20 s) ran on
+// with nobody to read it.
+{
+  const log = path.join(tmp, 'clock43e.log'); fs.rmSync(log, { force: true });
+  const h = await start(1, {}, { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), FSDB_CLOCK_DESC: '1', STUB_CLOCK_MS: '20000', STUB_CLOCK_LOG: log });
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  for (let k = 0; k < 100 && !fs.existsSync(log); k++) { await wait(20); }
+  const pid = fs.existsSync(log) ? JSON.parse(fs.readFileSync(log, 'utf8').trim().split('\n')[0]).pid : 0;
+  h.close();
+  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return false; } };
+  let gone = false;
+  for (let k = 0; k < 50 && pid; k++) { if (!alive()) { gone = true; break; } await wait(40); }
+  check(pid > 0 && gone, `the helper's exit ends a running clock segment: pid ${pid} ${gone ? 'gone' : 'still running'}`);
+  if (pid && !gone) { try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ } }
 }
 
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M

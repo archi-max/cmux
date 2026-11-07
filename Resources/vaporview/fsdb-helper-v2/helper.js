@@ -157,7 +157,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const zlib = require('node:zlib');
-const { fork } = require('node:child_process');
+const { fork, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const expr = require('./expr.js');
 const { scopeTree } = require('./tree.js');
@@ -217,6 +217,7 @@ const DERIVED_BASE = 1e9;  // derived signal ids start here (FSDB ids are small)
 const SEARCH_CHUNK = 16;   // signals per searchAll task (one batched reader load)
 const COLD_CHUNK = 4;      // cold-scan pool chunk (small, so the pool balances across workers)
 const MAX_BUCKETS = 1 << 22; // per signal in a window request (16 MB of counts)
+const CLOCK_WIN_BUCKETS = 65536;  // descriptor windows answered on the main thread, at most (review M1)
 const MAX_LINE = 1 << 20;    // request line bytes
 
 function send(obj, bin) {
@@ -240,9 +241,10 @@ function writeAll(buf) {
 function shutdown(code) {
   try { flushManifest(); } catch (e) { /* best effort (L8) */ }
   for (const w of workers) { w.proc.kill(); }
-  // (and the processes that aren't workers: fsdbdebug, warm readers)
+  // (and the processes that aren't workers: fsdbdebug, warm readers, a clock segment)
   try { stopKinds(); } catch (e) { /* best effort */ }
   try { hotStop(); } catch (e) { /* best effort */ }
+  try { clockStop('exit'); } catch (e) { /* best effort (also: before the clock state exists) */ }
   removeTmpDir();
   process.exit(code);
 }
@@ -2710,6 +2712,216 @@ function countOf(id) {
   return h ? sizeEntry(id, h.count, h.bits, h.xz, 'file') : null;
 }
 
+// ---- clock descriptors (off unless FSDB_CLOCK_DESC=1) ----
+// A 1-bit row that is a clock is described by a grid (rises at R0 + kP, falls H later) plus
+// intervals where it leaves the grid, holding its own changes verbatim; before R0 everything is
+// verbatim. Never trusted unverified: a verify job reads the row's whole history and checks every
+// change (clockseg). On a rebuilt row the reader keeps ~9 B per change read for the life of
+// the process (a rebuilt clock on a 10 GB dump: 230 -> 882 MB over one pass, not freed by
+// unload, malloc_trim or a reopen), so the job reads it in fresh processes, sized from the
+// measured open and growth (clockVerifyJob), each in CLOCK_CHUNKS view windows, each killed
+// past CLOCK_RSS_MB (the job is aborted, never a reader). At most one job at
+// a time, counted in the reader budget; a segment starts only while no visible work is queued.
+// Aborted (not a clock): more than CLOCK_MAX_RECORDS verbatim changes, or deviations (records +
+// intervals) over CLOCK_MAX_FRAC of the grid edges. A descriptor is keyed by the file's stamp,
+// size and CLOCK_VERSION, and covers [lo, verifiedEnd] only.
+const CLOCK = process.env.FSDB_CLOCK_DESC === '1';
+const MiB = 1048576;  // (the clock block's MB: MiB, as statm and ps count)
+const CLOCK_SEGMENTS = Number(process.env.FSDB_CLOCK_SEGMENTS || 32), CLOCK_CHUNKS = Number(process.env.FSDB_CLOCK_CHUNKS || 4);
+const CLOCK_RSS_MB = Number(process.env.FSDB_CLOCK_RSS_MB || 256), CLOCK_MAX_RECORDS = Number(process.env.FSDB_CLOCK_MAX_RECORDS || 65536);
+const CLOCK_MAX_FRAC = 0.01, CLOCK_VERSION = 1, CLOCK_MIN_SEGMENTS = 32, CLOCK_MAX_SEGMENTS = 1024;
+// The reader keeps ~9 B per change read on a rebuilt row (measured on a 10 GB dump); a segment
+// aims at CLOCK_TARGET_MB, well under the CLOCK_RSS_MB kill.
+const CLOCK_BYTES_PER_CHANGE = 9, CLOCK_TARGET_MB = Number(process.env.FSDB_CLOCK_TARGET_MB || 200);
+const clock = { job: null, desc: new Map(), log: [], served: 0 };  // desc: id -> descriptor | {state: 'notClock' | 'aborted', why}
+function clockKey(file) {
+  const st = fs.statSync(file);
+  return `${st.size}:${st.mtimeMs}:${st.ino}:${st.ctimeMs}:v${CLOCK_VERSION}:${process.env.VERDI_HOME ? path.basename(process.env.VERDI_HOME) : ''}`;
+}
+// Visible (non-prefetch, non-background) work queued or running on a worker or warm reader:
+// a segment waits for it.
+const visibleWork = () => workers.some((w) => (w.busy && !w.busy.bg && !w.busy.prefetch) || w.queue.some((q) => !q.prefetch))
+  || hotReady().some((r) => r.busy && (r.queue || []).some((q) => !q.prefetch));
+function clockStop(why) {
+  const j = clock.job;
+  if (!j) { return; }
+  j.stopped = why;
+  if (j.child) { try { j.child.proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
+  clock.job = null;
+}
+function clockLog(o) { clock.log.push({ at: Math.round(performance.now()), ...o }); if (clock.log.length > 50) { clock.log.shift(); } }
+// One segment process (the native clockseg, FSDB_CLOCK_SEG_CMD: a JSON argv prefix): it opens the
+// file, scans the calls' ranges in order, one JSON line each, and exits. Its RSS is sampled every
+// 100 ms and read from each line; past CLOCK_RSS_MB it is killed and the job aborts.
+const CLOCK_SEG_CMD = process.env.FSDB_CLOCK_SEG_CMD ? JSON.parse(process.env.FSDB_CLOCK_SEG_CMD) : [path.join(__dirname, 'clockseg')];
+async function clockSegment(j, calls) {
+  const x0 = calls[0];
+  const args = [...CLOCK_SEG_CMD.slice(1), j.file, String(j.id), String(x0.P), String(x0.H), String(x0.R0), String(x0.maxRecords)];
+  for (const x of calls) { args.push(String(x.a), String(x.b)); }
+  const proc = spawn(CLOCK_SEG_CMD[0], args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const c = { proc, peak: 0 };
+  j.child = c;
+  hot.alive.add(c);  // (counted with the reader budget until it exits)
+  let over = false, err = '', buf = '';
+  const out = [];
+  const seen = (rss) => {
+    c.peak = Math.max(c.peak, rss || 0); j.peak = Math.max(j.peak || 0, rss || 0);
+    if (rss > CLOCK_RSS_MB * MiB) { over = true; try { proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
+  };
+  proc.stdout.on('data', (d) => {
+    buf += d;
+    let k;
+    while ((k = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, k); buf = buf.slice(k + 1);
+      if (line[0] !== '{') { continue; }  // (only JSON lines)
+      try { const r = JSON.parse(line); if (r.rssMB) { seen(r.rssMB * MiB); } out.push(r); } catch (e) { err = err || `clockseg: bad line ${line.slice(0, 80)}`; }
+    }
+  });
+  proc.stderr.on('data', (d) => { if (err.length < 400) { err += d; } });
+  const exited = new Promise((r) => { proc.on('exit', (code, sig) => r({ code, sig })); proc.on('error', (e) => r({ code: -1, error: e.message })); });
+  const watch = setInterval(() => seen(procRss([proc.pid]).get(proc.pid) || 0), 100);
+  try {
+    const ex = await exited;
+    if (over) { throw new Error(`segment process over ${CLOCK_RSS_MB} MB (peak ${Math.round(c.peak / MiB)} MB)`); }
+    if (j.stopped) { throw new Error(j.stopped); }
+    const bad = out.find((r) => r.error);
+    if (bad) { throw new Error(bad.error); }
+    if (ex.error) { throw new Error(`clockseg: ${ex.error}`); }
+    out.peak = c.peak;
+    if (out.some((r) => r.over)) { return out; }
+    if (ex.code !== 0 || out.length !== calls.length) { throw new Error(`clockseg exited ${ex.sig || ex.code} after ${out.length}/${calls.length} ranges${err ? `: ${err.trim().slice(0, 200)}` : ''}`); }
+    return out;
+  } finally {
+    clearInterval(watch);
+    hot.alive.delete(c);
+    j.child = null;
+  }
+}
+// Answers from a ready descriptor (clockdesc.js), exact against the reader's store: edge and
+// search of a verified row, for t within [lo, verifiedEnd + 1] (or past it once verifiedEnd is the
+// dump's end: nothing changes after it). A hit past verifiedEnd, or none while verifiedEnd is short
+// of the dump's end, goes to the reader.
+const clockdesc = CLOCK ? require('./clockdesc.js') : null;
+function clockFor(id, t) {
+  if (!CLOCK || !openFile) { return null; }
+  const d = clock.desc.get(id);
+  // (a descriptor is ready only after a whole pass, so it covers the dump to its end; one that
+  // doesn't, e.g. a dump that grew, answers nothing: review L3)
+  if (!d || d.state !== 'ready' || d.verifiedEnd < (timeEnd || 0) || !(t >= d.lo)) { return null; }
+  try { if (d.key !== clockKey(openFile)) { return null; } } catch (e) { return null; }
+  return d;
+}
+function clockAnswer(d, hit) {  // (clockFor: d covers the whole dump, so every hit and null is final)
+  clock.served++;
+  return { t: hit };
+}
+async function clockVerifyJob(j) {
+  const T = Math.max(1, timeEnd || 1), lo = timeStart || 0, end = T + 1;
+  const wait = async () => {  // (the reader budget, and no visible work)
+    for (;;) {
+      if (j.stopped) { throw new Error(j.stopped); }
+      if (!visibleWork() && workers.length + Math.max(hotProcs().length, hot.alive.size) + 1 <= readerBudget()) { return; }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  // Fit from the first rises: spans growing x8 from the start.
+  let fit = null, fitPeak = 0;
+  for (let span = Math.max(16, Math.ceil(T / 4096)); ; span *= 8) {
+    await wait();
+    const b = Math.min(end, lo + span);
+    const fr = await clockSegment(j, [{ signalId: j.id, a: lo, b, P: 0, H: 0, R0: 0, maxRecords: 0 }]);
+    fit = fr[0]; fitPeak = fr.peak || 0;
+    if (fit.rises >= 65 || b >= end) { break; }
+  }
+  if (!fit.period || !fit.high) { return { state: 'notClock', why: `${fit.rises} rises: no period` }; }
+  const d = { state: 'verifying', id: j.id, period: fit.period, high: fit.high, firstRise: fit.firstRise, lo, verifiedEnd: lo, changes: 0, edges: 0, records: 0, intervals: [], open: null, segments: 0 };
+  j.desc = d;
+  // Segment sizes from the measurement: the open baseline (each line's openMB), plus a load's
+  // setup whatever it reads, plus the bytes kept per change read times the changes a segment reads
+  // (the densest seen, the grid's 2 per period at first) stays within CLOCK_TARGET_MB. Setup and
+  // bytes per change are a line through each process's (changes read, peak over its open), the
+  // fit's included; with one point, CLOCK_BYTES_PER_CHANGE and the rest is setup. At least
+  // CLOCK_MIN_SEGMENTS segments and at most CLOCK_MAX_SEGMENTS (past that, the CLOCK_RSS_MB kill
+  // decides). FSDB_CLOCK_SEGMENTS fixes the count.
+  const fixedS = process.env.FSDB_CLOCK_SEGMENTS ? Math.max(1, CLOCK_SEGMENTS) : 0;
+  const maxStep = Math.ceil((end - lo) / (fixedS || CLOCK_MIN_SEGMENTS)), minStep = Math.max(1, Math.ceil((end - lo) / CLOCK_MAX_SEGMENTS));
+  let openB = (fit.openMB || 0) * MiB, bpc = CLOCK_BYTES_PER_CHANGE, setupB = 0, dens = 2 / d.period;
+  const obs = [[fit.changes || 0, Math.max(0, fitPeak - openB)]];
+  const refit = () => {
+    const ns = obs.map((o) => o[0]), lo2 = Math.min(...ns), hi2 = Math.max(...ns);
+    if (obs.length >= 2 && hi2 >= 1.5 * lo2 && hi2 > lo2) {
+      const mn = ns.reduce((x, y) => x + y, 0) / obs.length, mg = obs.reduce((x, o) => x + o[1], 0) / obs.length;
+      let sxy = 0, sxx = 0;
+      for (const [n, g] of obs) { sxy += (n - mn) * (g - mg); sxx += (n - mn) * (n - mn); }
+      bpc = Math.max(CLOCK_BYTES_PER_CHANGE, sxy / sxx);
+      setupB = Math.max(0, Math.min(...obs.map(([n, g]) => g - bpc * n)));  // (the line under every point)
+    } else { bpc = CLOCK_BYTES_PER_CHANGE; setupB = Math.max(0, Math.min(...obs.map(([n, g]) => g - bpc * n))); }
+  };
+  refit();
+  d.segPeakMB = [0, 0];
+  for (let a0 = lo; a0 < end;) {
+    const budget = Math.max(4 * MiB, CLOCK_TARGET_MB * MiB - openB - setupB);
+    const step = fixedS ? maxStep : Math.max(minStep, Math.min(maxStep, Math.floor(budget / (bpc * dens))));
+    const b0 = Math.min(end, a0 + step);
+    const sub = Math.max(1, CLOCK_CHUNKS), w = Math.ceil((b0 - a0) / sub), calls = [];
+    for (let c = 0; c < sub; c++) { const a = a0 + c * w, b = Math.min(b0, a + w); if (a < b) { calls.push({ signalId: j.id, a, b, P: d.period, H: d.high, R0: d.firstRise, maxRecords: CLOCK_MAX_RECORDS - d.records }); } }
+    await wait();
+    const rs = await clockSegment(j, calls);
+    let n = 0;
+    for (let c = 0; c < rs.length; c++) {
+      if (rs[c].over) { return { state: 'aborted', why: `more than ${CLOCK_MAX_RECORDS} changes off the grid` }; }
+      clockdesc.merge(d, rs[c], calls[c].a);
+      n += rs[c].changes; openB = Math.max(openB, (rs[c].openMB || 0) * MiB);
+    }
+    dens = Math.max(dens, n / (b0 - a0));
+    obs.push([n, Math.max(0, rs.peak - openB)]); refit();
+    const pk = Math.round(rs.peak / MiB);
+    if (d.segments === 0) { d.segPeakMB[0] = pk; } else { d.segPeakMB[1] = Math.max(d.segPeakMB[1], pk); }
+    d.openMB = Math.round(openB / MiB); d.bytesPerChange = Math.round(bpc); d.setupMB = Math.round(setupB / MiB);
+    d.verifiedEnd = b0 - 1; d.segments++; a0 = b0;
+    if (d.records > CLOCK_MAX_RECORDS) { return { state: 'aborted', why: `more than ${CLOCK_MAX_RECORDS} changes off the grid` }; }
+  }
+  if (d.open) { d.open[1] = end; d.open = null; }  // (off the grid up to the end)
+  const dev = d.records + d.intervals.length;
+  if (dev > CLOCK_MAX_FRAC * Math.max(1, d.edges)) { return { state: 'aborted', why: `${dev} deviations against ${d.edges} grid edges (over ${CLOCK_MAX_FRAC * 100}%)` }; }
+  d.state = 'ready';
+  return d;
+}
+function clockStart(id) {
+  if (!CLOCK) { throw new Error('clock descriptors are off (FSDB_CLOCK_DESC=1)'); }
+  if (!openFile) { throw new Error('no file open'); }
+  if ((widthOf.get(id) || 1) !== 1) { throw new Error('clock: a 1-bit signal only'); }
+  if (noSplit.has(id)) { throw new Error('clock: not for a string, real or event'); }
+  const key = clockKey(openFile);
+  const have = clock.desc.get(id);
+  if (have && have.key === key) { return { state: have.state, ...(have.why ? { why: have.why } : {}) }; }
+  if (clock.job) { return { state: clock.job.id === id ? 'verifying' : 'busy', busyWith: clock.job.id }; }
+  const j = { id, file: openFile, key, t0: performance.now(), peak: 0 };
+  clock.job = j;
+  clockLog({ id, start: true });
+  clockVerifyJob(j).then((d) => {
+    if (clock.job !== j) { return; }
+    clock.desc.set(id, { ...d, key, ms: Math.round(performance.now() - j.t0), peakMB: Math.round(j.peak / MiB) });
+    clockLog({ id, state: d.state, why: d.why, ms: Math.round(performance.now() - j.t0), peakMB: Math.round(j.peak / MiB) });
+  }, (e) => {
+    if (clock.job !== j) { return; }
+    const why = String((e && e.message) || e);
+    clock.desc.set(id, { state: 'aborted', why, key, peakMB: Math.round(j.peak / MiB) });
+    clockLog({ id, state: 'aborted', why, peakMB: Math.round(j.peak / MiB) });
+  }).finally(() => { if (clock.job === j) { clock.job = null; } });
+  return { state: 'verifying' };
+}
+function clockInfo(id) {
+  if (clock.job && clock.job.id === id) { const v = clock.job.desc; return { state: 'verifying', ...(v ? { verifiedEnd: v.verifiedEnd, segments: v.segments } : {}) }; }
+  const d = clock.desc.get(id);
+  if (!d) { return { state: 'none' }; }
+  if (!openFile || d.key !== clockKey(openFile)) { return { state: 'stale' }; }
+  if (d.state !== 'ready') { return { state: d.state, why: d.why, ...(d.peakMB !== undefined ? { peakMB: d.peakMB } : {}) }; }
+  return { state: 'ready', period: d.period, high: d.high, firstRise: d.firstRise, lo: d.lo, verifiedEnd: d.verifiedEnd, changes: d.changes, edges: d.edges,
+    intervals: d.intervals.length, records: d.records, ms: d.ms, peakMB: d.peakMB,
+    segments: d.segments, openMB: d.openMB, setupMB: d.setupMB, bytesPerChange: d.bytesPerChange, segPeakMB: d.segPeakMB };
+}
+
 const handlers = {
   async open({ file, workers: n, warm: wantWarm, reload }) {
     if (typeof file !== 'string' || !file) { throw new Error('open needs a file'); }
@@ -2727,6 +2939,7 @@ const handlers = {
     lastOpen = null;
     clearJobs();
     bgFailed.clear(); rowDensity.clear();
+    clockStop('file reopened');
     persisting.clear();
     epoch++;
     hotStop();
@@ -2803,12 +3016,31 @@ const handlers = {
     const buckets = Math.max(1, Math.min(MAX_BUCKETS, Math.floor(Number(req.buckets)) || 1));
     for (const s of signals) { if (s.width) { widthOf.set(s.signalId, s.width); } }
     const ranged = t1 > t0 && timeEnd > 0 && (t1 - t0) <= timeEnd * COLD_RANGE;
+    // Rows with a ready clock descriptor covering [t0, t1) answer from it (clockdesc.js), as the
+    // addon's windowOf would, byte for byte. Only up to CLOCK_WIN_BUCKETS buckets (so at most
+    // 2 x that many changes exact, or that many buckets' first and last): it runs on this main
+    // thread, and a 2^22-bucket window over a fast clock took 4-9 s and 1.8 GB here (review M1).
+    // Wider ones go to the reader worker, under its RSS cap. (The page's tiles are <= 3 x 1024
+    // buckets and its value scan 32768.)
+    const fromClock = new Map();
+    if (CLOCK && buckets <= CLOCK_WIN_BUCKETS) {
+      for (const id of new Set(ids)) {
+        const d = clockFor(id, t0);
+        if (d) {  // (clockFor: it covers the whole dump)
+          const w = clockdesc.window(d, t0, t1, buckets);  // (records deflated as the workers' are)
+          // (not ranged: the page treats a ranged row as a cold one, whose reads cost by span; and
+          // total, the row's whole normalized change count, as a stored row's: review L6)
+          fromClock.set(id, { signalId: id, ...w, records: zlib.deflateRawSync(w.records, { level: 1 }), loadMs: 0, walkMs: 0, clock: true, total: clockdesc.countIn(d, d.lo, d.verifiedEnd + 1) });
+          clock.served++;
+        }
+      }
+    }
     // A signal whose load failed for good (unreadable, over the store cap) answers that error,
     // without loading it again; over the cap, ranged windows still read it cold.
-    const failed = new Map(ids.filter((id) => bgFailed.has(id) && !derived.has(id) && !(ranged && /larger than/.test(bgFailed.get(id)))).map((id) => [id, { signalId: id, error: bgFailed.get(id) }]));
+    const failed = new Map(ids.filter((id) => !fromClock.has(id) && bgFailed.has(id) && !derived.has(id) && !(ranged && /larger than/.test(bgFailed.get(id)))).map((id) => [id, { signalId: id, error: bgFailed.get(id) }]));
     // (a signal in the persistent store cache is read from its file instead: <= ~70 ms, and it stays)
-    const cold = new Set(ranged ? ids.filter((id) => !failed.has(id) && isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
-    const warmIds = [...new Set(ids.filter((id) => !cold.has(id) && !failed.has(id)))];
+    const cold = new Set(ranged ? ids.filter((id) => !fromClock.has(id) && !failed.has(id) && isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
+    const warmIds = [...new Set(ids.filter((id) => !cold.has(id) && !failed.has(id) && !fromClock.has(id)))];
     const sp = prep(req, warmIds);
     // Signals that wait for nothing (no split walk, no derived rebuild) are asked for now,
     // not after the split walks: a 20-signal add waited for its wide signals' splits first.
@@ -2830,7 +3062,7 @@ const handlers = {
       cold.size ? rangedRead(req, [...cold], range) : []]);
     if (req.cancelled) { return {}; }
     const warmRes = [...r1, ...r2];
-    const byId = new Map([...warmRes, ...coldRes, ...failed.values()].map((r) => [r.signalId, r]));
+    const byId = new Map([...warmRes, ...coldRes, ...failed.values(), ...fromClock.values()].map((r) => [r.signalId, r]));
     for (const r of coldRes) { if (!r.error) { scheduleBgLoad(r.signalId); } }
     const res = ids.map((id) => byId.get(id));
     const head = [], bins = [];
@@ -2847,7 +3079,7 @@ const handlers = {
       const sp = req.split && req.split.get(r.signalId);
       head.push({ signalId: r.signalId, exact: r.exact, count: r.count, bytes: rec.length, bucketBytes: cnt ? cnt.length : 0,
         cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
-        ...(r.ranged ? { ranged: true } : {}), ...(r.warm ? { warm: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}),
+        ...(r.ranged ? { ranged: true } : {}), ...(r.clock ? { clock: true } : {}), ...(r.warm ? { warm: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}),
         ...(r.text ? { text: true, kind: r.kind } : {}), ...(r.kind === 'real' && r.min !== undefined ? { min: r.min, max: r.max } : {}),
         ...(r.textMean !== undefined ? { textMean: r.textMean } : {}), ...(r.cut ? { cut: true } : {}) });
       bins.push(rec);
@@ -2892,6 +3124,8 @@ const handlers = {
     if (req.kind !== undefined && req.kind !== null && !EDGE_KINDS.has(req.kind)) { throw new Error(`edge: unknown kind ${JSON.stringify(req.kind)}`); }
     checkIds([req.signalId]);
     const dir = req.dir < 0 ? -1 : 1;
+    const cd = clockFor(req.signalId, t);
+    if (cd) { const r = clockAnswer(cd, clockdesc.edge(cd, t, dir, req.kind ?? 'any', timeStart || 0)); if (r) { return r; } }
     return findStoredOrRanged(req, 'edge', req.signalId, { t, dir, kind: req.kind, start: timeStart }, { kind: req.kind ?? 'any' });
   },
   async search(req) {
@@ -2900,6 +3134,8 @@ const handlers = {
     checkIds([req.signalId]);
     // wildcard: '?' -> strict pattern: only ? matches anything, x and z are literal.
     const value = (strictWildcard(req) ? '!' : '') + req.value;
+    const dir = req.dir < 0 ? -1 : 1, cd = clockFor(req.signalId, t);
+    if (cd) { const r = clockAnswer(cd, clockdesc.search(cd, t, dir, value)); if (r) { return r; } }
     return findStoredOrRanged(req, 'search', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, value }, { pattern: value });
   },
 
@@ -3050,6 +3286,11 @@ const handlers = {
     return {};
   },
 
+  // clockVerify {signalId} -> {state}: start (or report) the clock descriptor verify of a 1-bit row.
+  // clockInfo {signalId} -> the descriptor's state and grid (FSDB_CLOCK_DESC=1).
+  async clockVerify(req) { return clockStart(Number(req.signalId)); },
+  async clockInfo(req) { return clockInfo(Number(req.signalId)); },
+
   // Answered from the state each worker attaches to its replies (never waits on a walk).
   async stats() {
     return {
@@ -3076,6 +3317,7 @@ const handlers = {
         ...(kinds.state === 'ready' ? kindCounts() : {}) },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
+      ...(CLOCK ? { clock: { job: clock.job ? { signalId: clock.job.id, segments: clock.job.desc ? clock.job.desc.segments : 0, peakMB: Math.round((clock.job.peak || 0) / 1e6), child: !!clock.job.child } : null, log: clock.log, served: clock.served } } : {}),
     };
   },
 
@@ -3138,6 +3380,7 @@ const handlers = {
     lastOpen = null;
     clearJobs();
     bgFailed.clear(); rowDensity.clear();
+    clockStop('file reopened');
     persisting.clear();
     epoch++;
     hotStop();

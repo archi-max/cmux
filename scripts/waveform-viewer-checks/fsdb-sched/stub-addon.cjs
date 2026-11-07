@@ -110,6 +110,57 @@ module.exports = {
       return { signalId: id, t: hit ? hit.t : null, scanned: cs.length };
     });
   },
+  // clockScan(id, a, b, P, H, R0, maxRecords): as the addon's, over the STUB_CLOCK row with
+  // STUB_CLOCK_DEV {id: [[t, v], ...]} (changes added to it: x/z, glitches, held values).
+  // STUB_CLOCK_MB: memory each call takes and keeps (the reader's per-change growth on a rebuilt
+  // row); STUB_CLOCK_MS: each call's time. STUB_CLOCK_LOG gets a line per call ({a, b, P, pid}).
+  clockScan(id, a, b, P, H, R0, maxRecords) {
+    if (process.env.STUB_CLOCK_LOG) { fs.appendFileSync(process.env.STUB_CLOCK_LOG, JSON.stringify({ a, b, P, pid: process.pid }) + '\n'); }
+    if (process.env.STUB_CLOCK_MB) { held.push(Buffer.alloc(Number(process.env.STUB_CLOCK_MB) * 1048576).fill(1)); }
+    sleep(Number(process.env.STUB_CLOCK_MS || 0));
+    if (!(b > a)) { return { error: 'empty range' }; }
+    if (!CLOCK[id]) { return { error: 'clock: a 1-bit signal only' }; }
+    const dev = (JSON.parse(process.env.STUB_CLOCK_DEV || '{}')[id] || []).map(([t, v]) => ({ t, v, dev: true }));
+    // (the clock's changes from a period before a: the value in effect at a is the last one before it)
+    const base = changesIn(id, Math.max(0, a - Number(CLOCK[id])), b).map((c) => ({ t: c.t, v: c.v }));
+    const all = [...base, ...dev].sort((x, y) => x.t - y.t || (x.dev ? 1 : 0) - (y.dev ? 1 : 0));
+    const norm = []; let pv = 'x';
+    for (let k = 0; k < all.length; k++) { if (k + 1 < all.length && all[k + 1].t === all[k].t) { continue; } if (all[k].v !== pv) { norm.push(all[k]); pv = all[k].v; } }
+    let vBefore = 'x';
+    for (const c of norm) { if (c.t < a) { vBefore = c.v; } }
+    const inR = norm.filter((c) => c.t >= a && c.t < b);
+    if (!P) {
+      const rs = [], fs2 = []; let last = null, n = 0;
+      for (const c of inR) { n++; if (c.v === '1' && last === '0') { rs.push(c.t); } if (c.v === '0' && last === '1' && rs.length) { fs2.push(c.t); } last = c.v; if (rs.length >= 65) { break; } }
+      const mode = (xs) => { const m = new Map(); xs.forEach((x) => m.set(x, (m.get(x) || 0) + 1)); let best = 0, v = 0; for (const [k, c] of [...m].sort((x, y) => x[0] - y[0])) { if (c > best) { best = c; v = k; } } return v; };
+      const per = mode(rs.slice(1).map((r, k) => r - rs[k]));
+      const hs = []; let j = 0;
+      for (const r of rs) { while (j < fs2.length && fs2[j] <= r) { j++; } if (j < fs2.length && per && fs2[j] - r < per) { hs.push(fs2[j] - r); } }
+      let first = 0; for (let k = 0; k + 1 < rs.length; k++) { if (rs[k + 1] - rs[k] === per) { first = rs[k]; break; } }
+      return { period: rs.length >= 3 ? per : 0, high: mode(hs), firstRise: first, rises: rs.length, changes: n };
+    }
+    const g = (t) => (t < R0 ? '0' : ((t - R0) % P) < H ? '1' : '0');
+    const nextEdge = (t) => { if (t < R0) { return R0; } const bs = t - (t - R0) % P; return t - bs < H ? bs + H : bs + P; };
+    const onEdge = (t) => t >= R0 && ((t - R0) % P === 0 || (t - R0) % P === H);
+    const ivs = []; let inSync = false, expE = 0, ivS = 0, rec = [], edges = 0, records = 0, changes = 0;
+    const open = (s0) => { inSync = false; ivS = s0; rec = []; };
+    const close = (e) => { ivs.push([ivS, e, rec]); rec = []; };
+    const gb = a === 0 || a - 1 < R0 ? '0' : g(a - 1);
+    if (a >= R0 && vBefore === gb) { inSync = true; expE = nextEdge(a - 1); } else { open(a); }
+    for (const c of inR) {
+      changes++;
+      if (inSync) {
+        if (c.t === expE && c.v === g(c.t)) { edges++; expE = nextEdge(c.t); continue; }
+        open(Math.min(c.t, expE));
+      }
+      if (onEdge(c.t) && c.v === g(c.t)) { close(c.t); inSync = true; edges++; expE = nextEdge(c.t); continue; }
+      rec.push([c.t, c.v]);
+      if (++records > maxRecords) { return { over: true, changes, records }; }
+    }
+    if (inSync && expE < b) { open(expE); }
+    if (!inSync) { close(-1); }
+    return { vBefore, changes, edges, intervals: ivs };
+  },
   coldValueAt: (ids) => ids.map(() => '0'),
   cacheValueAt: () => '0',
   cacheLastChange(id, t) { const c = changeOf(id); return c !== null && c <= t ? { t: c, value: '1' } : null; },
