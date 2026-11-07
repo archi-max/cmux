@@ -121,7 +121,7 @@ func relayChecks() async throws {
   let open = await on.response(for: json(["cmd": "sim.open", "dir": "/etc", "id": 3]), failureMessage: fail)
   let o = result(open)
   expect((o["simv"] as? String) == runDir.appendingPathComponent("simv").path, "sim.open runs the simulator of the panel file's folder, not the page's: \(header(open))")
-  expect((o["period"] as? NSNumber)?.intValue == 10, "sim.open answers with the clock period: \(o)")
+  expect((o["period"] as? NSNumber)?.intValue == 2000, "sim.open answers with the clock period: \(o)")
 
   let w = await on.response(for: json(["cmd": "sim.watch", "signals": ["tb.cnt"], "id": 4]), failureMessage: fail)
   expect(((result(w)["watch"] as? [[String: Any]])?.first?["width"] as? NSNumber)?.intValue == 8, "sim.watch through the relay: \(header(w))")
@@ -132,7 +132,8 @@ func relayChecks() async throws {
     let r = result(p)
     let bin = binary(p)
     for s in r["signals"] as? [[String: Any]] ?? [] { records += (s["count"] as? NSNumber)?.intValue ?? 0 }
-    if records > 0 { expect(bin.count == records * (8 + 8), "poll binary: \(records) records of 8+8 bytes, got \(bin.count)") }
+    let n = (r["signals"] as? [[String: Any]] ?? []).reduce(0) { $0 + (($1["count"] as? NSNumber)?.intValue ?? 0) }
+    if n > 0 { expect(bin.count == n * (8 + 8), "poll binary: \(n) records of 8+8 bytes, got \(bin.count)") }
     if let stop = r["stop"] as? [String: Any] { stopped = stop["stopped"] as? String ?? "?" }
   }
   expect(stopped == "done" && records == 3, "run 2 cycles: the counter's 3 records arrive by poll, then done (\(records), \(stopped))")
@@ -265,8 +266,8 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // Everything on screen again: the other rows are watched from now on (x before).
     _ = await call("document.getElementById('viewer').style.height = ''; return null")
-    let w2 = await waitFor(5000) { await self.watched() == ["tb.clk", "tb.dut.state", "tb.rst"] }
-    expect(w2, "rows scrolled into view are watched (bus0 is not in the simulation): \(await watched())")
+    let w2 = await waitFor(5000) { await self.watched() == ["tb.clk", "tb.dut.state"] }
+    expect(w2, "rows scrolled into view are watched (bus0 and rst are not in the simulation): \(await watched())")
     _ = await call("document.getElementById('sim-step').click(); return null")
     _ = await waitIdle()
     let state2 = await liveRecords("tb.dut.state")

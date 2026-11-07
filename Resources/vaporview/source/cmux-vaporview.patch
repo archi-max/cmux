@@ -744,6 +744,136 @@ index 51613df..dacb442 100644
      }
      this.draggableRows.forEach((rowId) => {
        const element = this.labels.querySelector(`#label-${rowId}`);
+diff --git a/src/webview/live.ts b/src/webview/live.ts
+new file mode 100644
+index 0000000..e61c1ed
+--- /dev/null
++++ b/src/webview/live.ts
+@@ -0,0 +1,124 @@
++// cmux: live simulation. The page (cmux-sim.js, outside this frame) runs a simulation through
++// cmux's FSDB helper and hands its value changes in here through window.__vvLive:
++//   rows()                      the shown signal rows: {rowId, signalId, netlistId, width, path, visible}
++//                               (visible: on screen vertically; path: the dotted hierarchical name)
++//   append(signalId, width, records, from)  [[t, value]] changes of a watched signal, in time order. The
++//                               first append of a signal replaces its dump data: x before `from` (the time
++//                               its watch began), then the changes. Later appends extend it.
++//   gap(signalId, t)            the signal is no longer watched from t: x from there
++//   extend(timeEnd)             the simulation reached timeEnd: the time range grows to it, and a view
++//                               showing the old end follows the new one
++//   isLive(signalId), live()    which signals show simulation data
++//   end()                       live mode is over (the page reloads the dump)
++//   viewport()                  the viewport (the page's checks)
++import { type ValueChange, type SignalId } from '../common/types';
++import { NetlistVariable } from './signal_item';
++import { viewport, viewerState, rowHandler, labelsPanel, events, dataManager } from './vaporview';
++
++const live = new Set<SignalId>();
++
++function rowsOf(signalId: SignalId): NetlistVariable[] {
++  const out: NetlistVariable[] = [];
++  viewerState.displayedSignalsFlat.forEach((rowId) => {
++    const item = rowHandler.rowItems[rowId];
++    if (item instanceof NetlistVariable && item.signalId === signalId) {out.push(item);}
++  });
++  return out;
++}
++
++function redraw(signalId: SignalId) {
++  rowsOf(signalId).forEach((item) => {
++    labelsPanel.valueAtMarker[item.rowId] = item.getValueAtTime(viewerState.markerTime);
++    events.redrawVariable(item.rowId);
++    rowHandler.setValueFormat(item.getWaveformData(), item.valueFormat, false);
++  });
++}
++
++function pathOf(item: NetlistVariable): string {
++  return [...(item.scopePath || []), item.signalName].filter((s) => s !== '').join('.');
++}
++
++function rows() {
++  const top = viewport.pseudoScrollTop, bottom = top + viewport.viewerHeight;
++  const out: {rowId: number; signalId: SignalId; netlistId: number | undefined; width: number; path: string; visible: boolean}[] = [];
++  viewerState.displayedSignalsFlat.forEach((rowId) => {
++    const item = rowHandler.rowItems[rowId];
++    if (!(item instanceof NetlistVariable) || item.signalId === undefined) {return;}
++    const shown = viewerState.visibleSignalsFlat.includes(rowId);
++    const bounds = shown ? viewport.getRowIdBounds(rowId) : null;
++    const visible = bounds !== null && bounds[1] > top && bounds[0] < bottom;
++    out.push({rowId, signalId: item.signalId, netlistId: item.netlistId, width: item.signalWidth, path: pathOf(item), visible});
++  });
++  return out;
++}
++
++// Appends in place (the renderer reads valueChangeData), dropping repeats of the last value.
++function push(list: ValueChange[], t: number, v: string) {
++  const last = list[list.length - 1];
++  if (last && last[0] === t) {
++    const prev = list[list.length - 2];
++    if (prev && prev[1] === v) {list.pop();} else {last[1] = v;}
++    return;
++  }
++  if (last && (last[0] > t || last[1] === v)) {return;}
++  list.push([t, v]);
++}
++
++function append(signalId: SignalId, width: number, records: [number, string][], from: number) {
++  let data = dataManager.valueChangeData[signalId];
++  if (!live.has(signalId) || data === undefined) {
++    live.add(signalId);
++    const list: ValueChange[] = [[0, 'x'.repeat(width)]];
++    data = dataManager.valueChangeData[signalId] = {valueChangeData: list, formattedValues: {}, signalWidth: width, min: 0, max: 1};
++    if (from > 0) {push(list, from, 'x'.repeat(width));}
++  }
++  const list = data.valueChangeData;
++  for (const [t, v] of records) {push(list, t, v);}
++  data.formattedValues = {};
++  redraw(signalId);
++}
++
++function gap(signalId: SignalId, t: number) {
++  const data = dataManager.valueChangeData[signalId];
++  if (!live.has(signalId) || data === undefined) {return;}
++  push(data.valueChangeData, t, 'x'.repeat(data.signalWidth));
++  data.formattedValues = {};
++  redraw(signalId);
++}
++
++function extend(timeEnd: number) {
++  if (!(timeEnd > viewport.timeStop)) {
++    labelsPanel.renderValueDisplay();
++    viewport.renderAllWaveforms();
++    return;
++  }
++  const oldEnd = viewport.timeStop;
++  const following = viewport.timeScrollRight >= oldEnd - viewport.pixelTime;
++  const span = viewport.timeScrollRight - viewport.timeScrollLeft;
++  viewport.timeStop = timeEnd;
++  viewport.maxScrollLeft = Math.round(Math.max((viewport.timeStop * viewport.zoomRatio) - viewport.viewerWidth, 0));
++  viewport.minZoomRatio = viewport.viewerWidth / viewport.timeStop;
++  if (following) {
++    // Same span, its right edge at the new end (a view of the whole dump keeps showing the whole run).
++    const start = span >= oldEnd - viewport.pixelTime ? 0 : Math.max(0, timeEnd - span);
++    viewport.updatePending = false;
++    viewport.setViewportRange(start, timeEnd);
++  } else {
++    viewport.updateHorizontalScrollbar();
++    viewport.renderAllWaveforms();
++  }
++  labelsPanel.renderValueDisplay();
++}
++
++export function endLive() {
++  live.clear();
++}
++
++export function installLive() {
++  (window as unknown as {__vvLive: object}).__vvLive = {
++    rows, append, gap, extend, end: endLive,
++    isLive: (signalId: SignalId) => live.has(signalId),
++    live: () => [...live],
++    viewport: () => viewport,
++  };
++}
 diff --git a/src/webview/riscv_disasm.ts b/src/webview/riscv_disasm.ts
 new file mode 100644
 index 0000000..d9cd6bb
@@ -2703,10 +2833,10 @@ index 0000000..dfc9b0a
 +  return bits === '0' ? '0' : '0' + bits;
 +}
 diff --git a/src/webview/vaporview.ts b/src/webview/vaporview.ts
-index c7771b9..69640a0 100644
+index c7771b9..f5aa7ca 100644
 --- a/src/webview/vaporview.ts
 +++ b/src/webview/vaporview.ts
-@@ -5,8 +5,9 @@ import { LabelsPanels } from './labels';
+@@ -5,8 +5,10 @@ import { LabelsPanels } from './labels';
  import { ControlBar } from './control_bar';
  import { RowHandler } from './row_handler';
  import { WaveformDataManager } from './data_manager';
@@ -2714,10 +2844,11 @@ index c7771b9..69640a0 100644
 +import { NetlistVariable, SignalGroup, SliceGroup, type RowItem } from './signal_item'; // cmux: SliceGroup
  import { Configuration, OS, ThemeColors, VscodeWrapper } from './vscode_wrapper';
 +import { WindowCache } from './window_cache'; // cmux: windowed loading (protocol v2)
++import { installLive, endLive } from './live'; // cmux: live simulation
  
  export class ViewerState {
    uri: string | null                 = null;
-@@ -332,8 +333,9 @@ class VaporviewWebview {
+@@ -332,8 +334,9 @@ class VaporviewWebview {
      }
  
      else if (e.key === 'Escape') {
@@ -2728,7 +2859,7 @@ index c7771b9..69640a0 100644
      }
      else if (e.key === 'Delete' || e.key === 'Backspace') {
        //viewerState.selectedSignal.forEach((rowId) => {
-@@ -386,6 +388,8 @@ class VaporviewWebview {
+@@ -386,6 +389,8 @@ class VaporviewWebview {
  
      // First check to see if we're moving it outside the parent group
      if (newIndex < 0 || newIndex >= parentList.length) {
@@ -2737,7 +2868,15 @@ index c7771b9..69640a0 100644
        const parentGroupRowId = rowHandler.groupIdTable[parentGroupId];
        const grandparentGroupId = getParentGroupId(parentGroupRowId);
        if (grandparentGroupId === null) {return;}
-@@ -458,6 +462,7 @@ export const styles        = new ThemeColors(events);
+@@ -446,6 +451,7 @@ export function unload() {
+   viewerState.visibleSignalsFlat   = [];
+   viewerState.zoomRatio            = 1;
+   dataManager.unload();
++  endLive(); // cmux: live simulation
+   labelsPanel.renderLabelsPanels();
+   labelsPanel.renderValueDisplay();
+   // we don't need to do anything to the viewport, because the ready message will reinitialize it
+@@ -458,11 +464,13 @@ export const styles        = new ThemeColors(events);
  export const config        = new Configuration();
  export const vscodeWrapper = new VscodeWrapper(events);
  export const dataManager   = new WaveformDataManager(events);
@@ -2745,6 +2884,12 @@ index c7771b9..69640a0 100644
  export const rowHandler    = new RowHandler(events);
  export const controlBar    = new ControlBar(events);
  export const viewport      = new Viewport(events);
+ export const labelsPanel   = new LabelsPanels(events);
+ const vaporview            = new VaporviewWebview(events);
++installLive(); // cmux: live simulation
+ 
+ vscodeWrapper.webviewReady();
+ 
 diff --git a/src/webview/viewport.ts b/src/webview/viewport.ts
 index 13ed9a8..cfc36da 100644
 --- a/src/webview/viewport.ts
