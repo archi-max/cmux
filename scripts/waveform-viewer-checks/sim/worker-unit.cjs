@@ -13,11 +13,12 @@ let failures = 0, n = 0;
 const expect = (ok, what) => { console.log((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) failures++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function start(extra = [], env = {}) {
-  const run = `w${++n}`, log = path.join(scratch, `${run}.lib.log`), cwd = path.join(scratch, `${run}.cwd`);
-  fs.mkdirSync(cwd);
-  const p = spawn(process.execPath, [WORKER, '--simv', SIMV, '--lib', '/nonexistent/libsimctl.so', '--scratch', scratch, '--run', run,
-    '--cwd', cwd, '--vmem-mb', '0', ...extra, '--'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, FAKE_SIMV_LOG: log, ...env } });
+function start(extra = [], env = {}, cwdGiven = null) {
+  const run = `w${++n}`, log = path.join(scratch, `${run}.lib.log`), cwd = cwdGiven || path.join(scratch, `${run}.cwd`);
+  if (!cwdGiven) fs.mkdirSync(cwd);
+  const hard = env.WORKER_UNIT_HARD_VMEM_KB;
+  const p = spawn(hard ? 'sh' : process.execPath, [...(hard ? ['-c', `ulimit -v ${hard} && exec "$0" "$@"`, process.execPath] : []), WORKER, ...extra, '--simv', SIMV, '--lib', '/nonexistent/libsimctl.so', '--scratch', scratch, '--run', run,
+    '--cwd', cwd, '--vmem-mb', '0', '--'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, FAKE_SIMV_LOG: log, ...env } });
   const w = { p, log, replies: new Map(), events: [], nextId: 1, stderr: '', exited: null };
   w.exitP = new Promise((res) => p.on('exit', (code, sig) => { w.exited = { code, sig }; res(w.exited); }));
   p.stderr.on('data', (d) => { w.stderr += d; });
@@ -40,6 +41,7 @@ function start(extra = [], env = {}) {
   w.quit = async () => { w.send({ cmd: 'quit' }); await Promise.race([w.exitP, sleep(5000)]); if (!w.exited) w.p.kill('SIGKILL'); };
   return w;
 }
+const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
 
 (async () => {
   // GitHub #3: a run, checkpoint or until refused while a run is in flight never reaches the library, and each
@@ -126,6 +128,26 @@ function start(extra = [], env = {}) {
     const ex = await Promise.race([w.exitP, sleep(5000).then(() => null)]);
     expect(!!ex && ex.code === 0 && !/EPIPE/.test(w.stderr), `stdout EPIPE: a clean exit (${JSON.stringify(ex)}), no crash: ${w.stderr.slice(0, 200)}`);
     if (!ex) w.p.kill('SIGKILL');
+  }
+  // Round-2 finding 3: a memory limit the environment won't allow is named, not a silent exit 70; the limit
+  // is clamped to the hard one when that is lower.
+  if (require('node:child_process').spawnSync('sh', ['-c', 'ulimit -v 3000000']).status === 0) {   // Linux; macOS can't lower it
+    const w = start(['--period', '10', '--vmem-mb', '4096'], { WORKER_UNIT_HARD_VMEM_KB: '3000000' });
+    const e = await w.ready;
+    expect(!!e && e.event === 'ready', `a hard ulimit -v below --vmem-mb: the limit is clamped and the run starts: ${JSON.stringify(e)} ${JSON.stringify(w.exited)} ${w.stderr.slice(0, 200)}`);
+    if (!w.exited) await w.quit();
+  } else console.log('skip a hard ulimit -v below --vmem-mb (this OS cannot lower it)');
+  // Round-2 finding 5: a symlinked folder in the run folder is not walked into (only a manifest names one),
+  // and a missing input's hint names the skipped link.
+  {
+    const ext = path.join(scratch, 'shared'); fs.mkdirSync(ext); fs.writeFileSync(path.join(ext, 'big.hex'), 'x');
+    const run = `w${n + 1}.cwd`; fs.mkdirSync(path.join(scratch, run)); fs.symlinkSync(ext, path.join(scratch, run, 'shared'));
+    const w = startIn(path.join(scratch, run), ['--period', '10']); await w.ready;
+    const copied = fs.existsSync(path.join(scratch, `w${n}`, 'shared', 'big.hex'));
+    expect(!copied, `a symlinked folder is not walked into: shared/big.hex copied ${copied}`);
+    const st = await w.reply(w.send({ cmd: 'stats' }).id);
+    expect(st && st.result && Array.isArray(st.result.skippedLinks) && st.result.skippedLinks.includes('shared'), `and it is named as skipped: ${JSON.stringify(st && st.result && st.result.skippedLinks)}`);
+    await w.quit();
   }
   fs.rmSync(scratch, { recursive: true, force: true });
   console.log(failures ? `WORKER UNIT CHECKS FAILED (${failures})` : 'WORKER UNIT CHECKS PASSED');
