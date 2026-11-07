@@ -109,7 +109,9 @@
   // One v2 query through the viewer's relay: its result, or undefined when the helper failed it
   // (or it was cancelled). A Verdi check's (`bg`) queries are kept in bg.pending while the helper
   // has them, so the check can cancel what is left when it ends.
-  async function v2(req, bg) {
+  // `within` ({ms}): a query not answered in ms is cancelled and undefined, with within.timedOut set;
+  // within.failed is set when the helper failed it (an error reply, or no reply at all).
+  async function v2(req, bg, within) {
     // A stopped check asks nothing more (its caller falls back to changesOf, which is stale then).
     if (bg && bg.stop && bg.stop()) { return undefined; }
     const b = session.backend;
@@ -117,9 +119,25 @@
     const pending = bg && bg.pending;
     if (pending) { pending.add(id); }
     let answer;
-    try { answer = await b.v2(Object.assign({ id }, req)); } finally { if (pending) { pending.delete(id); } }
+    try {
+      const asked = b.v2(Object.assign({ id }, req));
+      if (within && within.ms > 0) {
+        let timer;
+        const late = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), within.ms); });
+        try { answer = await Promise.race([asked, late]); } finally { clearTimeout(timer); }
+        if (answer === TIMED_OUT) {
+          within.timedOut = true;
+          Promise.resolve(asked).catch(() => {});
+          Promise.resolve(b.v2({ cmd: 'cancel', id: v2Id(), target: id })).catch(() => {});
+          return undefined;
+        }
+      } else {
+        answer = await asked;
+      }
+    } finally { if (pending) { pending.delete(id); } }
     const r = answer && answer.reply;
     if (r && r.cancelled) { return undefined; }
+    if (within && (!r || r.error)) { within.failed = true; }
     if (r && r.error && /larger than|store limit/i.test(String(r.error)) && req.signalId !== undefined) {
       // Over the helper's store limit (about 244 MB of history): a whole read, capped only by its
       // change count, would be about a GB of values in the page, so the signal stays unknown.
@@ -129,6 +147,7 @@
     if (!r || r.error) { if (r && r.error) { host.log(new Error('trace ' + req.cmd + ': ' + r.error)); } return undefined; }
     return r.result;
   }
+  const TIMED_OUT = Symbol('timedOut');
   // A signal helper v2 refused to index (over its store limit): unknown rather than read whole.
   const refusedByHelper = (v) => !!(session.refused && session.refused.has(v.signalId));
   // Cancels a Verdi check's queries the helper still has (it would keep a worker busy for nothing).
@@ -154,7 +173,10 @@
   // helper-v2's point read for trace-X (valueAt with prev): the values at `time` of `list` (a Map by
   // netlistId) and each one's last change at or before `time`, kept for lastChange, in one request (the
   // helper batches the reads). Null when the helper fails it, or answers without prev (an older helper:
-  // not asked again this session; the caller reads values and edges as before).
+  // not asked again this session; the caller reads values and edges as before). Until a helper has
+  // answered prev once, an error reply or no answer within twice the step's budget counts as no prev
+  // too (the page never waits on a helper that doesn't know it); after that, it fails this read only.
+  // A signal it can't read (values[i] null) has no last change from it: read as before.
   // Values read so (by netlistId and time) are kept too: a step asks for a leaf at a time again and again.
   async function v2PointRead(list, time, bg) {
     const s = session;
@@ -163,17 +185,19 @@
     const key = (v) => v.netlistId + '@' + time;
     const ask = list.filter((v) => !s.pointValues.has(key(v)));
     if (ask.length) {
-      const r = await v2({ cmd: 'valueAt', signalIds: ask.map((v) => v.signalId), t: time, prev: true }, bg);
+      const within = { ms: 2 * verdiBudget() };
+      const r = await v2({ cmd: 'valueAt', signalIds: ask.map((v) => v.signalId), t: time, prev: true }, bg, within);
+      if ((within.timedOut || within.failed) && s.prevReads !== true) { s.prevReads = false; }
       if (!r || !Array.isArray(r.values) || r.values.length !== ask.length) { return null; }
       if (!Array.isArray(r.prev) || r.prev.length !== ask.length) { s.prevReads = false; return null; }
       s.prevReads = true;
       if (s.pointValues.size + ask.length > POINT_VALUES) { s.pointValues.clear(); }
       ask.forEach((v, i) => {
-        const p = r.prev[i];
-        // null: no change at or before `time` (the value is the start's).
-        const at = p === null ? 0 : p && Number.isFinite(Number(p.t)) ? Number(p.t) : undefined;
+        const p = r.prev[i], read = typeof r.values[i] === 'string';
+        // null: no change at or before `time` (the value is the start's); unless the value is unknown too.
+        const at = !read ? undefined : p === null ? 0 : p && Number.isFinite(Number(p.t)) ? Number(p.t) : undefined;
         if (at !== undefined && at <= time) { keepSince(s, v, at, time); }
-        s.pointValues.set(key(v), typeof r.values[i] === 'string' ? r.values[i] : null);
+        s.pointValues.set(key(v), read ? r.values[i] : null);
       });
     }
     const out = new Map();
