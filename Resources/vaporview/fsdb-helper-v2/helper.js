@@ -1255,10 +1255,24 @@ const HOT = process.env.FSDB_WARM !== '0';
 const HOT_MAX = Number(process.env.FSDB_WARM_SIGNALS || 16);
 const HOT_RECENT_MS = Number(process.env.FSDB_WARM_RECENT_MS || 3000);
 const HOT_RSS = Number(process.env.FSDB_WARM_RSS_MB || 600) * 1e6;
-const hot = { readers: [], building: null, asked: new Map(), timer: null };  // asked: id -> last ranged ask (ms)
+// A set is split over HOT_READERS processes (by estimated changes), read in parallel: a warm
+// call's cost is its walk, one process walked the whole set one signal after another.
+const HOT_READERS = Math.max(1, Number(process.env.FSDB_WARM_READERS || 2));
+const hot = { readers: [], building: null, asked: new Map(), timer: null };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hotReady = () => hot.readers.filter((r) => r.state === 'ready');
+// ids -> {parts: [[reader, ids]], rest}: the ids each ready warm reader holds, and the others
+function hotSplit(ids) {
+  const parts = [], taken = new Set();
+  for (const r of hotReady()) {
+    const mine = [...new Set(ids.filter((id) => r.ids.has(id) && !taken.has(id)))];
+    mine.forEach((id) => taken.add(id));
+    if (mine.length) { parts.push([r, mine]); }
+  }
+  return { parts, rest: ids.filter((id) => !taken.has(id)) };
+}
 const storedWhole = (id) => derived.has(id) || (route.has(id) && !floating.has(id) && workerFor(id).state.cached.includes(id));
 function hotStop() {
-  for (const r of [...hot.readers, hot.building].filter(Boolean)) { hotKill(r); }
+  for (const r of [...hot.readers, ...(hot.building || [])]) { hotKill(r); }
   hot.readers = []; hot.building = null; hot.asked.clear();
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
 }
@@ -1290,7 +1304,6 @@ function hotSpawn(ids) {
   proc.on('exit', () => {
     hotKill(r);
     hot.readers = hot.readers.filter((x) => x !== r);
-    if (hot.building === r) { hot.building = null; }
   });
   return r;
 }
@@ -1314,40 +1327,50 @@ function hotCheck() {
   if (!HOT || !openFile || hot.building) { return; }
   const want = hotWanted();
   if (!want.length) { return; }
-  const cur = hot.readers.find((r) => r.state === 'ready');
-  const outside = cur ? want.filter((id) => !cur.ids.has(id)).length : want.length;
-  const overRss = cur && cur.rss > HOT_RSS;
-  if (cur && !overRss && outside * 4 < want.length) { return; }
+  const cur = hotReady();
+  const outside = want.filter((id) => !cur.some((r) => r.ids.has(id))).length;
+  const overRss = cur.some((r) => r.rss > HOT_RSS);
+  if (cur.length && !overRss && outside * 4 < want.length) { return; }
   hotBuild(want);
+}
+// Greedy split of a set over k readers by estimated changes (kinds' counts; unknown: 1 each).
+function hotParts(ids, k) {
+  const w = (id) => (kinds.primaries && kinds.primaries.get(id)) || 1;
+  const parts = Array.from({ length: Math.min(k, ids.length) }, () => ({ ids: [], w: 0 }));
+  for (const id of [...ids].sort((a, b) => w(b) - w(a))) { const p = parts.reduce((m, x) => (x.w < m.w ? x : m)); p.ids.push(id); p.w += w(id); }
+  return parts.map((p) => p.ids);
 }
 async function hotBuild(ids) {
   const ep = epoch, file = openFile;
-  const r = hotSpawn(ids);
-  hot.building = r;
-  try {
+  const rs = hotParts(ids, HOT_READERS).map((part) => hotSpawn(part));
+  hot.building = rs;
+  const one = async (r) => {
     await r.ready;
     const o = await hotCall(r, { op: 'hotOpen', file });
     if (o.error) { throw new Error(o.error); }
-    const l = await hotCall(r, { op: 'hotLoad', signalIds: ids });
+    const part = [...r.ids];
+    const l = await hotCall(r, { op: 'hotLoad', signalIds: part });
     if (l.error) { throw new Error(l.error); }
     // (a signal the reader can't load stays out of the set: read cold)
-    l.result.forEach((x, k) => { if (x && x.error) { r.ids.delete(ids[k]); } });
+    l.result.forEach((x, k) => { if (x && x.error) { r.ids.delete(part[k]); } });
     // The reader's first load (navigation built, ~0.2-0.9 s) is its first window: done here,
     // over the last window asked for, so the first pan once the set is ready doesn't pay it.
     if (r.ids.size && epoch === ep && r.state !== 'dead') {
       const p = await hotCall(r, { op: 'hotWindow', signalIds: [...r.ids], ...(hot.lastRange || { t0: 0, t1: Math.max(1, Math.floor((timeEnd || 1) / 100)), buckets: 1024 }) });
       if (p.error) { throw new Error(p.error); }
     }
-    if (epoch !== ep || r.state === 'dead') { hotKill(r); return; }
-    r.state = 'ready';
+  };
+  try {
+    const done = await Promise.allSettled(rs.map(one));
+    done.forEach((d, k) => { if (d.status === 'rejected') { if (DEBUG) { process.stderr.write(`[helper] warm reader: ${(d.reason && d.reason.message) || d.reason}\n`); } hotKill(rs[k]); } });
+    const ok = rs.filter((r) => r.state !== 'dead');
+    if (epoch !== ep || !ok.length) { rs.forEach(hotKill); return; }
+    ok.forEach((r) => { r.state = 'ready'; });
     const old = hot.readers;
-    hot.readers = [r];
-    for (const x of old) { x.state = 'retiring'; Promise.all([...x.pending.values()]).finally(() => {}); setTimeout(() => hotKill(x), 5000); }
-  } catch (e) {
-    if (DEBUG) { process.stderr.write(`[helper] warm reader: ${(e && e.message) || e}\n`); }
-    hotKill(r);
+    hot.readers = ok;
+    for (const x of old) { x.state = 'retiring'; setTimeout(() => hotKill(x), 5000); }
   } finally {
-    if (hot.building === r) { hot.building = null; }
+    if (hot.building === rs) { hot.building = null; }
     if (epoch === ep) { setTimeout(hotCheck, 50); }
   }
 }
@@ -1383,19 +1406,21 @@ async function hotPump(r) {
 async function rangedRead(req, ids, range) {
   hotNote(ids);
   if (HOT) { hot.lastRange = range; }
-  const r = hot.readers.find((x) => x.state === 'ready');
-  const inSet = r ? ids.filter((id) => r.ids.has(id)) : [];
-  const rest = ids.filter((id) => !inSet.includes(id));
-  const [a, b] = await Promise.all([
-    inSet.length ? hotWindowBatched(r, [...new Set(inSet)], range) : null,
-    rest.length ? coldTask(req, 'windowCold', rest, range, true) : []]);
-  const by = new Map(rest.map((id, k) => [id, b[k]]));
-  if (inSet.length) {
-    if (a.error) { (await coldTask(req, 'windowCold', inSet, range, true)).forEach((x, k) => by.set(inSet[k], x)); } else {
-      req.workerMs = Math.max(req.workerMs || 0, a.ms || 0);
+  return warmOrCold(req, ids, range, 'hotWindow', 'windowCold');
+}
+// The ids each ready warm reader holds read on it (op), all in parallel with the rest cold
+// (coldOp); a warm read that fails is read cold. -> results in ids order
+async function warmOrCold(req, ids, extra, op, coldOp, useWarm = true) {
+  const { parts, rest } = useWarm ? hotSplit(ids) : { parts: [], rest: ids };
+  const by = new Map();
+  await Promise.all([
+    ...parts.map(async ([r, mine]) => {
+      const a = await hotWindowBatched(r, mine, extra, op);
+      if (a.error) { (await coldTask(req, coldOp, mine, extra, true)).forEach((x, k) => by.set(mine[k], x)); return; }
+      if (op === 'hotWindow') { req.workerMs = Math.max(req.workerMs || 0, a.ms || 0); }
       for (const x of a.result) { by.set(x.signalId, x); }
-    }
-  }
+    }),
+    rest.length ? coldTask(req, coldOp, rest, extra, true).then((b) => rest.forEach((id, k) => by.set(id, b[k]))) : null]);
   return ids.map((id) => by.get(id));
 }
 
@@ -1406,19 +1431,7 @@ async function rangedRead(req, ids, range) {
 // so a widening round over a quarter of the dump cost ~4x a cold call of the rows still searching.
 async function nearRead(req, ids, extra) {
   hotNote(ids);
-  const r = (extra.span || 0) <= (timeEnd || 0) * 0.01 ? hot.readers.find((x) => x.state === 'ready') : null;
-  const inSet = r ? [...new Set(ids.filter((id) => r.ids.has(id)))] : [];
-  const rest = ids.filter((id) => !inSet.includes(id));
-  const [a, b] = await Promise.all([
-    inSet.length ? hotWindowBatched(r, inSet, extra, 'hotNear') : null,
-    rest.length ? coldTask(req, 'coldNear', rest, extra, true) : []]);
-  const by = new Map(rest.map((id, k) => [id, b[k]]));
-  if (inSet.length) {
-    if (a.error) { (await coldTask(req, 'coldNear', inSet, extra, true)).forEach((x, k) => by.set(inSet[k], x)); } else {
-      for (const x of a.result) { by.set(x.signalId, x); }
-    }
-  }
-  return ids.map((id) => by.get(id));
+  return warmOrCold(req, ids, extra, 'hotNear', 'coldNear', (extra.span || 0) <= (timeEnd || 0) * 0.01);
 }
 
 // valueAt {prev: true} of signals that aren't stored: view windows [t - span, t] that grow x8
@@ -2391,8 +2404,8 @@ const handlers = {
       return { values: ids.map((id) => byId.get(id).value), prev: ids.map((id) => byId.get(id).prev), cold: cold.size };
     }
     // (cold rows in a ready warm set are read on it: a point read there is the value at t)
-    const hr = hot.readers.find((x) => x.state === 'ready');
-    const coldList = [...cold], onWarm = hr ? coldList.filter((id) => hr.ids.has(id)) : [], offWarm = coldList.filter((id) => !onWarm.includes(id));
+    const hr = hotReady();
+    const coldList = [...cold], onWarm = coldList.filter((id) => hr.some((r) => r.ids.has(id))), offWarm = coldList.filter((id) => !onWarm.includes(id));
     if (HOT) { hotNote(coldList); }
     const [wv, cw, co] = await Promise.all([
       warmIds.length ? scatter(req, 'valueAt', warmIds, { t }, (m) => m.result) : [],
@@ -2579,8 +2592,8 @@ const handlers = {
       firstLoads: floatQueue.length,  // first loads waiting for a free worker (floatQueue)
       coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
       pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
-      warm: { ready: (hot.readers.find((r) => r.state === 'ready') || { ids: new Set() }).ids.size ? [...hot.readers.find((r) => r.state === 'ready').ids] : [],
-        building: hot.building ? [...hot.building.ids] : null, rss: hot.readers.map((r) => r.rss) },
+      warm: { ready: hotReady().flatMap((r) => [...r.ids]), readers: hotReady().length,
+        building: hot.building ? hot.building.flatMap((r) => [...r.ids]) : null, rss: hot.readers.map((r) => r.rss) },
       aliases: { running: aliasRunning, checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
         verified: [...aliases].filter(([, a]) => a.state === 'verified').map(([x, a]) => [x, a.p]), bad: [...aliases].filter(([, a]) => a.state === 'bad').map(([x, a]) => [x, a.p]), log: aliasLog },
       kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },
