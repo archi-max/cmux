@@ -299,7 +299,7 @@ import Testing
             == .signal(designPath: "soc.u_core1.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
     }
 
-    /// Whatever the overlap between instances' children, a row maps to its own instance (the top's rule) or to nothing,
+    /// Whatever the overlap between instances' children, a row maps to its own instance by the top's rule,
     /// never to another instance's signal of the same name.
     @Test func aRowNeverMapsToAnotherInstance() async throws {
         for cores in 1...3 {
@@ -312,9 +312,9 @@ import Testing
                     for row in rows {
                         let got = try await resolve("\(row).x", design: design, dump: dump)
                         let own = "soc" + "\(row).x".dropFirst("tb.dut".count)
-                        if case .signal(let designPath, _, _) = got {
-                            #expect(designPath == own, "cores \(cores), shared \(shared), dma dumped \(dumpDma): \(row).x -> \(designPath)")
-                        }
+                        // The top's rule (soc = tb.dut) is there in every case, so the row is found.
+                        #expect(got == .signal(designPath: own, designPrefix: "soc", dumpPrefix: "tb.dut"),
+                                "cores \(cores), shared \(shared), dma dumped \(dumpDma): \(row).x -> \(got)")
                     }
                 }
             }
