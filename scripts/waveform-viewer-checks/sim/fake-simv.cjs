@@ -2,7 +2,7 @@
 // A stand-in simulator for worker-unit.cjs: what fsdb-helper-v2/simctl/sim-worker.js spawns as <simv>, with
 // the VPI library's side played here. UCLI on stdin/stdout ("ucli% " prompts; `run` starts the library side),
 // the library's line protocol on fd 3 (requests in) and fd 4 (replies out), as simctl_vpi.c speaks it:
-//   T/G/W/X/I/N/O/E answered at once, also during a run (the library's poll points); R/U run for FAKE_RUN_MS
+//   T/G/W/X/I/N/O/E/V answered at once, also during a run (the library's poll points); R/U run for FAKE_RUN_MS
 //   (default 1500) or until an S; F/D/L ... Y (writes), P, Q and anything else wait for the run's end, in order.
 // Toy design: time unit 1; tb.cnt (8 bits) = floor(t / 10) mod 256. Every library line received is appended to
 // FAKE_SIMV_LOG (one per line), so a test can see what reached "the library".
@@ -34,6 +34,9 @@ function quick(op, id, a) {
     case 'I': send({ id, t, watches: [] }); return true;
     case 'N': send({ id, vars: [], truncated: false }); return true;
     case 'E': send({ id, t }); return true;
+    // fork-save: the reply at once (the fork), the save's end as a `saved` event a little later
+    case 'V': { const pid = 90000 + id; send({ id, t, pid, forkMs: 1.5, file: a[0] });
+      setTimeout(() => { try { fs.writeFileSync(a[0], 'fake save'); } catch { /* bad path */ } send({ ev: 'saved', pid, file: a[0], t, status: 0 }); }, 200); return true; }
     default: return false;
   }
 }
