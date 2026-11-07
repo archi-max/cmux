@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..beff5ee
+index 0000000..9a0b36f
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,268 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -264,6 +264,14 @@ index 0000000..beff5ee
 +row is not failed as "missing from the reply". A whole load answered after a newer one
 +started is ignored. `stats.aliasDropped` counts the drops. cmux's `run.sh windowed` checks
 +that a dropped row is asked for again and redrawn from the new reply.
++
++## Prefetch is marked, and cold rows prefetch less
++
++`WindowCache.sendWindow` (`window_cache.ts`) adds `prefetch: true` to window requests for
++prefetch tiles (left and right screens, one level out, one level in), so the FSDB helper can
++queue them behind the next visible request. A row whose last window reply was a cold ranged
++read (`ranged` and not `warm`) costs the helper by the span it reads, so its level-out prefetch
++asks only for the level-out tiles over the view, not those for the screens either side.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2900,10 +2908,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..498e0bf
+index 0000000..e9763b0
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1957 @@
+@@ -0,0 +1,1964 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3027,6 +3035,7 @@ index 0000000..498e0bf
 +  orphanSince: number | null = null;
 +  solo      = false; // failed (alone or in a batch): ask for it alone until it succeeds
 +  answered  = false; // cmux: a window reply named it (data or error); until then it is asked for alone
++  cold      = false; // cmux: its last window was a cold ranged read (not stored, not on a warm reader): costs by the span
 +  // Hybrid mode: unknown -> asking -> known -> loading -> local (loaded whole), or windowed.
 +  hybrid: 'unknown' | 'asking' | 'known' | 'loading' | 'local' | 'windowed' = 'windowed';
 +  hybridTries   = 0;
@@ -3419,8 +3428,12 @@ index 0000000..498e0bf
 +    let visiblePending = false;
 +    this.inflight.forEach((f) => {if (f.priority === 0) {visiblePending = true;}});
 +    const covered = new Map<string, boolean>(); // coveredExact per (signal, tile) for this pass
++    // cmux: a cold row's read costs by its span, so its level-out prefetch covers only the tiles
++    // over the view (not the screen either side), at most about one view more of reading.
++    const L = viewport.timeScrollLeft, R = viewport.timeScrollRight;
 +    const missing = (s: SignalWindows, t: Tile) => {
 +      if (s.windows.has(t.key) || s.inflight.has(t.key)) {return false;}
++      if (t.priority === 1 && s.cold && (t.t1 <= L || t.t0 >= R)) {return false;}
 +      const k = s.signalId + '/' + t.key;
 +      let c = covered.get(k);
 +      if (c === undefined) {c = this.coveredExact(s, t); covered.set(k, c);}
@@ -3702,8 +3715,9 @@ index 0000000..498e0bf
 +    }, this.windowTimeout(who));
 +    this.inflight.set(id, {id, tiles: span, priority, buckets, signals: who.map((s) => s.signalId), sentAt: performance.now(), gen: this.generation, timer});
 +    this.stats.requests++;
++    // cmux: prefetch is marked, so the helper queues it behind visible work (one running task at most)
 +    vscodeWrapper.sendV2Request({id, cmd: 'window', signals: who.map((s) => ({signalId: s.signalId, width: s.width})),
-+      t0: span[0].t0, t1: span[span.length - 1].t1, buckets: buckets * span.length});
++      t0: span[0].t0, t1: span[span.length - 1].t1, buckets: buckets * span.length, ...(priority > 0 ? {prefetch: true} : {})});
 +  }
 +
 +  // Signals no longer shown in any row drop their windows after a few seconds (M8). The
@@ -3895,6 +3909,7 @@ index 0000000..498e0bf
 +      if (stale && stale.has(h.signalId) && h.alias !== undefined) {return;} // (from the dropped alias)
 +      answered.add(s.signalId);
 +      s.answered = true;
++      s.cold = !!h.ranged && !h.warm;
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
 +      if (this.hybrid && typeof h.total === 'number') {this.decideCount(s, h.total);} // the helper knows its whole count
 +      if (err !== null || raw === null) {this.fail(s, err || 'no data'); return;}

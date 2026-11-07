@@ -25,7 +25,10 @@
 //     stores, derived signals and queued work and replies {reused: true}; reload: true forces
 //     a real reopen (a new epoch, as below).
 //   children {scopeOffsetIdx, scopePath} -> {scopes, vars}
-//   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?}
+//   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?, prefetch?}
+//     (prefetch: true: tiles the viewer reads ahead; its worker tasks queue behind every other
+//     interactive one, and its rebuilt rows go one task each, so a visible request waits for at
+//     most one running prefetch task)
 //     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?} | {signalId, error}]}
 //     (total: the signal's whole normalized change count, when it came from the store;
 //     absent for ranged answers. Same number as `count`'s.)
@@ -381,10 +384,18 @@ function enqueue(w, task, front = false) {
     w.busy.yieldSent = true;
     try { process.kill(w.pid, 'SIGUSR2'); } catch (e) { /* exiting */ }
   }
+  // Prefetch (window {prefetch: true}: tiles the page asks for once what's on screen is answered)
+  // goes behind every other interactive task, and other tasks go ahead of queued prefetch, so a
+  // visible request waits for at most the one prefetch task running (above background work).
+  if (task.req && task.req.prefetch) { task.prefetch = true; }
   if (front) {
     let k = 0;
     while (k < w.queue.length && w.queue[k].barrier) { k++; }
     w.queue.splice(k, 0, task);
+  } else if (task.prefetch) {
+    w.queue.push(task);
+  } else if (!cached && w.queue.some((x) => x.prefetch)) {
+    w.queue.splice(w.queue.findIndex((x) => x.prefetch), 0, task);
   } else if (cached) {
     let k = 0;
     while (k < w.queue.length && (w.queue[k].fast || w.queue[k].barrier)) { k++; }
@@ -1236,7 +1247,7 @@ const isCold = (id) => !derived.has(id) && !workerFor(id).state.cached.includes(
 const COLD_SPREAD = Number(process.env.FSDB_COLD_SPREAD ?? 16);  // 0: never split
 const COLD_PRIM_GROUP = 64;  // stored signals per ranged cold call (one reader floor each)
 function coldTask(req, op, ids, extra, spread = false) {
-  const groups = new Map();
+  const groups = new Map(), solo = [];
   if (spread === 'even' && COLD_SPREAD > 0 && ids.length >= 2 * COLD_SPREAD) {
     const ws = [...workers].sort((a, b) => busyness(a) - busyness(b));
     const k = Math.min(ws.length, Math.floor(ids.length / COLD_SPREAD));
@@ -1255,7 +1266,9 @@ function coldTask(req, op, ids, extra, spread = false) {
     const pool = free.length ? free.slice(0, pg.length + rest.length) : [leastBusy()];
     pg.forEach((g, k) => { for (const id of g) { add(pool[k % pool.length], id); } });
     const others = pool.length > pg.length ? pool.slice(pg.length) : pool;
-    rest.forEach((id, k) => add(others[k % others.length], id));
+    // (a prefetch's rebuilt rows go one task each: they cost by the range, so one row's task is
+    // all a visible request that arrives meanwhile waits for)
+    if (req.prefetch) { rest.forEach((id, k) => solo.push([others[k % others.length], [id]])); } else { rest.forEach((id, k) => add(others[k % others.length], id)); }
   } else {
     for (const id of ids) {
       const w = leastBusy();
@@ -1263,7 +1276,7 @@ function coldTask(req, op, ids, extra, spread = false) {
       groups.get(w).push(id);
     }
   }
-  return Promise.all([...groups].map(([w, gids]) => new Promise((resolve, reject) => {
+  return Promise.all([...groups, ...solo].map(([w, gids]) => new Promise((resolve, reject) => {
     const task = enqueue(w, { op, signalIds: gids, ...extra, req });
     req.parts = [...(req.parts || []), { w, task }];
     task.done = (m) => {
