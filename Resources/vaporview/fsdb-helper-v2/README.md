@@ -88,6 +88,8 @@ What is streamed, and when:
   takes from one shared queue, about 250 ms of work each (100 ms in the background). A cheap signal added after a
   heavy one waits for one piece at most, a heavy one is spread over the pool, and a pan never waits for a whole
   load. Cancelling a load's last request keeps it going in the background (at most 8 such loads, the furthest along); `free` of the signal drops it.
+  Pieces wait in `/dev/shm` files until their join, which deletes them; that is RAM no worker's memory guard sees, so
+  their total is capped (`FSDB_SHM_CAP`, 512 MB): above it, only the load nearest done gets more pieces.
 - *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
   the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
 
