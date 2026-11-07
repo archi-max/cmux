@@ -374,6 +374,37 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(early?.first is NSNull, "lossy: a query in the evicted span has no answer: \(String(describing: early))")
   }
 
+  // GitHub #2, the page: with no clock period known, Run, Step and Run Until are off and refuse with a clear
+  // error, and time does not move; with one, bad cycle counts are refused rather than rounded to a cycle.
+  func periodChecks(known: Bool) async {
+    await add(["tb", "clk"])
+    _ = await waitFor(10000) { (await self.frame("L.rows().length") as? Int ?? 0) == 1 }
+    let opened = await sim("S.open().then(() => 'opened', (e) => String(e.message || e))") as? String
+    expect(opened == "opened", "period \(known): live simulation opens: \(String(describing: opened))")
+    let t0 = await sim("S.state().t") as? Int ?? -1
+    if !known {
+      let off = await call("return ['sim-run','sim-step','sim-until'].map((id) => document.getElementById(id).disabled)") as? [Bool]
+      expect(off == [true, true, true], "no period: Run, Step and Run Until are off: \(String(describing: off))")
+      for js in ["S.step()", "S.run(10)", "S.until(\"tb.clk == 'd1\", 5)"] {
+        let r = await sim("\(js).then(() => 'ran', (e) => String(e.message || e))") as? String ?? ""
+        expect(r != "ran" && r.contains("clock"), "no period: \(js) refused, naming the clock: \(r)")
+      }
+      let t1 = await sim("S.state().t") as? Int ?? -1
+      expect(t1 == t0, "no period: time does not move: \(t0) -> \(t1)")
+    } else {
+      for bad in ["0", "-3", "1.5", "'x'"] {
+        let r = await sim("S.run(\(bad)).then(() => 'ran', (e) => String(e.message || e))") as? String ?? ""
+        _ = await waitIdle()
+        let t1 = await sim("S.state().t") as? Int ?? -1
+        expect(r != "ran" && t1 == t0, "run(\(bad)) is refused, not rounded to a cycle: \(r), t \(t0) -> \(t1)")
+      }
+      _ = await sim("S.run(3)")
+      _ = await waitIdle()
+      let t2 = await sim("S.state().t") as? Int ?? -1
+      expect(t2 == t0 + 3 * 2000, "run(3) advances exactly 3 periods: \(t0) -> \(t2)")
+    }
+  }
+
   func close() {
     helper?.stop()
     window.orderOut(nil)
@@ -400,6 +431,14 @@ func pageChecks() async throws {
   if await lossy.open(home: home) { await lossy.lossChecks() } else { expect(false, "the page opened (lossy)") }
   lossy.close()
   unsetenv("CMUX_SIM_BUFFER"); unsetenv("FAKE_BATCH_CYCLES")
+  let known = Page(live: true)
+  if await known.open(home: home) { await known.periodChecks(known: true) } else { expect(false, "the page opened (period)") }
+  known.close()
+  setenv("FAKE_REPORT_PERIOD", "0", 1)
+  let noPeriod = Page(live: true)
+  if await noPeriod.open(home: home) { await noPeriod.periodChecks(known: false) } else { expect(false, "the page opened (no period)") }
+  noPeriod.close()
+  unsetenv("FAKE_REPORT_PERIOD")
 }
 
 Task { @MainActor in
