@@ -195,7 +195,7 @@ def scan(args, base, found, depth, unplaced=None):
             if not os.path.isabs(args[i + 1]) and base is None:
                 return False  # where VCS ran is not known: a relative file list can't be found
             path = args[i + 1] if os.path.isabs(args[i + 1]) else os.path.join(base, args[i + 1])
-            if unplaced is not None and arg != "-F" and not os.path.isabs(args[i + 1]):
+            if unplaced is not None and not os.path.isabs(args[i + 1]):
                 up = os.path.dirname(unplaced)
                 while True:
                     if os.path.exists(os.path.join(up, args[i + 1])):
