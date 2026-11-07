@@ -402,6 +402,58 @@ struct SSHTuiShellIntegrationTests {
         #expect(result.stdout.contains("cmux=[] zdotdir=[unset]"), "\(result.stdout)")
     }
 
+    static let refusalNotice = "cmux: shell integration disabled: "
+
+    /// A refused chain costs the terminal `cmux open` and the Files panel's `cd`
+    /// tracking; one line says why, HOME-relative, once per terminal.
+    @Test("A refused chain prints one HOME-relative line; a private one prints none")
+    func refusalIsReportedOnce() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let path = try sandbox.fakeGroupDatabase(nil)
+            let fine = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            #expect(!fine.stderr.contains(Self.refusalNotice), "\(name): \(fine.stderr)")
+            // Both the CLI and the hook are refused here; one line covers them.
+            try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+            let refused = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            let lines = refused.stderr.components(separatedBy: "\n").filter { $0.contains(Self.refusalNotice) }
+            #expect(lines.count == 1, "\(name): \(refused.stderr)")
+            #expect(lines.first?.hasPrefix(Self.refusalNotice + "~ ") == true, "\(name): \(lines)")
+            #expect(lines.first?.contains("cmux open") == true, "\(name): \(lines)")
+            #expect(!refused.stderr.contains(sandbox.home), "\(name): \(refused.stderr)")
+            // Only the hook refused: the line names the file, below HOME.
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sandbox.home)
+            let env = sandbox.hookDirectory + "/" + (name == "bash" ? "shell/bash-env" : "shell/zsh/.zshenv")
+            try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: env)
+            let hook = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            let relative = "~/" + env.dropFirst(sandbox.home.count + 1)
+            #expect(hook.stderr.components(separatedBy: "\n").filter { $0.contains(Self.refusalNotice + relative + " ") }.count == 1,
+                    "\(name): \(hook.stderr)")
+        }
+    }
+
+    @Test("A symlinked ~/.cmux-ssh is reported; a configured command's output never is")
+    func refusalNoticeCases() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let path = try sandbox.fakeGroupDatabase(nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+        let configured = try sandbox.runLoginShell(input: "", extraEnvironment: ["PATH": path],
+                                                   launch: ShellSandbox.connection().commandArguments("echo done"))
+        #expect(configured.stdout.contains("done"), "\(configured.stdout) \(configured.stderr)")
+        #expect(!configured.stderr.contains(Self.refusalNotice), "\(configured.stderr)")
+        #expect(!configured.stdout.contains(Self.refusalNotice), "\(configured.stdout)")
+
+        let fresh = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let elsewhere = fresh.root + "/elsewhere"
+        try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: fresh.home + "/.cmux-ssh", withDestinationPath: elsewhere)
+        let linked = try fresh.runLoginShell(input: "true\n", extraEnvironment: ["PATH": try fresh.fakeGroupDatabase(nil)])
+        let lines = linked.stderr.components(separatedBy: "\n").filter { $0.contains(Self.refusalNotice) }
+        #expect(lines.count == 1 && lines.first?.hasPrefix(Self.refusalNotice + "~/.cmux-ssh ") == true, "\(linked.stderr)")
+    }
+
     static let setfacl: String? = ["/usr/bin/setfacl", "/bin/setfacl"].first { FileManager.default.isExecutableFile(atPath: $0) }
 
     /// POSIX ACLs (Linux): a named entry that can write HOME or the hook chain
