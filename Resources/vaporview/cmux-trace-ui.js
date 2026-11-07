@@ -1142,6 +1142,8 @@
     return loadStep(f.path, f.time, 0, true, { gotoTime: f.time, direction: f.direction });
   }
   async function addTargets(e) {
+    // (a modport's target names the modport port, not a dumped signal: the interface's own is the row)
+    if (e.kind === 'modport') { return; }
     for (const t of e.targets || []) {
       if (String(t).startsWith('$local:')) { continue; }
       try { await waveform.link.addSignal(dumpSegments(toDump(t))); } catch (error) { host.log(error); }
@@ -1176,9 +1178,9 @@
         const trust = el('td');
         if (a.trust) { const b = el('span', 'badge ' + a.trust, s['traceTrust_' + a.trust] || a.trust); b.title = (a.reasons || []).map(reasonText).join('\n'); trust.append(b); }
         const actions = el('td');
-        actions.append(button('+', s.traceLoadsAdd, () => addTargets(e)));
+        if (e.kind !== 'modport') { actions.append(button('+', s.traceLoadsAdd, () => addTargets(e))); }
         // (forward needs the target dumped: any non-local target can be followed, even with no backward follow)
-        const fwd = (e.targets || []).find((x) => x && !String(x).startsWith('$local:'));
+        const fwd = e.kind === 'modport' ? null : (e.targets || []).find((x) => x && !String(x).startsWith('$local:'));
         if (a.follow) { actions.append(button(s.traceLoadsFollow, format(s.traceStepTitle, a.follow.path, '', number(a.follow.time)), () => followLoad({ index: i }))); }
         else if (fwd) { actions.append(button(s.traceLoadsFollow, format(s.traceStepTitle, fwd, '', ''), () => followLoad({ index: i }))); }
         tr.append(code, at, what, trust, actions);

@@ -544,6 +544,44 @@ public:
         writeLocProp(w, "loc", inst.location, inst.name.size());
         w.writeProperty("ports");
         writePorts(w, inst, parent);
+        // An interface: its modports and each one's ports (direction, the interface signal it
+        // names), for load trace (a modport taking a signal as an input is a load of it).
+        if (inst.getDefinition().definitionKind == DefinitionKind::Interface) {
+            w.writeProperty("interface");
+            w.writeValue(true);
+            w.writeProperty("modports");
+            w.startArray();
+            for (auto& member : inst.body.members()) {
+                if (member.kind != SymbolKind::Modport)
+                    continue;
+                auto& modport = member.as<ModportSymbol>();
+                w.startObject();
+                w.writeProperty("name");
+                w.writeValue(modport.name);
+                writeLocProp(w, "loc", modport.location, modport.name.size());
+                w.writeProperty("ports");
+                w.startArray();
+                for (auto& pm : modport.members()) {
+                    if (pm.kind != SymbolKind::ModportPort)
+                        continue;
+                    auto& port = pm.as<ModportPortSymbol>();
+                    w.startObject();
+                    w.writeProperty("name");
+                    w.writeValue(port.name);
+                    w.writeProperty("dir");
+                    w.writeValue(toString(port.direction));
+                    if (port.internalSymbol) {
+                        w.writeProperty("internal");
+                        w.writeValue(port.internalSymbol->name);
+                    }
+                    writeLocProp(w, "loc", port.location, port.name.size());
+                    w.endObject();
+                }
+                w.endArray();
+                w.endObject();
+            }
+            w.endArray();
+        }
         // Value parameters and localparams of the body (not its generate blocks'): integers without
         // x/z as numbers, others as slang prints them; cmux compares them with the KDB's.
         w.writeProperty("params");

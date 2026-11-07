@@ -1351,12 +1351,14 @@
     // Load trace: the static readers of the signal at `path` (design path), in instance path then
     // source order, one page at a time ({ offset, limit }, limit at most 512, 64 by default).
     // { signal, total, entries, next (the next page's offset, or null), limits }. An entry: { kind
-    // ('assign' | 'initializer' | 'stmt' | 'event' | 'portIn' | 'portOut'), role ('data' |
-    // 'condition' | 'index' | 'sensitivity' | 'connection'), instance, src, loc, targets (the paths
-    // it writes: the next hop; block locals as `$local:` names), procKind?, procLoc?, port?,
-    // maybe? (it reads the whole array the signal is an element of) }. Not seen: reads from other
-    // instances through hierarchical references (limits.hierarchical), and statements slang could
-    // not elaborate (limits.opaque counts them).
+    // ('assign' | 'initializer' | 'stmt' | 'event' | 'portIn' | 'portOut' | 'modport'), role ('data' |
+    // 'condition' | 'index' | 'sensitivity' | 'connection' | 'opaque'), instance, src, loc, targets
+    // (the paths it writes: the next hop; block locals as `$local:` names), procKind?, procLoc?,
+    // port?, maybe? (it reads the whole array the signal is an element of, or names it in a
+    // statement slang could not elaborate), via? ('interface': a read through an interface port) }.
+    // Not seen: reads from other instances through hierarchical references (limits.hierarchical;
+    // an interface's are walked: limits.interfaceWalk), and what statements slang could not
+    // elaborate read without naming the signal (limits.opaque counts them).
     async function loads(path, opts) {
       const all = await collectLoads(path);
       if (all.error) { return all; }
@@ -1368,6 +1370,40 @@
       const limit = Math.max(1, Math.min(512, Number(o.limit) || 64));
       const offset = Math.max(0, Number(o.offset) || 0);
       return { total: list.length, entries: list.slice(offset, offset + limit), next: offset + limit < list.length ? offset + limit : null };
+    }
+    // An interface's signal: each modport taking it as an input (kind 'modport', a connection),
+    // and its reads through the interface port in the instances under the interface's parent
+    // (where its ports can reach: `via: 'interface'`), walked down to INTERFACE_WALK instances.
+    const INTERFACE_WALK = 512;
+    async function interfaceLoads(m, path, base, out, limits) {
+      for (const mp of m.modports || []) {
+        for (const pt of mp.ports || []) {
+          if ((pt.internal || pt.name) !== base || !['In', 'InOut', 'Ref'].includes(pt.dir)) { continue; }
+          const e = { kind: 'modport', role: 'connection', instance: m.path, src: `modport ${mp.name} (${pt.dir === 'In' ? 'input' : pt.dir === 'Ref' ? 'ref' : 'inout'} ${pt.name})`,
+            port: mp.name + '.' + pt.name, loc: locOf(m, pt.loc || mp.loc), targets: [m.path + '.' + mp.name + '.' + pt.name] };
+          loadRefs.set(e, { m, modport: mp });
+          out.push(e);
+        }
+      }
+      if (!m.parent) { return; }
+      const pm = await model(m.parent);
+      const todo = pm ? [pm] : [];
+      let seen = 0;
+      while (todo.length) {
+        const x = todo.shift();
+        if (++seen > INTERFACE_WALK) { limits.interfaceWalk = { instances: INTERFACE_WALK, capped: true }; return; }
+        if (x !== pm) {
+          const found = [];
+          loadsIn(x, path, found, limits);
+          found.forEach((e) => { e.via = 'interface'; out.push(e); });
+        }
+        for (const c of x.children || []) {
+          if (c.path === m.path) { continue; }
+          const cm = await model(c.path);
+          if (cm) { todo.push(cm); }
+        }
+      }
+      limits.interfaceWalk = { instances: seen, capped: false };
     }
     async function collectLoads(path) {
       const where = await models.lookup(path);
@@ -1396,6 +1432,7 @@
           }
         }
       }
+      if (m.interface) { await interfaceLoads(m, path, base, out, limits); }
       out.sort(byPlace);
       return { entries: out, limits, instances: new Set(out.map((e) => e.instance)).size };
     }
@@ -1455,6 +1492,10 @@
         const f = await changedAt(target, since);
         if (f === null) { return { status: 'read', time: since, reasons }; }
         return f ? { status: 'propagated', time: since, follow: f, reasons } : { status: 'noChange', time: since, reasons };
+      }
+      if (e.kind === 'modport') {
+        if (since === null || since === undefined) { return { status: 'notEvaluated', reasons: [{ code: 'notDumped' }] }; }
+        return { status: 'read', time: since, reasons };
       }
       if (e.kind === 'initializer') { return { status: 'start', time: 0, reasons }; }
       const p = ref.p;
@@ -1522,7 +1563,7 @@
     // ({ path, time | null, direction: 'forward' }), when the dump can search forward; null when it
     // can't or the entry has no dumped target (the caller keeps the entry's backward follow).
     async function nextOf(e, t) {
-      if (!e || typeof dump.nextChange !== 'function') { return null; }
+      if (!e || e.kind === 'modport' || typeof dump.nextChange !== 'function') { return null; }
       const target = (e.targets || []).find((x) => x && !isLocal(x));
       if (!target) { return null; }
       const at = await dump.nextChange(target, t);
