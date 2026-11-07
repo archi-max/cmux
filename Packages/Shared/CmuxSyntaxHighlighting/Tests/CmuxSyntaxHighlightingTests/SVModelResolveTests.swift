@@ -27,16 +27,8 @@ import Testing
             return (best, best.count < path.count ? String(path.dropFirst(best.count + 1)) : "")
         }
 
-        func roots() -> [String: [HierarchyNode]] {
-            var roots: [String: [HierarchyNode]] = [:]
-            for top in tops {
-                var kids = models.keys.filter { $0.hasPrefix(top + ".") && !$0.dropFirst(top.count + 1).contains(".") }
-                    .sorted().map { HierarchyNode(name: String($0.dropFirst(top.count + 1)), isScope: true) }
-                kids += ((models[top]?["signals"] as? [String: Any]) ?? [:]).keys.sorted().map { HierarchyNode(name: $0, isScope: false) }
-                roots[top] = kids
-            }
-            return roots
-        }
+        /// The design's instances, as the sidecar's `instances` lists them (sorted).
+        var instances: [String] { models.keys.sorted() }
     }
 
     /// The dump's hierarchy: each scope path's children.
@@ -48,7 +40,7 @@ import Testing
             mapping: mapping,
             lookup: { design.lookup($0) },
             model: { design.models[$0] },
-            designRoots: { design.roots() },
+            designRoots: { await SVModelResolve.designRoots(tops: design.tops, instances: design.instances, model: { design.models[$0] }) },
             dumpChildren: { dump[HierarchyPathMapping.join($0)] }
         )
     }
@@ -131,6 +123,56 @@ import Testing
             == .signal(designPath: "soc.dfp_read", designPrefix: "soc", dumpPrefix: "tb.dut"))
         #expect(try await resolve("tb.dut.mmio_rdata", design: design, dump: dump)
             == .signal(designPath: "soc.mmio_rdata", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    // Inference beyond the design's tops (x-root review M3).
+
+    static let gen = FakeDesign(models: [
+        "soc": signals(["clk": bit, "g_blk.x": word32, "g_blk.y": bit]),
+        "soc.g[0].u_sub": signals(["d": word32]),
+        "soc.g[1].u_sub": signals(["d": word32]),
+    ], tops: ["soc"])
+
+    @Test func aGenerateBlocksSignalUnderARenamedTopIsInferred() async throws {
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true)],
+            "tb.dut": [HierarchyNode(name: "clk", isScope: false, width: 1), HierarchyNode(name: "g_blk", isScope: true),
+                       HierarchyNode(name: "g[0]", isScope: true), HierarchyNode(name: "g[1]", isScope: true)],
+            "tb.dut.g_blk": [HierarchyNode(name: "x", isScope: false, width: 32), HierarchyNode(name: "y", isScope: false, width: 1)],
+            "tb.dut.g[0]": [HierarchyNode(name: "u_sub", isScope: true)],
+        ]
+        #expect(try await resolve("tb.dut.g_blk.x", design: Self.gen, dump: dump)
+            == .signal(designPath: "soc.g_blk.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+        #expect(try await resolve("tb.dut.g[0].u_sub.d", design: Self.gen, dump: dump)
+            == .signal(designPath: "soc.g[0].u_sub.d", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func aDumpScopeNamedForADeeperInstanceIsInferred() async throws {
+        // The dump's testbench names the design instance `dut`; the design's is `u_dut`.
+        let design = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]),
+            "tb.u_dut": Self.signals(["clk": Self.bit]),
+            "tb.u_dut.u_alu": Self.signals(["x": Self.word32]),
+            "tb.u_dut.u_reg": Self.signals(["q": Self.word32]),
+        ], tops: ["tb"])
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+            "tb.dut": [HierarchyNode(name: "u_alu", isScope: true), HierarchyNode(name: "u_reg", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+            "tb.dut.u_alu": [HierarchyNode(name: "x", isScope: false, width: 32)],
+        ]
+        #expect(try await resolve("tb.dut.u_alu.x", design: design, dump: dump)
+            == .signal(designPath: "tb.u_dut.u_alu.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
+        let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
+        #expect(roots["soc"] == [
+            HierarchyNode(name: "g[0]", isScope: true), HierarchyNode(name: "g[1]", isScope: true), HierarchyNode(name: "g_blk", isScope: true),
+            HierarchyNode(name: "clk", isScope: false),
+        ])
+        #expect(roots["soc.g[0].u_sub"] == [])
     }
 
     @Test func wordIndexesAreTheEnginesDigits() {

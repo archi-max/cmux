@@ -265,7 +265,7 @@ enum WaveformTrace {
         return text + "\n\n" + first
     }
 
-    /// Each design top and its children (child instances, then its signals), for inference.
+    /// Each design top and its children, for inference (SVModelResolve.designRoots).
     private static func designRoots(of design: Design) async throws -> [String: [HierarchyNode]] {
         let hierarchy: (tops: [String], instances: [String])
         if let known = design.hierarchy {
@@ -275,17 +275,9 @@ enum WaveformTrace {
             hierarchy = (reply["tops"] as? [String] ?? [], reply["instances"] as? [String] ?? [])
             design.hierarchy = hierarchy
         }
-        var roots: [String: [HierarchyNode]] = [:]
-        for top in hierarchy.tops {
-            var children = hierarchy.instances
-                .filter { $0.hasPrefix(top + ".") && !$0.dropFirst(top.count + 1).contains(".") }
-                .map { HierarchyNode(name: String($0.dropFirst(top.count + 1)), isScope: true) }
-            if let model = await instanceModel(top, in: design), let signals = model["signals"] as? [String: Any] {
-                children += signals.keys.sorted().map { HierarchyNode(name: $0, isScope: false) }
-            }
-            roots[top] = children
+        return await SVModelResolve.designRoots(tops: hierarchy.tops, instances: hierarchy.instances) { path in
+            await instanceModel(path, in: design)
         }
-        return roots
     }
 
     // MARK: Entry points
