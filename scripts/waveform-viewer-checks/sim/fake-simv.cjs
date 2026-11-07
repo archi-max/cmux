@@ -97,7 +97,11 @@ if (UCLI) require('node:readline').createInterface({ input: process.stdin }).on(
   const c = l.trim();
   if (c === 'run') { if (!started) { started = true; send({ ev: 'ready', t, precision: -12 }); } return; }
   if (c === 'quit') process.exit(0);
+  // FAKE_UCLI_CKPT_ERR: the simulator refuses checkpoints (its Error-[...] text, as VCS prints them)
+  if (c.startsWith('checkpoint -add') && process.env.FAKE_UCLI_CKPT_ERR) { process.stdout.write('Error-[UCLI-CHECKPOINT-FAIL] Checkpoint failed\n  Cannot create the checkpoint.\nucli% '); return; }
   if (c.startsWith('checkpoint -add')) { if (!process.env.FAKE_UCLI_STUCK) process.stdout.write('1\nucli% '); return; }   // STUCK: no prompt ever
+  // a checkpoint id the run never made (99), as VCS answers it
+  if (c === 'checkpoint -join 99') { process.stdout.write("Error-[UCLI-CHECKPOINT-INVALID-ID] Invalid checkpoint ID\n  Checkpoint ID '99' given to 'Join' command is invalid: checkpoint Id 99 does\n  not exist.\nucli% "); return; }
   // a file save the simulator refuses (as VCS does at a $stop, which a held serve point is): names with "refuse"
   if (c.startsWith('save ') && /refuse/.test(c)) { process.stdout.write("Error-[UCLI-SAVE-STOP] Save at $stop\n  Cannot save the state when the simulation is stopped at the $stop() task.\nucli% "); return; }
   process.stdout.write('ucli% ');

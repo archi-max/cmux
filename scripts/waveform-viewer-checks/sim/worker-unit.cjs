@@ -247,7 +247,14 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     const tm = await w.reply(w.send({ cmd: 'time' }).id);
     expect(!!so && !!so.result && !!rf && /restoreFile is not supported/.test(rf.error || '') && /\/dev\/null/.test(rf.error || '') && ms < 2000 && !!tm && !!tm.result,
       `restoreFile is refused at once (${ms} ms) with the reason, and the run still answers: save ${JSON.stringify(so && (so.result || so.error))}, ${JSON.stringify(rf)}, time ${JSON.stringify(tm && (tm.result || tm.error))}`);
+    const j = await w.reply(w.send({ cmd: 'restore', cp: 99 }).id);
+    expect(!!j && /UCLI-CHECKPOINT-INVALID-ID/.test(j.error || '') && !j.result, `restore: the simulator's refusal is an error: ${JSON.stringify(j)}`);
     await w.quit().catch(() => {});
+    const w2 = start(['--period', '10'], { FAKE_UCLI_CKPT_ERR: '1' }); await w2.ready;
+    const c = await w2.reply(w2.send({ cmd: 'checkpoint' }).id);
+    const tm2 = await w2.reply(w2.send({ cmd: 'time' }).id);
+    expect(!!c && /UCLI-CHECKPOINT-FAIL/.test(c.error || '') && !c.result && !!tm2 && !!tm2.result, `checkpoint: the simulator's refusal is an error, the run still answers: ${JSON.stringify(c)}`);
+    await w2.quit().catch(() => {});
   }
   // Write access (from the simctl library, prototype ae742cc): a write the build gives no access for is an error
   // that says a rebuild is needed; a park the library refuses (an unwritable hold) errors at once, and the
