@@ -353,11 +353,16 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
 // one request each, four workers: each in its own pieces paid the floor per piece.
 {
   const ids = [1, 2, 3, 4, 5, 6, 7, 8];
-  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 100])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ids), STUB_FLOOR_MS: '300' });
+  const loadLog = path.join(tmp, 'loads21.log');
+  fs.rmSync(loadLog, { force: true });
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 100])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ids), STUB_FLOOR_MS: '300', STUB_LOAD_LOG: loadLog });
   await kindsOf(h);
   const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
-  const last = Math.max(...rs.map((r) => r.at));
-  check(rs.every((r) => !r.error) && last < 900, `8 cheap primaries with a 300 ms floor: last at ${Math.round(last)} ms (two per call on four workers: ~500)`);
+  // (counted in reader calls, each one floor, not in wall-clock time: a busy machine made the
+  // timed version flaky)
+  const calls = fs.readFileSync(loadLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.ids.length);
+  check(rs.every((r) => !r.error) && calls.length <= 4 && calls.every((c) => c.op === 'load'),
+    `8 cheap primaries with a 300 ms floor: ${calls.length} reader calls of ${JSON.stringify(calls.map((c) => c.ids.length))} (two per call on four workers: 4; one each or in pieces: 8+)`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
   // (its change count says what it costs: 20.8M changes of 1 bit ~ 3 s)

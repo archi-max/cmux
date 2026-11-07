@@ -58,6 +58,7 @@ module.exports = {
   cacheSetLimit(n) { limit = n; }, cacheSetBounds() {},
   cacheStats: () => ({ bytes: 16 * store.size, limit, signals: [...store.keys()].map(entry) }),
   cacheLoad(ids) {
+    if (process.env.STUB_LOAD_LOG) { fs.appendFileSync(process.env.STUB_LOAD_LOG, JSON.stringify({ op: 'load', ids: ids.filter((id) => !store.has(id)) }) + '\n'); }
     sleep(floorOf(ids.filter((id) => !store.has(id))));
     return ids.map((id) => {
       if (store.has(id)) { return { ...entry(id), cached: true, loadMs: 0, walkMs: 0 }; }
@@ -101,6 +102,7 @@ module.exports = {
   },
   cacheWindowCold(ids, t0, t1) { if (navOnce) { throw new Error('cold read in a navDB-once reader'); } sleep(floorOf(ids) + COLD_MS * ids.length); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
   cacheWalkSlice(id, s, e, path) {
+    if (process.env.STUB_LOAD_LOG) { fs.appendFileSync(process.env.STUB_LOAD_LOG, JSON.stringify({ op: 'slice', ids: [id] }) + '\n'); }
     const ms = share(id, s, e) + floorOf([id]);
     sleep(ms);
     if (BAD.has(id)) { throw new Error('unsupported encoding'); }
