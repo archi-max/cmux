@@ -598,12 +598,38 @@ function runTask(w, task, front) {
 // Never -with_computed_signal: it loads every secondary (> 6 GB on 1.7 GB).
 const KINDS_FILE = 'kinds.v1.json';
 const SEC_SETUP_MS = Number(process.env.FSDB_SEC_SETUP_MS || 190);
-const kinds = { state: 'none', source: null, primaries: null, error: null, ms: 0, proc: null };
-function kindOf(id) { return kinds.state === 'ready' ? (kinds.primaries.has(id) ? 'p' : 's') : null; }
+// Three kinds, each from evidence (#7): 'p' listed by fsdbdebug (stored); 's' rebuilt, only from
+// positive evidence (none comes from the reader today: its ffrIsComputedVar and
+// ffrHasBeenComputed answer false for every var of these dumps); 'u' unknown, not listed. Not
+// listed is not proof of rebuilt: stored packed-struct parents are listed nowhere. An unknown
+// loads as a secondary (few workers; the conservative use of the pool), may take a spare warm
+// slot (at most FSDB_WARM_UNKNOWN), and is not taken as a stored alias target. warmSlow: unknowns
+// measured making their warm calls slow (likely rebuilt per window), kept out of warm sets.
+const kinds = { state: 'none', source: null, primaries: null, secondaries: new Map(), warmSlow: new Map(), error: null, ms: 0, proc: null };
+function kindOf(id) {
+  if (kinds.state !== 'ready') { return null; }
+  return kinds.primaries.has(id) ? 'p' : kinds.secondaries.has(id) ? 's' : 'u';
+}
+// Where a signal's kind comes from.
+function kindSource(id) {
+  const k = kindOf(id);
+  return k === 'p' ? `listed by fsdbdebug (${kinds.source})` : k === 's' ? kinds.secondaries.get(id) : k === 'u' ? (kinds.warmSlow.get(id) || 'not listed by fsdbdebug') : 'kinds not known';
+}
+const rebuiltLike = (k) => k === 's' || k === 'u';  // (scheduled as a secondary)
+// stats.kinds: how many of the file's signals are of each kind, where each kind comes from, and
+// the unknowns measured slow when warm.
+function kindCounts() {
+  let ids = [];
+  try { ids = [...getIndex().byId.keys()]; } catch (e) { /* no index */ }
+  const counts = { p: 0, s: 0, u: 0 };
+  for (const id of ids) { counts[kindOf(id)]++; }
+  return { counts, model: { p: `listed by fsdbdebug (${kinds.source})`, s: 'positive evidence only (none from the reader)', u: 'not listed by fsdbdebug' },
+    warmSlow: [...kinds.warmSlow].map(([id, why]) => ({ id, why })) };
+}
 function stopKinds() {
   if (kinds.proc) { try { kinds.proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
   if (kinds.timer) { clearInterval(kinds.timer); }
-  Object.assign(kinds, { state: 'none', source: null, primaries: null, error: null, ms: 0, proc: null, timer: null });
+  Object.assign(kinds, { state: 'none', source: null, primaries: null, secondaries: new Map(), warmSlow: new Map(), error: null, ms: 0, proc: null, timer: null });
 }
 function startKinds(file) {
   stopKinds();
@@ -724,7 +750,7 @@ function addAlias(s, p) {
   if (aliases.has(s)) { return aliases.get(s).p !== p ? 'has another candidate' : null; }
   if (!width(s) || width(s) !== width(p)) { return 'widths differ'; }
   if (derived.has(s) || derived.has(p)) { return 'derived'; }
-  if (kindOf(p) !== 'p' || kindOf(s) !== 's') { return 'not a rebuilt and a stored signal'; }
+  if (kindOf(p) !== 'p' || kindOf(s) === 'p') { return 'not a stored signal and another one'; }  // (s: rebuilt or unknown; the whole streams are compared)
   if (aliasKnown.get(s) === p) { aliases.set(s, { p, state: 'verified' }); return null; }
   aliases.set(s, { p, state: 'checking' });
   checkAlias(s, p);
@@ -923,7 +949,7 @@ function pickJob(interactive, w = null, limit = false) {
     if (j.failed || j.adopting || j.batching || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
     if (!j.redo.length && j.next >= j.end) { continue; }  // every piece handed out
     // (a secondary's pieces stay on few workers while other loads can use the rest)
-    if (limit && w && j.kind === 's' && !j.workers.has(w.i) && j.workers.size >= j.maxW) { continue; }
+    if (limit && w && rebuiltLike(j.kind) && !j.workers.has(w.i) && j.workers.size >= j.maxW) { continue; }
     const rest = j.doneLen > 0 ? (j.doneMs / j.doneLen) * (j.end - j.next) : 0;  // est. ms still to hand out
     // (a measured job with at most one piece of work left finishes first: that is a draw)
     const cls = !j.pieces.length ? 0 : j.doneLen > 0 ? (rest <= PIECE_MS ? -1 : 1) : 2;
@@ -1072,7 +1098,7 @@ function pieceDone(j, p, m, w) {
   j.doneMs += m.ms;
   j.doneLen += Math.min(p.e, j.end) - p.s;
   j.done.push({ len: Math.min(p.e, j.end) - p.s, ms: m.ms });
-  if (j.kind === 's') {  // as many workers as keep their setup under 1/4 of the work
+  if (rebuiltLike(j.kind)) {  // as many workers as keep their setup under 1/4 of the work
     // (a worker's first piece of the signal includes its setup: not part of the work's rate)
     j.firstOn = j.firstOn || new Set();
     const first = !j.firstOn.has(w.i);
@@ -1255,6 +1281,9 @@ const HOT = process.env.FSDB_WARM !== '0';
 const HOT_MAX = Number(process.env.FSDB_WARM_SIGNALS || 16);
 const HOT_RECENT_MS = Number(process.env.FSDB_WARM_RECENT_MS || 3000);
 const HOT_RSS = Number(process.env.FSDB_WARM_RSS_MB || 600) * 1e6;
+const HOT_UNKNOWN = Number(process.env.FSDB_WARM_UNKNOWN ?? 2);
+// A warm call over this (and over 3 floors) with unknowns in its set marks them slow.
+const HOT_SLOW_MS = Number(process.env.FSDB_WARM_SLOW_MS || 250);
 // A set can be split over HOT_READERS processes (by estimated changes), read in parallel: a
 // warm call's cost is mostly its walk. Off by default: at 1% of a 10 GB dump, 10 rows went from
 // 201 to 184 ms with two (one heavy row's walk dominates), for a second ~250 MB process.
@@ -1375,8 +1404,13 @@ function hotWanted() {
   // Stored (primary) signals only, once the kinds are known: a warm reader saves the per-call
   // floor, but a rebuilt signal costs the same rebuild per window (~175 ms at 1% of 1.7 GB) and
   // in one warm process they would be read one after another instead of spread over workers.
-  const ok = (id) => kinds.state !== 'ready' || kindOf(id) === 'p';
-  return [...hot.asked].filter(([id]) => ok(id) && !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).slice(0, Math.min(HOT_MAX, hot.limit)).map(([id]) => id);
+  // Unknowns (#7) take spare slots after the primaries, at most HOT_UNKNOWN, never one measured slow.
+  const max = Math.min(HOT_MAX, hot.limit);
+  const recent = [...hot.asked].filter(([id]) => !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  if (kinds.state !== 'ready') { return recent.slice(0, max); }
+  const prim = recent.filter((id) => kindOf(id) === 'p').slice(0, max);
+  const unk = recent.filter((id) => kindOf(id) === 'u' && !kinds.warmSlow.has(id)).slice(0, Math.max(0, Math.min(HOT_UNKNOWN, max - prim.length)));
+  return [...prim, ...unk];
 }
 function hotNote(ids) {
   if (!HOT || !openFile) { return; }
@@ -1394,7 +1428,8 @@ function hotCheck() {
   // (its baseline over the cap) is replaced by a smaller one (hot.limit, set by hotBuild).
   const grown = cur.filter((r) => r.rss > HOT_RSS && r.rss > r.base + Math.max(64e6, r.base / 4));
   const oversized = cur.some((r) => r.base > HOT_RSS) && hotKey(want) !== hotKey(cur.flatMap((r) => [...r.ids]));
-  if (cur.length && !grown.length && !oversized && outside * 4 < want.length) { return; }
+  const slow = cur.some((r) => [...r.ids].some((id) => kinds.warmSlow.has(id)));
+  if (cur.length && !grown.length && !oversized && !slow && outside * 4 < want.length) { return; }
   const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
   if (f && f.until > now) { if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, f.until - now + 10); } return; }
   // At most HOT_PROCS warm processes with the new ones: idle retiring readers go first.
@@ -1482,6 +1517,13 @@ async function hotPump(r) {
   for (const qs of groups.values()) {
     const ids = [...new Set(qs.flatMap((q) => q.ids))];
     const a = await hotCall(r, { op: qs[0].op, signalIds: ids, ...qs[0].range });
+    // Unknowns in a set whose warm call is slow are likely rebuilt per window (the whole set loads
+    // each call): measured, they leave the next set (hotCheck), and keep that as their provenance.
+    if (!a.error && kinds.state === 'ready' && (a.ms || 0) > Math.max(HOT_SLOW_MS, 3 * primFloor())) {
+      const unk = [...r.ids].filter((id) => kindOf(id) === 'u' && !kinds.warmSlow.has(id));
+      unk.forEach((id) => kinds.warmSlow.set(id, `measured: a warm call of its set took ${Math.round(a.ms)} ms`));
+      if (unk.length && !hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, 0); }
+    }
     for (const q of qs) {
       if (a.error) { q.resolve({ error: a.error }); continue; }
       const want = new Set(q.ids);
@@ -2693,7 +2735,8 @@ const handlers = {
         backoff: [...hot.fails].map(([fp, f]) => ({ size: fp.split(',').length, n: f.n, why: f.why, inMs: Math.max(0, Math.round(f.until - performance.now())) })) },
       aliases: { running: aliasRunning, checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
         verified: [...aliases].filter(([, a]) => a.state === 'verified').map(([x, a]) => [x, a.p]), bad: [...aliases].filter(([, a]) => a.state === 'bad').map(([x, a]) => [x, a.p]), log: aliasLog },
-      kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },
+      kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()),
+        ...(kinds.state === 'ready' ? kindCounts() : {}) },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
     };
