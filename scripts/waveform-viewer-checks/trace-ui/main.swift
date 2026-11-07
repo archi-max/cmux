@@ -835,32 +835,55 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         cases.push({ name: a + '->' + b + '->' + a + ' @19', hist: [[0, a], [10, b], [20, a]], time: 19 });
       } cases.push({ name: 'start ' + a, hist: [[0, a]], time: 5 }); }
       const wrong = [], ok = { v2: 0, plain: 0, v2history: 0, v2wide: 0 };
-      const run = async (kind) => {
-        for (const c of cases) {
+      // The same matrix with the dump starting at 100 (every time +100): with the start known (the
+      // open's timeStart) it must give the same answers; with it unknown (dumpStart 0), the only
+      // misses allowed are an edge at the dump's first time where SystemVerilog has none (the
+      // stream's first change read as from x: the known limit until the helper reports timeStart).
+      const shifted = { known: {}, unknown: {} }, shiftWrong = [], phantom = [];
+      const dumpStart = h.dumpStart;
+      const run = async (kind, shift, start) => {
+        h.dumpStart = () => start;
+        const into = shift === 0 ? ok : shifted[start === shift ? 'known' : 'unknown'];
+        into[kind] = into[kind] || 0;
+        for (const c0 of cases) {
+          const c = { name: c0.name, hist: c0.hist.map(([at, v]) => [at + shift, v]), time: c0.time + shift };
           m.custom.set(clk.signalId, c.hist);
           t.backendChanged();
-          await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 + shift });
           for (const edge of ['PosEdge', 'NegEdge', 'BothEdges']) {
             const got = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', c.time, edge);
             const want = expected(c.hist, c.time, edge);
-            if ((got === undefined ? null : got) === want) { ok[kind]++; } else if (wrong.length < 12) { wrong.push(kind + ' ' + edge + ' ' + c.name + ': ' + got + ', not ' + want); }
+            const g = got === undefined ? null : got;
+            if (g === want) { into[kind]++; continue; }
+            const line = kind + ' +' + shift + ' start ' + start + ' ' + edge + ' ' + c.name + ': ' + got + ', not ' + want;
+            if (shift && start !== shift && want === null && g === shift) { phantom.push(line); continue; }
+            const list = shift ? shiftWrong : wrong;
+            if (list.length < 12) { list.push(line); }
           }
         }
       };
       try {
-        m.plain(); await run('plain');
-        m.install(); await run('v2');
-        // The helper's edge queries fail: the page reads the history as the helper streams it.
-        m.fail.add(clk.signalId); m.normalizedDownloads = true; await run('v2history');
-        m.fail.clear(); m.normalizedDownloads = false;
-        // A 2-bit clock (its last bit the edge), through the helper's search.
-        clk.width = 2; m.widths.set(clk.signalId, 2); await run('v2wide');
-        return { wrong, ok, cases: cases.length * 3 };
-      } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
+        for (const [shift, start] of [[0, 0], [100, 100], [100, 0]]) {
+          m.plain(); await run('plain', shift, start);
+          m.install(); await run('v2', shift, start);
+          // The helper's edge queries fail: the page reads the history as the helper streams it.
+          m.fail.add(clk.signalId); m.normalizedDownloads = true; await run('v2history', shift, start);
+          m.fail.clear(); m.normalizedDownloads = false;
+          // A 2-bit clock (its last bit the edge), through the helper's search.
+          clk.width = 2; m.widths.set(clk.signalId, 2); await run('v2wide', shift, start);
+          clk.width = width; m.widths.clear();
+        }
+        return { wrong, ok, cases: cases.length * 3, shifted, shiftWrong, phantom: phantom.length, phantomFirst: phantom.slice(0, 3) };
+      } finally { h.dumpStart = dumpStart; m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
       """) as? [String: Any]
     print("[v2] SV clock edges: \(String(describing: svEdges?["ok"])) of \(String(describing: svEdges?["cases"])) each")
     expect((svEdges?["wrong"] as? [String])?.isEmpty == true && (svEdges?["cases"] as? Int ?? 0) >= 240,
            "a 1-bit clock's edges are SystemVerilog's on helper v2 (narrow, history, 2-bit) and the whole history, every 0/1/x/z pair: \(String(describing: svEdges?["wrong"]))")
+    print("[v2] SV clock edges, dump from 100: start known \(String(describing: svEdges?["shifted"])); \(String(describing: svEdges?["phantom"])) phantom first-time edges with the start unknown, e.g. \(String(describing: svEdges?["phantomFirst"]))")
+    let cases3 = svEdges?["cases"] as? Int ?? 0
+    let known = (svEdges?["shifted"] as? [String: Any])?["known"] as? [String: Int] ?? [:]
+    expect((svEdges?["shiftWrong"] as? [String])?.isEmpty == true && known.count == 4 && known.values.allSatisfy { $0 == cases3 },
+           "a dump from 100 with its start known gives the same edges as one from 0 (every path), and with it unknown misses only a phantom edge at 100: \(String(describing: svEdges?["shiftWrong"])); known \(known)")
 
     // The check hooks are not in the shipped page: only with the checks' window.cmuxTraceChecks.
     let hooks = await call("return { shipped: 'prevEdge' in (window.cmuxTraceUI || {}), checks: typeof (window.cmuxTraceChecks || {}).prevEdge }") as? [String: Any]
@@ -886,7 +909,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const at = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', time, edge);
           const ms = performance.now() - t0;
           m.delay = 0;
-          out[name] = { at, requests: m.sent.filter((r) => r.cmd === 'edge' || r.cmd === 'search').length, trips: Math.round(ms / 80) };
+          // Every request counts, the valueAt+prev point read too.
+          out[name] = { at, requests: m.sent.filter((r) => r.cmd === 'edge' || r.cmd === 'search' || r.cmd === 'valueAt').length, others: m.sent.filter((r) => !['edge', 'search', 'valueAt', 'cancel'].includes(r.cmd)).map((r) => r.cmd), trips: Math.round(ms / 80) };
         }
         delete clk.width; m.widths.set(clk.signalId, 2);
         m.custom.set(clk.signalId, [[0, '1'], [10, '0']]);
@@ -900,7 +924,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let wants: [String: Int] = ["rise": 30, "fall": 10, "both": 20, "neg": 20]
     for (name, want) in wants.sorted(by: { $0.key < $1.key }) {
       let c = cost?[name] as? [String: Any]
-      expect(c?["at"] as? Int == want && (c?["trips"] as? Int ?? 9) <= 2 && (c?["requests"] as? Int ?? 9) <= 4,
+      expect(c?["at"] as? Int == want && (c?["trips"] as? Int ?? 9) <= 2 && (c?["requests"] as? Int ?? 9) <= 4 && (c?["others"] as? [String])?.isEmpty == true,
              "v2 helper, a clean clock's \(name) edge: \(want) in at most 2 round trips and 4 requests: \(String(describing: c))")
     }
     expect(cost?.keys.contains("unknownWidth") == true && cost?["unknownWidth"] is NSNull,
