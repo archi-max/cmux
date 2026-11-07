@@ -6,15 +6,19 @@
 // until the warm set is ready, then read at windows of frac (default 0.01) of the dump at six
 // positions plus the first again; every warm answer must equal the cold one change for change
 // (count and records), and valueAt / valueAt {prev} of all rows at six times must equal the cold
-// answers. Exit 1 on any difference or when nothing was answered warm.
+// answers (WORKERS=k: workers per helper, default 2). Each warm prev is also checked against the row's history read with exact windows
+// (a separate read path, so an addon bug common to warm and cold point reads shows too; review
+// L10): the last change at or before t within 1% of the dump before it, or none there. Exit 1 on
+// any difference or when nothing was answered warm.
 import { spawn } from 'node:child_process';
+import zlib from 'node:zlib';
 
 const [launcher, file, scope, nStr, fracStr] = process.argv.slice(2);
 if (!launcher || !file || !scope) { console.error('usage: node warm-parity.mjs <launcher> <fsdb> <scope> [n] [frac]'); process.exit(2); }
 const n = Number(nStr || 16), frac = Number(fracStr || 0.01);
 
 function start(env) {
-  const p = spawn('bash', [launcher, '--workers', '2'], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, FSDB_BG_LOAD: '0', ...env } });
+  const p = spawn('bash', [launcher, '--workers', process.env.WORKERS || '2'], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, FSDB_BG_LOAD: '0', ...env } });
   let buf = Buffer.alloc(0), need = null, nid = 1, ready;
   const pend = new Map(), readyP = new Promise((r) => { ready = r; });
   const deliver = (msg, bin) => {
@@ -95,6 +99,19 @@ for (const at of [0.05, 0.2, 0.35, 0.62, 0.8, 0.93, 0.05]) {
     console.log(`DIFF ${s.path} at ${at}: warm ${x.warm ? 'yes' : 'no'} count ${x.count} vs ${z.count}`);
   }
 }
+// A row's changes in [a, b), from exact windows (split until exact), on the cold helper: [t, value].
+// The first record is the value at a; it is a change only when the count says one is at a.
+async function history(sig, a, b) {
+  const r = await cold.send('window', { signals: [{ signalId: sig.signalId, width: sig.width }], t0: a, t1: b, buckets: 1 << 20 });
+  const x = r.result && r.result.signals[0];
+  if (!x || x.error) { return null; }
+  if (!x.exact) { const m = Math.floor((a + b) / 2); const l = await history(sig, a, m), h = await history(sig, m, b); return l && h ? [...l, ...h] : null; }
+  const buf = zlib.inflateRawSync(r.bin.subarray(0, x.bytes)), w = sig.width, recs = [];
+  let t = 0;
+  for (let k = 0; k + 8 + w <= buf.length; k += 8 + w) { t += Number(buf.readBigUInt64LE(k)); recs.push([t, buf.toString('latin1', k + 8, k + 8 + w)]); }
+  return x.count > recs.length - 1 ? recs : recs.slice(1);
+}
+let hSame = 0, hDiffer = 0, hNone = 0;
 // trace-X's fan-in point reads: valueAt and valueAt {prev} at change times and around them
 let pSame = 0, pDiffer = 0;
 const pLat = [], cLat = [];
@@ -111,12 +128,23 @@ for (const at of [0.051, 0.2, 0.35, 0.62, 0.8, 0.93]) {
     if (prev) { cLat.push(performance.now() - s1); }
     const eq = !a.error && !b.error && JSON.stringify(a.result.values) === JSON.stringify(b.result.values) && JSON.stringify(a.result.prev || null) === JSON.stringify(b.result.prev || null);
     if (eq) { pSame++; } else { pDiffer++; console.log(`DIFF valueAt${prev ? ' prev' : ''} at ${t}: ${JSON.stringify(a.error || a.result).slice(0, 300)} vs ${JSON.stringify(b.error || b.result).slice(0, 300)}`); }
+    if (!prev || a.error) { continue; }
+    const H = Math.max(1, Math.floor(T * 0.01));
+    for (const [k, sig] of sigs.entries()) {
+      const ch = await history(sig, Math.max(0, t - H), t + 1);
+      if (!ch) { continue; }
+      const last = ch.filter(([ct]) => ct <= t).pop();
+      const got = a.result.prev && a.result.prev[k];
+      if (!last) { hNone++; if (got && got.t !== undefined && got.t !== null && got.t >= t - H) { hDiffer++; console.log(`HIST ${sig.path} at ${t}: prev ${JSON.stringify(got)}, no change in [${t - H}, ${t}]`); } continue; }
+      if (got && got.t === last[0] && got.value === last[1]) { hSame++; } else { hDiffer++; console.log(`HIST ${sig.path} at ${t}: prev ${JSON.stringify(got)}, history ${JSON.stringify(last)}`); }
+    }
   }
 }
 pLat.sort((x, y) => x - y); cLat.sort((x, y) => x - y);
-differ += pDiffer;
+differ += pDiffer + hDiffer;
 lat.sort((x, y) => x - y);
-console.log(JSON.stringify({ signals: sigs.length, warmSet: st ? st.ready.length : 0, compared: same + differ - pDiffer, warmServed, same, differ, warmWindowMs: { p50: Math.round(lat[3]), max: Math.round(lat[6]) },
+console.log(JSON.stringify({ signals: sigs.length, warmSet: st ? st.ready.length : 0, compared: same + differ - pDiffer - hDiffer, warmServed, same, differ, warmWindowMs: { p50: Math.round(lat[3]), max: Math.round(lat[6]) },
+  prevVsHistory: { same: hSame, differ: hDiffer, noChangeInSpan: hNone },
   pointReads: { same: pSame, differ: pDiffer, prevMs: { p50: Math.round(pLat[3]), max: Math.round(pLat[5]) }, coldPrevMs: { p50: Math.round(cLat[3]), max: Math.round(cLat[5]) } } }));
 warm.close(); cold.close();
 setTimeout(() => process.exit(differ || !warmServed ? 1 : 0), 300);
