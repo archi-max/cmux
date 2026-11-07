@@ -1952,6 +1952,31 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let codes = entries(kdb).map { (($0["active"] as? [String: Any])?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String } }
     expect(trusts == ["approximate", "approximate", "approximate"] && codes.allSatisfy { $0.contains("kdbNotChecked") }, "readers outside kdbChecked: approximate \(trusts) \(codes)")
     resolveAnswer = nil
+    // An interface bound to more instances than the walk takes (600, past 512): the panel says the
+    // reads past them are not listed (u_sink stands for the interface here).
+    let saved = models
+    var instances = models["instances"] as? [String: Any] ?? [:]
+    var iface = instances[sink] as? [String: Any] ?? [:]
+    var connections: [[String: Any]] = []
+    for i in 0..<600 {
+      let user = "tb_c.u_user\(i)"
+      instances[user] = ["version": 1, "path": user, "module": "user", "parent": "tb_c", "ports": [Any](), "params": [String: Any](),
+                         "signals": [String: Any](), "assigns": [Any](), "procs": [Any](), "children": [Any](), "files": [Any]()]
+      connections.append(["instance": user, "port": "bus"])
+    }
+    iface["interface"] = true
+    iface["modports"] = [Any]()
+    iface["connections"] = connections
+    instances[sink] = iface
+    models["instances"] = instances
+    resolveAnswer = ["designPath": sink + ".in", "designPrefix": "", "dumpPrefix": "", "designId": "c#loads3"]
+    let wide = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 60 })")
+    let walk = (wide?["limits"] as? [String: Any])?["interfaceWalk"] as? [String: Any]
+    let wideText = await panelText()
+    expect(walk?["capped"] as? Bool == true && wideText.contains("Interface reads past 512 instances are not listed."),
+           "an interface bound to 600 instances: the walk is capped and the panel says so: \(String(describing: walk)) \(wideText.suffix(300))")
+    models = saved
+    resolveAnswer = nil
     // The page strings, from WaveformTrace.swift, in 9 locales.
     let resources = assetRoot.deletingLastPathComponent()
     let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
@@ -2254,6 +2279,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     "traceLoadsSummaryOne": "%1$@ readers in 1 instance", "traceLoadsList": "List", "traceLoadsPage": "%1$@–%2$@ of %3$@",
     "traceLoadsNext": "Next", "traceLoadsPrev": "Previous", "traceLoadsAdd": "Add to Waveform", "traceLoadsFollow": "Follow",
     "traceLoadsGoto": "Move Marker to %@", "traceLoadsNone": "Nothing in the design model reads this signal.",
+    "traceLoadsInterfaceCapped": "Interface reads past %@ instances are not listed.",
     "traceLoadsStatus_taken": "taken", "traceLoadsStatus_untaken": "not taken", "traceLoadsStatus_propagated": "propagated",
     "traceLoadsStatus_noChange": "no change", "traceLoadsStatus_notRun": "not run",
     "traceNoSignal": "Select a signal in the waveform first.", "traceNoMarker": "Place the marker at the time to trace first.",
