@@ -65,10 +65,15 @@ if [ -z "$DAIDIR" ]; then
   done)
 fi
 { [ -n "$DAIDIR" ] && [ -d "$DAIDIR/kdb.elab++" ]; } || fail noKDB "$(dirname "$FSDB")"
-if ! command -v verdi >/dev/null 2>&1 && type module >/dev/null 2>&1; then
-  module load Synopsys_x86-64 >/dev/null 2>&1
+# Verdi: on PATH, else in $VERDI_HOME/bin, else after CMUX_VERDI_SETUP (a command the user sets in
+# their shell startup file, e.g. their site's module load). No site default.
+if ! command -v verdi >/dev/null 2>&1 && [ -n "${VERDI_HOME:-}" ] && [ -x "$VERDI_HOME/bin/verdi" ]; then
+  PATH=$VERDI_HOME/bin:$PATH
 fi
-command -v verdi >/dev/null 2>&1 || fail noVerdi ""
+if ! command -v verdi >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
+  eval "$CMUX_VERDI_SETUP" >/dev/null 2>&1
+fi
+command -v verdi >/dev/null 2>&1 || fail noVerdi "Verdi is not on PATH: set VERDI_HOME, or CMUX_VERDI_SETUP (a command that puts verdi on PATH), in the shell startup file"
 CMUX_VERDI_COMPILE_DIR=$(cd "$(dirname "$DAIDIR")" && pwd)
 export CMUX_VERDI_COMPILE_DIR
 # cmux's requests reach serve.tcl through this relay, which also ends the session (serve.tcl ends at

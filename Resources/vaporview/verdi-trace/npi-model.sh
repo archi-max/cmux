@@ -85,10 +85,15 @@ if command -v flock >/dev/null 2>&1; then
   fi
 fi
 
-if ! command -v verdi >/dev/null 2>&1 && type module >/dev/null 2>&1; then
-  module load Synopsys_x86-64 >/dev/null 2>&1
+# Verdi: on PATH, else in $VERDI_HOME/bin, else after CMUX_VERDI_SETUP (a command the user sets in
+# their shell startup file, e.g. their site's module load). No site default.
+if ! command -v verdi >/dev/null 2>&1 && [ -n "${VERDI_HOME:-}" ] && [ -x "$VERDI_HOME/bin/verdi" ]; then
+  PATH=$VERDI_HOME/bin:$PATH
 fi
-command -v verdi >/dev/null 2>&1 || say noVerdi ""
+if ! command -v verdi >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
+  eval "$CMUX_VERDI_SETUP" >/dev/null 2>&1
+fi
+command -v verdi >/dev/null 2>&1 || say noVerdi "Verdi is not on PATH: set VERDI_HOME, or CMUX_VERDI_SETUP (a command that puts verdi on PATH), in the shell startup file"
 VERDI_HOME=${VERDI_HOME:-$(cd "$(dirname "$(command -v verdi)")/.." && pwd)}
 export VERDI_HOME
 available=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null)
