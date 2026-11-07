@@ -2385,6 +2385,8 @@
     edges: () => ensureEdges(),
     // The clock the edges are of, as a dotted path (null: none yet).
     clockPath: () => (state.clock ? host.pathOf(state.clock).join('.') : null),
+    // cmux-sim.js: the clock stepping would use (the chosen one, else the default), as a dotted path.
+    clockOrDefaultPath: async () => { const v = state.clock || await defaultClock(); return v ? host.pathOf(v).join('.') : null; },
     markerTime: () => markerTime(),
     moveTo: async (query) => {
       const time = Number((query || {}).time);
