@@ -1103,6 +1103,28 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   check(none === null && sv === 100, `... none ahead is null, not an error: ${none}; x->1 at 100 is a posedge: ${sv}`);
 }
 
+// 42b. A ranged search with no hit stays bounded (review M5): its rounds stop growing once one
+// would read more than FSDB_RANGED_CHANGES changes (the reader's load of a round is its memory),
+// and each round resumes from the last one's bound instead of reading [t, bound] again. Clock 5
+// (2000 changes over the dump), a value it never takes, a cap of 300 changes a round.
+{
+  const log = path.join(tmp, 'find2.log'); fs.rmSync(log, { force: true });
+  const h = await start(1, {}, { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), STUB_FIND_LOG: log, FSDB_RANGED_CHANGES: '300' });
+  const ask = async (cmd, a) => { const r = await h.send(cmd, a).reply; return r.error ? `error: ${r.error}` : r.result.t; };
+  const fwd = await ask('search', { signalId: 5, t: 0, dir: 1, value: 'z' });
+  const rf = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)); fs.rmSync(log, { force: true });
+  const back = await ask('edge', { signalId: 5, t: 1000000, dir: -1, kind: 'posedge' });
+  const nb = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').length : 0; fs.rmSync(log, { force: true });
+  const back2 = await ask('search', { signalId: 5, t: 1000000, dir: -1, value: 'z' });
+  const rb = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  h.close();
+  const spans = (rs) => rs.map((r) => Math.abs(r.bound - r.t));
+  const chained = (rs) => rs.every((r, k) => k === 0 || r.t === rs[k - 1].bound);
+  check(fwd === null && back2 === null && back === 999500 && nb <= 2, `no-hit searches answer null, a near edge in a round or two: ${fwd}, ${back2}, ${back} (${nb} rounds)`);
+  check(Math.max(...spans(rf), ...spans(rb)) <= 150000 + 1000, `... no round reads more than ~300 changes (150000 ns of the clock): widest ${Math.max(...spans(rf), ...spans(rb))}`);
+  check(chained(rf) && chained(rb), `... and each round resumes from the last bound: forward ${JSON.stringify(rf.map((r) => [r.t, r.bound]))}, back ${JSON.stringify(rb.map((r) => [r.t, r.bound]))}`);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `FSDB SCHED CHECKS FAILED: ${fails}` : 'FSDB SCHED CHECKS PASSED');
 process.exit(fails ? 1 : 0);
