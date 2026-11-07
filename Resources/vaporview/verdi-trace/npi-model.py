@@ -143,6 +143,9 @@ class Walker:
         self.instances[path] = m
         for port in call(handle, "port_handles") or []:
             entry = {"name": call(port, "name"), "dir": direction(call(port, "direction")), "width": call(port, "size")}
+            conn = connection(call(port, "high_conn_handle"), parent)
+            if conn:
+                entry["conn"] = conn
             m["ports"].append(entry)
         self.scope(handle, m, files, "", path)
 
@@ -260,6 +263,25 @@ def target(lhs):
             return lhs if name and "[" not in name and "." not in name else None
         lhs = parent
     return None
+
+
+def connection(high, parent):
+    """A port's connection in the parent when it is one whole net or variable of the parent (`.clk(clk)`):
+    {"leaves": [name], "src": name, "width"}, as cmux-sv-model gives it; None for a select, a concatenation,
+    an expression, a constant or an interface."""
+    if high is None or not parent:
+        return None
+    typ = str(call(high, "type") or "")
+    if not (typ.startswith("npiNet") or typ.endswith("Var") or typ in ("npiReg",)) or typ in ("npiNetBit", "npiVarBit"):
+        return None
+    full = call(high, "full_name") or ""
+    if not full.startswith(parent + "."):
+        return None
+    name = full[len(parent) + 1:]
+    if not name or "[" in name:
+        return None
+    width = call(high, "size")
+    return {"leaves": [name], "src": name, "width": width if isinstance(width, int) and width > 0 else 0}
 
 
 def ranges(spec):
