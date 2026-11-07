@@ -108,6 +108,18 @@ with tempfile.TemporaryDirectory() as tmp:
     # F1d: words match option tokens only, not a file named for parameters.
     check("a source file named parameters_pkg.sv: no override",
           npi.overrides(case("pkgname", rebuild="vcs '-sverilog' 'rtl/parameters_pkg.sv' 't.sv'")), [])
+    # F1e: an -o set inside a file list moves where VCS put the daidir, which the scan can't follow.
+    check("-o inside an -f file: unknown",
+          npi.overrides(case("fileout", rebuild="vcs '-f' 'opts.f' 't.sv'",
+                             files={"opts.f": "-o out/simv\n-f more.f\n", "more.f": "t.sv\n"})), None)
+    # F1f: only one vcs line can be the compile; with two the scan can't tell which made the KDB.
+    check("two vcs lines: unknown",
+          npi.overrides(case("twovcs", rebuild="vcs 't.sv'\nvcs '-pvalue+tb.W=1' 't.sv'")), None)
+    # -o's directory part is normalised: ./simv and out/../simv put the daidir next to where VCS ran.
+    check("-o ./simv: the -f file next to the daidir",
+          npi.overrides(case("dotout", rebuild="vcs '-f' 'opts.f' '-o' './simv'", files={"opts.f": "-pvalue+tb.W=3\n"})), ["-pvalue+tb.W=3"])
+    check("-o out/../simv: the -f file next to the daidir",
+          npi.overrides(case("upout", rebuild="vcs '-f' 'opts.f' '-o' 'out/../simv'", files={"opts.f": "-pvalue+tb.W=5\n"})), ["-pvalue+tb.W=5"])
     check("a KDB with no files: no compile time (None, not 0)", npi.compiled_at(case("empty")), None)
     check("the newest file's time, in ms", npi.compiled_at(case("dated", elab={"a.db": 1000, "b.db": 2000})), 2000000)
 
