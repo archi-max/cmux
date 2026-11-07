@@ -650,6 +650,78 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 39. Point reads on a ready warm reader (Refs #6): one request mixing rows in the warm set,
+// a stored-whole row, a listed row outside the set and a deep change; prev gives each row's
+// real last change (never a round's window edge), equal to a run with no warm reader. A
+// multi-step trace stays fast; a warm reader killed mid-read and a cancelled request fall
+// back cold with the same answers.
+{
+  const log = path.join(tmp, 'warm39.log');
+  fs.rmSync(log, { force: true });
+  const CH = { 1: 599000, 2: 100000, 3: 900000, 4: 10, 5: 598500, 6: 450000 };  // (2, 4: deep, found only in wider (cold) rounds; 3: after t)
+  const base = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,5,6]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '300', STUB_WARM_LOG: log, FSDB_BG_LOAD: '0', STUB_CHANGE_AT: JSON.stringify(CH) };
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const all = [1, 2, 3, 4, 5, 6], set = [1, 2, 3, 4];
+  const ask = (h, t, prev = true, list = all) => h.send('valueAt', { signalIds: list, t, ...(prev ? { prev: true } : {}) });
+  const warmUp = async (h) => {
+    await kindsOf(h);
+    await h.send('window', { ...win([6]), t1: 1000001 }).reply;  // (6: stored whole)
+    let st = null;
+    for (let k = 0; k < 100; k++) { await h.send('window', near(set, 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && set.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
+    return st;
+  };
+  const truth = (t) => all.map((id) => (CH[id] <= t ? { t: CH[id], value: '1' } : null));
+  const steps = [600000, 599200, 598800, 598000, 597000];
+  // the reference: no warm reader
+  const cold = await start(4, { 6: 100 }, { ...base, FSDB_WARM: '0' });
+  await kindsOf(cold);
+  await cold.send('window', { ...win([6]), t1: 1000001 }).reply;  // (6 stored whole here too: the stub's store answers '0' at t)
+  const ref = [];
+  for (const t of steps) { const r = await ask(cold, t).reply; ref.push(r.error ? r.error : r.result); }
+  cold.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+
+  const h = await start(4, { 6: 100 }, { ...base, FSDB_WARM: '1', STUB_WARM_MS: '10' });
+  const st = await warmUp(h);
+  const got = [], lat = [];
+  for (const t of steps) { const r = await ask(h, t).reply; lat.push(r.at); got.push(r.error ? r.error : r.result); }
+  const exact = got.every((g, k) => g && g.prev && JSON.stringify(g.prev) === JSON.stringify(truth(steps[k])));
+  const pick = (g) => JSON.stringify(g && { values: g.values, prev: g.prev });  // (cold: how many were read cold, differs by design)
+  const same = got.every((g, k) => pick(g) === pick(ref[k]));
+  const nearCalls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'near');
+  check(st && exact && same && nearCalls.length > 0 && nearCalls.every((c) => !c.ids.includes(5) && !c.ids.includes(6)),
+    `mixed warm / stored / outside-set / deep rows: prev is each row's real change and equals the no-warm run (${exact}, ${same}); ${nearCalls.length} warm point reads, rows 5 and 6 never: ${JSON.stringify(got[0] && got[0].prev)}`);
+  // a trace step whose rows change near t: one warm round for the set's rows (cold: a 300 ms floor per round)
+  const tl = [];
+  for (const t of [600000, 599500, 599100]) { const r = await ask(h, t, true, [1]).reply; tl.push(r.at); }
+  const pt = [];
+  for (let k = 0; k < 10; k++) { const r = await ask(h, 600000 - k * 100, false, set).reply; pt.push(r.at); }
+  pt.sort((a, b) => a - b);
+  check(Math.max(...tl) < 150 && pt[9] < 150,
+    `a multi-step trace of near changes ${tl.map(Math.round).join('/')} ms; repeated warm point reads p50 ${Math.round(pt[5])}, max ${Math.round(pt[9])} ms (cold floor 300)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+
+  // a warm reader killed mid-read; a cancelled read
+  fs.rmSync(log, { force: true });
+  const k2 = await start(4, { 6: 100 }, { ...base, FSDB_WARM: '1', STUB_WARM_MS: '600' });
+  await warmUp(k2);
+  const pids = [...new Set(fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'load').map((c) => c.pid))];
+  const q = ask(k2, 600000);
+  await wait(150);
+  for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  const kr = await q.reply;
+  const c = ask(k2, 599000);
+  await wait(50);
+  k2.send('cancel', { target: c.id });
+  const cr = await c.reply;
+  const after = await ask(k2, 600000).reply;
+  check(pids.length > 0 && !kr.error && JSON.stringify(kr.result.prev) === JSON.stringify(truth(600000)) && !after.error && JSON.stringify(after.result.prev) === JSON.stringify(truth(600000)),
+    `a warm reader killed mid point read: the read is answered cold, exactly (${JSON.stringify(kr.error || kr.result.prev)}); after a cancelled read (${cr.cancelled || cr.error ? 'cancelled' : 'answered'}) the next one is exact too`);
+  k2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
