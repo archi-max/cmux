@@ -543,6 +543,34 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 29. The page asks for each row's window in its own request, all at once. A warm call loads the
+// whole set however many rows it names, so requests for the same window that arrive together
+// go to the warm worker as one call.
+{
+  const log = path.join(tmp, 'warm29.log');
+  fs.rmSync(log, { force: true });
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '60', STUB_WARM_LOG: log, FSDB_WARM: '1' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && ids.every((id) => st.ready.includes(id))) { break; } await wait(50); }
+  const lat = [];
+  for (let k = 1; k <= 4; k++) {
+    const t = performance.now();
+    const rs = await Promise.all(ids.map((id) => h.send('window', near([id], k * 10000)).reply));
+    lat.push(rs.some((r) => r.error || r.result.signals[0].error) ? 1e9 : performance.now() - t);
+  }
+  lat.sort((a, b) => a - b);
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'window');
+  const last = calls.slice(-4);
+  check(lat[2] < 200, `8 one-row requests for one window over a warm set: ${Math.round(lat[2])} ms (one call: ~60; one each: ~480)`);
+  check(last.length === 4 && last.every((c) => c.ids.length === 8), `... sent as one warm call per window: ${JSON.stringify(last.map((c) => c.ids.length))}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
