@@ -962,6 +962,13 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     check(JSON.stringify(r.proven) === '[6]' && !r.slow.length,
       `(B) a row that adds nothing isn't judged on its reader's slower first calls: proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}`);
   }
+  // (D) the bound is max(10%, 10 ms) over primaries-only (FSDB_WARM_BOUND_FRAC): a row adding
+  //     15 ms to a 100 ms call leaves the set (under a quarter, it stayed).
+  {
+    const r = await run({ STUB_WARM_MS: '100', STUB_WARM_SIG_COST: '{"6":15}' }, [6], Array.from({ length: 50 }, () => () => ({ ids: [...P, 6] })));
+    check(JSON.stringify(r.slow) === '[6]' && !r.proven.length,
+      `(D) a row adding 15 ms to a 100 ms call breaks max(10%, 10 ms): slow ${JSON.stringify(r.s.kinds.warmSlow)}, proven ${JSON.stringify(r.proven)}`);
+  }
   // (C) P alone at one span, then 6 joins; once its trial reader is up, the view zooms in 2x.
   {
     let zoomed = false;
