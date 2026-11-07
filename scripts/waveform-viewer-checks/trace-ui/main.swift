@@ -1361,6 +1361,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
     await compiledOnlyChecks()
     await designChecks()
+    await kdbDiffersChecks()
     await xRootChecks()
     await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
@@ -1639,6 +1640,36 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await trace("close()")
   }
 
+  /// Issue #9: a row the KDB mapped where the compiled design and slang's differ (another
+  /// parameter, width, write line, or a source newer than the compile; cmux's kdbDiffers says what)
+  /// is evaluated with slang's statements all the same, so its steps are approximate and say why.
+  func kdbDiffersChecks() async {
+    _ = await trace("close()")
+    let differs = "parameter DEPTH of tb_c.dut.u_mid.u_sink: 16 compiled, 8 in slang"
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "k#1", "kdbDiffers": differs]
+    let step = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let codes = (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    let text = await panelText()
+    expect(step?["trust"] as? String == "approximate" && codes.contains("kdbDiffers"),
+           "kdb differs: the step is approximate and says why: \(String(describing: step?["trust"])) \(codes)")
+    expect(text.contains("differs from the compiled design (KDB)") && text.contains(differs), "kdb differs: the panel says what differs: \(text.prefix(400))")
+    // The same design, agreeing: no such reason.
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "k#2"]
+    let agreed = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let agreedCodes = (agreed?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    expect(agreed != nil && !agreedCodes.contains("kdbDiffers"), "kdb agrees: no kdbDiffers reason: \(agreedCodes)")
+    resolveAnswer = nil
+    // Its string comes from cmux, in 9 locales.
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let id = traceSwift.range(of: "\"traceReason_kdbDiffers\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
+    let locales = id.flatMap { (catalog[String($0)] as? [String: Any])?["localizations"] as? [String: Any] }?.count ?? 0
+    expect(locales == 9, "kdb differs: the reason's string comes from cmux in 9 locales (\(locales))")
+    _ = await trace("close()")
+  }
+
   /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
   /// where it was made (designs J and K, the engine's own fixtures).
   func xRootChecks() async {
@@ -1890,6 +1921,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     "traceCompiledOnly_otherModule": "Slang's design model has another module at this instance, so its statements aren't used.",
     "traceCompiledWrites": "Written at:",
     "traceCompiledNoWrites": "The compiled design has no statement writing it here (it is driven through a port, or is an input).",
+    "traceReason_kdbDiffers": "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@.",
   ]
 
   /// How many times the page said a dump opened.
