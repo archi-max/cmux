@@ -118,6 +118,12 @@ with tempfile.TemporaryDirectory() as tmp:
     check("a relative -f, no command-line -o, a same-named file above the daidir's folder: unknown",
           npi.overrides(case("decoy", rebuild="vcs '-f' 'opts.f' 't.sv'", sub="out",
                              files={"opts.f": "-o out/simv\n-pvalue+tb.W=1\n", "out/opts.f": "t.sv\n"})), None)
+    # The same decoy through a top-level -F: the -F file's own name is found from where VCS ran,
+    # like -f's (only the paths inside it are relative to the file), so the same walk applies.
+    check("a relative -F, no command-line -o, a same-named file above the daidir's folder: unknown",
+          npi.overrides(case("decoyF", rebuild="vcs '-F' 'opts.f' 't.sv'", sub="out",
+                             files={"opts.f": "-o out/simv\n-override_timescale=1ns/1ps\n-pvalue+tb.W=1\n",
+                                    "out/opts.f": "t.sv\n"})), None)
     check("-o=out/simv (another -o spelling): unknown",
           npi.overrides(case("oeq", rebuild="vcs '-f' 'opts.f' '-o=out/simv'", sub="out", files={"out/opts.f": "t.sv\n"})), None)
     # Only -o's own spellings: options that merely start with -o are read as usual.
