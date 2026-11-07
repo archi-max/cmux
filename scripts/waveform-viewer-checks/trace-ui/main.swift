@@ -1293,6 +1293,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let now = Date().timeIntervalSince1970 * 1000
     await progress("{ stage: 'configure', host: 'build-host', startedAt: \(now), focus: true, entry: { dumpPath: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 } }")
     let focused = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    // The panel takes the focus without joining the tab order.
+    let focusable = await call("const p = document.getElementById('cmux-trace'); return p.tabIndex === -1 && document.activeElement === p") as? Bool
+    expect(focusable == true, "build: the build's panel takes the focus, out of the tab order: \(String(describing: focusable))")
     text = await panelText()
     expect(calm == false && focused == true && text.contains("Building the design model on build-host"),
            "build: a trace from the editor while it builds shows the build and points at it: \(String(describing: calm)) \(String(describing: focused)) \(text.prefix(200))")

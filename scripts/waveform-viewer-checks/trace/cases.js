@@ -197,7 +197,7 @@ const TRACE_CASES = [
   // (Icarus 12 does not run a block local's initializer, so its dump keeps dq at x: fan-in only.)
   { d: 'j', sig: 'tb_j.dut.dq', t: 20000, kind: 'proc', line: 72, stmt: 'dq <= t2;', fanin: { t2: '*', 'tb_j.dut.b': '00100010' } },
   // A net declaration assignment whose initializer has no source text (a width extension).
-  { d: 'j', sig: 'tb_j.dut.wz', t: 20000, kind: 'assign', stmt: 'wz = go', value: '00000001', fanin: { 'tb_j.dut.go': '1' }, trust: 'exact' },
+  { d: 'j', sig: 'tb_j.dut.wz', t: 20000, kind: 'assign', stmt: 'wz = go', rhs: 'go', value: '00000001', fanin: { 'tb_j.dut.go': '1' }, trust: 'exact' },
 
   // ---- K: writes that aren't re-executed: a driver that may have written, never a confident "nothing" ----
   // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
@@ -266,6 +266,7 @@ function runTraceChecks() {
     if (c.file) { want('file', base(step.stmt && step.stmt.loc && step.stmt.loc.file), c.file); }
     if (c.line) { want('line', step.stmt && step.stmt.loc && step.stmt.loc.line, c.line); }
     const squeeze = (x) => String(x).replace(/\s+/g, ' ');
+    if (c.rhs && !(step.stmt && squeeze(step.stmt.rhs || '') === squeeze(c.rhs))) { bad.push(`rhs: ${JSON.stringify(step.stmt && step.stmt.rhs)} != ${JSON.stringify(c.rhs)}`); }
     if (c.stmt) { if (!(step.stmt && squeeze(step.stmt.src).includes(squeeze(c.stmt)))) { bad.push(`stmt: ${JSON.stringify(step.stmt && step.stmt.src)} lacks ${JSON.stringify(c.stmt)}`); } }
     if (c.act !== undefined) { want('activation', step.activation && step.activation.time, c.act); }
     if (c.sample !== undefined) { want('sample', step.sample, c.sample); }
@@ -387,6 +388,13 @@ function runTraceChecks() {
       step: async (p) => (p === 'q' ? fake.q : Object.assign({}, fake[p], { value: '0' })),
     });
     chainWant('no candidate with x left', [none.end.code, none.root, none.steps.map((e) => e.signal)], ['failed', -1, ['q']]);
+    // cnt <= cnt + in, both x since the start: the input it has not seen is where the x came from.
+    const ring = {
+      cnt: { signal: 'cnt', time: 10, value: 'x', since: 0, driver: { kind: 'proc' }, fanin: [{ path: 'cnt', value: 'x', time: 9 }, { path: 'in', value: 'x', time: 9 }] },
+      in: { signal: 'in', time: 9, value: 'x', since: 0, driver: { kind: 'none' }, fanin: [] },
+    };
+    const tied = await cmuxTrace.xChain({ path: 'cnt', time: 10 }, { step: async (p) => ring[p] });
+    chainWant('a tie in since goes to the candidate not seen', [tied.root, tied.steps.map((e) => e.signal)], [1, ['cnt', 'in']]);
     return out;
   }
   return run().then((lines) => { globalThis.__traceDone = { lines, results }; }, (error) => { globalThis.__traceDone = { lines: out.concat(['FAIL ' + (error && error.stack || error)]), results: { failures: 1 } }; });
