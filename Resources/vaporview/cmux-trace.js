@@ -1232,8 +1232,12 @@
       if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) { return false; }
       const code = String(text).replace(/\/\/[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/"(?:[^"\\]|\\.)*"/g, '""');
       const id = name.replace(/\$/g, '\\$');
-      const target = new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + '((\\s*\\[[^\\]]*\\])*)\\s*(<=|=)(?!=)', 'g');
-      const reads = code.replace(target, (all, pre, sel) => pre + ' ' + (sel || ''));
+      // An assignment's target: `x =` anywhere (not ==), `x <=` only where a statement starts (else it
+      // is a comparison, a read: if (x <= 3)).
+      const sel = '((\\s*\\[[^\\]]*\\])*)';
+      const target = new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + sel + '\\s*=(?!=)', 'g');
+      const nonblocking = new RegExp('(^|[;):]|\\bbegin|\\belse|#\\s*[0-9][A-Za-z0-9_.\']*)(\\s*)' + id + sel + '\\s*<=(?!=)', 'g');
+      const reads = code.replace(nonblocking, (all, pre, space, sel) => pre + space + ' ' + (sel || '')).replace(target, (all, pre, sel) => pre + ' ' + (sel || ''));
       return new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + '(?![A-Za-z0-9_$])').test(reads);
     }
     const EDGE_WORD = { PosEdge: 'posedge ', NegEdge: 'negedge ', BothEdges: 'edge ' };
