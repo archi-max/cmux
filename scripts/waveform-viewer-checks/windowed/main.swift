@@ -1102,8 +1102,8 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// text=1 dump: tb.dut.msg (string, a word every 2000 ps, 500k changes: windowed),
   /// level (real, 1000 changes: loaded whole), bad (a permanent error), flaky (a transient one).
   func textValueChecks() async {
-    let msgId = 4, levelId = 5, badId = 6, flakyId = 7, bannerId = 8, tornId = 9, swingId = 10, coldlvlId = 11, tornWholeId = 12
-    for name in ["msg", "level", "bad", "flaky", "banner", "torn", "swing", "tornwhole"] {
+    let msgId = 4, levelId = 5, badId = 6, flakyId = 7, bannerId = 8, tornId = 9, swingId = 10, coldlvlId = 11, cutLongId = 12, tornWholeId = 13
+    for name in ["msg", "level", "bad", "flaky", "banner", "torn", "swing", "cutlong", "tornwhole"] {
       let added = await call("return await cmuxWaveform.link.addSignal(['tb','dut','\(name)'])")
       if added as? Bool != true { print("[add]", name, String(describing: added)) }
     }
@@ -1206,6 +1206,13 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var cold: [Double] = []
     let coldOk = await waitFor(10000) { cold = await rowRange(coldlvlId); return cold.count == 2 && cold[0] == -50 && cold[1] == 0 }
     expect(addedCold as? Bool == true && coldOk, "a real row first drawn from a ranged window takes the range of later windows: row \(cold)")
+    // A string whose whole load says its values were cut stays windowed (its search and values come from the helper).
+    var cl = ""
+    let clSettled = await waitFor(15000) {
+      cl = await self.wc("(() => { const s = w.signals.get(\(cutLongId)); return s ? s.hybrid + ',' + w.isWindowed(\(cutLongId)) : 'none'; })()") as? String ?? "?"
+      return cl == "windowed,true" || cl.hasPrefix("local")
+    }
+    expect(clSettled && cl == "windowed,true", "a string whose whole load says cut stays windowed, not loaded whole with cut text: \(cl)")
     // A whole load whose reply is torn is tried a bounded number of times, then the row stays windowed.
     var tw = ""
     let settled = await waitFor(45000) {
