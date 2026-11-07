@@ -1525,6 +1525,81 @@ Napi::Value coldValueAt(const Napi::CallbackInfo &info) {
   return out;
 }
 
+// cacheLastChange(id, t) -> {t, value} | null: a stored signal's last (normalized) change at or
+// before t, and its value (null: no change yet, the value is all x).
+Napi::Value cacheLastChange(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  const size_t k = upperIdx(s, argTime(info[1]), 0, s->times.size());
+  if (k == 0) return env.Null();
+  std::string v(s->bits, 'x');
+  putChars(s, k - 1, (uint8_t *)&v[0]);
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("t", Napi::Number::New(env, (double)s->times[k - 1]));
+  o.Set("value", Napi::String::New(env, v));
+  return o;
+}
+
+// coldValueNear(ids[], t, span) -> [{t, value} | {none: true, value} | {error}]: for signals
+// that aren't stored, one view window [lo, t] (lo = t - span, at least 0): the value at t and,
+// if there is one in [lo, t], the last normalized change (same-time changes count as their
+// last value; a change to the value already in effect is none). The window starts at lo - 1,
+// so whatever the reader gives before lo (its synthetic first change) is the value in effect
+// on entry; with lo = 0 that is all x. A rebuilt signal's cost scales with the span; a stored
+// one's mostly doesn't. Nothing is walked into the store or kept.
+Napi::Value coldValueNear(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 3) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  const uint64_t t = argTime(info[1]), span = argTime(info[2]);
+  const uint64_t lo = t > span ? t - span : 0;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) ids.push_back((fsdbVarIdcode)argI64(arr.Get(i)));
+  Napi::Array out = Napi::Array::New(env);
+  ReaderScope scope;
+  readerWindow(lo > 0 ? lo - 1 : 0, t);
+  forBatches(ids, [&](size_t k, double) {
+    ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(ids[k]);
+    std::string err;
+    if (!h) err = "no traverse handle";
+    else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
+    else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
+    Napi::Object o = Napi::Object::New(env);
+    if (!err.empty()) {
+      o.Set("error", Napi::String::New(env, err));
+    } else {
+      const uint32_t bits = h->ffrGetBitSize();
+      std::string cur(bits, 'x'), grp, v(bits, 'x');
+      uint64_t gt = 0, lastT = 0;
+      bool have = false, found = false;
+      fsdbTag64 g;
+      if (h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGetMinXTag((void *)&g) && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g)) {
+        do {
+          h->ffrGetXTag(&g);
+          const uint64_t tt = combineTime(g.H, g.L);
+          if (tt > t) break;
+          byte_T *vc;
+          h->ffrGetVC(&vc);
+          for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
+          if (tt < lo) { cur = v; continue; }  // in effect on entry to [lo, t]
+          if (have && tt != gt && grp != cur) { cur = grp; lastT = gt; found = true; }
+          gt = tt; grp = v; have = true;
+        } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
+        if (have && grp != cur) { cur = grp; lastT = gt; found = true; }
+      }
+      if (found) o.Set("t", Napi::Number::New(env, (double)lastT));
+      else o.Set("none", Napi::Boolean::New(env, true));
+      o.Set("value", Napi::String::New(env, cur));
+    }
+    out.Set((uint32_t)k, o);
+    if (h) h->ffrFree();
+  });
+  readerWindowAll();
+  return out;
+}
+
 // cacheWindowCold(ids[], t0, t1, buckets) -> [{signalId, exact, count, records, counts?, loadMs, walkMs} | {signalId, error}]
 // A window over a short range of signals that aren't stored: load only
 // [t0 - 1, t1] (the reader's synthetic first change at t0 - 1 is the value in

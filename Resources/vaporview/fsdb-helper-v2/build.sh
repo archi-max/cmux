@@ -98,7 +98,7 @@ trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"' EXIT
     "cacheValueAt", "cacheEdge", "cacheSearch", "cacheFree", "cacheSetLimit", "cacheStats", "cacheWalkSlice",
     "cacheAdopt", "cacheExport", "cacheDerive", "signalInfo", "searchScan", "handleBits", "bgBegin", "bgEnd",
     "indexWrite", "indexSearch", "readerProbe", "coldValueAt", "cacheWindowCold", "cacheSetBounds",
-    "cacheAdoptIndex", "cacheWriteIndex", "cacheEvict"];
+    "cacheAdoptIndex", "cacheWriteIndex", "cacheEvict", "cacheLastChange", "coldValueNear"];
   const add = incs.map((f) => fs.readFileSync(f, "utf8").replace("#pragma once", "")).join("\n");
   const exp = names.map((n) => `\n  exports.Set(Napi::String::New(env, "${n}"), Napi::Function::New(env, ${n}));`).join("");
   s = s.replace(anchor, add + "\n" + anchor + exp);
