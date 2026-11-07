@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..5bb1829
+index 0000000..beff5ee
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,260 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -252,6 +252,18 @@ index 0000000..5bb1829
 +signal's elements and their elements in one batch, one undo step. The context's
 +`cmuxDeclared` is true on a netlist variable (a dump signal the design declares) and false on
 +a slice.
++
++## A row whose alias the helper drops is asked for again
++
++The FSDB helper can answer a rebuilt row from a stored signal it takes for its alias (an
++`aliasHints` pair), and later find the two differ. Its reply then lists the row in
++`result.aliasDropped`. `WindowCache.dropAliased` (`window_cache.ts`) forgets everything held
++for that row: its windows, painted tiles, point value and nav results, and a whole load (whose
++bytes leave `hybridBytes`, tracked per row as `localBytes`). It cancels the row's requests in
++flight and asks again. Aliased records for the row in that same reply are not stored, and the
++row is not failed as "missing from the reply". A whole load answered after a newer one
++started is ignored. `stats.aliasDropped` counts the drops. cmux's `run.sh windowed` checks
++that a dropped row is asked for again and redrawn from the new reply.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2888,10 +2900,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..64451a8
+index 0000000..498e0bf
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1929 @@
+@@ -0,0 +1,1957 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3024,6 +3036,7 @@ index 0000000..64451a8
 +  scanKey: string | null = null; // latest exact chunk of a formatted value search
 +  hybridSolo    = false; // was in a probe batch that failed as a whole: probe it alone
 +  loadQueryId: number | null = null; // the hybrid whole-signal load in flight
++  localBytes    = 0; // cmux: estimated bytes counted in hybridBytes while loaded whole
 +  constructor(public signalId: SignalId, public width: number) {}
 +}
 +
@@ -3160,7 +3173,7 @@ index 0000000..64451a8
 +  private refine: {since: number; key: string} | null = null;
 +
 +  stats = {
-+    requests: 0, cancels: 0, replies: 0, bytesIn: 0, queries: 0, decodeMs: 0, promoted: 0, prefetchQueries: 0, navHits: 0,
++    requests: 0, cancels: 0, replies: 0, bytesIn: 0, queries: 0, decodeMs: 0, promoted: 0, aliasDropped: 0, prefetchQueries: 0, navHits: 0,
 +    firstDrawMs: [] as number[], promoteMs: [] as number[], refineMs: [] as number[], renderMs: [] as number[], rttMs: [] as number[], helperMs: [] as number[],
 +    slow: [] as {ms: number; helperMs: number; workerMs: number; signals: SignalId[]; level: number; priority: number; at: number}[], // replies over 300 ms (last 50)
 +  };
@@ -3618,7 +3631,7 @@ index 0000000..64451a8
 +    reply.then(async ({result, bin}) => {
 +      if (gen !== this.generation) {return;}
 +      const [d] = await this.decodeSignals(result, bin || new Uint8Array(0), buckets);
-+      if (gen !== this.generation || s.hybrid !== 'loading') {return;}
++      if (gen !== this.generation || s.hybrid !== 'loading' || s.loadQueryId !== id) {return;} // (cmux: or a newer load)
 +      if (!d || d.h.signalId !== s.signalId) {this.hybridLater(s, 'known'); return;}
 +      if (d.h.error) {final(); return;}
 +      if (d.err !== null || d.raw === null) {this.hybridLater(s, 'known'); return;}
@@ -3663,6 +3676,7 @@ index 0000000..64451a8
 +      formattedValues: {}, signalWidth: s.width, min, max,
 +    };
 +    this.hybridBytes += est;
++    s.localBytes = est;
 +    this.stats.promoted++;
 +    pushStat(this.stats.promoteMs, performance.now() - s.addedAt);
 +    this.rowsOf(s.signalId).forEach((item) => {
@@ -3761,6 +3775,10 @@ index 0000000..64451a8
 +    this.stats.replies++;
 +    if (bin) {this.stats.bytesIn += bin.length;}
 +
++    // cmux: rows the helper answered from a stored signal it took for their alias, which it
++    // has since found to differ: forget what was shown for them and ask again.
++    const stale = reply.result && Array.isArray(reply.result.aliasDropped) ? new Set<SignalId>(reply.result.aliasDropped) : null;
++    if (stale) {this.dropAliased(stale);}
 +    const q = this.queries.get(reply.id);
 +    if (q) {
 +      this.queries.delete(reply.id);
@@ -3793,7 +3811,28 @@ index 0000000..64451a8
 +      if (this.stats.slow.length > 50) {this.stats.slow.shift();}
 +    }
 +    if (typeof (reply as any).ms === 'number') {pushStat(this.stats.helperMs, (reply as any).ms);}
-+    this.storeWindows(f, reply.result, bin || new Uint8Array(0));
++    this.storeWindows(f, reply.result, bin || new Uint8Array(0), stale);
++  }
++
++  private dropAliased(ids: Set<SignalId>) {
++    ids.forEach((id) => {
++      const s = this.signals.get(id);
++      if (!s) {return;}
++      this.stats.aliasDropped++;
++      this.inflight.forEach((f, qid) => {if (f.signals.includes(id)) {this.cancel(qid);}});
++      if (s.hybrid === 'loading' && s.loadQueryId !== null) {const q = s.loadQueryId; s.hybrid = 'windowed'; this.cancelQuery(q, 'cancelled');}
++      if (s.hybrid === 'known') {this.unpend(s);}
++      if (s.hybrid === 'local' && dataManager.valueChangeData[id] !== undefined) {
++        delete dataManager.valueChangeData[id];
++        this.hybridBytes -= s.localBytes; s.localBytes = 0;
++      }
++      s.windows.clear(); s.bytes = 0; s.painted.clear(); s.valueAt = null; s.inflight.clear(); s.scanKey = null;
++      s.answered = false;
++      s.hybrid = this.hybrid ? 'unknown' : 'windowed'; s.hybridTries = 0; s.hybridRetryAt = 0; s.hybridCount = 0;
++      [...this.navCache.keys()].forEach((k) => {if (k.startsWith(id + '|')) {this.navCache.delete(k);}});
++    });
++    this.scheduleEnsure(0);
++    this.scheduleRedraw();
 +  }
 +
 +  // Per signal: inflated records and counts, or an error string. One bad signal (corrupt
@@ -3841,7 +3880,7 @@ index 0000000..64451a8
 +    };
 +  }
 +
-+  private async storeWindows(f: InflightWindow, result: any, bin: Uint8Array) {
++  private async storeWindows(f: InflightWindow, result: any, bin: Uint8Array, stale: Set<SignalId> | null = null) {
 +    const decoded = await this.decodeSignals(result, bin, f.buckets * f.tiles.length);
 +    // A reset (file reload) while we were decoding: these tiles belong to the old file (M2).
 +    if (f.gen !== this.generation) {return;}
@@ -3853,6 +3892,7 @@ index 0000000..64451a8
 +    decoded.forEach(({h, raw, counts, err}) => {
 +      const s = this.signals.get(h.signalId);
 +      if (!s || !f.signals.includes(h.signalId)) {return;}
++      if (stale && stale.has(h.signalId) && h.alias !== undefined) {return;} // (from the dropped alias)
 +      answered.add(s.signalId);
 +      s.answered = true;
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
@@ -3884,7 +3924,7 @@ index 0000000..64451a8
 +    // A signal the reply left out would otherwise be asked for again at once, forever (H2).
 +    f.signals.forEach((sid) => {
 +      const s = this.signals.get(sid);
-+      if (s && !answered.has(sid)) {this.fail(s, 'missing from the reply');}
++      if (s && !answered.has(sid) && !(stale && stale.has(sid))) {this.fail(s, 'missing from the reply');}
 +    });
 +    this.stats.decodeMs += performance.now() - t;
 +    firstWindow.forEach((s) => this.onFirstWindow(s));
