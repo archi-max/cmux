@@ -118,7 +118,7 @@ public struct KDBDesignModel: @unchecked Sendable {
 /// into a private scratch folder (removed when it ends), and the launcher answers from the user's
 /// cache on the host or exports (one Verdi licence seat for a few seconds).
 public enum KDBModelLaunch {
-    public enum Outcome: Equatable {
+    public enum Outcome: Equatable, Sendable {
         case model(KDBDesignModel, cached: Bool)
         /// The launcher's error code (noFile, noKDB, noVerdi, licence, memory, time, start, walk),
         /// `model` for an unreadable model, `start` for no answer.

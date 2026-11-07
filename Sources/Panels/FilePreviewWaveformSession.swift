@@ -1041,6 +1041,7 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if let panel {
                 WaveformSourceLink.waveformOpened(panel)
                 WaveformFSMEngines.waveformOpened(panel)
+                WaveformTraceKDB.waveformOpened(panel)
             }
         case "signalData":
             if let panel { WaveformSourceLink.waveformDataArrived(panel) }
