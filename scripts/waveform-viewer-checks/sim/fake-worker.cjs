@@ -14,6 +14,7 @@ const out = (o, bin) => { process.stdout.write(JSON.stringify(o) + '\n'); if (bi
 const PERIOD = Number(process.env.FAKE_PERIOD) || 10;
 const HALF = PERIOD / 2;
 let t = 0, cnt = 0, running = null;
+const BATCH_CYCLES = Number(process.env.FAKE_BATCH_CYCLES) || 0;   // >0: a batch every N cycles, all in one go
 const UNWATCH_LAG = process.env.FAKE_UNWATCH_LAG_MS !== undefined ? Number(process.env.FAKE_UNWATCH_LAG_MS) : 30;
 const width = { 'tb.clk': 1, 'tb.cnt': 8, 'tb.dut.state': 4, 'tb.x': 4, 'tb.z': 2 };
 const clkAt = (tt) => ((tt % PERIOD) < HALF ? '0' : '1'); // 0 for [0,5), 1 for [5,10), ...
@@ -57,8 +58,10 @@ function runTo(id, end, untilFn) {
     if (r.stop !== null) { running = null; flush(); out({ id: r.id, result: { t, stopped: 'stop' } }); out({ id: r.stop, result: { t } }); return; }
     const chunk = r.end - t > 1e5 * PERIOD ? 5 * PERIOD : r.end - t;   // long runs are slow, so a stop can catch them
     const target = t + chunk;
+    let lastFlushT = t;
     while (t < target) {
       step(Math.min(target, t + HALF));
+      if (BATCH_CYCLES && t - lastFlushT >= BATCH_CYCLES * PERIOD) { flush(); lastFlushT = t; }
       if (r.untilFn && r.untilFn()) { running = null; flush(); out({ id: r.id, result: { t, stopped: 'until' } }); return; }
     }
     if (t >= r.end) { running = null; flush(); out({ id: r.id, result: { t, stopped: 'done' } }); return; }

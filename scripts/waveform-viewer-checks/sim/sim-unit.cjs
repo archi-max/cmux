@@ -201,6 +201,30 @@ const widths = new Map();
   let alive2 = true; try { process.kill(pid2, 0); } catch { alive2 = false; }
   expect(!alive2, 'closeAll (the viewer went away): the worker is killed');
 
+  // GitHub #4, this side: changes dropped past the buffer are reported per signal as missing coverage, and
+  // nothing delivered claims the lost span.
+  process.env.FAKE_BATCH_CYCLES = '5';   // many small batches at once, as a busy run sends them
+  const lo = await req('sim.open', { dir: runDir, clock: 'tb.clk' });
+  delete process.env.FAKE_BATCH_CYCLES;
+  const lw = await req('sim.watch', { signals: ['tb.clk', 'tb.cnt'] });
+  (lw.result && lw.result.watch || []).forEach((x) => x && widths.set(x.simSignal, x.width));
+  await pollUntilStop(new Map(), 2);
+  const tB = (await req('sim.read', { signals: ['tb.cnt'] })).result.t;
+  process.env.CMUX_SIM_BUFFER = '3000';
+  await req('sim.run', { cycles: 2000 });
+  await new Promise((res) => setTimeout(res, 400));   // a consumer that does not poll for a while
+  const lp = await req('sim.poll', { waitMs: 0 });
+  delete process.env.CMUX_SIM_BUFFER;
+  const lossRecs = []; { let off = 0; for (const x of (lp.result && lp.result.signals) || []) { let t = 0; for (let k = 0; k < x.count; k++) { t += Number(lp.bin.readBigUInt64LE(off)); if (x.simSignal === 1) lossRecs.push([t, lp.bin.toString('latin1', off + 8, off + 8 + widths.get(x.simSignal))]); off += 8 + widths.get(x.simSignal); } } }
+  const g = ((lp.result && lp.result.gaps) || []).find((x) => x.simSignal === 1);
+  expect(lp.result && lp.result.dropped > 0 && !!g && g.from > tB && g.through >= g.from && lossRecs.length > 0 && lossRecs[0][0] > g.through,
+    `buffer overflow: the lost span is reported (${JSON.stringify(g)}, dropped ${lp.result && lp.result.dropped}), the records after it start at ${lossRecs[0] && lossRecs[0][0]}`);
+  const lossEnd = lp.result && lp.result.stop ? lp.result : await pollUntilStop(new Map());   // the run may have ended by the first poll
+  const gapAgain = await req('sim.poll', { waitMs: 0 });
+  expect(lossEnd.stop && lossEnd.stop.stopped === 'done' && !((gapAgain.result.gaps || []).length), 'and a gap is reported once');
+
+  await req('sim.close', {});
+
   // The helper's shutdown: closeAll, then process.exit at once. Nothing of the simulation's is left behind.
   const child = require('node:child_process').spawnSync(process.execPath, ['-e', `
     const sim = require(${JSON.stringify(path.join(helperDir, 'sim.js'))});
