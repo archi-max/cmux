@@ -1344,8 +1344,11 @@ const HOT_CALL_MS = Number(process.env.FSDB_WARM_CALL_MS || 60000);
 const HOT_BACKOFF_MS = Number(process.env.FSDB_WARM_BACKOFF_MS || 5000);
 // A set is replaced for its recency only once the requests have settled (none for this long):
 // one pan's rows arrive one by one, and partway through, its first rows look the most recent.
-// A stream that never settles is judged after HOT_SETTLE_MAX_MS anyway.
-const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000;
+// A stream that never settles is judged after HOT_SETTLE_MAX_MS anyway, and each such forced
+// replacement doubles that wait (at most 8x) until the requests pause for HOT_PAUSE_MS (a pan
+// held down would otherwise start a warm reader, 0.2-0.9 s of navigation, every 2 s; requests
+// reach the warm set after the queue, so a busy helper alone gaps them by a few hundred ms).
+const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000, HOT_PAUSE_MS = 1000;
 // Unknowns are tried one at a time (review M2 round 2): a set's warm call loads all of it, so a
 // row's own cost is the call's growth over the set without it (the reader before, same span
 // within HOT_LEVEL_TOL), over HOT_TRIAL_N calls, a reader's first HOT_TRIAL_SKIP calls after its
@@ -1355,7 +1358,7 @@ const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000;
 // own cold read.
 const HOT_TRIAL_N = 3, HOT_TRIAL_SKIP = 2, HOT_TRIAL_SLACK_MS = 10, HOT_TRIAL_FRAC = 0.25, HOT_LEVEL_TOL = 0.1;
 const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
-const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, trial: null, calls: new Map(), lastFrac: null, alive: new Set(), replacing: false, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, forced: 0, trial: null, calls: new Map(), lastFrac: null, alive: new Set(), replacing: false, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
 const hotProcs = () => [...hot.readers, ...(hot.building || []), ...hot.retiring].filter((r) => r.state !== 'dead');
 function hotFail(fp, why) {
@@ -1422,7 +1425,7 @@ function hotStop() {
   hot.limit = HOT_MAX; hot.fails.clear(); hot.totalRss = 0; hot.peakRss = 0;
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
   if (hot.backoffTimer) { clearTimeout(hot.backoffTimer); hot.backoffTimer = null; }
-  hot.cold.clear(); hot.calls.clear(); hot.lastNote = 0; hot.unsettled = 0; hot.trial = null; hot.replacing = false; hot.lastFrac = null;
+  hot.cold.clear(); hot.calls.clear(); hot.lastNote = 0; hot.unsettled = 0; hot.forced = 0; hot.trial = null; hot.replacing = false; hot.lastFrac = null;
 }
 function hotKill(r) {
   r.state = 'dead';
@@ -1526,14 +1529,19 @@ function hotCheck() {
   const stray = (id) => kinds.state === 'ready' && kindOf(id) === 'u' && !kinds.warmProven.has(id) && !want.includes(id);
   const slow = cur.some((r) => [...r.ids].some((id) => kinds.warmSlow.has(id) || stray(id)));
   const trialing = hot.trial !== null && !cur.some((r) => r.ids.has(hot.trial));
-  if (cur.length && !grown.length && !oversized && !slow && !trialing && outside * 4 < want.length) { hot.unsettled = 0; return; }
+  if (cur.length && !grown.length && !oversized && !slow && !trialing && outside * 4 < want.length) {
+    hot.unsettled = 0;
+    if (performance.now() - (hot.lastNote || 0) >= HOT_PAUSE_MS) { hot.forced = 0; }
+    return;
+  }
   const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
   // (a set replaced for recency, its old reader ready or retired for the reader budget: wait for
   // the requests to settle, at most HOT_SETTLE_MAX_MS; a first set doesn't wait)
   if ((cur.length || hot.replacing) && !grown.length && !oversized && !slow && now - (hot.lastNote || 0) < HOT_SETTLE_MS) {
     if (!hot.unsettled) { hot.unsettled = now; }
-    if (now - hot.unsettled < HOT_SETTLE_MAX_MS) { hotSoon(HOT_SETTLE_MS); return; }
-  }
+    if (now - hot.unsettled < HOT_SETTLE_MAX_MS * 2 ** Math.min(3, hot.forced)) { hotSoon(HOT_SETTLE_MS); return; }
+    hot.forced++;
+  } else if (now - (hot.lastNote || 0) >= HOT_PAUSE_MS) { hot.forced = 0; }
   hot.unsettled = 0;
   if (f && f.until > now) {
     if (!hot.backoffTimer) { hot.backoffTimer = setTimeout(() => { hot.backoffTimer = null; hotCheck(); }, f.until - now + 10); }
