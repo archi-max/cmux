@@ -1027,6 +1027,20 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     h.close();
     check(sets <= 2, `a warm set of 4 isn't rebuilt partway through each 16-row pan: ${sets} reader starts in 6 s, ready ${JSON.stringify(st && st.ready)}`);
   }
+  // (a3) The set size halved for heavy rows grows back for light ones (review low): rows 1-8 keep
+  // 40 MB each against a 150 MB cap (halved to 2 rows), then rows 9-16 (1 MB each) are viewed.
+  {
+    const log = path.join(tmp, 'warm37a3.log'); fs.rmSync(log, { force: true });
+    const heavy = Object.fromEntries(all.slice(0, 8).map((id) => [id, 40]));
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB: JSON.stringify(heavy), STUB_WARM_MB_PER_SIG: '1', FSDB_WARM_RSS_MB: '150', FSDB_WARM_RECENT_MS: '600', FSDB_WARM_SIGNALS: '8' });
+    let t0 = performance.now(), k = 0;
+    while (performance.now() - t0 < 5000) { await ask(h, all.slice(0, 8), (k++ % 50) * 10000); await wait(150); }
+    const lim1 = (await h.send('stats').reply).result.warm.limit;
+    t0 = performance.now(); let st = null;
+    while (performance.now() - t0 < 8000) { await ask(h, all.slice(8), (k++ % 50) * 10000); await wait(150); st = (await h.send('stats').reply).result.warm; if (st.ready.length === 8 && st.ready.every((id) => id > 8)) { break; } }
+    h.close();
+    check(lim1 < 8 && st && st.ready.length === 8 && st.ready.every((id) => id > 8), `a set size halved for heavy rows (to ${lim1}) grows back for light ones: ready ${JSON.stringify(st && st.ready)}, limit ${st && st.limit}`);
+  }
   // (b) A warm reader whose init fails is not restarted at once, over and over: its cohort backs off.
   {
     const log = path.join(tmp, 'warm37b.log'); fs.rmSync(log, { force: true });

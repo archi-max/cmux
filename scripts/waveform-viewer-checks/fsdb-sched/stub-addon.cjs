@@ -137,7 +137,9 @@ module.exports = {
     if (JSON.parse(process.env.STUB_WARM_LOAD_FAIL || '[]').some((id) => ids.includes(id))) { warmLog({ op: 'loadFail', ids }); throw new Error('warm load failed (stub)'); }
     warmSet = new Set(ids); warmLog({ op: 'load', ids });
     // STUB_WARM_MB_PER_SIG: resident memory the reader keeps per signal of its set (its navigation).
-    const mb = Number(process.env.STUB_WARM_MB_PER_SIG || 0) * ids.length;
+    // (STUB_WARM_MB {id: mb}: per signal, over STUB_WARM_MB_PER_SIG)
+    const per = JSON.parse(process.env.STUB_WARM_MB || '{}');
+    const mb = ids.reduce((x, id) => x + Number(per[id] ?? process.env.STUB_WARM_MB_PER_SIG ?? 0), 0);
     if (mb) { held.push(Buffer.alloc(mb * 1048576).fill(1)); }
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { signalId: id }));
   },
