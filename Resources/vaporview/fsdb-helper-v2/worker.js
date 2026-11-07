@@ -148,7 +148,7 @@ function readVarTree() {
 // mean text bytes per change as windows send it (textMean: the viewer's whole-load estimate).
 const textHead = (w, ranged = false) => (w.text ? { text: true, kind: w.kind,
   ...(w.kind === 'real' && !ranged ? { min: w.min, max: w.max } : {}),
-  ...(typeof w.textMean === 'number' ? { textMean: +w.textMean.toFixed(1) } : {}) } : {});
+  ...(typeof w.textMean === 'number' ? { textMean: +w.textMean.toFixed(1) } : {}), ...(w.cut ? { cut: true } : {}) } : {});
 
 const ops = {
   open({ file, cacheBytes }) {

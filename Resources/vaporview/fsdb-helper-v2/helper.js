@@ -25,7 +25,7 @@
 //     a real reopen (a new epoch, as below).
 //   children {scopeOffsetIdx, scopePath} -> {scopes, vars}
 //   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?}
-//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?, text?, kind?, min?, max?, textMean?}
+//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?, text?, kind?, min?, max?, textMean?, cut?}
 //                   | {signalId, error, permanent?}]}
 //     (permanent: the error won't go away for this file (an encoding the reader can't give, a
 //     0-bit alias); the viewer shows it once and stops asking. Over the store cap is not
@@ -39,8 +39,9 @@
 //     shared by its strings (each at least a quarter of it): the cut shrinks, down to 256 bytes, so
 //     the window fits; one that can't is a retryable error (a narrower window fits). Reals also
 //     carry the signal's min and max (of 0 and every finite value, as wellen), but not on a
-//     ranged answer (a slice's range). Strings carry textMean, the mean bytes of text per
-//     change as windows send it. Edges: every change; search (bit patterns) refuses them.)
+//     ranged answer (a slice's range). cut: true when a value in the window was cut (the
+//     viewer then keeps the signal windowed instead of loading it whole). Strings carry
+//     textMean, the mean bytes of text per change as windows send it. Edges: every change; search (bit patterns) refuses them.)
 //     (total: the signal's whole normalized change count, when it came from the store;
 //     absent for ranged answers. Same number as `count`'s.)
 //     (ranged: a cold signal over a range <= FSDB_COLD_RANGE (0.25) of the file was answered
@@ -1544,7 +1545,7 @@ const handlers = {
         cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
         ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}),
         ...(r.text ? { text: true, kind: r.kind } : {}), ...(r.kind === 'real' && r.min !== undefined ? { min: r.min, max: r.max } : {}),
-        ...(r.textMean !== undefined ? { textMean: r.textMean } : {}) });
+        ...(r.textMean !== undefined ? { textMean: r.textMean } : {}), ...(r.cut ? { cut: true } : {}) });
       bins.push(rec);
       if (cnt) { bins.push(cnt); }
     }
