@@ -2301,11 +2301,12 @@ const handlers = {
     openFile = file;
     try { fileBytes = fs.statSync(file).size; } catch (e) { fileBytes = 0; }
     const metadata = { timeTableLoaded: false, scopeCount: 0, netlistIdCount: 0, signalIdCount: 0,
-      timeTableCount: 0, timeEnd: 0, minTimeStep: 1, timeScale: 1, timeUnit: 'ns' };
+      timeTableCount: 0, timeStart: 0, timeEnd: 0, minTimeStep: 1, timeScale: 1, timeUnit: 'ns' };
     addon.readMetadata(
       (scopecount, varcount, timescale, timeunit) => Object.assign(metadata,
         { scopeCount: scopecount, netlistIdCount: varcount, timeScale: timescale, timeUnit: timeunit }),
-      (chunksize, timeend) => Object.assign(metadata, { timeEnd: Number(timeend), timeTableLoaded: true }));
+      // timestart: the reader's min tag, the dump's first time (0 from an addon without it).
+      (chunksize, timeend, timestart) => Object.assign(metadata, { timeStart: Number(timestart) || 0, timeEnd: Number(timeend), timeTableLoaded: true }));
     timeEnd = metadata.timeEnd;
     const top = scopes.top();
     // The hierarchy index (paths, widths) is built now, while the workers open,

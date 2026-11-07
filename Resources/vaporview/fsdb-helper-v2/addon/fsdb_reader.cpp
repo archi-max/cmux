@@ -330,6 +330,11 @@ void readMetadata(const Napi::CallbackInfo &info) {
     return;
   }
   ulong_T end_time = combineTime(max_time.H, max_time.L);
+  // The dump's first time. Read at open, before any view window is set (with a window set,
+  // the min and max tags are the window's bounds).
+  fsdbTag64 min_time;
+  ulong_T start_time = FSDB_RC_SUCCESS == fsdb_obj->ffrGetMinFsdbTag64(&min_time)
+                           ? combineTime(min_time.H, min_time.L) : 0;
 
   // NOTE: traverse flush session is slow in some case.
   //
@@ -355,6 +360,7 @@ void readMetadata(const Napi::CallbackInfo &info) {
   // number (500)
   args2.push_back(Napi::Number::New(env, 500));
   args2.push_back(Napi::Number::New(env, end_time));
+  args2.push_back(Napi::Number::New(env, start_time));
   setChunkSize.Call(args2);
 }
 
