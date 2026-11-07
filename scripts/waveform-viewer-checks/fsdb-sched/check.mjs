@@ -796,12 +796,17 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
-// 38. An unknown row that makes its warm calls slow (rebuilt per window: here 600 ms each) leaves the
-// warm set, with that measurement as its provenance, so the primaries' pans are fast again (Refs #7).
+// 38. An unknown row is judged by its own cold cost (Refs #7, review M2/L7): a warm call of its
+// set slower than that row's own cold read of the same span marks it warmSlow, and it leaves
+// the set; each row is judged alone, so a cheap unknown (a stored struct parent, whose cold read
+// pays the floor) stays. Realistic costs: a rebuilt unknown adds ~60 ms to every warm call of its
+// set and reads cold in ~40 ms; the struct parent reads cold in ~300 ms and adds nothing warm; a
+// tiny unknown reads cold in ~5 ms, under any warm call. Primaries pay a 300 ms cold floor.
 {
-  const ids = [1, 2, 3, 4, 5, 6];
-  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
-    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '10', STUB_WARM_SIG_COST: '{"5":600,"6":600}', FSDB_WARM: '1', FSDB_BG_LOAD: '0' });
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, { 1: 100, 2: 100, 3: 100, 4: 100, 5: 4000, 6: 4000, 7: 30000, 8: 500 },
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '10', STUB_WARM_SIG_COST: '{"5":60,"6":60}',
+      FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_UNKNOWN: '4' });
   for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
   const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
   const lat = [];
@@ -815,11 +820,37 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   }
   const s = (await h.send('stats').reply).result;
   const got = s.warm && s.warm.ready ? [...s.warm.ready].sort((a, b) => a - b) : [];
+  const slow = (s.kinds.warmSlow || []).map((x) => x.id).sort((a, b) => a - b);
   lat.sort((a, b) => a - b);
   h.close();
-  check(JSON.stringify(got) === '[1,2,3,4]' && s.kinds.warmSlow && s.kinds.warmSlow.length === 2,
-    `unknown rows that slow their warm calls leave the set, measured: set ${JSON.stringify(got)}, warmSlow ${JSON.stringify(s.kinds.warmSlow)}`);
-  check(lat[Math.floor(lat.length / 2)] < 300, `... and the primaries' warm answers are fast again: p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms (1200+ while the slow rows shared their calls)`);
+  check(JSON.stringify(got) === '[1,2,3,4,7]' && JSON.stringify(slow) === '[5,6,8]',
+    `unknowns judged each by its own cold cost: set ${JSON.stringify(got)} (want [1,2,3,4,7]), warmSlow ${JSON.stringify(s.kinds.warmSlow)} (want 5, 6, 8)`);
+  check(lat[Math.floor(lat.length / 2)] < 100, `... and the primaries' warm answers are fast: p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms (130+ while the rebuilt ones share their calls)`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 41. One set's backoff must not hold up another set's warm-up (Refs #5, review M1): a set whose
+// warm reader fails backs off (here 4 s); once other rows are viewed instead, their set is built
+// at once, not after that backoff.
+{
+  const log = path.join(tmp, 'warm41.log');
+  fs.rmSync(log, { force: true });
+  const h = await start(2, Object.fromEntries([1, 2, 3, 4, 9].map((id) => [id, 1000])),
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,9]', STUB_WARM_LOG: log, STUB_WARM_LOAD_FAIL: '[9]', FSDB_WARM: '1', FSDB_BG_LOAD: '0',
+      FSDB_WARM_BACKOFF_MS: '4000', FSDB_WARM_RECENT_MS: '400' });
+  await kindsOf(h);
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await h.send('window', near([9], 0)).reply;  // a set that fails
+  let failed = false;
+  for (let k = 0; k < 40 && !failed; k++) { await wait(50); failed = fs.existsSync(log) && /loadFail/.test(fs.readFileSync(log, 'utf8')); }
+  await wait(500);  // (9 is no longer recent)
+  const t0 = performance.now();
+  let st = null;
+  for (let k = 0; k < 80; k++) { await h.send('window', near([1, 2, 3, 4], 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && st.ready && [1, 2, 3, 4].every((id) => st.ready.includes(id))) { break; } await wait(50); }
+  const ms = performance.now() - t0;
+  h.close();
+  check(failed && st && [1, 2, 3, 4].every((id) => st.ready.includes(id)) && ms < 2000,
+    `another set warms up during a failed set's 4 s backoff: ready in ${Math.round(ms)} ms (failed first: ${failed})`);
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
