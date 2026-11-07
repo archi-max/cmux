@@ -77,7 +77,9 @@
 //                                                 nothing is ever loaded). symbol, versionSymbol and
 //                                                 lastErrorSymbol must be registered entry points (the defaults
 //                                                 below, or cmux-replay.json applySymbols); others are refused
-//                                                 before any lookup. Never from a read-only region:
+//                                                 before any lookup; after a restoreFile too, the list is this
+//                                                 run's own (a save does not carry its run's list). Never from a
+//                                                 read-only region:
 //                                                 at serve, inside the TB's held serve point (simctl_hold.sv) at
 //                                                 this time (from a ReadOnlySynch park with the TB held there: at
 //                                                 t+1, back inside its serve point); at next, one time unit later

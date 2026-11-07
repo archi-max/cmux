@@ -14,7 +14,10 @@
  *   int sym(const char *arg); unsigned versym(void) must == want; const char *errsym(void) for lastError
  * sym, versym and errsym must be registered entry points (apply_register, at registration): simctl's own plan
  * interface and the names the run's manifest lists (cmux-replay.json applySymbols, passed as
- * SIMCTL_APPLY_SYMBOLS). Any other loaded symbol (libc's system, getpid, ...) is refused before any lookup. */
+ * SIMCTL_APPLY_SYMBOLS). Any other loaded symbol (libc's system, getpid, ...) is refused before any lookup.
+ * Restores: the list is always this process's own, from its manifest at its start. A file restore (restoreFile)
+ * does not bring back the saving run's list (measured both ways, review.js applysave); a run restored from a
+ * forksave (simv -r) never serves requests, so it has no apply; checkpoints are in this process. */
 #include <dlfcn.h>
 
 #define AP_MAX 64
