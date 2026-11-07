@@ -39,6 +39,8 @@ const RSS_HEADROOM = Number(process.env.FSDB_RSS_HEADROOM_MB ?? 16) * 1e6;  // (
 let rssFloor = 0, capRaised = null;
 const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6), rssFloor);
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
+const HOT_OPS = new Set(['hotLoad', 'hotWindow']);
+let hotMode = false;
 const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
@@ -179,6 +181,22 @@ const ops = {
     return addon.coldValueAt(signalIds, t).map((v) => (typeof v === 'string' ? v : null));
   },
 
+  // Warm readers (helper.js "warm readers"): the reader keeps the file's navigation DB, and
+  // every signal this process reads is in its first load (hotLoad); nothing else is loaded.
+  hotOpen({ file }) {
+    addon.openFsdb(file);
+    openFile = file;
+    readVarTree();  // (as a worker's open: the reader's scope/var tree, before any load)
+    addon.readerNavOnce();
+    hotMode = true;
+    return {};
+  },
+  hotLoad({ signalIds }) { return addon.warmLoad(signalIds); },
+  hotWindow({ signalIds, t0, t1, buckets }) {
+    return addon.warmWindow(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
+      : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
+        counts: w.counts || null, cached: false, ranged: true, warm: true, loadMs: w.loadMs, walkMs: w.walkMs }));
+  },
   // aliases: a stored signal's whole stream, hashed (the helper compares two).
   digest({ signalId }) {
     const l = ensure([signalId]).get(signalId);
@@ -415,7 +433,8 @@ process.on('message', (task) => {
   try {
     const fn = ops[task.op];
     if (!fn) { throw new Error('unknown op ' + task.op); }
-    if (!openFile && !NO_FILE_OK.has(task.op)) { throw new Error('no file open'); }  // the addon needs a reader
+    if (!openFile && !NO_FILE_OK.has(task.op) && task.op !== 'hotOpen') { throw new Error('no file open'); }  // the addon needs a reader
+    if (hotMode && !HOT_OPS.has(task.op)) { throw new Error(`${task.op} in a warm reader`); }  // (its first load fixed its signals)
     if (LOADS.has(task.op)) { memoryGuard(); }
     taskFiles = task.files || null;
     walkedNow = []; badNow = [];

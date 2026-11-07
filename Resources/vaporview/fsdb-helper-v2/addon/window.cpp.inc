@@ -412,7 +412,12 @@ static void normalizeStore(SigStore *s, bool initialX) {
 // back to the whole file before it returns, so other loads see everything.
 static bool g_winNarrow = false;
 static inline void setTag(fsdbTag64 &g, uint64_t t) { g.H = (uint_T)(t >> 32); g.L = (uint_T)(t & 0xFFFFFFFF); }
+// The reader's max tag is the end of the current view window (after a load over a narrowed
+// one, that window's end), so a warm reader, which never widens again, keeps the file's own
+// end from before its first load (readerNavOnce).
+static uint64_t g_hotEnd = 0;
 static uint64_t fileEnd() {  // time of the file's last change (a window past it loads nothing)
+  if (g_hotEnd) return g_hotEnd;
   fsdbTag64 m;
   return FSDB_RC_SUCCESS == fsdb_obj->ffrGetMaxFsdbTag64(&m) ? combineTime(m.H, m.L) : UINT64_MAX;
 }
@@ -1707,4 +1712,95 @@ Napi::Value cacheWriteIndex(const Napi::CallbackInfo &info) {
   o.Set("bits", Napi::Number::New(env, s->bits));
   o.Set("xz", Napi::Boolean::New(env, !s->xz.empty()));
   return o;
+}
+
+// ---- warm readers: navigation DB kept (ffrSetLoadNavDBOnlyOnce) ----
+// The reader keeps the file's navigation DB after the first load, so a view window of the same
+// signals costs ~1-20 ms instead of a per-call floor (~110 ms on 1.7 GB, ~650 ms on 10 GB). Its
+// documented condition: every signal read later must be in the first load (others can come back
+// WRONG). So a warm process loads its set once (warmLoad) and keeps that signal list for good;
+// warmWindow refuses any id outside it. Values are unloaded after every window.
+static bool g_hotOn = false;
+static std::unordered_set<int64_t> g_hotSet;
+
+// readerNavOnce(): before any load.
+Napi::Value readerNavOnce(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!fsdb_obj) { Napi::Error::New(env, "no file open").ThrowAsJavaScriptException(); return env.Undefined(); }
+  readerWindowAll();
+  g_hotEnd = fileEnd();
+  fsdb_obj->ffrSetLoadNavDBOnlyOnce(true);
+  g_hotOn = true;
+  return env.Undefined();
+}
+
+// warmLoad(ids[]) -> [{signalId} | {signalId, error}]: fixes the signal list (unreadable signals are
+// left out); the first warmWindow is the first load.
+Napi::Value warmLoad(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 1) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  if (!g_hotOn || !g_hotSet.empty()) { Napi::Error::New(env, "warmLoad: not a fresh navDB-once reader").ThrowAsJavaScriptException(); return env.Undefined(); }
+  Napi::Array arr = info[0].As<Napi::Array>();
+  Napi::Array out = Napi::Array::New(env);
+  std::vector<fsdbVarIdcode> ok;
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    const fsdbVarIdcode id = (fsdbVarIdcode)argI64(arr.Get(i));
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)id));
+    ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+    std::string err;
+    if (!h) err = "no traverse handle";
+    else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
+    else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
+    if (h) h->ffrFree();
+    if (!err.empty()) o.Set("error", Napi::String::New(env, err));
+    else if (!g_hotSet.count(id)) { g_hotSet.insert(id); ok.push_back(id); }
+    out.Set(i, o);
+  }
+  // (the first window's load is the first load, as in the reader's own example)
+  for (fsdbVarIdcode id : ok) fsdb_obj->ffrAddToSignalList(id);
+  return out;
+}
+
+// warmWindow(ids[], t0, t1, buckets) -> as cacheWindowCold, for ids of the first load only.
+Napi::Value warmWindow(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  uint64_t t0 = argTime(info[1]), t1 = argTime(info[2]);
+  if (t1 < t0) std::swap(t0, t1);
+  uint32_t B = info[3].As<Napi::Number>().Uint32Value();
+  if (B == 0) B = 1;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    const fsdbVarIdcode id = (fsdbVarIdcode)argI64(arr.Get(i));
+    if (!g_hotSet.count(id)) { Napi::Error::New(env, "warmWindow: signal not in the first load").ThrowAsJavaScriptException(); return env.Undefined(); }
+    ids.push_back(id);
+  }
+  using clk = std::chrono::steady_clock;
+  auto msSince = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+  Napi::Array out = Napi::Array::New(env);
+  readerWindow(t0 > 0 ? t0 - 1 : 0, t1);
+  const auto tl = clk::now();
+  fsdb_obj->ffrLoadSignals();  // the whole set (its list is fixed)
+  const double loadMs = msSince(tl);
+  try {
+    for (size_t k = 0; k < ids.size(); k++) {
+      auto tw = clk::now();
+      std::string err;
+      SigStore *s = walkSignal(ids[k], err);
+      Napi::Object o = s ? windowOf(env, s, t0, t1, B) : Napi::Object::New(env);
+      o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
+      if (!s) o.Set("error", Napi::String::New(env, err));
+      o.Set("loadMs", Napi::Number::New(env, loadMs));
+      o.Set("walkMs", Napi::Number::New(env, msSince(tw)));
+      delete s;
+      out.Set((uint32_t)k, o);
+    }
+  } catch (...) {
+    fsdb_obj->ffrUnloadSignals();
+    throw;
+  }
+  fsdb_obj->ffrUnloadSignals();
+  return out;
 }

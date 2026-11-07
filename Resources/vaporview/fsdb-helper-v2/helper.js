@@ -1215,6 +1215,126 @@ function coldTask(req, op, ids, extra, spread = false) {
     };
   }))).then((parts) => { const by = new Map(parts.flat()); return ids.map((id) => by.get(id)); });
 }
+// ---- warm readers (the reader's navDB-once mode) ----
+// A reader that keeps the file's navigation DB (ffrSetLoadNavDBOnlyOnce) answers a view window
+// of its signals in ~1-20 ms instead of a cold read's ~110 ms (1.7 GB) to ~650 ms (10 GB) per
+// call, but every signal it reads must be in its first load: the reader can return wrong
+// results otherwise. So a warm reader is its own process with a fixed set: the signals being
+// viewed (ranged reads asked for in the last HOT_RECENT_MS, not stored whole), at most HOT_MAX.
+// Ranged reads of signals in a ready set go to it; the rest are read cold as before, in
+// parallel. When a quarter of what is being viewed is outside the ready set, a new reader is
+// built in the background with the new set and the old one retires once it is ready. Warm
+// readers take no load pieces and keep no store; their answers are windowCold's records.
+const HOT = process.env.FSDB_WARM !== '0';
+const HOT_MAX = Number(process.env.FSDB_WARM_SIGNALS || 16);
+const HOT_RECENT_MS = Number(process.env.FSDB_WARM_RECENT_MS || 3000);
+const HOT_RSS = Number(process.env.FSDB_WARM_RSS_MB || 600) * 1e6;
+const hot = { readers: [], building: null, asked: new Map(), timer: null };  // asked: id -> last ranged ask (ms)
+const storedWhole = (id) => derived.has(id) || (route.has(id) && !floating.has(id) && workerFor(id).state.cached.includes(id));
+function hotStop() {
+  for (const r of [...hot.readers, hot.building].filter(Boolean)) { hotKill(r); }
+  hot.readers = []; hot.building = null; hot.asked.clear();
+  if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
+}
+function hotKill(r) {
+  r.state = 'dead';
+  for (const p of r.pending.values()) { p({ error: 'warm reader retired' }); }
+  r.pending.clear();
+  try { r.proc.kill(); } catch (e) { /* gone */ }
+}
+function hotCall(r, msg) {
+  return new Promise((resolve) => {
+    if (r.state === 'dead') { resolve({ error: 'warm reader retired' }); return; }
+    const tid = r.tid++;
+    r.pending.set(tid, resolve);
+    r.proc.send({ ...msg, tid }, (e) => { if (e && r.pending.delete(tid)) { resolve({ error: e.message }); } });
+  });
+}
+function hotSpawn(ids) {
+  const proc = fork(path.join(__dirname, 'worker.js'), [], { stdio: ['ignore', 2, 2, 'ipc'], serialization: 'advanced' });
+  const r = { proc, ids: new Set(ids), state: 'starting', pending: new Map(), tid: 1, epoch, rss: 0, ready: null };
+  r.ready = new Promise((resolve) => { r.onReady = resolve; });
+  proc.on('message', (m) => {
+    if (m.ready) { r.onReady(); return; }
+    if (m.state) { r.rss = m.state.rss || 0; }
+    const p = r.pending.get(m.tid);
+    if (p) { r.pending.delete(m.tid); p(m); }
+  });
+  proc.on('error', () => {});
+  proc.on('exit', () => {
+    hotKill(r);
+    hot.readers = hot.readers.filter((x) => x !== r);
+    if (hot.building === r) { hot.building = null; }
+  });
+  return r;
+}
+// The set wanted now: ranged reads of the last HOT_RECENT_MS, newest first, not stored whole.
+function hotWanted() {
+  const now = performance.now();
+  for (const [id, t] of hot.asked) { if (now - t > HOT_RECENT_MS) { hot.asked.delete(id); } }
+  return [...hot.asked].filter(([id]) => !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).slice(0, HOT_MAX).map(([id]) => id);
+}
+function hotNote(ids) {
+  if (!HOT || !openFile) { return; }
+  const now = performance.now();
+  for (const id of ids) { hot.asked.delete(id); hot.asked.set(id, now); }
+  if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, 200); }
+}
+function hotCheck() {
+  if (!HOT || !openFile || hot.building) { return; }
+  const want = hotWanted();
+  if (!want.length) { return; }
+  const cur = hot.readers.find((r) => r.state === 'ready');
+  const outside = cur ? want.filter((id) => !cur.ids.has(id)).length : want.length;
+  const overRss = cur && cur.rss > HOT_RSS;
+  if (cur && !overRss && outside * 4 < want.length) { return; }
+  hotBuild(want);
+}
+async function hotBuild(ids) {
+  const ep = epoch, file = openFile;
+  const r = hotSpawn(ids);
+  hot.building = r;
+  try {
+    await r.ready;
+    const o = await hotCall(r, { op: 'hotOpen', file });
+    if (o.error) { throw new Error(o.error); }
+    const l = await hotCall(r, { op: 'hotLoad', signalIds: ids });
+    if (l.error) { throw new Error(l.error); }
+    // (a signal the reader can't load stays out of the set: read cold)
+    l.result.forEach((x, k) => { if (x && x.error) { r.ids.delete(ids[k]); } });
+    if (epoch !== ep || r.state === 'dead') { hotKill(r); return; }
+    r.state = 'ready';
+    const old = hot.readers;
+    hot.readers = [r];
+    for (const x of old) { x.state = 'retiring'; Promise.all([...x.pending.values()]).finally(() => {}); setTimeout(() => hotKill(x), 5000); }
+  } catch (e) {
+    if (DEBUG) { process.stderr.write(`[helper] warm reader: ${(e && e.message) || e}\n`); }
+    hotKill(r);
+  } finally {
+    if (hot.building === r) { hot.building = null; }
+    if (epoch === ep) { setTimeout(hotCheck, 50); }
+  }
+}
+// A ranged cold read: the signals in the ready warm set from it, the rest cold (coldTask),
+// in parallel; a warm read that fails falls back to cold. -> results in ids order
+async function rangedRead(req, ids, range) {
+  hotNote(ids);
+  const r = hot.readers.find((x) => x.state === 'ready');
+  const inSet = r ? ids.filter((id) => r.ids.has(id)) : [];
+  const rest = ids.filter((id) => !inSet.includes(id));
+  const [a, b] = await Promise.all([
+    inSet.length ? hotCall(r, { op: 'hotWindow', signalIds: [...new Set(inSet)], ...range }) : null,
+    rest.length ? coldTask(req, 'windowCold', rest, range, true) : []]);
+  const by = new Map(rest.map((id, k) => [id, b[k]]));
+  if (inSet.length) {
+    if (a.error) { (await coldTask(req, 'windowCold', inSet, range, true)).forEach((x, k) => by.set(inSet[k], x)); } else {
+      req.workerMs = Math.max(req.workerMs || 0, a.ms || 0);
+      for (const x of a.result) { by.set(x.signalId, x); }
+    }
+  }
+  return ids.map((id) => by.get(id));
+}
+
 // valueAt {prev: true} of signals that aren't stored: view windows [t - span, t] that grow x8
 // until each signal's last real change is in one or the window reaches 0 (then it has none:
 // null). Stored (primary) signals pay a floor per call, so they start wide (1/256 of the dump)
@@ -1245,7 +1365,11 @@ async function coldNear(req, ids, t) {
 // Background whole walks (after a ranged first draw): a job nobody waits for, so it runs in
 // pieces only when no interactive work is queued (see jobs above).
 const bgFailed = new Map();  // signalId -> error: loads that failed for good (over the store cap, unreadable); not retried until a reopen
+// FSDB_BG_LOAD=0 (checks and benches): rows are never stored whole in the background, so they
+// stay on ranged (cold or warm) reads.
+const BG_LOAD = process.env.FSDB_BG_LOAD !== '0';
 function scheduleBgLoad(id) {
+  if (!BG_LOAD) { return; }
   if (jobs.has(id) || bgFailed.has(id) || !timeEnd || derived.has(id)) { return; }
   if (STORE_CACHE && warm.epoch === epoch && warm.files.has(id)) { return; }
   if (route.has(id) && !floating.has(id) && workerFor(id).state.cached.includes(id)) { return; }
@@ -2048,6 +2172,7 @@ const handlers = {
     bgFailed.clear();
     persisting.clear();
     epoch++;
+    hotStop();
     splitting.clear();
     widthOf.clear();
     index = null;
@@ -2140,7 +2265,7 @@ const handlers = {
       return ok.length ? scatter(req, 'window', ok, range, (m) => m.result, true) : [];
     }) : null;
     const [r1, r2, coldRes] = await Promise.all([nowRes || [], laterRes || [],
-      cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets }, true) : []]);
+      cold.size ? rangedRead(req, [...cold], { t0, t1, buckets }) : []]);
     if (req.cancelled) { return {}; }
     const warmRes = [...r1, ...r2];
     const byId = new Map([...warmRes, ...coldRes, ...failed.values()].map((r) => [r.signalId, r]));
@@ -2155,7 +2280,7 @@ const handlers = {
       const sp = req.split && req.split.get(r.signalId);
       head.push({ signalId: r.signalId, exact: r.exact, count: r.count, bytes: rec.length, bucketBytes: cnt ? cnt.length : 0,
         cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
-        ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
+        ...(r.ranged ? { ranged: true } : {}), ...(r.warm ? { warm: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
       bins.push(rec);
       if (cnt) { bins.push(cnt); }
     }
@@ -2360,6 +2485,8 @@ const handlers = {
       firstLoads: floatQueue.length,  // first loads waiting for a free worker (floatQueue)
       coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
       pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
+      warm: { ready: (hot.readers.find((r) => r.state === 'ready') || { ids: new Set() }).ids.size ? [...hot.readers.find((r) => r.state === 'ready').ids] : [],
+        building: hot.building ? [...hot.building.ids] : null, rss: hot.readers.map((r) => r.rss) },
       aliases: { checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
         verified: [...aliases].filter(([, a]) => a.state === 'verified').map(([x, a]) => [x, a.p]), bad: [...aliases].filter(([, a]) => a.state === 'bad').map(([x, a]) => [x, a.p]), log: aliasLog },
       kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },
@@ -2429,6 +2556,7 @@ const handlers = {
     bgFailed.clear();
     persisting.clear();
     epoch++;
+    hotStop();
     splitting.clear();
     derived.clear(); derivedByKey.clear(); derivedByName.clear();
     index = null;
