@@ -355,7 +355,7 @@ const NEXT_CASES = [
 // (role 'opaque', maybe): Verdi's loads inside for and repeat loops match them.
 const INTERFACE_READS = {
   'tb_m.bus.data': ['tb_m.u_prod:20', 'tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
-  'tb_m.bus.valid': ['tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
+  'tb_m.bus.valid': ['tb_m:10', 'tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
   'tb_m.bus.clk': ['tb_m.u_prod:15', 'tb_m.u_mid.u_leaf:27'],
   'tb_m.bus.ready': ['tb_m.u_prod:19'],
   'tb_f.bus.addr': ['tb_f.u_mem:23'],

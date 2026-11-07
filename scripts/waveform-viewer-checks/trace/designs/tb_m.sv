@@ -6,6 +6,8 @@ module tb_m;
   m_prod u_prod (.bus(bus), .rst_n(rst_n));
   m_mid u_mid (.bus(bus), .seen(seen));
   m_mon u_mon (.bus(bus), .last(last));
+  logic top_valid;
+  assign top_valid = bus.valid;  // the interface's own parent reads it directly
   always #5 clk = ~clk;
   initial begin
     $dumpfile("m.vcd"); $dumpvars(0, tb_m);

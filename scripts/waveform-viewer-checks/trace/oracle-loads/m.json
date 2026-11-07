@@ -175,6 +175,19 @@
 "text": "tb_m.bus.mon.valid",
 "type": "npiMpPort",
 "upper": false
+},
+{
+"file": "tb_m.sv",
+"from": "tb_m.bus.valid",
+"line": 10,
+"scope": "tb_m",
+"scopeType": "npiModule",
+"targets": [
+"tb_m.top_valid"
+],
+"text": "assign top_valid = bus.valid",
+"type": "npiContAssign",
+"upper": false
 }
 ],
 "through": [
@@ -203,6 +216,19 @@
 "text": "tb_m.bus.mon.valid",
 "type": "npiMpPort",
 "upper": false
+},
+{
+"file": "tb_m.sv",
+"from": "tb_m.bus.valid",
+"line": 10,
+"scope": "tb_m",
+"scopeType": "npiModule",
+"targets": [
+"tb_m.top_valid"
+],
+"text": "assign top_valid = bus.valid",
+"type": "npiContAssign",
+"upper": false
 }
 ]
 },
@@ -224,7 +250,7 @@
 {
 "file": "tb_m.sv",
 "from": "tb_m.clk",
-"line": 9,
+"line": 11,
 "scope": "tb_m",
 "scopeType": "npiModule",
 "targets": [
@@ -252,7 +278,7 @@
 {
 "file": "tb_m.sv",
 "from": "tb_m.clk",
-"line": 9,
+"line": 11,
 "scope": "tb_m",
 "scopeType": "npiModule",
 "targets": [
@@ -401,6 +427,10 @@
 ]
 },
 "tb_m.seen": {
+"stop": [],
+"through": []
+},
+"tb_m.top_valid": {
 "stop": [],
 "through": []
 },
