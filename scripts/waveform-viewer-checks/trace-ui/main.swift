@@ -33,6 +33,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// The design cmux has loaded now (resolve's designId); a model request for another one is
   /// refused as cmux refuses it (nil: any).
   var currentDesign: String?
+  /// Model requests are answered `noDesign` (cmux has no design for the viewer: evicted, or its build failed).
+  var noDesign = false
   /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
   var engineAnswer: [String: Any]?
   /// Per traced signal (the request's dump path), ahead of `engineAnswer`.
@@ -1421,6 +1423,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await compiledOnlyChecks()
     await designChecks()
     await kdbDiffersChecks()
+    await kdbPendingChecks()
     await xRootChecks()
     await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
@@ -1694,6 +1697,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     _ = await trace("driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, designId: 'd#4' })")
     models = asked(since: k)
     expect(!models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#4" }, "design: the editor's trace asks in its design: \(models.map { $0["design"] ?? "none" })")
+    // cmux dropped the viewer's design (evicted, Refs #8 F1): the page's session ends there too,
+    // so a design cmux makes again is asked anew, never answered from the old one's kept models.
+    currentDesign = nil
+    answerIn("e#1")
+    _ = await trace("driver({ path: \(path), time: 60 })")
+    noDesign = true
+    _ = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    noDesign = false
+    k = events.count
+    let anew = await trace("driver({ path: \(path), time: 60 })")
+    expect(anew?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !asked(since: k).isEmpty,
+           "design: after noDesign the session's kept models are dropped (\(asked(since: k).count) asked)")
     resolveAnswer = nil
     currentDesign = nil
     _ = await trace("close()")
@@ -1726,6 +1741,45 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let id = traceSwift.range(of: "\"traceReason_kdbDiffers\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
     let locales = id.flatMap { (catalog[String($0)] as? [String: Any])?["localizations"] as? [String: Any] }?.count ?? 0
     expect(locales == 9, "kdb differs: the reason's string comes from cmux in 9 locales (\(locales))")
+    _ = await trace("close()")
+  }
+
+  /// Issue #8 F3: while the dump's KDB export runs (a viewer just opened or reloaded it), cmux
+  /// traces with slang's design and says so: resolve's kdbPending marks each step (its trust is
+  /// slang's own), and a row slang lacks says the compiled design is still loading, not that the
+  /// row is not in the design. A reload's helper gets slang's aliases again (L1).
+  func kdbPendingChecks() async {
+    _ = await trace("close()")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "p#1", "kdbPending": true]
+    let step = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let codes = (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    let text = await panelText()
+    expect(step != nil && codes.contains("kdbPending"), "kdb pending: the step says slang's design was used: \(codes)")
+    expect(text.contains("still loading, so this was traced with slang"), "kdb pending: the panel says so: \(text.prefix(300))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "p#1"]
+    let later = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let laterCodes = (later?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    expect(later != nil && !laterCodes.contains("kdbPending"), "kdb pending: gone once the export answered: \(laterCodes)")
+    resolveAnswer = nil
+    // cmux's side: the reason's string in 9 locales; a row slang lacks while the export runs.
+    let resources = assetRoot.deletingLastPathComponent()
+    let sources = resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels")
+    let traceSwift = (try? String(contentsOf: sources.appendingPathComponent("WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let linkSwift = (try? String(contentsOf: sources.appendingPathComponent("WaveformSourceLink.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    func locales(_ key: String) -> Int { ((catalog[key] as? [String: Any])?["localizations"] as? [String: Any])?.count ?? 0 }
+    let id = traceSwift.range(of: "\"traceReason_kdbPending\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
+    expect(id.map { locales(String($0)) } == 9, "kdb pending: the reason's string comes from cmux in 9 locales")
+    expect(traceSwift.contains("WaveformTraceKDB.pending(for: waveform)") && locales("waveformTrace.kdbStillLoading") == 9,
+           "kdb pending: a row slang lacks while the export runs says the compiled design is still loading (9 locales: \(locales("waveformTrace.kdbStillLoading")))")
+    func body(_ text: String, after marker: String) -> String {
+      guard let start = text.range(of: marker), let end = text[start.upperBound...].range(of: "\n    }\n") else { return "" }
+      return String(text[start.lowerBound..<end.upperBound])
+    }
+    expect(body(linkSwift, after: "static func waveformReloading(").contains("WaveformTrace.waveformReloading(")
+             && body(traceSwift, after: "static func waveformReloading(").contains("aliasRules.removeObject"),
+           "L1: a reload clears the viewer's alias rule, so its new helper gets slang's aliases again")
     _ = await trace("close()")
   }
 
@@ -1854,6 +1908,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       answer(id, ok: true, result: ["designPath": path, "designPrefix": "", "dumpPrefix": ""])
     case "model":
       modelRequests += 1
+      if noDesign {
+        answer(id, ok: false, error: "noDesign", message: "Open a design first.")
+        return
+      }
       if let currentDesign, body["design"] as? String != currentDesign {
         answer(id, ok: false, error: "designChanged", message: "The design changed since this trace began. Trace again.")
         return
@@ -1982,6 +2040,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     "traceCompiledWrites": "Written at:",
     "traceCompiledNoWrites": "The compiled design has no statement writing it here (it is driven through a port, or is an input).",
     "traceReason_kdbDiffers": "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@.",
+    "traceReason_kdbPending": "The compiled design (KDB) is still loading, so this was traced with slang’s design.",
   ]
 
   /// How many times the page said a dump opened.

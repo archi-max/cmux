@@ -87,6 +87,25 @@ import Testing
         #expect(fake.asked("instances") == 1)
     }
 
+    /// A design's id names its session as well as its generation: a design evicted and made again
+    /// under the same key (a new sidecar, generation 1 again) never answers to the old one's id,
+    /// so a page never takes the old design's kept answers for the new one's (Refs #8).
+    @Test func designIdsNeverRepeatAcrossSessions() async throws {
+        let first = try Fake("A")
+        let g1 = try await first.session.load().generation
+        let second = try Fake("B")
+        let g2 = try await second.session.load().generation
+        #expect(g1 == g2, "both sidecars count from the same start")
+        let id1 = first.session.designId(key: "k", generation: g1)
+        let id2 = second.session.designId(key: "k", generation: g2)
+        #expect(id1 != id2)
+        #expect(second.session.generation(ofDesignId: id1, key: "k") == nil, "the old design's id is not the new one's")
+        #expect(second.session.generation(ofDesignId: id2, key: "k") == g2)
+        #expect(first.session.generation(ofDesignId: id1, key: "k") == g1)
+        #expect(first.session.generation(ofDesignId: id1, key: "other") == nil)
+        #expect(first.session.generation(ofDesignId: "k#" + String(g1), key: "k") == nil, "the old form names no session")
+    }
+
     @Test func aRestartOntoEditedSourcesIsANewDesign() async throws {
         let fake = try Fake("A")
         let g = try await fake.session.load().generation

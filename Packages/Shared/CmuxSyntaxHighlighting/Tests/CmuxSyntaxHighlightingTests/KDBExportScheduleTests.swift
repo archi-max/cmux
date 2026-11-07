@@ -23,10 +23,39 @@ import Testing
         #expect(schedule.opened("k", enabled: true) == .join)
         #expect(schedule.opened("other", enabled: true) == .start)
         #expect(schedule.model("k") == nil)
-        _ = schedule.finished("k", .model(Self.model("tb"), cached: false))
-        #expect(schedule.model("k")?.tops == ["tb"])
+        // The export of "other" was never joined: its model is installed.
+        _ = schedule.finished("other", .model(Self.model("o"), cached: false))
+        #expect(schedule.model("other")?.tops == ["o"] && !schedule.pending("other"))
         // Reopened later: the host's cache answers (a new KDB gives a new model).
+        #expect(schedule.opened("other", enabled: true) == .start)
+    }
+
+    /// A viewer (re)opening while its KDB's export runs may come with another KDB (a rerun
+    /// rewrote it after the export read it): that export's model is dropped and the export runs
+    /// once more (the host's cache answers it when the KDB is the same), however many join (Refs #8).
+    @Test func anOpenDuringAnExportRunsItOnceMore() {
+        var schedule = KDBExportSchedule()
         #expect(schedule.opened("k", enabled: true) == .start)
+        #expect(schedule.pending("k"))
+        #expect(schedule.opened("k", enabled: true) == .join)
+        #expect(schedule.opened("k", enabled: true) == .join)
+        #expect(schedule.finished("k", .model(Self.model("old"), cached: false)) == nil)
+        #expect(schedule.model("k") == nil, "the export that began before the reopen is not installed")
+        #expect(schedule.pending("k"), "it runs once more for the reopened dump")
+        _ = schedule.finished("k", .model(Self.model("new"), cached: true))
+        #expect(schedule.model("k")?.tops == ["new"] && !schedule.pending("k"))
+        // A failure of the superseded export says nothing; the next one's is said.
+        _ = schedule.opened("j", enabled: true)
+        _ = schedule.opened("j", enabled: true)
+        #expect(schedule.finished("j", .unavailable(code: "licence", message: "no seat")) == nil)
+        #expect(schedule.pending("j") && schedule.finished("j", .unavailable(code: "licence", message: "no seat")) != nil)
+        #expect(!schedule.pending("j"))
+    }
+
+    @Test func nothingIsPendingWithTheSettingOff() {
+        var schedule = KDBExportSchedule()
+        _ = schedule.opened("k", enabled: false)
+        #expect(!schedule.pending("k"))
     }
 
     /// A reopened dump (a reload after another simulation) may come with another KDB: the model in
