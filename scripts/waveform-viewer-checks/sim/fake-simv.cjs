@@ -44,6 +44,8 @@ function quick(op, id, a) {
       if (/exitsoon/.test(a[0])) { setTimeout(() => process.kill(process.pid, "SIGTERM"), 50); return true; }   // (process.exit waits on the fd 3 read here)
       // "latetimeout": the image is there and the status 0, but the deadline also fired (one outcome must win)
       if (/latetimeout/.test(a[0])) { setTimeout(() => { fs.writeFileSync(a[0], 'fake save'); send({ ev: 'saved', pid, file: a[0], t, status: 0, timeout: true }); }, 200); return true; }
+      // "warnfile": the child could not reopen one of the design's $fopen files (it says so in <file>.log)
+      if (/warnfile/.test(a[0])) { try { fs.writeFileSync(`${a[0]}.log`, 'simctl-forksave: warning: /work/out.txt (fd 9) could not be reopened: a run restored from this save writes nothing to it\n'); } catch { /* bad path */ } }
       setTimeout(() => { try { if (!/nofile/.test(a[0])) fs.writeFileSync(a[0], 'fake save'); } catch { /* bad path */ } send({ ev: 'saved', pid, file: a[0], t, status: 0 }); }, 200); return true; }
     default: return false;
   }

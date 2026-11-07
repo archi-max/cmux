@@ -248,6 +248,28 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(!!np && /no port/.test(np.error || '') && np.needsRebuild === true, `push to a port the build doesn't have: refused, needsRebuild: ${JSON.stringify(np)}`);
     await w.quit().catch(() => {});
   }
+  // Fork-save re-review 2/3 (from the simctl library, prototype 4d96339, 4f4c7bb, 6221084): a file the save child
+  // could not reopen is named in the saved event's warnings; a save copied without its <file>.simctl.d folder is
+  // named as missing when a run is started on it (-r), instead of the simulator's "Can't restore state".
+  {
+    const w = start(['--period', '10', '--no-ucli']); await w.ready;
+    const f = await w.reply(w.send({ cmd: 'forksave', file: 'warnfile.save' }).id);
+    const end = Date.now() + 3000; let ev = null;
+    while (!ev && Date.now() < end) { ev = w.events.find((e) => e.event === 'saved' && f && f.result && e.pid === f.result.pid); if (!ev) await sleep(20); }
+    expect(!!ev && ev.ok === true && Array.isArray(ev.warnings) && ev.warnings.length === 1 && /out\.txt .*could not be reopened/.test(ev.warnings[0]), `a forksave's warnings: ${JSON.stringify(ev)}`);
+    await w.quit().catch(() => {});
+  }
+  {
+    const cwd = path.join(scratch, 'l1.cwd'); fs.mkdirSync(cwd);
+    fs.symlinkSync('a.save.simctl.d/cur/img', path.join(cwd, 'a.save'));
+    fs.symlinkSync('a.save.simctl.d/cur/img.FILES', path.join(cwd, 'a.save.FILES'));
+    const p = spawn(process.execPath, [WORKER, '--simv', SIMV, '--lib', '/nonexistent/libsimctl.so', '--scratch', scratch, '--run', 'l1', '--cwd', cwd, '--vmem-mb', '0', '--no-ucli', '--', '-r', 'a.save'],
+      { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, FAKE_SIMV_LOG: path.join(scratch, 'l1.lib.log') } });
+    let so = ''; p.stdout.on('data', (d) => { so += d; });
+    const code = await Promise.race([new Promise((r) => p.on('exit', (c) => r(c))), sleep(5000).then(() => 'timeout')]);
+    if (code === 'timeout') p.kill('SIGKILL');
+    expect(code === 3 && /a\.save\.simctl\.d\/ is missing/.test(so), `a save copied without its .simctl.d folder: named as missing, exit 3: exit ${code}, ${so.trim().slice(0, 300)}`);
+  }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
   // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
   {
