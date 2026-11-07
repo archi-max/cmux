@@ -1,19 +1,22 @@
 // A stand-in for fsdb-helper-v2/simctl/sim-worker.js (no simulator on this Mac): the same JSON-lines protocol
-// on stdio, over a toy design. Time unit 1, clock period 10.
-//   tb.clk   1 bit, rises at 5, 15, 25, ...
-//   tb.cnt   8 bits, counts on each rising edge from 0 (wraps)
-//   tb.x     4 bits, always xxxx
-//   tb.z     2 bits, always zz
+// on stdio, over a toy design. Time unit 1, clock period FAKE_PERIOD (default 10, even).
+//   tb.clk        1 bit, rises at 5, 15, 25, ... (period/2 + k*period)
+//   tb.cnt        8 bits, counts on each rising edge from 0 (wraps)
+//   tb.dut.state  4 bits, the counter's low 4 bits (a name the mock's synth dump also has)
+//   tb.x          4 bits, always xxxx
+//   tb.z          2 bits, always zz
 // `deposit tb.cnt` sets the counter. FAKE_WORKER_LOG (a file) gets {argv, pid}.
 'use strict';
 const fs = require('node:fs');
 if (process.env.FAKE_WORKER_LOG) fs.writeFileSync(process.env.FAKE_WORKER_LOG, JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }));
 const out = (o, bin) => { process.stdout.write(JSON.stringify(o) + '\n'); if (bin && bin.length) process.stdout.write(bin); };
-const PERIOD = 10;
+const PERIOD = Number(process.env.FAKE_PERIOD) || 10;
+const HALF = PERIOD / 2;
 let t = 0, cnt = 0, running = null;
-const width = { 'tb.clk': 1, 'tb.cnt': 8, 'tb.x': 4, 'tb.z': 2 };
-const clkAt = (tt) => ((tt % PERIOD) < 5 ? '0' : '1'); // 0 for [0,5), 1 for [5,10), ...
-const value = (name) => name === 'tb.clk' ? clkAt(t) : name === 'tb.cnt' ? (cnt & 255).toString(2).padStart(8, '0') : name === 'tb.x' ? 'xxxx' : 'zz';
+const width = { 'tb.clk': 1, 'tb.cnt': 8, 'tb.dut.state': 4, 'tb.x': 4, 'tb.z': 2 };
+const clkAt = (tt) => ((tt % PERIOD) < HALF ? '0' : '1'); // 0 for [0,5), 1 for [5,10), ...
+const value = (name) => name === 'tb.clk' ? clkAt(t) : name === 'tb.cnt' ? (cnt & 255).toString(2).padStart(8, '0')
+  : name === 'tb.dut.state' ? (cnt & 15).toString(2).padStart(4, '0') : name === 'tb.x' ? 'xxxx' : 'zz';
 const watches = new Map(); let nextWid = 0; const last = new Map();
 let pend = [];   // [t, wid, value]
 function flush() {
@@ -32,9 +35,9 @@ function flush() {
   out({ id: 0, event: 'changes', t0: tmin, t1: tmax, signals: sigs, binLength: all.length }, all);
 }
 function step(to) {
-  // advance to time `to`, edge by edge (every 5), recording watched changes
+  // advance to time `to`, edge by edge (every HALF), recording watched changes
   while (t < to) {
-    const nt = (Math.floor(t / 5) + 1) * 5;
+    const nt = (Math.floor(t / HALF) + 1) * HALF;
     if (nt > to) { t = to; break; }
     t = nt;
     if (clkAt(t) === '1') cnt++;
@@ -49,10 +52,10 @@ function runTo(id, end, untilFn) {
   const tick = () => {
     const r = running; if (!r) return;
     if (r.stop !== null) { running = null; flush(); out({ id: r.id, result: { t, stopped: 'stop' } }); out({ id: r.stop, result: { t } }); return; }
-    const chunk = r.end - t > 1e6 ? 50 : r.end - t;   // long runs are slow, so a stop can catch them
+    const chunk = r.end - t > 1e5 * PERIOD ? 5 * PERIOD : r.end - t;   // long runs are slow, so a stop can catch them
     const target = t + chunk;
     while (t < target) {
-      step(Math.min(target, t + 5));
+      step(Math.min(target, t + HALF));
       if (r.untilFn && r.untilFn()) { running = null; flush(); out({ id: r.id, result: { t, stopped: 'until' } }); return; }
     }
     if (t >= r.end) { running = null; flush(); out({ id: r.id, result: { t, stopped: 'done' } }); return; }
