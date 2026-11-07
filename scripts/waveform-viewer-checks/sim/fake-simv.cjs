@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A stand-in simulator for worker-unit.cjs: what fsdb-helper-v2/simctl/sim-worker.js spawns as <simv>, with
-// the VPI library's side played here. UCLI on stdin/stdout ("ucli% " prompts; `run` starts the library side),
+// the VPI library's side played here. UCLI on stdin/stdout ("ucli% " prompts; `run` starts the library side;
+// started without -ucli, as `sim-worker.js --no-ucli` does: no prompts, and the library side starts at once),
 // the library's line protocol on fd 3 (requests in) and fd 4 (replies out), as simctl_vpi.c speaks it:
 //   T/G/W/X/I/N/O/E/V answered at once, also during a run (the library's poll points); R/U run for FAKE_RUN_MS
 //   (default 1500) or until an S; F/D/L ... Y (writes), P, Q and anything else wait for the run's end, in order.
@@ -65,8 +66,10 @@ fs.createReadStream(null, { fd: 3 }).on('data', (d) => {
   ibuf += d.toString('latin1'); let k;
   while ((k = ibuf.indexOf('\n')) >= 0) { const l = ibuf.slice(0, k); ibuf = ibuf.slice(k + 1); if (LOG) fs.appendFileSync(LOG, l + '\n'); if (l) line(l); }
 }).on('end', () => process.exit(0));
-process.stdout.write('ucli% ');
-require('node:readline').createInterface({ input: process.stdin }).on('line', (l) => {
+const UCLI = process.argv.includes('-ucli');
+if (UCLI) process.stdout.write('ucli% ');
+else { started = true; send({ ev: 'ready', t, precision: -12 }); }
+if (UCLI) require('node:readline').createInterface({ input: process.stdin }).on('line', (l) => {
   const c = l.trim();
   if (c === 'run') { if (!started) { started = true; send({ ev: 'ready', t, precision: -12 }); } return; }
   if (c === 'quit') process.exit(0);
