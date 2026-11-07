@@ -580,12 +580,15 @@ function runTask(w, task, front) {
 //   behind ranged first draws, cancelled requests' loads); then measured jobs with at most one
 //   piece of work left, jobs not started yet (oldest first), the other measured jobs (least
 //   remaining work first), and last more pieces of jobs whose first piece is still running.
-// - Piece length: a job's first piece covers 1/16 of the dump; while it runs, idle workers take
-//   1/128 pieces. Then about PIECE_MS of work, from a fit of the job's pieces to ms = floor +
+// - Piece length: a job's first piece covers 1/16 of a 1.7 GB dump, less on a bigger one (1/16 x
+//   1.7 GB / size, down to 1/256); while it runs, idle workers take pieces 8x shorter. (Shorter
+//   probes on every dump cost more: each piece pays the reader's per-load floor and a worker's
+//   first load of the signal; 10 signals on 1.7 GB: last 7.5 -> 10.9 s.) Then about PIECE_MS of work, from a fit of the job's pieces to ms = floor +
 //   rate * length: some signals cost ~110 ms per load whatever the range (big reader blocks),
 //   so a piece cheaper than PIECE_MS is followed by one 4x longer, and a job whose floor is
 //   over PIECE_MS / 2 takes the rest in one piece, but no piece is longer than 2 * PIECE_MS at
-//   the plain rate of the job's longest piece. Background jobs aim at BG_PIECE_MS instead.
+//   the plain rate of the job's longest piece (and of its newest one). Background jobs aim at
+//   BG_PIECE_MS instead.
 // - Cancelling every request of a job keeps it going in the background (asking again finds it
 //   done or further along), at most CANCEL_KEEP such loads (the furthest along); `free` of the
 //   signal (or free {}) drops a load nobody waits for. A job over the store cap is stopped as soon as its pieces say so.
@@ -593,7 +596,12 @@ function runTask(w, task, front) {
 const PIECE_MS = Number(process.env.FSDB_PIECE_MS || 250);
 // Background pieces are shorter: a request for a signal stored on that worker waits for one.
 const BG_PIECE_MS = Number(process.env.FSDB_BG_PIECE_MS || 100);
-const PROBE_PARTS = 16, SMALL_PARTS = 128, MIN_PARTS = 1024;
+// (probe sizes scale with the dump's size, as a whole load's cost does: on a 1.7 GB dump a 1/16
+// probe of a 10 s load is ~600 ms, on a 10 GB one the same share would be 5-7 s)
+const PROBE_REF_BYTES = 1.7e9, MIN_PARTS = 1024;
+let fileBytes = 0;
+const probeParts = () => Math.round(Math.min(256, Math.max(16, 16 * fileBytes / PROBE_REF_BYTES)));
+const smallParts = () => Math.min(MIN_PARTS, 8 * probeParts());
 const jobs = new Map();  // signalId -> job
 let jobSeq = 0;
 const transient = (e) => /exited|pool resized|memory limit|cancelled/.test(String(e || ''));
@@ -651,7 +659,7 @@ function pickJob(interactive) {
 function nextPiece(j, target) {
   if (j.redo.length) { return j.redo.shift(); }
   const left = j.end - j.next;
-  let len = Math.ceil(j.end / (j.pieces.length ? SMALL_PARTS : PROBE_PARTS));
+  let len = Math.ceil(j.end / (j.pieces.length ? smallParts() : probeParts()));
   if (j.done.length) {
     let S = j.done[0], L = j.done[0];
     for (const d of j.done) { if (d.len < S.len) { S = d; } if (d.len > L.len) { L = d; } }
@@ -666,6 +674,9 @@ function nextPiece(j, target) {
     // cost): a worker's first load of a signal costs ~150-200 ms extra, which the fit can take
     // for a floor, and one piece must never hold a worker for seconds.
     len = Math.min(len, 2 * target * L.len / Math.max(1e-3, L.ms));
+    // (and at the newest comparable piece's: the rate changes along the dump)
+    const N = j.done[j.done.length - 1];
+    if (N !== L && N.len >= L.len / 2) { len = Math.min(len, 2 * target * N.len / Math.max(1e-3, N.ms)); }
     len = Math.max(Math.ceil(j.end / MIN_PARTS), Math.floor(len));
   }
   if (left - len < len / 2) { len = left; }  // no tiny tail
@@ -1699,6 +1710,7 @@ const handlers = {
       throw e;
     }
     openFile = file;
+    try { fileBytes = fs.statSync(file).size; } catch (e) { fileBytes = 0; }
     const metadata = { timeTableLoaded: false, scopeCount: 0, netlistIdCount: 0, signalIdCount: 0,
       timeTableCount: 0, timeEnd: 0, minTimeStep: 1, timeScale: 1, timeUnit: 'ns' };
     addon.readMetadata(
