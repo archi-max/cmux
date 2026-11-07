@@ -9,7 +9,8 @@ import Foundation
 /// (``SSHTuiConnection/shellCommand``), so without this the graph keeps the
 /// spawn directory after every `cd`.
 ///
-/// The launch command installs two small files beside the host `cmux` and
+/// The launch command installs two small files in a private directory chain
+/// below HOME (``SSHTuiHostOpenCommand/shellIntegrationDirectory``) and
 /// starts the login shell through them, the way terminals inject shell
 /// integration:
 /// - bash: `--posix -l` with `ENV` pointing at ``bashEnvironmentFile``. An
@@ -140,28 +141,53 @@ public enum SSHTuiShellIntegration {
         }.joined()
     }
 
+    /// Shell functions `cmux_ssh_private <file>`: true when the file and each
+    /// parent up to HOME pass the check below. The launch uses them for the
+    /// sourced files, the prelude for the host `cmux` it puts on PATH.
+    static let privateCheckCode = #"""
+    # The shell sources or runs the file, so nobody else may be able to rewrite or
+    # swap it: the file and each parent up to HOME is the user's, not a
+    # symlink, with no group or other write. Group write is never trusted:
+    # on Linux the group bits are the ACL mask, so they would let named ACL
+    # entries write. Only that chain is looked at: another terminal
+    # installing at the same moment renames temporary files beside it, and
+    # a walk that lists one before it is renamed fails.
+    cmux_ssh_unsafe() {
+      find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
+    }
+    # A refusal leaves the refused path in cmux_ssh_refused.
+    cmux_ssh_private() {
+      cmux_ssh_refused=
+      [ -r "$1" ] && cmux_ssh_uid=$(id -u) || return 1
+      [ -z "$(cmux_ssh_unsafe "$1")" ] || { cmux_ssh_refused=$1; return 1; }
+      cmux_ssh_parent=$1
+      while [ "$cmux_ssh_parent" != "$HOME" ]; do
+        case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
+        cmux_ssh_parent=${cmux_ssh_parent%/*}
+        # HOME itself may be a symlink; check what it points to.
+        if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
+        [ -z "$(cmux_ssh_unsafe "$1")" ] || { cmux_ssh_refused=$1; return 1; }
+      done
+    }
+    """#
+
     /// Shell code that starts the login shell through the installed files,
     /// found under `installDirectory`, or falls through when it cannot.
     static func launchCode(installDirectory: String) -> String {
         #"""
         cmux_ssh_dir="\#(installDirectory)"
         cmux_ssh_shell=${SHELL:-/bin/sh}
-        # The shell sources these files, so nobody else may be able to rewrite
-        # or swap any of them: every entry, and each parent up to HOME, is the
-        # user's, not a symlink, with no group or other write.
-        cmux_ssh_unsafe() {
-          find "$@" \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
-        }
-        cmux_ssh_private() {
-          [ -r "$1" ] && cmux_ssh_uid=$(id -u) && [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir")" ] || return 1
-          cmux_ssh_parent=$cmux_ssh_dir
-          while [ "$cmux_ssh_parent" != "$HOME" ]; do
-            case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
-            cmux_ssh_parent=${cmux_ssh_parent%/*}
-            # HOME itself may be a symlink; check what it points to.
-            if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
-            [ -z "$(cmux_ssh_unsafe "$1" -prune)" ] || return 1
-          done
+        \#(privateCheckCode)
+        # One line on the terminal when the chain was refused (the prelude
+        # records the host cmux's refusal in cmux_ssh_cli_refused), so a
+        # missing `cmux open` or Files `cd` tracking is explained. HOME-relative.
+        cmux_ssh_notice() {
+          case $1 in
+            "$HOME"|"$HOME/.") set -- "~" ;;
+            "$HOME"/*) set -- "~/${1#"$HOME"/}" ;;
+            *) return 0 ;;
+          esac
+          printf 'cmux: shell integration disabled: %s is a symlink, not yours, or writable by others; cmux open and Files cd tracking are unavailable\n' "$1" >&2
         }
         case ${cmux_ssh_shell##*/} in
           bash)
@@ -183,14 +209,20 @@ public enum SSHTuiShellIntegration {
                 fi ;;
             esac ;;
           zsh)
-            if cmux_ssh_private "$cmux_ssh_dir/\#(zshEnvironmentPath)"; then
+            # zsh reads .zshenv.zwc instead when it is there and newer.
+            if cmux_ssh_private "$cmux_ssh_dir/\#(zshEnvironmentPath)" && {
+                { [ ! -e "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc" ] && [ ! -h "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc" ]; } ||
+                [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc")" ] ||
+                { cmux_ssh_refused=$cmux_ssh_dir/\#(zshEnvironmentPath).zwc; false; }; }; then
               if [ -n "${ZDOTDIR+x}" ]; then CMUX_SSH_ZDOTDIR=$ZDOTDIR; export CMUX_SSH_ZDOTDIR; fi
               ZDOTDIR=$cmux_ssh_dir/\#((zshEnvironmentPath as NSString).deletingLastPathComponent); export ZDOTDIR
               exec "$cmux_ssh_shell" -l
             fi ;;
         esac
-        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent
-        unset -f cmux_ssh_private cmux_ssh_unsafe
+        cmux_ssh_refused=${cmux_ssh_cli_refused:-${cmux_ssh_refused-}}
+        [ -z "$cmux_ssh_refused" ] || cmux_ssh_notice "$cmux_ssh_refused"
+        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent cmux_ssh_refused cmux_ssh_cli_refused
+        unset -f cmux_ssh_private cmux_ssh_unsafe cmux_ssh_notice
 
         """#
     }

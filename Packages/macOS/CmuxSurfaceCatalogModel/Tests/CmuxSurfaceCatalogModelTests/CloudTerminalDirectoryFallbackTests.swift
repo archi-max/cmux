@@ -44,6 +44,75 @@ import Testing
         #expect(driver.show([terminal("t1", title: "vim notes", cols: 100)]).isEmpty)
     }
 
+    /// The daemon publishes no graph event when a terminal's title changes; the title
+    /// reaches the Mac only through the terminal's own output, so that is what asks again.
+    @Test func aTitleTheTerminalSetAsksAgainWithoutAGraphEvent() throws {
+        let driver = Driver()
+        let first = try #require(driver.title("u@h:~"))
+        _ = driver.finish(first, .directory("/home/u"))
+        driver.now += 10
+        let probe = try #require(driver.fallback.terminalTitleChanged("u@h: /etc", terminalID: "t1", now: driver.now))
+        #expect(probe.terminalID == "t1")
+        #expect(driver.finish(probe, .directory("/etc")).directoryChanged)
+        #expect(driver.fallback.directory(forTerminal: "t1") == "/etc")
+        // The same title again, or the graph's stale copy, asks nothing.
+        driver.now += 10
+        #expect(driver.fallback.terminalTitleChanged("u@h: /etc", terminalID: "t1", now: driver.now) == nil)
+        #expect(driver.title("u@h:~") == nil)
+    }
+
+    @Test func aTerminalTitleIsIgnoredWhenNotShownOrReporting() throws {
+        let driver = Driver()
+        #expect(driver.fallback.terminalTitleChanged("x", terminalID: "t1", now: 1) == nil)
+        let first = try #require(driver.title("a"))
+        // During a query, a new title queues the one rerun.
+        #expect(driver.fallback.terminalTitleChanged("b", terminalID: "t1", now: driver.now) == nil)
+        #expect(driver.finish(first, .directory("/home/u")).next != nil)
+        // A terminal that reports its own directory is not asked.
+        let reporting = Driver()
+        let probe = try #require(reporting.title("a"))
+        _ = reporting.finish(probe, .directory("/home/u"))
+        #expect(reporting.title("a", cwd: "/srv") == nil)
+        reporting.now += 10
+        #expect(reporting.fallback.terminalTitleChanged("c", terminalID: "t1", now: reporting.now) == nil)
+    }
+
+    /// tmux with `set-titles on` and a clock retitles every second and is always skipped.
+    @Test func answersThatChangeNothingBackOff() throws {
+        var fallback = Fallback()
+        var starts: [TimeInterval] = []
+        var running: Fallback.Probe?
+        var startedAt: TimeInterval = 0
+        func begin(_ probe: Fallback.Probe?, at now: TimeInterval) {
+            guard let probe else { return }
+            running = probe
+            startedAt = now + probe.delay
+            starts.append(startedAt)
+        }
+        for probe in fallback.observe([terminal("t1", title: "tmux 0")], projected: ["t1"], now: 0) { begin(probe, at: 0) }
+        for step in 1...600 {
+            let now = Double(step) / 10
+            if let probe = running, now >= startedAt + 0.1 {
+                running = nil
+                begin(fallback.finish(probe, answer: .skipped, now: now).next, at: now)
+            }
+            if step % 10 == 0 {
+                begin(fallback.terminalTitleChanged("tmux \(step)", terminalID: "t1", now: now), at: now)
+            }
+        }
+        // 1 Hz without back-off would be about 60 starts in this minute.
+        #expect(starts.count <= 12, "\(starts)")
+        let gaps = zip(starts.dropFirst(), starts).map { $0 - $1 }
+        #expect(gaps.allSatisfy { $0 <= Fallback.maximumProbeSpacing + 0.5 }, "\(gaps)")
+        // A directory that changes resets the spacing.
+        var pending = running
+        while let probe = pending { pending = fallback.finish(probe, answer: .skipped, now: 100).next }
+        let a = try #require(fallback.terminalTitleChanged("a", terminalID: "t1", now: 200))
+        _ = fallback.finish(a, answer: .directory("/x"), now: 200.1)
+        let b = try #require(fallback.terminalTitleChanged("b", terminalID: "t1", now: 200.2))
+        #expect(b.delay <= Fallback.minimumProbeSpacing, "\(b.delay)")
+    }
+
     @Test func titleChangesDuringAQueryQueueOneRerun() throws {
         let driver = Driver()
         let probe = try #require(driver.title("a"))

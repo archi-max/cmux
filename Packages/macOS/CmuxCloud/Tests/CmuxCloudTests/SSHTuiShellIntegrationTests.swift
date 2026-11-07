@@ -215,12 +215,18 @@ struct SSHTuiShellIntegrationTests {
         let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
         let target = try sandbox.makeDirectory("t")
         _ = try sandbox.runLoginShell(input: "true\n", umask: "000")
-        let install = sandbox.installDirectory
+        let install = sandbox.hookDirectory
         for file in ["shell/bash-env", "shell/zsh/.zshenv"] {
             #expect(try sandbox.mode(install + "/" + file) == 0o644, "\(file)")
         }
         for dir in ["", "/shell", "/shell/zsh"] {
             #expect(try sandbox.mode(install + dir) == 0o700, "\(install + dir)")
+        }
+        // cmux creates the whole chain below HOME itself.
+        var parent = (install as NSString).deletingLastPathComponent
+        while parent != sandbox.home {
+            #expect(try sandbox.mode(parent) == 0o700, "\(parent)")
+            parent = (parent as NSString).deletingLastPathComponent
         }
         // A file someone else could have rewritten is not sourced.
         try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: install + "/shell/bash-env")
@@ -270,17 +276,242 @@ struct SSHTuiShellIntegrationTests {
         var shells: [(String, String)] = [("/bin/zsh", "zsh")]
         if let bash = Self.gnuBash { shells.append((bash, "bash")) }
         for (shell, name) in shells {
-            for (levels, mode) in [(1, 0o775), (2, 0o757), (4, 0o775)] {
+            for (levels, mode) in [(1, 0o775), (2, 0o757), (3, 0o775)] {
                 let sandbox = try ShellSandbox(shell: shell, name: name)
                 let target = try sandbox.makeDirectory("t")
                 _ = try sandbox.runLoginShell(input: "true\n")
-                var parent = sandbox.installDirectory
+                var parent = sandbox.hookDirectory
                 for _ in 0..<levels { parent = (parent as NSString).deletingLastPathComponent }
                 try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: parent)
-                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n")
+                // The user's group is not a private one here, whatever this machine's is.
+                let path = try sandbox.fakeGroupDatabase(nil)
+                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n",
+                                                       extraEnvironment: ["PATH": path])
                 #expect(result.reportedDirectories.isEmpty, "\(name) \(parent): \(result.stdout.debugDescription)")
                 #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name) \(parent): \(result.stdout)")
             }
+        }
+    }
+
+    /// Ubuntu and Debian log in with umask 002, so the `mkdir -p ~/.local/bin`
+    /// of the cmux-tui install leaves `~/.local` group-writable. The sourced
+    /// files live in a chain cmux creates itself below HOME, so that does not
+    /// matter, and no group write is ever trusted.
+    @Test("A group-writable ~/.local from a umask 002 login does not stop the hook")
+    func umask002LocalDirectoryDoesNotStopTheHook() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("t")
+            for dir in [".local", ".local/bin", ".local/share"] {
+                try FileManager.default.createDirectory(atPath: sandbox.home + "/" + dir, withIntermediateDirectories: true)
+                try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home + "/" + dir)
+            }
+            let path = try sandbox.fakeGroupDatabase(nil)
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n",
+                                                   extraEnvironment: ["PATH": path], umask: "002")
+            #expect(result.stdout.contains("marker-done"), "\(name): \(result.stderr)")
+            #expect(result.reportedDirectories.last == target, "\(name): \(result.stdout.debugDescription)")
+        }
+    }
+
+    /// Group write is never trusted, even for a group whose only listed member
+    /// is the user: on Linux the group bits are the ACL mask, so they would
+    /// let every named ACL entry write, and the group database cannot show
+    /// every member (primary-group users, duplicate GIDs, sssd).
+    @Test("A HOME writable by the user's own group keeps the plain login launch")
+    func groupWritableHomeStaysPlain() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("t")
+            let path = try sandbox.fakeGroupDatabase("\(NSUserName()):x:\(getgid()):")
+            _ = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            try sandbox.giveHookChainTheUsersGroup()
+            try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n",
+                                                   extraEnvironment: ["PATH": path])
+            #expect(result.reportedDirectories.isEmpty, "\(name): \(result.stdout.debugDescription)")
+            #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name): \(result.stdout)")
+        }
+    }
+
+    /// zsh reads `$ZDOTDIR/.zshenv.zwc` instead of `.zshenv` when it exists and is newer.
+    @Test("zsh: a compiled .zshenv.zwc someone else could write keeps the plain login launch")
+    func zshUnsafeCompiledEnvStaysPlain() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let target = try sandbox.makeDirectory("t")
+        _ = try sandbox.runLoginShell(input: "true\n")
+        let compiled = sandbox.hookDirectory + "/shell/zsh/.zshenv.zwc"
+        FileManager.default.createFile(atPath: compiled, contents: Data())
+        try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: compiled)
+        let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"zdotdir=[${ZDOTDIR-unset}]\"\n")
+        #expect(result.reportedDirectories.isEmpty, "\(result.stdout.debugDescription)")
+        #expect(result.stdout.contains("zdotdir=[unset]"), "\(result.stdout)")
+    }
+
+    /// The host `cmux` directory goes first on PATH, so whoever can write it or
+    /// any parent can put an `ls` there that every command in the terminal runs.
+    @Test("The host cmux is put on PATH only from a private chain cmux created below HOME")
+    func cliIsOnPathOnlyFromAPrivateChain() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let cli = sandbox.cliDirectory
+        #expect(cli.hasPrefix(sandbox.home + "/.cmux-ssh/"), "\(cli)")
+        let path = try sandbox.fakeGroupDatabase(nil)
+        // A macOS login shell's path_helper reorders PATH, so look at what `cmux` is.
+        let probe = "echo \"cmux=[$(command -v cmux)] path=[$PATH]\"\n"
+        let first = try sandbox.runLoginShell(input: probe, extraEnvironment: ["PATH": path])
+        #expect(first.stdout.contains("cmux=[\(cli)/cmux]"), "\(first.stdout)")
+        // A parent someone else can write: PATH is left alone.
+        let parent = ((cli as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+        try FileManager.default.setAttributes([.posixPermissions: 0o757], ofItemAtPath: parent)
+        let open = try sandbox.runLoginShell(input: probe, extraEnvironment: ["PATH": path])
+        #expect(!open.stdout.contains(cli), "\(open.stdout)")
+        #expect(open.stdout.contains("cmux=[]"), "\(open.stdout)")
+        // So is a CLI file someone else can rewrite.
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent)
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: cli + "/cmux")
+        let writable = try sandbox.runLoginShell(input: probe, extraEnvironment: ["PATH": path])
+        #expect(!writable.stdout.contains(cli), "\(writable.stdout)")
+    }
+
+    @Test("The configured-command launch also leaves PATH alone when the CLI chain is not private")
+    func configuredCommandCliNeedsAPrivateChain() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let cli = sandbox.cliDirectory
+        let path = try sandbox.fakeGroupDatabase(nil)
+        let launch = ShellSandbox.connection().commandArguments("echo \"cmux=[$(command -v cmux)] path=[$PATH]\"")
+        let ok = try sandbox.runLoginShell(input: "", extraEnvironment: ["PATH": path], launch: launch)
+        #expect(ok.stdout.contains("cmux=[\(cli)/cmux]"), "\(ok.stdout) \(ok.stderr)")
+        try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+        let open = try sandbox.runLoginShell(input: "", extraEnvironment: ["PATH": path], launch: launch)
+        #expect(!open.stdout.contains(cli) && open.stdout.contains("cmux=[]"), "\(open.stdout) \(open.stderr)")
+    }
+
+    @Test("Nothing is installed through a symlinked ~/.cmux-ssh")
+    func installSkipsASymlinkedRoot() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let elsewhere = sandbox.root + "/elsewhere"
+        try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: sandbox.home + "/.cmux-ssh", withDestinationPath: elsewhere)
+        let path = try sandbox.fakeGroupDatabase(nil)
+        let result = try sandbox.runLoginShell(input: "echo \"cmux=[$(command -v cmux)] zdotdir=[${ZDOTDIR-unset}]\"\n", extraEnvironment: ["PATH": path])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere).isEmpty)
+        #expect(result.stdout.contains("cmux=[] zdotdir=[unset]"), "\(result.stdout)")
+    }
+
+    static let refusalNotice = "cmux: shell integration disabled: "
+
+    /// A refused chain costs the terminal `cmux open` and the Files panel's `cd`
+    /// tracking; one line says why, HOME-relative, once per terminal.
+    @Test("A refused chain prints one HOME-relative line; a private one prints none")
+    func refusalIsReportedOnce() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let path = try sandbox.fakeGroupDatabase(nil)
+            let fine = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            #expect(!fine.stderr.contains(Self.refusalNotice), "\(name): \(fine.stderr)")
+            // Both the CLI and the hook are refused here; one line covers them.
+            try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+            let refused = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            let lines = refused.stderr.components(separatedBy: "\n").filter { $0.contains(Self.refusalNotice) }
+            #expect(lines.count == 1, "\(name): \(refused.stderr)")
+            #expect(lines.first?.hasPrefix(Self.refusalNotice + "~ ") == true, "\(name): \(lines)")
+            #expect(lines.first?.contains("cmux open") == true, "\(name): \(lines)")
+            #expect(!refused.stderr.contains(sandbox.home), "\(name): \(refused.stderr)")
+            // Only the hook refused: the line names the file, below HOME.
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sandbox.home)
+            let env = sandbox.hookDirectory + "/" + (name == "bash" ? "shell/bash-env" : "shell/zsh/.zshenv")
+            try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: env)
+            let hook = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            let relative = "~/" + env.dropFirst(sandbox.home.count + 1)
+            #expect(hook.stderr.components(separatedBy: "\n").filter { $0.contains(Self.refusalNotice + relative + " ") }.count == 1,
+                    "\(name): \(hook.stderr)")
+        }
+    }
+
+    @Test("A symlinked ~/.cmux-ssh is reported; a configured command's output never is")
+    func refusalNoticeCases() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let path = try sandbox.fakeGroupDatabase(nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+        let configured = try sandbox.runLoginShell(input: "", extraEnvironment: ["PATH": path],
+                                                   launch: ShellSandbox.connection().commandArguments("echo done"))
+        #expect(configured.stdout.contains("done"), "\(configured.stdout) \(configured.stderr)")
+        #expect(!configured.stderr.contains(Self.refusalNotice), "\(configured.stderr)")
+        #expect(!configured.stdout.contains(Self.refusalNotice), "\(configured.stdout)")
+
+        let fresh = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let elsewhere = fresh.root + "/elsewhere"
+        try FileManager.default.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: fresh.home + "/.cmux-ssh", withDestinationPath: elsewhere)
+        let linked = try fresh.runLoginShell(input: "true\n", extraEnvironment: ["PATH": try fresh.fakeGroupDatabase(nil)])
+        let lines = linked.stderr.components(separatedBy: "\n").filter { $0.contains(Self.refusalNotice) }
+        #expect(lines.count == 1 && lines.first?.hasPrefix(Self.refusalNotice + "~/.cmux-ssh ") == true, "\(linked.stderr)")
+    }
+
+    static let setfacl: String? = ["/usr/bin/setfacl", "/bin/setfacl"].first { FileManager.default.isExecutableFile(atPath: $0) }
+
+    /// POSIX ACLs (Linux): a named entry that can write HOME or the hook chain
+    /// could swap the sourced file. Each case keeps the plain launch, also when
+    /// the group database calls the user's group private.
+    @Test("An ACL that lets someone else write HOME or the hook chain keeps the plain login launch",
+          .enabled(if: setfacl != nil, "needs setfacl (Linux)"))
+    func aclWritableChainStaysPlain() throws {
+        guard let setfacl = Self.setfacl else { return }
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        // (ACL, where, before the first install)
+        let cases: [(String, String, Bool)] = [
+            ("u:nobody:rwx", "", false), ("g:nobody:rwx", "", false), ("d:u:nobody:rwx", "", true),
+            ("u:nobody:rwx", "/.cmux-ssh", false),
+        ]
+        for (shell, name) in shells where FileManager.default.isExecutableFile(atPath: shell) {
+            for (acl, relative, before) in cases {
+                let sandbox = try ShellSandbox(shell: shell, name: name)
+                let target = try sandbox.makeDirectory("t")
+                let path = try sandbox.fakeGroupDatabase("\(NSUserName()):x:\(getgid()):")
+                let apply = { _ = try sandbox.run([setfacl, "-m", acl, sandbox.home + relative], environment: [:], input: "") }
+                if before { try apply() }
+                _ = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+                if !before { try apply() }
+                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n",
+                                                       extraEnvironment: ["PATH": path])
+                #expect(result.reportedDirectories.isEmpty, "\(name) \(acl) on ~\(relative): \(result.stdout.debugDescription)")
+                #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name) \(acl) on ~\(relative): \(result.stdout)")
+            }
+        }
+    }
+
+    /// Two terminals that start together both install. GNU find exits 1 when
+    /// an entry it listed is gone by the time it looks at it, as another
+    /// installer's temporary file is once renamed. The fake find does that for
+    /// every walk of a directory's contents, so only a check that looks at the
+    /// files it relies on, and not at what else is in the directory, passes.
+    @Test("Another installer's temporary files in the install directory do not stop the hook")
+    func concurrentInstallerDoesNotStopTheHook() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("t")
+            _ = try sandbox.runLoginShell(input: "true\n")
+            let path = try sandbox.fakeGroupDatabase(nil)
+            try sandbox.writeExecutable(sandbox.fakeBin + "/find", """
+                #!/bin/sh
+                for a in "$@"; do [ "$a" = -prune ] && exec /usr/bin/find "$@"; done
+                /usr/bin/find "$@"
+                echo "find: '$1/shell/bash-env.4242': No such file or directory" >&2
+                exit 1
+
+                """)
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n", extraEnvironment: ["PATH": path])
+            #expect(result.stdout.contains("marker-done"), "\(name): \(result.stderr)")
+            #expect(result.reportedDirectories.last == target, "\(name): \(result.stdout.debugDescription)")
         }
     }
 
@@ -375,6 +606,45 @@ private final class ShellSandbox {
     /// The host `cmux` install directory under this HOME.
     var installDirectory: String {
         home + "/" + Self.connection().hostOpenCommand.installDirectory.replacingOccurrences(of: "$HOME/", with: "")
+    }
+
+    /// Commands that stand in for the host's, first on PATH.
+    var fakeBin: String { root + "/fakebin" }
+
+    /// A `getent` that answers `group <gid>` with `line` (`name:x:gid:members`),
+    /// or finds no group for nil. Returns the PATH that uses it.
+    func fakeGroupDatabase(_ line: String?) throws -> String {
+        try FileManager.default.createDirectory(atPath: fakeBin, withIntermediateDirectories: true)
+        let answer = line.map { "[ \"$1\" = group ] && [ \"$2\" = \(getgid()) ] && { echo '\($0)'; exit 0; }\n" } ?? ""
+        try writeExecutable(fakeBin + "/getent", "#!/bin/sh\n\(answer)exit 2\n")
+        return fakeBin + ":/usr/bin:/bin"
+    }
+
+    /// New directories take their parent's group on macOS; make the hook files,
+    /// its files and each parent up to HOME the user's primary group.
+    func giveHookChainTheUsersGroup() throws {
+        var paths = [home]
+        var parent = hookDirectory
+        while parent != home {
+            paths.append(parent)
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        if let walk = FileManager.default.enumerator(atPath: hookDirectory) {
+            for case let relative as String in walk { paths.append(hookDirectory + "/" + relative) }
+        }
+        for path in paths where chown(path, uid_t.max, getgid()) != 0 {
+            throw POSIXError(.EPERM)
+        }
+    }
+
+    /// The host `cmux` directory under this HOME.
+    var cliDirectory: String {
+        home + "/" + Self.connection().hostOpenCommand.installDirectory.replacingOccurrences(of: "$HOME/", with: "")
+    }
+
+    /// Where the sourced shell files are installed under this HOME.
+    var hookDirectory: String {
+        home + "/" + Self.connection().hostOpenCommand.shellIntegrationDirectory.replacingOccurrences(of: "$HOME/", with: "")
     }
 
     func mode(_ path: String) throws -> Int {
