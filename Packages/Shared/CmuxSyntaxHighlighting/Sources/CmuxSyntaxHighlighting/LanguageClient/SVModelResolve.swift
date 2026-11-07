@@ -82,6 +82,27 @@ public enum SVModelResolve {
         return .signal(designPath: designPath, designPrefix: prefixes.designPrefix, dumpPrefix: prefixes.dumpPrefix)
     }
 
+    /// Each design top and its children (child instances, then its signals), for inference:
+    /// `tops` and `instances` as the sidecar's `instances` answers them.
+    public static func designRoots(
+        tops: [String],
+        instances: [String],
+        model: Model,
+        isolation: isolated (any Actor)? = #isolation
+    ) async -> [String: [HierarchyNode]] {
+        var roots: [String: [HierarchyNode]] = [:]
+        for top in tops {
+            var children = instances
+                .filter { $0.hasPrefix(top + ".") && !$0.dropFirst(top.count + 1).contains(".") }
+                .map { HierarchyNode(name: String($0.dropFirst(top.count + 1)), isScope: true) }
+            if let signals = await model(top)?["signals"] as? [String: Any] {
+                children += signals.keys.sorted().map { HierarchyNode(name: $0, isScope: false) }
+            }
+            roots[top] = children
+        }
+        return roots
+    }
+
     /// `name`'s trailing `[msb:lsb]`: the name before it and the bits it spans.
     static func rangeSuffix(_ name: String) -> (base: String, width: Int)? {
         guard !name.hasPrefix("\\"), name.hasSuffix("]"), let open = name.lastIndex(of: "["), open > name.startIndex else { return nil }
