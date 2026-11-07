@@ -1374,6 +1374,11 @@ private:
             w.writeProperty("signed");
             w.writeValue(true);
         }
+        // A 2-state type (bit, int, byte...) starts at 0; a 4-state one at x (cmux-trace.js startValue).
+        if (!t.isFourState()) {
+            w.writeProperty("twoState");
+            w.writeValue(true);
+        }
         auto& ct = t.getCanonicalType();
         if (ct.isUnpackedArray() && ct.hasFixedRange()) {
             auto r = ct.getFixedRange();

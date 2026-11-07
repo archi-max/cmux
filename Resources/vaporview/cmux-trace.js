@@ -632,10 +632,11 @@
       return Array.isArray(s.items) ? s.items.map((it) => unknownWrites(it.s)).find(Boolean) || null : null;
     }
     // Whether `now`, unchanged since `since`, is what the signal started with: its declaration's
-    // initializer, else x (or 0, for a 2-state type). False when it changed after the start.
+    // initializer, else x, or 0 for a 2-state type (the model's `twoState`; without it, 4-state).
+    // False when it changed after the start.
     async function startValue(m, sig, now, since) {
       if (Number(since) !== 0) { return false; }
-      if (!sig.init) { return /^x+$/.test(shown(now)) || /^0+$/.test(shown(now)); }
+      if (!sig.init) { return sig.twoState === true ? /^0+$/.test(shown(now)) : /^x+$/.test(shown(now)); }
       const vals = await fetch(leafPaths(m, sig.init, new Set()), 0);
       const ctx = newCtx(m, vals);
       await fillElements(ctx, m, sig.init, 0);
@@ -703,15 +704,21 @@
       }
       // Only stimulus: the testbench (tracing stops here by default).
       if (!live.length) { return stimulusStep(step, cands, m, name, sig, t); }
-      if (live.length > 1) { step.reasons.push({ code: 'multiDriven', count: live.length }); }
+      const multi = live.length > 1 ? { code: 'multiDriven', count: live.length } : null;
+      if (multi) { step.reasons.push(multi); }
       // Each live driver is tried; the one whose prediction agrees with the dump is the active one.
-      let best = null;
+      // With several that agree, which one made the value is not known (multiDriven, consistent > 1:
+      // approximate). A driver predicting all z (a tri-state driver that is off) adds nothing to a
+      // resolved net, so it doesn't count.
+      let best = null, agree = 0;
       for (const c of live) {
         const r = await runDriver(c.m, c.d, c.name, sig, t, now, step.since, o);
         if (c.m !== m) { r.driver.writer = c.m.path; }
+        if (rank(r) >= 3 && !/^z+$/.test(r.predicted || '')) { agree++; }
         if (!best || rank(r) > rank(best)) { best = r; }
-        if (rank(r) >= 3) { break; }
+        if (rank(r) >= 3 && !multi) { break; }
       }
+      if (multi) { multi.consistent = agree; }
       // The instance's own drivers can't explain the value (inconsistent, or no write): another
       // instance's write into it can (a testbench's force or $deposit, a hierarchical write). Its
       // statement is shown, approximate ('force'), with the own driver's answer as a candidate.
@@ -739,6 +746,17 @@
         }
       }
       Object.assign(step, best, { reasons: step.reasons.concat(best.reasons || []) });
+      // Its process held the value since the start and never wrote it (a flop whose enable never
+      // came): the value is the one it started with, not the process's doing (the process is a
+      // candidate).
+      if (best.wrote === false && Number(step.since) === 0 && now !== undefined && await startValue(m, sig, now, 0)) {
+        const held = step.stmt ? [{ src: step.stmt.src, loc: step.stmt.loc }] : [];
+        delete step.activation; delete step.decisions; delete step.stmt;
+        step.driver = { kind: sig.init ? 'initializer' : 'none' };
+        if (sig.init) { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
+        step.candidates = held;
+        step.reasons = step.reasons.filter((r) => r.code !== 'noWrite');
+      }
       step.trust = trustOf(step);
       return step;
     }
@@ -774,7 +792,7 @@
 
     function trustOf(step) {
       if (step.consistent === false) { return 'inconsistent'; }
-      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown', 'force', 'writeNotFound'].includes(r.code));
+      const approximate = step.reasons.some((r) => (r.code === 'multiDriven' && r.consistent > 1) || ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown', 'force', 'writeNotFound'].includes(r.code));
       if (approximate) { return 'approximate'; }
       return step.computed ? 'computed' : 'exact';
     }
