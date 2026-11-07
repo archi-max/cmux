@@ -14,10 +14,16 @@
 //
 // Requests (stdin, one JSON object per line) -> {id, result, ms} or {id, error}; events are {id: 0, event}.
 //   run {cycles | time}                         -> {t, stopped: done|until|stop|finish}
+//                                                 time: ticks >= 0 (0: no-op); cycles: >= 1, of the start clock,
+//                                                 refused without a known period (see runTicks)
 //   until {expr, maxCycles | maxTime}           expr: sig == lit / sig != lit joined by && / || (&& binds
 //                                                 tighter); true at a time step where one of its signals
 //                                                 changed, values after the step settles
 //   stop {}                                     ends a run in flight (that run replies stopped: stop)
+// During a run, time/read/watch/unwatch/watches/list are served at the run's poll points (every --poll-cycles
+// cycles of simulated time), at that time step's ReadOnlySynch, and the run goes on: a read's t is the time it
+// observed, a new watch's first record (at its reply's t) is where its coverage starts. Other requests (writes,
+// checkpoints) wait for the run's end, and so does everything sent after them (requests keep their order).
 //   time {}                                     -> {t}
 //   read {signals: [path]}                      -> {t, values: ['01xz..' | null]}
 //   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12 -> {t, value}
@@ -60,7 +66,8 @@ const LIB = path.resolve(opt('--lib', ''));
 const SCRATCH = opt('--scratch', '');
 const RUN = opt('--run', `run-${process.pid}`);
 const CLOCK = opt('--clock', '');
-let period = Number(opt('--period', 0)) || 0;
+let period = Number(opt('--period', 0));
+if (!(Number.isSafeInteger(period) && period > 0)) period = 0;   // unknown: cycle requests are refused
 const RSS_MB = Number(opt('--rss-mb', 2048));
 const MIN_AVAIL_MB = Number(opt('--min-avail-mb', 5120));
 const POLL_CYCLES = Number(opt('--poll-cycles', 100));
@@ -313,16 +320,34 @@ function writeGroup(list) {
   if (lines.length) libIn.write(lines.join('\n') + `\nY ${libId++}\n`);
   return Promise.all(waits).then((rs) => rs.map((m) => (m.error ? { error: m.error } : { t: m.t, value: m.value })));
 }
-const toTicks = (r, c, t) => (r[t] !== undefined ? Number(r[t]) : r[c] !== undefined ? Math.round(Number(r[c]) * period) : NaN);
+// A run's length in ticks, or an error. `time` is in ticks (0: a zero-time no-op). `cycles` are periods of the
+// clock named at start (--clock, measured as the time between two rising edges, or --period): a whole number
+// >= 1, and refused when no positive period is known. With several clocks, cycles count only that one.
+function runTicks(r, c, t) {
+  if (r[t] !== undefined) {
+    const v = r[t];
+    if (!Number.isSafeInteger(v) || v < 0) return { error: `${t} must be a whole number of ticks >= 0` };
+    return { dt: v };
+  }
+  if (r[c] === undefined) return { error: `need ${c} or ${t}` };
+  if (!(Number.isFinite(period) && period > 0)) return { error: `${c}: no clock period is known; start the simulation with a clock (--clock), or give ${t}` };
+  const v = r[c];
+  if (!Number.isSafeInteger(v) || v < 1) return { error: `${c} must be a whole number >= 1` };
+  const dt = v * period;
+  if (!Number.isSafeInteger(dt)) return { error: `${c} too large` };
+  return { dt };
+}
 async function handle(r) {
   const id = r.id;
-  const busyRun = () => inflightRun && out({ id, error: 'a run is in flight; stop it first' });
+  // true (and the one reply sent) when a run is in flight: the caller must return at once
+  const busyRun = () => { if (!inflightRun) return false; out({ id, error: 'a run is in flight; stop it first' }); return true; };
   switch (r.cmd) {
     case 'run': case 'until': {
       if (busyRun()) return;
       if (lowMem) return out({ id, error: 'paused: host memory low' });
-      const dt = r.cmd === 'run' ? toTicks(r, 'cycles', 'time') : toTicks(r, 'maxCycles', 'maxTime');
-      if (!Number.isFinite(dt) || dt < 0) return out({ id, error: 'need cycles (with a known period) or time' });
+      const rt = r.cmd === 'run' ? runTicks(r, 'cycles', 'time') : runTicks(r, 'maxCycles', 'maxTime');
+      if (rt.error) return out({ id, error: rt.error });
+      const dt = rt.dt;
       if (r.cmd === 'run') { inflightRun = lib('R', id, String(dt)); return; }
       inflightRun = lib('U', id, `${dt} ${exprTokens(r.expr).join(' ')}`); return;
     }
