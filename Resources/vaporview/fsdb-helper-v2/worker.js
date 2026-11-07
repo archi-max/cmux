@@ -41,6 +41,8 @@ const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
 const HOT_OPS = new Set(['hotLoad', 'hotWindow', 'hotNear']);
 let hotMode = false, warmCap = 0;
+// edge kinds (addon cacheEdge): VaporView's any / rise / fall, and SystemVerilog's posedge / negedge / edge
+const EDGE_KINDS = { any: 0, rise: 1, fall: 2, posedge: 3, negedge: 4, edge: 5 };
 const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
@@ -250,10 +252,12 @@ const ops = {
     }));
   },
 
-  edge({ signalId, t, dir, kind }) {
+  edge({ signalId, t, dir, kind, start }) {
+    const k = EDGE_KINDS[kind ?? 'any'];
+    if (k === undefined) { throw new Error(`edge: unknown kind ${JSON.stringify(kind)}`); }
     const l = ensure([signalId]).get(signalId);
     if (l.error) { throw new Error(l.error); }
-    return { t: addon.cacheEdge(signalId, t, dir, { any: 0, rise: 1, fall: 2 }[kind || 'any'] ?? 0) };
+    return { t: addon.cacheEdge(signalId, t, dir, k, start || 0) };
   },
 
   search({ signalId, t, dir, value }) {
