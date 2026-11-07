@@ -207,8 +207,12 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
   // The reusable testbench and apply (carried in from the simctl library, prototype 6c1eb0c..056c4b8): describe
   // answers the build's simctl_cfg/simctl_port instances; apply checks its arguments and reaches the library as
   // one A line, and its reply comes back.
+  // apply calls only registered entry points (follow-up L1): the library's own three and the run manifest's
+  // applySymbols, which reach the simulator as SIMCTL_APPLY_SYMBOLS; anything else is the library's refusal.
   {
-    const w = start(['--period', '10']); await w.ready;
+    const cwd = path.join(scratch, 'apply-reg.cwd'); fs.mkdirSync(cwd);
+    fs.writeFileSync(path.join(cwd, 'cmux-replay.json'), JSON.stringify({ inputs: [], applySymbols: ['my_hook'] }));
+    const w = startIn(cwd, ['--period', '10']); await w.ready;
     const d = await w.reply(w.send({ cmd: 'describe' }).id);
     expect(!!d && !!d.result && d.result.cfg && d.result.cfg[0] && d.result.cfg[0].path === 'tb.u_cfg' && d.result.ports && d.result.ports[0] && d.result.ports[0].name === 'in',
       `describe: the build's simctl_cfg and simctl_port: ${JSON.stringify(d)}`);
@@ -218,7 +222,16 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     const aLine = w.libLines().find((l) => l.startsWith('A '));
     expect(!!a && !!a.result && a.result.rc === 0 && a.result.settled === true && !!aLine && / serve my_hook x78 - - 0 -$/.test(aLine),
       `apply: one A line to the library, and its reply: ${JSON.stringify(a)} (${aLine})`);
+    const g = await w.reply(w.send({ cmd: 'apply', at: 'serve', symbol: 'getpid', versionSymbol: null }).id);
+    expect(!!g && /getpid is not a registered apply entry point/.test(g.error || '') && !g.result, `apply: an unregistered loaded symbol (getpid) is refused: ${JSON.stringify(g)}`);
     await w.quit().catch(() => {});
+    // a manifest whose applySymbols is not a list of C identifiers stops the start
+    const cwd2 = path.join(scratch, 'apply-bad.cwd'); fs.mkdirSync(cwd2);
+    fs.writeFileSync(path.join(cwd2, 'cmux-replay.json'), JSON.stringify({ inputs: [], applySymbols: ['system; id'] }));
+    const w2 = startIn(cwd2, ['--period', '10']); const e2 = await w2.ready; const x2 = await Promise.race([w2.exitP, sleep(5000)]);
+    expect(!!e2 && e2.event === 'setupError' && /applySymbols/.test(e2.message || '') && !!x2 && x2.code === 3,
+      `apply: a bad applySymbols manifest entry is a setup error: ${JSON.stringify(e2)} exit ${JSON.stringify(x2)}`);
+    if (!w2.exited) w2.p.kill('SIGKILL');
   }
   // Write access (from the simctl library, prototype ae742cc): a write the build gives no access for is an error
   // that says a rebuild is needed; a park the library refuses (an unwritable hold) errors at once, and the

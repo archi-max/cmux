@@ -12,6 +12,7 @@
 const fs = require('node:fs');
 const LOG = process.env.FAKE_SIMV_LOG;
 const RUN_MS = Number(process.env.FAKE_RUN_MS) || 1500;
+const APPLY_SYMBOLS = (process.env.SIMCTL_APPLY_SYMBOLS || '').split(',').filter(Boolean);
 const lout = fs.createWriteStream(null, { fd: 4 });
 const send = (o) => lout.write(JSON.stringify(o) + '\n');
 let t = 0, run = null, deferred = [], started = false, writes = [];
@@ -72,7 +73,12 @@ function line(l) {
     // the reusable testbench: one simctl_cfg and one simctl_port in the toy design (simctl_describe.c's reply)
     case 'H': send({ id, t, cfg: [{ path: 'tb.u_cfg', scenarios: 'smoke:plain adds' }], ports: [{ path: 'tb.u_in', name: 'in', kind: 'vr', width: 16, fields: 'hi[15:8] lo[7:0]' }], memories: [], memoriesTruncated: false }); return;
     // apply: the hook ran and the design settled (simctl_apply.c's reply)
-    case 'A': send({ id, t, rc: 0, lastError: '', settled: true, held: false }); return;
+    case 'A': {   // apply: like the library, only registered entry points (its own three + SIMCTL_APPLY_SYMBOLS)
+      const reg = ['vcs_restore_apply_plan', 'vcs_restore_api_version', 'vcs_restore_last_error', ...APPLY_SYMBOLS];
+      const bad = [a[1], a[4], a[6]].find((n, i) => !(i && n === '-') && !reg.includes(n));
+      if (bad) { send({ id, error: `apply: ${bad} is not a registered apply entry point: simctl calls only vcs_restore_apply_plan, vcs_restore_api_version, vcs_restore_last_error and the names in the run's cmux-replay.json applySymbols` }); return; }
+      send({ id, t, rc: 0, lastError: '', settled: true, held: false }); return;
+    }
     // push: transactions queued for a port (simctl_push.c's reply); nothing pulls them in the toy design
     case 'B': { const n = Number(a[1]); queued += n; send({ id, t, port: a[0], queued, pulled: 0 }); return; }
     case 'Q': send({ id, t, quit: true }); setTimeout(() => process.exit(0), 20); return;
