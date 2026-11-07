@@ -638,6 +638,40 @@ function runTraceChecks() {
       else if (extra.length || gone.length) { results.failures++; out.push(`FAIL load oracle: ${counts.match} match, ${extra.length} unexplained: ${extra.join('; ')}${gone.length ? '; listed but not seen: ' + gone.join('; ') : ''}`); }
       else { out.push(`ok   load oracle: ${counts.match} match, ${counts.upper} upper, through ${counts.throughMatch}/${counts.through}, ${counts.interfaceRead} interface reads, ${expected.length} listed differences`); }
     }
+    // The interface walk follows the interface's connections, not everything under its parent: 600
+    // unrelated children of tb_n, ahead of the others, leave its reads listed and the walk uncapped.
+    {
+      results.cases++;
+      const bad = [];
+      try {
+        const all = JSON.parse(traceFiles.models.n);
+        const tb = all.instances.tb_n;
+        const fillers = [];
+        for (let i = 0; i < 600; i++) {
+          const path = `tb_n.u_fill${i}`;
+          all.instances[path] = { version: 1, path, module: 'n_fill', parent: 'tb_n', loc: tb.loc, ports: [], params: {}, signals: {}, assigns: [], procs: [], children: [], files: tb.files };
+          fillers.push({ path, name: `u_fill${i}`, module: 'n_fill', loc: tb.loc, ports: [] });
+        }
+        tb.children = fillers.concat(tb.children);
+        const models = {
+          instance: async (p) => all.instances[p],
+          writers: async () => [],
+          lookup: async (p) => {
+            let best = null;
+            for (const k of Object.keys(all.instances)) { if ((p === k || p.startsWith(k + '.')) && (!best || k.length > best.length)) { best = k; } }
+            return best ? { instance: best, name: p.slice(best.length + 1) } : null;
+          },
+        };
+        const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
+        const got = await cmuxTrace.createEngine({ models, dump: none }).loads('tb_n.bus.data', { limit: 512 });
+        const via = [...new Set((got.entries || []).filter((e) => e.via === 'interface').map((e) => e.instance + ':' + (e.loc && e.loc.line)))].sort();
+        const want = INTERFACE_READS['tb_n.bus.data'].slice().sort();
+        if (JSON.stringify(via) !== JSON.stringify(want)) { bad.push(`interface reads ${JSON.stringify(via)} != ${JSON.stringify(want)}`); }
+        const walk = got.limits && got.limits.interfaceWalk;
+        if (!walk || walk.capped) { bad.push(`interfaceWalk ${JSON.stringify(walk)}, not uncapped`); }
+      } catch (error) { bad.push('error ' + String(error && error.message || error)); }
+      if (bad.length) { results.failures++; out.push(`FAIL loads n tb_n.bus.data beside 600 unrelated instances: ${bad.join('; ')}`); } else { out.push('ok   loads n tb_n.bus.data beside 600 unrelated instances: the interface reads listed, the walk not capped'); }
+    }
     for (const c of NEXT_CASES) {
       results.cases++;
       const what = `nextOf ${c.d} ${c.sig} @${c.t} :${c.line}${c.back ? ' (no nextChange)' : ''}`;
