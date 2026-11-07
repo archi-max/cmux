@@ -485345,6 +485345,124 @@
         }
       }
     },
+    "waveformTrace.kdb.notCheckedChain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "an instance above the row, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "行より上のインスタンス(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "eine Instanz oberhalb der Zeile, die einer Seite fehlt (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "une instance au-dessus de la ligne, absente d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مثيل فوق الصف، يفتقده أحد الجانبين (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "una instancia por encima de la fila, que falta en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "該列上層的實例(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该行上层的实例(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "행 위의 인스턴스(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedOverrides": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the parameters, which the compile overrode or whose command the export couldn’t read (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パラメータ(コンパイルで上書きされたか、エクスポートがコンパイルコマンドを読めなかったため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Parameter, die der Compile überschrieben hat oder deren Befehl der Export nicht lesen konnte (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les paramètres, que la compilation a surchargés ou dont l’export n’a pas pu lire la commande (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المعاملات، التي تجاوزتها عملية التصريف أو التي تعذّر على التصدير قراءة أمرها (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "los parámetros, que la compilación sobrescribió o cuyo comando la exportación no pudo leer (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "參數(編譯時已覆寫,或匯出無法讀取編譯命令;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参数(编译时已覆盖,或导出无法读取编译命令;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "매개변수(컴파일에서 재정의했거나 내보내기가 컴파일 명령을 읽지 못함, 확인 안 함)"
+          }
+        }
+      }
+    },
     "waveformTrace.kdb.notCheckedParameters": {
       "extractionState": "manual",
       "localizations": {
@@ -485404,6 +485522,124 @@
         }
       }
     },
+    "waveformTrace.kdb.notCheckedPorts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the instance’s ports, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インスタンスのポート(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Ports der Instanz, die einer Seite fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les ports de l’instance, absents d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "منافذ المثيل، التي يفتقدها أحد الجانبين (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "los puertos de la instancia, que faltan en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "實例的埠(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实例的端口(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "인스턴스의 포트(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedShape": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the signal’s width or range, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号の幅または範囲(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Breite oder der Bereich des Signals, die einer Seite fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la largeur ou la plage du signal, absente d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عرض الإشارة أو نطاقها، الذي يفتقده أحد الجانبين (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el ancho o el rango de la señal, que falta en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "訊號的寬度或範圍(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号的宽度或范围(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "신호의 폭 또는 범위(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
     "waveformTrace.kdb.notCheckedSources": {
       "extractionState": "manual",
       "localizations": {
@@ -485459,6 +485695,65 @@
           "stringUnit": {
             "state": "translated",
             "value": "컴파일 후 소스가 바뀌었는지 여부(확인하지 않음)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedWrites": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the lines that write the signal, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号に書き込む行(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Zeilen, die das Signal schreiben, die einer Seite fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les lignes qui écrivent le signal, absentes d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الأسطر التي تكتب الإشارة، التي يفتقدها أحد الجانبين (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "las líneas que escriben la señal, que faltan en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "寫入訊號的程式行(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入信号的代码行(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "신호를 쓰는 줄(한쪽에 없음, 확인 안 함)"
           }
         }
       }

@@ -136,7 +136,7 @@ import Testing
             "tb.u_soc": [HierarchyNode(name: "u_mbox", isScope: true), HierarchyNode(name: "clk", isScope: false), HierarchyNode(name: "irq", isScope: false)],
         ]
         for row in ["tb.u_soc.u_mbox.rdata", "tb.u_soc.irq"] {
-            let exact = try await resolve(row, design: dutTop, dump: dump, kdb: Self.socKDB)
+            let exact = mapping(try await resolve(row, design: dutTop, dump: dump, kdb: Self.socKDB))
             #expect(exact == (try await today(row, design: dutTop, dump: dump)), "\(row)")
             if case .signal(_, let designPrefix, let dumpPrefix) = exact { #expect(designPrefix == "soc" && dumpPrefix == "tb.u_soc") } else { Issue.record("\(row): \(exact)") }
         }

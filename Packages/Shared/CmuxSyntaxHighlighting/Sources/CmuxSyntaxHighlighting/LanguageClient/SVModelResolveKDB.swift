@@ -30,6 +30,7 @@ extension SVModelResolve {
         kdb: KDBDesignModel?,
         instances: @escaping () async throws -> [String],
         sourceTimes: (() async -> [String: Int64]?)? = nil,
+        kdbSameFiles: Bool = false,
         log: (String) -> Void = { _ in },
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Outcome {
@@ -99,13 +100,19 @@ extension SVModelResolve {
                let instanceModel = await slangModel(found.instance), SVModelLoad.isSignal(found.name, inModel: instanceModel) {
                 let mapped = result(designPath: designPath, dumpPath: rowSegments)
                 var levels: [KDBAgreement.Level] = []
+                var lost = false
                 for path in chain[level...] {
                     let rest = below(path, prefix)
-                    guard let compiled = kdb.instance(path), let slang = await slangModel(rest.isEmpty ? designPrefix : designPrefix + "." + rest) else { continue }
+                    guard let compiled = kdb.instance(path), let slang = await slangModel(rest.isEmpty ? designPrefix : designPrefix + "." + rest) else {
+                        lost = true
+                        continue
+                    }
                     levels.append(KDBAgreement.Level(path: path, compiled: compiled, slang: slang))
                 }
                 let times = await sourceTimes?()
-                let differences = KDBAgreement.differences(chain: levels, signal: name, compiledAt: kdb.compiledAt, sourceTimes: times)
+                var differences = KDBAgreement.differences(chain: levels, signal: name, compiledAt: kdb.compiledAt, sourceTimes: times,
+                                                           overrides: kdb.overrides, sameFiles: kdbSameFiles)
+                if lost, !differences.contains(.notChecked(.chain)) { differences.append(.notChecked(.chain)) }
                 guard !differences.isEmpty, case .signal(let p, let dp, let up) = mapped else { return mapped }
                 log("KDB mapping of \(row): approximate (\(differences.map(\.kind).joined(separator: ", ")))")
                 return .approximate(designPath: p, designPrefix: dp, dumpPrefix: up, differences: differences)

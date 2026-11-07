@@ -5,7 +5,10 @@
 # elaborated: the instance tree, each instance's ports and signals (widths, ranges, arrays), and
 # where each signal is written (continuous assigns and procedural assignments: file and line), each
 # instance's parameters and localparams (their elaborated values), and when the KDB was compiled
-# (`"compiled"`: its newest file's time, ms since 1970), as
+# (`"compiled"`: its newest file's time, ms since 1970; none for a KDB with no files) and the
+# compile's parameter overrides (`"overrides"`: -pvalue/-parameters/-gv/-gfile options from the
+# daidir's vcs_rebuild, VCS's record of the compile command, and the -f files it names; none when
+# that can't be read: NPI reports an overridden parameter's declared value), as
 # `"source": "kdb"` models without statement trees (`"partial": true`: the engine's statements still
 # come from slang). NPI holds a Verdi licence seat from load_design to its end: everything is read
 # first, NPI is ended, then the JSON is written, so the seat is held for the load and the walk only.
@@ -13,6 +16,7 @@
 # "instances", "signals", "error"?}.
 import json
 import os
+import shlex
 import sys
 import time
 
@@ -74,7 +78,12 @@ def main():
         npisys.end()
         fail("walk", repr(error), seconds)
     npisys.end()
-    model["compiled"] = compiled_at(daidir)
+    compiled = compiled_at(daidir)
+    if compiled is not None:
+        model["compiled"] = compiled
+    found = overrides(daidir)
+    if found is not None:
+        model["overrides"] = found
     seconds["walk"] = round(time.time() - t2, 3)
     t3 = time.time()
     tmp = out + ".tmp"
@@ -88,15 +97,71 @@ def main():
 
 
 def compiled_at(daidir):
-    """The newest modification time of the KDB's files (ms since 1970): when VCS compiled it."""
-    newest = 0
+    """The newest modification time of the KDB's files (ms since 1970): when VCS compiled it; None
+    when it has none to tell."""
+    newest = None
     for root, _, names in os.walk(os.path.join(daidir, "kdb.elab++")):
         for name in names:
             try:
-                newest = max(newest, os.stat(os.path.join(root, name)).st_mtime)
+                mtime = os.stat(os.path.join(root, name)).st_mtime
             except OSError:
-                pass
-    return int(newest * 1000)
+                continue
+            newest = mtime if newest is None else max(newest, mtime)
+    return None if newest is None else int(newest * 1000)
+
+
+# VCS options that set a parameter's value from outside the source (with the file they take, if any).
+OVERRIDE_PREFIXES = ("-pvalue",)
+OVERRIDE_WITH_FILE = ("-parameters", "-gfile")
+OVERRIDE_EXACT = ("-gv",)
+FILE_LISTS = ("-f", "-F", "-file")
+
+
+def overrides(daidir):
+    """The compile's parameter override options, from the daidir's vcs_rebuild (the vcs command VCS
+    recorded) and the -f files it names (relative to the daidir's folder, where VCS ran by default);
+    None when the command or one of its files can't be read."""
+    try:
+        with open(os.path.join(daidir, "vcs_rebuild")) as f:
+            lines = [line for line in f.read().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        args = shlex.split(" ".join(lines))
+    except (OSError, ValueError):
+        return None
+    if not args:
+        return None
+    base = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
+    found = []
+    return found if scan(args[1:], base, found, 0) else None
+
+
+def scan(args, base, found, depth):
+    """Adds the override options in `args` to `found`; False when a file list can't be read."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in FILE_LISTS:
+            if i + 1 >= len(args) or depth > 8:
+                return False
+            path = args[i + 1] if os.path.isabs(args[i + 1]) else os.path.join(base, args[i + 1])
+            try:
+                with open(path) as f:
+                    text = "\n".join(line.split("//")[0] for line in f.read().splitlines())
+                inner = shlex.split(text, comments=True)
+            except (OSError, ValueError):
+                return False
+            # Paths in a -F file are relative to it; in a -f file, to where VCS ran.
+            if not scan(inner, os.path.dirname(path) if arg == "-F" else base, found, depth + 1):
+                return False
+            i += 2
+            continue
+        if arg in OVERRIDE_WITH_FILE:
+            found.append(arg + (" " + args[i + 1] if i + 1 < len(args) else ""))
+            i += 2
+            continue
+        if arg.startswith(OVERRIDE_PREFIXES) or arg in OVERRIDE_EXACT or arg.startswith(tuple(o + "+" for o in OVERRIDE_EXACT)):
+            found.append(arg)
+        i += 1
+    return True
 
 
 def call(handle, method, *args):

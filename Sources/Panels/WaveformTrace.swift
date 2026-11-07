@@ -306,9 +306,14 @@ enum WaveformTrace {
         // way makes another, and the resolve runs again in it (once), never on answers of both.
         var outcome: SVModelResolve.Outcome?
         var generation = design.session.generation
+        // slang reads the design where the KDB is (the editor's host is the dump's): a write's file
+        // compares by its full path.
+        let dumpHost = FilePreviewWaveformSession.RemoteFSDB.resolve(panel: waveform)?.host
+        let sameFiles = dumpHost != nil && dumpHost == editor.linkRemoteRoute?.configuration.destination
         for _ in 0..<2 {
             generation = design.session.generation
-            let resolved = try await resolve(dumpPath: dumpPath, mapping: mapping, design: design, generation: generation, waveform: waveform)
+            let resolved = try await resolve(dumpPath: dumpPath, mapping: mapping, design: design, generation: generation, waveform: waveform,
+                                             sameFiles: sameFiles)
             if design.session.generation == generation {
                 outcome = resolved
                 break
@@ -353,7 +358,7 @@ enum WaveformTrace {
 
     /// One resolve against the design of `generation` (an answer of another one is none).
     private static func resolve(dumpPath: [String], mapping: HierarchyPathMapping, design: Design, generation: Int,
-                                waveform: FilePreviewPanel) async throws -> SVModelResolve.Outcome {
+                                waveform: FilePreviewPanel, sameFiles: Bool) async throws -> SVModelResolve.Outcome {
         let session = design.session
         // The dump's KDB model when its export has come (never waited for): it decides what exists
         // and how the row maps to slang's design.
@@ -368,6 +373,7 @@ enum WaveformTrace {
             kdb: WaveformTraceKDB.model(for: waveform),
             instances: { try await session.hierarchy(generation: generation).instances },
             sourceTimes: { (try? await session.sourceTimes(generation: generation)) ?? nil },
+            kdbSameFiles: sameFiles,
             log: { line in waveformTraceLogger.info("\(line, privacy: .public)") }
         )
     }
@@ -394,6 +400,16 @@ enum WaveformTrace {
                 return String(localized: "waveformTrace.kdb.notCheckedParameters", defaultValue: "the parameters, which this export lacks (not checked)")
             case .notChecked(.sources):
                 return String(localized: "waveformTrace.kdb.notCheckedSources", defaultValue: "whether a source changed after the compile (not checked)")
+            case .notChecked(.overrides):
+                return String(localized: "waveformTrace.kdb.notCheckedOverrides", defaultValue: "the parameters, which the compile overrode or whose command the export couldn’t read (not checked)")
+            case .notChecked(.shape):
+                return String(localized: "waveformTrace.kdb.notCheckedShape", defaultValue: "the signal’s width or range, which one side lacks (not checked)")
+            case .notChecked(.ports):
+                return String(localized: "waveformTrace.kdb.notCheckedPorts", defaultValue: "the instance’s ports, which one side lacks (not checked)")
+            case .notChecked(.writes):
+                return String(localized: "waveformTrace.kdb.notCheckedWrites", defaultValue: "the lines that write the signal, which one side lacks (not checked)")
+            case .notChecked(.chain):
+                return String(localized: "waveformTrace.kdb.notCheckedChain", defaultValue: "an instance above the row, which one side lacks (not checked)")
             }
         }
         let shown = parts.prefix(6).joined(separator: "; ")

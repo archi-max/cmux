@@ -18,8 +18,11 @@ public struct KDBDesignModel: @unchecked Sendable {
     }
 
     public let tops: [String]
-    /// When VCS compiled the KDB (ms since 1970: its newest file), when the export says.
+    /// When VCS compiled the KDB (ms since 1970: its newest file), when the export says (0: none).
     public let compiledAt: Int64?
+    /// The compile's parameter override options (-pvalue and the like), when the export could read
+    /// the compile command (nil: it couldn't, or an older exporter).
+    public let overrides: [String]?
     /// Every instance path, sorted.
     public let instancePaths: [String]
     private let instances: [String: [String: Any]]
@@ -28,7 +31,8 @@ public struct KDBDesignModel: @unchecked Sendable {
         guard let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
               let instances = object["instances"] as? [String: [String: Any]] else { return nil }
         self.tops = (object["tops"] as? [String] ?? []).sorted()
-        self.compiledAt = (object["compiled"] as? NSNumber)?.int64Value
+        self.compiledAt = ((object["compiled"] as? NSNumber)?.int64Value).flatMap { $0 > 0 ? $0 : nil }
+        self.overrides = object["overrides"] as? [String]
         self.instances = instances
         self.instancePaths = instances.keys.sorted()
     }

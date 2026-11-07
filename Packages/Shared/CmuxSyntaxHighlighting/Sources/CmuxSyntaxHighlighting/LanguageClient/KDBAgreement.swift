@@ -32,15 +32,28 @@ public enum KDBDifference: Hashable, Sendable {
 public enum KDBCheck: String, Hashable, Sendable {
     /// The export (an older exporter) or slang's model has no parameters.
     case parameters
+    /// The compile overrode parameters (-pvalue and the like), or the export couldn't read its
+    /// command: NPI reports an overridden parameter's declared value, so values can't be compared.
+    case overrides
     /// No compile time in the export, or no source times from slang's side.
     case sources
+    /// One side lacks the signal's width or range.
+    case shape
+    /// One side lacks the instance's ports.
+    case ports
+    /// The KDB lacks the signal's writes, or slang's model its statements.
+    case writes
+    /// The row's chain, or a level of it, has no models on both sides.
+    case chain
 }
 
 /// The checks behind an exact KDB mapping. What is checked: the parameters of every instance on
-/// the row's chain (from the matched level down), the signal's shape, the row instance's ports and
-/// the signal's write lines, and that no source of the chain's instances is newer than the compile.
-/// Not checked: a right-hand side that differs without a parameter, width, port or line to show it
-/// (a define expanding to another literal, in a file older than the compile).
+/// the row's chain (from the matched level down; none when the compile overrode parameters), the
+/// signal's shape, the row instance's ports and the signal's write lines, and that no file slang's
+/// load read (sources, includes, packages) is newer than the compile. What one side lacks is
+/// `notChecked`, never taken as agreeing. Not checked: a right-hand side that differs without a
+/// parameter, width, port or line to show it (a define expanding to another literal, in a file
+/// older than the compile).
 public enum KDBAgreement {
     /// One level of the row's chain: the KDB's instance (its dump path and model) and slang's model there.
     public struct Level {
@@ -56,13 +69,19 @@ public enum KDBAgreement {
     }
 
     /// What differs for `signal` (a name in the last level's instance); empty: they agree.
-    /// `compiledAt` and `sourceTimes` (path -> modification time), both in ms since 1970.
-    public static func differences(chain: [Level], signal: String, compiledAt: Int64?, sourceTimes: [String: Int64]?) -> [KDBDifference] {
-        guard let row = chain.last else { return [] }
+    /// `compiledAt` and `sourceTimes` (every file slang's load read -> its modification time), both
+    /// in ms since 1970. `overrides`: the compile's parameter overrides (nil: unknown). `sameFiles`:
+    /// slang and the KDB read one file system, so a write's file compares by its full path (else by
+    /// its name: the paths of two hosts differ).
+    public static func differences(chain: [Level], signal: String, compiledAt: Int64?, sourceTimes: [String: Int64]?,
+                                   overrides: [String]?, sameFiles: Bool = false) -> [KDBDifference] {
+        guard let row = chain.last else { return [.notChecked(.chain)] }
         var out: [KDBDifference] = []
         // Parameters, down the chain.
         if chain.contains(where: { $0.compiled["params"] as? [String: Any] == nil || $0.slang["params"] as? [String: Any] == nil }) {
             out.append(.notChecked(.parameters))
+        } else if overrides?.isEmpty != true {
+            out.append(.notChecked(.overrides))
         } else {
             for level in chain {
                 let compiled = level.compiled["params"] as? [String: Any] ?? [:]
@@ -77,30 +96,40 @@ public enum KDBAgreement {
         // The signal's shape.
         let compiledSignal = (row.compiled["signals"] as? [String: Any])?[signal] as? [String: Any]
         let slangSignal = (row.slang["signals"] as? [String: Any])?[signal] as? [String: Any]
-        if let compiledSignal, let slangSignal, !sameShape(compiledSignal, slangSignal) {
-            out.append(.shape(signal: signal))
+        if let compiledSignal, let slangSignal {
+            switch sameShape(compiledSignal, slangSignal) {
+            case false: out.append(.shape(signal: signal))
+            case nil: out.append(.notChecked(.shape))
+            case true: break
+            }
+        } else {
+            out.append(.notChecked(.shape))
         }
         // The instance's ports.
-        if let compiled = row.compiled["ports"] as? [[String: Any]], let slang = row.slang["ports"] as? [[String: Any]],
-           portSet(compiled) != portSet(slang) {
-            out.append(.ports(instance: row.path))
+        if let compiled = row.compiled["ports"] as? [[String: Any]], let slang = row.slang["ports"] as? [[String: Any]] {
+            if portSet(compiled) != portSet(slang) { out.append(.ports(instance: row.path)) }
+        } else {
+            out.append(.notChecked(.ports))
         }
         // The signal's write lines (slang's model with its statements only).
-        if row.slang["assigns"] != nil || row.slang["procs"] != nil, row.compiled["writes"] != nil,
-           !sameWrites(compiledLines(row.compiled, signal), slangWrites(row.slang)[signal] ?? []) {
-            out.append(.writes(signal: signal))
+        if row.slang["assigns"] != nil || row.slang["procs"] != nil, row.compiled["writes"] != nil {
+            if !sameWrites(compiledLines(row.compiled, signal), slangWrites(row.slang)[signal] ?? [], fullPaths: sameFiles) {
+                out.append(.writes(signal: signal))
+            }
+        } else {
+            out.append(.notChecked(.writes))
         }
-        // Sources newer than the compile.
+        // Sources newer than the compile: every file the load read (includes and packages too, which
+        // no instance model points into), and each file the chain's models point into is known.
         if let compiledAt, let sourceTimes {
-            var seen: Set<String> = []
             var unknown = false
+            for (file, time) in sourceTimes.sorted(by: { $0.key < $1.key }) where time > compiledAt {
+                out.append(.sourceNewer(file: file))
+            }
+            var seen: Set<String> = []
             for level in chain {
                 for file in level.slang["files"] as? [String] ?? [] where seen.insert(file).inserted {
-                    guard let time = time(of: file, in: sourceTimes) else {
-                        unknown = true
-                        continue
-                    }
-                    if time > compiledAt { out.append(.sourceNewer(file: file)) }
+                    if time(of: file, in: sourceTimes) == nil { unknown = true }
                 }
             }
             if unknown { out.append(.notChecked(.sources)) }
@@ -165,10 +194,18 @@ public enum KDBAgreement {
 
     // MARK: Shapes and ports
 
-    static func sameShape(_ a: [String: Any], _ b: [String: Any]) -> Bool {
-        for key in ["width", "msb", "lsb", "signed"] {
-            if let x = a[key], let y = b[key], !sameValue(x, y) { return false }
+    /// The same shape (nil: a key one side has and the other lacks; `signed` and the array's keys
+    /// are left out when either lacks them).
+    static func sameShape(_ a: [String: Any], _ b: [String: Any]) -> Bool? {
+        var known = true
+        for key in ["width", "msb", "lsb"] {
+            switch (a[key], b[key]) {
+            case (let x?, let y?): if !sameValue(x, y) { return false }
+            case (nil, nil): break
+            default: known = false
+            }
         }
+        if let x = a["signed"], let y = b["signed"], !sameValue(x, y) { return false }
         let arrayA = a["array"] as? [String: Any], arrayB = b["array"] as? [String: Any]
         if (arrayA == nil) != (arrayB == nil) { return false }
         if let arrayA, let arrayB {
@@ -176,7 +213,7 @@ public enum KDBAgreement {
                 if let x = arrayA[key], let y = arrayB[key], !sameValue(x, y) { return false }
             }
         }
-        return true
+        return known ? true : nil
     }
 
     /// Ports by name, direction and width (interface ports, which slang does not list, left out).
@@ -232,8 +269,11 @@ public enum KDBAgreement {
     }
 
     /// The same writes: every KDB line in one of slang's spans of the same file, every span with a KDB line.
-    static func sameWrites(_ compiled: [(file: String, line: Int)], _ slang: [(file: String, first: Int, last: Int)]) -> Bool {
-        func same(_ a: String, _ b: String) -> Bool { a == b || (a as NSString).lastPathComponent == (b as NSString).lastPathComponent }
+    /// `fullPaths`: files compare by their full path (one file system), else by name.
+    static func sameWrites(_ compiled: [(file: String, line: Int)], _ slang: [(file: String, first: Int, last: Int)], fullPaths: Bool = false) -> Bool {
+        func same(_ a: String, _ b: String) -> Bool {
+            a == b || (!fullPaths && (a as NSString).lastPathComponent == (b as NSString).lastPathComponent)
+        }
         let lines = compiled.allSatisfy { line in slang.contains { same(line.file, $0.file) && line.line >= $0.first && line.line <= $0.last } }
         let spans = slang.allSatisfy { span in compiled.contains { same($0.file, span.file) && $0.line >= span.first && $0.line <= span.last } }
         return lines && spans
