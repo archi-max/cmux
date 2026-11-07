@@ -19,7 +19,9 @@
 //                                 design and slang's differ there; the steps are approximate and say so.
 //                                 A resolve's kdbPending (true): the dump's KDB export still runs, so
 //                                 slang's design was used; each step says so. A resolve's kdbChecked
-//                                 (instance paths; with a KDB model): a step outside them is approximate
+//                                 (with a KDB model: instance paths whose parameters and ports agreed,
+//                                 and instance.signal paths whose shape and writes did): a step whose
+//                                 instance or signal is outside it is approximate
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
 //   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log?, focus?, entry? })
@@ -663,10 +665,14 @@
     if (s.kdbPending && !(step.reasons || []).some((r) => r.code === 'kdbPending')) {
       step.reasons = (step.reasons || []).concat([{ code: 'kdbPending' }]);
     }
+    // kdbChecked: the instances whose parameters and ports agreed, and `instance.signal` for the
+    // signals whose shape and writes did. A step needs its instance and its signal in it, and so
+    // do its driver's instance (a port's other side) and any other instance writing it; a step
+    // with no instance was not checked.
     const outside = (path) => typeof path === 'string' && !s.kdbChecked.has(path);
-    // The step's instance, its driver's (a port's other side) and any other instance writing it.
-    const touched = [step.instance, step.driver && step.driver.instance].concat((step.drivers || []).map((d) => d && d.writer));
-    if (s.kdbChecked && touched.some(outside)
+    const touched = [step.instance, step.instance && step.name ? step.instance + '.' + String(step.name).replace(/\[.*$/, '') : null, step.driver && step.driver.instance]
+      .concat((step.drivers || []).map((d) => d && d.writer));
+    if (s.kdbChecked && (!step.instance || touched.some(outside))
         && !(step.reasons || []).some((r) => r.code === 'kdbNotChecked')) {
       step.reasons = (step.reasons || []).concat([{ code: 'kdbNotChecked' }]);
       if (step.trust === 'exact' || step.trust === 'computed') { step.trust = 'approximate'; }

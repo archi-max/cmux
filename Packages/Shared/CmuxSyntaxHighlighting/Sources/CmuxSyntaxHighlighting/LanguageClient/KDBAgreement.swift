@@ -45,6 +45,9 @@ public enum KDBCheck: String, Hashable, Sendable {
     case writes
     /// The row's chain, or a level of it, has no models on both sides.
     case chain
+    /// slang reads the editor's copy on another host than the compile: a write's file matches by
+    /// its name only, which is no evidence of the same text.
+    case copy
 }
 
 /// The checks behind an exact KDB mapping. What is checked: the parameters of every instance on
@@ -73,8 +76,8 @@ public enum KDBAgreement {
     /// What differs for `signal` (a name in the last level's instance); empty: they agree.
     /// `compiledAt` and `sourceTimes` (every file slang's load read -> its modification time), both
     /// in ms since 1970. `overrides`: the compile's parameter overrides (nil: unknown). `sameFiles`:
-    /// slang and the KDB read one file system, so a write's file compares by its full path (else by
-    /// its name: the paths of two hosts differ).
+    /// slang and the KDB read one file system, so a write's file compares by its full path; else
+    /// slang reads another host's copy, matched by name only, and the row is `notChecked(.copy)`.
     public static func differences(chain: [Level], signal: String, compiledAt: Int64?, sourceTimes: [String: Int64]?,
                                    overrides: [String]?, sameFiles: Bool = false) -> [KDBDifference] {
         guard let row = chain.last else { return [.notChecked(.chain)] }
@@ -137,6 +140,32 @@ public enum KDBAgreement {
             if unknown { out.append(.notChecked(.sources)) }
         } else {
             out.append(.notChecked(.sources))
+        }
+        if !sameFiles { out.append(.notChecked(.copy)) }
+        return out
+    }
+
+    /// What a row's chain compared in full and found the same (slang's paths): each level whose
+    /// parameters and ports agree, and `level.signal` for each of its signals whose shape and write
+    /// lines agree. A step outside it was not checked. `levels` pairs slang's path with the level.
+    public static func agreed(levels: [(slangPath: String, level: Level)], overrides: [String]?, sameFiles: Bool) -> Set<String> {
+        var out: Set<String> = []
+        let parametersComparable = overrides?.isEmpty == true
+        for (path, level) in levels {
+            if parametersComparable, let compiled = level.compiled["params"] as? [String: Any], let slang = level.slang["params"] as? [String: Any],
+               Set(compiled.keys) == Set(slang.keys), compiled.allSatisfy({ name, value in slang[name].map { sameValue(value, $0) } ?? false }),
+               let compiledPorts = level.compiled["ports"] as? [[String: Any]], let slangPorts = level.slang["ports"] as? [[String: Any]],
+               portSet(compiledPorts) == portSet(slangPorts) {
+                out.insert(path)
+            }
+            guard let compiledSignals = level.compiled["signals"] as? [String: Any], let slangSignals = level.slang["signals"] as? [String: Any],
+                  level.slang["assigns"] != nil || level.slang["procs"] != nil, level.compiled["writes"] != nil else { continue }
+            let writes = slangWrites(level.slang)
+            for (name, value) in compiledSignals {
+                guard let a = value as? [String: Any], let b = slangSignals[name] as? [String: Any], sameShape(a, b) == true,
+                      sameWrites(compiledLines(level.compiled, name), writes[name] ?? [], fullPaths: sameFiles) else { continue }
+                out.insert(path + "." + name)
+            }
         }
         return out
     }

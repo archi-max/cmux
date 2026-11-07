@@ -485404,6 +485404,65 @@
         }
       }
     },
+    "waveformTrace.kdb.notCheckedCopy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the source text: slang reads the editor’s copy on another host than the compile, matched by file name only (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ソースの内容(slang はコンパイルとは別のホストにあるエディタのコピーを読んでおり、ファイル名でしか照合できないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der Quelltext: slang liest die Kopie des Editors auf einem anderen Host als dem der Kompilierung, nur über den Dateinamen zugeordnet (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le texte source : slang lit la copie de l’éditeur sur un autre hôte que celui de la compilation, associée par le seul nom de fichier (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نص المصدر: يقرأ slang نسخة المحرر على مضيف غير مضيف الترجمة، ولا تُطابَق إلا باسم الملف (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el texto fuente: slang lee la copia del editor en otro host distinto del de la compilación, emparejada solo por el nombre de archivo (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始碼內容(slang 讀取的是編輯器在另一台主機上的副本，與編譯所在主機不同，只能以檔名比對;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "源代码内容(slang 读取的是编辑器在另一台主机上的副本，与编译所在主机不同，只能按文件名匹配;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "소스 내용(slang이 컴파일과 다른 호스트에 있는 편집기 사본을 읽으며, 파일 이름으로만 대조함, 확인 안 함)"
+          }
+        }
+      }
+    },
     "waveformTrace.kdb.notCheckedOverrides": {
       "extractionState": "manual",
       "localizations": {

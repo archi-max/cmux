@@ -417,6 +417,8 @@ enum WaveformTrace {
                 return String(localized: "waveformTrace.kdb.notCheckedWrites", defaultValue: "the lines that write the signal, which one side lacks (not checked)")
             case .notChecked(.chain):
                 return String(localized: "waveformTrace.kdb.notCheckedChain", defaultValue: "an instance above the row, which one side lacks (not checked)")
+            case .notChecked(.copy):
+                return String(localized: "waveformTrace.kdb.notCheckedCopy", defaultValue: "the source text: slang reads the editor’s copy on another host than the compile, matched by file name only (not checked)")
             }
         }
         let shown = parts.prefix(6).joined(separator: "; ")

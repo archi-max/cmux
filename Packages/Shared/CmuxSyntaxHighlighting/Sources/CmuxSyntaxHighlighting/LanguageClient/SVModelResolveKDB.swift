@@ -102,7 +102,7 @@ extension SVModelResolve {
                let instanceModel = await slangModel(found.instance), SVModelLoad.isSignal(found.name, inModel: instanceModel) {
                 let mapped = result(designPath: designPath, dumpPath: rowSegments)
                 var levels: [KDBAgreement.Level] = []
-                var checked: Set<String> = []
+                var paired: [(slangPath: String, level: KDBAgreement.Level)] = []
                 var lost = false
                 for path in chain[level...] {
                     let rest = below(path, prefix)
@@ -111,10 +111,11 @@ extension SVModelResolve {
                         lost = true
                         continue
                     }
-                    levels.append(KDBAgreement.Level(path: path, compiled: compiled, slang: slang))
-                    checked.insert(slangPath)
+                    let one = KDBAgreement.Level(path: path, compiled: compiled, slang: slang)
+                    levels.append(one)
+                    paired.append((slangPath, one))
                 }
-                kdbChecked?(checked)
+                kdbChecked?(KDBAgreement.agreed(levels: paired, overrides: kdb.overrides, sameFiles: kdbSameFiles))
                 let times = await sourceTimes?()
                 var differences = KDBAgreement.differences(chain: levels, signal: name, compiledAt: kdb.compiledAt, sourceTimes: times,
                                                            overrides: kdb.overrides, sameFiles: kdbSameFiles)
