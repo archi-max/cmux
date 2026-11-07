@@ -1168,7 +1168,174 @@
       return best < 0 || best === recs.length - 1 ? last : Object.assign({}, recs[best], { after: recs.slice(best + 1) });
     }
 
-    return { active, model, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
+    // ---- loads (load trace: who reads a signal) ----
+    // Whether expression e (in m) reads the signal at `sig`: 'yes', 'maybe' (it reads the array
+    // `sig` is an element of, at an index the model doesn't fix), or ''.
+    function readsSig(m, e, sig) {
+      if (!e) { return ''; }
+      let found = '';
+      for (const l of e.leaves || []) {
+        if (isLocal(l)) { continue; }
+        const p = absOf(m.path, l);
+        if (p === sig) { return 'yes'; }
+        if (sig.startsWith(p + '[')) { found = 'maybe'; }
+      }
+      for (const el of e.elems || []) {
+        const r = readsSig(m, el.index, sig);
+        if (r === 'yes') { return r; }
+        if (r) { found = r; }
+      }
+      return found;
+    }
+    // The signals an lvalue writes (block locals as `$local:` names), and whether its index reads sig.
+    function lvalNames(m, lhs, out) {
+      if (!lhs) { return out; }
+      if (lhs.concat) { lhs.concat.forEach((x) => lvalNames(m, x, out)); return out; }
+      if (lhs.name) { out.push(isLocal(lhs.name) ? lhs.name : absOf(m.path, lhs.name)); }
+      return out;
+    }
+    function lvalIndexReads(m, lhs, sig) {
+      if (!lhs) { return ''; }
+      if (lhs.concat) { return lhs.concat.map((x) => lvalIndexReads(m, x, sig)).find(Boolean) || ''; }
+      return readsSig(m, lhs.elem, sig) || readsSig(m, lhs.off, sig);
+    }
+    // Everything a statement may write (its targets when a condition or an event reads the signal).
+    function writtenBy(m, st, out) {
+      if (!st) { return out; }
+      if (Array.isArray(st.writes)) { st.writes.forEach((w) => { if (w && w.name) { out.add(isLocal(w.name) ? w.name : absOf(m.path, w.name)); } }); }
+      switch (st.k) {
+        case 'seq': st.s.forEach((x) => writtenBy(m, x, out)); break;
+        case 'asgn': lvalNames(m, st.lhs, []).forEach((n) => out.add(n)); break;
+        case 'timed': writtenBy(m, st.stmt, out); break;
+        case 'if': writtenBy(m, st.t, out); writtenBy(m, st.f, out); break;
+        case 'case': st.items.forEach((it) => writtenBy(m, it.s, out)); writtenBy(m, st.dflt, out); break;
+        default:
+      }
+      return out;
+    }
+    const exprText = (e) => (e ? (e.src || leafText(e)) : '');
+    const EDGE_WORD = { PosEdge: 'posedge ', NegEdge: 'negedge ', BothEdges: 'edge ' };
+    // The readers of `sig` inside instance m: assigns, declaration initializers, statements (data,
+    // condition, index), procedures' sensitivity, and the child input ports it connects. `opaque`
+    // counts the statements slang could not elaborate (their reads unknown).
+    function loadsIn(m, sig, out, limits) {
+      const entry = (o, l) => Object.assign({ instance: m.path, loc: locOf(m, l) }, o);
+      const push = (o, l, how) => { const e = entry(o, l); if (how === 'maybe') { e.maybe = true; } out.push(e); };
+      for (const a of m.assigns) {
+        const r = readsSig(m, a.rhs, sig);
+        if (r) { push({ kind: 'assign', role: 'data', src: a.src, targets: lvalNames(m, a.lhs, []) }, a.loc, r); }
+        const ir = lvalIndexReads(m, a.lhs, sig);
+        if (ir) { push({ kind: 'assign', role: 'index', src: a.src, targets: lvalNames(m, a.lhs, []) }, a.loc, ir); }
+      }
+      for (const [name, info] of Object.entries(m.signals)) {
+        const r = info.init ? readsSig(m, info.init, sig) : '';
+        if (r) { push({ kind: info.kind === 'net' ? 'assign' : 'initializer', role: 'data', src: `${name} = ${exprText(info.init)}`, targets: [absOf(m.path, name)] }, info.init.loc || info.loc, r); }
+      }
+      for (const p of m.procs) {
+        const proc = { procKind: p.kind, procLoc: locOf(m, p.loc) };
+        for (const ev of p.events || []) {
+          const r = ev.expr ? readsSig(m, ev.expr, sig) : '';
+          if (r) { push(Object.assign({ kind: 'event', role: 'sensitivity', src: (EDGE_WORD[ev.edge] || '') + exprText(ev.expr), targets: [...writtenBy(m, p.body, new Set())] }, proc), p.loc, r); }
+        }
+        const visit = (st) => {
+          if (!st) { return; }
+          switch (st.k) {
+            case 'seq': st.s.forEach(visit); return;
+            case 'timed': visit(st.stmt); return;
+            case 'decl': {
+              const r = readsSig(m, st.init, sig);
+              if (r) { push(Object.assign({ kind: 'stmt', role: 'data', src: `${st.name.replace(/^\$local:/, '')} = ${exprText(st.init)}`, targets: [st.name] }, proc), st.loc, r); }
+              return;
+            }
+            case 'asgn': {
+              const r = readsSig(m, st.rhs, sig);
+              if (r) { push(Object.assign({ kind: 'stmt', role: 'data', src: st.src, targets: lvalNames(m, st.lhs, []) }, proc), st.loc, r); }
+              const ir = lvalIndexReads(m, st.lhs, sig);
+              if (ir) { push(Object.assign({ kind: 'stmt', role: 'index', src: st.src, targets: lvalNames(m, st.lhs, []) }, proc), st.loc, ir); }
+              return;
+            }
+            case 'if': {
+              const r = readsSig(m, st.c, sig);
+              if (r) {
+                const t = new Set(); writtenBy(m, st.t, t); writtenBy(m, st.f, t);
+                push(Object.assign({ kind: 'stmt', role: 'condition', src: `if (${exprText(st.c)})`, targets: [...t] }, proc), st.c.loc, r);
+              }
+              visit(st.t); visit(st.f);
+              return;
+            }
+            case 'case': {
+              const t = writtenBy(m, st, new Set());
+              const conds = [st.e].concat(...st.items.map((it) => it.m));
+              for (const e of conds) {
+                const r = readsSig(m, e, sig);
+                if (r) { push(Object.assign({ kind: 'stmt', role: 'condition', src: e === st.e ? `case (${exprText(e)})` : exprText(e), targets: [...t] }, proc), e.loc, r); }
+              }
+              st.items.forEach((it) => visit(it.s)); visit(st.dflt);
+              return;
+            }
+            case 'opaque': limits.opaque++; return;
+            default:
+          }
+        };
+        visit(p.body);
+      }
+      for (const child of m.children) {
+        for (const port of child.ports) {
+          if (port.dir !== 'In' && port.dir !== 'InOut') { continue; }
+          const r = readsSig(m, port.conn, sig);
+          if (r) { push({ kind: 'portIn', role: 'connection', src: `.${port.name}(${connText(port.conn) || port.name})`, port: port.name, targets: [child.path + '.' + port.internal] }, port.loc, r); }
+        }
+      }
+    }
+    const locKey = (e) => [e.instance, e.loc ? e.loc.file || '' : '', e.loc ? e.loc.line : 0, e.loc ? e.loc.col : 0];
+    function byPlace(x, y) {
+      const a = locKey(x), b = locKey(y);
+      for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) { return -1; } if (a[i] > b[i]) { return 1; } }
+      return 0;
+    }
+    // Load trace: the static readers of the signal at `path` (design path), in instance path then
+    // source order, one page at a time ({ offset, limit }, limit at most 512, 64 by default).
+    // { signal, total, entries, next (the next page's offset, or null), limits }. An entry: { kind
+    // ('assign' | 'initializer' | 'stmt' | 'event' | 'portIn' | 'portOut'), role ('data' |
+    // 'condition' | 'index' | 'sensitivity' | 'connection'), instance, src, loc, targets (the paths
+    // it writes: the next hop; block locals as `$local:` names), procKind?, procLoc?, port?,
+    // maybe? (it reads the whole array the signal is an element of) }. Not seen: reads from other
+    // instances through hierarchical references (limits.hierarchical), and statements slang could
+    // not elaborate (limits.opaque counts them).
+    async function loads(path, opts) {
+      const o = opts || {};
+      const where = await models.lookup(path);
+      if (!where || !where.instance) { return { signal: path, error: 'notInDesign' }; }
+      const m = await model(where.instance);
+      if (!m) { return { signal: path, error: 'notInDesign' }; }
+      const name = where.name;
+      const out = [];
+      const limits = { opaque: 0, hierarchical: true };
+      loadsIn(m, path, out, limits);
+      // An output port: the parent's signals connected to it (where its value goes next).
+      const s = signalOf(m, name);
+      const base = s && s.element ? s.element.array : name;
+      if (m.parent) {
+        const outs = m.ports.filter((pt) => (pt.dir === 'Out' || pt.dir === 'InOut') && pt.internal === base);
+        if (outs.length) {
+          const pm = await model(m.parent);
+          const me = pm && pm.children.find((c) => c.path === m.path);
+          for (const pt of outs) {
+            const cp = me && me.ports.find((q) => q.name === pt.name);
+            if (!cp) { continue; }
+            const targets = cp.connLval ? lvalNames(pm, cp.connLval, []) : [...leafPaths(pm, cp.conn, new Set())];
+            out.push({ kind: 'portOut', role: 'connection', instance: pm.path, src: `.${cp.name}(${connText(cp.conn) || cp.name})`, port: cp.name, loc: locOf(pm, cp.loc), targets, maybe: s && s.element ? true : undefined });
+          }
+        }
+      }
+      out.sort(byPlace);
+      const limit = Math.max(1, Math.min(512, Number(o.limit) || 64));
+      const offset = Math.max(0, Number(o.offset) || 0);
+      const entries = out.slice(offset, offset + limit);
+      return { signal: path, total: out.length, entries, next: offset + limit < out.length ? offset + limit : null, limits };
+    }
+
+    return { active, model, loads, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
   }
 
   // ---- Trace X to Root ----

@@ -282,7 +282,7 @@ const LOAD_CASES = [
   { d: 'a', sig: 'tb_a.dut.clk', page: [1, 1, 3, 2], want: ['event/sensitivity/20/tb_a.dut.acc'] },
   { d: 'a', sig: 'tb_a.dut.clk', page: [2, 64, 3, null], want: ['event/sensitivity/32/tb_a.dut.dout'] },
   // The testbench's clock: its own toggle, and the DUT's input port it connects (the next hop down).
-  { d: 'a', sig: 'tb_a.clk', want: ['stmt/data/7/tb_a.clk', 'portIn/connection/6/tb_a.dut.clk'] },
+  { d: 'a', sig: 'tb_a.clk', want: ['portIn/connection/6/tb_a.dut.clk', 'stmt/data/7/tb_a.clk'] },
   // An output port: the parent's signal connected to it (the next hop up).
   { d: 'a', sig: 'tb_a.dut.dout', want: ['portOut/connection/6/tb_a.dout'] },
   // Read into a block-local temporary (tmp = sum + 1).
