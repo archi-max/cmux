@@ -722,6 +722,27 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 40. Prefetch (the page's left / right / level-out / level-in tiles, sent once what's on screen
+// is answered) must not hold up the next visible request: prefetch requests (prefetch: true) queue
+// behind visible work on a worker, and their rebuilt rows go one task per row, so a visible
+// request waits for at most one running prefetch task. Measured on a 10 GB dump: four prefetch
+// batches ahead of the first pan's cold rows made it 8.7 s.
+{
+  const ids = [1, 2, 3, 4];
+  const h = await start(1, Object.fromEntries(ids.map((id) => [id, 15000])),  // (150 ms per row per 1% window)
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', FSDB_WARM: '0', FSDB_BG_LOAD: '0' });
+  await kindsOf(h);
+  const W = (t0, prefetch) => ({ signals: ids.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024, ...(prefetch ? { prefetch: true } : {}) });
+  const pf = [0, 1, 2, 3].map((k) => h.send('window', W(100000 + k * 10000, true)));
+  await wait(20);
+  const vis = await h.send('window', W(500000, false)).reply;
+  const pr = await Promise.all(pf.map((q) => q.reply));
+  check(!vis.error && vis.at < 1000 && pr.every((r) => !r.error && r.result.signals.every((x) => !x.error)),
+    `a visible request after 4 prefetch batches (600 ms each) answers within one running prefetch task: ${Math.round(vis.at)} ms (FIFO: ~3000); prefetches answered: ${pr.map((r) => r.error || Math.round(r.at)).join('/')}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
