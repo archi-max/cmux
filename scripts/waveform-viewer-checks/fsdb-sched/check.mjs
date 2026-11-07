@@ -513,6 +513,7 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   check(st && st.ready && ids.every((id) => st.ready.includes(id)), `the rows being viewed get a warm worker: ${JSON.stringify(st)}`);
   const lat = [];
   for (let k = 1; k <= 8; k++) { const r = await h.send('window', near(ids, k * 10000)).reply; lat.push(r.error ? 1e9 : r.at); }
+  check(lat[0] < 100, `the first pan once the set is ready: ${Math.round(lat[0])} ms (the reader's first load, 600 ms, is done before it is ready)`);
   lat.sort((a, b) => a - b);
   check(lat[4] < 80, `pans over 8 warm rows: p50 ${Math.round(lat[4])} ms (cold reads: 8 x 150 ms over the free workers, ~300+)`);
   const r9 = await h.send('window', near([...ids, 9], 90000)).reply;
