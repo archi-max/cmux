@@ -220,6 +220,22 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
       `apply: one A line to the library, and its reply: ${JSON.stringify(a)} (${aLine})`);
     await w.quit().catch(() => {});
   }
+  // Write access (from the simctl library, prototype ae742cc): a write the build gives no access for is an error
+  // that says a rebuild is needed; a park the library refuses (an unwritable hold) errors at once, and the
+  // simulation goes on (no wait for a prompt that can't come).
+  {
+    const w = start(['--period', '10'], { FAKE_NOACCESS: '1' }); await w.ready;
+    const d = await w.reply(w.send({ cmd: 'deposit', signal: 'tb.cnt', value: "'h5" }).id);
+    expect(!!d && /no write access/.test(d.error || '') && d.needsRebuild === true, `a deposit without write access: an error with needsRebuild: ${JSON.stringify(d)}`);
+    await w.quit().catch(() => {});
+  }
+  {
+    const w = start(['--period', '10', '--ucli-timeout-ms', '3000'], { FAKE_P_REFUSE: '1' }); await w.ready;
+    const t0 = Date.now(); const c = await w.reply(w.send({ cmd: 'checkpoint' }).id, 6000); const ms = Date.now() - t0;
+    const r = await w.reply(w.send({ cmd: 'time' }).id, 3000);
+    expect(!!c && /hold/.test(c.error || '') && ms < 1500 && !!r && !!r.result && !w.exited, `a refused park errors at once and the simulation goes on: ${JSON.stringify(c)} in ${ms} ms; then ${JSON.stringify(r)}`);
+    await w.quit().catch(() => {});
+  }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
   // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
   {

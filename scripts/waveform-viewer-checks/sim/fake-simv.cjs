@@ -61,8 +61,11 @@ function line(l) {
       return;
     }
     case 'F': case 'D': case 'L': writes.push(id); return;
-    case 'Y': t += 1; for (const w of writes) send({ id: w, t, value: cnt() }); writes = []; return;
-    case 'P': send({ id, t, parked: true }); process.stdout.write('ucli% '); return;
+    // FAKE_NOACCESS: a build without write access (the library reads each write back and says so)
+    case 'Y': t += 1; for (const w of writes) send(process.env.FAKE_NOACCESS ? { id: w, error: 'no write access to tb.cnt (rebuild with -debug_access+w)', needsRebuild: true } : { id: w, t, value: cnt() }); writes = []; return;
+    // FAKE_P_REFUSE: the hold can't be written, so the library refuses to park (no stop, so no prompt)
+    case 'P': if (process.env.FAKE_P_REFUSE) { send({ id, error: 'the testbench hold (st) has no write access: rebuild with -debug_access+w' }); return; }
+      send({ id, t, parked: true }); process.stdout.write('ucli% '); return;
     // the reusable testbench: one simctl_cfg and one simctl_port in the toy design (simctl_describe.c's reply)
     case 'H': send({ id, t, cfg: [{ path: 'tb.u_cfg', scenarios: 'smoke:plain adds' }], ports: [{ path: 'tb.u_in', name: 'in', kind: 'vr', width: 16, fields: 'hi[15:8] lo[7:0]' }], memories: [], memoriesTruncated: false }); return;
     // apply: the hook ran and the design settled (simctl_apply.c's reply)
