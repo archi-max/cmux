@@ -1272,7 +1272,11 @@ function hotSpawn(ids) {
 function hotWanted() {
   const now = performance.now();
   for (const [id, t] of hot.asked) { if (now - t > HOT_RECENT_MS) { hot.asked.delete(id); } }
-  return [...hot.asked].filter(([id]) => !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).slice(0, HOT_MAX).map(([id]) => id);
+  // Stored (primary) signals only, once the kinds are known: a warm reader saves the per-call
+  // floor, but a rebuilt signal costs the same rebuild per window (~175 ms at 1% of 1.7 GB) and
+  // in one warm process they would be read one after another instead of spread over workers.
+  const ok = (id) => kinds.state !== 'ready' || kindOf(id) === 'p';
+  return [...hot.asked].filter(([id]) => ok(id) && !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).slice(0, HOT_MAX).map(([id]) => id);
 }
 function hotNote(ids) {
   if (!HOT || !openFile) { return; }
