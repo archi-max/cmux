@@ -92,13 +92,21 @@ Variable kinds:
 - **Bit vectors** (1 byte per bit: wires, regs, integers, enums...) are sent as `[u64 delta][value]` records.
 - **Strings** (SystemVerilog `string`) and **reals** (8-byte double, 4-byte float) come as text records,
   `[u64 delta][u32 length][UTF-8]`; the window header says `text: true` and `kind`, and a real's also carries
-  `min`/`max` for the analog view. A real reads as Rust's `f64` text (shortest round-trip digits, `-0`, `NaN`,
+  `min`/`max` for the analog view (not on a ranged answer, whose range is only the slice's; the viewer keeps
+  the widest it has seen). A real reads as Rust's `f64` text (shortest round-trip digits, `-0`, `NaN`,
   `inf`), the same as a VCD real in the viewer. A string or real change is an edge; a bit pattern `search` and
   expressions refuse them, and they are walked whole, never split or saved to the store cache.
-- **Events** keep every occurrence, repeats included.
+- **Long text** is stored once per distinct value, but a window repeats it per record, so a window carries
+  at most 4 KB of each value (cut at a character boundary, ended with `…`) and at most 16 MB of records (past
+  it the window is an error; a narrower one fits). `valueAt` and `searchText` use the whole text. A string's
+  header says `textMean`, the mean text bytes per change, which the viewer counts before loading it whole.
+- **Events** keep every occurrence, repeats included, in stored and cold searches alike.
+- **Parameters and time vars** are listed as Real by the reader, but most are bit vectors and work as
+  expression operands; the addon refuses an operand whose values really are text or reals.
 - Any other encoding (for example 2 bytes per bit) is an error for that signal alone. Errors that can't
-  change on a retry (unsupported encoding, 0 bits, larger than the store, not a bit signal) come with
-  `permanent: true`: the viewer labels the row once, without "(retrying)", and doesn't ask again.
+  change on a retry (unsupported encoding, 0 bits, not a bit signal) come with `permanent: true`: the viewer
+  labels the row once, without "(retrying)", and doesn't ask again. Over the store cap is not permanent: a
+  zoomed-in range of the signal still loads through the ranged cold path.
 
 ## Timeouts and recovery
 

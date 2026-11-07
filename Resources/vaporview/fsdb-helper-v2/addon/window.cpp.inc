@@ -50,6 +50,7 @@ struct SigStore {
   std::vector<std::string> strs;  // kString: the distinct strings
   size_t strBytes = 0;            // their characters plus per-string overhead (in bytes())
   double rmin = 0, rmax = 0;      // kReal: as wellen's (min/max of 0 and every finite value)
+  double textMean = 0;            // kString: mean bytes per change of the text as windows send it
   uint64_t lastUsed = 0;
   // searchText: each change's index into the signal's distinct values (built on first
   // use, accounted in bytes(); dgen names this table, so JS memos keyed on it go stale
@@ -498,6 +499,18 @@ static std::string capError(size_t cap) { return "signal larger than " + std::to
 // memory-range indices, other 4-byte values) can't be shown, and never will be from this
 // file: such errors say "unsupported", which the coordinator and viewer treat as permanent.
 static const size_t kMaxText = 1u << 20;  // one string value
+// Windows carry at most kWinText bytes of each text (cut at a UTF-8 character boundary and
+// marked with an ellipsis): the store keeps each distinct string once, but a window repeats
+// it per record. valueAt and searchText keep the whole text. A window's records stop at
+// kTextBudget bytes: past it the window is refused (retryable; a narrower one fits).
+static const size_t kWinText = 4096;
+static const size_t kTextBudget = 16u << 20;
+static size_t shownLen(const std::string &v) {
+  if (v.size() <= kWinText) return v.size();
+  size_t cut = kWinText;
+  while (cut > 0 && ((uint8_t)v[cut] & 0xC0) == 0x80) cut--;
+  return cut + 3;
+}
 static int valueKind(ffrVCTrvsHdl h, bool &f32, std::string &err) {
   const fsdbBytesPerBit b = h->ffrGetBytesPerBit();
   const fsdbVarType vt = h->ffrGetVarType();
@@ -622,6 +635,12 @@ static SigStore *walkText(ffrVCTrvsHdl h, int kind, bool f32, std::string &err, 
       memcpy(&d, &s->val[k * 8], 8);
       if (std::isfinite(d)) { s->rmin = std::min(s->rmin, d); s->rmax = std::max(s->rmax, d); }
     }
+  } else if (!s->times.empty()) {
+    std::vector<uint32_t> shown(s->strs.size());
+    for (size_t d = 0; d < s->strs.size(); d++) shown[d] = (uint32_t)shownLen(s->strs[d]);
+    double sum = 0;
+    for (size_t k = 0; k < s->times.size(); k++) { uint32_t idx; memcpy(&idx, &s->val[k * 4], 4); sum += idx < shown.size() ? shown[idx] : 0; }
+    s->textMean = sum / (double)s->times.size();
   }
   return s;
 }
@@ -764,7 +783,9 @@ static std::string valueText(const SigStore *s, ptrdiff_t k) {
 // header `text: true`) [u64 LE delta][u32 LE byte length][the text's bytes].
 static inline void putRecord(const SigStore *s, std::vector<uint8_t> &out, uint64_t &prev, uint64_t t, ptrdiff_t k) {
   if (s->kind != kBits) {
-    const std::string v = valueText(s, k);
+    std::string v = valueText(s, k);
+    const size_t n = shownLen(v);
+    if (n != v.size()) { v.resize(n - 3); v += "\xe2\x80\xa6"; }  // cut, then U+2026
     const size_t o = out.size();
     const uint64_t delta = t - prev;
     const uint32_t len = (uint32_t)v.size();
@@ -901,9 +922,17 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
   uint64_t prev = 0;
   putRecord(s, rec, prev, t0, (ptrdiff_t)first - 1);
   Napi::Object o = Napi::Object::New(env);
+  const bool text = s->kind != kBits;
+  auto overBudget = [&]() {
+    o.Set("error", Napi::String::New(env, "text window over the " + std::to_string(kTextBudget >> 20) + " MB reply budget (a narrower window fits)"));
+    return o;
+  };
   if (exact) {
-    rec.reserve((count + 1) * (8 + (s->kind == kBits ? s->bits : 16)));
-    for (size_t k = first; k < hi; k++) putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
+    rec.reserve(text ? 4096 : (count + 1) * (8 + s->bits));
+    for (size_t k = first; k < hi; k++) {
+      putRecord(s, rec, prev, s->times[k], (ptrdiff_t)k);
+      if (text && rec.size() > kTextBudget) return overBudget();
+    }
   } else {
     std::vector<uint32_t> counts(B);
     const unsigned __int128 span = t1 - t0;
@@ -916,6 +945,7 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
       if (b > f) {
         putRecord(s, rec, prev, s->times[f], (ptrdiff_t)f);
         if (b - f >= 2) putRecord(s, rec, prev, s->times[b - 1], (ptrdiff_t)(b - 1));
+        if (text && rec.size() > kTextBudget) return overBudget();
       }
       a = b;
     }
@@ -929,6 +959,7 @@ static Napi::Object windowOf(Napi::Env env, const SigStore *s, uint64_t t0, uint
     o.Set("kind", Napi::String::New(env, kindName(s->kind)));
   }
   if (s->kind == kReal) { o.Set("min", Napi::Number::New(env, s->rmin)); o.Set("max", Napi::Number::New(env, s->rmax)); }
+  if (s->kind == kString) o.Set("textMean", Napi::Number::New(env, s->textMean));
   return o;
 }
 
@@ -1487,6 +1518,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
     // per time only the last change counts, and only if it differs from the
     // value in effect before it (all x before the first change).
     std::vector<uint8_t> prev(bits, 2), cur(bits);
+    const bool ev = h->ffrGetVarType() == FSDB_VT_VCD_EVENT;  // each occurrence is a change (as normalizeStore's repeats)
     auto grab = [&](std::vector<uint8_t> &dst) { byte_T *vc; h->ffrGetVC(&vc); for (uint32_t j = 0; j < bits; j++) dst[j] = vc[j] & 3; };
     double found = -1, scanned = 0;
     uint64_t steps = 0;
@@ -1511,7 +1543,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
           if (have && tt != ct) {  // ct's group is complete
             if (ct > t) {
               if (ct > bound) { have = false; break; }
-              if (cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+              if (ev || cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
             }
             prev.swap(cur);
           }
@@ -1520,7 +1552,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
           have = true;
           more = FSDB_RC_SUCCESS == h->ffrGotoNextVC();
         }
-        if (!stopped && have && ct > t && ct <= bound && cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+        if (!stopped && have && ct > t && ct <= bound && (ev || cur != prev)) { scanned++; if (match(cur.data())) found = (double)ct; }
       } else if (dir < 0 && onT) {
         // Start at the very last change <= t (the reader may land on the first of a time's changes).
         while (FSDB_RC_SUCCESS == h->ffrGotoNextVC()) {
@@ -1539,7 +1571,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
             grab(prev);  // the value in effect before ct
             if (have) {
               if (ct < bound) { have = false; break; }
-              if (cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+              if (ev || cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
             }
             cur.swap(prev);
             ct = tt;
@@ -1549,7 +1581,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
         }
         if (!stopped && have && ct >= bound) {  // the earliest group: before it, all x
           std::fill(prev.begin(), prev.end(), 2);
-          if (cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+          if (ev || cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
         }
       }
     }
