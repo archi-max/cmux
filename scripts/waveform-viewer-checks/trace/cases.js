@@ -354,10 +354,10 @@ const NEXT_CASES = [
 // Statements slang leaves opaque (loops, calls) are listed when their text names the signal
 // (role 'opaque', maybe): Verdi's loads inside for and repeat loops match them.
 const INTERFACE_READS = {
-  'tb_m.bus.data': ['tb_m.u_prod:20', 'tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
-  'tb_m.bus.valid': ['tb_m:10', 'tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
-  'tb_m.bus.clk': ['tb_m.u_prod:15', 'tb_m.u_mid.u_leaf:27'],
-  'tb_m.bus.ready': ['tb_m.u_prod:19'],
+  'tb_n.bus.data': ['tb_n.u_prod:20', 'tb_n.u_mid.u_leaf:28', 'tb_n.u_mon:36'],
+  'tb_n.bus.valid': ['tb_n:10', 'tb_n.u_mid.u_leaf:28', 'tb_n.u_mon:36'],
+  'tb_n.bus.clk': ['tb_n.u_prod:15', 'tb_n.u_mid.u_leaf:27'],
+  'tb_n.bus.ready': ['tb_n.u_prod:19'],
   'tb_f.bus.addr': ['tb_f.u_mem:23'],
   'tb_f.bus.req': ['tb_f.u_mem:23', 'tb_f.u_mem:28'],
   'tb_f.bus.clk': ['tb_f.u_mem:26', 'tb_f.dut:33'],
