@@ -688,21 +688,26 @@ function runTraceChecks() {
         const loc = [0, 3, 3, 3, 60];
         const sig = (w) => ({ width: w, kind: 'var', msb: w - 1, lsb: 0, loc });
         const opaque = (src) => ({ k: 'opaque', why: 'ForLoop', src, loc });
-        const inst = { version: 1, path: 'tb_o', module: 'tb_o', loc, ports: [], params: {}, signals: { pick: sig(2), pop: sig(4), valid: sig(4), q: sig(1), d: sig(1), c: sig(1), sel: sig(2), y: sig(1) },
+        const inst = { version: 1, path: 'tb_o', module: 'tb_o', loc, ports: [], params: {}, signals: { pick: sig(2), pop: sig(4), valid: sig(4), q: sig(1), d: sig(1), c: sig(1), sel: sig(2), y: sig(1), wz: sig(1), wc: sig(1), wb: sig(1) },
           assigns: [], children: [], files: ['o.sv'],
           procs: [
             { id: 0, kind: 'AlwaysComb', events: [], body: opaque("for (int t = 0; t < 4; t++) if (pick <= 2'(t)) pop[t] = valid[t];"), loc },
             { id: 1, kind: 'AlwaysFF', events: [], body: opaque('for (int t = 0; t < 4; t++) begin q <= d; if (c) q <= 1\'b0; end'), loc },
             // (a ternary's `:` starts no statement: sel <= 2'(t) there is a comparison)
             { id: 2, kind: 'AlwaysComb', events: [], body: opaque("for (int t = 0; t < 4; t++) y = valid[t] ? 1'b0 : sel <= 2'(t);"), loc },
+            // (a `?` in a casez wildcard or a parenthesised case expression is no ternary; a named
+            // block's `begin : name` starts a statement: wz, wc and wb are only assigned)
+            { id: 3, kind: 'AlwaysFF', events: [], body: opaque("for (int t = 0; t < 4; t++) casez (t) 2'b1?: wz <= 1'b1; default: wz <= 1'b0; endcase"), loc },
+            { id: 4, kind: 'AlwaysFF', events: [], body: opaque("for (int t = 0; t < 4; t++) case (valid[t] ? t : 0) 0: wc <= 1'b1; endcase"), loc },
+            { id: 5, kind: 'AlwaysFF', events: [], body: opaque("for (int t = 0; t < 4; t++) begin : blk wb <= 1'b1; end"), loc },
           ] };
         const all = { instances: { tb_o: inst } };
         const models = { instance: async (p) => all.instances[p], writers: async () => [], lookup: async (p) => (p.startsWith('tb_o.') ? { instance: 'tb_o', name: p.slice(5) } : null) };
         const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
         const eng = cmuxTrace.createEngine({ models, dump: none });
         const count = async (s) => ((await eng.loads(s)).entries || []).length;
-        const got = { pick: await count('tb_o.pick'), q: await count('tb_o.q'), d: await count('tb_o.d'), c: await count('tb_o.c'), pop: await count('tb_o.pop'), sel: await count('tb_o.sel'), y: await count('tb_o.y') };
-        const want = { pick: 1, q: 0, d: 1, c: 1, pop: 0, sel: 1, y: 0 };
+        const got = { pick: await count('tb_o.pick'), q: await count('tb_o.q'), d: await count('tb_o.d'), c: await count('tb_o.c'), pop: await count('tb_o.pop'), sel: await count('tb_o.sel'), y: await count('tb_o.y'), wz: await count('tb_o.wz'), wc: await count('tb_o.wc'), wb: await count('tb_o.wb') };
+        const want = { pick: 1, q: 0, d: 1, c: 1, pop: 0, sel: 1, y: 0, wz: 0, wc: 0, wb: 0 };
         if (JSON.stringify(got) !== JSON.stringify(want)) { bad.push(`opaque reads ${JSON.stringify(got)} != ${JSON.stringify(want)}`); }
       } catch (error) { bad.push('error ' + String(error && error.message || error)); }
       if (bad.length) { results.failures++; out.push(`FAIL loads in opaque text, <= as a comparison: ${bad.join('; ')}`); } else { out.push('ok   loads in opaque text: <= inside a condition is a read, at a statement start an assignment'); }
