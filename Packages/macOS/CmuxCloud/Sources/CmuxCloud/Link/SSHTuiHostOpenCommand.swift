@@ -83,14 +83,16 @@ public struct SSHTuiHostOpenCommand: Sendable {
         passthrough() {
           if [ -z "${CMUX_SSH_CLI_PASSTHROUGH:-}" ]; then
             self_dir=$(cd -P -- "$(dirname -- "$0")" 2>/dev/null && pwd -P)
-            installs=$(cd -P -- "$HOME/.local/share/cmux/ssh-cli" 2>/dev/null && pwd -P) ||
-              installs=$HOME/.local/share/cmux/ssh-cli
+            installs=$(cd -P -- "$HOME/.cmux-ssh" 2>/dev/null && pwd -P) || installs=$HOME/.cmux-ssh
+            # Where earlier versions installed it.
+            legacy=$(cd -P -- "$HOME/.local/share/cmux/ssh-cli" 2>/dev/null && pwd -P) ||
+              legacy=$HOME/.local/share/cmux/ssh-cli
             old_ifs=$IFS; IFS=:; set -f
             for d in $PATH; do
               [ -n "$d" ] && [ -f "$d/cmux" ] && [ -x "$d/cmux" ] || continue
               real=$(cd -P -- "$d" 2>/dev/null && pwd -P) || continue
               [ "$real" = "$self_dir" ] && continue
-              case $real/ in "$installs"/*) continue ;; esac
+              case $real/ in "$installs"/*|"$legacy"/*) continue ;; esac
               IFS=$old_ifs; set +f
               CMUX_SSH_CLI_PASSTHROUGH=1 exec "$d/cmux" "$@"
             done
@@ -243,8 +245,12 @@ public struct SSHTuiHostOpenCommand: Sendable {
     /// shell word. Tagged by session so a DEV build and the release on one
     /// host never share it, and keyed by content so an update installs beside
     /// the old copy instead of rewriting a file another shell may be running.
+    ///
+    /// It goes first on PATH, so like the sourced files it lives in the private
+    /// chain below HOME (``shellIntegrationDirectory``) and is put on PATH only
+    /// when that chain passes the same check.
     public var installDirectory: String {
-        "$HOME/.local/share/cmux/ssh-cli/\(session)/\(contentDigest)"
+        shellIntegrationDirectory + "/bin"
     }
 
     /// Where the launch command installs the ``SSHTuiShellIntegration`` files the
@@ -253,17 +259,21 @@ public struct SSHTuiHostOpenCommand: Sendable {
     /// parent it did not create is HOME: a `~/.local` that a umask 002 login left
     /// group-writable does not matter, and no group write is ever trusted.
     public var shellIntegrationDirectory: String {
-        "$HOME/.cmux-ssh/\(session)/\(contentDigest)"
+        "\(Self.rootDirectory)/\(session)/\(contentDigest)"
     }
+
+    /// The top of the private chain. The install never writes through it when
+    /// it is a symlink.
+    static let rootDirectory = "$HOME/.cmux-ssh"
 
     private var contentDigest: String {
         let contents = script + "\u{0}" + SSHTuiShellIntegration.bashEnvironmentFile + "\u{0}" + SSHTuiShellIntegration.zshEnvironmentFile
         return SHA256.hash(data: Data(contents.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Shell code run before the login shell: installs ``script`` (prepending its
-    /// directory to PATH) and the ``SSHTuiShellIntegration`` files
-    /// (``shellIntegrationDirectory``) once. Any failure leaves PATH unchanged and the shell still starts.
+    /// Shell code run before the login shell: installs ``script`` and the
+    /// ``SSHTuiShellIntegration`` files (``shellIntegrationDirectory``) once, and
+    /// prepends the script's directory to PATH when its chain is private. Any failure leaves PATH unchanged and the shell still starts.
     public var shellPrelude: String {
         let delimiter = "CMUX_SSH_CLI_EOF"
         return """
@@ -272,6 +282,7 @@ public struct SSHTuiHostOpenCommand: Sendable {
         # Private directories: the shell runs and sources what is installed here.
         (
         umask 077
+        [ ! -h "\(Self.rootDirectory)" ] || exit 0
         if [ ! -x "$cmux_cli_dir/cmux" ]; then
           mkdir -p "$cmux_cli_dir" 2>/dev/null &&
           cat > "$cmux_cli_dir/.cmux.$$" 2>/dev/null <<'\(delimiter)' &&
@@ -280,8 +291,13 @@ public struct SSHTuiHostOpenCommand: Sendable {
           rm -f "$cmux_cli_dir/.cmux.$$" 2>/dev/null
         fi
         \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_ssh_hook_dir")))
-        if [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ]; then PATH="$cmux_cli_dir:$PATH"; export PATH; fi
-        unset cmux_cli_dir cmux_ssh_hook_dir
+        # First on PATH, so only from a chain nobody else can write.
+        \(SSHTuiShellIntegration.privateCheckCode)
+        if [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ] && cmux_ssh_private "$cmux_cli_dir/cmux"; then
+          PATH="$cmux_cli_dir:$PATH"; export PATH
+        fi
+        unset cmux_cli_dir cmux_ssh_hook_dir cmux_ssh_uid cmux_ssh_parent
+        unset -f cmux_ssh_private cmux_ssh_unsafe
 
         """
     }

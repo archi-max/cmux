@@ -85,8 +85,9 @@ struct SSHTuiHostOpenCommandTests {
     func installPathsAreIsolated() {
         let release = connection(bundleIdentifier: "com.cmuxterm.app").hostOpenCommand
         let tagged = connection().hostOpenCommand
-        #expect(release.installDirectory.hasPrefix("$HOME/.local/share/cmux/ssh-cli/cmux/"))
-        #expect(tagged.installDirectory.hasPrefix("$HOME/.local/share/cmux/ssh-cli/cmux-svedit/"))
+        #expect(release.installDirectory.hasPrefix("$HOME/.cmux-ssh/cmux/"))
+        #expect(tagged.installDirectory.hasPrefix("$HOME/.cmux-ssh/cmux-svedit/"))
+        #expect(tagged.installDirectory.hasSuffix("/bin"))
         #expect(!tagged.installDirectory.contains(".cmux/bin"))
         #expect(tagged.script.contains("$HOME/.local/bin/cmux-tui-svedit}\""))
         #expect(release.script.contains("$HOME/.local/bin/cmux-tui}\""))
@@ -305,9 +306,10 @@ struct SSHTuiHostOpenCommandTests {
         #expect(looped.status == 2, "\(looped.stderr)")
         #expect(looped.stderr.contains("only cmux open"), "\(looped.stderr)")
 
-        // Every install directory is skipped, so a real cmux after them still runs.
-        let installs = sandbox.home + "/.local/share/cmux/ssh-cli/cmux-svedit"
-        let first = installs + "/1111", second = installs + "/2222"
+        // Every install directory, and those of earlier versions, is skipped, so a
+        // real cmux after them still runs.
+        let first = sandbox.home + "/.cmux-ssh/cmux-svedit/1111/bin"
+        let second = sandbox.home + "/.local/share/cmux/ssh-cli/cmux-svedit/2222"
         let other = sandbox.root + "/other-bin"
         for dir in [first, second, other] {
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
