@@ -743,6 +743,52 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 40b. ... nor in three more paths (review M3). Each: the visible request alone, then after four
+// prefetch batches; it must wait for at most about one running prefetch task.
+//  A. 1 worker, a visible first window of a row loaded whole (job pieces): pieces ran only when
+//     the worker's queue was empty, so after every queued prefetch task (~2.9 s vs ~0.4 s).
+//  C. 3 workers all busy on solo prefetch tasks: a visible 6-row window went whole onto the least
+//     busy worker (6 x 150 ms after its running task) instead of over the three.
+//  E. a warm reader (rows 1-4, 150 ms a call): its pump took the whole queue and ran it in order,
+//     so a visible window waited for all four prefetch calls.
+{
+  const W = (ids, t0, span, prefetch) => ({ signals: ids.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + span, buckets: 1024, ...(prefetch ? { prefetch: true } : {}) });
+  const timed = async (h, pf, vis) => {
+    const ps = pf.map((q) => h.send('window', q));
+    await wait(30);
+    const r = await h.send('window', vis).reply;
+    const pr = await Promise.all(ps.map((q) => q.reply));
+    return { at: Math.round(r.at), ok: !r.error && r.result.signals.every((x) => !x.error) && pr.every((x) => !x.error) };
+  };
+  // A: rows 1-4 cold (600 ms per prefetch window), row 9 loaded whole (~400 ms)
+  {
+    const h = await start(1, { 1: 15000, 2: 15000, 3: 15000, 4: 15000, 9: 400 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', FSDB_WARM: '0', FSDB_BG_LOAD: '0' });
+    await kindsOf(h);
+    const r = await timed(h, [0, 1, 2, 3].map((k) => W([1, 2, 3, 4], 100000 + k * 10000, 10000, true)), W([9], 0, 1000000, false));
+    h.close(); fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    check(r.ok && r.at < 1300, `A: a visible whole-load window after 4 prefetch batches (600 ms each) waits for about one: ${r.at} ms (behind all: ~2900)`);
+  }
+  // C: 3 workers, 4 prefetch batches of 6 rows (150 ms per row: solo tasks), then a visible 6-row window
+  {
+    const six = [1, 2, 3, 4, 5, 6];
+    const h = await start(3, Object.fromEntries([...six, 7, 8, 9, 10, 11, 12].map((id) => [id, 15000])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', FSDB_WARM: '0', FSDB_BG_LOAD: '0' });
+    await kindsOf(h);
+    const r = await timed(h, [0, 1, 2, 3].map((k) => W(six, 100000 + k * 10000, 10000, true)), W([7, 8, 9, 10, 11, 12], 500000, 10000, false));
+    h.close(); fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    check(r.ok && r.at < 700, `C: a visible 6-row window with every worker on prefetch is spread over them: ${r.at} ms (on one worker: ~1050)`);
+  }
+  // E: a warm reader for rows 1-4 (150 ms a call), 4 prefetch windows of the set, then a visible one
+  {
+    const ids = [1, 2, 3, 4];
+    const h = await start(1, Object.fromEntries(ids.map((id) => [id, 1000])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_WARM_LOAD_MS: '50', STUB_WARM_MS: '150', FSDB_WARM: '1', FSDB_BG_LOAD: '0' });
+    await kindsOf(h);
+    for (let k = 0; k < 60; k++) { await h.send('window', W(ids, 0, 10000, false)).reply; const st = (await h.send('stats').reply).result.warm; if (st && st.ready && st.ready.length === 4 && !st.building) { break; } await wait(100); }
+    const r = await timed(h, [0, 1, 2, 3].map((k) => W(ids, 100000 + k * 10000, 10000, true)), W(ids, 500000, 10000, false));
+    h.close(); fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    check(r.ok && r.at < 450, `E: a visible warm window after 4 prefetch warm windows (150 ms each) waits for about one: ${r.at} ms (behind all: ~750)`);
+  }
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
