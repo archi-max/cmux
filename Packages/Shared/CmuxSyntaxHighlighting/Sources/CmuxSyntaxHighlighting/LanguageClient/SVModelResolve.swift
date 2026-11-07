@@ -51,13 +51,20 @@ public enum SVModelResolve {
         let dump = HierarchyPathMapping.join(dumpPath)
         let mappedPath = mapping.designPath(forDumpPath: dump)
         if let found = await signal(dumpPath, mapping: mapping, lookup: lookup, model: model) { return found }
-        if let rule = await HierarchyPrefixInference.designRule(
-            forDumpPath: dump,
-            designRoots: await within(anchor(dumpPath, mapping: mapping, lookup: lookup, roots: try await designRoots())),
-            dumpChildren: dumpChildren,
-            ties: .ambiguous,
-            signalsListed: false
-        ) {
+        let roots = try await designRoots()
+        let anchored = await anchor(dumpPath, mapping: mapping, lookup: lookup, roots: roots)
+        func infer(_ roots: [String: [HierarchyNode]]) async -> HierarchyPathMapping.Rule? {
+            await HierarchyPrefixInference.designRule(forDumpPath: dump, designRoots: roots, dumpChildren: dumpChildren,
+                                                      ties: .ambiguous, signalsListed: false)
+        }
+        var inferred = await infer(within(anchored))
+        // An anchor that holds nothing named like the dump's scope below it (a top that only shares
+        // the testbench's name) is no anchor: all roots, when it gave no rule.
+        if inferred == nil, let instances, let at = anchored.anchor, let length = anchored.length,
+           await isCoincidental(anchor: at, below: Array(dumpPath.prefix(length + 1)), instances: try await instances(), dumpChildren: dumpChildren) {
+            inferred = await infer(roots)
+        }
+        if let rule = inferred {
             mapping.addInferredRule(designPrefix: rule.designPrefix, dumpPrefix: rule.dumpPrefix)
             if let found = await signal(dumpPath, mapping: mapping, lookup: lookup, model: model) { return found }
         }
@@ -79,18 +86,38 @@ public enum SVModelResolve {
         lookup: Lookup,
         roots: [String: [HierarchyNode]],
         isolation: isolated (any Actor)? = #isolation
-    ) async -> (anchor: String?, roots: [String: [HierarchyNode]]) {
+    ) async -> (anchor: String?, length: Int?, roots: [String: [HierarchyNode]]) {
         for length in stride(from: dumpPath.count - 1, through: 1, by: -1) {
             let path = mapping.designPath(forDumpPath: HierarchyPathMapping.join(Array(dumpPath.prefix(length))))
             guard roots[path]?.contains(where: \.isScope) == true else { continue }
-            if let found = await lookup(path), found.instance == path, found.name.isEmpty { return (path, roots) }
+            if let found = await lookup(path), found.instance == path, found.name.isEmpty { return (path, length, roots) }
         }
-        return (nil, roots)
+        return (nil, nil, roots)
+    }
+
+    /// Whether `anchor` (a design instance the dump has by the same path) shares only its name
+    /// with the dump's: the dump's scope `below` it on the row (`top.dut`) has child scopes, and no
+    /// instance in the design under the anchor is named like any of them. A scope without child
+    /// scopes is no evidence either way: the anchor stays.
+    private static func isCoincidental(
+        anchor: String,
+        below: [String],
+        instances: [String],
+        dumpChildren: HierarchyPrefixInference.Children,
+        isolation: isolated (any Actor)? = #isolation
+    ) async -> Bool {
+        let scopes = Set((await dumpChildren(below) ?? []).filter(\.isScope).map(\.name))
+        guard !scopes.isEmpty else { return false }
+        for path in instances where path.hasPrefix(anchor + ".") {
+            let segments = HierarchyPathMapping.segments(String(path.dropFirst(anchor.count + 1)))
+            if segments.contains(where: scopes.contains) { return false }
+        }
+        return true
     }
 
     /// The roots inside `anchor` (all without one): an extra top (a module nothing instantiates) whose names
     /// happen to match is no answer for a row below a scope the design has.
-    private static func within(_ found: (anchor: String?, roots: [String: [HierarchyNode]])) -> [String: [HierarchyNode]] {
+    private static func within(_ found: (anchor: String?, length: Int?, roots: [String: [HierarchyNode]])) -> [String: [HierarchyNode]] {
         guard let anchor = found.anchor else { return found.roots }
         return found.roots.filter { $0.key == anchor || $0.key.hasPrefix(anchor + ".") }
     }

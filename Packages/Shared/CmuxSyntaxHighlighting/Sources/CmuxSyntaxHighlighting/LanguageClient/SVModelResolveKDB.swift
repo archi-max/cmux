@@ -24,13 +24,13 @@ extension SVModelResolve {
         designRoots: () async throws -> [String: [HierarchyNode]],
         dumpChildren: HierarchyPrefixInference.Children,
         kdb: KDBDesignModel?,
-        instances: () async throws -> [String],
+        instances: @escaping () async throws -> [String],
         log: (String) -> Void = { _ in },
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Outcome {
         func today() async throws -> Outcome {
             try await resolve(dumpPath: dumpPath, mapping: mapping, loadMessages: loadMessages, lookup: lookup, model: model,
-                              designRoots: designRoots, dumpChildren: dumpChildren)
+                              designRoots: designRoots, dumpChildren: dumpChildren, instances: instances)
         }
         guard let kdb, let (rowSegments, row) = kdbRow(dumpPath, in: kdb), let (instance, name) = kdb.lookup(row), !name.isEmpty else {
             return try await today()
