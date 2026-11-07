@@ -39,8 +39,10 @@
 //     floor((t - t0) * buckets / (t1 - t0)); changes exactly at t0 are counted (in
 //     count and bucket 0) but folded into the t0 record, not sent. exact when
 //     count <= 2 * buckets; otherwise per bucket its first and last sent change.
-//   aliasHints {pairs: [[rebuiltId, storedId], ...]} -> {accepted, refused: [{pair, why}]}: candidate
-//     aliases from the app's design model (single-net port bindings). A pair is used once the
+//   aliasHints {pairs: [[rebuilt, stored], ...]} -> {accepted, refused: [{pair, why}], pending}: candidate
+//     aliases from the app's design model (single-net port bindings), as signal ids or full
+//     paths. Pairs sent while the stored signals are still being listed wait (pending; refusals
+//     then go to stats.aliases.log). free of the rebuilt signal drops its alias. A pair is used once the
 //     stored signal is loaded and 16 short windows of both match: window, valueAt, count, edge
 //     and search of the rebuilt id are then answered from the stored one (window and count
 //     entries say alias: storedId). The whole streams are compared in the background; a pair
@@ -607,11 +609,14 @@ function startKinds(file) {
     if (epoch !== ep) { return; }
     Object.assign(kinds, { state: 'ready', source, primaries: map, ms: Math.round(performance.now() - t0), proc: null });
     if (kinds.timer) { clearInterval(kinds.timer); kinds.timer = null; }
+    const held = aliasPending.splice(0);
+    for (const [, s, p] of held) { const why = addAlias(s, p); if (why) { aliasNote(s, p, `refused: ${why}`); } }
   };
   const fail = (error) => {
     if (epoch !== ep) { return; }
     if (kinds.timer) { clearInterval(kinds.timer); kinds.timer = null; }
     Object.assign(kinds, { state: 'none', error, proc: null });
+    for (const [, s, p] of aliasPending.splice(0)) { aliasNote(s, p, 'refused: stored signals not known'); }
   };
   const dir = warm.dir;
   if (dir) {
@@ -694,13 +699,26 @@ const aliases = new Map();  // rebuilt id -> {p, state: 'checking' | 'on' | 'ver
 const aliasLog = [];        // the last few drops and refusals, for stats
 let aliasDropped = [];      // ids to report on the next replies
 let aliasKnown = new Map(); // verified pairs from the index dir: rebuilt id -> stored id
+let aliasPending = [];      // [pair, s, p] sent while the stored signals were being listed
+// A pair (ids) is taken: checked, or used at once if verified before. -> null, or why not.
+function addAlias(s, p) {
+  const width = (id) => widthOf.get(id) ?? (getIndex().byId.get(id) || {}).width;
+  if (aliases.has(s)) { return aliases.get(s).p !== p ? 'has another candidate' : null; }
+  if (!width(s) || width(s) !== width(p)) { return 'widths differ'; }
+  if (derived.has(s) || derived.has(p)) { return 'derived'; }
+  if (kindOf(p) !== 'p' || kindOf(s) !== 's') { return 'not a rebuilt and a stored signal'; }
+  if (aliasKnown.get(s) === p) { aliases.set(s, { p, state: 'verified' }); return null; }
+  aliases.set(s, { p, state: 'checking' });
+  checkAlias(s, p);
+  return null;
+}
 const aliasFor = (id) => { const a = aliases.get(id); return a && (a.state === 'on' || a.state === 'verified') ? a.p : null; };
 function aliasNote(s, p, why) {
   aliasLog.push({ s, p, why }); if (aliasLog.length > 16) { aliasLog.shift(); }
   if (DEBUG) { process.stderr.write(`[helper] alias ${s} -> ${p}: ${why}\n`); }
 }
 function loadAliases() {
-  aliases.clear(); aliasDropped = []; aliasKnown = new Map();
+  aliases.clear(); aliasDropped = []; aliasKnown = new Map(); aliasPending = [];
   if (!warm.dir) { return; }
   try {
     const j = JSON.parse(fs.readFileSync(path.join(warm.dir, ALIASES_FILE), 'utf8'));
@@ -2303,26 +2321,23 @@ const handlers = {
   // aliases from the app's design model (port bindings); see "aliases" above.
   async aliasHints(req) {
     if (!Array.isArray(req.pairs)) { throw new Error('aliasHints needs pairs'); }
-    const width = (id) => widthOf.get(id) ?? (getIndex().byId.get(id) || {}).width;
-    let accepted = 0;
+    const idOf = (x) => (Number.isInteger(x) ? x : typeof x === 'string' ? ((getIndex().byPath.get(x) || {}).signalId ?? null) : null);
+    let accepted = 0, pending = 0;
     const refused = [];
     for (const pr of req.pairs) {
-      const [s, p] = Array.isArray(pr) ? pr : [];
-      const no = (why) => { refused.push({ pair: pr, why }); };
-      if (!Number.isInteger(s) || !Number.isInteger(p) || s === p) { no('not a pair of signal ids'); continue; }
-      if (aliases.has(s)) { if (aliases.get(s).p !== p) { no('has another candidate'); } continue; }
-      if (!width(s) || width(s) !== width(p)) { no('widths differ'); continue; }
-      if (derived.has(s) || derived.has(p)) { no('derived'); continue; }
-      if (kindOf(p) !== 'p' || kindOf(s) !== 's') { no(kinds.state === 'ready' ? 'not a rebuilt and a stored signal' : 'stored signals not known yet'); continue; }
-      accepted++;
-      if (aliasKnown.get(s) === p) { aliases.set(s, { p, state: 'verified' }); continue; }
-      aliases.set(s, { p, state: 'checking' });
-      checkAlias(s, p);
+      const [s, p] = Array.isArray(pr) && pr.length === 2 ? pr.map(idOf) : [null, null];
+      if (s === null || p === null || s === p) { refused.push({ pair: pr, why: 'not a pair of signals' }); continue; }
+      if (kinds.state === 'pending') { aliasPending.push([pr, s, p]); pending++; continue; }
+      if (kinds.state !== 'ready') { refused.push({ pair: pr, why: 'stored signals not known' }); continue; }
+      const why = addAlias(s, p);
+      if (why) { refused.push({ pair: pr, why }); } else { accepted++; }
     }
-    return { accepted, refused };
+    return { accepted, refused, pending };
   },
 
   async free(req) {
+    // (a freed rebuilt signal's alias goes too: a later hint checks it again)
+    if (!req.signalIds) { aliases.clear(); aliasPending = []; } else { for (const id of req.signalIds) { aliases.delete(id); } }
     // (a load of a freed signal that nobody waits for is dropped, not stored again later)
     for (const j of [...jobs.values()]) { if (!req.signalIds || req.signalIds.includes(j.id)) { dropJob(j); } }
     if (!req.signalIds) { await broadcast('free', {}); return {}; }
