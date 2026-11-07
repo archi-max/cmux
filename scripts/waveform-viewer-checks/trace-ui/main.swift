@@ -101,7 +101,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     let api = await call("return Object.keys(cmuxWaveform.trace).sort()") as? [String]
-    expect(api == ["aliasHints", "back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "progress", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
+    expect(api == ["aliasHints", "back", "backendChanged", "close", "driver", "driverOfDesign", "followLoad", "forward", "loads", "loadsOfDesign", "progress", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
 
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
@@ -162,9 +162,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
       const none = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'scope' });
       return { label: items[0] && items[0].label, key: items[0] && items[0].keybinding, count: items.length, none: none.length,
-        xLabel: items[1] && items[1].label, xKey: items[1] && items[1].keybinding };
+        xLabel: items[1] && items[1].label, xKey: items[1] && items[1].keybinding, loadsLabel: items[2] && items[2].label };
     """) as? [String: Any]
-    expect(item?["count"] as? Int == 2 && item?["label"] as? String == "Trace Driver at Marker" && item?["key"] as? String == "⌃T" && item?["none"] as? Int == 0,
+    expect(item?["loadsLabel"] as? String == "Trace Loads at Marker", "the row menu has Trace Loads: \(String(describing: item?["loadsLabel"]))")
+    expect(item?["count"] as? Int == 3 && item?["label"] as? String == "Trace Driver at Marker" && item?["key"] as? String == "⌃T" && item?["none"] as? Int == 0,
            "row menu items on signal rows only: \(String(describing: item))")
     expect(item?["xLabel"] as? String == "Trace X to Root" && item?["xKey"] as? String == "⌃⇧T", "the row menu has Trace X to Root, with its shortcut")
     // The selected row at the marker: what Ctrl+T in the viewer does.
@@ -1453,6 +1454,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await kdbDiffersChecks()
     await kdbPendingChecks()
     await kdbCheckedChecks()
+    await loadChecks()
     await xRootChecks()
     await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
@@ -1875,6 +1877,86 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
   /// where it was made (designs J and K, the engine's own fixtures).
+  /// Load trace (who reads a signal): the panel lists each reader with its source, file:line and what
+  /// it did at the time; follow goes to the change a read caused, selecting that row without moving the
+  /// marker (an agent's jump: true moves it); Back returns. Past the summary threshold the panel first
+  /// shows a count; pages; Add to Waveform; a reader in an instance the KDB did not check is approximate.
+  func loadChecks() async {
+    _ = await trace("close()")
+    let data = try! Data(contentsOf: traceDir.appendingPathComponent("models/c.json"))
+    models = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let before = opened
+    openDump("c.plain.vcd")
+    await waitFor("c reopened", 10000) { self.opened > before }
+    await sleep(500)
+    func entries(_ v: [String: Any]?) -> [[String: Any]] { v?["entries"] as? [[String: Any]] ?? [] }
+    func status(_ e: [String: Any]) -> String { (e["active"] as? [String: Any])?["status"] as? String ?? "-" }
+    let sink = "tb_c.dut.u_mid.u_sink"
+    resolveAnswer = ["designPath": sink + ".in", "designPrefix": "", "dumpPrefix": "", "designId": "c#loads"]
+    let loadEvents = events.filter { $0["event"] as? String == "loads" }.count
+    let stepEvents = steps().count
+    let view = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 60 })")
+    let es = entries(view)
+    expect(view?["signal"] as? String == sink + ".in" && view?["total"] as? Int == 3 && es.count == 3,
+           "loads of u_sink.in at 60: three readers: \(String(describing: view?["total"])) \(es.count)")
+    expect(es.map(status) == ["noChange", "taken", "propagated"], "each reader's status at 60: \(es.map(status))")
+    let follow = (es.last?["active"] as? [String: Any])?["follow"] as? [String: Any]
+    expect(follow?["path"] as? String == sink + ".qd" && follow?["time"] as? Int == 55, "the third reader made qd's change at 55: \(String(describing: follow))")
+    let text = await panelText()
+    expect(text.contains("Loads of " + sink + ".in") && text.contains("c_struct.sv:55") && text.contains("taken"),
+           "the panel lists the readers with file:line and status: \(text.prefix(400))")
+    expect(events.filter { $0["event"] as? String == "loads" }.count == loadEvents + 1 && steps().count == stepEvents,
+           "cmux hears a loads event, not a driver step")
+    let hasAdd = await call("return document.querySelectorAll('#cmux-trace tr.load button[title=\"Add to Waveform\"]').length") as? Int
+    expect(hasAdd == 3, "each reader has Add to Waveform: \(String(describing: hasAdd))")
+    // Follow: the change the read caused, its row selected, the marker where it was.
+    _ = await call("cmuxWaveform.link.setMarker(60); return null")
+    await sleep(200)
+    let next = await trace("followLoad({ index: 2 })")
+    expect(next?["signal"] as? String == sink + ".qd" && next?["time"] as? Int == 55, "follow went to qd at 55: \(String(describing: next?["signal"])) @\(String(describing: next?["time"]))")
+    let sel = await call("return (cmuxWaveform.link.selectedSignal() || []).join('.')") as? String
+    let marker = await call("return cmuxWaveform.host.viewerContext.webview.markerTime") as? Int
+    expect(sel == sink + ".qd" && marker == 60, "follow selects qd and leaves the marker: \(String(describing: sel)) \(String(describing: marker))")
+    expect(await panelText().contains("Move Marker to 55"), "the panel offers to move the marker to the change")
+    let st = await trace("state()")
+    expect(st?["steps"] as? Int == 2 && st?["at"] as? Int == 1, "follow is a step in the history: \(String(describing: st?["steps"]))")
+    let back = await trace("back()")
+    expect((back?["step"] as? [String: Any])?["signal"] as? String == sink + ".in", "Back returns to the loads of in")
+    _ = await trace("followLoad({ index: 2, jump: true })")
+    let jumped = await call("return cmuxWaveform.host.viewerContext.webview.markerTime") as? Int
+    expect(jumped == 55, "jump: true moves the marker to the change: \(String(describing: jumped))")
+    // Pages, and a count first past the summary threshold (the checks lower both).
+    _ = await call("cmuxWaveform.traceLoadsPage = 2; cmuxWaveform.traceLoadsSummaryOver = 2; return null")
+    let first = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 60 })")
+    expect(entries(first).count == 2 && first?["next"] as? Int == 2, "a page of two: \(entries(first).count) next \(String(describing: first?["next"]))")
+    let summary = await panelText()
+    expect(summary.contains("3 readers in 1 instance") && !summary.contains("c_struct.sv:55"), "past the threshold the panel shows the count first: \(summary.prefix(300))")
+    let listed = await call("const b = [...document.querySelectorAll('#cmux-trace button')].find((x) => x.textContent === 'List'); if (!b) return false; b.click(); return true") as? Bool
+    await sleep(200)
+    let listedText = await panelText()
+    expect(listed == true && listedText.contains("1–2 of 3"), "List shows the first page: \(listedText.prefix(300))")
+    let second = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 60, offset: 2 })")
+    expect(entries(second).count == 1 && second?["next"] is NSNull, "the last page: \(entries(second).count)")
+    _ = await call("delete cmuxWaveform.traceLoadsPage; delete cmuxWaveform.traceLoadsSummaryOver; return null")
+    // With a KDB model that did not check u_sink, its readers are approximate.
+    resolveAnswer = ["designPath": sink + ".in", "designPrefix": "", "dumpPrefix": "", "designId": "c#loads2", "kdbChecked": ["tb_c", "tb_c.dut"]]
+    let kdb = await trace("loads({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 60 })")
+    let trusts = entries(kdb).map { ($0["active"] as? [String: Any])?["trust"] as? String ?? "-" }
+    let codes = entries(kdb).map { (($0["active"] as? [String: Any])?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String } }
+    expect(trusts == ["approximate", "approximate", "approximate"] && codes.allSatisfy { $0.contains("kdbNotChecked") }, "readers outside kdbChecked: approximate \(trusts) \(codes)")
+    resolveAnswer = nil
+    // The page strings, from WaveformTrace.swift, in 9 locales.
+    let resources = assetRoot.deletingLastPathComponent()
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    let strings = catalog?["strings"] as? [String: Any] ?? [:]
+    let loadKeys = strings.keys.filter { $0.hasPrefix("waveformTrace.loads.") }
+    let swift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    expect(loadKeys.count >= 20 && loadKeys.allSatisfy { k in ((strings[k] as? [String: Any])?["localizations"] as? [String: Any])?.count == 9 && swift.contains("\"\(k)\"") },
+           "the load trace strings: in WaveformTrace.swift and 9 locales: \(loadKeys.count)")
+    _ = await trace("close()")
+  }
+
   func xRootChecks() async {
     _ = await trace("close()")
     await reopen("j")
@@ -2098,6 +2180,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   static let pageStrings: [String: String] = [
     "netlist": "Netlist", "loading": "Loading…", "openFailed": "Could not open", "addSignal": "Add",
     "traceTitle": "Trace Driver", "traceDriverMenu": "Trace Driver at Marker", "traceDriverKey": "⌃T",
+    "traceLoadsMenu": "Trace Loads at Marker", "traceLoadsTitle": "Loads of %1$@ = %2$@ at %3$@", "traceLoadsSummary": "%1$@ readers in %2$@ instance(s)",
+    "traceLoadsSummaryOne": "%1$@ readers in 1 instance", "traceLoadsList": "List", "traceLoadsPage": "%1$@–%2$@ of %3$@",
+    "traceLoadsNext": "Next", "traceLoadsPrev": "Previous", "traceLoadsAdd": "Add to Waveform", "traceLoadsFollow": "Follow",
+    "traceLoadsGoto": "Move Marker to %@", "traceLoadsNone": "Nothing in the design model reads this signal.",
+    "traceLoadsStatus_taken": "taken", "traceLoadsStatus_untaken": "not taken", "traceLoadsStatus_propagated": "propagated",
+    "traceLoadsStatus_noChange": "no change", "traceLoadsStatus_notRun": "not run",
     "traceNoSignal": "Select a signal in the waveform first.", "traceNoMarker": "Place the marker at the time to trace first.",
     "traceFailed": "Driver tracing failed.", "traceResolving": "Finding %@ in the design…", "traceRunning": "Tracing %1$@ at %2$@…",
     "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
