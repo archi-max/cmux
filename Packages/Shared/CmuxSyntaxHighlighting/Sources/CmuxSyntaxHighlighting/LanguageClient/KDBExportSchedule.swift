@@ -9,7 +9,9 @@ import Foundation
 /// - An export that fails says so in one log line per KDB (until one gives a model), and its
 ///   KDB keeps slang's design; the host does not try that KDB again until it changes (npi-model.sh
 ///   answers `tried`), so a viewer opening it later costs no seat.
-/// - The newest `maxModels` KDBs' models are kept.
+/// - The newest `maxModels` KDBs' models are kept. A viewer (re)opening a dump drops its KDB's
+///   model until the export answers: a reload after another simulation may come with another KDB,
+///   and a trace in between uses slang's design, not the old compile's.
 public struct KDBExportSchedule: Sendable {
     public enum Opened: Equatable, Sendable {
         /// The setting is off: no export.
@@ -42,7 +44,9 @@ public struct KDBExportSchedule: Sendable {
     public mutating func opened(_ key: String, enabled: Bool) -> Opened {
         guard enabled else { return .off }
         use(key)
-        return running.insert(key).inserted ? .start : .join
+        guard running.insert(key).inserted else { return .join }
+        models[key] = nil
+        return .start
     }
 
     /// The export ended: its model is kept, or the log line for its failure (nil: none to say again).
@@ -60,8 +64,7 @@ public struct KDBExportSchedule: Sendable {
             order.removeAll { models[$0] == nil && !running.contains($0) && !said.contains($0) }
             return nil
         case .unavailable(let code, let message):
-            // (`tried`: the host kept the failure; a model in hand stays, it is the same KDB's)
-            if code != "tried" { models[key] = nil }
+            models[key] = nil
             guard said.insert(key).inserted else { return nil }
             return "KDB model unavailable (\(code)\(message.isEmpty ? "" : ": " + message)); tracing uses slang's design"
         }
