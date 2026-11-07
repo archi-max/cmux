@@ -341,7 +341,8 @@ const NEXT_CASES = [
 // An interface's signal: Verdi lists each modport that takes it as an input (keyed by the
 // modport port, iface.modport.name); ours list those too, plus the reads through the interface
 // port in each instance it reaches (INTERFACE_READS), which Verdi does not list: counted, not listed.
-// verdiOnly (and upper: an upper statement with no condition or event of ours reading the signal)
+// verdiOnly (and upper: an upper statement with no condition or event of ours reading the signal
+//   whose procedure encloses it)
 //   dumpTask: $dumpvars naming the signal (a dump directive, not a design read);
 //   sysFunctionOutput: $value$plusargs's output argument (it writes the signal), and the statement
 //     under that condition (upper);
@@ -603,9 +604,15 @@ function runTraceChecks() {
           if (!want && via.length) { seen.push(`interfaceReads ${d} ${sig} unexpected ${JSON.stringify(got)}`); }
           counts.interfaceRead = (counts.interfaceRead || 0) + via.length;
           for (const y of ours) { if (y.via !== 'interface' && !vk.has(keyOurs(y))) { seen.push(`oursOnly ${d} ${sig} ${keyOurs(y)}`); } }
-          // An upper statement's signal read in a condition or event of ours.
-          const ctl = ours.some((y) => y.role === 'condition' || y.role === 'sensitivity' || y.role === 'opaque');
-          for (const x of o.stop.filter((z) => z.upper)) { counts.upper++; if (!ctl) { seen.push(`upper ${d} ${sig} ${keyVerdi(x)}`); } }
+          // An upper statement (one whose enclosing control reads the signal): a condition, event or
+          // opaque statement of ours reading it, in the same file, whose procedure (or own range, outside
+          // one) encloses the statement's line.
+          const encloses = (y, x) => {
+            const r = y.procLoc || y.loc;
+            return !!r && base(r.file) === x.file && r.line <= x.line && x.line <= (r.endLine || r.line);
+          };
+          const ctl = ours.filter((y) => y.role === 'condition' || y.role === 'sensitivity' || y.role === 'opaque');
+          for (const x of o.stop.filter((z) => z.upper)) { counts.upper++; if (!ctl.some((y) => encloses(y, x))) { seen.push(`upper ${d} ${sig} ${keyVerdi(x)}`); } }
           // Through ports: ours followed through each port connection, transitively.
           const closure = new Set();
           const todo = [sig];
