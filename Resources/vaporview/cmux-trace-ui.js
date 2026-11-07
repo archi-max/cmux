@@ -445,10 +445,14 @@
     return q ? driverOfDesign(q) : null;
   }
   // From the editor (cmux mapped the path); a click while the design model builds points at it.
-  // cmux traces from the editor only once the design is built: a build still shown is over (its
-  // done is queued behind the design's progress calls), and a failed one is gone.
+  // cmux traces from the editor only once the design is built: a build of it still shown is over
+  // (its done is queued behind the design's progress calls), and a failed one is gone. Another
+  // design's build (`design`: cmux's key for it) holds the trace as a page trace is held.
   function fromEditor(query) {
-    if (build && build.failed) { build = null; } else if (building()) { endBuild(); }
+    if (build && build.failed) { build = null; }
+    const design = query && query.design !== undefined && query.design !== null ? String(query.design) : null;
+    if (building() && (build.design === null || design === null || build.design === design)) { endBuild(); }
+    if (heldByBuild()) { return null; }
     lastEntry = () => fromEditor(query);
     return driverOfDesign(query);
   }
@@ -1157,6 +1161,8 @@
       build = { startedAt: startedAt !== null ? startedAt : Date.now(), stage: 'upload', percent: null, sourceBytes: null };
     }
     build.host = q.host === undefined ? build.host : q.host;
+    if (q.design !== undefined) { build.design = q.design === null ? null : String(q.design); }
+    if (build.design === undefined) { build.design = null; }
     // A trace from the editor that waits for this build: Retry traces its signal.
     if (q.entry && Array.isArray(q.entry.dumpPath) && q.entry.dumpPath.length) {
       const entry = { path: q.entry.dumpPath.map(String), time: Number.isFinite(Number(q.entry.time)) && q.entry.time !== null ? Number(q.entry.time) : null };

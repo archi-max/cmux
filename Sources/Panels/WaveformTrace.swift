@@ -251,6 +251,7 @@ enum WaveformTrace {
             var argument = state
             argument["startedAt"] = startedAt
             argument["host"] = host ?? NSNull()
+            argument["design"] = key
             if focus { argument["focus"] = true }
             if let entry = buildEntries.object(forKey: waveform) { argument["entry"] = ["dumpPath": entry, "time": NSNull()] }
             return (waveform, argument)
@@ -462,6 +463,7 @@ enum WaveformTrace {
         }
         var argument = result(designPath: designPath, dumpPath: dumpPath)
         argument["time"] = NSNull()
+        argument["design"] = built.key
         editor.closeLinkProgress()
         // The build's done (queued behind its progress calls) before the trace, as the page expects.
         await buildSends[built.key]?.value
