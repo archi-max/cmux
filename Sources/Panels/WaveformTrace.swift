@@ -452,8 +452,9 @@ enum WaveformTrace {
                 designPath
             )
         }
+        let built: Design
         do {
-            _ = try await design(for: editor, waveform: waveform, entry: dumpPath)
+            built = try await design(for: editor, waveform: waveform, entry: dumpPath)
         } catch let error as Failure {
             return error.message
         } catch {
@@ -462,6 +463,8 @@ enum WaveformTrace {
         var argument = result(designPath: designPath, dumpPath: dumpPath)
         argument["time"] = NSNull()
         editor.closeLinkProgress()
+        // The build's done (queued behind its progress calls) before the trace, as the page expects.
+        await buildSends[built.key]?.value
         _ = await waveform.nativeViewSessions.waveform.callTrace("driverOfDesign", argument: argument)
         return nil
     }
