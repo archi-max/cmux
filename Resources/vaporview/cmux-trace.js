@@ -1237,7 +1237,10 @@
       const sel = '((\\s*\\[[^\\]]*\\])*)';
       const target = new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + sel + '\\s*=(?!=)', 'g');
       const nonblocking = new RegExp('(^|[;):]|\\bbegin|\\belse|#\\s*[0-9][A-Za-z0-9_.\']*)(\\s*)' + id + sel + '\\s*<=(?!=)', 'g');
-      const reads = code.replace(nonblocking, (all, pre, space, sel) => pre + space + ' ' + (sel || '')).replace(target, (all, pre, sel) => pre + ' ' + (sel || ''));
+      // (a `:` starts a statement after a case label, not in a ternary: a `?` since the statement began)
+      const ternary = (at) => /\?/.test(code.slice(0, at).split(/;|\bbegin\b|\bend\b/).pop());
+      const reads = code.replace(nonblocking, (all, pre, space, sel, inner, at) => (pre === ':' && ternary(at) ? all : pre + space + ' ' + (sel || '')))
+        .replace(target, (all, pre, sel) => pre + ' ' + (sel || ''));
       return new RegExp('(^|[^A-Za-z0-9_$.\'])' + id + '(?![A-Za-z0-9_$])').test(reads);
     }
     const EDGE_WORD = { PosEdge: 'posedge ', NegEdge: 'negedge ', BothEdges: 'edge ' };
