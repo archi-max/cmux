@@ -41,6 +41,7 @@ function helper(workers, env = {}) {
     pend.delete(m.id); h({ ...m, at: performance.now() - h.t0 });
   }
   return {
+    pid: p.pid,
     ready: readyP,
     send(cmd, a = {}) { const id = nid++; const t0 = performance.now(); return { id, reply: new Promise((res) => { res.t0 = t0; pend.set(id, Object.assign(res, { t0 })); p.stdin.write(JSON.stringify({ id, cmd, ...a }) + '\n'); }) }; },
     close() { p.stdin.end(); p.kill(); },
@@ -273,6 +274,35 @@ async function start(workers, costs, env = {}) {
   for (let t = 0; t < 60; t++) { const st = (await h.send('stats').reply).result; if (!st.loads.length && st.workers.every((w) => !w.busy)) { break; } await wait(100); }
   const n = await loaded(h);
   check(n <= 8, `14 cancelled loads: at most 8 go on in the background: ${n} stored`);
+  h.close();
+}
+
+// 18. Piece files live in RAM (/dev/shm) where no worker's RSS guard sees them: their total is
+// capped (FSDB_SHM_CAP), above it only the started load with the least work left gets more
+// pieces until its join deletes them. With a 1-byte cap (every load after another) all 12
+// loads still answer, and the files never hold more than about two loads (one joining, the
+// next one filling) plus a piece per worker. (A guard: the stub's own ordering already keeps
+// the uncapped peak near that, 280-370 KB; the cap matters on a real dump, see status.)
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 400])),
+    { STUB_COUNTS: JSON.stringify(Object.fromEntries(ids.map((id) => [id, 20000]))), FSDB_SHM_CAP: '1' });
+  const root = fs.existsSync('/dev/shm') ? '/dev/shm' : '/tmp';
+  const mine = fs.readdirSync(root).filter((n) => n.startsWith('fsdb-helper-v2-')).map((n) => path.join(root, n))
+    .find((d) => { try { return fs.readFileSync(path.join(d, 'pid'), 'utf8').trim() === String(h.pid); } catch (e) { return false; } });
+  let peak = 0, polling = true;
+  (async () => {
+    while (polling) {
+      let sum = 0;
+      try { for (const f of fs.readdirSync(mine)) { if (f !== 'pid') { try { sum += fs.statSync(path.join(mine, f)).size; } catch (e) { /* joined */ } } } } catch (e) { /* gone */ }
+      peak = Math.max(peak, sum);
+      await wait(2);
+    }
+  })();
+  const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  polling = false;
+  check(!!mine && rs.every((r) => !r.error), `12 loads of 200 KB of pieces each answer: ${rs.map((r) => r.error || 'ok')}`);
+  check(peak > 0 && peak < 450000, `... piece files peak at ${Math.round(peak / 1000)} KB under a 1-byte cap (two loads + a piece per worker: < 450)`);
   h.close();
 }
 
