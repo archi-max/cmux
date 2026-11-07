@@ -620,6 +620,29 @@
       || (p.kind === 'Always' && p.events.some((e) => e.edge === 'Other' && e.kind !== 'ImplicitEvent'));
     const isEdgeProc = (p) => p.events.some((e) => e.edge === 'PosEdge' || e.edge === 'NegEdge' || e.edge === 'BothEdges');
 
+    // The first statement slang could not elaborate (its writes unknown), or null.
+    function unknownWrites(s) {
+      if (!s || typeof s !== 'object') { return null; }
+      if (s.k === 'opaque' && s.why === 'Invalid') { return s; }
+      for (const k of ['s', 'stmt', 't', 'f', 'dflt']) {
+        const v = s[k];
+        const hit = Array.isArray(v) ? v.map(unknownWrites).find(Boolean) : unknownWrites(v);
+        if (hit) { return hit; }
+      }
+      return Array.isArray(s.items) ? s.items.map((it) => unknownWrites(it.s)).find(Boolean) || null : null;
+    }
+    // Whether `now`, unchanged since `since`, is what the signal started with: its declaration's
+    // initializer, else x (or 0, for a 2-state type). False when it changed after the start.
+    async function startValue(m, sig, now, since) {
+      if (Number(since) !== 0) { return false; }
+      if (!sig.init) { return /^x+$/.test(shown(now)) || /^0+$/.test(shown(now)); }
+      const vals = await fetch(leafPaths(m, sig.init, new Set()), 0);
+      const ctx = newCtx(m, vals);
+      await fillElements(ctx, m, sig.init, 0);
+      const ev = evalExpr(sig.init, ctx, sig.width);
+      return !ctx.reasons.length && same(fit(ev.value, now.w), now);
+    }
+
     // ---- the step ----
     async function active(path, time, opts) {
       const o = opts || {};
@@ -648,10 +671,34 @@
       step.drivers = cands.map((c) => Object.assign(driverSummary(c.m, c.d), c.m === m ? {} : { writer: c.m.path }));
       const live = cands.filter((c) => c.d.type !== 'proc' || !isStimulus(c.d.p));
       if (!all.length) {
+        // A statement slang could not elaborate may write anything in its instance: its block is
+        // the candidate, approximate.
+        const unknown = m.procs.filter((p) => unknownWrites(p.body));
+        if (unknown.length) {
+          const uc = unknown.map((p) => ({ m, d: { type: 'proc', p }, name }));
+          step.drivers = uc.map((c) => driverSummary(m, c.d));
+          const op = unknownWrites(unknown[0].body);
+          const opaque = { code: 'opaque', src: op.src, why: op.why };
+          if (unknown.every(isStimulus)) { const r = stimulusStep(step, uc, m, name, sig, t); r.reasons.push(opaque); r.trust = trustOf(r); return r; }
+          const p = unknown.find((x) => !isStimulus(x));
+          step.driver = driverSummary(m, { type: 'proc', p });
+          step.procKind = p.kind;
+          step.stmt = { src: op.src, loc: locOf(m, op.loc || p.loc) };
+          step.reasons.push(opaque);
+          step.trust = trustOf(step);
+          return step;
+        }
         step.driver = { kind: sig.kind === 'net' ? 'undriven' : 'none' };
-        if (!m.parent && m.ports.some((p) => p.internal === name && p.dir === 'In')) { step.driver.kind = 'topInput'; }
+        const topInput = !m.parent && m.ports.some((p) => p.internal === name && p.dir === 'In');
+        if (topInput) { step.driver.kind = 'topInput'; }
         if (sig.init) { step.driver.kind = 'initializer'; step.stmt = { src: sig.init.src, loc: locOf(m, sig.init.loc) }; }
-        step.trust = 'exact';
+        // Nothing found writes it, so its value is the one it started with: unless it changed after
+        // the start or isn't that value, a write the model doesn't show made it (never exact).
+        if (!topInput && now !== undefined && step.since !== null && !(await startValue(m, sig, now, step.since))) {
+          if (step.driver.kind === 'initializer') { step.candidates = [step.stmt]; delete step.stmt; step.driver.kind = 'none'; }
+          step.reasons.push({ code: 'writeNotFound' });
+        }
+        step.trust = trustOf(step);
         return step;
       }
       // Only stimulus: the testbench (tracing stops here by default).
@@ -727,7 +774,7 @@
 
     function trustOf(step) {
       if (step.consistent === false) { return 'inconsistent'; }
-      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown', 'force'].includes(r.code));
+      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown', 'force', 'writeNotFound'].includes(r.code));
       if (approximate) { return 'approximate'; }
       return step.computed ? 'computed' : 'exact';
     }
@@ -974,9 +1021,19 @@
         if (trigger) { const tv = await fetch([trigger.path], te); extra.set(trigger.path, tv.get(trigger.path)); }
       }
       r.sample = sample;
-      let ctx = await runProc(m, p, sample, extra, options.xprop === 'on' ? 'xprop' : 'optimistic');
+      const mode = options.xprop === 'on' ? 'xprop' : 'optimistic';
+      let ctx = await runProc(m, p, sample, extra, mode);
       let pick = pickWrite(ctx, targetPath, s, now);
       let consistent = pick ? consistentWith(pick, now, sig) : undefined;
+      // A comb procedure's value in effect was made by its run when the value last changed; a later
+      // run that took other branches can give the same value by another statement (the default,
+      // once an override's condition fell). The statement that made it, when that run explains the
+      // value. (An x value is left to the run at t: x again is no change, and its cause is now's.)
+      if (!edge && pick && consistent === true && ctx.decisions.length && !hasX(now) && since !== null && since !== undefined && since < t) {
+        const at = await runProc(m, p, since, extra, mode);
+        const ap = pickWrite(at, targetPath, s, now);
+        if (ap && ap.stmt !== pick.stmt && consistentWith(ap, now, sig) === true) { ctx = at; pick = ap; sample = since; r.sample = since; }
+      }
       // X-propagation: an x condition on the path and a dump that disagrees: try merged branches.
       if (options.xprop === 'auto' && consistent === false && (ctx.decisions.some((d) => d.xCond) || ctx.sawXIndex)) {
         const merged = await runProc(m, p, sample, extra, 'xprop');

@@ -961,6 +961,7 @@ enum WaveformTrace {
             "traceReason_sinceUnknown": String(localized: "waveformTrace.reason.sinceUnknown", defaultValue: "When the value last changed is unknown (the signal is too large for the waveform reader): a clocked step uses the last clock edge, a combinational or latch step the values at the time asked."),
             "traceReason_initialValue": String(localized: "waveformTrace.reason.initialValue", defaultValue: "The value is the signal’s initial value."),
             "traceReason_noEdge": String(localized: "waveformTrace.reason.noEdge", defaultValue: "No clock edge before %@."),
+            "traceReason_writeNotFound": String(localized: "waveformTrace.reason.writeNotFound", defaultValue: "No statement found in the design writes this signal, yet its value changed after the start or is not its initial value: a write the design model does not show made it."),
             "traceReason_noWrite": String(localized: "waveformTrace.reason.noWrite", defaultValue: "The taken branch does not write the signal: it keeps its value."),
             "traceReason_multiDriven": String(localized: "waveformTrace.reason.multiDriven", defaultValue: "Several drivers; the one that agrees with the dump is shown."),
             "traceReason_mismatch": String(localized: "waveformTrace.reason.mismatch", defaultValue: "Re-execution gives %2$@, not the dumped value."),

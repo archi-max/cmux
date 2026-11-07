@@ -487528,6 +487528,65 @@
         }
       }
     },
+    "waveformTrace.reason.writeNotFound": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No statement found in the design writes this signal, yet its value changed after the start or is not its initial value: a write the design model does not show made it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計内にこの信号に書き込む文が見つかりませんが、値が開始後に変化しているか初期値ではありません。設計モデルに現れない書き込みがこの値を作りました。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Anweisung im Design schreibt dieses Signal, doch sein Wert hat sich nach dem Start geändert oder ist nicht sein Anfangswert: Ein Schreibzugriff, den das Designmodell nicht zeigt, hat ihn erzeugt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune instruction du design n’écrit ce signal, pourtant sa valeur a changé après le départ ou n’est pas sa valeur initiale : une écriture que le modèle du design ne montre pas l’a produite."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُعثر على أي عبارة في التصميم تكتب هذه الإشارة، ومع ذلك تغيّرت قيمتها بعد البداية أو ليست قيمتها الأولية: كتابةٌ لا يُظهرها نموذج التصميم هي التي أنتجتها."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguna sentencia del diseño escribe esta señal, pero su valor cambió después del inicio o no es su valor inicial: lo produjo una escritura que el modelo del diseño no muestra."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計中找不到寫入此訊號的陳述式，但其值在開始後有變化，或不是其初始值：是設計模型未顯示的寫入產生了它。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设计中找不到写入此信号的语句，但其值在开始后发生了变化，或不是其初始值：是设计模型未显示的写入产生了它。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설계에서 이 신호에 쓰는 문을 찾지 못했지만, 값이 시작 후에 바뀌었거나 초기값이 아닙니다. 설계 모델에 나타나지 않는 쓰기가 이 값을 만들었습니다."
+          }
+        }
+      }
+    },
     "workspace.agentChat.defaultTitle": {
       "extractionState": "manual",
       "localizations": {

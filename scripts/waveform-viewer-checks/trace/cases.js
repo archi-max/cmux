@@ -8,7 +8,7 @@
 //   fanin { path or local name: bits, or '*' for any value }, noFanin [names that must not be fan-in], roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
 //   trust, noTrust (a trust it must not have), root, reasons [codes that must be there], viol [each decision's case violation or null],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's; 'stale' is
-//   the Icarus dump with staleModel's model].
+//   the Icarus dump with staleModel's model, 'nowrites' with that model's write lists removed only].
 /* global cmuxTrace, traceVcd, traceFiles */
 /* exported runTraceChecks */
 
@@ -240,7 +240,11 @@ const TRACE_CASES = [
   { d: 'l', sig: 'tb_l.rst_n', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, since: 26000, trust: 'approximate', reasons: ['opaque'] },
   { d: 'l', sig: 'tb_l.epoch_iters', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, trust: 'approximate', reasons: ['opaque'] },
   { d: 'l', sig: 'tb_l.iters', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, trust: 'approximate', reasons: ['opaque'] },
-  { d: 'l', sig: 'tb_l.settle', t: 40000, dumps: ['stale'], since: 35000, noTrust: 'exact', reasons: ['writeNotFound'] },
+  // The initial block may write settle too: named, approximate. With only the write lists gone
+  // ('nowrites': settle++ is opaque and says nothing), nothing found writes it, yet it changed at 35.
+  { d: 'l', sig: 'tb_l.settle', t: 40000, dumps: ['stale'], kind: 'initial', line: 18, since: 35000, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.settle', t: 40000, dumps: ['nowrites'], kind: 'none', since: 35000, trust: 'approximate', reasons: ['writeNotFound'] },
+  { d: 'l', sig: 'tb_l.iters', t: 40000, dumps: ['nowrites'], kind: 'initial', stmt: 'iters = 4;', trust: 'approximate', noReasons: ['writeNotFound'] },
   // B: y unchanged since 35 (the override made it); at 40 and 50 the default gives the same value
   // (sel fell at 45). The statement that made the value, run when it changed, as Verdi names it.
   { d: 'l', sig: 'tb_l.dut.y', t: 50000, kind: 'proc', proc: 'Always', file: 'l_oracle.sv', line: 19, stmt: 'y = b;', since: 35000, sample: 35000, value: '00110011', trust: 'exact' },
@@ -253,7 +257,8 @@ const TRACE_CASES = [
 
 // The model an older cmux-sv-model gave (the one the Verdi oracle ran on): no statement lists what
 // it writes, and an initial block slang could not elaborate is one opaque statement.
-function staleModel(all) {
+// ('nowrites': the write lists only.)
+function staleModel(all, invalidInitial) {
   const strip = (x) => {
     if (Array.isArray(x)) { x.forEach(strip); return; }
     if (!x || typeof x !== 'object') { return; }
@@ -262,7 +267,7 @@ function staleModel(all) {
   };
   for (const m of Object.values(all.instances)) {
     strip(m.procs);
-    for (const p of m.procs) { if (p.kind === 'Initial') { p.body = { k: 'opaque', why: 'Invalid', src: p.body.src || '', loc: p.loc }; } }
+    for (const p of m.procs) { if (invalidInitial && p.kind === 'Initial') { p.body = { k: 'opaque', why: 'Invalid', src: p.body.src || '', loc: p.loc }; } }
   }
 }
 
@@ -284,8 +289,8 @@ function runTraceChecks() {
     const modelName = d === 'c' && variant === 'icarus' ? 'c.icarus' : d;
     const all = JSON.parse(traceFiles.models[modelName]);
     // 'stale': the Icarus dump with the model an older sidecar gave for that testbench.
-    if (variant === 'stale') { staleModel(all); }
-    const vcd = traceVcd(traceFiles.dumps[`${d}.${variant === 'stale' ? 'icarus' : variant}`]);
+    if (variant === 'stale' || variant === 'nowrites') { staleModel(all, variant === 'stale'); }
+    const vcd = traceVcd(traceFiles.dumps[`${d}.${variant === 'stale' || variant === 'nowrites' ? 'icarus' : variant}`]);
     const models = {
       instance: async (p) => all.instances[p],
       // What cmux-sv-model's `writers` answers: the instances that write into `p` from outside it.
