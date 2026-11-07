@@ -519,7 +519,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // Helper v2 (windowed): nothing of a signal's history is downloaded, even where the page used to
     // fall back to a whole read. A mock v2 helper answers edge, search, valueAt and cancel from this
-    // VCD's changes (normalized as the helper does: one value per time, no repeats), at a width the
+    // VCD's changes (normalized as the helper does: one value per time, no repeats, no leading all-x
+    // value: the helper's stream starts from all x), at a width the
     // test may set (a 2-bit "clock" whose last bit is the edge), and can leave a signal's requests
     // unanswered until cancelled.
     _ = await call("""
@@ -542,6 +543,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const t = Number(at), v = pad(val, w);
           if (out.length && out[out.length - 1][0] === t) { out.pop(); }
           if (out.length && out[out.length - 1][1] === v) { continue; }
+          if (!out.length && /^x+$/.test(v)) { continue; }
           out.push([t, v]);
         }
         return out;
@@ -552,7 +554,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       m.answer = async (req) => {
         if (req.cmd === 'edge') {
           const ch = await m.changes(req.signalId);
-          const ok = (v) => req.kind === 'any' || v.slice(-1) === (req.kind === 'rise' ? '1' : '0');
+          // (rise/fall on a store wider than 1 bit are any change, as the helper's cacheEdge has them)
+          const wideStore = (m.widths.get(req.signalId) || 1) !== 1;
+          const ok = (v) => req.kind === 'any' || wideStore || v.slice(-1) === (req.kind === 'rise' ? '1' : '0');
           return { t: req.dir < 0 ? lastBefore(ch, req.t, ok) : firstAfter(ch, req.t, ok) };
         }
         if (req.cmd === 'search' && req.wildcard === '?') {
@@ -600,7 +604,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         throw new Error('not here: ' + req.cmd);
       };
       m.install = () => {
-        b.signalChanges = (v, max) => { if (!m.inFake) { m.downloads++; } return m.read(v, max); };
+        b.signalChanges = (v, max) => {
+          if (!m.inFake) { m.downloads++; }
+          // (m.normalizedDownloads: the history as the helper streams it, leading all-x dropped)
+          return m.normalizedDownloads ? m.changes(v.signalId) : m.read(v, max);
+        };
         b.windowed = () => true;
         b.v2 = async (req) => {
           m.asked.push(req.cmd);
@@ -640,7 +648,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       // The plain (whole-signal) page on the same histories, to compare with.
       m.plain = () => { b.signalChanges = (v, max) => m.read(v, max); };
-      m.remove = () => { m.custom.clear(); m.sent = []; m.aliasHints = []; m.noAliasHints = false; m.delay = 0; m.readDelay = 0; m.prev = false; m.prevMode = undefined; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
+      m.remove = () => { m.custom.clear(); m.sent = []; m.aliasHints = []; m.noAliasHints = false; m.delay = 0; m.readDelay = 0; m.prev = false; m.prevMode = undefined; m.normalizedDownloads = false; m.fail.clear(); b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
       m.pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
       return null
       """)
@@ -702,16 +710,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         try {
           t.backendChanged();
           const plain = m.pick(await q()), plainChain = chain(await x());
-          m.install(); m.prev = \(prev); m.downloads = 0; m.sent = [];
+          m.install(); m.prev = \(prev); m.downloads = 0; m.sent = []; window.cmuxTraceChecks.walkQueries = 0;
           b.changes = async () => { throw new Error('not here'); };
           b.valuesAt = async () => { throw new Error('not here'); };
           t.backendChanged();
           const v2 = m.pick(await q()), v2Chain = chain(await x());
           const sent = m.sent.filter((r) => r.cmd !== 'cancel');
           return { plain, v2, plainChain, v2Chain, downloads: m.downloads,
-            // (a last change's searches: not a clock's, whose edges are walked with rise/fall/any)
-            anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any' && !sent.some((o) => o.signalId === r.signalId && o.cmd === 'edge' && o.kind !== 'any')).length,
-            clockEdges: sent.filter((r) => r.cmd === 'edge' && sent.some((o) => o.signalId === r.signalId && o.cmd === 'edge' && o.kind !== 'any')).length,
+            // (every last-change search, the clocks' too: a clock walk's own queries for the change
+            // before one are counted by the page, by purpose)
+            anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any').length - (window.cmuxTraceChecks.walkQueries || 0),
+            clockEdges: sent.filter((r) => r.cmd === 'edge' && r.kind !== 'any').length + (window.cmuxTraceChecks.walkQueries || 0),
             prevReads: sent.filter((r) => r.cmd === 'valueAt' && r.prev).length, requests: sent.length,
             byCmd: Object.entries(sent.reduce((a, r) => { const k = r.cmd + (r.prev ? '+prev' : '') + (r.kind ? ':' + r.kind : '') + (r.ids > 1 ? ' batch' : ''); a[k] = (a[k] || 0) + 1; return a; }, {})).sort().map(([k, n]) => k + ' ' + n).join(', ') };
         } finally { m.remove(); t.backendChanged(); }
@@ -807,8 +816,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // z->1; negedge 1->0, 1->x, 1->z, x->0, z->0; x<->z is no edge. Every pair of 0/1/x/z, there
     // and back, at the transition, just before and after it, and from the dump's start.
     let svEdges = await call("""
-      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock, ui = window.cmuxTraceUI;
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock, ui = (window.cmuxTraceChecks || {}).prevEdge ? window.cmuxTraceChecks : window.cmuxTraceUI;
       const clk = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'clk'], true);
+      const width = clk.width;
       const pos = new Set(['01', '0x', '0z', 'x1', 'z1']), neg = new Set(['10', '1x', '1z', 'x0', 'z0']);
       const sv = (a, b, edge) => edge === 'PosEdge' ? pos.has(a + b) : edge === 'NegEdge' ? neg.has(a + b) : pos.has(a + b) || neg.has(a + b);
       const expected = (hist, time, edge) => {
@@ -822,7 +832,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         cases.push({ name: a + '->' + b + '->' + a + ' @25', hist: [[0, a], [10, b], [20, a]], time: 25 });
         cases.push({ name: a + '->' + b + '->' + a + ' @19', hist: [[0, a], [10, b], [20, a]], time: 19 });
       } cases.push({ name: 'start ' + a, hist: [[0, a]], time: 5 }); }
-      const wrong = [], ok = { v2: 0, plain: 0 };
+      const wrong = [], ok = { v2: 0, plain: 0, v2history: 0, v2wide: 0 };
       const run = async (kind) => {
         for (const c of cases) {
           m.custom.set(clk.signalId, c.hist);
@@ -838,12 +848,61 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       try {
         m.plain(); await run('plain');
         m.install(); await run('v2');
+        // The helper's edge queries fail: the page reads the history as the helper streams it.
+        m.fail.add(clk.signalId); m.normalizedDownloads = true; await run('v2history');
+        m.fail.clear(); m.normalizedDownloads = false;
+        // A 2-bit clock (its last bit the edge), through the helper's search.
+        clk.width = 2; m.widths.set(clk.signalId, 2); await run('v2wide');
         return { wrong, ok, cases: cases.length * 3 };
-      } finally { m.remove(); t.backendChanged(); }
+      } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
       """) as? [String: Any]
     print("[v2] SV clock edges: \(String(describing: svEdges?["ok"])) of \(String(describing: svEdges?["cases"])) each")
     expect((svEdges?["wrong"] as? [String])?.isEmpty == true && (svEdges?["cases"] as? Int ?? 0) >= 240,
-           "a 1-bit clock's edges are SystemVerilog's on helper v2 and the whole history, every 0/1/x/z pair: \(String(describing: svEdges?["wrong"]))")
+           "a 1-bit clock's edges are SystemVerilog's on helper v2 (narrow, history, 2-bit) and the whole history, every 0/1/x/z pair: \(String(describing: svEdges?["wrong"]))")
+
+    // The check hooks are not in the shipped page: only with the checks' window.cmuxTraceChecks.
+    let hooks = await call("return { shipped: 'prevEdge' in (window.cmuxTraceUI || {}), checks: typeof (window.cmuxTraceChecks || {}).prevEdge }") as? [String: Any]
+    expect(hooks?["shipped"] as? Bool == false && hooks?["checks"] as? String == "function",
+           "the prevEdge hook is the checks' only: \(String(describing: hooks))")
+
+    // A clean 0/1 clock's edge costs 1-2 round trips to helper v2 (each answer m.delay late), and a
+    // clock of unknown width (no netlist width; the helper stores 2 bits, whose rise/fall are any
+    // change) is not taken for a 1-bit one.
+    let cost = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock, ui = (window.cmuxTraceChecks || {}).prevEdge ? window.cmuxTraceChecks : window.cmuxTraceUI;
+      const clk = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'clk'], true);
+      const width = clk.width;
+      const out = {};
+      try {
+        m.install();
+        for (const [name, time, edge] of [['rise', 35, 'PosEdge'], ['fall', 25, 'PosEdge'], ['both', 25, 'BothEdges'], ['neg', 35, 'NegEdge']]) {
+          m.custom.set(clk.signalId, [[0, '0'], [10, '1'], [20, '0'], [30, '1']]);
+          t.backendChanged();
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          m.delay = 80; m.sent = [];
+          const t0 = performance.now();
+          const at = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', time, edge);
+          const ms = performance.now() - t0;
+          m.delay = 0;
+          out[name] = { at, requests: m.sent.filter((r) => r.cmd === 'edge' || r.cmd === 'search').length, trips: Math.round(ms / 80) };
+        }
+        delete clk.width; m.widths.set(clk.signalId, 2);
+        m.custom.set(clk.signalId, [[0, '1'], [10, '0']]);
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        out.unknownWidth = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', 11, 'PosEdge');
+        return out;
+      } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] clean clock edge cost: \(String(describing: cost))")
+    let wants: [String: Int] = ["rise": 30, "fall": 10, "both": 20, "neg": 20]
+    for (name, want) in wants.sorted(by: { $0.key < $1.key }) {
+      let c = cost?[name] as? [String: Any]
+      expect(c?["at"] as? Int == want && (c?["trips"] as? Int ?? 9) <= 2 && (c?["requests"] as? Int ?? 9) <= 4,
+             "v2 helper, a clean clock's \(name) edge: \(want) in at most 2 round trips and 4 requests: \(String(describing: c))")
+    }
+    expect(cost?.keys.contains("unknownWidth") == true && cost?["unknownWidth"] is NSNull,
+           "v2 helper, a clock of unknown width is not read as 1-bit: \(String(describing: cost?["unknownWidth"]))")
 
     // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
     // whole read is capped too and only costs time; its last change is unknown.
@@ -1844,6 +1903,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let cfg = WKWebViewConfiguration()
     cfg.setURLSchemeHandler(scheme, forURLScheme: WaveformViewerSchemeHandler.scheme)
     let hook = """
+    window.cmuxTraceChecks = {};
     (function(){ for (const k of ['warn','error']) { const o = console[k];
       console[k] = (...a) => { try { webkit.messageHandlers.console.postMessage(k + ': ' + a.map((x) => (x && x.stack ? String(x) + ' ' + x.stack : String(x))).join(' ')); } catch(e){}; o.apply(console, a); }; }
       window.addEventListener('error', e => webkit.messageHandlers.console.postMessage('onerror: ' + e.message + ' @' + e.filename + ':' + e.lineno + ':' + e.colno + ' ' + (e.error && e.error.stack)));
