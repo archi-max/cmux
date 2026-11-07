@@ -445,8 +445,10 @@
     return q ? driverOfDesign(q) : null;
   }
   // From the editor (cmux mapped the path); a click while the design model builds points at it.
+  // cmux traces from the editor only once the design is built: a build still shown is over (its
+  // done is queued behind the design's progress calls), and a failed one is gone.
   function fromEditor(query) {
-    if (heldByBuild()) { return null; }
+    if (build && build.failed) { build = null; } else if (building()) { endBuild(); }
     lastEntry = () => fromEditor(query);
     return driverOfDesign(query);
   }
