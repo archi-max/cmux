@@ -95,6 +95,7 @@ const widths = new Map();
   const acc = new Map();
   const st = await pollUntilStop(acc);
   expect(st.stop && st.stop.stopped === 'done' && st.stop.t === 30 && st.running === false, 'poll: the run ends done at t=30');
+  if (!eq(acc.get(1), [[0, '00000000'], [5, '00000001'], [15, '00000010'], [25, '00000011']])) console.log('  got', JSON.stringify(acc.get(1)));
   expect(eq(acc.get(1), [[0, '00000000'], [5, '00000001'], [15, '00000010'], [25, '00000011']]), 'poll: counter changes, exact times and values');
   expect(eq((acc.get(0) || []).map((x) => x[0]), [0, 5, 10, 15, 20, 25, 30]), 'poll: every clock edge');
   const t0 = Date.now(); const idle = await req('sim.poll', { waitMs: 250 });
