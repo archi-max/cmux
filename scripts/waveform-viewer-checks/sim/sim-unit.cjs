@@ -22,6 +22,7 @@ process.env.CMUX_SIM_WORKER = path.join(__dirname, 'fake-worker.cjs');
 process.env.CMUX_SIM_LIB = lib;
 process.env.CMUX_SIM_STUB = '/home/me/.cache/cmux/simctl/libsimctl_stub.so';
 process.env.FAKE_WORKER_LOG = workerLog;
+process.env.CMUX_SIM_SCRATCH = scratch;   // the workers' private folders, under this run's scratch
 
 const sim = require(path.join(helperDir, 'sim.js'));
 
@@ -159,6 +160,20 @@ const widths = new Map();
   let alive2 = true; try { process.kill(pid2, 0); } catch { alive2 = false; }
   expect(!alive2, 'closeAll (the viewer went away): the worker is killed');
 
+  // The helper's shutdown: closeAll, then process.exit at once. Nothing of the simulation's is left behind.
+  const child = require('node:child_process').spawnSync(process.execPath, ['-e', `
+    const sim = require(${JSON.stringify(path.join(helperDir, 'sim.js'))});
+    sim.handle({ id: 1, cmd: 'sim.open', dir: ${JSON.stringify(runDir)} }, (m) => { if (m.id === 1) { sim.closeAll(); process.exit(m.error ? 3 : 0); } });
+  `], { env: process.env, timeout: 10000 });
+  const argv3 = JSON.parse(fs.readFileSync(workerLog, 'utf8'));
+  const scr3 = argv3.argv[argv3.argv.indexOf('--scratch') + 1];
+  await new Promise((res) => setTimeout(res, 500));
+  let alive3 = true; try { process.kill(argv3.pid, 0); } catch { alive3 = false; }
+  expect(child.status === 0 && !alive3, 'a helper that exits right after closeAll leaves no worker (' + child.status + ')');
+  expect(!!scr3 && !fs.existsSync(scr3), 'and no scratch folder: ' + scr3);
+
+  const leftovers = fs.readdirSync(scratch).filter((f) => f.startsWith('sim-'));
+  expect(leftovers.length === 0, 'every closed simulation removed its scratch folder: ' + leftovers);
   fs.rmSync(scratch, { recursive: true, force: true });
   console.log(failures ? `SIM UNIT CHECKS FAILED (${failures})` : 'SIM UNIT CHECKS PASSED');
   process.exit(failures ? 1 : 0);
