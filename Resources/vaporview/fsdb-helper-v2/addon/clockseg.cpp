@@ -10,7 +10,8 @@
 // One JSON line per range [a, b), in order, then exits. The row's normalized changes (the last
 // change per time wins, repeats dropped, all x before the first change) at times in [a, b) are
 // checked against the grid: rises at R0 + kP, falls H later.
-//   {vBefore, changes, edges, intervals: [[s, e | -1, [[t, v], ...]], ...], rssMB}
+//   {vBefore, changes, edges, intervals: [[s, e | -1, [[t, v], ...]], ...], rssMB, openMB}
+// (rssMB: the process's RSS now; openMB: right after the open, before any load)
 // vBefore is the value in effect just before a. Where the row leaves the grid (a change off it, a
 // wrong value such as x or z, or a grid edge that never comes) an interval [s, e) opens and holds
 // its changes verbatim, until a change lands back on the grid with the grid's value (e). Before
@@ -53,6 +54,7 @@ int main(int argc, char **argv) {
   ffrObject *o = ffrObject::ffrOpen3(argv[1]);
   if (!o) { fail("open failed"); return 1; }
   o->ffrReadScopeVarTree();  // (a rebuilt row needs it)
+  const long openMB = rssMB();  // (the baseline: the open alone, before any load)
   fsdbTag64 mx; o->ffrGetMaxFsdbTag64(&mx);
   const uint64_t fileEnd = tg(mx);
   double records = 0;
@@ -109,8 +111,8 @@ int main(int argc, char **argv) {
       best = 0; for (auto &e : hc) if (e.second > best) { best = e.second; hi = e.first; }
       uint64_t first = 0;  // the first rise from which the next one is a period later
       for (size_t k = 0; k + 1 < rs.size(); k++) if (rs[k + 1] - rs[k] == per) { first = rs[k]; break; }
-      fprintf(J, "{\"period\":%llu,\"high\":%llu,\"firstRise\":%llu,\"rises\":%zu,\"changes\":%.0f,\"rssMB\":%ld}\n",
-             (unsigned long long)(rs.size() >= 3 ? per : 0), (unsigned long long)hi, (unsigned long long)first, rs.size(), changes, rssMB());
+      fprintf(J, "{\"period\":%llu,\"high\":%llu,\"firstRise\":%llu,\"rises\":%zu,\"changes\":%.0f,\"rssMB\":%ld,\"openMB\":%ld}\n",
+             (unsigned long long)(rs.size() >= 3 ? per : 0), (unsigned long long)hi, (unsigned long long)first, rs.size(), changes, rssMB(), openMB);
       fflush(J);
       continue;
     }
@@ -157,10 +159,10 @@ int main(int argc, char **argv) {
     });
     h->ffrFree(); o->ffrUnloadSignals(id);
     if (!started) begin();  // (no change in [a, b))
-    if (over) { fprintf(J, "{\"over\":true,\"changes\":%.0f,\"records\":%.0f,\"rssMB\":%ld}\n", changes, records, rssMB()); fflush(J); return 0; }
+    if (over) { fprintf(J, "{\"over\":true,\"changes\":%.0f,\"records\":%.0f,\"rssMB\":%ld,\"openMB\":%ld}\n", changes, records, rssMB(), openMB); fflush(J); return 0; }
     if (inSync && expE < b) open(expE);  // (grid edges that never came, up to b)
     if (!inSync) close(-1);
-    fprintf(J, "{\"vBefore\":\"%c\",\"changes\":%.0f,\"edges\":%.0f,\"intervals\":[%s],\"rssMB\":%ld}\n", CH[vBefore], changes, edges, ivs.c_str(), rssMB());
+    fprintf(J, "{\"vBefore\":\"%c\",\"changes\":%.0f,\"edges\":%.0f,\"intervals\":[%s],\"rssMB\":%ld,\"openMB\":%ld}\n", CH[vBefore], changes, edges, ivs.c_str(), rssMB(), openMB);
     fflush(J);
   }
   o->ffrClose();

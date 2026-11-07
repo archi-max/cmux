@@ -2664,17 +2664,22 @@ function countOf(id) {
 // intervals where it leaves the grid, holding its own changes verbatim; before R0 everything is
 // verbatim. Never trusted unverified: a verify job reads the row's whole history and checks every
 // change (clockseg). On a rebuilt row the reader keeps ~9 B per change read for the life of
-// the process (a rebuilt clock on a 10 GB dump: 230 -> 882 MB over one pass, not freed by unload, malloc_trim or
-// a reopen), so the job reads it in CLOCK_SEGMENTS fresh processes, each in CLOCK_CHUNKS view
-// windows, each killed past CLOCK_RSS_MB (the job is aborted, never a reader). At most one job at
+// the process (a rebuilt clock on a 10 GB dump: 230 -> 882 MB over one pass, not freed by
+// unload, malloc_trim or a reopen), so the job reads it in fresh processes, sized from the
+// measured open and growth (clockVerifyJob), each in CLOCK_CHUNKS view windows, each killed
+// past CLOCK_RSS_MB (the job is aborted, never a reader). At most one job at
 // a time, counted in the reader budget; a segment starts only while no visible work is queued.
 // Aborted (not a clock): more than CLOCK_MAX_RECORDS verbatim changes, or deviations (records +
 // intervals) over CLOCK_MAX_FRAC of the grid edges. A descriptor is keyed by the file's stamp,
 // size and CLOCK_VERSION, and covers [lo, verifiedEnd] only.
 const CLOCK = process.env.FSDB_CLOCK_DESC === '1';
+const MiB = 1048576;  // (the clock block's MB: MiB, as statm and ps count)
 const CLOCK_SEGMENTS = Number(process.env.FSDB_CLOCK_SEGMENTS || 32), CLOCK_CHUNKS = Number(process.env.FSDB_CLOCK_CHUNKS || 4);
 const CLOCK_RSS_MB = Number(process.env.FSDB_CLOCK_RSS_MB || 256), CLOCK_MAX_RECORDS = Number(process.env.FSDB_CLOCK_MAX_RECORDS || 65536);
-const CLOCK_MAX_FRAC = 0.01, CLOCK_VERSION = 1;
+const CLOCK_MAX_FRAC = 0.01, CLOCK_VERSION = 1, CLOCK_MIN_SEGMENTS = 32, CLOCK_MAX_SEGMENTS = 1024;
+// The reader keeps ~9 B per change read on a rebuilt row (measured on a 10 GB dump); a segment
+// aims at CLOCK_TARGET_MB, well under the CLOCK_RSS_MB kill.
+const CLOCK_BYTES_PER_CHANGE = 9, CLOCK_TARGET_MB = Number(process.env.FSDB_CLOCK_TARGET_MB || 200);
 const clock = { job: null, desc: new Map(), log: [] };  // desc: id -> descriptor | {state: 'notClock' | 'aborted', why}
 function clockKey(file) {
   const st = fs.statSync(file);
@@ -2708,7 +2713,7 @@ async function clockSegment(j, calls) {
   const out = [];
   const seen = (rss) => {
     c.peak = Math.max(c.peak, rss || 0); j.peak = Math.max(j.peak || 0, rss || 0);
-    if (rss > CLOCK_RSS_MB * 1e6) { over = true; try { proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
+    if (rss > CLOCK_RSS_MB * MiB) { over = true; try { proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
   };
   proc.stdout.on('data', (d) => {
     buf += d;
@@ -2716,7 +2721,7 @@ async function clockSegment(j, calls) {
     while ((k = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, k); buf = buf.slice(k + 1);
       if (line[0] !== '{') { continue; }  // (only JSON lines)
-      try { const r = JSON.parse(line); if (r.rssMB) { seen(r.rssMB * 1048576); } out.push(r); } catch (e) { err = err || `clockseg: bad line ${line.slice(0, 80)}`; }
+      try { const r = JSON.parse(line); if (r.rssMB) { seen(r.rssMB * MiB); } out.push(r); } catch (e) { err = err || `clockseg: bad line ${line.slice(0, 80)}`; }
     }
   });
   proc.stderr.on('data', (d) => { if (err.length < 400) { err += d; } });
@@ -2724,11 +2729,12 @@ async function clockSegment(j, calls) {
   const watch = setInterval(() => seen(procRss([proc.pid]).get(proc.pid) || 0), 100);
   try {
     const ex = await exited;
-    if (over) { throw new Error(`segment process over ${CLOCK_RSS_MB} MB (peak ${Math.round(c.peak / 1e6)} MB)`); }
+    if (over) { throw new Error(`segment process over ${CLOCK_RSS_MB} MB (peak ${Math.round(c.peak / MiB)} MB)`); }
     if (j.stopped) { throw new Error(j.stopped); }
     const bad = out.find((r) => r.error);
     if (bad) { throw new Error(bad.error); }
     if (ex.error) { throw new Error(`clockseg: ${ex.error}`); }
+    out.peak = c.peak;
     if (out.some((r) => r.over)) { return out; }
     if (ex.code !== 0 || out.length !== calls.length) { throw new Error(`clockseg exited ${ex.sig || ex.code} after ${out.length}/${calls.length} ranges${err ? `: ${err.trim().slice(0, 200)}` : ''}`); }
     return out;
@@ -2760,29 +2766,60 @@ async function clockVerifyJob(j) {
     }
   };
   // Fit from the first rises: spans growing x8 from the start.
-  let fit = null;
+  let fit = null, fitPeak = 0;
   for (let span = Math.max(16, Math.ceil(T / 4096)); ; span *= 8) {
     await wait();
     const b = Math.min(end, lo + span);
-    [fit] = await clockSegment(j, [{ signalId: j.id, a: lo, b, P: 0, H: 0, R0: 0, maxRecords: 0 }]);
+    const fr = await clockSegment(j, [{ signalId: j.id, a: lo, b, P: 0, H: 0, R0: 0, maxRecords: 0 }]);
+    fit = fr[0]; fitPeak = fr.peak || 0;
     if (fit.rises >= 65 || b >= end) { break; }
   }
   if (!fit.period || !fit.high) { return { state: 'notClock', why: `${fit.rises} rises: no period` }; }
   const d = { state: 'verifying', id: j.id, period: fit.period, high: fit.high, firstRise: fit.firstRise, lo, verifiedEnd: lo, changes: 0, edges: 0, records: 0, intervals: [], open: null, segments: 0 };
   j.desc = d;
-  const S = Math.max(1, CLOCK_SEGMENTS), step = Math.ceil((end - lo) / S);
-  for (let k = 0; k < S; k++) {
-    const a0 = lo + k * step, b0 = Math.min(end, a0 + step);
-    if (a0 >= b0) { break; }
+  // Segment sizes from the measurement: the open baseline (each line's openMB), plus a load's
+  // setup whatever it reads, plus the bytes kept per change read times the changes a segment reads
+  // (the densest seen, the grid's 2 per period at first) stays within CLOCK_TARGET_MB. Setup and
+  // bytes per change are a line through each process's (changes read, peak over its open), the
+  // fit's included; with one point, CLOCK_BYTES_PER_CHANGE and the rest is setup. At least
+  // CLOCK_MIN_SEGMENTS segments and at most CLOCK_MAX_SEGMENTS (past that, the CLOCK_RSS_MB kill
+  // decides). FSDB_CLOCK_SEGMENTS fixes the count.
+  const fixedS = process.env.FSDB_CLOCK_SEGMENTS ? Math.max(1, CLOCK_SEGMENTS) : 0;
+  const maxStep = Math.ceil((end - lo) / (fixedS || CLOCK_MIN_SEGMENTS)), minStep = Math.max(1, Math.ceil((end - lo) / CLOCK_MAX_SEGMENTS));
+  let openB = (fit.openMB || 0) * MiB, bpc = CLOCK_BYTES_PER_CHANGE, setupB = 0, dens = 2 / d.period;
+  const obs = [[fit.changes || 0, Math.max(0, fitPeak - openB)]];
+  const refit = () => {
+    const ns = obs.map((o) => o[0]), lo2 = Math.min(...ns), hi2 = Math.max(...ns);
+    if (obs.length >= 2 && hi2 >= 1.5 * lo2 && hi2 > lo2) {
+      const mn = ns.reduce((x, y) => x + y, 0) / obs.length, mg = obs.reduce((x, o) => x + o[1], 0) / obs.length;
+      let sxy = 0, sxx = 0;
+      for (const [n, g] of obs) { sxy += (n - mn) * (g - mg); sxx += (n - mn) * (n - mn); }
+      bpc = Math.max(CLOCK_BYTES_PER_CHANGE, sxy / sxx);
+      setupB = Math.max(0, Math.min(...obs.map(([n, g]) => g - bpc * n)));  // (the line under every point)
+    } else { bpc = CLOCK_BYTES_PER_CHANGE; setupB = Math.max(0, Math.min(...obs.map(([n, g]) => g - bpc * n))); }
+  };
+  refit();
+  d.segPeakMB = [0, 0];
+  for (let a0 = lo; a0 < end;) {
+    const budget = Math.max(4 * MiB, CLOCK_TARGET_MB * MiB - openB - setupB);
+    const step = fixedS ? maxStep : Math.max(minStep, Math.min(maxStep, Math.floor(budget / (bpc * dens))));
+    const b0 = Math.min(end, a0 + step);
     const sub = Math.max(1, CLOCK_CHUNKS), w = Math.ceil((b0 - a0) / sub), calls = [];
     for (let c = 0; c < sub; c++) { const a = a0 + c * w, b = Math.min(b0, a + w); if (a < b) { calls.push({ signalId: j.id, a, b, P: d.period, H: d.high, R0: d.firstRise, maxRecords: CLOCK_MAX_RECORDS - d.records }); } }
     await wait();
     const rs = await clockSegment(j, calls);
+    let n = 0;
     for (let c = 0; c < rs.length; c++) {
       if (rs[c].over) { return { state: 'aborted', why: `more than ${CLOCK_MAX_RECORDS} changes off the grid` }; }
       clockMerge(d, rs[c], calls[c].a);
+      n += rs[c].changes; openB = Math.max(openB, (rs[c].openMB || 0) * MiB);
     }
-    d.verifiedEnd = b0 - 1; d.segments++;
+    dens = Math.max(dens, n / (b0 - a0));
+    obs.push([n, Math.max(0, rs.peak - openB)]); refit();
+    const pk = Math.round(rs.peak / MiB);
+    if (d.segments === 0) { d.segPeakMB[0] = pk; } else { d.segPeakMB[1] = Math.max(d.segPeakMB[1], pk); }
+    d.openMB = Math.round(openB / MiB); d.bytesPerChange = Math.round(bpc); d.setupMB = Math.round(setupB / MiB);
+    d.verifiedEnd = b0 - 1; d.segments++; a0 = b0;
     if (d.records > CLOCK_MAX_RECORDS) { return { state: 'aborted', why: `more than ${CLOCK_MAX_RECORDS} changes off the grid` }; }
   }
   if (d.open) { d.open[1] = end; d.open = null; }  // (off the grid up to the end)
@@ -2804,13 +2841,13 @@ function clockStart(id) {
   clockLog({ id, start: true });
   clockVerifyJob(j).then((d) => {
     if (clock.job !== j) { return; }
-    clock.desc.set(id, { ...d, key, ms: Math.round(performance.now() - j.t0), peakMB: Math.round(j.peak / 1e6) });
-    clockLog({ id, state: d.state, why: d.why, ms: Math.round(performance.now() - j.t0), peakMB: Math.round(j.peak / 1e6) });
+    clock.desc.set(id, { ...d, key, ms: Math.round(performance.now() - j.t0), peakMB: Math.round(j.peak / MiB) });
+    clockLog({ id, state: d.state, why: d.why, ms: Math.round(performance.now() - j.t0), peakMB: Math.round(j.peak / MiB) });
   }, (e) => {
     if (clock.job !== j) { return; }
     const why = String((e && e.message) || e);
-    clock.desc.set(id, { state: 'aborted', why, key, peakMB: Math.round(j.peak / 1e6) });
-    clockLog({ id, state: 'aborted', why, peakMB: Math.round(j.peak / 1e6) });
+    clock.desc.set(id, { state: 'aborted', why, key, peakMB: Math.round(j.peak / MiB) });
+    clockLog({ id, state: 'aborted', why, peakMB: Math.round(j.peak / MiB) });
   }).finally(() => { if (clock.job === j) { clock.job = null; } });
   return { state: 'verifying' };
 }
@@ -2821,7 +2858,8 @@ function clockInfo(id) {
   if (!openFile || d.key !== clockKey(openFile)) { return { state: 'stale' }; }
   if (d.state !== 'ready') { return { state: d.state, why: d.why, ...(d.peakMB !== undefined ? { peakMB: d.peakMB } : {}) }; }
   return { state: 'ready', period: d.period, high: d.high, firstRise: d.firstRise, lo: d.lo, verifiedEnd: d.verifiedEnd, changes: d.changes, edges: d.edges,
-    intervals: d.intervals.length, records: d.records, ms: d.ms, peakMB: d.peakMB };
+    intervals: d.intervals.length, records: d.records, ms: d.ms, peakMB: d.peakMB,
+    segments: d.segments, openMB: d.openMB, setupMB: d.setupMB, bytesPerChange: d.bytesPerChange, segPeakMB: d.segPeakMB };
 }
 
 const handlers = {
