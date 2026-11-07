@@ -183,6 +183,25 @@ import Testing
         #expect(rows > 0 && same == rows, "\(other)")
     }
 
+    // The review's probe E with the dump's KDB: tb `top` (module tb) > dut (soc) > u_a, u_b (blk);
+    // slang has an unrelated top `top` (module harness) and soc as a top of its own.
+    @Test func aTopNamedLikeTheDumpsTestbenchMapsExactlyWithTheKDB() async throws {
+        let design = Design(models: [
+            "top": Self.inst("harness", ["clk"]), "top.u_x": Self.inst("blk_x", ["a"]), "top.u_y": Self.inst("blk_x", ["a"]),
+            "soc": Self.inst("soc", ["clk"]), "soc.u_a": Self.inst("blk", ["x"]), "soc.u_b": Self.inst("blk", ["x"]),
+        ], tops: ["soc", "top"])
+        let kdb = Self.kdb([
+            ("top", "tb", nil, ["clk"], [:]),
+            ("top.dut", "soc", "top", ["clk"], [:]),
+            ("top.dut.u_a", "blk", "top.dut", ["x"], ["x": 12]),
+            ("top.dut.u_b", "blk", "top.dut", ["x"], ["x": 12]),
+        ])
+        #expect(try await resolve("top.dut.u_a.x", design: design, kdb: kdb) == .signal(designPath: "soc.u_a.x", designPrefix: "soc", dumpPrefix: "top.dut"))
+        #expect(try await resolve("top.dut.clk", design: design, kdb: kdb) == .signal(designPath: "soc.clk", designPrefix: "soc", dumpPrefix: "top.dut"))
+        // The testbench's own signal: slang's `top` is another module (harness), so not evaluated.
+        #expect(try await resolve("top.clk", design: design, kdb: kdb) == .compiledOnly(dumpPath: "top.clk", reason: .otherModule, writes: []))
+    }
+
     // (c) No KDB: exactly today's answers.
     @Test func withoutAKDBTheAnswersAreTodays() async throws {
         let whole = Design(models: [

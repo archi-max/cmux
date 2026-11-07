@@ -103,7 +103,7 @@ import Testing
                 dumpPath: HierarchyPathMapping.segments(leaf.dump), mapping: .init(), loadMessages: [],
                 lookup: { design.lookup($0) }, model: { design.models[$0] },
                 designRoots: { await SVModelResolve.designRoots(tops: design.tops, instances: design.instances, model: { design.models[$0] }) },
-                dumpChildren: { dump[HierarchyPathMapping.join($0)] })
+                dumpChildren: { dump[HierarchyPathMapping.join($0)] }, instances: { design.instances })
             var baseOK = false
             if let rule = await HierarchyPrefixInference.designRule(forDumpPath: leaf.dump, designRoots: topRoots, dumpChildren: { dump[HierarchyPathMapping.join($0)] }, ties: .first) {
                 var mp = HierarchyPathMapping(); mp.addInferredRule(designPrefix: rule.designPrefix, dumpPrefix: rule.dumpPrefix)

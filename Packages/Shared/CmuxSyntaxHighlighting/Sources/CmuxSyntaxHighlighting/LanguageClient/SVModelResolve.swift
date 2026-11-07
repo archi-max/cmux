@@ -34,6 +34,7 @@ public enum SVModelResolve {
     /// signal (FSDB's `x[0:0]` for a 1-bit vector) is the signal without it, as host.js
     /// `withoutRange` reads rows. `loadMessages`: slang's errors loading the design (the sidecar's
     /// `messages`); a row below a scope the design lacks is `.notElaborated` only with some.
+    /// `instances`: the design's instance paths (the sidecar's `instances`).
     public static func resolve(
         dumpPath: [String],
         mapping: HierarchyPathMapping,
@@ -42,6 +43,7 @@ public enum SVModelResolve {
         model: Model,
         designRoots: () async throws -> [String: [HierarchyNode]],
         dumpChildren: HierarchyPrefixInference.Children,
+        instances: (() async throws -> [String])? = nil,
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Outcome {
         guard !dumpPath.isEmpty else { return .notInDesign }

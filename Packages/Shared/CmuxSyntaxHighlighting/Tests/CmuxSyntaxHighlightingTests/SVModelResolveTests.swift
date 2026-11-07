@@ -42,7 +42,8 @@ import Testing
             lookup: { design.lookup($0) },
             model: { design.models[$0] },
             designRoots: { await SVModelResolve.designRoots(tops: design.tops, instances: design.instances, model: { design.models[$0] }) },
-            dumpChildren: { dump[HierarchyPathMapping.join($0)] }
+            dumpChildren: { dump[HierarchyPathMapping.join($0)] },
+            instances: { design.instances }
         )
     }
 
@@ -372,6 +373,29 @@ import Testing
             let got = try await resolve(row, design: design, dump: dump)
             if case .signal(let designPath, _, _) = got { #expect(designPath.hasPrefix("tb."), "\(row) -> \(designPath)") }
         }
+    }
+
+    /// The review's probe E: the design has a top named like the dump's testbench (`top`, with scopes of
+    /// its own, nothing to do with the dump's), and the DUT `soc` is a top of its own; the dump's
+    /// top.dut is soc. The scope the design has as it is (`top`) holds nothing named like what is
+    /// below the dump's top.dut, so it is no anchor: the row maps to soc.
+    static let probeE = FakeDesign(models: [
+        "top": signals(["clk": bit]), "top.u_x": signals(["a": bit]), "top.u_y": signals(["a": bit]),
+        "soc": signals(["clk": bit]), "soc.u_a": signals(["x": bit]), "soc.u_b": signals(["x": bit]),
+    ], tops: ["soc", "top"])
+    static let probeEDump: FakeDump = [
+        "": scopes(["top"]), "top": scopes(["dut"]) + bits(["clk"]),
+        "top.dut": scopes(["u_a", "u_b"]) + bits(["clk"]), "top.dut.u_a": bits(["x"]), "top.dut.u_b": bits(["x"]),
+    ]
+
+    @Test func aTopNamedLikeTheDumpsTestbenchIsNoAnchor() async throws {
+        #expect(try await resolve("top.dut.u_a.x", design: Self.probeE, dump: Self.probeEDump)
+                == .signal(designPath: "soc.u_a.x", designPrefix: "soc", dumpPrefix: "top.dut"))
+        #expect(try await resolve("top.dut.clk", design: Self.probeE, dump: Self.probeEDump)
+                == .signal(designPath: "soc.clk", designPrefix: "soc", dumpPrefix: "top.dut"))
+        // The design's own top's signal stays its own.
+        #expect(try await resolve("top.clk", design: Self.probeE, dump: Self.probeEDump)
+                == .signal(designPath: "top.clk", designPrefix: "", dumpPrefix: ""))
     }
 
     @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
