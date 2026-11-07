@@ -80,6 +80,8 @@ const EDGE_OK = (kind, was, v) => {
   return kind === 3 ? pos : kind === 4 ? neg : pos || neg;
 };
 let limit = 0;
+// STUB_TYPES {id: var type}: rows listed with that var type (e.g. 'event'); others are 'reg'.
+const TYPES = JSON.parse(process.env.STUB_TYPES || '{}');
 const entry = (id) => ({ signalId: id, count: 2, bits: 1, xz: false, bytes: 16 });
 module.exports = {
   bgBegin() { process.removeAllListeners('SIGUSR2'); process.on('SIGUSR2', () => {}); },
@@ -89,7 +91,7 @@ module.exports = {
   readMetadata(meta, chunk) { meta(1, 0, 1, 'ns'); chunk(500, TIME_END, Number(process.env.STUB_TIME_START || 0)); },
   readScopes: () => [{ name: 'tb', type: 'module', netlistId: 0, scopeOffsetIdx: 0 }],
   getScopeChildren: () => ({ scopes: [], totalReturned: 0, remainingItems: 0 }),
-  readVars(p, idx, onVar) { for (let id = 1; id <= N; id++) { onVar('s' + id, TEXT[id] !== undefined ? 'string' : 'reg', TEXT[id] !== undefined ? 'String' : 'BitVector', p, id, id, 1, 0, 0); } },
+  readVars(p, idx, onVar) { for (let id = 1; id <= N; id++) { onVar('s' + id, TEXT[id] !== undefined ? 'string' : (TYPES[id] || 'reg'), TEXT[id] !== undefined ? 'String' : 'BitVector', p, id, id, 1, 0, 0); } },
   cacheSetLimit(n) { limit = n; }, cacheSetBounds() {},
   cacheStats: () => ({ bytes: 16 * store.size, limit, signals: [...store.keys()].map(entry) }),
   cacheLoad(ids) {

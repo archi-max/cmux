@@ -1566,6 +1566,19 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     `a warm reader's hotWindow takes the text budget and text header: ${JSON.stringify(hw && (hw.error || [w6, w7].map((x) => x && { ...x, records: undefined })))}`);
 }
 
+
+// clockStart refuses string, real and event rows (integration of fsdb-strings with fsdb-fetch):
+// an event is 1 bit, so the width check passes it, but its store keeps every repeated
+// occurrence, which a descriptor's alternating 0/1 grid can't model. A plain 1-bit row verifies.
+{
+  const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify({ 5: 1000, 6: 1000 }), STUB_TYPES: JSON.stringify({ 6: 'event' }) });
+  const ev = await h.send('clockVerify', { signalId: 6 }).reply;
+  const plain = await h.send('clockVerify', { signalId: 5 }).reply;
+  h.close();
+  check(!!ev.error && /not for a string, real or event/.test(ev.error), `clockVerify on an event row is refused: ${ev.error || JSON.stringify(ev.result)}`);
+  check(!plain.error && plain.result && plain.result.state === 'verifying', `... and a plain 1-bit row still verifies: ${plain.error || JSON.stringify(plain.result)}`);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `FSDB SCHED CHECKS FAILED: ${fails}` : 'FSDB SCHED CHECKS PASSED');
 process.exit(fails ? 1 : 0);
