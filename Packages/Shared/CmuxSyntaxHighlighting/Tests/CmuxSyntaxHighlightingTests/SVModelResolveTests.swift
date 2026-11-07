@@ -205,6 +205,40 @@ import Testing
             == .signal(designPath: "tb.u_dut.u_alu.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
     }
 
+    /// Two identical cores (`u_core0`, `u_core1`, each with `u_a`/`u_b`/`u_c`) below `root`, dumped below `tb.dut`.
+    static func twoCores(below root: String, models: [String: [String: Any]], tops: [String], dumpTb: [HierarchyNode]) -> (FakeDesign, FakeDump) {
+        var models = models
+        var dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": dumpTb,
+            "tb.dut": [HierarchyNode(name: "u_core0", isScope: true), HierarchyNode(name: "u_core1", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+        ]
+        for core in ["u_core0", "u_core1"] {
+            models["\(root).\(core)"] = signals(["clk": bit])
+            dump["tb.dut.\(core)"] = ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) }
+            for sub in ["u_a", "u_b", "u_c"] {
+                models["\(root).\(core).\(sub)"] = signals(["x": bit])
+                dump["tb.dut.\(core).\(sub)"] = [HierarchyNode(name: "x", isScope: false, width: 1)]
+            }
+        }
+        return (FakeDesign(models: models, tops: tops), dump)
+    }
+
+    @Test func aRowInTheSecondOfTwoIdenticalCoresMapsToItUnderARenamedTop() async throws {
+        let (design, dump) = Self.twoCores(below: "soc", models: ["soc": Self.signals(["clk": Self.bit])], tops: ["soc"],
+                                           dumpTb: [HierarchyNode(name: "dut", isScope: true)])
+        #expect(try await resolve("tb.dut.u_core1.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "soc.u_core1.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func aRowInTheSecondOfTwoIdenticalCoresMapsToItUnderADeeperInstance() async throws {
+        let (design, dump) = Self.twoCores(
+            below: "tb.u_dut", models: ["tb": Self.signals(["clk": Self.bit]), "tb.u_dut": Self.signals(["clk": Self.bit])], tops: ["tb"],
+            dumpTb: [HierarchyNode(name: "dut", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)])
+        #expect(try await resolve("tb.dut.u_core1.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "tb.u_dut.u_core1.u_a.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+    }
+
     @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
         let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
         #expect(roots["soc"] == [
