@@ -306,6 +306,22 @@ async function start(workers, costs, env = {}) {
   h.close();
 }
 
+// 19. A load's first piece shrinks on a bigger dump, as its load costs more: on a 10 GB dump a
+// 1/16 probe of a 10 s signal held a worker 5-7 s. A 10 GB (sparse) dump, four 16 s loads on
+// four workers, then a cheap signal: it waits for one short piece, not for a 1 s probe.
+{
+  fs.truncateSync(dump, 10e9);
+  const h = await start(4, { 1: 16000, 2: 16000, 3: 16000, 4: 16000 });
+  const heavy = [1, 2, 3, 4].map((id) => h.send('window', win([id])));
+  await wait(30);
+  const r = await h.send('window', win([5])).reply;
+  check(!r.error && r.at < 450, `a cheap signal added while four 16 s loads start: ${Math.round(r.at)} ms (behind 1/16 probes: ~1000)`);
+  for (const q of heavy) { h.send('cancel', { target: q.id }); }
+  await h.send('free', {}).reply;
+  h.close();
+  fs.writeFileSync(dump, 'stub');
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
