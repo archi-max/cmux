@@ -1185,6 +1185,27 @@
 
   // A reload drops the session (its variables and changes are the old file's).
   function backendChanged() { session = null; }
+  // cmux's aliasHints({pairs}): the dump's port aliases, pairs of full dump paths ([port, net] and the
+  // other way round), for helper v2, which keeps the pairs whose first is rebuilt and second stored
+  // and then reads the stored one for both. Sent in chunks of ALIAS_CHUNK on the page's own helper
+  // connection; an older helper (an error reply) is not asked for the rest. The pairs sent.
+  const ALIAS_CHUNK = 4096;
+  async function aliasHints(arg) {
+    const pairs = (arg && Array.isArray(arg.pairs) ? arg.pairs : [])
+      .filter((p) => Array.isArray(p) && p.length === 2 && p.every((x) => typeof x === 'string' && x.length > 0));
+    if (dumpKind() !== 'v2' || !pairs.length) { return 0; }
+    const b = host.currentBackend;
+    let sent = 0;
+    for (let i = 0; i < pairs.length; i += ALIAS_CHUNK) {
+      const chunk = pairs.slice(i, i + ALIAS_CHUNK);
+      let answer;
+      try { answer = await b.v2({ id: v2Id(), cmd: 'aliasHints', pairs: chunk }); } catch (error) { host.log(error); return sent; }
+      const r = answer && answer.reply;
+      if (!r || r.error || r.cancelled) { if (r && r.error) { host.log(new Error('aliasHints: ' + r.error)); } return sent; }
+      sent += chunk.length;
+    }
+    return sent;
+  }
 
   // Shown only while a trace is waiting (not over a step already shown).
   function status(text) { if (!build && panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
@@ -1337,7 +1358,7 @@
     p.append(body);
   }
 
-  const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged });
+  const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged, aliasHints });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
   window.cmuxTraceUI = { rowMenuItems };
 })();

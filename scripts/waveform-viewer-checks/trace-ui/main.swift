@@ -94,7 +94,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     let api = await call("return Object.keys(cmuxWaveform.trace).sort()") as? [String]
-    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "progress", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
+    expect(api == ["aliasHints", "back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "progress", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
 
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
