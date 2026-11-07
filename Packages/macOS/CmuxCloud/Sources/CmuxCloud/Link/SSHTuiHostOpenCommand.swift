@@ -293,10 +293,19 @@ public struct SSHTuiHostOpenCommand: Sendable {
         \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_ssh_hook_dir")))
         # First on PATH, so only from a chain nobody else can write.
         \(SSHTuiShellIntegration.privateCheckCode)
-        if [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ] && cmux_ssh_private "$cmux_cli_dir/cmux"; then
-          PATH="$cmux_cli_dir:$PATH"; export PATH
+        # A refusal is only recorded: the login launch reports it, while a
+        # configured command's output stays its own.
+        cmux_ssh_cli_refused=
+        if [ -h "\(Self.rootDirectory)" ]; then
+          cmux_ssh_cli_refused="\(Self.rootDirectory)"
+        elif [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ]; then
+          if cmux_ssh_private "$cmux_cli_dir/cmux"; then
+            PATH="$cmux_cli_dir:$PATH"; export PATH
+          else
+            cmux_ssh_cli_refused=$cmux_ssh_refused
+          fi
         fi
-        unset cmux_cli_dir cmux_ssh_hook_dir cmux_ssh_uid cmux_ssh_parent
+        unset cmux_cli_dir cmux_ssh_hook_dir cmux_ssh_uid cmux_ssh_parent cmux_ssh_refused
         unset -f cmux_ssh_private cmux_ssh_unsafe
 
         """
