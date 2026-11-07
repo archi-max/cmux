@@ -94,6 +94,13 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     case 'deposit': if (r.signal === 'tb.cnt') cnt = parseInt(String(r.value).replace(/^'d/, ''), 10); return out({ id, result: { t: t + 1, value: value(r.signal) } });
     case 'watch': {
       const ws = (r.signals || []).map((s) => { if (!width[s]) return null; const wid = nextWid++; watches.set(wid, s); last.set(wid, value(s)); pend.push([t, wid, value(s)]); return { signalId: wid, width: width[s] }; });
+      // FAKE_WATCH_ONE_WRITE: the reply and the watch's first records in one write, as a busy pipe delivers them
+      if (process.env.FAKE_WATCH_ONE_WRITE) {
+        const chunks = []; const w0 = process.stdout.write; process.stdout.write = (c) => { chunks.push(Buffer.from(c)); return true; };
+        try { out({ id, result: { t, watch: ws } }); flush(); } finally { process.stdout.write = w0; }
+        process.stdout.write(Buffer.concat(chunks));
+        return;
+      }
       out({ id, result: { t, watch: ws } });
       flush();
       return;

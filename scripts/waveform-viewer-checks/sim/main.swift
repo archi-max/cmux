@@ -337,8 +337,8 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   // missing coverage, not as the value before them, and no query answers inside the gap; the viewer's own
   // live history is bounded, and what it evicts becomes missing too.
   func lossChecks() async {
-    for p in [["tb", "clk"], ["tb", "dut", "state"]] { await add(p) }
-    _ = await waitFor(10000) { (await self.frame("L.rows().length") as? Int ?? 0) == 2 }
+    for p in [["tb", "clk"], ["tb", "dut", "state"], ["tb", "dut", "bus0"]] { await add(p) }   // bus0: not in the simulation, never live
+    _ = await waitFor(10000) { (await self.frame("L.rows().length") as? Int ?? 0) == 3 }
     let opened = await sim("S.open().then(() => 'opened', (e) => String(e.message || e))") as? String
     expect(opened == "opened", "lossy: live simulation opens: \(String(describing: opened))")
     _ = await waitFor(5000) { await self.watched() == ["tb.clk", "tb.dut.state"] }
@@ -372,6 +372,14 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect((first?.first as? Int) == 0 && ((first?.count ?? 0) > 1 && (first?[1] as? Int ?? 0) > 0), "lossy: the evicted span is missing from 0: \(String(describing: first))")
     let early = await call("return await cmuxWaveform.link.valuesAt({ time: 100, paths: ['tb.dut.state'] })") as? [Any]
     expect(early?.first is NSNull, "lossy: a query in the evicted span has no answer: \(String(describing: early))")
+
+    // A gap that comes before a row's first record (the batch holding its first records was the one dropped):
+    // nothing is known of the row before the first delivered record, so that whole span is missing, not x.
+    let bus = "(L.rows().find((x) => x.path === 'tb.dut.bus0') || {}).signalId"
+    let pre = await frame("(() => { const s = \(bus); if (L.isLive(s)) return 'already live'; L.missing(s, 500); L.append(s, 4, [[900, '0101']], 100); return { cov: L.coverage(s), at700: L.valueAt(s, 700), at950: L.valueAt(s, 950) }; })()") as? [String: Any]
+    let cov = (pre?["cov"] as? [[Any]])?.map { $0.map { ($0 as? Int).map(String.init) ?? "open" } }
+    expect(cov == [["0", "900"]], "lossy: a gap before the first record leaves [0, first record) missing: \(String(describing: pre))")
+    expect(pre?["at700"] is NSNull && (pre?["at950"] as? String) == "0101", "lossy: no answer before the first record, its value after: \(String(describing: pre))")
   }
 
   // GitHub #2, the page: with no clock period known, Run, Step and Run Until are off and refuse with a clear

@@ -244,6 +244,16 @@ const widths = new Map();
   expect(!mo.error && notes.some((n) => n.event === 'missingInput' && n.file === 'images/program.hex' && /cmux-replay/.test(n.hint || '')), `missing inputs reach the poll as notices: ${JSON.stringify(notes)}`);
   await req('sim.close', {});
 
+  // A watch's first records in the same chunk as its reply: they are kept (the widths are known by then).
+  process.env.FAKE_WATCH_ONE_WRITE = '1';
+  const ow = await req('sim.open', { dir: runDir, clock: 'tb.clk' });
+  const oww = await req('sim.watch', { signals: ['tb.cnt'] });
+  delete process.env.FAKE_WATCH_ONE_WRITE;
+  const owp = await req('sim.poll', { waitMs: 300 });
+  const owSig = ((owp.result && owp.result.signals) || []).find((x) => oww.result && oww.result.watch[0] && x.simSignal === oww.result.watch[0].simSignal);
+  expect(!ow.error && !!owSig && owSig.count === 1, `a watch's first record, in the reply's chunk, reaches the poll: ${JSON.stringify(owp.result && owp.result.signals)}`);
+  await req('sim.close', {});
+
   // The helper's shutdown: closeAll, then process.exit at once. Nothing of the simulation's is left behind.
   const child = require('node:child_process').spawnSync(process.execPath, ['-e', `
     const sim = require(${JSON.stringify(path.join(helperDir, 'sim.js'))});
