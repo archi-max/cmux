@@ -233,7 +233,7 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
       `apply: a bad applySymbols manifest entry is a setup error: ${JSON.stringify(e2)} exit ${JSON.stringify(x2)}`);
     if (!w2.exited) w2.p.kill('SIGKILL');
   }
-  // File save / restoreFile (simctl library, prototype ece8cd0..): the simulator's own refusal is an error with its
+  // File save / restoreFile (simctl library, prototype red and green): the simulator's own refusal is an error with its
   // text, and restoreFile is refused at once with the reason (a VCS file restore cuts the controller off), the
   // run going on serving.
   {

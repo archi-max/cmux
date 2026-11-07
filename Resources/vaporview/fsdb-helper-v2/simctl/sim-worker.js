@@ -771,7 +771,7 @@ async function handle(r) {
       if (r.cmd === 'checkpoint') ucliCmd = 'checkpoint -add simctl';
       else if (r.cmd === 'restore') { if (!Number.isSafeInteger(r.cp) || r.cp < 0) return out({ id, error: 'restore: cp must be a checkpoint number' }); ucliCmd = `checkpoint -join ${r.cp}`; }
       else { if (r.cmd === 'restoreFile') return out({ id, error: RESTORE_FILE_MSG });
-        ucliCmd = `${r.cmd === 'save' ? 'save' : 'restore'} {${scratchFile(r.file)}}`; }   // brace-quoted Tcl word, charset already safe   // brace-quoted Tcl word, charset already safe
+        ucliCmd = `save {${scratchFile(r.file)}}`; }   // brace-quoted Tcl word, charset already safe
       const s0 = performance.now();
       let res;
       try { res = await park(async () => {
