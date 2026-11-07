@@ -41,9 +41,10 @@ public enum SVModelResolve {
         if let found = await signal(dumpPath, mapping: mapping, lookup: lookup, model: model) { return found }
         if let rule = await HierarchyPrefixInference.designRule(
             forDumpPath: dump,
-            designRoots: try await designRoots(),
+            designRoots: await within(anchor(dumpPath, mapping: mapping, lookup: lookup, roots: try await designRoots())),
             dumpChildren: dumpChildren,
-            ties: .ambiguous
+            ties: .ambiguous,
+            signalsListed: false
         ) {
             mapping.addInferredRule(designPrefix: rule.designPrefix, dumpPrefix: rule.dumpPrefix)
             if let found = await signal(dumpPath, mapping: mapping, lookup: lookup, model: model) { return found }
@@ -56,6 +57,30 @@ public enum SVModelResolve {
             return .notElaborated(instance: missing)
         }
         return .notInDesign
+    }
+
+    /// The deepest scope above the row that the design has as it is (`tb` of `tb.dut.q` for a design `tb.u_dut`), when
+    /// it is a root with scopes (a renamed child: the row's place in the design is below it), with the roots.
+    private static func anchor(
+        _ dumpPath: [String],
+        mapping: HierarchyPathMapping,
+        lookup: Lookup,
+        roots: [String: [HierarchyNode]],
+        isolation: isolated (any Actor)? = #isolation
+    ) async -> (anchor: String?, roots: [String: [HierarchyNode]]) {
+        for length in stride(from: dumpPath.count - 1, through: 1, by: -1) {
+            let path = mapping.designPath(forDumpPath: HierarchyPathMapping.join(Array(dumpPath.prefix(length))))
+            guard roots[path]?.contains(where: \.isScope) == true else { continue }
+            if let found = await lookup(path), found.instance == path, found.name.isEmpty { return (path, roots) }
+        }
+        return (nil, roots)
+    }
+
+    /// The roots inside `anchor` (all without one): an extra top (a module nothing instantiates) whose names
+    /// happen to match is no answer for a row below a scope the design has.
+    private static func within(_ found: (anchor: String?, roots: [String: [HierarchyNode]])) -> [String: [HierarchyNode]] {
+        guard let anchor = found.anchor else { return found.roots }
+        return found.roots.filter { $0.key == anchor || $0.key.hasPrefix(anchor + ".") }
     }
 
     /// The row as a signal of the design under `mapping`: as it is, else without a trailing

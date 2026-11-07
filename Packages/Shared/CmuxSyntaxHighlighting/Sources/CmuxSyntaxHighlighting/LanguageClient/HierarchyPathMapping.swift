@@ -326,12 +326,16 @@ public enum HierarchyPrefixInference {
     /// Waveform → editor. `dumpPath` is not in the design as is; returns the
     /// rule mapping a design top (`designRoots`: name → its children) to the
     /// prefix of `dumpPath` whose dump children overlap that top's enough, the best score's.
-    /// `ties`: which of the rules tying for a score wins (see `Ties`).
+    /// `ties`: which of the rules tying for a score wins (see `Ties`). `signalsListed: false`: some roots list
+    /// their scopes alone (instances below the tops, `SVModelResolve.designRoots`), so roots with scopes compare
+    /// by their scopes only (a shared clk and rst say nothing), and a row that is a dump signal matches a root
+    /// listing no signals by its scopes.
     public static func designRule(
         forDumpPath dumpPath: String,
         designRoots: [String: [HierarchyNode]],
         dumpChildren: Children,
         ties: Ties = .first,
+        signalsListed: Bool = true,
         isolation: isolated (any Actor)? = #isolation
     ) async -> HierarchyPathMapping.Rule? {
         let path = HierarchyPathMapping.segments(dumpPath)
@@ -344,6 +348,7 @@ public enum HierarchyPrefixInference {
             // The design names the signal without the range a dump may give it (`pc[0:0]`).
             let name = path[length]
             var designName = name
+            let isSignalRow = length == path.count - 1 && kids.contains { $0.name == name && !$0.isScope }
             if length == path.count - 1, let kid = kids.first(where: { $0.name == name }) {
                 if uniqueSignalNames(kids).contains(signalName(kid)) {
                     designName = signalName(kid)
@@ -353,9 +358,16 @@ public enum HierarchyPrefixInference {
                 }
             }
             for (root, rootChildren) in designRoots.sorted(by: { $0.key < $1.key })
-            where rootChildren.contains(where: { $0.name == name || $0.name == designName }) {
-                let match = score(kids, against: rootChildren)
+            where rootChildren.contains(where: { $0.name == name || $0.name == designName })
+                || (!signalsListed && isSignalRow && !rootChildren.isEmpty && rootChildren.allSatisfy(\.isScope)) {
+                var match = score(kids, against: rootChildren)
                 guard match.overlap >= requiredOverlap(childCount: Set(rootChildren.map(\.name)).count) else { continue }
+                if !signalsListed, rootChildren.contains(where: \.isScope) {
+                    let scopes = Set(rootChildren.filter(\.isScope).map(\.name))
+                    let shared = Set(kids.filter(\.isScope).map(\.name)).intersection(scopes).count
+                    guard shared > 0 else { continue }
+                    match.score = 2 * shared
+                }
                 let rule = HierarchyPathMapping.Rule(designPrefix: root, dumpPrefix: HierarchyPathMapping.join(prefix), isInferred: true)
                 let mapped = HierarchyPathMapping.join(HierarchyPathMapping.segments(root) + path[length...])
                 if !(byScore[match.score] ?? []).contains(where: { $0.rule == rule }) { byScore[match.score, default: []].append((rule, mapped)) }
@@ -366,18 +378,22 @@ public enum HierarchyPrefixInference {
         case .first:
             return scores.first.map { byScore[$0]![0].rule }
         case .ambiguous:
-            // The first (broadest) rule of a score whose rules all map the row to one design path. Below an
-            // ambiguous score only a broader rule (a shorter dump prefix than any tied one) may win: one at
-            // the tie's scope or deeper is one more candidate for that unresolved scope (u_dma beside u_core*).
+            // In one score, the rules at the shallowest dump prefix win (the first of them) when they map the row
+            // to one design path and the rules at each deeper prefix agree with them or tie among themselves
+            // (copies inside the broader rule's scope). Else the score is ambiguous, and below it only a broader
+            // rule (a shorter dump prefix) may win: one at the tie's scope or deeper is one more candidate for
+            // that unresolved scope (u_dma beside u_core*).
             var limit = Int.max
             for score in scores {
-                let found = byScore[score]!
-                let depths = found.map { HierarchyPathMapping.segments($0.rule.dumpPrefix).count }
-                if Set(found.map(\.designPath)).count == 1 {
-                    if depths.allSatisfy({ $0 < limit }) { return found[0].rule }
-                } else {
-                    limit = min(limit, depths.min() ?? 0)
+                let depth = { (found: (rule: HierarchyPathMapping.Rule, designPath: String)) in HierarchyPathMapping.segments(found.rule.dumpPrefix).count }
+                let found = byScore[score]!.filter { depth($0) < limit }
+                guard let shallowest = found.map(depth).min() else { continue }
+                let broad = Set(found.filter { depth($0) == shallowest }.map(\.designPath))
+                let deeper = Dictionary(grouping: found.filter { depth($0) > shallowest }, by: depth).values.map { Set($0.map(\.designPath)) }
+                if broad.count == 1, deeper.allSatisfy({ $0 == broad || $0.count > 1 }) {
+                    return found.first { depth($0) == shallowest }!.rule
                 }
+                limit = shallowest
             }
             return nil
         }
@@ -389,7 +405,8 @@ public enum HierarchyPrefixInference {
         /// where any instance of a module is the same.
         case first
         /// Ambiguous when they map the row to different design paths (`u_core0`/`u_core1`, copies of
-        /// one module): the next score down with a broader rule (a shorter dump prefix), else nil. Rules mapping it alike (a top and its own child
+        /// one module), unless the broadest agree and the deeper ones only tie among themselves: then
+        /// the next score down with a broader rule (a shorter dump prefix), else nil. Rules mapping it alike (a top and its own child
         /// instance) agree, and the broadest wins.
         case ambiguous
     }

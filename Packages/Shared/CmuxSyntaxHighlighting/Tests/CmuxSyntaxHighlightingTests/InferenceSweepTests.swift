@@ -23,14 +23,15 @@ import Testing
         var r = RNG(s: seed | 1)
         let nMods = 3 + r.int(5)
         // A child: its path segments below the parent (1 or 2: a generate scope then the instance) and its module.
-        var kids: [[([String], Int)]] = Array(repeating: [], count: nMods)
-        var sigs: [[String]] = Array(repeating: [], count: nMods)
-        for m in 0..<nMods {
+        // Module nMods is an extra one that nothing instantiates (mode 3's extra top), with children of modules 1...
+        var kids: [[([String], Int)]] = Array(repeating: [], count: nMods + 1)
+        var sigs: [[String]] = Array(repeating: [], count: nMods + 1)
+        for m in 0...nMods {
             sigs[m] = Array(Set((0..<(1 + r.int(3))).map { _ in sigPool[r.int(sigPool.count)] })).sorted()
-            guard m < nMods - 1 else { continue }
+            guard m != nMods - 1 else { continue }
             var used = Set<String>()
             for _ in 0..<r.int(5) {
-                let n = pool[r.int(pool.count)], c = m + 1 + r.int(nMods - m - 1)
+                let n = pool[r.int(pool.count)], c = m == nMods ? 1 + r.int(nMods - 1) : m + 1 + r.int(nMods - m - 1)
                 switch r.int(4) {
                 case 0: // generate loop g_<n>[0..k]
                     let g = "g_" + n.dropFirst(2)
@@ -76,9 +77,10 @@ import Testing
             dump["top_tb"] = [HierarchyNode(name: "wrap", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)]
             dump["top_tb.wrap"] = [HierarchyNode(name: "dut", isScope: true), HierarchyNode(name: "rst", isScope: false, width: 1)]
             tops = ["soc"]
-        case 3: // as 1, plus an extra top `other` of module 1 (slang's top for a module nothing instantiates), not dumped
+        case 3, 5: // as 1, plus an extra top `other`, not dumped: slang's top for a module nothing instantiates, its
+            // names from the same pool (3); or a copy of module 1, which the DUT instantiates too (5: --top given twice)
             models["tb"] = ["signals": ["clk": bit]]; build(0, design: "tb.u_dut", dumpPath: "tb.dut", depth: 0); tb("tb", "dut")
-            build(1, design: "other", dumpPath: "other", depth: 0, record: false)
+            build(mode == 3 ? nMods : 1, design: "other", dumpPath: "other", depth: 0, record: false)
             tops = ["other", "tb"]
         default: // design has its own TB top; the dump's TB is named differently, DUT instance alike
             models["tb_soc"] = ["signals": ["clk": bit, "rst": bit]]
@@ -110,7 +112,7 @@ import Testing
             if baseOK { o.base += 1 }
             switch got {
             case .signal(let p, _, _):
-                if p != leaf.design { o.wrong += 1; if o.samples.count < 3 { o.samples.append("WRONG seed \(seed) mode \(mode): \(leaf.dump) -> \(p)") } }
+                if p != leaf.design { o.wrong += 1; if o.samples.count < 6 { o.samples.append("WRONG seed \(seed) mode \(mode): \(leaf.dump) -> \(p)") } }
             default:
                 o.none += 1
                 if baseOK { o.lost += 1; if o.samples.count < 3 { o.samples.append("LOST seed \(seed) mode \(mode): \(leaf.dump) (tops only: \(leaf.design))") } }
@@ -120,15 +122,19 @@ import Testing
     }
 
     @Test func sweep() async throws {
-        let n = Int(ProcessInfo.processInfo.environment["SWEEP_N"] ?? "") ?? 40
-        let modes = 5
+        let env = ProcessInfo.processInfo.environment
+        let n = Int(env["SWEEP_N"] ?? "") ?? 40
+        let start = Int(env["SWEEP_START"] ?? "") ?? 0  // first seed index, to split a long sweep over processes
+        let only = Set((env["SWEEP_MODES"] ?? "").split(separator: ",").compactMap { Int($0) })
+        let modes = 6
         var per = [Out](repeating: Out(), count: modes)
         var lostDesigns = [Int](repeating: 0, count: modes), wrongDesigns = [Int](repeating: 0, count: modes)
-        for i in 0..<n { for mode in 0..<modes {
+        for i in start..<(start + n) { for mode in 0..<modes where only.isEmpty || only.contains(mode) {
             let o = try await Self.runOne(seed: UInt64(i) &* 0x9E3779B97F4A7C15 &+ 777, mode: mode)
             per[mode].rows += o.rows; per[mode].wrong += o.wrong; per[mode].none += o.none; per[mode].lost += o.lost; per[mode].base += o.base
             if o.lost > 0 { lostDesigns[mode] += 1 }; if o.wrong > 0 { wrongDesigns[mode] += 1 }
-            if per[mode].samples.count < 4 { per[mode].samples += o.samples.prefix(4 - per[mode].samples.count) }
+            // Wrong rows' samples before lost ones'.
+            per[mode].samples = Array((per[mode].samples + o.samples).sorted { $0.hasPrefix("WRONG") && !$1.hasPrefix("WRONG") }.prefix(4))
         } }
         for m in 0..<modes {
             let p = per[m]
