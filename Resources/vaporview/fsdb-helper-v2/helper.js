@@ -1306,6 +1306,12 @@ async function hotBuild(ids) {
     if (l.error) { throw new Error(l.error); }
     // (a signal the reader can't load stays out of the set: read cold)
     l.result.forEach((x, k) => { if (x && x.error) { r.ids.delete(ids[k]); } });
+    // The reader's first load (navigation built, ~0.2-0.9 s) is its first window: done here,
+    // over the last window asked for, so the first pan once the set is ready doesn't pay it.
+    if (r.ids.size && epoch === ep && r.state !== 'dead') {
+      const p = await hotCall(r, { op: 'hotWindow', signalIds: [...r.ids], ...(hot.lastRange || { t0: 0, t1: Math.max(1, Math.floor((timeEnd || 1) / 100)), buckets: 1024 }) });
+      if (p.error) { throw new Error(p.error); }
+    }
     if (epoch !== ep || r.state === 'dead') { hotKill(r); return; }
     r.state = 'ready';
     const old = hot.readers;
@@ -1350,6 +1356,7 @@ async function hotPump(r) {
 // in parallel; a warm read that fails falls back to cold. -> results in ids order
 async function rangedRead(req, ids, range) {
   hotNote(ids);
+  if (HOT) { hot.lastRange = range; }
   const r = hot.readers.find((x) => x.state === 'ready');
   const inSet = r ? ids.filter((id) => r.ids.has(id)) : [];
   const rest = ids.filter((id) => !inSet.includes(id));
