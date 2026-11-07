@@ -159,7 +159,7 @@ mkdir -p "$STAGE/addon/build/Release" \
 # Live simulation (optional; sim.js says so when it is missing): the simctl VPI library, compiled
 # against this host's own VCS headers ($VCS_HOME/include, never shipped with cmux), and the stub a
 # simulator names at elaboration (-load <stub>:simctl_register), at a path that outlives versions.
-cp "$SRC/sim.js" "$STAGE/" && mkdir -p "$STAGE/simctl" && cp "$SRC/simctl/sim-worker.js" "$STAGE/simctl/" || exit 15
+cp "$SRC/sim.js" "$STAGE/" && mkdir -p "$STAGE/simctl" && cp "$SRC/simctl/sim-worker.js" "$SRC/simctl/LICENSE" "$STAGE/simctl/" || exit 15
 build_simctl() {
   vcs_home=${VCS_HOME:-}
   if [ -z "$vcs_home" ] && v=$(command -v vcs 2>/dev/null); then vcs_home=$(cd "$(dirname "$v")/.." && pwd); fi

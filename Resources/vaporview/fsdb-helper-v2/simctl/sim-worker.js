@@ -21,15 +21,25 @@
 //   time {}                                     -> {t}
 //   read {signals: [path]}                      -> {t, values: ['01xz..' | null]}
 //   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12 -> {t, value}
+//   writes {writes: [{op: force|deposit|release, signal, value}]}  -> {t, writes: [{t, value} | {error}]}
+//                                                 all of one request land at the same time step (t+1 of the
+//                                                 parked time); separate requests each get their own
 //   watch {signals}                             -> {t, watch: [{signalId, width} | null]}
 //   unwatch {signalIds}                         -> {unwatched}
 //   watches {}                                  -> {watches: [{signalId, name, width}]}
 //   list {scope, limit}                         -> {vars: [{name, width}], truncated}
-//   checkpoint {}                               -> {cp, t}     (simulator checkpoint, -ucli2Proc)
+//   checkpoint {}                               -> {cp, t, requestedAt}  (simulator checkpoint, -ucli2Proc)
+//                                                 t: the time of the state it holds, where a restore comes
+//                                                 back (the checkpoint lands after the next time step, not
+//                                                 at requestedAt)
 //   restore {cp}                                -> {t, watches} and a full-value changes event
 //   save {file} / restoreFile {file}            file-based save/restore, for comparison
 //   stats {}                                    -> {pids, pssMb, memAvailMb, licence?}
 //   quit {}
+// Names, values and expressions must not contain control characters, and names and values no whitespace;
+// `file` must be a path inside --scratch of [A-Za-z0-9._/-]; `cp` an integer. Anything else is refused.
+// The simulator runs as the leader of its own process group (its command-line process and checkpoint
+// children join it); every kill here is of that group, and the library ends the group if this process goes.
 // Events: ready {t, precision, period, startupMs}; changes {t0, t1, signals: [{signalId, count, bytes}],
 //   binLength} followed by binLength bytes: per signal `bytes` of records [u64 LE delta][width chars]
 //   (the first delta is from t0, then from the previous record; the window-record layout of helper-v2,
@@ -54,6 +64,7 @@ let period = Number(opt('--period', 0)) || 0;
 const RSS_MB = Number(opt('--rss-mb', 2048));
 const MIN_AVAIL_MB = Number(opt('--min-avail-mb', 5120));
 const POLL_CYCLES = Number(opt('--poll-cycles', 100));
+const VMEM_MB = Number(opt('--vmem-mb', 4096));   // hard limit (ulimit -v) per simulator process; 0: none
 if (!SIMV || !LIB || !SCRATCH) { process.stderr.write('usage: worker.js --simv <simv> --lib <lib.so> --scratch <dir> -- <args>\n'); process.exit(2); }
 
 const t0 = Date.now();
@@ -75,11 +86,28 @@ for (const f of fs.readdirSync(buildDir)) {
 // ---------------------------------------------------------------- launch
 const ucli2 = !flag('--no-ucli2proc');
 const args = ['-n', '10', SIMV, '-ucli', ...(ucli2 ? ['-ucli2Proc'] : []), ...simArgs];
-const sim = spawn('nice', args, {
+// sh sets the hard memory limit, then execs nice, which execs the simulator (with -ucli2Proc it runs the design
+// in a child process). detached: a new session, whose process group holds all of the simulation's processes.
+const sim = spawn('/bin/sh', ['-c', 'if [ "$1" -gt 0 ]; then ulimit -v "$1" || exit 70; fi; shift; exec nice "$@"', 'simctl', String(VMEM_MB * 1024), ...args], {
   cwd: dir,
   stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-  env: { ...process.env, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB },
+  env: { ...process.env, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1' },
+  detached: true,
 });
+// The simulator leaves /tmp/vcs_{attachable,dve_general}.<user>.<pid> when killed: remove those of the group.
+const USER = (() => { try { return require('node:os').userInfo().username; } catch { return ''; } })();
+const killGroup = (sig = 'SIGKILL') => {
+  let pids = []; try { pids = groupPids(sim.pid); } catch { /* none */ }
+  try { process.kill(-sim.pid, sig); } catch { /* gone */ }
+  if (sig === 'SIGKILL' && USER) for (const p of pids) for (const k of ['attachable', 'dve_general']) { try { fs.unlinkSync(`/tmp/vcs_${k}.${USER}.${p}`); } catch { /* none */ } }
+};
+// The group goes with this process, however it ends (a crash, a signal; SIGKILL is the library's job).
+process.on('exit', () => killGroup());
+for (const sg of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sg, () => { killGroup(); process.exit(0); });
+// run.sh counts running sims by these files (one per worker, removed when it ends)
+const SIMS_DIR = path.join(SCRATCH, '.sims');
+try { fs.mkdirSync(SIMS_DIR, { recursive: true, mode: 0o700 }); fs.writeFileSync(path.join(SIMS_DIR, String(sim.pid)), String(process.pid)); } catch { /* best effort */ }
+process.on('exit', () => { try { fs.unlinkSync(path.join(SIMS_DIR, String(sim.pid))); } catch { /* gone */ } });
 const simLog = fs.createWriteStream(path.join(dir, 'sim.out'));
 const libIn = sim.stdio[3], libOut = sim.stdio[4];
 // a file-based `restore` brings back the simulation's memory but not these pipes: report it, don't crash
@@ -114,6 +142,7 @@ let libId = 1;
 const pending = new Map();          // libId -> {id, cmd, sent, resolve?}
 let rbuf = Buffer.alloc(0), needBin = 0, chgHdr = null;
 const watches = new Map();          // wid -> {name, width}
+const unwatchedWidth = new Map();   // wid -> width, of watches dropped here (the library may still send some)
 let lastT = 0, inflightRun = null;
 libOut.on('data', (d) => {
   rbuf = rbuf.length ? Buffer.concat([rbuf, d]) : d;
@@ -136,8 +165,14 @@ function onChanges(n, bin) {
   const per = new Map(); let off = 0, tmin = Infinity, tmax = 0;
   for (let i = 0; i < n; i++) {
     const t = Number(bin.readBigUInt64LE(off)); const wid = bin.readUInt32LE(off + 8);
-    const w = watches.get(wid); const width = w ? w.width : 0;
-    if (!w) { event('error', { message: `record for unknown watch ${wid}` }); return; }
+    const w = watches.get(wid);
+    if (!w) {
+      // unwatched meanwhile (the library drops it only once the run ends): skip this record, keep the rest
+      const width = unwatchedWidth.get(wid);
+      if (width === undefined) { event('error', { message: `record for unknown watch ${wid}; rest of the batch dropped` }); return; }
+      off += 12 + width; continue;
+    }
+    const width = w.width;
     let s = per.get(wid); if (!s) per.set(wid, (s = []));
     s.push([t, bin.subarray(off + 12, off + 12 + width)]);
     if (t < tmin) tmin = t; if (t > tmax) tmax = t;
@@ -183,14 +218,13 @@ function lib(op, id, rest, extra = {}) {
 const libCall = (op, rest) => new Promise((resolve) => lib(op, 0, rest, { resolve }));
 
 // ---------------------------------------------------------------- memory guards
-function descendants(root) {
-  const kids = new Map();
+// The simulation's processes: its process group (reparented checkpoint children included).
+function groupPids(pgid) {
+  const outp = [];
   for (const p of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(p)) continue;
-    try { const st = fs.readFileSync(`/proc/${p}/stat`, 'latin1'); const pp = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]); if (!kids.has(pp)) kids.set(pp, []); kids.get(pp).push(Number(p)); } catch {}
+    try { const st = fs.readFileSync(`/proc/${p}/stat`, 'latin1'); if (Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[2]) === pgid) outp.push(Number(p)); } catch {}
   }
-  const outp = [], st = [root];
-  while (st.length) { const x = st.pop(); outp.push(x); for (const k of kids.get(x) || []) st.push(k); }
   return outp;
 }
 function pssKb(pid) {
@@ -200,7 +234,7 @@ function memAvailMb() { const m = /MemAvailable:\s+(\d+)/.exec(fs.readFileSync('
 let lowMem = false, peakPss = 0, treePids = [], treeAt = 0;
 function memStats(fresh) {
   // walking /proc for the process tree is the expensive part: redo it every 10 s (checkpoints add processes)
-  if (fresh || Date.now() - treeAt > 10000) { treePids = descendants(sim.pid); treeAt = Date.now(); }
+  if (fresh || Date.now() - treeAt > 10000) { treePids = groupPids(sim.pid); treeAt = Date.now(); }
   const pids = treePids;
   const pss = pids.reduce((a, p) => a + pssKb(p), 0) / 1024;
   if (pss > peakPss) peakPss = pss;
@@ -211,7 +245,7 @@ const guard = setInterval(() => {
   const s = memStats();
   if (s.pssMb > RSS_MB) {
     event('memory', { ...s, killed: true, message: `simulation over ${RSS_MB} MB; killed` });
-    for (const p of descendants(sim.pid).reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} }
+    killGroup();
     return;
   }
   const low = s.memAvailMb < MIN_AVAIL_MB;
@@ -234,7 +268,50 @@ async function park(work) {
   libIn.write(`K ${libId++}\n`);      // the library's resume callback serves again once it sees this
   sim.stdin.write('run\n');
   parked = false;
-  return { parkedAt: pr.t, ...result };
+  // where serving resumed: the time of the state a checkpoint taken here holds (the stop took effect after
+  // the next time step, not at the requested time)
+  const back = await libCall('T', '');
+  return { requestedAt: pr.t, t: back.t, ...result };
+}
+// ---------------------------------------------------------------- request validation
+const BAD_TOKEN = /[\s\x00-\x1f\x7f]/;
+function names(list, what = 'signal') {
+  if (!Array.isArray(list)) throw new Error(`${what}s: expected a list`);
+  return list.map((n) => token(n, what));
+}
+function token(v, what) {
+  const s = String(v ?? '');
+  if (!s || BAD_TOKEN.test(s)) throw new Error(`bad ${what} ${JSON.stringify(s).slice(0, 80)}: no whitespace or control characters`);
+  return s;
+}
+function exprTokens(expr) {
+  const e = String(expr || '');
+  if (/[\x00-\x1f\x7f]/.test(e)) throw new Error('bad expression: control characters');
+  return e.replace(/(&&|\|\||==|!=)/g, ' $1 ').trim().split(/\s+/).filter(Boolean).map((t) => token(t, 'expression token'));
+}
+function scratchFile(f) {
+  const s = String(f || '');
+  if (!/^[A-Za-z0-9._/-]+$/.test(s)) throw new Error('bad file: use [A-Za-z0-9._/-] only');
+  const abs = path.resolve(dir, s);
+  const root = path.resolve(SCRATCH) + path.sep;
+  if (!abs.startsWith(root)) throw new Error(`bad file: must be inside ${SCRATCH}`);
+  return abs;
+}
+const WRITE_OPS = { force: 'F', deposit: 'D', release: 'L' };
+// One request's writes: one group (Y), so they land at the same time step. Each gets its own reply.
+function writeGroup(list) {
+  const lines = [], waits = [];
+  for (const w of list) {
+    const op = WRITE_OPS[w.op];
+    if (!op) { waits.push(Promise.resolve({ error: `unknown write op ${w.op}` })); continue; }
+    let sig, val;
+    try { sig = token(w.signal, 'signal'); if (op !== 'L') val = token(w.value, 'value'); } catch (e) { waits.push(Promise.resolve({ error: e.message })); continue; }
+    const lid = libId++;
+    waits.push(new Promise((resolve) => pending.set(lid, { id: 0, sent: performance.now(), resolve })));
+    lines.push(`${op} ${lid} ${sig}${op === 'L' ? '' : ' ' + val}`);
+  }
+  if (lines.length) libIn.write(lines.join('\n') + `\nY ${libId++}\n`);
+  return Promise.all(waits).then((rs) => rs.map((m) => (m.error ? { error: m.error } : { t: m.t, value: m.value })));
 }
 const toTicks = (r, c, t) => (r[t] !== undefined ? Number(r[t]) : r[c] !== undefined ? Math.round(Number(r[c]) * period) : NaN);
 async function handle(r) {
@@ -247,29 +324,41 @@ async function handle(r) {
       const dt = r.cmd === 'run' ? toTicks(r, 'cycles', 'time') : toTicks(r, 'maxCycles', 'maxTime');
       if (!Number.isFinite(dt) || dt < 0) return out({ id, error: 'need cycles (with a known period) or time' });
       if (r.cmd === 'run') { inflightRun = lib('R', id, String(dt)); return; }
-      const toks = String(r.expr || '').replace(/(&&|\|\||==|!=)/g, ' $1 ').trim().split(/\s+/).filter(Boolean);
-      inflightRun = lib('U', id, `${dt} ${toks.join(' ')}`); return;
+      inflightRun = lib('U', id, `${dt} ${exprTokens(r.expr).join(' ')}`); return;
     }
     case 'stop': libIn.write(`S ${libId}\n`); pending.set(libId++, { id, sent: performance.now() }); return;
     case 'time': lib('T', id, ''); return;
-    case 'read': lib('G', id, (r.signals || []).join(' ')); return;
-    case 'force': case 'deposit': lib(r.cmd === 'force' ? 'F' : 'D', id, `${r.signal} ${r.value}`); return;
-    case 'release': lib('L', id, r.signal); return;
-    case 'watch': lib('W', id, (r.signals || []).join(' '), { names: r.signals || [] }); return;
-    case 'unwatch': for (const w of r.signalIds || []) watches.delete(w); lib('X', id, (r.signalIds || []).join(' ')); return;
+    case 'read': lib('G', id, names(r.signals || []).join(' ')); return;
+    case 'force': case 'deposit': case 'release': {
+      const [w] = await writeGroup([{ op: r.cmd, signal: r.signal, value: r.value }]);
+      out(w.error ? { id, error: w.error } : { id, result: w }); return;
+    }
+    case 'writes': {
+      if (!Array.isArray(r.writes) || !r.writes.length) return out({ id, error: 'writes: expected a non-empty list' });
+      const ws = await writeGroup(r.writes);
+      const t = ws.find((w) => !w.error);
+      out({ id, result: { t: t ? t.t : lastT, writes: ws } }); return;
+    }
+    case 'watch': { const ns = names(r.signals || []); lib('W', id, ns.join(' '), { names: ns }); return; }
+    case 'unwatch': {
+      const ids = (r.signalIds || []).map(Number).filter(Number.isInteger);
+      for (const w of ids) { const x = watches.get(w); if (x) { unwatchedWidth.set(w, x.width); watches.delete(w); } }
+      lib('X', id, ids.join(' ')); return;
+    }
     case 'watches': lib('I', id, ''); return;
-    case 'list': lib('N', id, `${r.scope} ${r.limit || 10000}`); return;
-    case 'option': lib('O', id, `poll ${r.poll}`); return;
+    case 'list': lib('N', id, `${token(r.scope, 'scope')} ${Math.max(1, Math.floor(Number(r.limit) || 10000))}`); return;
+    case 'option': lib('O', id, `poll ${Math.max(1, Math.floor(Number(r.poll) || 1))}`); return;
     case 'checkpoint': case 'restore': case 'save': case 'restoreFile': {
       if (busyRun()) return;
+      if (lowMem) return out({ id, error: 'paused: host memory low (a checkpoint or restore forks the simulation)' });
+      let ucliCmd;
+      if (r.cmd === 'checkpoint') ucliCmd = 'checkpoint -add simctl';
+      else if (r.cmd === 'restore') { if (!Number.isSafeInteger(r.cp) || r.cp < 0) return out({ id, error: 'restore: cp must be a checkpoint number' }); ucliCmd = `checkpoint -join ${r.cp}`; }
+      else ucliCmd = `${r.cmd === 'save' ? 'save' : 'restore'} {${scratchFile(r.file)}}`;   // brace-quoted Tcl word, charset already safe
       const s0 = performance.now();
       const res = await park(async () => {
         const u0 = performance.now();
-        let txt;
-        if (r.cmd === 'checkpoint') txt = await ucli('checkpoint -add simctl');
-        else if (r.cmd === 'restore') txt = await ucli(`checkpoint -join ${r.cp}`);
-        else if (r.cmd === 'save') txt = await ucli(`save ${r.file}`);
-        else txt = await ucli(`restore ${r.file}`);
+        const txt = await ucli(ucliCmd);
         const ucliMs = performance.now() - u0;
         const o = { ucliMs: +ucliMs.toFixed(1), ucli: txt.trim().slice(-400) };
         if (r.cmd === 'checkpoint') { const m = /(\d+)\s*$/.exec(txt.trim()); o.cp = m ? Number(m[1]) : null; }
@@ -284,28 +373,30 @@ async function handle(r) {
         await libCall('E', '');
         res.t = info.t;
       }
+      treeAt = 0;   // a checkpoint or restore changed the group: count it afresh
       out({ id, result: res, ms: +(performance.now() - s0).toFixed(1) });
       return;
     }
     case 'stats': out({ id, result: { ...memStats(true), period, lastT } }); return;
     case 'quit': lib('Q', id, ''); setTimeout(() => { try { sim.stdin.write('quit\n'); sim.stdin.end(); } catch {} }, 200);
-      setTimeout(() => { for (const p of descendants(sim.pid).reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} } }, 10000).unref();
+      setTimeout(() => killGroup(), 10000).unref();
       return;
     default: out({ id, error: `unknown cmd ${r.cmd}` });
   }
 }
-let chain = Promise.resolve();
+let chain = Promise.resolve(), queued = 0;
 const rl = require('node:readline').createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   if (!line.trim()) return;
   let r; try { r = JSON.parse(line); } catch { out({ id: null, error: 'bad JSON' }); return; }
-  // stop goes straight through (it must reach a run in flight); everything else keeps order
-  if (r.cmd === 'stop' && !parked) { handle(r); return; }
-  chain = chain.then(() => handle(r)).catch((e) => out({ id: r.id, error: String(e) }));
+  // Requests keep their order. A stop with nothing queued before it goes straight through, since it must
+  // reach a run in flight (which holds the chain only until the library has it); behind queued requests
+  // (a run not sent yet) it waits its turn, so it stops that run.
+  if (r.cmd === 'stop' && !parked && queued === 0) { handle(r); return; }
+  queued++;
+  chain = chain.then(() => handle(r)).catch((e) => out({ id: r.id, error: String((e && e.message) || e) })).finally(() => { queued--; });
 });
 rl.on('close', () => { if (sim.exitCode === null) handle({ id: 0, cmd: 'quit' }); });
-// The helper is exiting: no time for a clean quit, kill the simulation's process tree now.
-process.on('SIGTERM', () => { for (const p of descendants(sim.pid).reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} } process.exit(0); });
 
 // ---------------------------------------------------------------- startup
 (async () => {
