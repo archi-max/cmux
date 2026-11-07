@@ -243,7 +243,18 @@ function merge(d, r, a) {
     if (ivs.length && ivs[0][0] === a) { d.open[2].push(...ivs[0][2]); d.open[1] = ivs[0][1]; k = 1; if (d.open[1] !== -1) { d.open = null; } }
     else { d.open[1] = a; d.open = null; }  // (in sync again at a)
   }
-  for (; k < ivs.length; k++) { const iv = [ivs[k][0], ivs[k][1], ivs[k][2]]; d.intervals.push(iv); if (iv[1] === -1) { d.open = iv; } }
+  for (; k < ivs.length; k++) {
+    const iv = [ivs[k][0], ivs[k][1], ivs[k][2]], last = d.intervals[d.intervals.length - 1];
+    // (a closed interval and the next with no grid edge between them are one: the changes and the
+    // values are the same either way, since outside intervals the row is the grid. A clock that
+    // stops split into one interval per segment otherwise, each a deviation toward the 1% limit:
+    // review L2)
+    if (last && last[1] >= d.firstRise && last[1] <= iv[0] && gridCount(d, last[1], iv[0]) === 0) {
+      last[2].push(...iv[2]); last[1] = iv[1]; if (last[1] === -1) { d.open = last; }
+      continue;
+    }
+    d.intervals.push(iv); if (iv[1] === -1) { d.open = iv; }
+  }
   d.records = d.intervals.reduce((x, iv) => x + iv[2].length, 0);
 }
 
