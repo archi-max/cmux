@@ -567,6 +567,107 @@ function runTask(w, task, front) {
   });
 }
 
+// ---- stored and rebuilt signals (kinds) ----
+// The reader stores some signals' changes (primaries) and rebuilds the others on load by
+// re-simulating a gate network from the stored ones (secondaries: port aliases, interface
+// members, combinational wires). They cost differently (status "Reader profile"):
+// - a primary pays a floor per reader load call (its navigation data is read and inflated again:
+//   ~110 ms on a 1.7 GB dump, ~650 ms on 10 GB, whatever the time range), then ~0.14-0.4 us per
+//   change: loaded several per call, and cut in pieces only of several floors;
+// - a secondary costs a worker a setup the first time (~190 ms), then is linear in its time
+//   range with no floor: cut in pieces, kept on few workers while other loads wait.
+// The reader API doesn't tell them apart; Verdi's `fsdbdebug -top_n_var 0 <file>` lists only the
+// stored vars, by idcode, with their change counts (1.7 GB: 4 s / 0.5 GB RSS; 10 GB: 27 s /
+// 2.5 GB). It runs once per file in the background (nice, an RSS watchdog) and is cached in the
+// index dir; without it (no tool, too little memory, it failed) signals load as one kind.
+// Never -with_computed_signal: it loads every secondary (> 6 GB on 1.7 GB).
+const KINDS_FILE = 'kinds.v1.json';
+const SEC_SETUP_MS = Number(process.env.FSDB_SEC_SETUP_MS || 190);
+const kinds = { state: 'none', source: null, primaries: null, error: null, ms: 0, proc: null };
+function kindOf(id) { return kinds.state === 'ready' ? (kinds.primaries.has(id) ? 'p' : 's') : null; }
+function stopKinds() {
+  if (kinds.proc) { try { kinds.proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
+  if (kinds.timer) { clearInterval(kinds.timer); }
+  Object.assign(kinds, { state: 'none', source: null, primaries: null, error: null, ms: 0, proc: null, timer: null });
+}
+function startKinds(file) {
+  stopKinds();
+  const ep = epoch, t0 = performance.now();
+  const done = (map, source) => {
+    if (epoch !== ep) { return; }
+    Object.assign(kinds, { state: 'ready', source, primaries: map, ms: Math.round(performance.now() - t0), proc: null });
+    if (kinds.timer) { clearInterval(kinds.timer); kinds.timer = null; }
+  };
+  const fail = (error) => {
+    if (epoch !== ep) { return; }
+    if (kinds.timer) { clearInterval(kinds.timer); kinds.timer = null; }
+    Object.assign(kinds, { state: 'none', error, proc: null });
+  };
+  const dir = warm.dir;
+  if (dir) {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(dir, KINDS_FILE), 'utf8'));
+      if (j && j.v === 1 && Array.isArray(j.p)) { done(new Map(j.p), 'cache'); return; }
+    } catch (e) { /* none yet */ }
+  }
+  const tool = process.env.FSDB_FSDBDEBUG || (process.env.VERDI_HOME ? path.join(process.env.VERDI_HOME, 'bin', 'fsdbdebug') : '');
+  if (!tool || !fs.existsSync(tool)) { fail('no fsdbdebug'); return; }
+  // memory: min(4 GB, available - 4 GB), not run under 3 GB (Linux; elsewhere no watchdog)
+  let availMB = Number(process.env.FSDB_HOST_AVAIL_MB) || 0;
+  if (!availMB) { try { availMB = Number(/MemAvailable:\s+(\d+) kB/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))[1]) / 1024; } catch (e) { availMB = 0; } }
+  const capMB = availMB ? Math.min(4096, availMB - 4096) : 0;
+  if (availMB && capMB < 3072) { fail(`not enough memory for fsdbdebug (${Math.round(availMB)} MB available)`); return; }
+  let cwd;
+  try { cwd = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'fsdb-helper-kinds-')); } catch (e) { fail('no temp dir'); return; }  // (it writes a log dir in its cwd)
+  const { spawn } = require('node:child_process');
+  let proc;
+  try { proc = spawn('nice', ['-n', '10', tool, '-top_n_var', '0', file], { cwd, stdio: ['ignore', 'ignore', 'pipe'] }); } catch (e) { fail(String(e.message)); return; }
+  kinds.state = 'pending'; kinds.proc = proc;
+  const map = new Map();
+  let buf = '', killed = null;
+  proc.stderr.setEncoding('utf8');
+  proc.stderr.on('data', (d) => {
+    buf += d;
+    let k;
+    while ((k = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, k); buf = buf.slice(k + 1);
+      const m = /^(\d+)\s+\S.*?\s(\d+)\([\d.]+%\)\s*$/.exec(line);
+      if (m) { map.set(Number(m[1]), Number(m[2])); }
+    }
+  });
+  const limitMs = Number(process.env.FSDB_FSDBDEBUG_TIMEOUT_MS || 300000);
+  kinds.timer = setInterval(() => {
+    if (performance.now() - t0 > limitMs) { killed = 'timed out'; } else if (capMB) {
+      try { const kb = Number(/VmRSS:\s+(\d+) kB/.exec(fs.readFileSync(`/proc/${proc.pid}/status`, 'utf8'))[1]); if (kb / 1024 > capMB) { killed = `over ${capMB} MB`; } } catch (e) { /* exited */ }
+    }
+    if (killed) { try { proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
+  }, 200);
+  proc.on('error', (e) => { fs.rmSync(cwd, { recursive: true, force: true }); fail(String(e.message)); });
+  proc.on('close', (code) => {
+    fs.rmSync(cwd, { recursive: true, force: true });
+    if (killed || code !== 0 || !map.size) { fail(killed || `fsdbdebug exited ${code} with ${map.size} vars`); return; }
+    done(map, 'fsdbdebug');
+    if (dir && epoch === ep) {
+      try {
+        privateDir(dir);
+        const tmp = path.join(dir, `${KINDS_FILE}.${process.pid}.tmp`);
+        fs.writeFileSync(tmp, JSON.stringify({ v: 1, p: [...map] }), { mode: 0o600 });
+        fs.renameSync(tmp, path.join(dir, KINDS_FILE));
+      } catch (e) { /* not cached: run again next open */ }
+    }
+  });
+}
+// Cost of a primary's whole load before any piece ran: the per-call floor (learned from loads,
+// first ~65 ms per GB of file) and ~0.14 us + 4 ns per bit per change (reader traversal, value
+// decode and the store walk; clk of a 1.7 GB dump: 13M changes, 1.8 s).
+let primFloorMs = null;
+const primFloor = () => (primFloorMs !== null ? primFloorMs : 65 * fileBytes / 1e9);
+const primWalkMs = (id) => ((kinds.primaries && kinds.primaries.get(id)) || 0) * (0.14 + 0.004 * (widthOf.get(id) || 1)) / 1000;
+function learnFloor(ms, walkMs) {
+  const f = Math.max(0, ms - walkMs);
+  primFloorMs = primFloorMs === null ? f : 0.7 * primFloorMs + 0.3 * f;
+}
+
 // ---- whole loads in pieces (jobs) ----
 // On a big dump one reader load of a whole signal costs up to ~10 s (clk 6.6 s, a 4-bit valid
 // 10.6 s on 1.7 GB), cannot be interrupted, and costs about the same whether it is done in one
@@ -1218,7 +1319,7 @@ function openIndex(file) {
     const man = readManifest(warm.dir);
     for (const name of fs.readdirSync(warm.dir)) {
       const m = /^(\d+)\.vvz$/.exec(name), f = path.join(warm.dir, name);
-      if (name === MANIFEST) { continue; }
+      if (name === MANIFEST || name === KINDS_FILE) { continue; }
       if (!m) {  // leftover temp files; another live helper's fresh ones (< 1 min) are left alone
         try { if (!/\.tmp$/.test(name) || fs.lstatSync(f).mtimeMs < Date.now() - 60e3) { fs.rmSync(f, { force: true }); } } catch (e) { /* gone */ }
         continue;
@@ -1726,6 +1827,7 @@ const handlers = {
     if (failed) { addon.unload(); openFile = null; throw new Error('workers could not open the file: ' + failed.reason.message); }
     warm.inflight = 0;
     openIndex(file);
+    startKinds(file);
     if (wantWarm) { startWarm(); }
     const result = { metadata, top, workers: want };
     if (ident) { lastOpen = { ident, result }; }
@@ -1967,6 +2069,7 @@ const handlers = {
       firstLoads: floatQueue.length,  // first loads waiting for a free worker (floatQueue)
       coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
       pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
+      kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
     };
@@ -2025,6 +2128,7 @@ const handlers = {
   },
 
   async close() {
+    stopKinds();
     flushManifest();
     lastOpen = null;
     clearJobs();
