@@ -1034,6 +1034,34 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   }
 }
 
+// 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
+// changes, 755 MB, against a 244 MB store gave "signal larger than 244 MB"): answered from
+// ranged reads that grow from t until the first hit, never a whole load's cap error. Signal 5 is
+// a clock (period 1000) and 6 changes once, at 100; both are 1 M changes against a 1 MB store.
+{
+  const log = path.join(tmp, 'find.log'); fs.rmSync(log, { force: true });
+  const h = await start(1, {}, { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6, 6: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), STUB_CHANGE_AT: JSON.stringify({ 6: 100 }), STUB_FIND_LOG: log });
+  const ask = async (cmd, a) => { const r = await h.send(cmd, a).reply; return r.error ? `error: ${r.error}` : r.result.t; };
+  const got = {
+    nextPos: await ask('edge', { signalId: 5, t: 600000, dir: 1, kind: 'posedge' }),
+    prevPos: await ask('edge', { signalId: 5, t: 600000, dir: -1, kind: 'posedge' }),
+    nextNeg: await ask('edge', { signalId: 5, t: 600000, dir: 1, kind: 'negedge' }),
+    nextAny: await ask('edge', { signalId: 5, t: 600500, dir: 1, kind: 'any' }),
+    nextOne: await ask('search', { signalId: 5, t: 600000, dir: 1, value: '1' }),
+    prevZero: await ask('search', { signalId: 5, t: 600000, dir: -1, value: '0' }),
+  };
+  const want = { nextPos: 600500, prevPos: 599500, nextNeg: 601000, nextAny: 601000, nextOne: 600500, prevZero: 600000 - 1000 };
+  check(JSON.stringify(got) === JSON.stringify(want), `edge and value search on a clock larger than the store: ${JSON.stringify(got)} (want ${JSON.stringify(want)})`);
+  fs.rmSync(log, { force: true });
+  const far = await ask('edge', { signalId: 6, t: 900000, dir: -1, kind: 'any' });
+  const rounds = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  const none = await ask('edge', { signalId: 6, t: 900000, dir: 1, kind: 'any' });
+  const sv = await ask('edge', { signalId: 6, t: 900000, dir: -1, kind: 'posedge' });
+  h.close();
+  check(far === 100 && rounds.length > 1 && rounds.length <= 6, `... a change far back is found by growing reads: ${far} in ${rounds.length} rounds (bounds ${rounds.map((r) => r.bound)})`);
+  check(none === null && sv === 100, `... none ahead is null, not an error: ${none}; x->1 at 100 is a posedge: ${sv}`);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `FSDB SCHED CHECKS FAILED: ${fails}` : 'FSDB SCHED CHECKS PASSED');
 process.exit(fails ? 1 : 0);
