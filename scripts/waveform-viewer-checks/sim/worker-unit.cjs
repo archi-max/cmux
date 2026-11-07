@@ -189,6 +189,21 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(!!rb && !!rb.error && !/outside\.save/.test(libLog), `a forksave outside the scratch is refused, nothing sent: ${rb && rb.error}`);
     await w.quit();
   }
+  // Fork-save re-review: L-b a save is never ok and timed out at once; M-a a simulation that ends with a save out
+  // still gets exactly one saved event for it, ok false and simExited.
+  {
+    const w = start(['--period', '10', '--no-ucli']); await w.ready;
+    const lt = await w.reply(w.send({ cmd: 'forksave', file: 'latetimeout.save' }).id);
+    const end = Date.now() + 3000; let ev = null;
+    while (!ev && Date.now() < end) { ev = w.events.find((e) => e.event === 'saved' && lt && lt.result && e.pid === lt.result.pid); if (!ev) await sleep(20); }
+    expect(!!ev && ev.timeout === true && ev.ok === false, `L-b a save that timed out is not ok, even with an image and status 0: ${JSON.stringify(ev)}`);
+    const xs = await w.reply(w.send({ cmd: 'forksave', file: 'exitsoon.save' }).id);
+    await Promise.race([w.exitP, sleep(5000)]);
+    await sleep(300);
+    const evs = w.events.filter((e) => e.event === 'saved' && xs && xs.result && e.pid === xs.result.pid);
+    expect(evs.length === 1 && evs[0].ok === false && evs[0].simExited === true, `M-a the simulation ended during a save: exactly one saved event, simExited: ${JSON.stringify(evs)}`);
+    await w.quit().catch(() => {});
+  }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
   // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
   {
