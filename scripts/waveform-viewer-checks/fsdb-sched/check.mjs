@@ -8,6 +8,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { refWindow } from './windowof-ref.mjs';
 
 const dir = path.resolve(process.argv[2]);
 const here = path.dirname(new URL(import.meta.url).pathname);
@@ -27,7 +29,7 @@ function helper(workers, env = {}) {
   p.stdio[3].on('data', (d) => {
     buf = Buffer.concat([buf, d]);
     for (;;) {
-      if (need) { if (buf.length < need.n) { break; } buf = buf.subarray(need.n); deliver(need.msg); need = null; continue; }
+      if (need) { if (buf.length < need.n) { break; } const bin = Buffer.from(buf.subarray(0, need.n)); buf = buf.subarray(need.n); deliver({ ...need.msg, bin }); need = null; continue; }
       const i = buf.indexOf(10); if (i < 0) { break; }
       const line = buf.subarray(0, i).toString(); buf = buf.subarray(i + 1);
       if (!line.trim()) { continue; }
@@ -1361,6 +1363,37 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   const diff = qs.map((q, k) => [q, want[k], got[k]]).filter(([, a, b]) => JSON.stringify(a) !== JSON.stringify(b));
   check(info.state === 'ready' && !diff.length && st.clock && st.clock.served >= qs.length - 8,
     `a ready descriptor answers ${qs.length} edge/search queries as the reader does: ${info.state}, ${diff.length} differ ${JSON.stringify(diff.slice(0, 3))}, ${st.clock ? st.clock.served : 'no'} from the descriptor`);
+}
+
+// 43c. A ready clock descriptor answers windows (clockdesc.js; FSDB_CLOCK_DESC=1 only), byte for
+// byte as the addon's windowOf over the row's changes: the page's tiles at every level (1024
+// buckets per tile, runs of tiles; bucketed where the period is under a bucket), odd spans, and
+// tiles past the dump's end. (clockdesc-check.mjs: the same on random gated/x/z/glitchy rows.)
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), FSDB_CLOCK_DESC: '1' };
+  const norm = []; for (let k = 0; k * 500 <= 1000000; k++) { norm.push([k * 500, k % 2 ? '1' : '0']); }
+  const reqs = [];
+  for (let L = 0; L <= 11; L++) { const span = 1024 * 2 ** L; reqs.push([0, span, 1024], [span, 3 * span, 2048], [Math.floor(999999 / span) * span, (Math.floor(999999 / span) + 1) * span, 1024], [span, 2 * span, 16]); }
+  reqs.push([123, 4567, 7], [0, 1000001, 1], [499, 501, 1024], [1000000, 1000000, 1024]);
+  const h = await start(1, {}, env);
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const bad = []; let bucketed = 0, fromDesc = 0;
+  for (const [t0, t1, buckets] of reqs) {
+    const r = await h.send('window', { signals: [{ signalId: 5, width: 1 }], t0, t1, buckets }).reply;
+    // (the reply's binary: deflate-raw records, then the u32 counts when bucketed)
+    const s0 = r.result && r.result.signals[0], w = refWindow(norm, t0, t1, buckets), want = Buffer.concat([w.records, w.counts || Buffer.alloc(0)]);
+    let gotBin = null;
+    try { gotBin = Buffer.concat([zlib.inflateRawSync(r.bin.subarray(0, s0.bytes)), r.bin.subarray(s0.bytes, s0.bytes + s0.bucketBytes)]); } catch (e) { gotBin = null; }
+    if (!w.exact) { bucketed++; }
+    if (s0 && s0.clock) { fromDesc++; }
+    if (!s0 || s0.exact !== w.exact || s0.count !== w.count || !gotBin || !gotBin.equals(want)) { bad.push({ t0, t1, buckets, got: s0 && { exact: s0.exact, count: s0.count, bytes: s0.bytes, bucketBytes: s0.bucketBytes }, want: { exact: w.exact, count: w.count, bytes: w.records.length } }); }
+  }
+  const st = (await h.send('stats').reply).result;
+  h.close();
+  check(info.state === 'ready' && !bad.length && fromDesc === reqs.length,
+    `a ready descriptor answers ${reqs.length} windows (${bucketed} bucketed) byte for byte as windowOf: ${info.state}, ${bad.length} differ ${JSON.stringify(bad.slice(0, 2))}, ${fromDesc} from the descriptor (served ${st.clock && st.clock.served})`);
 }
 
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M

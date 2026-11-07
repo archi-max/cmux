@@ -3,10 +3,12 @@
 // change, a clock that stops, odd starts. Each row is scanned as clockseg scans it (the same
 // algorithm, in JS: stub-addon.cjs clockScan's), over random contiguous ranges merged as the
 // verify job merges them, then every answer is compared with a brute-force model of the addon's
-// cacheValueAt / cacheEdge / cacheSearch over the row's normalized changes.
+// cacheValueAt / cacheEdge / cacheSearch / windowOf over the row's normalized changes (windows byte
+// for byte, at every level of the page's tiles, bucketed ones included).
 // Usage: node clockdesc-check.mjs <fsdb-helper-v2 folder> [cases]
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { refWindow } from './windowof-ref.mjs';
 
 const require = createRequire(import.meta.url);
 const cd = require(path.join(path.resolve(process.argv[2]), 'clockdesc.js'));
@@ -108,6 +110,20 @@ function refSearch(norm, t, dir, pattern) {
   return null;
 }
 
+// The page's windows (window_cache.ts): tiles at level L span 1024 * 2^L with 1024 buckets each
+// (256 for wide rows), a request covers a run of tiles; plus odd spans and bucket counts.
+function windowsFor(T, R0) {
+  const out = [];
+  for (let L = 0; 1024 * 2 ** L <= 4 * T; L++) {
+    const span = 1024 * 2 ** L, tiles = Math.ceil((T + 1) / span);
+    for (let r = 0; r < 3; r++) { const i = ri(0, tiles - 1), m = ri(1, 3); out.push([i * span, (i + m) * span, 1024 * m]); }
+    out.push([0, span, 1024], [0, span, 256]);
+  }
+  for (let k = 0; k < 6; k++) { const t0 = ri(0, T), t1 = t0 + ri(0, T); out.push([t0, t1, ri(1, 64)]); }
+  out.push([R0, R0, 4], [0, T + 1, 1], [0, T + 1, 1 << 22 > 4 * T ? 4 * T : 1 << 22]);
+  return out;
+}
+let windows = 0, bucketed = 0;
 const KINDS = ['any', 'rise', 'fall', 'posedge', 'negedge', 'edge'];
 const PATTERNS = ['0', '1', 'x', 'z', '?', '!x', '!z', '!?', '10', 'X'];
 for (let c = 0; c < CASES; c++) {
@@ -123,6 +139,12 @@ for (let c = 0; c < CASES; c++) {
   for (const [t] of row.norm) { if (rnd() < 0.15) { ts.push(t - 1, t, t + 1); } }
   for (let k = 0; k < 40; k++) { ts.push(ri(0, row.T + 1)); }
   for (const iv of d.intervals) { ts.push(iv[0] - 1, iv[0], iv[0] + 1, iv[1] - 1, iv[1], iv[1] + 1); }
+  for (const [t0, t1, B] of windowsFor(row.T, R0)) {
+    const w = cd.window(d, t0, t1, B), rw = refWindow(row.norm, t0, t1, B);
+    windows++; if (!rw.exact) { bucketed++; }
+    const same = w.exact === rw.exact && w.count === rw.count && w.records.equals(rw.records) && (!!w.counts === !!rw.counts) && (!w.counts || w.counts.equals(rw.counts));
+    check(same, `${tag}: window [${t0}, ${t1}) x ${B}: exact ${w.exact}/${rw.exact}, count ${w.count}/${rw.count}, records ${w.records.length}/${rw.records.length} B${w.records.equals(rw.records) ? ' (same)' : ''}, counts ${w.counts ? w.counts.length : '-'}/${rw.counts ? rw.counts.length : '-'}${w.counts && rw.counts && w.counts.equals(rw.counts) ? ' (same)' : ''}`);
+  }
   for (const t of ts.filter((x) => x >= 0 && x <= row.T + 1)) {
     compared++;
     const v = cd.valueAt(d, t), rv = refValue(row.norm, t);
@@ -140,6 +162,6 @@ for (let c = 0; c < CASES; c++) {
     }
   }
 }
-console.log(`${CASES} rows, ${compared} times x (1 value + 2 dirs x (6 edge kinds + ${PATTERNS.length} patterns))`);
+console.log(`${CASES} rows, ${windows} windows (byte for byte, ${bucketed} bucketed), ${compared} times x (1 value + 2 dirs x (6 edge kinds + ${PATTERNS.length} patterns))`);
 if (fails) { console.log(`CLOCKDESC CHECKS FAILED: ${fails}`); process.exit(1); }
 console.log('CLOCKDESC CHECKS PASSED');
