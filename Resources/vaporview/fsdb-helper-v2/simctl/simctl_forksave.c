@@ -29,7 +29,9 @@
  *     <file>.FILES are always the image and file list of one and the same save (the old one or the new one), and
  *     the exit status 0 is this save's own completion record. A name that is not such a symlink yet (a first
  *     save, or a file from elsewhere) is turned into one before the commit;
- *   - a second save to a name with a save of this process still in flight is refused;
+ *   - a second save to a name with a save of this process still in flight is refused; each save folder has an
+ *     owner file (host, pid), and a commit removes only this host's folders whose process is gone, so a scratch
+ *     shared over NFS by several hosts never loses another host's save in flight (re-review 4);
  *   - to move or copy a save, take all three: <file>, <file>.FILES and <file>.simctl.d (the links are relative;
  *     copy with the links as links, e.g. cp -a). <file> and <file>.FILES alone are just links (re-review 3, L1);
  *   - a failed or timed-out save's folder is removed;
@@ -103,8 +105,9 @@ static void fs_private_fds(void) {
     struct stat sb; char lp[64], tp[4096];
     snprintf(lp, sizeof lp, "/proc/self/fd/%d", k);
     ssize_t m = readlink(lp, tp, sizeof tp - 1);
-    if (m > 0 && tp[0] == '/' && fstat(k, &sb) == 0 && S_ISREG(sb.st_mode)) {
-      tp[m] = 0;
+    tp[m > 0 ? m : 0] = 0;                                   /* terminated whatever happens below */
+    int reg = fstat(k, &sb) == 0 && S_ISREG(sb.st_mode);    /* sb is only read when this is 1 */
+    if (m > 0 && tp[0] == '/' && reg) {
       off_t at = lseek(k, 0, SEEK_CUR);   /* the shared offset, read before anything moves it */
       n = open(tp, (fl & O_ACCMODE));
       struct stat nb;
@@ -112,7 +115,7 @@ static void fs_private_fds(void) {
     }
     if (n >= 0) { dup2(n, k); close(n); }
     else {
-      if (m > 0 && tp[0] == '/' && S_ISREG(sb.st_mode) && fs_nwarn < sizeof fs_warn - 1)   /* a file it could not reopen */
+      if (m > 0 && tp[0] == '/' && reg && fs_nwarn < sizeof fs_warn - 1)   /* a file it could not reopen */
         fs_nwarn += snprintf(fs_warn + fs_nwarn, sizeof fs_warn - fs_nwarn, "simctl-forksave: warning: %s (fd %d) could not be reopened: a run restored from this save writes nothing to it\n", tp, k);
       if (dn >= 0) dup2(dn, k);
     }
@@ -224,16 +227,20 @@ static PLI_INT32 fs_exit(p_cb_data d) {
   char me[32], tl[1500]; snprintf(me, sizeof me, "%d", (int)getpid()); snprintf(tl, sizeof tl, "%s/cur.%d", dd, (int)getpid());
   unlink(tl);
   if (symlink(me, tl) != 0 || rename(tl, x) != 0) { unlink(tl); _exit(4); }   /* the commit point */
-  /* the old folder, and any a crashed save left after its own commit (L2): every <pid> folder but this one whose
-   * process is gone (a live one may be another simulation's save in flight) */
-  if (*old && strcmp(old, me) && !strchr(old, '/')) { snprintf(x, sizeof x, "%s/%s", dd, old); rm_tree(x); }   /* committed before: done */
+  /* the old folder, and any a crashed save left after its own commit (L2): every <pid> folder but this one that
+   * this host made (its owner file names this host and that pid) and whose process is gone. A folder of another
+   * host (a scratch shared over NFS) or without an owner file is left alone: its pid means nothing here. */
+  char hn[256] = ""; gethostname(hn, sizeof hn - 1);
   DIR *gd = opendir(dd); struct dirent *ge;
   while (gd && (ge = readdir(gd))) {
     const char *nm = ge->d_name; int digits = *nm != 0;
     for (const char *c = nm; *c; c++) if (!isdigit((unsigned char)*c)) digits = 0;
     if (!digits || !strcmp(nm, me)) continue;
-    pid_t gp = (pid_t)atoi(nm);
-    if (gp > 0 && (kill(gp, 0) == 0 || errno == EPERM)) continue;   /* alive */
+    char of[1700], oh[256] = ""; int op = 0; snprintf(of, sizeof of, "%s/%s/owner", dd, nm);
+    FILE *o = fopen(of, "r"); if (!o) continue;
+    int got = fscanf(o, "%255s %d", oh, &op); fclose(o);
+    if (got != 2 || strcmp(oh, hn) || op != atoi(nm)) continue;
+    if (kill((pid_t)op, 0) == 0 || errno == EPERM) continue;   /* alive */
     snprintf(x, sizeof x, "%s/%s", dd, nm); rm_tree(x);
   }
   if (gd) closedir(gd);
@@ -244,6 +251,8 @@ static PLI_INT32 fs_trigger(p_cb_data d) {
   if (getpid() != fs_child_pid) return 0;      /* restored from the save: not the child */
   char gd[1200], sd[1300]; fs_gendir(gd, sizeof gd, fs_file, fs_child_pid); snprintf(sd, sizeof sd, "%s.simctl.d", fs_file);
   if ((mkdir(sd, 0755) != 0 && errno != EEXIST) || mkdir(gd, 0755) != 0) _exit(4);
+  { char of[1300], hn[256] = ""; gethostname(hn, sizeof hn - 1); snprintf(of, sizeof of, "%s/owner", gd);   /* L2: whose folder */
+    FILE *o = fopen(of, "w"); if (!o) _exit(4); fprintf(o, "%s %d\n", hn, (int)fs_child_pid); fclose(o); }
   s_vpi_value v; v.format = vpiStringVal; v.value.str = fs_tmp; vpi_put_value(fs_name_h, &v, NULL, vpiNoDelay);
   s_vpi_value g; g.format = vpiIntVal; vpi_get_value(fs_go_h, &g); g.value.integer = !g.value.integer; vpi_put_value(fs_go_h, &g, NULL, vpiNoDelay);
   vpiHandle h = after(1, fs_exit); if (h) vpi_release_handle(h);   /* $save runs as the last event of this step */
