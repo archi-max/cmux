@@ -338,8 +338,10 @@ const NEXT_CASES = [
 // at the instance). Verdi's "load in an upper statement" entries (statements under a condition or
 // event that reads the signal) are ours as that condition or event entry. `through` is compared
 // with ours followed through each port connection. The differences left, each with its reason:
+// An interface's signal: Verdi lists each modport that takes it as an input (keyed by the
+// modport port, iface.modport.name); ours list those too, plus the reads through the interface
+// port in each instance it reaches (INTERFACE_READS), which Verdi does not list: counted, not listed.
 // verdiOnly (and upper: an upper statement with no condition or event of ours reading the signal)
-//   modport: an interface's modport port connection (not modelled as a port load);
 //   dumpTask: $dumpvars naming the signal (a dump directive, not a design read);
 //   sysFunctionOutput: $value$plusargs's output argument (it writes the signal), and the statement
 //     under that condition (upper);
@@ -351,13 +353,18 @@ const NEXT_CASES = [
 //   increment: x++ reads x; Verdi does not list it.
 // Statements slang leaves opaque (loops, calls) are listed when their text names the signal
 // (role 'opaque', maybe): Verdi's loads inside for and repeat loops match them.
+const INTERFACE_READS = {
+  'tb_m.bus.data': ['tb_m.u_prod:20', 'tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
+  'tb_m.bus.valid': ['tb_m.u_mid.u_leaf:28', 'tb_m.u_mon:36'],
+  'tb_m.bus.clk': ['tb_m.u_prod:15', 'tb_m.u_mid.u_leaf:27'],
+  'tb_m.bus.ready': ['tb_m.u_prod:19'],
+  'tb_f.bus.addr': ['tb_f.u_mem:23'],
+  'tb_f.bus.req': ['tb_f.u_mem:23', 'tb_f.u_mem:28'],
+  'tb_f.bus.clk': ['tb_f.u_mem:26', 'tb_f.dut:33'],
+  'tb_f.bus.resp': ['tb_f.dut:39'],
+  'tb_f.bus.rdata': ['tb_f.dut:39'],
+};
 const LOAD_ORACLE_DIFFS = [
-  'verdiOnly f tb_f.bus.addr port:tb_f.bus.mem.addr modport',
-  'verdiOnly f tb_f.bus.clk port:tb_f.bus.ctrl.clk modport',
-  'verdiOnly f tb_f.bus.clk port:tb_f.bus.mem.clk modport',
-  'verdiOnly f tb_f.bus.rdata port:tb_f.bus.ctrl.rdata modport',
-  'verdiOnly f tb_f.bus.req port:tb_f.bus.mem.req modport',
-  'verdiOnly f tb_f.bus.resp port:tb_f.bus.ctrl.resp modport',
   'verdiOnly h tb_h.dut.mem tb_h.sv:17 dumpTask',
   'verdiOnly i tb_i.dut.lost tb_i.sv:25 dumpTask',
   'verdiOnly i tb_i.dut.mem tb_i.sv:26 dumpTask',
@@ -556,7 +563,7 @@ function runTraceChecks() {
       const oracle = traceFiles.loadOracle || {};
       const seen = [];
       const counts = { match: 0, upper: 0, through: 0, throughMatch: 0 };
-      const keyOurs = (e) => (e.kind === 'portIn' || e.kind === 'portOut' ? 'port:' + (e.targets || []).slice().sort().join(',') : base(e.loc && e.loc.file) + ':' + (e.loc && e.loc.line));
+      const keyOurs = (e) => (e.kind === 'portIn' || e.kind === 'portOut' || e.kind === 'modport' ? 'port:' + (e.targets || []).slice().sort().join(',') : base(e.loc && e.loc.file) + ':' + (e.loc && e.loc.line));
       const keyVerdi = (x) => (/Port$/.test(x.type || '') ? 'port:' + x.targets.slice().sort().join(',') : x.file + ':' + x.line);
       // (the model VCS compiled, without __ICARUS__: loads read no dump)
       const oracleEngines = {};
@@ -588,7 +595,14 @@ function runTraceChecks() {
           const direct = o.stop.filter((x) => !x.upper);
           const vk = new Set(direct.map(keyVerdi));
           for (const x of direct) { if (ok.has(keyVerdi(x))) { counts.match++; } else { seen.push(`verdiOnly ${d} ${sig} ${keyVerdi(x)}`); } }
-          for (const y of ours) { if (!vk.has(keyOurs(y))) { seen.push(`oursOnly ${d} ${sig} ${keyOurs(y)}`); } }
+          // Reads through an interface port, in another instance than the interface's own.
+          const via = ours.filter((y) => y.via === 'interface');
+          const want = INTERFACE_READS[sig];
+          const got = [...new Set(via.map((y) => y.instance + ':' + (y.loc && y.loc.line)))].sort();
+          if (want && JSON.stringify(got) !== JSON.stringify(want.slice().sort())) { seen.push(`interfaceReads ${d} ${sig} ${JSON.stringify(got)}!=${JSON.stringify(want)}`); }
+          if (!want && via.length) { seen.push(`interfaceReads ${d} ${sig} unexpected ${JSON.stringify(got)}`); }
+          counts.interfaceRead = (counts.interfaceRead || 0) + via.length;
+          for (const y of ours) { if (y.via !== 'interface' && !vk.has(keyOurs(y))) { seen.push(`oursOnly ${d} ${sig} ${keyOurs(y)}`); } }
           // An upper statement's signal read in a condition or event of ours.
           const ctl = ours.some((y) => y.role === 'condition' || y.role === 'sensitivity' || y.role === 'opaque');
           for (const x of o.stop.filter((z) => z.upper)) { counts.upper++; if (!ctl) { seen.push(`upper ${d} ${sig} ${keyVerdi(x)}`); } }
@@ -622,7 +636,7 @@ function runTraceChecks() {
       results.cases++;
       if (Object.keys(oracle).length === 0) { results.failures++; out.push('FAIL load oracle: no fixtures'); }
       else if (extra.length || gone.length) { results.failures++; out.push(`FAIL load oracle: ${counts.match} match, ${extra.length} unexplained: ${extra.join('; ')}${gone.length ? '; listed but not seen: ' + gone.join('; ') : ''}`); }
-      else { out.push(`ok   load oracle: ${counts.match} match, ${counts.upper} upper, through ${counts.throughMatch}/${counts.through}, ${expected.length} listed differences`); }
+      else { out.push(`ok   load oracle: ${counts.match} match, ${counts.upper} upper, through ${counts.throughMatch}/${counts.through}, ${counts.interfaceRead} interface reads, ${expected.length} listed differences`); }
     }
     for (const c of NEXT_CASES) {
       results.cases++;
