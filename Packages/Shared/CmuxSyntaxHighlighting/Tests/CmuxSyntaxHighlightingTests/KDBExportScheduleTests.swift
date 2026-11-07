@@ -1,0 +1,82 @@
+#if os(macOS)
+import CmuxSyntaxHighlighting
+import Foundation
+import Testing
+
+/// When cmux asks a host for a dump's KDB model: in the background, once per KDB in flight, never
+/// again for a KDB whose export failed (one log line), and not at all with the setting off.
+@Suite struct KDBExportScheduleTests {
+    static func model(_ top: String) -> KDBDesignModel {
+        let data = try! JSONSerialization.data(withJSONObject: ["tops": [top], "instances": [top: ["path": top, "module": top, "signals": [:]]]])
+        return KDBDesignModel(json: data)!
+    }
+
+    @Test func dumpsOfOneSimulationShareTheirKDB() {
+        #expect(KDBExportSchedule.key(host: "h", dumpPath: "/sim/run/a.fsdb") == KDBExportSchedule.key(host: "h", dumpPath: "/sim/run/b.fsdb"))
+        #expect(KDBExportSchedule.key(host: "h", dumpPath: "/sim/run/a.fsdb") != KDBExportSchedule.key(host: "h", dumpPath: "/sim/other/a.fsdb"))
+        #expect(KDBExportSchedule.key(host: "h", dumpPath: "/sim/run/a.fsdb") != KDBExportSchedule.key(host: "g", dumpPath: "/sim/run/a.fsdb"))
+    }
+
+    @Test func oneExportInFlightPerKDBWhateverViewersOpen() {
+        var schedule = KDBExportSchedule()
+        #expect(schedule.opened("k", enabled: true) == .start)
+        #expect(schedule.opened("k", enabled: true) == .join)
+        #expect(schedule.opened("other", enabled: true) == .start)
+        #expect(schedule.model("k") == nil)
+        _ = schedule.finished("k", .model(Self.model("tb"), cached: false))
+        #expect(schedule.model("k")?.tops == ["tb"])
+        // Reopened later: the host's cache answers (a new KDB gives a new model).
+        #expect(schedule.opened("k", enabled: true) == .start)
+        #expect(schedule.model("k")?.tops == ["tb"], "the model in hand stays while the next export runs")
+    }
+
+    @Test func theSettingOffAsksNothing() {
+        var schedule = KDBExportSchedule()
+        #expect(schedule.opened("k", enabled: false) == .off)
+        #expect(schedule.opened("k", enabled: true) == .start, "off asked nothing, so nothing is in flight")
+    }
+
+    @Test func aFailedExportSaysSoOnceAndKeepsSlang() {
+        var schedule = KDBExportSchedule()
+        _ = schedule.opened("k", enabled: true)
+        let first = schedule.finished("k", .unavailable(code: "licence", message: "no seat"))
+        #expect(first?.contains("licence") == true && first?.contains("no seat") == true, "\(String(describing: first))")
+        #expect(schedule.model("k") == nil)
+        // Reopened: the host answers `tried` (no seat asked); nothing more is logged.
+        #expect(schedule.opened("k", enabled: true) == .start)
+        #expect(schedule.finished("k", .unavailable(code: "tried", message: "licence: no seat")) == nil)
+        #expect(schedule.finished("k", .unavailable(code: "licence", message: "no seat")) == nil)
+        // A new KDB that exports, then fails later: said again.
+        _ = schedule.finished("k", .model(Self.model("tb"), cached: false))
+        #expect(schedule.finished("k", .unavailable(code: "time", message: "past 120 s")) != nil)
+    }
+
+    @Test func aKDBThatIsGoneTakesItsModel() {
+        var schedule = KDBExportSchedule()
+        _ = schedule.finished("k", .model(Self.model("tb"), cached: true))
+        _ = schedule.finished("k", .unavailable(code: "noKDB", message: "/sim/run"))
+        #expect(schedule.model("k") == nil)
+    }
+
+    @Test func theNewestKDBsModelsAreKept() {
+        var schedule = KDBExportSchedule(maxModels: 2)
+        for key in ["a", "b", "c"] {
+            _ = schedule.opened(key, enabled: true)
+            _ = schedule.finished(key, .model(Self.model(key), cached: true))
+        }
+        #expect(schedule.model("a") == nil && schedule.model("b") != nil && schedule.model("c") != nil)
+        // b exported again is newer than c, so c goes when d comes.
+        _ = schedule.opened("b", enabled: true)
+        _ = schedule.finished("b", .model(Self.model("b"), cached: true))
+        _ = schedule.opened("d", enabled: true)
+        _ = schedule.finished("d", .model(Self.model("d"), cached: true))
+        #expect(schedule.model("c") == nil && schedule.model("b") != nil && schedule.model("d") != nil)
+    }
+
+    @Test func slangAliasesAreOffByDefaultAndNeverBesideAKDBModel() {
+        #expect(KDBExportSchedule.sendsSlangAliases(enabled: false, model: nil) == false)
+        #expect(KDBExportSchedule.sendsSlangAliases(enabled: true, model: nil) == true)
+        #expect(KDBExportSchedule.sendsSlangAliases(enabled: true, model: Self.model("tb")) == false)
+    }
+}
+#endif

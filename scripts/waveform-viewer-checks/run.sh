@@ -68,6 +68,10 @@
 #                                        widths, ranges, arrays, written signals and port connections;
 #                                        a second export comes from the host cache, without a seat
 #   ./run.sh trace-kdb-self-test         trace-kdb's comparison against its mutations, offline
+#   ./run.sh trace-kdb-launcher <ssh-host>
+#                                        npi-model.sh's seat rules with a stand-in Verdi and exporter (no
+#                                        seat): a denied or timed-out export is not tried again for the
+#                                        same KDB, a new KDB is; the host's cache answers
 #   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
 #                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
 #                                        given; its models of the trace fixtures equal trace/models
@@ -339,6 +343,14 @@ case "${1:-}" in
       "$OUT/trace-kdb.cached.json" "$(cat "$OUT/trace-kdb.export2")" | tee "$OUT/trace-kdb.log"
     python3 "$HERE/trace-kdb/compare.py" --self-test "$OUT/trace-kdb.json" "$3" | tee -a "$OUT/trace-kdb.log"
     grep -q '^TRACE KDB CHECKS PASSED' "$OUT/trace-kdb.log" && grep -q '^TRACE KDB SELF-TEST PASSED' "$OUT/trace-kdb.log"
+    ;;
+  trace-kdb-launcher)
+    if [ $# -lt 2 ]; then echo "trace-kdb-launcher: needs <ssh-host>"; exit 2; fi
+    # trace-kdb/launcher.sh on the host, in a scratch folder of its own (removed however it ends).
+    S=$(ssh "$2" 'umask 077; mktemp -d /tmp/cmux-trace-kdb-launcher.XXXXXX') || exit 1
+    scp -q "$ROOT/Resources/vaporview/verdi-trace/npi-model.sh" "$HERE/trace-kdb/launcher.sh" "$2:$S/" || { ssh "$2" "rm -rf '$S'"; exit 1; }
+    ssh "$2" "bash '$S/launcher.sh' '$S/t' '$S/npi-model.sh'; rm -rf '$S'" | tee "$OUT/trace-kdb-launcher.log"
+    grep -q '^TRACE KDB LAUNCHER CHECKS PASSED' "$OUT/trace-kdb-launcher.log"
     ;;
   trace-kdb-self-test)
     # compare.py's self-test offline (no host, no seat): it passes on a saved export and its slang
