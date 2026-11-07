@@ -159,7 +159,10 @@ mkdir -p "$STAGE/addon/build/Release" \
 # Live simulation (optional; sim.js says so when it is missing): the simctl VPI library, compiled
 # against this host's own VCS headers ($VCS_HOME/include, never shipped with cmux), and the stub a
 # simulator names at elaboration (-load <stub>:simctl_register), at a path that outlives versions.
-cp "$SRC/sim.js" "$STAGE/" && mkdir -p "$STAGE/simctl" && cp "$SRC/simctl/sim-worker.js" "$SRC/simctl/LICENSE" "$SRC/simctl/simctl_saver.sv" "$STAGE/simctl/" || exit 15
+# The worker's testbench helper (tb.js), the build-manifest tool, and the testbench pieces a user compiles in
+# (simctl_tb.sv: simctl_cfg/simctl_port; simctl_hold.sv: the apply hold; simctl_saver.sv: fork-save).
+cp "$SRC/sim.js" "$STAGE/" && mkdir -p "$STAGE/simctl" && cp "$SRC/simctl/sim-worker.js" "$SRC/simctl/tb.js" "$SRC/simctl/simctl-manifest.js" "$SRC/simctl/LICENSE" \
+  "$SRC/simctl/simctl_saver.sv" "$SRC/simctl/simctl_tb.sv" "$SRC/simctl/simctl_hold.sv" "$STAGE/simctl/" || exit 15
 build_simctl() {
   vcs_home=${VCS_HOME:-}
   if [ -z "$vcs_home" ] && v=$(command -v vcs 2>/dev/null); then vcs_home=$(cd "$(dirname "$v")/.." && pwd); fi
@@ -170,7 +173,7 @@ build_simctl() {
     || { rm -f "$STAGE/simctl/libsimctl.so"; say "live simulation: the VPI library did not compile; skipped"; return 0; }
   stubdir=$HOME/.cache/cmux/simctl
   mkdir -p "$stubdir" && chmod 700 "$stubdir" || return 0
-  "$cc" -O2 -fPIC -shared -Wall -o "$WORK/libsimctl_stub.so" "$SRC/simctl/simctl_stub.c" -ldl >>"$WORK/build.log" 2>&1 || return 0
+  "$cc" -O2 -fPIC -shared -Wall -I"$vcs_home/include" -o "$WORK/libsimctl_stub.so" "$SRC/simctl/simctl_stub.c" -ldl >>"$WORK/build.log" 2>&1 || return 0
   # A simulator built against the stub loads it on every run: replace it only when it differs, by rename.
   cmp -s "$WORK/libsimctl_stub.so" "$stubdir/libsimctl_stub.so" \
     || { cp "$WORK/libsimctl_stub.so" "$stubdir/.stub.$$" && chmod 755 "$stubdir/.stub.$$" && mv -f "$stubdir/.stub.$$" "$stubdir/libsimctl_stub.so"; }

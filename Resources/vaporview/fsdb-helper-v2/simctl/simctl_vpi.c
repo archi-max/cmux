@@ -33,6 +33,10 @@
  *                           step + 1 time unit (the stop takes effect only once the simulation moves on)
  *      K id                 resume token (see P)
  *      V id file            fork-save: a file save in a forked copy; the simulation goes on (simctl_forksave.c)
+ *      H id                 describe: the build's simctl_cfg/simctl_port instances (simctl_describe.c)
+ *      M id mem packedfile  loadmem: write a memory image (index hex per line) one time unit later (simctl_mem.c)
+ *      A id at sym arg ...  apply: call an already-loaded native routine at a writable point, reply once settled
+ *                           (simctl_apply.c; the TB holds at simctl_hold.sv)
  *      Q id                 finish
  *
  * Tokens are separated by single spaces and lines by \n; the controller never sends a token with whitespace or
@@ -309,6 +313,12 @@ static int *dirty; static int ndirty, capdirty;
 static buf_t recs; static int nrecs; static double last_flush;
 static int ro_pending, need_serve, cond_dirty, in_ro, quick_pending;
 static char serve_reason[16];
+/* apply + settle state (simctl_apply.c) */
+static vpiHandle hold_st, hold_rel, hold_pulse; static int held, serving_hold, discarded; static long long released_at;
+static void hold_wake(int st); static void hold_put(vpiHandle h, int v, int scalar); static void hold_later(int st);
+static void settle_reply(void);
+static long settle_id;
+static long long hold_since = -1, held_units = -1;   /* when the TB's current hold began; a release's span */
 
 static void send_recs(void) {
   if (!nrecs) return;
@@ -504,10 +514,17 @@ static PLI_INT32 resume_rtn(p_cb_data d) { if (fs_child) return 0;
     if (!nl) break;
     if (p[0] == 'K' && (p[1] == ' ' || p[1] == '\n')) {
       memmove(p, nl + 1, e - nl - 1); inlen -= (nl + 1 - p);
+      if (held) { hold_wake(2); return 0; }   /* parked from a held TB: serve again inside its $simctl_serve */
       snprintf(serve_reason, sizeof serve_reason, "resume"); need_serve = 1; sched_ro();
       return 0;
     }
     p = nl + 1;
+  }
+  /* only here, while a park's stop is pending (P until K): the held TB makes no activity of its own, and the
+   * stop takes effect only at some. Each step is one time unit (the reply's t shows it). Never otherwise. */
+  if (held && hold_pulse) {
+    s_vpi_value v; v.format = vpiScalarVal; vpi_get_value(hold_pulse, &v);
+    v.value.scalar = v.value.scalar == vpi1 ? vpi0 : vpi1; vpi_put_value(hold_pulse, &v, NULL, vpiNoDelay);
   }
   vpiHandle h = after(1, resume_rtn); if (h) vpi_release_handle(h);
   return 0;
@@ -593,11 +610,14 @@ static void emit_all(void) {
  * during a run at its poll points (see poll_rtn), at that time's ReadOnlySynch, without ending the run. A read's
  * reply carries the time it observed; a new watch's first record (its value then) is where its coverage starts. */
 #include "simctl_forksave.c"
+#include "simctl_describe.c"
+#include "simctl_mem.c"
+#include "simctl_apply.c"
 static int is_quick(char op) { return op == 'T' || op == 'G' || op == 'W' || op == 'X' || op == 'I' || op == 'N' || op == 'V'; }
 static void quick_op(char op, long id, char **tok, int nt, uint64_t t) {
   switch (op) {
     case 'V': forksave(id, nt >= 3 ? tok[2] : NULL, t); break;
-    case 'T': bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", id, (unsigned long long)t); send_ob(); break;
+    case 'T': bfmt(&ob, "{\"id\":%ld,\"t\":%llu%s}", id, (unsigned long long)t, discarded ? ",\"tainted\":true" : ""); send_ob(); break;
     case 'G': {
       bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"values\":[", id, (unsigned long long)t);
       for (int i = 2; i < nt; i++) {
@@ -607,7 +627,7 @@ static void quick_op(char op, long id, char **tok, int nt, uint64_t t) {
         bgrow(&ob, sigs[si].width + 2);
         ob.p[ob.n++] = '"'; getbin(&sigs[si], ob.p + ob.n); ob.n += sigs[si].width; ob.p[ob.n++] = '"';
       }
-      bstr(&ob, "]}"); send_ob(); break;
+      bstr(&ob, discarded ? "],\"tainted\":true}" : "]}"); send_ob(); break;
     }
     case 'W': {
       bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"watch\":[", id, (unsigned long long)t);
@@ -681,9 +701,12 @@ static void serve_quick(void) {
 static void serve(int ctx) {
   if (need_serve) need_serve = 0;
   flush_dirty(); send_recs();
+  if (ctx == CTX_RO) settle_reply();   /* settled means after this time step's propagation: only at ReadOnlySynch */
   if (run_id >= 0) {
-    bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"stopped\":\"%s\"}", run_id, (unsigned long long)now(), serve_reason); send_ob();
-    run_id = -1;
+    bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"stopped\":\"%s\"", run_id, (unsigned long long)now(), serve_reason);
+    if (released_at >= 0) bfmt(&ob, ",\"released\":%lld,\"heldUnits\":%lld", released_at, held_units);
+    bstr(&ob, "}"); send_ob();
+    run_id = -1; released_at = -1;
   }
   for (int i = 0; i < nwdone; i += 2) reply_write(wdone[i], (int)wdone[i + 1]);
   nwdone = 0;
@@ -699,9 +722,16 @@ static void serve(int ctx) {
     if (nt < 2) continue;
     char op = tok[0][0]; long id = strtol(tok[1], NULL, 10);
     uint64_t t = now();
+    if (discarded && strchr("RUAFDLM", op)) { reply_err(id, "this branch is discarded (an apply returned -2): restore a checkpoint from before it"); continue; }
     switch (op) {
     case 'T': case 'G': case 'W': case 'X': case 'I': case 'N': case 'V': quick_op(op, id, tok, nt, t); break;
+    case 'A': if (apply_req(id, tok, nt, ctx)) return; break;
     case 'K': break;   /* a resume token that arrived while serving: nothing to do */
+    case 'H': describe(id, t); break;
+    case 'M':
+      if (nt < 4) { reply_err(id, "loadmem: expected memory and file"); break; }
+      if (loadmem(id, tok[2], tok[3], ctx)) return;   /* written one time unit later; serving resumes after */
+      break;
     case 'S': bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"idle\":true}", id, (unsigned long long)t); send_ob(); break;
     case 'R': case 'U': {
       if (nt < 3) { reply_err(id, "missing time"); break; }
@@ -731,6 +761,8 @@ static void serve(int ctx) {
         bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"stopped\":\"done\"}", id, (unsigned long long)t); send_ob(); break;
       }
       run_id = id; running = 1;
+      if (ctx == CTX_SYSTF && hold_st) { hold_put(hold_st, 0, 0); held = 0; released_at = (long long)t; held_units = released_at - hold_since; hold_since = -1; }   /* the TB goes on from here, now */
+      else if (ctx == CTX_RO && held) { hold_later(0); released_at = (long long)t + 1; held_units = released_at - hold_since; hold_since = -1; }   /* t+1: writable */
       end_cb = after(dt, end_rtn);
       poll_cb = after(poll_dt < dt ? poll_dt : dt, poll_rtn);
       last_flush = wall_ms();
@@ -766,7 +798,8 @@ static void serve(int ctx) {
       if (!poll_dt) poll_dt = 1;
       bfmt(&ob, "{\"id\":%ld,\"poll\":%llu}", id, (unsigned long long)poll_dt); send_ob(); break;
     case 'P':
-      if (ctx == CTX_SYSTF) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"parked\":true}", id, (unsigned long long)t); send_ob(); return; }
+      if (ctx == CTX_SYSTF && !hold_st) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"parked\":true}", id, (unsigned long long)t); send_ob(); return; }
+      if (ctx == CTX_SYSTF) { hold_put(hold_st, 1, 0); held = 1; }   /* the TB waits; resume_rtn wakes it back in */
       {
         /* UCLI `call` can't reach a VPI-registered task, so come back by ourselves: one time unit after the
          * simulator's command line says `run` again (a checkpoint taken while parked keeps this callback too) */
@@ -794,7 +827,35 @@ static PLI_INT32 ro_rtn(p_cb_data d) { if (fs_child) return 0; if (fs_alive) fs_
   in_ro = 0;
   return 0;
 }
-static PLI_INT32 serve_calltf(PLI_BYTE8 *ud) { (void)ud; if (fs_child) return 0; need_serve = 0; snprintf(serve_reason, sizeof serve_reason, "resume"); serve(CTX_SYSTF); return 0; }
+/* $simctl_serve [(st, rel)]: the TB hands the controller its procedural context here (simctl_hold.sv) */
+static vpiHandle arg_by_name(vpiHandle a) {
+  char *nm = a ? vpi_get_str(vpiFullName, a) : NULL;
+  vpiHandle h = nm ? vpi_handle_by_name(nm, NULL) : NULL;
+  return h ? h : a;
+}
+PLI_INT32 simctl_serve_calltf(PLI_BYTE8 *ud) { (void)ud; if (fs_child) return 0;
+  /* an apply's settle is pending (this time step's propagation is still running): any other entry now, e.g. a
+   * process woken by the hook's own write, goes on at once; it neither serves nor replaces the held TB's handles */
+  if (settle_id >= 0) return 0;
+  vpiHandle call = vpi_handle(vpiSysTfCall, NULL), it = call ? vpi_iterate(vpiArgument, call) : NULL, a1 = NULL, a2 = NULL;
+  if (it) { a1 = vpi_scan(it); if (a1) a2 = vpi_scan(it); if (a2) vpi_release_handle(it); }
+  hold_st = a2 ? arg_by_name(a1) : NULL; hold_rel = a2 ? arg_by_name(a2) : NULL;
+  vpiHandle sc = hold_rel ? vpi_handle(vpiScope, hold_rel) : NULL;
+  hold_pulse = sc ? vpi_handle_by_name("pulse", sc) : NULL;
+  held = 0;   /* serving, not waiting */
+  need_serve = 0;
+  if (running) {   /* the TB reached its serve point during a run: the run ends here */
+    if (end_cb) { vpi_remove_cb(end_cb); end_cb = NULL; }
+    if (poll_cb) { vpi_remove_cb(poll_cb); poll_cb = NULL; }
+    clear_conds(); running = 0;
+    snprintf(serve_reason, sizeof serve_reason, "serve");
+  } else snprintf(serve_reason, sizeof serve_reason, "resume");
+  serving_hold = hold_st != NULL;
+  if (hold_st && hold_since < 0) hold_since = (long long)now();
+  if (!(ap.armed && ap.serve && hold_st && apply_at_serve())) serve(CTX_SYSTF);   /* woken for an apply at serve: that first */
+  serving_hold = 0;
+  return 0;
+}
 static PLI_INT32 start_rtn(p_cb_data d) { if (fs_child) return 0;
   (void)d;
   snprintf(serve_reason, sizeof serve_reason, "start");
@@ -812,7 +873,7 @@ static PLI_INT32 end_sim_rtn(p_cb_data d) { if (fs_child) return 0;
   return 0;
 }
 
-void simctl_entry(void) {
+void simctl_entry2(int stub_serves) {
   static int done; if (done) return; done = 1;
   if (getenv("SIMCTL_DEBUG")) { FILE *f = fopen(getenv("SIMCTL_DEBUG"), "a"); if (f) { fprintf(f, "simctl_register called\n"); fclose(f); } }
   const char *a = getenv("SIMCTL_IN_FD"), *b = getenv("SIMCTL_OUT_FD");
@@ -827,9 +888,11 @@ void simctl_entry(void) {
   }
   /* nothing the simulation starts ($system, its own tools) inherits the channel */
   unsetenv("SIMCTL_IN_FD"); unsetenv("SIMCTL_OUT_FD"); unsetenv("SIMCTL_LIB"); unsetenv("SIMCTL_OWN_GROUP");
-  s_vpi_systf_data tf; memset(&tf, 0, sizeof tf);
-  tf.type = vpiSysTask; tf.tfname = "$simctl_serve"; tf.calltf = serve_calltf;
-  vpi_register_systf(&tf);
+  if (!stub_serves) {   /* the stub registers $simctl_serve itself (also at elaboration) and forwards it here */
+    s_vpi_systf_data tf; memset(&tf, 0, sizeof tf);
+    tf.type = vpiSysTask; tf.tfname = "$simctl_serve"; tf.calltf = simctl_serve_calltf;
+    vpi_register_systf(&tf);
+  }
   s_cb_data cb; memset(&cb, 0, sizeof cb);
   cb.reason = cbStartOfSimulation; cb.cb_rtn = start_rtn;
   vpiHandle h = vpi_register_cb(&cb); if (h) vpi_release_handle(h);
@@ -846,5 +909,6 @@ __attribute__((constructor)) static void simctl_loaded(void) {
   if (f) { fprintf(f, "loaded pid %d\n", (int)getpid()); fclose(f); }
 }
 
+void simctl_entry(void) { simctl_entry2(0); }
 /* direct use: a build that names this library itself with -load <lib>.so:simctl_register */
 void simctl_register(void) { simctl_entry(); }
