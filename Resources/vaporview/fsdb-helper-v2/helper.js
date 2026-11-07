@@ -431,7 +431,8 @@ function pump(w) {
   pullFloat(w);  // before background work: a first load is interactive
   // With nothing of its own queued: a piece of a whole load some request waits for, then the
   // worker's background work, then a piece of a background whole load.
-  if (!w.busy && w.ready && !w.queue.length && !w.recycle && !w.hold) { pullPiece(w, true) || (!w.bgQueue.length && pullPiece(w, false)); }
+  // Background pieces leave one worker free (of 3 or more), so a pan or a new signal never waits for one.
+  if (!w.busy && w.ready && !w.queue.length && !w.recycle && !w.hold) { pullPiece(w, true) || (!w.bgQueue.length && bgRoom() && pullPiece(w, false)); }
   if (w.busy || !w.ready || !(w.queue.length || w.bgQueue.length)) { return; }
   const task = w.queue.length ? w.queue.shift() : w.bgQueue.shift();
   w.busy = task;
@@ -583,11 +584,13 @@ function runTask(w, task, front) {
 //   rate * length: some signals cost ~110 ms per load whatever the range (big reader blocks),
 //   so a piece cheaper than PIECE_MS is followed by one 4x longer, and a job whose floor is
 //   over PIECE_MS / 2 takes the rest in one piece, but no piece is longer than 2 * PIECE_MS at
-//   the plain rate of the job's longest piece.
+//   the plain rate of the job's longest piece. Background jobs aim at BG_PIECE_MS instead.
 // - Cancelling every request of a job keeps it going in the background (asking again finds it
 //   done or further along). A job over the store cap is stopped as soon as its pieces say so.
 //   A signal the reader can't read fails once and is remembered (bgFailed), not loaded again.
 const PIECE_MS = Number(process.env.FSDB_PIECE_MS || 250);
+// Background pieces are shorter: a request for a signal stored on that worker waits for one.
+const BG_PIECE_MS = Number(process.env.FSDB_BG_PIECE_MS || 100);
 const PROBE_PARTS = 16, SMALL_PARTS = 128, MIN_PARTS = 1024;
 const jobs = new Map();  // signalId -> job
 let jobSeq = 0;
@@ -634,7 +637,7 @@ function pickJob(interactive) {
   }
   return best;
 }
-function nextPiece(j) {
+function nextPiece(j, target) {
   if (j.redo.length) { return j.redo.shift(); }
   const left = j.end - j.next;
   let len = Math.ceil(j.end / (j.pieces.length ? SMALL_PARTS : PROBE_PARTS));
@@ -643,15 +646,15 @@ function nextPiece(j) {
     for (const d of j.done) { if (d.len < S.len) { S = d; } if (d.len > L.len) { L = d; } }
     if (L.len >= 2 * S.len) {
       const rate = Math.max(1e-12, (L.ms - S.ms) / (L.len - S.len)), floor = Math.max(0, S.ms - rate * S.len);
-      len = floor >= PIECE_MS / 2 ? left : (PIECE_MS - floor) / rate;
+      len = floor >= target / 2 ? left : (target - floor) / rate;
     } else {
-      len = PIECE_MS * L.len / Math.max(1e-3, L.ms);
-      if (L.ms <= PIECE_MS) { len = Math.max(len, 4 * L.len); }  // tells a per-load floor from a per-time cost
+      len = target * L.len / Math.max(1e-3, L.ms);
+      if (L.ms <= target) { len = Math.max(len, 4 * L.len); }  // tells a per-load floor from a per-time cost
     }
-    // Never more than 2 * PIECE_MS at the longest piece's plain rate (an upper bound on the
+    // Never more than 2 * target at the longest piece's plain rate (an upper bound on the
     // cost): a worker's first load of a signal costs ~150-200 ms extra, which the fit can take
     // for a floor, and one piece must never hold a worker for seconds.
-    len = Math.min(len, 2 * PIECE_MS * L.len / Math.max(1e-3, L.ms));
+    len = Math.min(len, 2 * target * L.len / Math.max(1e-3, L.ms));
     len = Math.max(Math.ceil(j.end / MIN_PARTS), Math.floor(len));
   }
   if (left - len < len / 2) { len = left; }  // no tiny tail
@@ -660,14 +663,15 @@ function nextPiece(j) {
   j.pieces.push(p);
   return p;
 }
+const bgRoom = () => workers.length < 3 || workers.filter((x) => x.busy && x.busy.bgPiece).length < workers.length - 1;
 // pump(w): w has nothing of its own queued; give it the next piece of `interactive` jobs.
 function pullPiece(w, interactive) {
   const j = pickJob(interactive);
   if (!j) { return false; }
-  const p = nextPiece(j);
+  const p = nextPiece(j, interactive ? PIECE_MS : BG_PIECE_MS);
   p.state = 'running';
   j.running++;
-  const task = { op: 'walkSlice', signalId: j.id, s: p.s, e: p.e >= j.end ? 1.8e19 : p.e, path: p.path, tid: nextTid++, epoch, piece: true };
+  const task = { op: 'walkSlice', signalId: j.id, s: p.s, e: p.e >= j.end ? 1.8e19 : p.e, path: p.path, tid: nextTid++, epoch, piece: true, bgPiece: !interactive };
   task.done = (m) => pieceDone(j, p, m, w);
   w.queue.push(task);
   return true;
@@ -771,8 +775,8 @@ const leastBusy = () => workers.reduce((b, w) => (busyness(w) < busyness(b) ? w 
 // (a signal whose whole load is still in pieces is cold too: a ranged read or one value is far
 // cheaper than waiting for the rest of its load)
 const isCold = (id) => !derived.has(id) && !workerFor(id).state.cached.includes(id);
-// One task on the least busy worker (cheap reads); with spread one per owner
-// worker in parallel (ranged walks); with spread 'even' split over the workers,
+// One task on the least busy worker (cheap reads); with spread spread over the free
+// workers in parallel (ranged walks); with spread 'even' split over the workers,
 // least busy first, at least COLD_SPREAD signals per part (cold reads keep
 // nothing, so any worker will do: a debugger's 200-signal step). Resolves with
 // results in ids order.
@@ -783,9 +787,19 @@ function coldTask(req, op, ids, extra, spread = false) {
     const ws = [...workers].sort((a, b) => busyness(a) - busyness(b));
     const k = Math.min(ws.length, Math.floor(ids.length / COLD_SPREAD));
     for (let j = 0; j < k; j++) { groups.set(ws[j], ids.slice(Math.floor(j * ids.length / k), Math.floor((j + 1) * ids.length / k))); }
+  } else if (spread === true) {
+    // Ranged walks keep nothing either: over the workers with nothing to do (in parallel), else
+    // the least busy one, not the signals' owners, which may be in the middle of a load piece.
+    const free = workers.filter((w) => w.ready && !w.busy && !w.queue.length && !w.recycle);
+    const pool = free.length ? free.slice(0, ids.length) : [leastBusy()];
+    ids.forEach((id, k) => {
+      const w = pool[k % pool.length];
+      if (!groups.has(w)) { groups.set(w, []); }
+      groups.get(w).push(id);
+    });
   } else {
     for (const id of ids) {
-      const w = spread === true ? workerFor(id) : leastBusy();
+      const w = leastBusy();
       if (!groups.has(w)) { groups.set(w, []); }
       groups.get(w).push(id);
     }
