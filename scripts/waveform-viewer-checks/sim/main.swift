@@ -333,6 +333,47 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(gone2, "a reload ends the simulation")
   }
 
+  // GitHub #4: changes lost past the helper's buffer (CMUX_SIM_BUFFER tiny, many small batches) show as
+  // missing coverage, not as the value before them, and no query answers inside the gap; the viewer's own
+  // live history is bounded, and what it evicts becomes missing too.
+  func lossChecks() async {
+    for p in [["tb", "clk"], ["tb", "dut", "state"]] { await add(p) }
+    _ = await waitFor(10000) { (await self.frame("L.rows().length") as? Int ?? 0) == 2 }
+    let opened = await sim("S.open().then(() => 'opened', (e) => String(e.message || e))") as? String
+    expect(opened == "opened", "lossy: live simulation opens: \(String(describing: opened))")
+    _ = await waitFor(5000) { await self.watched() == ["tb.clk", "tb.dut.state"] }
+    _ = await sim("S.run(2000)")
+    expect(await waitIdle(15000), "lossy: a 2000-cycle run ends")
+    await sleep(500)
+    let sig = "(L.rows().find((x) => x.path === 'tb.dut.state') || {}).signalId"
+    let holes = await frame("L.coverage ? L.coverage(\(sig)) : 'no coverage()'")
+    let hs = holes as? [[Any]] ?? []
+    let inner = hs.first { (($0.first as? Int) ?? 0) > 0 }
+    expect(inner != nil, "lossy: the lost span is a coverage hole: \(String(describing: holes))")
+    if let h = inner, let a = h[0] as? Int {
+      let b = (h.count > 1 ? h[1] as? Int : nil) ?? a
+      let mid = a + max(0, (b - a) / 2)
+      let q = await call("return await cmuxWaveform.link.valuesAt({ time: \(mid), paths: ['tb.dut.state'] })") as? [Any]
+      expect(q?.first is NSNull, "lossy: a query inside the hole has no answer: t=\(mid) -> \(String(describing: q))")
+      let atEnd = await call("return await cmuxWaveform.link.valuesAt({ time: cmuxWaveform.sim.state().t, paths: ['tb.dut.state'] })") as? [Any]
+      expect((atEnd?.first as? String) != nil, "lossy: after the hole the live value answers: \(String(describing: atEnd))")
+    }
+    let drawn = await frame("L.coverageDrawn ? L.coverageDrawn() : -1") as? Int ?? -1
+    expect(drawn > 0, "lossy: the hole is drawn as missing (apart from x): \(drawn) segments")
+
+    // the viewer's live history is bounded; the evicted span is missing too
+    _ = await frame("L.setLimit ? L.setLimit(300) : null")
+    _ = await sim("S.run(1000)")
+    _ = await waitIdle(15000)
+    await sleep(500)
+    let n = await frame("f.__vvDataManager.valueChangeData[\(sig)].valueChangeData.length") as? Int ?? -1
+    let first = await frame("(L.coverage ? L.coverage(\(sig)) : [])[0] || null") as? [Any]
+    expect(n > 0 && n <= 301, "lossy: the live history is bounded: \(n) records (limit 300)")
+    expect((first?.first as? Int) == 0 && ((first?.count ?? 0) > 1 && (first?[1] as? Int ?? 0) > 0), "lossy: the evicted span is missing from 0: \(String(describing: first))")
+    let early = await call("return await cmuxWaveform.link.valuesAt({ time: 100, paths: ['tb.dut.state'] })") as? [Any]
+    expect(early?.first is NSNull, "lossy: a query in the evicted span has no answer: \(String(describing: early))")
+  }
+
   func close() {
     helper?.stop()
     window.orderOut(nil)
@@ -354,6 +395,11 @@ func pageChecks() async throws {
   try await Task.sleep(nanoseconds: 1_500_000_000)
   let p = workerPid()
   expect(p != nil && p != pid && !alive(p!), "closing the viewer ends the simulation (\(String(describing: pid)) -> \(String(describing: p)))")
+  setenv("CMUX_SIM_BUFFER", "3000", 1); setenv("FAKE_BATCH_CYCLES", "5", 1)
+  let lossy = Page(live: true)
+  if await lossy.open(home: home) { await lossy.lossChecks() } else { expect(false, "the page opened (lossy)") }
+  lossy.close()
+  unsetenv("CMUX_SIM_BUFFER"); unsetenv("FAKE_BATCH_CYCLES")
 }
 
 Task { @MainActor in
