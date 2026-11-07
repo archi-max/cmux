@@ -1421,6 +1421,23 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     `(${info.state} ${info.error || ""}) a 2^22-bucket window over a 1 M-change clock doesn't block the coordinator: stats waited ${Math.round(statsMs)} ms (want < 100), helper RSS +${Math.round((r1 - r0) / 1e6)} MB (want < 100), from the descriptor ${!!(r.result && r.result.signals[0].clock)}; a 1024-bucket tile still is ${!!(small.result && small.result.signals[0].clock)}`);
 }
 
+// 43e. The helper's exit ends a running clock-verify segment too (review L4): shutdown() killed the
+// workers, fsdbdebug and the warm readers, but a clockseg process (here one call of 20 s) ran on
+// with nobody to read it.
+{
+  const log = path.join(tmp, 'clock43e.log'); fs.rmSync(log, { force: true });
+  const h = await start(1, {}, { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), FSDB_CLOCK_DESC: '1', STUB_CLOCK_MS: '20000', STUB_CLOCK_LOG: log });
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  for (let k = 0; k < 100 && !fs.existsSync(log); k++) { await wait(20); }
+  const pid = fs.existsSync(log) ? JSON.parse(fs.readFileSync(log, 'utf8').trim().split('\n')[0]).pid : 0;
+  h.close();
+  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return false; } };
+  let gone = false;
+  for (let k = 0; k < 50 && pid; k++) { if (!alive()) { gone = true; break; } await wait(40); }
+  check(pid > 0 && gone, `the helper's exit ends a running clock segment: pid ${pid} ${gone ? 'gone' : 'still running'}`);
+  if (pid && !gone) { try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+}
+
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
 // changes, 755 MB, against a 244 MB store gave "signal larger than 244 MB"): answered from
 // ranged reads that grow from t until the first hit, never a whole load's cap error. Signal 5 is
