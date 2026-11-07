@@ -8,7 +8,14 @@
 set -eu
 W=${1:?scratch dir}
 cd "$W"
-module load Synopsys_x86-64 >/dev/null 2>&1 || true
+# VCS and Verdi: on PATH, else in $VCS_HOME/bin and $VERDI_HOME/bin, else after CMUX_VERDI_SETUP
+# (a command that puts them on PATH, e.g. the site's module load). No site default.
+[ -n "${VCS_HOME:-}" ] && [ -x "$VCS_HOME/bin/vcs" ] && PATH=$VCS_HOME/bin:$PATH
+[ -n "${VERDI_HOME:-}" ] && [ -x "$VERDI_HOME/bin/verdi" ] && PATH=$VERDI_HOME/bin:$PATH
+if ! command -v vcs >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
+  eval "$CMUX_VERDI_SETUP" >/dev/null 2>&1 || true
+fi
+command -v vcs >/dev/null 2>&1 || { echo "sim-vcs: vcs is not on PATH: set VCS_HOME, or CMUX_VERDI_SETUP (a command that puts vcs and verdi on PATH)" >&2; exit 2; }
 mkdir -p out
 for d in ${DESIGNS:-a b c e f g h}; do
   src=$(ls designs/${d}_*.sv)

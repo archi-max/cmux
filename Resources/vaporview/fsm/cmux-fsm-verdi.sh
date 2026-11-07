@@ -25,12 +25,13 @@ SIGNAL=$3
 KDB=${4:-}
 say() { printf 'cmux-fsm: %s\n' "$*"; }
 
-# Verdi on PATH, or through environment modules under a common name.
-if ! command -v verdi >/dev/null 2>&1 && type module >/dev/null 2>&1; then
-  for m in verdi Verdi synopsys Synopsys_x86-64; do
-    module load "$m" >/dev/null 2>&1
-    command -v verdi >/dev/null 2>&1 && break
-  done
+# Verdi: on PATH, else in $VERDI_HOME/bin, else after CMUX_VERDI_SETUP (a command the user sets,
+# e.g. their site's module load). No site default.
+if ! command -v verdi >/dev/null 2>&1 && [ -n "${VERDI_HOME:-}" ] && [ -x "$VERDI_HOME/bin/verdi" ]; then
+  PATH=$VERDI_HOME/bin:$PATH
+fi
+if ! command -v verdi >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
+  eval "$CMUX_VERDI_SETUP" >/dev/null 2>&1
 fi
 command -v verdi >/dev/null 2>&1 || { say "unavailable no-verdi"; exit 0; }
 if [ -z "${VERDI_HOME:-}" ]; then

@@ -26,25 +26,21 @@ say() { printf 'cmux-fsdb-build: %s\n' "$*" >&2; }
 
 has_reader() { [ -n "$1" ] && [ -f "$1/share/FsdbReader/linux64/libnffr.so" ] && [ -f "$1/share/FsdbReader/ffrAPI.h" ]; }
 
-# ---- Verdi: $VERDI_HOME, then `module load` of a Synopsys/Verdi module, then common install roots.
+# ---- Verdi: $VERDI_HOME, then verdi on PATH, then after CMUX_VERDI_SETUP (a command the user
+# sets, e.g. their site's module load; run in a subshell so nothing leaks into the build).
+# No site defaults: no guessed modules or install roots.
+from_path() {
+  command -v verdi >/dev/null 2>&1 || return 1
+  d=$(dirname "$(dirname "$(command -v verdi)")")
+  has_reader "$d" && echo "$d"
+}
 find_verdi() {
   if has_reader "${VERDI_HOME:-}"; then echo "$VERDI_HOME"; return 0; fi
-  if command -v verdi >/dev/null 2>&1; then
-    d=$(dirname "$(dirname "$(command -v verdi)")")
-    if has_reader "$d"; then echo "$d"; return 0; fi
+  from_path && return 0
+  if [ -n "${CMUX_VERDI_SETUP:-}" ]; then
+    d=$( (eval "$CMUX_VERDI_SETUP" >/dev/null 2>&1; if has_reader "${VERDI_HOME:-}"; then echo "$VERDI_HOME"; else from_path; fi) )
+    if [ -n "$d" ]; then echo "$d"; return 0; fi
   fi
-  # Environment modules (Lmod or Tcl modules) are not loaded in a batch ssh
-  # session; load them in a subshell so nothing leaks into the build.
-  for init in /etc/profile.d/modules.sh /usr/share/lmod/lmod/init/sh /usr/share/Modules/init/sh; do
-    [ -f "$init" ] || continue
-    for mod in $( (. "$init" >/dev/null 2>&1; module -t avail 2>&1) | grep -i -E '^(synopsys|verdi)[^/]*/?$' | sed 's,/$,,'); do
-      d=$( (. "$init" >/dev/null 2>&1; module load "$mod" >/dev/null 2>&1; printf '%s' "${VERDI_HOME:-}") )
-      if has_reader "$d"; then echo "$d"; return 0; fi
-    done
-  done
-  for d in $(ls -d /software/*ynopsys*/verdi/* /opt/synopsys/verdi/* /usr/synopsys/verdi/* /tools/synopsys/verdi/* 2>/dev/null | sort -r); do
-    if has_reader "$d"; then echo "$d"; return 0; fi
-  done
   return 1
 }
 
@@ -61,7 +57,7 @@ find_node() {
   return 1
 }
 
-VERDI=$(find_verdi) || { say "Verdi FsdbReader not found (set VERDI_HOME)"; exit 10; }
+VERDI=$(find_verdi) || { say "Verdi FsdbReader not found: set VERDI_HOME, or CMUX_VERDI_SETUP (a command that puts verdi on PATH)"; exit 10; }
 NODE=$(find_node) || { say "Node.js 18 or later not found (set CMUX_FSDB_NODE)"; exit 11; }
 CXX=${CXX:-$(command -v g++ || command -v c++ || command -v clang++)} || true
 [ -n "$CXX" ] || { say "no C++ compiler (g++) found"; exit 12; }

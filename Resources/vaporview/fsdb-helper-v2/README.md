@@ -49,8 +49,8 @@ On the first open of an FSDB on a host:
 1. cmux runs the launcher from `~/.cache/cmux/fsdb-helper-v2/<version>-<machine>` on the host. `<version>` hashes
    every file in this folder, so a cmux update that changes the helper rebuilds it once.
 2. Exit 87 means "not installed, or built for a Node.js or Verdi that is gone". cmux then pipes a tar of this folder
-   over SSH and runs `build.sh` on the host. It finds Verdi (`$VERDI_HOME`, `verdi` on `PATH`, environment modules,
-   common install roots) and Node.js 18 or later, compiles the addon with the host's C++ compiler, checks that it
+   over SSH and runs `build.sh` on the host. It finds Verdi (`$VERDI_HOME`, `verdi` on `PATH`, or after
+   `CMUX_VERDI_SETUP`, a command the user sets that puts it on `PATH`) and Node.js 18 or later, compiles the addon with the host's C++ compiler, checks that it
    loads, and installs it under a lock. A working install is never replaced half-way.
 3. `cmux-helper-v2.sh` refuses to run (exit 86) an install that anyone but the user can write, since it would run
    that code. It starts `helper.js` under `nice`, in a private run directory on node-local `/tmp`.
