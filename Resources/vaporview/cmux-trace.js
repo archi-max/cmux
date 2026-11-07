@@ -497,7 +497,7 @@
       m.assigns.forEach((a, i) => { if (writesTo(a.lhs, base)) { out.push({ type: 'assign', a, i }); } });
       // A net's declaration assignment (wire w = e) is a continuous assignment, not an initializer.
       if (s && s.kind === 'net' && s.init && !s.element) {
-        out.push({ type: 'assign', i: -1, a: { lhs: { name, width: s.width, full: s.width, loc: s.loc }, rhs: s.init, src: `${name} = ${s.init.src}`, loc: s.init.loc } });
+        out.push({ type: 'assign', i: -1, a: { lhs: { name, width: s.width, full: s.width, loc: s.loc }, rhs: s.init, src: `${name} = ${s.init.src || leafText(s.init)}`, loc: s.init.loc } });
       }
       m.procs.forEach((p) => { if (stmtWrites(p.body, base)) { out.push({ type: 'proc', p }); } });
       for (const port of m.ports) {
@@ -569,11 +569,13 @@
         if (!out.some((x) => (x.path || x.name) + '|' + x.role === key)) { out.push(entry); }
         const w = (r.src === 'local' || r.src === 'blocking') && r.write;
         const done = (seen && seen.writes) || new Set();
-        if (w && w.stmt && w.stmt.rhs && w.ctx && !done.has(w)) {
+        // What the temp's write read: its rhs, or a declaration's initializer (logic t = e;).
+        const rhs = w && w.stmt && (w.stmt.rhs || (w.decl && w.stmt.init));
+        if (rhs && w.ctx && !done.has(w)) {
           // At most 16 temps' writes are followed; past that the fan-in is cut, and the step says so.
           if (done.size >= 16) { out.limited = true; continue; }
           done.add(w);
-          faninOf(m, w.stmt.rhs, readsOf(w.stmt.rhs, w.ctx, w.width), time, role, out, { writes: done, through: (seen && seen.through) || entry.path || entry.name });
+          faninOf(m, rhs, readsOf(rhs, w.ctx, w.width || w.stmt.width), time, role, out, { writes: done, through: (seen && seen.through) || entry.path || entry.name });
         }
       }
       return out;
@@ -802,10 +804,17 @@
     // The bits of the target a write covers, compared with the dump: undefined when not comparable.
     function consistentWith(rec, now, sig) {
       if (!now || !rec || !rec.value) { return undefined; }
-      if (rec.after && rec.after.length && rec.lsb === 0 && rec.width >= now.w) {
-        let v = fit(rec.value, now.w);
-        for (const a of rec.after) { if (!a.value || (a.lsb || 0) + a.width > now.w) { return undefined; } v = insert(v, a.lsb || 0, fit(a.value, a.width)); }
-        return same(v, now);
+      if (rec.after && rec.after.length) {
+        // The chosen write's bits with the later writes laid over them, against the dump's same bits.
+        const lo = rec.lsb || 0, hi = Math.min(now.w, lo + (rec.width || now.w));
+        if (lo >= hi) { return undefined; }
+        let v = fit(rec.value, hi - lo);
+        for (const a of rec.after) {
+          if (!a.value) { return undefined; }
+          const alo = a.lsb || 0, aw = a.width || now.w, from = Math.max(lo, alo), to = Math.min(hi, alo + aw);
+          if (from < to) { v = insert(v, from - lo, slice(fit(a.value, aw), from - alo, to - from)); }
+        }
+        return same(v, slice(now, lo, hi - lo));
       }
       if (rec.width >= now.w && rec.lsb === 0) { return same(fit(rec.value, now.w), now); }
       if (rec.lsb + rec.width > now.w) { return undefined; }
@@ -834,7 +843,7 @@
         if (d.a.delay) { r.reasons.push({ code: 'delay', src: d.a.src }); }
         const delayed = !!d.a.delay;
         const rec = recFor(ctx, d.a.lhs, name, ev.value, w);
-        r.stmt = { src: d.a.src, loc: locOf(m, d.a.loc), rhs: d.a.rhs.src, rhsLoc: locOf(m, d.a.rhs.loc) };
+        r.stmt = { src: d.a.src, loc: locOf(m, d.a.loc), rhs: d.a.rhs.src || leafText(d.a.rhs), rhsLoc: locOf(m, d.a.rhs.loc) };
         r.sample = t;
         r.predicted = rec ? shown(rec.value) : null;
         r.bits = rec ? { lsb: rec.lsb, width: rec.width } : null;
@@ -1150,23 +1159,41 @@
       if (out.steps.length >= maxSteps) { return finish('budget'); }
       const cands = (cur.fanin || []).filter((f) => typeof f.path === 'string' && f.path && f.role !== 'clock' && f.dumped !== false && !f.blocking && !f.local && xBits(f.value));
       if (!cands.length) { return finish('noXInput'); }
-      let best = null;
+      const probed = [];
       for (const f of cands.slice(0, maxProbes)) {
         let st;
         try { st = await probe(f.path, f.time); } catch (error) { st = null; }
         if (cancelled()) { return finish('cancelled'); }
         if (!st || st.error) { continue; }
         const since = st.since === null || st.since === undefined ? Infinity : Number(st.since);
-        if (!best || since < best.since) { best = { f, st, since }; }
+        probed.push({ f, st, since });
+      }
+      // Earliest x first (a stable sort keeps the fan-in's order on a tie).
+      probed.sort((p, q) => p.since - q.since);
+      if (!probed.length) { return finish('failed'); }
+      let best = null, next = null;
+      for (const cand of probed) {
+        if (seen.has(cand.f.path)) {
+          // Back to a signal of the chain. x since the start all the way round (an unreset
+          // cnt <= cnt + 1) is uninitialised storage; otherwise the x goes round a loop.
+          const from = out.steps.findIndex((e) => e.signal === cand.f.path);
+          if (from >= 0 && out.steps.slice(from).every((e) => Number(e.since) === 0)) { return finish('uninit', { signal: cand.f.path }); }
+          return finish('loop', { signal: cand.f.path });
+        }
+        let st = cand.st;
+        if (probe !== step) {
+          try { st = await step(cand.f.path, cand.f.time); } catch (error) { st = null; }
+          if (cancelled()) { return finish('cancelled'); }
+          if (!st || st.error) { return finish('failed'); }
+        }
+        // The step can disagree with its probe (Verdi's answer, an edge off by one): a value with
+        // no x is not where the x came from; try the next candidate.
+        if (!xBits(st.value)) { continue; }
+        best = cand;
+        next = st;
+        break;
       }
       if (!best) { return finish('failed'); }
-      if (seen.has(best.f.path)) { return finish('loop', { signal: best.f.path }); }
-      let next = best.st;
-      if (probe !== step) {
-        try { next = await step(best.f.path, best.f.time); } catch (error) { next = null; }
-        if (cancelled()) { return finish('cancelled'); }
-        if (!next || next.error) { return finish('failed'); }
-      }
       const why = cands.length === 1 ? { code: 'only', role: best.f.role } : { code: 'earliest', role: best.f.role, count: cands.length };
       if (cands.length > maxProbes) { why.limited = true; }
       seen.add(next.signal);
