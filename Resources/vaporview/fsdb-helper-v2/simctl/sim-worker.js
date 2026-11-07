@@ -3,14 +3,14 @@
 // Part of cmux's FSDB helper v2 (live simulation; sim.js starts it).
 // simctl worker: launches one simulation under our VPI library and serves it as JSON lines on stdio.
 //
-//   node worker.js --simv <path> --lib <libsimctl.so> --scratch <dir> [--run <name>] [--clock <sig>] [--period <t>]
+//   node worker.js --simv <path> --lib <libsimctl.so> --scratch <dir> [--cwd <run folder>] [--run <name>] [--clock <sig>] [--period <t>]
 //                  [--rss-mb 2048] [--min-avail-mb 5120] [--poll-cycles 100] -- <simulator run arguments>
 //
 // The simv must have been elaborated with `-load <libsimctl_stub.so>:simctl_register` (a run-time simv -load
 // does not call VPI registration routines). The stub loads <lib> from SIMCTL_LIB, set here.
-// The simulation runs as `<simv> -ucli -ucli2Proc <args>` in <scratch>/<run>
-// (a private directory; regular files next to simv other than dumps and logs are linked in, so relative
-// paths such as memory images resolve). Its command line is driven only for checkpoint/restore.
+// The simulation runs as `<simv> -ucli -ucli2Proc <args>` in <scratch>/<run>, a private copy of the original
+// run's folder (--cwd [--copy-mb 512]; see "run directory" below). Its command line is driven only for
+// checkpoint/restore.
 //
 // Requests (stdin, one JSON object per line) -> {id, result, ms} or {id, error}; events are {id: 0, event}.
 //   run {cycles | time}                         -> {t, stopped: done|until|stop|finish}
@@ -78,16 +78,94 @@ const t0 = Date.now();
 const out = (obj, bin) => { process.stdout.write(JSON.stringify(obj) + '\n'); if (bin && bin.length) process.stdout.write(bin); };
 const event = (name, o = {}) => out({ id: 0, event: name, ...o });
 
-// ---------------------------------------------------------------- run directory
+// ---------------------------------------------------------------- run directory (the replay manifest)
+// The run is replayed in <scratch>/<run>, a private copy of the original run's folder (--cwd; default the
+// simulator's folder): the files it may read are COPIED there (cloned where the filesystem can), nested folders
+// included, never linked, so a testbench that writes a file by an existing name can't reach the original.
+// Left out: the run's own outputs (dumps, logs, novas*, ucli.key), build folders (*.daidir, csrc) and the
+// simulator. A cmux-replay.json in that folder makes it explicit:
+//   {"cwd": "<folder, relative to the manifest>", "inputs": ["<file or folder, relative to cwd>", ...],
+//    "env": {"NAME": "value"}}   (only those inputs are copied; env is added to the simulator's environment)
+// More than --copy-mb (512) to copy is refused before starting, naming the largest files and the manifest.
+// While it runs, the simulator's "cannot open" messages become missingInput events naming the file.
+const setupFail = (message) => { event('setupError', { message }); process.exit(3); };
+let RUN_CWD = path.resolve(opt('--cwd', path.dirname(SIMV)));
+const COPY_MB = Number(opt('--copy-mb', 512));
+let manifest = null;
+try { manifest = JSON.parse(fs.readFileSync(path.join(RUN_CWD, 'cmux-replay.json'), 'utf8')); } catch (e) {
+  if (e.code !== 'ENOENT') setupFail(`cmux-replay.json in ${RUN_CWD}: ${e.message}`);
+}
+const replayEnv = {};
+if (manifest) {
+  if (typeof manifest !== 'object' || Array.isArray(manifest)) setupFail('cmux-replay.json: expected an object');
+  if (manifest.cwd !== undefined) RUN_CWD = path.resolve(RUN_CWD, String(manifest.cwd));
+  if (manifest.inputs !== undefined && !(Array.isArray(manifest.inputs) && manifest.inputs.every((x) => typeof x === 'string'))) setupFail('cmux-replay.json: inputs must be a list of paths');
+  for (const [k, v] of Object.entries(manifest.env || {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k.startsWith('SIMCTL_') || typeof v !== 'string') setupFail(`cmux-replay.json: bad env entry ${JSON.stringify(k)}`);
+    replayEnv[k] = v;
+  }
+}
 const dir = path.join(SCRATCH, RUN);
 fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-const buildDir = path.dirname(SIMV);
-for (const f of fs.readdirSync(buildDir)) {
-  if (/\.(fsdb|vpd|vcd|log|key|time|out)$/.test(f) || /^novas/.test(f) || f === path.basename(SIMV)) continue;
-  const src = path.join(buildDir, f);
-  let st; try { st = fs.statSync(src); } catch { continue; }
-  if (!st.isFile()) continue;
-  try { fs.symlinkSync(src, path.join(dir, f)); } catch {}
+const OUTPUT = /\.(fsdb|vpd|vcd|fst|saif|log)$|^novas|^ucli\.key$|^verdi|^\.cmux|^vc_hdrs\.h$/;
+const BUILD_DIR = /\.daidir$|^csrc$|^AN\.DB$|^\.git$|^verdiLog$|^\.sims$/;
+const plan = [];   // [src, rel, bytes]
+const dirReal = fs.realpathSync(dir), scratchReal = fs.realpathSync(SCRATCH);
+const cwdReal = (() => { try { return fs.realpathSync(RUN_CWD); } catch { return RUN_CWD; } })();
+const cwdInScratch = cwdReal.startsWith(scratchReal + path.sep);
+function walk(abs, rel, depth) {
+  let st; try { st = fs.statSync(abs); } catch { return; }
+  if (st.isDirectory()) {
+    if (depth > 8 || plan.length > 20000) return;
+    let real; try { real = fs.realpathSync(abs); } catch { return; }
+    if (real === dirReal || (real === scratchReal && !cwdInScratch)) return;   // our copies (a scratch inside the run folder)
+    for (const f of fs.readdirSync(abs)) {
+      if (BUILD_DIR.test(f)) continue;
+      walk(path.join(abs, f), rel ? path.join(rel, f) : f, depth + 1);
+    }
+  } else if (st.isFile()) {
+    if (!manifest && (OUTPUT.test(path.basename(abs)) || path.resolve(abs) === SIMV || path.basename(abs) === 'cmux-replay.json')) return;
+    plan.push([abs, rel, st.size]);
+  }
+}
+if (manifest && manifest.inputs) {
+  for (const inp of manifest.inputs) {
+    const abs = path.resolve(RUN_CWD, inp), rel = path.relative(RUN_CWD, abs);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) setupFail(`cmux-replay.json: input ${JSON.stringify(inp)} is outside ${RUN_CWD}`);
+    if (!fs.existsSync(abs)) setupFail(`cmux-replay.json names ${inp}, which is missing in ${RUN_CWD}`);
+    walk(abs, rel, 0);
+  }
+} else walk(RUN_CWD, '', 0);
+const total = plan.reduce((a, x) => a + x[2], 0);
+if (total > COPY_MB * 1024 * 1024) {
+  const big = [...plan].sort((a, b) => b[2] - a[2]).slice(0, 5).map(([, rel, n]) => `${rel} (${(n / 1048576).toFixed(1)} MB)`);
+  setupFail(`the run folder ${RUN_CWD} holds ${(total / 1048576).toFixed(0)} MB to copy (limit ${COPY_MB} MB), largest: ${big.join(', ')}. ` +
+    `List the inputs the simulation reads in ${path.join(RUN_CWD, 'cmux-replay.json')} ({"inputs": ["..."]}), or raise --copy-mb.`);
+}
+for (const [src, rel] of plan) {
+  const dst = path.join(dir, rel);
+  try { fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst, fs.constants.COPYFILE_FICLONE); } catch (e) { setupFail(`copying ${rel} into the scratch run: ${e.message}`); }
+}
+// "cannot open <file>" from the simulator: the replay lacks an input (or the run needs another folder)
+const missingSeen = new Set();
+let scanTail = '', scanPending = 0, scanHead = '';
+function scanMissing(d) {
+  const text = scanTail + d.toString('latin1'); const lines = text.split('\n'); scanTail = lines.pop().slice(-2000);
+  for (const line of lines) {
+    // VCS: "Warning-[...] Cannot open file" then "  The file 'x' could not be opened. ..." on a line after it
+    const hit = /(can ?not|could not|couldn't|unable to|failed to)( be)? open|no such file/i.test(line);
+    if (!hit && !scanPending) continue;
+    const m = /["'`]([^"'`\s]+)["'`]/.exec(line);
+    if (!m) { if (hit) { scanPending = 3; scanHead = line.trim(); } else scanPending--; continue; }
+    scanPending = 0;
+    if (!hit && !/open/i.test(line)) continue;
+    const file = m[1];
+    if (missingSeen.has(file) || missingSeen.size > 100) continue;
+    missingSeen.add(file);
+    event('missingInput', { file, message: `${scanHead ? scanHead + ' ' : ''}${line.trim()}`.slice(0, 400), cwd: RUN_CWD,
+      hint: `the replay runs in a copy of ${RUN_CWD}; if ${file} lives elsewhere, name it in ${path.join(RUN_CWD, 'cmux-replay.json')}` });
+    scanHead = '';
+  }
 }
 
 // ---------------------------------------------------------------- launch
@@ -98,7 +176,7 @@ const args = ['-n', '10', SIMV, '-ucli', ...(ucli2 ? ['-ucli2Proc'] : []), ...si
 const sim = spawn('/bin/sh', ['-c', 'if [ "$1" -gt 0 ]; then ulimit -v "$1" || exit 70; fi; shift; exec nice "$@"', 'simctl', String(VMEM_MB * 1024), ...args], {
   cwd: dir,
   stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-  env: { ...process.env, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1' },
+  env: { ...process.env, ...replayEnv, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1' },
   detached: true,
 });
 // The simulator leaves /tmp/vcs_{attachable,dve_general}.<user>.<pid> when killed: remove those of the group.
@@ -120,7 +198,7 @@ const libIn = sim.stdio[3], libOut = sim.stdio[4];
 // a file-based `restore` brings back the simulation's memory but not these pipes: report it, don't crash
 for (const st of [libIn, libOut, sim.stdin]) st.on('error', (e) => event('error', { message: `library channel: ${e.code || e.message}` }));
 libOut.on('close', () => { for (const [, p] of pending) if (!p.resolve) out({ id: p.id, error: 'library channel closed' }); });
-sim.stderr.pipe(simLog);
+sim.stderr.on('data', (d) => { simLog.write(d); scanMissing(d); });
 sim.on('exit', (code, signal) => {
   event('exit', { code, signal, ms: Date.now() - t0 });
   for (const [, p] of pending) out({ id: p.id, error: 'simulation exited' });
@@ -131,7 +209,7 @@ sim.on('exit', (code, signal) => {
 // ---------------------------------------------------------------- simulator command line (UCLI)
 let ucliBuf = '', ucliWaiters = [], promptsSeen = 0;
 sim.stdout.on('data', (d) => {
-  simLog.write(d);
+  simLog.write(d); scanMissing(d);
   ucliBuf += d.toString('latin1');
   let k;
   while ((k = ucliBuf.indexOf('ucli% ')) >= 0) {
