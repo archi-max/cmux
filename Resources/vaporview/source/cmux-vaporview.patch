@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..4486eac
+index 0000000..5f8aec0
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,287 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -285,6 +285,12 @@ index 0000000..4486eac
 +`src/webview/window_cache.ts`:
 +- After a pan onto tiles that a prefetch request is still reading, that request is cancelled, so the tiles are asked for as visible. Before, they waited on the deprioritized request.
 +- A prefetch request that expires schedules the next ensure, so its tiles are asked for again. Before, nothing did until the user acted, because slow() had been the only caller.
++
++## Prefetch replies don't stretch the visible timeout; an expired prefetch waits longer next time
++
++`src/webview/window_cache.ts`:
++- The window timeout scales with the p95 RTT of replies. Only visible (priority 0) replies feed that sample now. Prefetch replies are slow by design (11-18 s on a 10 GB dump) and stretched the visible timeout; they go to `prefetchRttMs`, which is shown only.
++- A prefetch request's timeout doubles for each of its rows' prefetch expiries in a row (at most 2^6, capped as before), and resets on a prefetch reply. A prefetch that always took longer than 3x used to loop: expire, cancel, re-send at once, throwing the helper's work away each time.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2921,10 +2927,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..66fcced
+index 0000000..64c7d85
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1975 @@
+@@ -0,0 +1,1985 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3044,6 +3050,7 @@ index 0000000..66fcced
 +  failMsg   = '';
 +  timeouts  = 0;     // window requests that timed out in a row: back off only (a slow helper isn't a failing one)
 +  slowUntil = 0;
++  prefetchExpiries = 0; // cmux: prefetch requests of it that expired in a row: its next prefetch timeout doubles
 +  painted   = new Set<string>(); // window keys the last render drew from (kept by evict)
 +  orphanSince: number | null = null;
 +  solo      = false; // failed (alone or in a batch): ask for it alone until it succeeds
@@ -3196,7 +3203,7 @@ index 0000000..66fcced
 +
 +  stats = {
 +    requests: 0, cancels: 0, replies: 0, bytesIn: 0, queries: 0, decodeMs: 0, promoted: 0, aliasDropped: 0, prefetchQueries: 0, navHits: 0,
-+    firstDrawMs: [] as number[], promoteMs: [] as number[], refineMs: [] as number[], renderMs: [] as number[], rttMs: [] as number[], helperMs: [] as number[],
++    firstDrawMs: [] as number[], promoteMs: [] as number[], refineMs: [] as number[], renderMs: [] as number[], rttMs: [] as number[], prefetchRttMs: [] as number[], helperMs: [] as number[],
 +    slow: [] as {ms: number; helperMs: number; workerMs: number; signals: SignalId[]; level: number; priority: number; at: number}[], // replies over 300 ms (last 50)
 +  };
 +
@@ -3728,15 +3735,21 @@ index 0000000..66fcced
 +    // A reply that never comes (lost on the wire, helper restart) must not keep these tiles
 +    // "in flight" forever: expire, count a failure, ask again after the backoff (M7).
 +    // cmux: prefetch waits behind visible work in the helper's queue by design (on a 10 GB dump
-+    // its replies came at 11-18 s), so it has a timeout of its own (3x, capped), and expiring
-+    // cancels it and asks again: no slow(), so its rows get no backoff, notice or batch splitting.
++    // its replies came at 11-18 s), so it has a timeout of its own (3x, doubled for each of its
++    // rows' prefetch expiries in a row, capped), and expiring cancels it and asks again: no slow(),
++    // so its rows get no backoff, notice or batch splitting, and the doubling ends the loop of a
++    // prefetch that always takes longer (expire, cancel, re-send).
++    const pre = Math.min(6, Math.max(0, ...who.map((s) => s.prefetchExpiries)));
 +    const timer = setTimeout(() => {
 +      const f = this.inflight.get(id);
 +      if (!f) {return;}
 +      this.cancel(id);
-+      if (priority > 0) {this.scheduleEnsure(0); return;} // (its tiles, if still wanted, are asked again)
++      if (priority > 0) {
++        f.signals.forEach((sid) => {const s = this.signals.get(sid); if (s) {s.prefetchExpiries++;}});
++        this.scheduleEnsure(0); return; // (its tiles, if still wanted, are asked again)
++      }
 +      f.signals.forEach((sid) => {const s = this.signals.get(sid); if (s) {this.slow(s);}});
-+    }, priority > 0 ? Math.min(this.windowTimeoutCap, 3 * this.windowTimeout(who)) : this.windowTimeout(who));
++    }, priority > 0 ? Math.min(this.windowTimeoutCap, 3 * this.windowTimeout(who) * 2 ** pre) : this.windowTimeout(who));
 +    this.inflight.set(id, {id, tiles: span, priority, buckets, signals: who.map((s) => s.signalId), sentAt: performance.now(), gen: this.generation, timer});
 +    this.stats.requests++;
 +    // cmux: prefetch is marked, so the helper queues it behind visible work (one running task at most)
@@ -3843,7 +3856,10 @@ index 0000000..66fcced
 +      return;
 +    }
 +    const rtt = performance.now() - f.sentAt;
-+    pushStat(this.stats.rttMs, rtt);
++    // cmux: the window timeout scales with rttMs, so only visible replies feed it; prefetch waits
++    // behind visible work by design and would stretch the visible timeout (prefetchRttMs: shown only).
++    if (f.priority === 0) {pushStat(this.stats.rttMs, rtt);} else {pushStat(this.stats.prefetchRttMs, rtt);}
++    if (f.priority > 0) {f.signals.forEach((sid) => {const s = this.signals.get(sid); if (s) {s.prefetchExpiries = 0;}});}
 +    if (rtt > 300) {
 +      this.stats.slow.push({ms: Math.round(rtt), helperMs: Math.round((reply as any).ms ?? -1), workerMs: Math.round((reply as any).workerMs ?? -1), signals: f.signals, level: f.tiles[0].level, priority: f.priority, at: Math.round(f.sentAt)});
 +      if (this.stats.slow.length > 50) {this.stats.slow.shift();}
