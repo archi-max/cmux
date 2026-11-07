@@ -675,13 +675,27 @@ function startKinds(file) {
 // Cost of a primary's whole load before any piece ran: the per-call floor (learned from loads,
 // first ~65 ms per GB of file) and ~0.14 us + 4 ns per bit per change (reader traversal, value
 // decode and the store walk; clk of a 1.7 GB dump: 13M changes, 1.8 s).
-let primFloorMs = null;
-const primFloor = () => (primFloorMs !== null ? primFloorMs : 65 * fileBytes / 1e9);
-const primWalkMs = (id) => ((kinds.primaries && kinds.primaries.get(id)) || 0) * (0.14 + 0.004 * (widthOf.get(id) || 1)) / 1000;
-function learnFloor(ms, walkMs) {
-  const f = Math.max(0, ms - walkMs);
-  primFloorMs = primFloorMs === null ? f : 0.7 * primFloorMs + 0.3 * f;
+// Both are learned from batched loads (batchDone), per file (reset on open):
+// - walkScale: measured / estimated walk of a batch, after the floor (the per-change cost
+//   differs by host and dump; it was ~3x the estimate on a busy 1.7 GB host);
+// - the floor only from one-signal calls (a many-signal call's overrun is walk, not floor),
+//   clamped to twice the per-GB estimate.
+let primFloorMs = null, walkScale = 1;
+const floorGuess = () => 65 * fileBytes / 1e9;
+const primFloor = () => (primFloorMs !== null ? primFloorMs : floorGuess());
+const primWalkMs = (id) => walkScale * ((kinds.primaries && kinds.primaries.get(id)) || 0) * (0.14 + 0.004 * (widthOf.get(id) || 1)) / 1000;
+function learnFloor(ms, walkMs, n) {
+  const est = walkMs / walkScale;  // (walkMs: the batch's scaled estimate)
+  if (n === 1) {
+    const f = Math.min(2 * floorGuess(), Math.max(0, ms - walkMs));
+    primFloorMs = primFloorMs === null ? f : 0.7 * primFloorMs + 0.3 * f;
+  }
+  if (est > 20) {
+    const k = Math.min(8, Math.max(0.5, (ms - primFloor()) / est));
+    walkScale = 0.7 * walkScale + 0.3 * k;
+  }
 }
+function resetLearned() { primFloorMs = null; walkScale = 1; }
 
 // ---- aliases: rebuilt signals that are copies of stored ones ----
 // A port bound to a single net is rebuilt by the reader on every load (u_cluster.clk: 6.8 s
@@ -1003,7 +1017,7 @@ function batchDone(batch, m, w) {
     scheduleKick(true);
     return;
   }
-  learnFloor(m.ms, batch.reduce((a, x) => a + x.walkMs, 0));
+  learnFloor(m.ms, batch.reduce((a, x) => a + x.walkMs, 0), batch.length);
   const owner = workers[w.i] === w ? w : null;
   batch.forEach((x, k) => {
     if (x.epoch !== epoch) { return; }
@@ -2259,6 +2273,7 @@ const handlers = {
     if (failed) { addon.unload(); openFile = null; throw new Error('workers could not open the file: ' + failed.reason.message); }
     warm.inflight = 0;
     openIndex(file);
+    resetLearned();
     startKinds(file);
     loadAliases();
     if (wantWarm) { startWarm(); }
