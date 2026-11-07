@@ -321,6 +321,29 @@ import Testing
         }
     }
 
+    /// An extra top (a module nothing instantiates, which slang makes a top) sharing clk and rst with a renamed DUT:
+    /// the DUT's own signals and scopes map to the DUT, not to the extra top.
+    @Test func aRenamedInstancesSignalsAreNotAnExtraTops() async throws {
+        let design = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]),
+            "tb.u_dut": Self.signals(["clk": Self.bit, "rst": Self.bit, "x": Self.bit]),
+            "tb.u_dut.u_a": Self.signals(["x": Self.bit]), "tb.u_dut.u_b": Self.signals(["x": Self.bit]),
+            "other": Self.signals(["clk": Self.bit, "rst": Self.bit]),
+            "other.u_c": Self.signals(["x": Self.bit]), "other.u_d": Self.signals(["x": Self.bit]),
+        ], tops: ["other", "tb"])
+        let dump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk"]),
+            "tb.dut": Self.scopes(["u_a", "u_b"]) + Self.bits(["clk", "rst", "x"]),
+            "tb.dut.u_a": Self.bits(["x"]), "tb.dut.u_b": Self.bits(["x"]),
+        ]
+        for name in ["rst", "clk", "x"] {
+            #expect(try await resolve("tb.dut.\(name)", design: design, dump: dump)
+                == .signal(designPath: "tb.u_dut.\(name)", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+        }
+        #expect(try await resolve("tb.dut.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "tb.u_dut.u_a.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+    }
+
     @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
         let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
         #expect(roots["soc"] == [
