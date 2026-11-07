@@ -112,6 +112,14 @@ with tempfile.TemporaryDirectory() as tmp:
     check("-o inside an -f file: unknown",
           npi.overrides(case("fileout", rebuild="vcs '-f' 'opts.f' 't.sv'",
                              files={"opts.f": "-o out/simv\n-f more.f\n", "more.f": "t.sv\n"})), None)
+    # F1e, the reviewer's decoy: ./opts.f sets -o out/simv (so the daidir is out/simv.daidir) and a
+    # same-named out/opts.f without the override sits next to the daidir. Which one VCS read is not
+    # known: unknown.
+    check("a relative -f, no command-line -o, a same-named file above the daidir's folder: unknown",
+          npi.overrides(case("decoy", rebuild="vcs '-f' 'opts.f' 't.sv'", sub="out",
+                             files={"opts.f": "-o out/simv\n-pvalue+tb.W=1\n", "out/opts.f": "t.sv\n"})), None)
+    check("-o=out/simv (another -o spelling): unknown",
+          npi.overrides(case("oeq", rebuild="vcs '-f' 'opts.f' '-o=out/simv'", sub="out", files={"out/opts.f": "t.sv\n"})), None)
     # F1f: only one vcs line can be the compile; with two the scan can't tell which made the KDB.
     check("two vcs lines: unknown",
           npi.overrides(case("twovcs", rebuild="vcs 't.sv'\nvcs '-pvalue+tb.W=1' 't.sv'")), None)
