@@ -550,6 +550,23 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 32. Review L3: the helper's exit (its stdin closed) ends a running fsdbdebug too; on a 10 GB
+// dump it otherwise ran on for ~27 s and 2.5 GB with nobody to read its answer.
+{
+  const pidFile = path.join(tmp, 'fsdbdebug.pid');
+  fs.rmSync(pidFile, { force: true });
+  const h = await start(2, { 1: 50 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DEBUG_MS: '20000', STUB_DEBUG_PIDFILE: pidFile });
+  for (let k = 0; k < 100 && !fs.existsSync(pidFile); k++) { await wait(20); }
+  const pid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : 0;
+  h.close();
+  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return false; } };
+  let gone = false;
+  for (let k = 0; k < 50 && pid; k++) { if (!alive()) { gone = true; break; } await wait(40); }
+  check(pid > 0 && gone, `the helper's exit ends a running fsdbdebug: pid ${pid} ${gone ? 'gone' : 'still running'}`);
+  if (pid && !gone) { try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
