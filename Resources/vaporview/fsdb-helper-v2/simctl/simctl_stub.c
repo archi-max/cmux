@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  * simctl stub: the one routine a build names with the compile-time `-load <this>.so:simctl_register`.
  * With SIMCTL_LIB unset it does nothing, so the simulation behaves exactly as without it. With SIMCTL_LIB set
  * it loads that library and calls its simctl_entry(), so the real library can change without relinking.

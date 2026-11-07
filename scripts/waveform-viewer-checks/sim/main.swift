@@ -120,7 +120,10 @@ func relayChecks() async throws {
   let on = makeHelper(home: home, commands: WaveformFSDBHelper.pageCommands.union(WaveformSimRelay.pageCommands), allowedFile: panelFile)
   let open = await on.response(for: json(["cmd": "sim.open", "dir": "/etc", "id": 3]), failureMessage: fail)
   let o = result(open)
-  expect((o["simv"] as? String) == runDir.appendingPathComponent("simv").path, "sim.open runs the simulator of the panel file's folder, not the page's: \(header(open))")
+  // compared as normalised paths: TMPDIR may end in "/", which leaves a "//" in one spelling of the same file
+  let wantSimv = (runDir.appendingPathComponent("simv").path as NSString).standardizingPath
+  let gotSimv = ((o["simv"] as? String).map { ($0 as NSString).standardizingPath }) ?? "(none)"
+  expect(gotSimv == wantSimv, "sim.open runs the simulator of the panel file's folder, not the page's: \(gotSimv) (want \(wantSimv))")
   expect((o["period"] as? NSNumber)?.intValue == 2000, "sim.open answers with the clock period: \(o)")
 
   let w = await on.response(for: json(["cmd": "sim.watch", "signals": ["tb.cnt"], "id": 4]), failureMessage: fail)

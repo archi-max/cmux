@@ -188,6 +188,22 @@ function takeChanges(s) {
   return { signals, bin: Buffer.concat(parts) };
 }
 
+// Names and expressions go to the worker inside JSON, and from there into the library's line protocol and the
+// simulator's command line. The worker validates them too; refusing them here keeps a bad request off the pipe.
+function names(list) {
+  if (!Array.isArray(list)) throw new Error('signals must be a list of names');
+  return list.map((n) => {
+    if (typeof n !== 'string' || !n || n.length > 4096) throw new Error(`bad signal name ${JSON.stringify(n)}`);
+    if (/[\s\x00-\x1f\x7f]/.test(n)) throw new Error(`bad signal name ${JSON.stringify(n)}: no whitespace or control characters`);
+    return n;
+  });
+}
+function expression(e) {
+  const x = String(e || '');
+  if (/[\x00-\x1f\x7f]/.test(x)) throw new Error('bad expression: control characters');
+  return x;
+}
+
 function needSim() { if (!cur || cur.exited) throw new Error('no simulation'); return cur; }
 // Cycles need the clock's period, which the worker measures on the clock sim.open names.
 function needPeriod(s) { if (!s.period) throw new Error('no clock period known: open the simulation with a clock, or run by time'); }
@@ -220,7 +236,7 @@ const handlers = {
     }
     if (!fs.existsSync(LIB)) throw new Error('live simulation is not built on this host (it needs VCS when cmux builds its helper)');
     const args = runArgs(parsed.args);
-    const s = startWorker(simv, args, req.clock ? String(req.clock) : '');
+    const s = startWorker(simv, args, req.clock ? names([req.clock])[0] : '');
     cur = s;
     let ready;
     try { ready = await s.ready; } catch (e) { kill(s); cur = null; throw e; }
@@ -233,7 +249,7 @@ const handlers = {
   },
   'sim.until'(req) {
     const s = needSim();
-    const a = { expr: String(req.expr || '') };
+    const a = { expr: expression(req.expr) };
     if (req.maxTime !== undefined) a.maxTime = Number(req.maxTime); else { needPeriod(s); a.maxCycles = Number(req.maxCycles); }
     return startRun(s, 'until', a);
   },
@@ -243,10 +259,10 @@ const handlers = {
     const r = await call(s, 'stop');
     return { t: r.t };
   },
-  async 'sim.read'(req) { const s = needSim(); return call(s, 'read', { signals: (req.signals || []).map(String) }); },
+  async 'sim.read'(req) { const s = needSim(); return call(s, 'read', { signals: names(req.signals || []) }); },
   async 'sim.watch'(req) {
     const s = needSim();
-    const r = await call(s, 'watch', { signals: (req.signals || []).map(String) });
+    const r = await call(s, 'watch', { signals: names(req.signals || []) });
     const watch = (r.watch || []).map((w) => { if (!w) return null; s.widths.set(w.signalId, w.width); return { simSignal: w.signalId, width: w.width }; });
     return { t: r.t, watch };
   },

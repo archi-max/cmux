@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MIT
  * simctl VPI library: lets a controller drive a running simulation over two pipes.
  * Public IEEE 1364/1800 VPI only. Build against the simulator's own vpi_user.h (not shipped here).
  *
@@ -17,8 +17,10 @@
  *      S id                 stop a run (polled while running)
  *      T id                 current time
  *      G id sig...          read values
- *      F id sig lit | D id sig lit | L id sig    force, deposit, release; issued while parked in the read-only
- *                           region they are applied 1 time unit later, and the reply carries that time
+ *      F id sig lit | D id sig lit | L id sig    force, deposit, release. Queued until the next Y; issued while
+ *                           parked in the read-only region they are applied 1 time unit later, all of one group
+ *                           at the same time, and each reply carries that time
+ *      Y id                 end of a write group: apply the queued writes (no reply of its own)
  *      W id sig...          watch (value-change callbacks; changes are recorded once per time step,
  *                           after the step settles, and only when the value differs)
  *      X id wid...          unwatch
@@ -31,6 +33,13 @@
  *                           step + 1 time unit (the stop takes effect only once the simulation moves on)
  *      K id                 resume token (see P)
  *      Q id                 finish
+ *
+ * Tokens are separated by single spaces and lines by \n; the controller never sends a token with whitespace or
+ * control characters (it refuses such names and values), so a token can't carry another command.
+ *
+ * If the controller goes away (its command pipe reaches EOF), the library ends the whole process group: the
+ * controller starts the simulator in a session of its own (and says so with SIMCTL_OWN_GROUP), and checkpoint children and the simulator's command-line
+ * process are in that group too, so nothing of the simulation outlives its controller.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -43,6 +52,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <dirent.h>
+#include <pwd.h>
+#include <sys/types.h>
 #include "vpi_user.h"
 
 #ifndef vpiInternalScope
@@ -50,6 +63,53 @@
 #endif
 
 static int in_fd = -1, out_fd = -1;
+static pid_t own_group = 0;           /* the simulator's process group, when it was started as its leader */
+
+/* The controller is gone: end every process of the simulation's group (the parked original after a restore,
+ * checkpoint children, the command-line process), then this one. A forked reaper makes sure of it a moment
+ * later even if one of them ignores SIGTERM. */
+/* The simulator leaves /tmp/vcs_{attachable,dve_general}.<user>.<pid> behind when it is killed (or ends on
+ * SIGTERM): the reaper removes those of the group's processes, collected before anything is signalled. */
+static int group_pids(pid_t pgid, pid_t *pids, int max) {
+  int n = 0;
+  DIR *d = opendir("/proc"); struct dirent *e;
+  while (d && (e = readdir(d)) && n < max) {
+    if (!isdigit((unsigned char)e->d_name[0])) continue;
+    char path[300], st[512]; snprintf(path, sizeof path, "/proc/%s/stat", e->d_name);
+    int fd = open(path, O_RDONLY); if (fd < 0) continue;
+    ssize_t k = read(fd, st, sizeof st - 1); close(fd); if (k <= 0) continue; st[k] = 0;
+    char *rp = strrchr(st, ')'); int ppid, pg; char state;
+    if (rp && sscanf(rp + 2, "%c %d %d", &state, &ppid, &pg) == 3 && pg == pgid) pids[n++] = (pid_t)atoi(e->d_name);
+  }
+  if (d) closedir(d);
+  return n;
+}
+static void lost_controller(void) {
+  if (own_group > 0) {
+    static pid_t pids[256]; int n = group_pids(own_group, pids, 256);
+    /* SIGTERM blocked across the fork: the group's SIGTERM below must not kill the reaper before its setsid. */
+    sigset_t term, old; sigemptyset(&term); sigaddset(&term, SIGTERM); sigprocmask(SIG_BLOCK, &term, &old);
+    pid_t r = fork();
+    if (r == 0) {
+      setsid();                       /* outside the group: it outlives the kill to clean up */
+      signal(SIGTERM, SIG_IGN); sigprocmask(SIG_SETMASK, &old, 0);
+      usleep(700 * 1000);
+      kill(-own_group, SIGKILL);
+      usleep(100 * 1000);
+      struct passwd *pw = getpwuid(getuid());
+      for (int i = 0; pw && i < n; i++) {
+        char f[512];
+        snprintf(f, sizeof f, "/tmp/vcs_attachable.%s.%d", pw->pw_name, (int)pids[i]); unlink(f);
+        snprintf(f, sizeof f, "/tmp/vcs_dve_general.%s.%d", pw->pw_name, (int)pids[i]); unlink(f);
+      }
+      _exit(0);
+    }
+    signal(SIGTERM, SIG_IGN);
+    sigprocmask(SIG_SETMASK, &old, 0);
+    kill(-own_group, SIGTERM);
+  }
+  vpi_control(vpiFinish, 0);
+}
 
 /* ---------------------------------------------------------------- output */
 typedef struct { char *p; size_t n, cap; } buf_t;
@@ -99,8 +159,8 @@ static uint64_t now(void) {
 static double wall_ms(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6; }
 
 /* ---------------------------------------------------------------- signals (handle cache) */
-typedef struct { char *name; vpiHandle h; int width; } sig_t;
-static sig_t *sigs; static int nsigs, capsigs;
+typedef struct { char *name; vpiHandle h; int width; } simsig_t;
+static simsig_t *sigs; static int nsigs, capsigs;
 static int *htab; static int hcap;     /* open addressing, values are index+1 */
 static uint64_t hstr(const char *s) { uint64_t h = 1469598103934665603ull; for (; *s; s++) h = (h ^ (unsigned char)*s) * 1099511628211ull; return h; }
 static void hput(int idx) {
@@ -120,7 +180,7 @@ static int sig_get(const char *name) {
     for (int i = 0; i < nsigs; i++) hput(i);
   }
   if (nsigs == capsigs) { capsigs = capsigs ? capsigs * 2 : 256; sigs = realloc(sigs, capsigs * sizeof *sigs); }
-  sig_t *s = &sigs[nsigs];
+  simsig_t *s = &sigs[nsigs];
   s->name = strdup(name);
   s->h = vpi_handle_by_name(s->name, NULL);
   s->width = 0;
@@ -137,7 +197,7 @@ static int sig_get(const char *name) {
   return s->h ? nsigs - 1 : -1;
 }
 /* width chars of 0/1/x/z, MSB first */
-static void getbin(const sig_t *s, char *dst) {
+static void getbin(const simsig_t *s, char *dst) {
   s_vpi_value v; v.format = vpiBinStrVal; v.value.str = NULL; vpi_get_value(s->h, &v);
   const char *p = v.format == vpiBinStrVal && v.value.str ? v.value.str : "";
   size_t L = strlen(p), w = (size_t)s->width;
@@ -214,7 +274,7 @@ static void flush_dirty(void) {
     watch_t *w = &watches[dirty[i]];
     w->dirty = 0;
     if (!w->active) continue;
-    sig_t *s = &sigs[w->sig];
+    simsig_t *s = &sigs[w->sig];
     char *v = tmpval(s->width);
     getbin(s, v);
     if (memcmp(v, w->last, s->width)) { memcpy(w->last, v, s->width); add_rec(t, dirty[i], v, s->width); }
@@ -269,7 +329,7 @@ static int eval_conds(void) {
   int any = 0, group = 1;
   for (int i = 0; i < nconds; i++) {
     if (i && cond_or[i]) { any |= group; group = 1; }
-    sig_t *s = &sigs[conds[i].sig];
+    simsig_t *s = &sigs[conds[i].sig];
     char *v = tmpval(s->width); getbin(s, v);
     int eq = !memcmp(v, conds[i].val, s->width);
     group &= conds[i].ne ? !eq : eq;
@@ -305,9 +365,10 @@ static vpiHandle after(uint64_t dt, PLI_INT32 (*rtn)(p_cb_data)) {
   return vpi_register_cb(&cb);
 }
 static PLI_INT32 poll_rtn(p_cb_data d) {
-  (void)d; poll_cb = NULL;
+  (void)d;
+  if (poll_cb) { vpi_release_handle(poll_cb); poll_cb = NULL; }   /* fired: its handle is ours to free */
   if (!running) return 0;
-  if (fill(0) < 0) { stop_run("eof"); return 0; }
+  if (fill(0) < 0) { stop_run("eof"); lost_controller(); return 0; }
   /* a stop line anywhere in the buffer ends the run; other lines wait for the serve loop */
   char *p = inb, *e = inb + inlen;
   while (p < e) {
@@ -334,13 +395,13 @@ typedef struct { char op; int sig; long id; char *val; } wr_t;
 static wr_t *wq; static int nwq, capwq;
 static long *wdone; static int nwdone, capwdone;
 static void apply_write(wr_t *w) {
-  sig_t *s = &sigs[w->sig];
+  simsig_t *s = &sigs[w->sig];
   s_vpi_value val; val.format = vpiBinStrVal; val.value.str = w->val;
   if (w->op == 'L') { getbin(s, w->val); w->val[s->width] = 0; vpi_put_value(s->h, &val, NULL, vpiReleaseFlag); }
   else vpi_put_value(s->h, &val, NULL, w->op == 'F' ? vpiForceFlag : vpiNoDelay);
 }
 static void reply_write(long id, int si) {
-  sig_t *s = &sigs[si];
+  simsig_t *s = &sigs[si];
   bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"value\":\"", id, (unsigned long long)now());
   bgrow(&ob, s->width); getbin(s, ob.p + ob.n); ob.n += s->width; bstr(&ob, "\"}"); send_ob();
 }
@@ -362,7 +423,7 @@ static PLI_INT32 write_rtn(p_cb_data d) {
  * its command-line work); until then it re-arms itself one time unit later without blocking. */
 static PLI_INT32 resume_rtn(p_cb_data d) {
   (void)d;
-  if (fill(0) < 0) { vpi_control(vpiFinish, 0); return 0; }
+  if (fill(0) < 0) { lost_controller(); return 0; }
   char *p = inb, *e = inb + inlen;
   while (p < e) {
     char *nl = memchr(p, '\n', e - p);
@@ -444,7 +505,7 @@ static void emit_all(void) {
   uint64_t t = now();
   for (int i = 0; i < nwatch; i++) {
     watch_t *w = &watches[i]; if (!w->active) continue;
-    sig_t *s = &sigs[w->sig]; getbin(s, w->last); add_rec(t, i, w->last, s->width);
+    simsig_t *s = &sigs[w->sig]; getbin(s, w->last); add_rec(t, i, w->last, s->width);
   }
   send_recs();
 }
@@ -462,7 +523,7 @@ static void serve(int ctx) {
   static char *tok[1 << 16];
   for (;;) {
     char *line = nextline();
-    if (!line) { vpi_control(vpiFinish, 0); return; }
+    if (!line) { lost_controller(); return; }
     int nt = split(line, tok, 1 << 16);
     if (nt < 2) continue;
     char op = tok[0][0]; long id = strtol(tok[1], NULL, 10);
@@ -518,18 +579,24 @@ static void serve(int ctx) {
     case 'F': case 'D': case 'L': {
       int si = nt >= 3 ? sig_get(tok[2]) : -1;
       if (si < 0) { reply_err(id, "unknown signal"); break; }
-      sig_t *s = &sigs[si];
+      simsig_t *s = &sigs[si];
       wr_t w = { op, si, id, malloc(s->width + 1) };
       if (op != 'L') {
         if (nt < 4 || lit2bin(tok[3], s->width, w.val)) { free(w.val); reply_err(id, "bad value literal"); break; }
         w.val[s->width] = 0;
       }
-      if (ctx == CTX_SYSTF) { apply_write(&w); free(w.val); flush_dirty(); send_recs(); reply_write(id, si); break; }
       if (nwq == capwq) { capwq = capwq ? capwq * 2 : 16; wq = realloc(wq, capwq * sizeof *wq); }
       wq[nwq++] = w;
-      /* take any further writes already waiting, so they all land at the same time */
-      char *nl = inlen ? memchr(inb, '\n', inlen) : NULL;
-      if (nl && (inb[0] == 'F' || inb[0] == 'D' || inb[0] == 'L') && inb[1] == ' ') break;
+      break;   /* applied at the group's Y */
+    }
+    case 'Y': {
+      if (!nwq) break;               /* every write of the group failed (each has its error reply) */
+      if (ctx == CTX_SYSTF) {
+        for (int i = 0; i < nwq; i++) { apply_write(&wq[i]); free(wq[i].val); }
+        flush_dirty(); send_recs();
+        for (int i = 0; i < nwq; i++) reply_write(wq[i].id, wq[i].sig);
+        nwq = 0; break;
+      }
       vpiHandle h = after(1, write_rtn); if (h) vpi_release_handle(h);
       return;
     }
@@ -637,10 +704,15 @@ void simctl_entry(void) {
   const char *a = getenv("SIMCTL_IN_FD"), *b = getenv("SIMCTL_OUT_FD");
   if (!a || !b) return;                         /* not launched by the controller: do nothing */
   in_fd = atoi(a); out_fd = atoi(b);
+  /* The controller starts the simulator in a new session (its process group = the session); a simulator run
+   * from a shell's job control is not a session's group, so it is never killed this way. */
+  if (getenv("SIMCTL_OWN_GROUP") && getpgrp() == getsid(0)) own_group = getpgrp();
   if (getenv("SIMCTL_DEBUG")) {
     FILE *f = fopen(getenv("SIMCTL_DEBUG"), "a");
     if (f) { fprintf(f, "register pid %d in %d(%d) out %d(%d)\n", (int)getpid(), in_fd, fcntl(in_fd, F_GETFD), out_fd, fcntl(out_fd, F_GETFD)); fclose(f); }
   }
+  /* nothing the simulation starts ($system, its own tools) inherits the channel */
+  unsetenv("SIMCTL_IN_FD"); unsetenv("SIMCTL_OUT_FD"); unsetenv("SIMCTL_LIB"); unsetenv("SIMCTL_OWN_GROUP");
   s_vpi_systf_data tf; memset(&tf, 0, sizeof tf);
   tf.type = vpiSysTask; tf.tfname = "$simctl_serve"; tf.calltf = serve_calltf;
   vpi_register_systf(&tf);
