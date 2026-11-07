@@ -270,14 +270,14 @@ const widths = new Map();
     const d1 = await req('sim.open', { dir: runDir, clock: 'tb.clk', forkSave: true });
     const a1 = JSON.parse(fs.readFileSync(workerLog, 'utf8')).argv;
     const fs1 = await req('sim.forksave', { file: 'a.save' });
-    const cp1 = await req('sim.checkpoint', {});
+    const ckptA = await req('sim.checkpoint', {});
     const rs1 = await req('sim.restore', { cp: 1 });
     let saves = [];
     for (let i = 0; i < 20 && !saves.length; i++) { const p = await req('sim.poll', { waitMs: 100 }); saves = (p.result && p.result.saves) || []; }
     expect(!d1.error && d1.result.mode === 'forkSave' && a1.includes('--no-ucli'), `a run opened with forkSave is in forkSave mode, the worker started with --no-ucli: ${JSON.stringify(d1.result && d1.result.mode)}`);
     expect(!fs1.error && fs1.result && fs1.result.pid > 0 && saves.length === 1 && saves[0].ok === true && saves[0].pid === fs1.result.pid,
       `in forkSave mode forksave works and its end reaches the poll: ${JSON.stringify(fs1.result || fs1.error)} ${JSON.stringify(saves)}`);
-    expect(!!cp1.error && /forkSave/.test(cp1.error) && !!rs1.error && /forkSave/.test(rs1.error), `and checkpoint/restore are refused: ${cp1.error} / ${rs1.error}`);
+    expect(!!ckptA.error && /forkSave/.test(ckptA.error) && !!rs1.error && /forkSave/.test(rs1.error), `and checkpoint/restore are refused: ${ckptA.error} / ${rs1.error}`);
     await req('sim.close', {});
   }
 
