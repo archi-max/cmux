@@ -51,7 +51,8 @@ module.exports = {
   bgBegin() { process.removeAllListeners('SIGUSR2'); process.on('SIGUSR2', () => {}); },
   bgEnd() {}, bgPoll: () => false,
   openFsdb() {}, unload() {},
-  readMetadata(meta, chunk) { meta(1, 0, 1, 'ns'); chunk(500, TIME_END); },
+  // STUB_TIME_START: the dump's first time (the reader's min tag), passed as the addon does.
+  readMetadata(meta, chunk) { meta(1, 0, 1, 'ns'); chunk(500, TIME_END, Number(process.env.STUB_TIME_START || 0)); },
   readScopes: () => [{ name: 'tb', type: 'module', netlistId: 0, scopeOffsetIdx: 0 }],
   getScopeChildren: () => ({ scopes: [], totalReturned: 0, remainingItems: 0 }),
   readVars(p, idx, onVar) { for (let id = 1; id <= N; id++) { onVar('s' + id, 'reg', 'BitVector', p, id, id, 1, 0, 0); } },
