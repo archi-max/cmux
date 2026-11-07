@@ -486643,6 +486643,65 @@
         }
       }
     },
+    "waveformTrace.loads.interfaceCapped": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface reads past %@ instances are not listed."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 個を超えるインスタンスでのインターフェース経由の読み出しは表示されません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lesezugriffe über die Schnittstelle in mehr als %@ Instanzen werden nicht aufgeführt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les lectures via l’interface au-delà de %@ instances ne sont pas listées."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا تُدرج القراءات عبر الواجهة بعد %@ نسخة."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se listan las lecturas a través de la interfaz más allá de %@ instancias."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "超過 %@ 個實例之後經由介面的讀取不會列出。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "超过 %@ 个实例之后经由接口的读取不会列出。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@개를 넘는 인스턴스에서 인터페이스를 통한 읽기는 표시되지 않습니다."
+          }
+        }
+      }
+    },
     "waveformTrace.loads.limits": {
       "extractionState": "manual",
       "localizations": {

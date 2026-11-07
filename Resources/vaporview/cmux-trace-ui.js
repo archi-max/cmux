@@ -1191,6 +1191,8 @@
     if (st.limits) {
       const lim = el('div', 'muted', s.traceLoadsLimits || '');
       if (st.limits.opaque) { lim.textContent += ' ' + format(s.traceLoadsOpaque, number(st.limits.opaque)); }
+      const walk = st.limits.interfaceWalk;
+      if (walk && walk.capped) { lim.textContent += ' ' + format(s.traceLoadsInterfaceCapped, number(walk.instances)); }
       body.append(lim);
     }
     p.append(body);

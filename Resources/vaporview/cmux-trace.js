@@ -1372,8 +1372,10 @@
       return { total: list.length, entries: list.slice(offset, offset + limit), next: offset + limit < list.length ? offset + limit : null };
     }
     // An interface's signal: each modport taking it as an input (kind 'modport', a connection),
-    // and its reads in the interface's parent and the instances under it (where its ports can
-    // reach: `via: 'interface'`), walked down to INTERFACE_WALK instances.
+    // and its reads (`via: 'interface'`) in the interface's parent and in the instances its interface
+    // ports are bound to (the model's `connections`, at any depth: its real fanout), up to
+    // INTERFACE_WALK instances (limits.interfaceWalk: { instances, of, capped }). A model without
+    // `connections` (an older sidecar): the parent and every instance under it, breadth first.
     const INTERFACE_WALK = 512;
     async function interfaceLoads(m, path, base, out, limits) {
       for (const mp of m.modports || []) {
@@ -1386,16 +1388,32 @@
         }
       }
       if (!m.parent) { return; }
+      // (the parent too: it can read the interface instance's members itself)
+      const visit = (x) => {
+        const found = [];
+        loadsIn(x, path, found, limits);
+        found.forEach((e) => { e.via = 'interface'; out.push(e); });
+      };
+      if (Array.isArray(m.connections)) {
+        const paths = [...new Set([m.parent].concat(m.connections.map((c) => c.instance)))].filter((p) => p && p !== m.path);
+        let walked = 0;
+        for (const p of paths) {
+          if (walked >= INTERFACE_WALK) { limits.interfaceWalk = { instances: walked, of: paths.length, capped: true }; return; }
+          const x = await model(p);
+          if (!x) { continue; }
+          walked++;
+          visit(x);
+        }
+        limits.interfaceWalk = { instances: walked, of: paths.length, capped: false };
+        return;
+      }
       const pm = await model(m.parent);
       const todo = pm ? [pm] : [];
       let seen = 0;
       while (todo.length) {
         const x = todo.shift();
         if (++seen > INTERFACE_WALK) { limits.interfaceWalk = { instances: INTERFACE_WALK, capped: true }; return; }
-        // (the parent too: it can read the interface instance's members itself)
-        const found = [];
-        loadsIn(x, path, found, limits);
-        found.forEach((e) => { e.via = 'interface'; out.push(e); });
+        visit(x);
         for (const c of x.children || []) {
           if (c.path === m.path) { continue; }
           const cm = await model(c.path);

@@ -875,6 +875,7 @@ enum WaveformTrace {
             "traceLoadsCompiledOnly": String(localized: "waveformTrace.loads.compiledOnly", defaultValue: "Only the compiled design has this signal, so its readers are not known."),
             "traceLoadsLimits": String(localized: "waveformTrace.loads.limits", defaultValue: "Not listed: reads through hierarchical references from other instances."),
             "traceLoadsOpaque": String(localized: "waveformTrace.loads.opaque", defaultValue: "%@ statements slang could not elaborate may read it too."),
+            "traceLoadsInterfaceCapped": String(localized: "waveformTrace.loads.interfaceCapped", defaultValue: "Interface reads past %@ instances are not listed."),
             "traceLoadsRole_data": String(localized: "waveformTrace.loads.role.data", defaultValue: "data"),
             "traceLoadsRole_condition": String(localized: "waveformTrace.loads.role.condition", defaultValue: "condition"),
             "traceLoadsRole_index": String(localized: "waveformTrace.loads.role.index", defaultValue: "index"),
