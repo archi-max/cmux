@@ -90,6 +90,15 @@ What is streamed, and when:
   load. Cancelling a load's last request keeps it going in the background (at most 8 such loads, the furthest along); `free` of the signal drops it.
   Pieces wait in `/dev/shm` files until their join, which deletes them; that is RAM no worker's memory guard sees, so
   their total is capped (`FSDB_SHM_CAP`, 512 MB): above it, only the load nearest done gets more pieces.
+- Stored and rebuilt signals load differently. On open, the helper lists the signals the dump stores, using
+  `fsdbdebug -top_n_var 0` (from `FSDB_FSDBDEBUG` or `$VERDI_HOME/bin`), run under `nice` with a memory and
+  time watchdog (`FSDB_FSDBDEBUG_TIMEOUT_MS`, 300 s). The result is cached next to the index (`kinds.v1.json`).
+  Everything else is rebuilt by the reader on load. Until the list is ready, or if the tool is missing, loads
+  run as above.
+  - A stored signal pays a fixed cost per reader call (about 110 ms on a 1.7 GB dump, learned as it runs), so
+    cheap ones are loaded several at a time in one call, and a heavy one gets a few large pieces, not many small ones.
+  - A rebuilt signal pays about 190 ms of setup on each worker it touches (`FSDB_SEC_SETUP_MS`), so it is spread
+    over only as many workers as its measured cost repays.
 - *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
   the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
 
