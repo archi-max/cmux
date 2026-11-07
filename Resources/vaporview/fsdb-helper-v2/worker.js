@@ -39,7 +39,7 @@ const RSS_HEADROOM = Number(process.env.FSDB_RSS_HEADROOM_MB ?? 16) * 1e6;  // (
 let rssFloor = 0, capRaised = null;
 const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6), rssFloor);
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
-const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
+const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
 // the RSS cap is undone before it is walked (the soft guard above recycles first).
@@ -177,6 +177,16 @@ const ops = {
   // value; ~2 ms, nothing walked or kept). Unreadable ones give null.
   coldValueAt({ signalIds, t }) {
     return addon.coldValueAt(signalIds, t).map((v) => (typeof v === 'string' ? v : null));
+  },
+
+  // valueAt {prev: true}: the value at t and the last real change at or before t.
+  lastChange({ signalIds, t }) {
+    const info = ensure(signalIds);
+    return signalIds.map((id) => (info.get(id).error ? { value: null, prev: null } : { value: addon.cacheValueAt(id, t), prev: addon.cacheLastChange(id, t) }));
+  },
+  // ... of signals that aren't stored: one view window [t - span, t], nothing kept.
+  coldNear({ signalIds, t, span }) {
+    return addon.coldValueNear(signalIds, t, span);
   },
 
   // A short range of signals that aren't stored: load and walk only [t0 - 1, t1]
