@@ -840,7 +840,8 @@
     function driverSummary(m, d) {
       if (d.type === 'assign') { return { kind: 'assign', src: d.a.src, loc: locOf(m, d.a.loc) }; }
       if (d.type === 'proc') { return { kind: 'proc', procKind: d.p.kind, src: d.p.body.src, loc: locOf(m, d.p.loc) }; }
-      if (d.type === 'portIn') { return { kind: 'portIn', port: d.port.name, instance: m.path, src: connText(d.port.conn), loc: locOf(m, d.port.loc) }; }
+      // (an input port's connection is the parent's text, evaluated there: `from`)
+      if (d.type === 'portIn') { return { kind: 'portIn', port: d.port.name, instance: m.path, from: m.parent, src: connText(d.port.conn), loc: locOf(m, d.port.loc) }; }
       return { kind: 'portOut', port: d.port.name, instance: d.child.path, src: connText(d.port.conn), loc: locOf(m, d.port.loc) };
     }
 

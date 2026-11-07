@@ -126,26 +126,48 @@ def unresolved(text):
 
 def overrides(daidir):
     """The compile's parameter override options, from the daidir's vcs_rebuild (the vcs command VCS
-    recorded) and the -f files it names (relative to the daidir's folder, where VCS ran by default).
-    Fails closed: None (unknown) when the command or one of its files can't be read, when it holds
-    an expansion the scan can't resolve, or when no vcs command is found in it."""
+    recorded) and the -f files it names (relative to where VCS ran: the daidir's folder, or the
+    folder above it that -o's directory part names). Fails closed: None (unknown) when the command
+    or one of its files can't be read, when it holds an expansion the scan can't resolve, when no
+    line's command is vcs (after env and VAR= assignments), or when a relative file list's folder
+    is unknown (an absolute -o, or a daidir that is not where -o put it)."""
     try:
         with open(os.path.join(daidir, "vcs_rebuild")) as f:
             lines = [line for line in f.read().splitlines() if line.strip() and not line.lstrip().startswith("#")]
         if unresolved("\n".join(lines)):
             return None
-        args = shlex.split(" ".join(lines))
+        commands = [shlex.split(line) for line in lines]
     except (OSError, ValueError):
         return None
-    at = next((i for i, a in enumerate(args) if os.path.basename(a) == "vcs"), None)
-    if at is None:
+    args = None
+    for words in commands:
+        i = 0
+        while i < len(words) and (words[i] == "env" or ("=" in words[i] and not words[i].startswith(("-", "+")))):
+            i += 1
+        if i < len(words) and os.path.basename(words[i]) == "vcs":
+            args = words[i + 1:]
+            break
+    if args is None:
         return None
-    base = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
+    folder = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
+    base = folder
+    out = [args[i + 1] for i in range(len(args) - 1) if args[i] == "-o"]
+    if out and os.path.dirname(out[-1]):
+        if os.path.isabs(out[-1]):
+            base = None
+        else:
+            sub = os.path.normpath(os.path.dirname(out[-1]))
+            # VCS ran in the folder that, joined with -o's directory part, is the daidir's folder.
+            ran = os.path.normpath(os.path.join(folder, *([os.pardir] * len(sub.split(os.sep)))))
+            base = ran if os.path.normpath(os.path.join(ran, sub)) == folder and os.pardir not in sub.split(os.sep) else None
     found = []
-    return found if scan(args[at + 1:], base, found, 0) else None
+    return found if scan(args, base, found, 0) else None
 
 
 def is_override(arg):
+    """An option token (- or +) that sets parameters; a file argument named for them is not one."""
+    if not arg.startswith(("-", "+")):
+        return False
     return arg in OVERRIDE_EXACT or arg.startswith(tuple(o + "+" for o in OVERRIDE_EXACT)) \
         or any(w in arg.lower() for w in OVERRIDE_WORDS)
 
@@ -159,6 +181,8 @@ def scan(args, base, found, depth):
         if arg in FILE_LISTS:
             if i + 1 >= len(args) or depth > 8:
                 return False
+            if not os.path.isabs(args[i + 1]) and base is None:
+                return False  # where VCS ran is not known: a relative file list can't be found
             path = args[i + 1] if os.path.isabs(args[i + 1]) else os.path.join(base, args[i + 1])
             try:
                 with open(path) as f:

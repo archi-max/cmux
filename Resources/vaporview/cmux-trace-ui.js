@@ -324,12 +324,21 @@
         if (r.t !== null && r.t !== undefined && (at === null || Number(r.t) > at)) { at = Number(r.t); was = c; }
       }
       if (at === null) {
-        // The run is the stream's first: it starts from all x (a leading x is not stored), an
-        // edge unless it starts at the dump's start (its first value).
-        const first = await v2({ cmd: 'edge', signalId: id, t: dumpStart() - 1, dir: 1, kind: 'any' }, bg);
+        // The run is the stream's first. With this last bit at the dump's start it is the dump's
+        // first value (no edge); else it starts from all x (a leading x is not stored) at the
+        // first change after the start. (No time before the start is asked: from 0 that is -1,
+        // which the helper rejects.)
+        const s0 = dumpStart();
+        const there = await v2({ cmd: 'valueAt', signalIds: [id], t: s0 }, bg);
+        const v0 = there && Array.isArray(there.values) ? there.values[0] : undefined;
+        if (typeof v0 !== 'string' || v0.length !== width) { return undefined; }
+        const b0 = v0.slice(-1).toLowerCase();
+        if (b0 === bit) { return null; }
+        if (b0 !== 'x') { return undefined; }
+        const first = await v2({ cmd: 'edge', signalId: id, t: s0, dir: 1, kind: 'any' }, bg);
         if (first === undefined) { return undefined; }
         const t0 = first.t === null || first.t === undefined ? null : Number(first.t);
-        return t0 !== null && t0 > dumpStart() && isEdge('x', bit, edge) ? t0 : null;
+        return t0 !== null && t0 > s0 && isEdge('x', bit, edge) ? t0 : null;
       }
       const start = await v2({ cmd: 'edge', signalId: id, t: at, dir: 1, kind: 'any' }, bg);
       if (start === undefined || start.t === null || start.t === undefined) { return undefined; }
@@ -667,10 +676,12 @@
     }
     // kdbChecked: the instances whose parameters and ports agreed, and `instance.signal` for the
     // signals whose shape and writes did. A step needs its instance and its signal in it, and so
-    // do its driver's instance (a port's other side) and any other instance writing it; a step
-    // with no instance was not checked.
+    // do its driver's instance (an output port's child), the parent an input port's connection is
+    // evaluated in (`from`) and any other instance writing it; a step with no instance was not
+    // checked. (A connection's expression is not compared: the KDB's writes are statements.)
     const outside = (path) => typeof path === 'string' && !s.kdbChecked.has(path);
-    const touched = [step.instance, step.instance && step.name ? step.instance + '.' + String(step.name).replace(/\[.*$/, '') : null, step.driver && step.driver.instance]
+    const touched = [step.instance, step.instance && step.name ? step.instance + '.' + String(step.name).replace(/\[.*$/, '') : null,
+      step.driver && step.driver.instance, step.driver && step.driver.from]
       .concat((step.drivers || []).map((d) => d && d.writer));
     if (s.kdbChecked && (!step.instance || touched.some(outside))
         && !(step.reasons || []).some((r) => r.code === 'kdbNotChecked')) {

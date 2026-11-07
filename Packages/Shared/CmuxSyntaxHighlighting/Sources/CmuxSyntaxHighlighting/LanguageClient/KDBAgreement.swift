@@ -58,7 +58,12 @@ public enum KDBCheck: String, Hashable, Sendable {
 /// parameter, width, port or line to show it (a define expanding to another literal, in a file
 /// older than the compile). `defparam` and instance overrides (`#(.P(v))`) are not compile options,
 /// so they are not in `overrides`: they are in the source, which slang elaborates too, and are
-/// compared through the parameter values both sides report.
+/// compared through the parameter values both sides report. An input port's connection
+/// expression (in the parent) is not compared either: the KDB's writes are statements, so a port
+/// has none on either side; the parent's level is checked (its parameters and ports). "The same
+/// host" is the SSH destination's name: one name that lands on different machines per connection
+/// (a load-balanced login name), with design files in machine-local folders such as /tmp, can
+/// read different files under the same full paths.
 public enum KDBAgreement {
     /// One level of the row's chain: the KDB's instance (its dump path and model) and slang's model there.
     public struct Level {
