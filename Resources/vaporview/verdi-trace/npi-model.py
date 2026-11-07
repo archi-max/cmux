@@ -130,8 +130,9 @@ def overrides(daidir):
     folder above it that -o's directory part names). Fails closed: None (unknown) when the command
     or one of its files can't be read, when it holds an expansion the scan can't resolve, when no
     line's command is vcs (after env and VAR= assignments) or more than one is, when a file list
-    sets -o, or when a relative file list's folder is unknown (an absolute -o, or a daidir that is
-    not where -o put it)."""
+    sets -o, when any token spells -o another way (-o=...), or when a relative file list's folder is
+    unknown (an absolute -o, a daidir that is not where -o put it, or, with no -o on the command
+    line, a file of the same name in a folder above the daidir's: a file list there may have set -o)."""
     try:
         with open(os.path.join(daidir, "vcs_rebuild")) as f:
             lines = [line for line in f.read().splitlines() if line.strip() and not line.lstrip().startswith("#")]
@@ -150,6 +151,8 @@ def overrides(daidir):
     if len(found_args) != 1:
         return None  # no vcs command, or more than one: which compile made this KDB is unknown
     args = found_args[0]
+    if any(a.startswith("-o") and a != "-o" for a in args):
+        return None  # an -o spelling the scan doesn't place
     folder = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
     base = folder
     out = [args[i + 1] for i in range(len(args) - 1) if args[i] == "-o"]
@@ -162,7 +165,7 @@ def overrides(daidir):
             ran = os.path.normpath(os.path.join(folder, *([os.pardir] * len(sub.split(os.sep)))))
             base = ran if os.path.normpath(os.path.join(ran, sub)) == folder and os.pardir not in sub.split(os.sep) else None
     found = []
-    return found if scan(args, base, found, 0) else None
+    return found if scan(args, base, found, 0, None if out else folder) else None
 
 
 def is_override(arg):
@@ -173,9 +176,10 @@ def is_override(arg):
         or any(w in arg.lower() for w in OVERRIDE_WORDS)
 
 
-def scan(args, base, found, depth):
+def scan(args, base, found, depth, unplaced=None):
     """Adds the override options in `args` to `found`; False when a file list can't be read or holds
-    an expansion the scan can't resolve."""
+    an expansion the scan can't resolve. `unplaced`: the daidir's folder when the command line has
+    no -o, so a relative file list might have been read from a folder above it."""
     i = 0
     while i < len(args):
         arg = args[i]
@@ -185,6 +189,14 @@ def scan(args, base, found, depth):
             if not os.path.isabs(args[i + 1]) and base is None:
                 return False  # where VCS ran is not known: a relative file list can't be found
             path = args[i + 1] if os.path.isabs(args[i + 1]) else os.path.join(base, args[i + 1])
+            if unplaced is not None and arg != "-F" and not os.path.isabs(args[i + 1]):
+                up = os.path.dirname(unplaced)
+                while True:
+                    if os.path.exists(os.path.join(up, args[i + 1])):
+                        return False  # the same name above: which one VCS read is not known
+                    if os.path.dirname(up) == up:
+                        break
+                    up = os.path.dirname(up)
             try:
                 with open(path) as f:
                     text = "\n".join(line.split("//")[0] for line in f.read().splitlines())
@@ -194,10 +206,11 @@ def scan(args, base, found, depth):
             except (OSError, ValueError):
                 return False
             # An -o in a file list moves the daidir, after `base` was worked out: unknown.
-            if "-o" in inner:
+            if any(a == "-o" or a.startswith("-o") for a in inner):
                 return False
             # Paths in a -F file are relative to it; in a -f file, to where VCS ran.
-            if not scan(inner, os.path.dirname(path) if arg == "-F" else base, found, depth + 1):
+            if not scan(inner, os.path.dirname(path) if arg == "-F" else base, found, depth + 1,
+                        None if arg == "-F" else unplaced):
                 return False
             i += 2
             continue
