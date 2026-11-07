@@ -325,7 +325,8 @@ public enum HierarchyPrefixInference {
 
     /// Waveform → editor. `dumpPath` is not in the design as is; returns the
     /// rule mapping a design top (`designRoots`: name → its children) to the
-    /// prefix of `dumpPath` whose dump children overlap that top's enough, best first.
+    /// prefix of `dumpPath` whose dump children overlap that top's enough: the best score one
+    /// rule alone has (roots tying for it are ambiguous), else nil.
     public static func designRule(
         forDumpPath dumpPath: String,
         designRoots: [String: [HierarchyNode]],
@@ -334,7 +335,9 @@ public enum HierarchyPrefixInference {
     ) async -> HierarchyPathMapping.Rule? {
         let path = HierarchyPathMapping.segments(dumpPath)
         guard path.count >= 2 else { return nil }
-        var best: (score: Int, rule: HierarchyPathMapping.Rule)?
+        // Each score's rules: two (copies of one module, `u_core0`/`u_core1`) are a tie, and the
+        // best score that one rule alone has wins.
+        var byScore: [Int: [HierarchyPathMapping.Rule]] = [:]
         for length in 1..<path.count {
             let prefix = Array(path.prefix(length))
             guard let kids = await dumpChildren(prefix) else { break }
@@ -353,12 +356,11 @@ public enum HierarchyPrefixInference {
             where rootChildren.contains(where: { $0.name == name || $0.name == designName }) {
                 let match = score(kids, against: rootChildren)
                 guard match.overlap >= requiredOverlap(childCount: Set(rootChildren.map(\.name)).count) else { continue }
-                if best == nil || match.score > best!.score {
-                    best = (match.score, .init(designPrefix: root, dumpPrefix: HierarchyPathMapping.join(prefix), isInferred: true))
-                }
+                let rule = HierarchyPathMapping.Rule(designPrefix: root, dumpPrefix: HierarchyPathMapping.join(prefix), isInferred: true)
+                if !(byScore[match.score] ?? []).contains(rule) { byScore[match.score, default: []].append(rule) }
             }
         }
-        return best?.rule
+        return byScore.keys.sorted(by: >).lazy.compactMap { byScore[$0]!.count == 1 ? byScore[$0]![0] : nil }.first
     }
 
     /// Whether `path` names an item in the hierarchy.
