@@ -496,6 +496,35 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
+// the process's first load): the rows being viewed get a warm worker in the background, and
+// ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
+// the set is read cold at once and never sent to the warm worker.
+{
+  const log = path.join(tmp, 'warm.log');
+  fs.rmSync(log, { force: true });
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries([...ids, 9].map((id) => [id, 20000])),
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '600', STUB_WARM_MS: '15', STUB_WARM_LOG: log, FSDB_WARM: '1' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });  // 1% of the dump
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));  // the rows' first draws, one request each
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && ids.every((id) => st.ready.includes(id))) { break; } await wait(50); }
+  check(st && st.ready && ids.every((id) => st.ready.includes(id)), `the rows being viewed get a warm worker: ${JSON.stringify(st)}`);
+  const lat = [];
+  for (let k = 1; k <= 8; k++) { const r = await h.send('window', near(ids, k * 10000)).reply; lat.push(r.error ? 1e9 : r.at); }
+  lat.sort((a, b) => a - b);
+  check(lat[4] < 80, `pans over 8 warm rows: p50 ${Math.round(lat[4])} ms (cold reads: 8 x 150 ms over the free workers, ~300+)`);
+  const r9 = await h.send('window', near([...ids, 9], 90000)).reply;
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  check(!r9.error && r9.result.signals.length === 9 && r9.result.signals.every((x) => !x.error) && !calls.some((c) => c.op === 'window' && c.ids.includes(9)),
+    `... a row outside the set is read cold, not sent to the warm worker: ${r9.error || JSON.stringify(r9.result.signals.map((x) => x.error || 'ok'))}`);
+  check(calls.length > 0 && calls.every((c) => c.op !== 'window' || calls.some((l) => l.op === 'load' && l.pid === c.pid && c.ids.every((id) => l.ids.includes(id)))),
+    `... and a warm worker only ever reads signals of its first load: ${calls.length} warm calls`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that

@@ -25,6 +25,15 @@ const floorOf = (ids) => (FLOOR_MS && ids.some((id) => PRIMARY.has(id)) ? FLOOR_
 // STUB_CHANGE_AT {id: time}: the signal's one real change (to '1') for the last-change reads
 // (valueAt {prev: true}); STUB_NEAR_LOG gets a line per coldValueNear call: span and ids.
 const CHANGE_AT = JSON.parse(process.env.STUB_CHANGE_AT || '{}');
+// STUB_COLD_MS: a ranged cold read costs each signal that much more (the reader's per-call
+// navigation and rebuild setup on a big dump). A navDB-once process (readerNavOnce, warm
+// workers) pays STUB_WARM_LOAD_MS once for its first load (warmLoad), then STUB_WARM_MS per
+// window of that set (warmWindow); naming a signal outside its first load throws, as the reader
+// documents that it must not happen. STUB_WARM_LOG gets a line per warm call.
+const COLD_MS = Number(process.env.STUB_COLD_MS || 0);
+const WARM_LOAD_MS = Number(process.env.STUB_WARM_LOAD_MS || 0), WARM_MS = Number(process.env.STUB_WARM_MS || 0);
+let navOnce = false, warmSet = null;
+const warmLog = (o) => { if (process.env.STUB_WARM_LOG) { fs.appendFileSync(process.env.STUB_WARM_LOG, JSON.stringify({ pid: process.pid, ...o }) + '\n'); } };
 const changeOf = (id) => (CHANGE_AT[id] === undefined ? null : Number(CHANGE_AT[id]));
 const seen = new Set();
 const first = (id) => (seen.has(id) ? 0 : (seen.add(id), FIRST_MS));
@@ -78,7 +87,19 @@ module.exports = {
     return { exact: true, count: 1, records: rec, counts: null, total: 2 };
   },
   cacheRecords: (id) => Buffer.from(DIFFER.has(id) || DIFFER_FULL.has(id) ? `other ${id}` : 'same'),
-  cacheWindowCold(ids, t0, t1) { sleep(floorOf(ids)); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
+  readerNavOnce() { navOnce = true; },
+  warmLoad(ids) {
+    if (!navOnce || warmSet) { throw new Error('warmLoad: not a fresh navDB-once reader'); }
+    warmSet = new Set(ids); warmLog({ op: 'load', ids }); sleep(WARM_LOAD_MS);
+    return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { signalId: id }));
+  },
+  warmWindow(ids, t0, t1) {
+    warmLog({ op: 'window', ids });
+    if (!warmSet || ids.some((id) => !warmSet.has(id))) { throw new Error('warmWindow: signal not in the first load'); }
+    sleep(WARM_MS);
+    return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: WARM_MS, walkMs: 0 }));
+  },
+  cacheWindowCold(ids, t0, t1) { if (navOnce) { throw new Error('cold read in a navDB-once reader'); } sleep(floorOf(ids) + COLD_MS * ids.length); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
   cacheWalkSlice(id, s, e, path) {
     const ms = share(id, s, e) + floorOf([id]);
     sleep(ms);
