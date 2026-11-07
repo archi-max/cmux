@@ -97,7 +97,7 @@ module.exports = {
   warmWindow(ids, t0, t1) {
     warmLog({ op: 'window', ids });
     if (!warmSet || ids.some((id) => !warmSet.has(id))) { throw new Error('warmWindow: signal not in the first load'); }
-    sleep(WARM_MS + (warmFirst ? 0 : WARM_LOAD_MS)); warmFirst = true;  // (the first window is the reader's first load)
+    sleep(WARM_MS + Number(process.env.STUB_WARM_SIG_MS || 0) * ids.length + (warmFirst ? 0 : WARM_LOAD_MS)); warmFirst = true;  // (the first window is the reader's first load; STUB_WARM_SIG_MS: the walk, per signal)
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: WARM_MS, walkMs: 0 }));
   },
   warmNear(ids, t, span) {
