@@ -525,6 +525,24 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 28. ... of stored (primary) signals only, once the kinds are known: a rebuilt signal costs
+// the same rebuild per window warm or cold, and in one warm process the rebuilds would run one
+// after another instead of spread over the workers.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '15', FSDB_WARM: '1' });
+  for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
+  let st = null;
+  for (let k = 0; k < 60; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && st.ready.length && !st.building) { break; } await h.send('window', near(ids, 0)).reply; await wait(50); }
+  const got = st && st.ready ? [...st.ready].sort((a, b) => a - b) : null;
+  check(JSON.stringify(got) === '[1,2,3,4]', `with the kinds known, the warm set holds the primaries only: ${JSON.stringify(got)}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
