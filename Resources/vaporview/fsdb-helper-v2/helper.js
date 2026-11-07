@@ -575,8 +575,9 @@ function runTask(w, task, front) {
 // most one piece, a heavy one is spread over the whole pool, and interactive requests on a
 // worker wait for at most one piece. The pieces are then adopted (joined) into the owner's store.
 // - Order: jobs some request waits for (interactive) before background ones (whole walks
-//   behind ranged first draws, cancelled requests' loads); then jobs not started yet (oldest
-//   first), then those whose cost is known, least remaining work first, then the rest.
+//   behind ranged first draws, cancelled requests' loads); then measured jobs with at most one
+//   piece of work left, jobs not started yet (oldest first), the other measured jobs (least
+//   remaining work first), and last more pieces of jobs whose first piece is still running.
 // - Piece length: a job's first piece covers 1/16 of the dump; while it runs, idle workers take
 //   1/128 pieces. Then about PIECE_MS of work, from a fit of the job's pieces to ms = floor +
 //   rate * length: some signals cost ~110 ms per load whatever the range (big reader blocks),
@@ -625,8 +626,10 @@ function pickJob(interactive) {
   for (const j of jobs.values()) {
     if (j.failed || j.adopting || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
     if (!j.redo.length && j.next >= j.end) { continue; }  // every piece handed out
-    const cls = !j.pieces.length ? 0 : j.doneLen > 0 ? 1 : 2;
-    const k = [cls, cls === 1 ? (j.doneMs / j.doneLen) * (j.end - j.next) : 0, j.seq];
+    const rest = j.doneLen > 0 ? (j.doneMs / j.doneLen) * (j.end - j.next) : 0;  // est. ms still to hand out
+    // (a measured job with at most one piece of work left finishes first: that is a draw)
+    const cls = !j.pieces.length ? 0 : j.doneLen > 0 ? (rest <= PIECE_MS ? -1 : 1) : 2;
+    const k = [cls, cls === 1 || cls === -1 ? rest : 0, j.seq];
     if (!best || k[0] < bk[0] || (k[0] === bk[0] && (k[1] < bk[1] || (k[1] === bk[1] && k[2] < bk[2])))) { best = j; bk = k; }
   }
   return best;
