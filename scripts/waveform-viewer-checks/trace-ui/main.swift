@@ -603,6 +603,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           }
           const ids = req.signalIds || [req.signalId];
           if (ids.some((id) => m.hang.has(id))) { m.hung = (m.hung || 0) + 1; return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          // m.prevMode: how a helper answers valueAt with prev ('hang': never; 'error': an error reply;
+          // 'unread': its first signal unreadable, values[0] and prev[0] null).
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'hang') { return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'error') { return { reply: { id: req.id, error: 'unknown field prev' } }; }
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'unread') {
+            const r = await m.answer(req);
+            if (r.prev && r.values.length) { r.values[0] = null; r.prev[0] = null; }
+            return { reply: { id: req.id, result: r } };
+          }
           if (req.cmd !== 'count' && ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
           if (req.cmd !== 'valueAt' && ids.some((id) => m.refuse.has(id))) { return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } }; }
           try { return { reply: { id: req.id, result: await m.answer(req) } }; }
@@ -611,7 +620,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       // The plain (whole-signal) page on the same histories, to compare with.
       m.plain = () => { b.signalChanges = (v, max) => m.read(v, max); };
-      m.remove = () => { m.custom.clear(); m.sent = []; m.delay = 0; m.readDelay = 0; m.prev = false; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
+      m.remove = () => { m.custom.clear(); m.sent = []; m.delay = 0; m.readDelay = 0; m.prev = false; m.prevMode = undefined; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
       m.pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
       return null
       """)
@@ -695,6 +704,41 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         expect(r?["anyEdges"] as? Int == 0 && (r?["prevReads"] as? Int ?? 0) > 0,
                "v2 helper, valueAt prev: last changes come with the values, no edge search: \(String(describing: r?["anyEdges"])) searches, \(String(describing: r?["prevReads"])) prev reads")
       }
+    }
+
+    // A helper whose valueAt with prev never answers, or answers with an error: the step does not wait
+    // past twice its budget, is the same as without the helper's prev, and prev is not asked again this
+    // session. A signal it can't read (values[i] null) is read as before, not taken as unchanged since 0.
+    for mode in ["hang", "error", "unread"] {
+      let r = await call("""
+        const h = cmuxWaveform.host, b = h.currentBackend, t = cmuxWaveform.trace, m = window.__v2mock;
+        const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const x = () => t.xRoot({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 });
+        const chain = (c) => JSON.stringify(((c && c.steps) || []).map((e) => [e.signal, e.time, e.value, e.since]).concat([c && c.end && c.end.code]));
+        cmuxWaveform.traceVerdiBudgetMs = 800;
+        try {
+          t.backendChanged();
+          const plain = m.pick(await q()), plainChain = chain(await x());
+          m.install(); m.prev = true; m.prevMode = '\(mode)'; m.downloads = 0; m.sent = [];
+          b.changes = async () => { throw new Error('not here'); };
+          b.valuesAt = async () => { throw new Error('not here'); };
+          t.backendChanged();
+          const t0 = performance.now();
+          const v2 = await Promise.race([q().then(m.pick), new Promise((r) => setTimeout(() => r('hung'), 6000))]);
+          const ms = performance.now() - t0;
+          const v2Chain = v2 === 'hung' ? 'hung' : chain(await x());
+          const prevReads = m.sent.filter((r) => r.cmd === 'valueAt' && r.prev).length;
+          return { plain, v2, plainChain, v2Chain, ms, prevReads, downloads: m.downloads };
+        } finally { for (const p of m.pending.values()) { p({ reply: { cancelled: true } }); } m.pending.clear(); m.remove(); cmuxWaveform.traceVerdiBudgetMs = 1500; t.backendChanged(); }
+        """) as? [String: Any]
+      print("[v2 point reads] \(mode): \(String(describing: r?["ms"])) ms, \(String(describing: r?["prevReads"])) prev reads")
+      expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
+             "v2 helper, valueAt prev \(mode): the same step and chain as without prev: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
+      expect((r?["ms"] as? Double ?? 1e9) < 2 * 800 + 1500, "v2 helper, valueAt prev \(mode): the step waits at most twice its budget (\(String(describing: r?["ms"])) ms)")
+      if mode != "unread" {
+        expect(r?["prevReads"] as? Int == 1, "v2 helper, valueAt prev \(mode): prev asked once, then not again (\(String(describing: r?["prevReads"])))")
+      }
+      expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(mode): no history downloaded (\(String(describing: r?["downloads"])))")
     }
 
     // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
