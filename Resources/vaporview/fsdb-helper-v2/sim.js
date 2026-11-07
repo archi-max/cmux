@@ -148,6 +148,8 @@ function onData(s, d) {
     if (!p) continue;
     s.pending.delete(m.id);
     if (m.result && typeof m.result.t === 'number') s.t = m.result.t;
+    // A watch's widths are known before the next line is read: its first records can follow in this chunk.
+    if (p.watch && m.result && Array.isArray(m.result.watch)) for (const w of m.result.watch) if (w) s.widths.set(w.signalId, w.width);
     if (m.error) p.reject(new Error(m.error)); else p.resolve(m.result);
   }
 }
@@ -178,7 +180,7 @@ function call(s, cmd, args = {}) {
   return new Promise((resolve, reject) => {
     if (s.exited) { reject(new Error('simulation exited')); return; }
     const id = s.nextId++;
-    s.pending.set(id, { resolve, reject });
+    s.pending.set(id, { resolve, reject, watch: cmd === 'watch' });
     s.proc.stdin.write(JSON.stringify({ id, cmd, ...args }) + '\n');
   });
 }
@@ -288,7 +290,7 @@ const handlers = {
   async 'sim.watch'(req) {
     const s = needSim();
     const r = await call(s, 'watch', { signals: names(req.signals || []) });
-    const watch = (r.watch || []).map((w) => { if (!w) return null; s.widths.set(w.signalId, w.width); return { simSignal: w.signalId, width: w.width }; });
+    const watch = (r.watch || []).map((w) => (w ? { simSignal: w.signalId, width: w.width } : null));   // widths: set in onData
     return { t: r.t, watch };
   },
   async 'sim.unwatch'(req) {
