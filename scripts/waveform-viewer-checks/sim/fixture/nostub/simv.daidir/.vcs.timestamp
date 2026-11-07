@@ -1,0 +1,1 @@
+vcs -full64 -kdb -debug_access+all -load /opt/eda/verdi/share/PLI/VCS/LINUX64/libnovas.so:FSDBDumpCmd
