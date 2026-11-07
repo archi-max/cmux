@@ -66,7 +66,7 @@ module.exports = {
     // STUB_COUNTS: a signal's whole change count, spread evenly over the dump (default 1 per slice);
     // the piece file holds 10 bytes per change, as a 1-bit signal's store file
     const n = COUNTS_[id] ? Math.round(COUNTS_[id] * (Math.min(Number(e), TIME_END) - Number(s)) / TIME_END) : 1;
-    fs.writeFileSync(path, Buffer.alloc(10 * n, 120));
+    fs.writeFileSync(path, Buffer.alloc(Math.min(10 * n, 1048576), 120));  // (at most 1 MB a piece)
     return { count: n, xz: false, loadMs: ms, walkMs: 0 };
   },
   cacheAdopt(id) { store.set(id, true); return { count: 2, bytes: 16 }; },
