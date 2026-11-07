@@ -362,6 +362,18 @@ case "${1:-}" in
     # The real build.sh and cmux-helper-v2.sh, against the mock, on a scratch HOME.
     bash "$HERE/windowed/scripts-check.sh" "$ASSETS/fsdb-helper-v2" "$HERE/windowed/mock-helper-v2.cjs" "$OUT/scripts-check"
     ;;
+  sim)
+    command -v node >/dev/null || { echo "sim: needs node"; exit 2; }
+    # Red until Sources/Panels/WaveformSimRelay.swift exists (the harness names WaveformSimRelay).
+    swiftc -swift-version 6 -typecheck "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      $(ls "$ROOT/Sources/Panels/WaveformSimRelay.swift" 2>/dev/null)
+    swiftc -O "$HERE/sim/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" $(ls "$ROOT/Sources/Panels/WaveformSimRelay.swift" 2>/dev/null) -o "$OUT/sim"
+    "$OUT/sim" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/sim/mock-helper-sim.cjs" \
+      "$HERE/windowed/mock-helper-v2.cjs" "$HERE/sim/fake-worker.cjs" "$HERE/sim/fixture" "$OUT/sim-scratch" \
+      | grep -v '^\[log\]' | tee "$OUT/sim.log"
+    grep -q '^SIM CHECKS PASSED' "$OUT/sim.log"
+    ;;
   windowed-launcher)
     shift
     if [ $# -lt 2 ]; then echo "windowed-launcher: needs <ssh-host> <remote-dir>"; exit 2; fi
