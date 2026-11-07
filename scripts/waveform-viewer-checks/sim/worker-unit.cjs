@@ -149,6 +149,25 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(st && st.result && Array.isArray(st.result.skippedLinks) && st.result.skippedLinks.includes('shared'), `and it is named as skipped: ${JSON.stringify(st && st.result && st.result.skippedLinks)}`);
     await w.quit();
   }
+  // Fork-save: `forksave {file}` is answered at once (the fork), also during a run, and the save's end comes as a
+  // `saved` event naming the file; a file outside the scratch is refused before anything reaches the library.
+  {
+    const w = start(['--period', '10'], { FAKE_RUN_MS: '1500' }); await w.ready;
+    const a = w.send({ cmd: 'run', cycles: 100 }); await sleep(100);
+    const f = w.send({ cmd: 'forksave', file: 'fs1.save' });
+    const rf = await w.reply(f.id), ra = await w.reply(a.id);
+    expect(!!rf && !!rf.result && rf.result.pid > 0 && typeof rf.result.forkMs === 'number' && !!ra && rf.at < ra.at,
+      `forksave during a run: answered at once with the child's pid, before the run ends: ${JSON.stringify(rf)}`);
+    const file = rf && rf.result ? rf.result.file : '';
+    const end = Date.now() + 3000; let ev = null;
+    while (!ev && Date.now() < end) { ev = w.events.find((e) => e.event === 'saved'); if (!ev) await sleep(20); }
+    expect(!!ev && ev.file === file && path.isAbsolute(file) && ev.status === 0, `and its end is a saved event naming the file: ${JSON.stringify(ev)} (${file})`);
+    const bad = w.send({ cmd: 'forksave', file: '/etc/outside.save' });
+    const rb = await w.reply(bad.id);
+    const libLog = fs.existsSync(w.log) ? fs.readFileSync(w.log, 'utf8') : '';
+    expect(!!rb && !!rb.error && !/outside\.save/.test(libLog), `a forksave outside the scratch is refused, nothing sent: ${rb && rb.error}`);
+    await w.quit();
+  }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
   // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
   {

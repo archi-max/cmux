@@ -357,6 +357,9 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       expect(q?.first is NSNull, "lossy: a query inside the hole has no answer: t=\(mid) -> \(String(describing: q))")
       let atEnd = await call("return await cmuxWaveform.link.valuesAt({ time: cmuxWaveform.sim.state().t, paths: ['tb.dut.state'] })") as? [Any]
       expect((atEnd?.first as? String) != nil, "lossy: after the hole the live value answers: \(String(describing: atEnd))")
+      // past the simulation's time nothing is known yet: no answer (not the last value carried forward)
+      let past = await call("return await cmuxWaveform.link.valuesAt({ time: cmuxWaveform.sim.state().t + 1000000, paths: ['tb.dut.state'] })") as? [Any]
+      expect(past?.first is NSNull, "lossy: a query past the simulation's time has no answer: \(String(describing: past))")
     }
     let drawn = await frame("L.coverageDrawn ? L.coverageDrawn() : -1") as? Int ?? -1
     expect(drawn > 0, "lossy: the hole is drawn as missing (apart from x): \(drawn) segments")
