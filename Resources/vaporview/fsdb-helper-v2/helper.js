@@ -1319,6 +1319,33 @@ async function hotBuild(ids) {
     if (epoch === ep) { setTimeout(hotCheck, 50); }
   }
 }
+// A warm call loads the reader's whole set however many signals it names, and the page asks
+// for each row in its own request, all at once: requests that reach a reader together (within
+// HOT_GATHER_MS of each other, or while it is busy) go to it as one call per window.
+const HOT_GATHER_MS = 3;
+function hotWindowBatched(r, ids, range) {
+  return new Promise((resolve) => {
+    (r.queue || (r.queue = [])).push({ ids, range, key: JSON.stringify(range), resolve });
+    if (!r.busy && !r.pumpSoon) { r.pumpSoon = true; setTimeout(() => { r.pumpSoon = false; hotPump(r); }, HOT_GATHER_MS); }
+  });
+}
+async function hotPump(r) {
+  if (r.busy || !r.queue || !r.queue.length) { return; }
+  r.busy = true;
+  const groups = new Map();
+  for (const q of r.queue.splice(0)) { if (!groups.has(q.key)) { groups.set(q.key, []); } groups.get(q.key).push(q); }
+  for (const qs of groups.values()) {
+    const ids = [...new Set(qs.flatMap((q) => q.ids))];
+    const a = await hotCall(r, { op: 'hotWindow', signalIds: ids, ...qs[0].range });
+    for (const q of qs) {
+      if (a.error) { q.resolve({ error: a.error }); continue; }
+      const want = new Set(q.ids);
+      q.resolve({ ms: a.ms, result: a.result.filter((x) => want.has(x.signalId)) });
+    }
+  }
+  r.busy = false;
+  if (r.queue.length) { hotPump(r); }
+}
 // A ranged cold read: the signals in the ready warm set from it, the rest cold (coldTask),
 // in parallel; a warm read that fails falls back to cold. -> results in ids order
 async function rangedRead(req, ids, range) {
@@ -1327,7 +1354,7 @@ async function rangedRead(req, ids, range) {
   const inSet = r ? ids.filter((id) => r.ids.has(id)) : [];
   const rest = ids.filter((id) => !inSet.includes(id));
   const [a, b] = await Promise.all([
-    inSet.length ? hotCall(r, { op: 'hotWindow', signalIds: [...new Set(inSet)], ...range }) : null,
+    inSet.length ? hotWindowBatched(r, [...new Set(inSet)], range) : null,
     rest.length ? coldTask(req, 'windowCold', rest, range, true) : []]);
   const by = new Map(rest.map((id, k) => [id, b[k]]));
   if (inSet.length) {
