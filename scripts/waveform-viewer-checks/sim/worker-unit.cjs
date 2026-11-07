@@ -149,6 +149,17 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(st && st.result && Array.isArray(st.result.skippedLinks) && st.result.skippedLinks.includes('shared'), `and it is named as skipped: ${JSON.stringify(st && st.result && st.result.skippedLinks)}`);
     await w.quit();
   }
+  // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
+  // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
+  {
+    const w = start(['--period', '10', '--ucli-timeout-ms', '500'], { FAKE_UCLI_STUCK: '1' }); await w.ready;
+    const c = w.send({ cmd: 'checkpoint' });
+    const r = await Promise.race([w.reply(c.id), sleep(5000).then(() => null)]);
+    expect(!!r && !!r.error && /prompt/.test(r.error), `a checkpoint whose prompt never comes errors: ${JSON.stringify(r)}`);
+    const ex = await Promise.race([w.exitP, sleep(5000).then(() => null)]);
+    expect(!!ex, `and the worker ends the simulation and exits: ${JSON.stringify(ex)}`);
+    if (!ex) w.p.kill('SIGKILL');
+  }
   fs.rmSync(scratch, { recursive: true, force: true });
   console.log(failures ? `WORKER UNIT CHECKS FAILED (${failures})` : 'WORKER UNIT CHECKS PASSED');
   process.exit(failures ? 1 : 0);

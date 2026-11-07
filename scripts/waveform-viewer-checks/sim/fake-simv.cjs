@@ -67,6 +67,6 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
   const c = l.trim();
   if (c === 'run') { if (!started) { started = true; send({ ev: 'ready', t, precision: -12 }); } return; }
   if (c === 'quit') process.exit(0);
-  if (c.startsWith('checkpoint -add')) { process.stdout.write('1\nucli% '); return; }
+  if (c.startsWith('checkpoint -add')) { if (!process.env.FAKE_UCLI_STUCK) process.stdout.write('1\nucli% '); return; }   // STUCK: no prompt ever
   process.stdout.write('ucli% ');
 });
