@@ -1396,6 +1396,23 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     `a ready descriptor answers ${reqs.length} windows (${bucketed} bucketed) byte for byte as windowOf: ${info.state}, ${bad.length} differ ${JSON.stringify(bad.slice(0, 2))}, ${fromDesc} from the descriptor (served ${st.clock && st.clock.served})`);
 }
 
+// 43f. A descriptor row isn't a cold row to the page (review L6): its windows replied ranged: true,
+// so the page set it cold (prefetch narrowed to the view, grouped with the cold rows) and got no
+// total for its count decisions. They carry no ranged flag, and total: the row's whole normalized
+// change count, as a stored row's windows do (here 2001: the first value and 2000 edges).
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), FSDB_CLOCK_DESC: '1' };
+  const h = await start(1, {}, env);
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const r = await h.send('window', { signals: [{ signalId: 5, width: 1 }], t0: 0, t1: 10000, buckets: 1024 }).reply;
+  h.close();
+  const s0 = r.result && r.result.signals[0];
+  check(info.state === 'ready' && s0 && s0.clock && !s0.ranged && s0.total === 2001,
+    `a descriptor row's window isn't ranged and has its total: clock ${s0 && s0.clock}, ranged ${s0 && s0.ranged}, total ${s0 && s0.total} (want 2001)`);
+}
+
 // 43d. A descriptor window is bounded in the coordinator (review M1): clockdesc.window runs on the
 // helper's main thread and builds every record, so a protocol client's 2^22-bucket window over a
 // fast clock (here 1 M changes) blocked a parallel stats request and grew the helper's memory
