@@ -428,7 +428,12 @@ static void normalizeStore(SigStore *s, bool initialX) {
 // back to the whole file before it returns, so other loads see everything.
 static bool g_winNarrow = false;
 static inline void setTag(fsdbTag64 &g, uint64_t t) { g.H = (uint_T)(t >> 32); g.L = (uint_T)(t & 0xFFFFFFFF); }
+// The reader's max tag is the end of the current view window (after a load over a narrowed
+// one, that window's end), so a warm reader, which never widens again, keeps the file's own
+// end from before its first load (readerNavOnce).
+static uint64_t g_hotEnd = 0;
 static uint64_t fileEnd() {  // time of the file's last change (a window past it loads nothing)
+  if (g_hotEnd) return g_hotEnd;
   fsdbTag64 m;
   return FSDB_RC_SUCCESS == fsdb_obj->ffrGetMaxFsdbTag64(&m) ? combineTime(m.H, m.L) : UINT64_MAX;
 }
@@ -1007,10 +1012,14 @@ Napi::Value cacheValueAt(const Napi::CallbackInfo &info) {
   return Napi::String::New(env, valueText(s, (ptrdiff_t)k - 1));
 }
 
-// cacheEdge(id, t, dir, kind) -> time of the next (dir 1, time > t) or previous
+// cacheEdge(id, t, dir, kind, start?) -> time of the next (dir 1, time > t) or previous
 // (dir -1, time < t) change, or null. kind 0 any change, 1 rise (new value '1',
 // so x->1 counts, as in VaporView), 2 fall (new value '0'); rise/fall look at
-// 1-bit signals, wider ones treat them as any.
+// 1-bit signals, wider ones treat them as any. SystemVerilog kinds, by the change from the
+// previous value (1-bit signals only; wider ones throw): 3 posedge (0->1, 0->x, 0->z, x->1,
+// z->1), 4 negedge (1->0, 1->x, 1->z, x->0, z->0), 5 edge (either; x<->z is none). The
+// dump's first value (a first change at or before `start`, the dump's start time) is never an
+// edge; a first change after it is one from 'x'.
 Napi::Value cacheEdge(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 4)) return env.Undefined();
@@ -1019,14 +1028,29 @@ Napi::Value cacheEdge(const Napi::CallbackInfo &info) {
   const uint64_t t = argTime(info[1]);
   const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
   int kind = info[3].As<Napi::Number>().Int32Value();
-  if (s->bits != 1 || s->kind != kBits) kind = 0;  // strings and reals: every change is an edge
+  const uint64_t start = info.Length() > 4 && info[4].IsNumber() ? argTime(info[4]) : 0;
+  const bool bitRow = s->bits == 1 && s->kind == kBits;
+  if (kind >= 3 && !bitRow) {
+    Napi::Error::New(env, "edge: posedge, negedge and edge need a 1-bit signal").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (kind < 3 && !bitRow) kind = 0;  // wider signals, strings and reals: every change is an edge
   const size_t n = s->times.size();
   auto bit2 = [&](size_t k) -> int {  // 0..3 like the reader's bit types
     int b = s->val[k] & 1;
     if (!s->xz.empty()) b |= (s->xz[k] & 1) << 1;
     return b;
   };
-  auto isEdge = [&](size_t k) -> bool { return kind == 0 || bit2(k) == (kind == 1 ? 1 : 0); };
+  auto isEdge = [&](size_t k) -> bool {
+    if (kind == 0) return true;
+    const int b = bit2(k);
+    if (kind <= 2) return b == (kind == 1 ? 1 : 0);
+    if (k == 0 && s->times[0] <= start) return false;
+    const int a = k > 0 ? bit2(k - 1) : 2;  // (before the first change: 'x')
+    const bool pos = (a == 0 && b != 0) || (a >= 2 && b == 1);
+    const bool neg = (a == 1 && b != 1) || (a >= 2 && b == 0);
+    return kind == 3 ? pos : kind == 4 ? neg : pos || neg;
+  };
   if (dir > 0) {
     for (size_t k = upperIdx(s, t, 0, n); k < n; k++)
       if (isEdge(k)) return Napi::Number::New(env, (double)s->times[k]);
@@ -1461,11 +1485,13 @@ Napi::Value cacheAdopt(const Napi::CallbackInfo &info) {
   return o;
 }
 
-// searchScan(ids[], t, dir, pattern, bound) -> [{signalId, t | null, scanned} | {signalId, error}]
+// searchScan(ids[], t, dir, pattern, bound, kind?, start?) -> [{signalId, t | null, scanned} | {signalId, error}]
 // searchAll on signals that aren't stored: load them (one batched reader load),
 // scan the reader's changes from t in direction dir for the first change whose
 // value matches `pattern` (as cacheSearch), and stop early past `bound`
 // (dir 1: time > bound, dir -1: time < bound). Nothing is kept.
+// kind >= 0: the first edge of that kind instead (cacheEdge's kinds and rules, `start` the
+// dump's start): edge and value search on a signal too big for the store, by ranged reads.
 Napi::Value searchScan(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 5) || !CHECK_ARRAY(env, info[0]) || !CHECK_STRING(env, info[3])) return env.Undefined();
@@ -1474,6 +1500,8 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
   const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
   const std::string pat0 = info[3].As<Napi::String>().Utf8Value();
   const uint64_t bound = argTime(info[4]);
+  const int kind0 = info.Length() > 5 && info[5].IsNumber() ? info[5].As<Napi::Number>().Int32Value() : -1;
+  const uint64_t start = info.Length() > 6 && info[6].IsNumber() ? argTime(info[6]) : 0;
   std::vector<fsdbVarIdcode> list;
   for (uint32_t i = 0; i < ids.Length(); i++) list.push_back((fsdbVarIdcode)argI64(ids.Get(i)));
   // Load a few at a time: a reader load can't be interrupted, so small
@@ -1522,6 +1550,11 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
         h->ffrFree(); scope.unload(id); continue;
       }
     }
+    if (kind0 >= 3 && bits != 1) {
+      o.Set("error", Napi::String::New(env, "edge: posedge, negedge and edge need a 1-bit signal"));
+      h->ffrFree(); scope.unload(id); continue;
+    }
+    const int kind = kind0 >= 0 && kind0 < 3 && bits != 1 ? 0 : kind0;
     const std::string p = patternBits(pat0, bits);
     std::vector<uint32_t> care;
     std::vector<uint8_t> want;
@@ -1534,6 +1567,19 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
     auto match = [&](const uint8_t *vc) {
       for (size_t j = 0; j < care.size(); j++) if ((vc[care[j]] & 3) != want[j]) return false;
       return true;
+    };
+    // The change at ct from value `was` to `now` (normalized, so they differ): a hit? (bit types
+    // 0 1 2=x 3=z, as cacheEdge's bit2)
+    auto hitOf = [&](const std::vector<uint8_t> &was, const std::vector<uint8_t> &now, uint64_t ct) -> bool {
+      if (kind < 0) return match(now.data());
+      if (kind == 0) return true;
+      const int b = now[0];
+      if (kind <= 2) return b == (kind == 1 ? 1 : 0);
+      if (ct <= start) return false;  // (the dump's first value is no edge)
+      const int a = was[0];
+      const bool pos = (a == 0 && b != 0) || (a >= 2 && b == 1);
+      const bool neg = (a == 1 && b != 1) || (a >= 2 && b == 0);
+      return kind == 3 ? pos : kind == 4 ? neg : pos || neg;
     };
     // The reader's raw changes, read as the normalized stream (normalizeStore):
     // per time only the last change counts, and only if it differs from the
@@ -1564,7 +1610,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
           if (have && tt != ct) {  // ct's group is complete
             if (ct > t) {
               if (ct > bound) { have = false; break; }
-              if (ev || cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+              if (ev || cur != prev) { scanned++; if (hitOf(prev, cur, ct)) { found = (double)ct; have = false; break; } }
             }
             prev.swap(cur);
           }
@@ -1573,7 +1619,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
           have = true;
           more = FSDB_RC_SUCCESS == h->ffrGotoNextVC();
         }
-        if (!stopped && have && ct > t && ct <= bound && (ev || cur != prev)) { scanned++; if (match(cur.data())) found = (double)ct; }
+        if (!stopped && have && ct > t && ct <= bound && (ev || cur != prev)) { scanned++; if (hitOf(prev, cur, ct)) found = (double)ct; }
       } else if (dir < 0 && onT) {
         // Start at the very last change <= t (the reader may land on the first of a time's changes).
         while (FSDB_RC_SUCCESS == h->ffrGotoNextVC()) {
@@ -1592,7 +1638,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
             grab(prev);  // the value in effect before ct
             if (have) {
               if (ct < bound) { have = false; break; }
-              if (ev || cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+              if (ev || cur != prev) { scanned++; if (hitOf(prev, cur, ct)) { found = (double)ct; have = false; break; } }
             }
             cur.swap(prev);
             ct = tt;
@@ -1602,7 +1648,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
         }
         if (!stopped && have && ct >= bound) {  // the earliest group: before it, all x
           std::fill(prev.begin(), prev.end(), 2);
-          if (ev || cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+          if (ev || cur != prev) { scanned++; if (hitOf(prev, cur, ct)) found = (double)ct; }
         }
       }
     }
@@ -1782,6 +1828,85 @@ Napi::Value coldValueAt(const Napi::CallbackInfo &info) {
   return out;
 }
 
+// cacheLastChange(id, t) -> {t, value} | null: a stored signal's last (normalized) change at or
+// before t, and its value (null: no change yet, the value is all x).
+Napi::Value cacheLastChange(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 2)) return env.Undefined();
+  SigStore *s = storeGet(env, info[0]);
+  if (!s) return env.Undefined();
+  const size_t k = upperIdx(s, argTime(info[1]), 0, s->times.size());
+  if (k == 0) return env.Null();
+  std::string v(s->bits, 'x');
+  putChars(s, k - 1, (uint8_t *)&v[0]);
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("t", Napi::Number::New(env, (double)s->times[k - 1]));
+  o.Set("value", Napi::String::New(env, v));
+  return o;
+}
+
+// coldValueNear(ids[], t, span) -> [{t, value} | {none: true, value} | {error}]: for signals
+// that aren't stored, one view window [lo, t] (lo = t - span, at least 0): the value at t and,
+// if there is one in [lo, t], the last normalized change (same-time changes count as their
+// last value; a change to the value already in effect is none). The window starts at lo - 1,
+// so whatever the reader gives before lo (its synthetic first change) is the value in effect
+// on entry; with lo = 0 that is all x. A rebuilt signal's cost scales with the span; a stored
+// one's mostly doesn't. Nothing is walked into the store or kept.
+// The value at t and the last real change in [lo, t] of one loaded signal (coldValueNear,
+// warmNear): {t, value} | {none: true, value} | {error}.
+static Napi::Object nearOf(Napi::Env env, fsdbVarIdcode id, uint64_t t, uint64_t lo) {
+  ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+  std::string err;
+  if (!h) err = "no traverse handle";
+  else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
+  else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
+  Napi::Object o = Napi::Object::New(env);
+  if (!err.empty()) {
+    o.Set("error", Napi::String::New(env, err));
+  } else {
+    const uint32_t bits = h->ffrGetBitSize();
+    std::string cur(bits, 'x'), grp, v(bits, 'x');
+    uint64_t gt = 0, lastT = 0;
+    bool have = false, found = false;
+    fsdbTag64 g;
+    if (h->ffrHasIncoreVC() && FSDB_RC_SUCCESS == h->ffrGetMinXTag((void *)&g) && FSDB_RC_SUCCESS == h->ffrGotoXTag((void *)&g)) {
+      do {
+        h->ffrGetXTag(&g);
+        const uint64_t tt = combineTime(g.H, g.L);
+        if (tt > t) break;
+        byte_T *vc;
+        h->ffrGetVC(&vc);
+        for (uint32_t j = 0; j < bits; j++) v[j] = "01xz"[vc[j] & 3];
+        if (tt < lo) { cur = v; continue; }  // in effect on entry to [lo, t]
+        if (have && tt != gt && grp != cur) { cur = grp; lastT = gt; found = true; }
+        gt = tt; grp = v; have = true;
+      } while (FSDB_RC_SUCCESS == h->ffrGotoNextVC());
+      if (have && grp != cur) { cur = grp; lastT = gt; found = true; }
+    }
+    if (found) o.Set("t", Napi::Number::New(env, (double)lastT));
+    else o.Set("none", Napi::Boolean::New(env, true));
+    o.Set("value", Napi::String::New(env, cur));
+  }
+  if (h) h->ffrFree();
+  return o;
+}
+
+Napi::Value coldValueNear(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 3) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  const uint64_t t = argTime(info[1]), span = argTime(info[2]);
+  const uint64_t lo = t > span ? t - span : 0;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) ids.push_back((fsdbVarIdcode)argI64(arr.Get(i)));
+  Napi::Array out = Napi::Array::New(env);
+  ReaderScope scope;
+  readerWindow(lo > 0 ? lo - 1 : 0, t);
+  forBatches(ids, [&](size_t k, double) { out.Set((uint32_t)k, nearOf(env, ids[k], t, lo)); });
+  readerWindowAll();
+  return out;
+}
+
 // cacheWindowCold(ids[], t0, t1, buckets) -> [{signalId, exact, count, records, counts?, loadMs, walkMs} | {signalId, error}]
 // A window over a short range of signals that aren't stored: load only
 // [t0 - 1, t1] (the reader's synthetic first change at t0 - 1 is the value in
@@ -1891,4 +2016,142 @@ Napi::Value cacheWriteIndex(const Napi::CallbackInfo &info) {
   o.Set("bits", Napi::Number::New(env, s->bits));
   o.Set("xz", Napi::Boolean::New(env, !s->xz.empty()));
   return o;
+}
+
+// ---- warm readers: navigation DB kept (ffrSetLoadNavDBOnlyOnce) ----
+// The reader keeps the file's navigation DB after the first load, so a view window of the same
+// signals costs ~1-20 ms instead of a per-call floor (~110 ms on 1.7 GB, ~650 ms on 10 GB). Its
+// documented condition: every signal read later must be in the first load (others can come back
+// WRONG). So a warm process loads its set once (warmLoad) and keeps that signal list for good;
+// warmWindow refuses any id outside it. Values are unloaded after every window.
+static bool g_hotOn = false;
+static std::unordered_set<int64_t> g_hotSet;
+
+// readerNavOnce(): before any load.
+Napi::Value readerNavOnce(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!fsdb_obj) { Napi::Error::New(env, "no file open").ThrowAsJavaScriptException(); return env.Undefined(); }
+  readerWindowAll();
+  g_hotEnd = fileEnd();
+  fsdb_obj->ffrSetLoadNavDBOnlyOnce(true);
+  g_hotOn = true;
+  return env.Undefined();
+}
+
+// warmLoad(ids[]) -> [{signalId} | {signalId, error}]: fixes the signal list (unreadable signals are
+// left out); the first warmWindow is the first load.
+Napi::Value warmLoad(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 1) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  if (!g_hotOn || !g_hotSet.empty()) { Napi::Error::New(env, "warmLoad: not a fresh navDB-once reader").ThrowAsJavaScriptException(); return env.Undefined(); }
+  Napi::Array arr = info[0].As<Napi::Array>();
+  Napi::Array out = Napi::Array::New(env);
+  std::vector<fsdbVarIdcode> ok;
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    const fsdbVarIdcode id = (fsdbVarIdcode)argI64(arr.Get(i));
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)id));
+    ffrVCTrvsHdl h = fsdb_obj->ffrCreateVCTraverseHandle(id);
+    std::string err;
+    if (!h) err = "no traverse handle";
+    else if (h->ffrGetBitSize() == 0) err = "reader reports 0 bits (alias?)";
+    else if (h->ffrGetBytesPerBit() != FSDB_BYTES_PER_BIT_1B) err = "unsupported encoding";
+    if (h) h->ffrFree();
+    if (!err.empty()) o.Set("error", Napi::String::New(env, err));
+    else if (!g_hotSet.count(id)) { g_hotSet.insert(id); ok.push_back(id); }
+    out.Set(i, o);
+  }
+  // (the first window's load is the first load, as in the reader's own example)
+  for (fsdbVarIdcode id : ok) fsdb_obj->ffrAddToSignalList(id);
+  return out;
+}
+
+// warmWindow(ids[], t0, t1, buckets) -> as cacheWindowCold, for ids of the first load only.
+// A warm load that leaves the process over the hard bound (cacheSetBounds, set by a warm reader's
+// open) is undone before anything is walked, as on the cold path (#5): each id answers an error.
+static bool warmOverBound(Napi::Env env, const std::vector<fsdbVarIdcode> &ids, Napi::Array &out) {
+  if (!g_rssHard || processRss() <= g_rssHard) return false;
+  fsdb_obj->ffrUnloadSignals();
+  for (size_t k = 0; k < ids.size(); k++) {
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
+    o.Set("error", Napi::String::New(env, "warm reader memory limit (reader load over " + std::to_string(g_rssHard >> 20) + " MB)"));
+    out.Set((uint32_t)k, o);
+  }
+  return true;
+}
+
+Napi::Value warmWindow(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 4) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  uint64_t t0 = argTime(info[1]), t1 = argTime(info[2]);
+  if (t1 < t0) std::swap(t0, t1);
+  uint32_t B = info[3].As<Napi::Number>().Uint32Value();
+  if (B == 0) B = 1;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    const fsdbVarIdcode id = (fsdbVarIdcode)argI64(arr.Get(i));
+    if (!g_hotSet.count(id)) { Napi::Error::New(env, "warmWindow: signal not in the first load").ThrowAsJavaScriptException(); return env.Undefined(); }
+    ids.push_back(id);
+  }
+  using clk = std::chrono::steady_clock;
+  auto msSince = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+  Napi::Array out = Napi::Array::New(env);
+  readerWindow(t0 > 0 ? t0 - 1 : 0, t1);
+  const auto tl = clk::now();
+  fsdb_obj->ffrLoadSignals();  // the whole set (its list is fixed)
+  const double loadMs = msSince(tl);
+  if (warmOverBound(env, ids, out)) return out;
+  try {
+    for (size_t k = 0; k < ids.size(); k++) {
+      auto tw = clk::now();
+      std::string err;
+      SigStore *s = walkSignal(ids[k], err);
+      Napi::Object o = s ? windowOf(env, s, t0, t1, B) : Napi::Object::New(env);
+      o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
+      if (!s) o.Set("error", Napi::String::New(env, err));
+      o.Set("loadMs", Napi::Number::New(env, loadMs));
+      o.Set("walkMs", Napi::Number::New(env, msSince(tw)));
+      delete s;
+      out.Set((uint32_t)k, o);
+    }
+  } catch (...) {
+    fsdb_obj->ffrUnloadSignals();
+    throw;
+  }
+  fsdb_obj->ffrUnloadSignals();
+  return out;
+}
+
+// warmNear(ids[], t, span) -> as coldValueNear, for ids of the first load only (trace-X's
+// fan-in reads on a warm reader; span 0 is the value at t).
+Napi::Value warmNear(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!CHECK_LENGTH(env, info, 3) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
+  Napi::Array arr = info[0].As<Napi::Array>();
+  const uint64_t t = argTime(info[1]), span = argTime(info[2]);
+  const uint64_t lo = t > span ? t - span : 0;
+  std::vector<fsdbVarIdcode> ids;
+  for (uint32_t i = 0; i < arr.Length(); i++) {
+    const fsdbVarIdcode id = (fsdbVarIdcode)argI64(arr.Get(i));
+    if (!g_hotSet.count(id)) { Napi::Error::New(env, "warmNear: signal not in the first load").ThrowAsJavaScriptException(); return env.Undefined(); }
+    ids.push_back(id);
+  }
+  Napi::Array out = Napi::Array::New(env);
+  readerWindow(lo > 0 ? lo - 1 : 0, t);
+  fsdb_obj->ffrLoadSignals();  // the whole set (its list is fixed)
+  if (warmOverBound(env, ids, out)) return out;
+  try {
+    for (size_t k = 0; k < ids.size(); k++) {
+      Napi::Object o = nearOf(env, ids[k], t, lo);
+      o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
+      out.Set((uint32_t)k, o);
+    }
+  } catch (...) {
+    fsdb_obj->ffrUnloadSignals();
+    throw;
+  }
+  fsdb_obj->ffrUnloadSignals();
+  return out;
 }

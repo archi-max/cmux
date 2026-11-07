@@ -96,7 +96,7 @@ final class StatusLog: @unchecked Sendable {
 }
 
 // Not searchText: the page's searchText must pass the relay's own list (pageCommands).
-let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats", "textControl", "textStats"])
+let testCommands = WaveformFSDBHelper.pageCommands.union(["sleep", "searchAll", "stats", "textControl", "textStats", "loadControl", "loadStats", "aliasControl"])
 
 func makeHelper(home: URL, loading: WaveformFSDBHelper.Loading, v2Root: URL = v2Root, hostKey: String = "local",
                 allowedFile: String? = nil, readyTimeout: TimeInterval = 20, log: StatusLog? = nil, env: String = "") -> WaveformFSDBHelper {
@@ -218,6 +218,14 @@ func relayChecks() async throws {
   // The relay passes only the page's commands, and an open only of the panel's file.
   let warm = await helper.response(for: json(["cmd": "warm", "on": true]), failureMessage: fail)
   expect((header(warm)["error"] as? String ?? "").contains("notAllowed"), "a command the page doesn't use is refused: \(header(warm))")
+  // trace-X's page sends aliasHints (its design model's port bindings) through the relay's own list.
+  let pageOnly = WaveformFSDBHelper(sshArguments: localShell(home: home), installs: WaveformFSDBHelper.installs(v2Root: v2Root, v1Root: v1Root, loading: .auto),
+                                    executable: URL(fileURLWithPath: "/bin/sh"), hostKey: "local") { _ in }
+  defer { pageOnly.stop() }
+  _ = await pageOnly.response(for: json(["cmd": "open", "file": dump]), failureMessage: fail)
+  let hints = header(await pageOnly.response(for: json(["cmd": "aliasHints", "id": 1, "pairs": [["tb.a", "tb.b"]]]), failureMessage: fail))
+  expect(((hints["result"] as? [String: Any])?["accepted"] as? Int) == 1,
+         "the relay passes the page's aliasHints (pageCommands): \(hints)")
   let fenced = makeHelper(home: home, loading: .auto, allowedFile: dump)
   defer { fenced.stop() }
   let other = await fenced.response(for: json(["cmd": "open", "file": "synth:ms=2"]), failureMessage: fail)
@@ -1293,6 +1301,60 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// The reader's ARRAY scopes (helper-v2 replies with them inline): the netlist shows each
   /// array as a node holding its elements, nested by dimension; an element's path stays
   /// scope.name (adding by path, the link's scope listing, search, reveal).
+  /// Signals added together each draw as soon as their own first load is answered, not when
+  /// the slowest one is: on a big dump a reader load costs 1 ms to 10 s per signal, and one
+  /// request for all of them showed every row dashed until the last load finished. A first
+  /// load that takes longer than the window timeout (10 s) is waited for, not cancelled and
+  /// asked again. Dump synth:ms=1,buses=6,wide=0: clk 0, rst 1, bus0..bus5 2..7, state 8.
+  func firstLoadChecks() async {
+    _ = await mock(["cmd": "loadControl", "firstLoadMs": ["3": 4000, "7": 12500]])
+    let t0 = Date()
+    let added = await call("return await cmuxWaveform.link.addScope({ path: ['tb', 'dut'], confirmed: true })") as? [String: Any]
+    expect((added?["added"] as? Int ?? 0) >= 7, "Add All in Scope adds dut's 7 signals at once: \(String(describing: added))")
+    func drawn(_ id: Int) async -> Bool { await wc("(() => { const s = w.signals.get(\(id)); return !!(s && s.firstDrawMs !== null); })()") as? Bool == true }
+    let fast = await waitFor(3000) { var all = true; for id in [2, 4, 5, 6] { if !(await drawn(id)) { all = false } }; return all }
+    let fastMs = Int(Date().timeIntervalSince(t0) * 1000)
+    let slowYet = await drawn(3)
+    print("first loads: windows", (await mock(["cmd": "loadStats"]))["windows"] ?? "nil")
+    expect(fast && !slowYet, "the fast signals draw before the slow first load (4 s) is answered: fast \(fast) at \(fastMs) ms, slow drawn \(slowYet)")
+    let slow = await waitFor(8000) { await drawn(3) }
+    expect(slow, "the 4 s first load draws when it is answered")
+    let slowest = await waitFor(20000) { await drawn(7) }
+    let cancels = ((await mock(["cmd": "loadStats"]))["cancels"] as? [String: Any])?["7"] as? Int ?? 0
+    expect(slowest && cancels == 0, "a 12.5 s first load is waited for, not cancelled at the 10 s window timeout: drawn \(slowest), cancels \(cancels)")
+  }
+
+  /// helper-v2 may answer a rebuilt signal from the stored one it was told is its alias (alias:
+  /// id on the window entry) and later find the two differ: a reply then carries aliasDropped,
+  /// and the page forgets what it showed for those rows and asks again. Dump as firstLoadChecks:
+  /// bus0 2, bus1 3; bus1 is answered as bus0 until the drop.
+  func aliasChecks() async {
+    _ = await mock(["cmd": "aliasControl", "serveAs": ["3": 2]])
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 0, endTime: 200000 }); return null")
+    let added = await call("return await cmuxWaveform.link.addScope({ path: ['tb', 'dut'], confirmed: true })") as? [String: Any]
+    expect((added?["added"] as? Int ?? 0) >= 7, "alias page: dut's signals added: \(String(describing: added))")
+    func val(_ id: Int, _ t: Int) async -> String? {
+      await wc("(() => { const s = w.signals.get(\(id)); const v = s && w.localValueAt(s, \(t)); return v && v.length ? v[v.length - 1] : null; })()") as? String
+    }
+    func truth(_ id: Int, _ t: Int) async -> String? { ((await mock(["cmd": "valueAt", "signalIds": [id], "t": t]))["values"] as? [String])?.first }
+    let t = 150001
+    let shown = await waitFor(5000) { await val(3, t) != nil }
+    let a = await val(3, t), alias = await truth(2, t), own = await truth(3, t)
+    expect(shown && a != nil && a == alias && alias != own, "a row answered from its alias shows the alias's data: \(a ?? "nil") (alias \(alias ?? "nil"), own \(own ?? "nil"))")
+    _ = await mock(["cmd": "aliasControl", "drop": [3]])
+    // The drop rides on the helper's next reply to the page. These rows are small and loaded
+    // whole, so a pan asks nothing: add a row the page doesn't have, whose load is that reply.
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 10000, endTime: 210000 }); return null")
+    _ = await call("return await cmuxWaveform.link.addSignal(['tb', 'rst'])")
+    let delivered = await waitFor(5000) { ((await self.mock(["cmd": "aliasControl"]))["dropped"] as? [Any])?.isEmpty == true }
+    expect(delivered, "the mock put aliasDropped on a reply to the page")
+    let fixed = await waitFor(5000) { await val(3, t) == own }
+    let dropped = await wc("w.getStats().aliasDropped ?? w.stats.aliasDropped") as? Int ?? -1
+    expect(fixed && dropped == 1, "after aliasDropped the row is asked for again and shows its own data: \(await val(3, t) ?? "nil") (own \(own ?? "nil")), drops \(dropped)")
+    let other = await val(2, t)
+    expect(other == alias, "... and the alias's own row is untouched: \(other ?? "nil")")
+  }
+
   func arrayChecks() async {
     let r = await call("""
       const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -1388,6 +1450,16 @@ func run() async {
     expect(ok4, "a page with packed arrays opened")
     if ok4 { await arrays.arrayChecks() }
     arrays.close()
+    let firsts = Page(loading: .auto, dump: "synth:ms=1,buses=6,wide=0")
+    let ok5 = await firsts.open(home: home)
+    expect(ok5, "a page for first loads opened")
+    if ok5 { await firsts.firstLoadChecks() }
+    firsts.close()
+    let aliased = Page(loading: .auto, dump: "synth:ms=1,buses=6,wide=0")
+    let ok6 = await aliased.open(home: home)
+    expect(ok6, "a page for aliases opened")
+    if ok6 { await aliased.aliasChecks() }
+    aliased.close()
     let vcdURL = scratch.appendingPathComponent("small.vcd")
     try Data("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n#20\n0!\n".utf8)
       .write(to: vcdURL)

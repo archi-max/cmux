@@ -32,4 +32,55 @@ function readScopeTree(addon, scopePath, scopeOffsetIdx, onVar) {
   return top;
 }
 
-module.exports = { readScopeTree };
+// cmux: the netlist with one node per scope path. A dump can hold several scope trees
+// that re-enter the same path from the root: VCS writes each interface modport port
+// (tb.u_soc.up[1].slave) as a tree of its own, tb > u_soc > up[1] > slave, after the
+// design's tree, so the reader's top level held the testbench scope ten times. Scopes
+// with the same name under the same (merged) parent are one node, shown with the
+// first one's scopeOffsetIdx; asking for its children reads every member and lists
+// each child scope, array and var name once (the first member's wins). Pure JS over
+// the addon's readScopes / getScopeChildren / readVars; `$` scopes are left out.
+function scopeTree(addon) {
+  const members = new Map();  // shown scopeOffsetIdx -> the offsets that make up its path
+  const merge = (list) => {
+    const byName = new Map();
+    const out = [];
+    for (const s of list) {
+      if (String(s.name).startsWith('$')) { continue; }
+      const first = byName.get(s.name);
+      if (first) { members.get(first.scopeOffsetIdx).push(s.scopeOffsetIdx); continue; }
+      byName.set(s.name, s);
+      members.set(s.scopeOffsetIdx, [s.scopeOffsetIdx]);
+      out.push(s);
+    }
+    return out;
+  };
+  const childScopes = (idx) => {
+    const scopes = [];
+    for (let start = 0, guard = 256; guard-- > 0;) {
+      const r = addon.getScopeChildren(idx, start);
+      scopes.push(...r.scopes);
+      start += r.totalReturned;
+      if (!r.totalReturned || !(r.remainingItems > 0)) { break; }
+    }
+    return scopes;
+  };
+  return {
+    top() { members.clear(); return merge(addon.readScopes()); },
+    // The offsets read for a shown scope (itself only, for one not listed yet).
+    members: (idx) => members.get(idx) || [idx],
+    children(idx, scopePath, onVar) {
+      const ids = members.get(idx) || [idx];
+      const scopes = merge(ids.flatMap(childScopes));
+      const arrays = [], vars = [], seenArrays = new Set(), seenVars = new Set();
+      for (const id of ids) {
+        const tree = readScopeTree(addon, scopePath, id, onVar);
+        for (const a of tree.scopes) { if (!seenArrays.has(a.name)) { seenArrays.add(a.name); arrays.push(a); } }
+        for (const v of tree.vars) { if (!seenVars.has(v.name)) { seenVars.add(v.name); vars.push(v); } }
+      }
+      return { scopes: scopes.concat(arrays), vars };
+    },
+  };
+}
+
+module.exports = { readScopeTree, scopeTree };

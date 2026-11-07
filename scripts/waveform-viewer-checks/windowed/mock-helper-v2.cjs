@@ -8,6 +8,14 @@
 //                         a helper without it), delayMs (wait first, cancellable), budgetMs
 //                         (override the viewer's budget, to force incomplete + resume),
 //                         tooLarge (answer {incomplete: {tooLarge}}); textStats counts them
+//   loadControl {firstLoadMs: {signalId: ms}}  a window naming a signal no window has named
+//                         yet waits that long first (a cold reader load on a big dump; it
+//                         finishes even if the request is cancelled, as helper-v2's do);
+//                         loadStats {} -> {cancels: {signalId: window requests cancelled}}
+//   aliasControl {serveAs: {signalId: otherId}, drop: [signalIds]}  windows of signalId are
+//                         answered with otherId's data and alias: otherId (helper-v2's aliases);
+//                         drop stops that and puts aliasDropped on the next window, valueAt or
+//                         count reply
 // searchText is the shipped helper's own text.js (and formats.js, the viewer's formatters)
 // over this mock's change stream, through a JS stand-in for the addon's cacheTextScan.
 // With --v1 it stands in for the v1 helper: open, children and signals only.
@@ -268,6 +276,10 @@ function packRecords(recs, width, text = false) {
 // its store-cache file); only their whole-dump count is known without a walk.
 const stored = new Set();
 const windowAsks = {}; // signalId -> window requests naming it (textStats.windowAsks)
+const loadCtl = { firstLoadMs: {} };
+const aliasCtl = { serveAs: {}, dropped: [] };
+const loadStats = { cancels: {}, windows: [] };
+const firstLoaded = new Set(); // loaded since the last loadControl
 function windowQuery({ signals, t0, t1, buckets }) {
   if (buckets === 32768) { textStats.scanWindows++; } // the viewer's value-search chunks (SCAN_BUCKETS)
   const out = [], parts = [];
@@ -430,7 +442,28 @@ const handlers = {
     return r;
   },
   children({ scopeOffsetIdx }) { return dump.children(scopeOffsetIdx); },
-  window: windowQuery,
+  async window(req) {
+    const ids = req.signals.map((x) => x.signalId);
+    if (Object.keys(loadCtl.firstLoadMs).length) { loadStats.windows.push(ids); }
+    const cold = ids.filter((id) => !firstLoaded.has(id));
+    const ms = Math.max(0, ...cold.map((id) => Number(loadCtl.firstLoadMs[id] || 0)));
+    if (ms > 0) { await new Promise((r) => setTimeout(r, ms)); }
+    cold.forEach((id) => firstLoaded.add(id));
+    const as = (id) => (aliasCtl.serveAs[id] !== undefined ? Number(aliasCtl.serveAs[id]) : null);
+    if (!ids.some((id) => as(id) !== null)) { return windowQuery(req); }
+    const r = windowQuery({ ...req, signals: req.signals.map((x) => (as(x.signalId) !== null ? { ...x, signalId: as(x.signalId) } : x)) });
+    r.result.signals.forEach((h, k) => { if (as(ids[k]) !== null) { h.alias = h.signalId; h.signalId = ids[k]; } });
+    return r;
+  },
+  // aliasHints {pairs}: the real helper's reply shape (every pair taken; the mock serves none).
+  aliasHints(c) { return { accepted: Array.isArray(c.pairs) ? c.pairs.length : 0, refused: [], pending: 0 }; },
+  aliasControl(c) {
+    if (c.serveAs) { aliasCtl.serveAs = c.serveAs; }
+    if (Array.isArray(c.drop)) { for (const id of c.drop) { delete aliasCtl.serveAs[id]; aliasCtl.dropped.push(id); } }
+    return { serveAs: aliasCtl.serveAs, dropped: aliasCtl.dropped };
+  },
+  loadControl(c) { if (c.firstLoadMs) { loadCtl.firstLoadMs = c.firstLoadMs; firstLoaded.clear(); loadStats.windows = []; } return { ...loadCtl }; },
+  loadStats() { return { ...loadStats }; },
   // count {signalIds, exact}: whole-dump change count per signal. exact: false answers only
   // stored signals (cheap) and {unknown: true} for the rest; exact: true always answers.
   count({ signalIds, exact }) {
@@ -494,7 +527,7 @@ let requestsAfterCancel = 0;
 function schedule(req) {
   if (cancelledUnseen.has(req.id)) { requestsAfterCancel++; cancelledUnseen.delete(req.id); }
   const rtt = LATENCY + Math.random() * JITTER;
-  const entry = { timer: null, cancelled: false, cmd: req.cmd };
+  const entry = { timer: null, cancelled: false, cmd: req.cmd, signals: req.cmd === 'window' && Array.isArray(req.signals) ? req.signals.map((x) => x.signalId) : null };
   live.set(req.id, entry);
   const reply = (obj, bin) => { if (!entry.cancelled) { live.delete(req.id); send(obj, bin); } };
   entry.timer = setTimeout(async () => {
@@ -512,6 +545,9 @@ function schedule(req) {
         out = { id: req.id, final: true, result: { matches: [], found: 2, searched: 3, total: 3, complete: true, incomplete: null } };
       } else {
         const r = await fn(req);
+        if (aliasCtl.dropped.length && (req.cmd === 'window' || req.cmd === 'valueAt' || req.cmd === 'count')) {
+          (r && r.bin !== undefined ? r.result : r).aliasDropped = aliasCtl.dropped.splice(0);
+        }
         const ms = Number(process.hrtime.bigint() - t0) / 1e6;
         if (r && r.bin !== undefined) { out = { id: req.id, result: r.result, ms }; bin = r.bin; } else { out = { id: req.id, result: r, ms }; }
       }
@@ -534,6 +570,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const entry = live.get(target);
     if (!entry && cancelledUnseen.size < 100000) { cancelledUnseen.add(target); }
     if (entry && entry.cmd === 'searchText') { textStats.cancelled++; }
+    if (entry && entry.signals) { for (const id of entry.signals) { loadStats.cancels[id] = (loadStats.cancels[id] || 0) + 1; } }
     if (entry) { entry.cancelled = true; clearTimeout(entry.timer); live.delete(target); send({ id: target, cancelled: true }); }
     if (req.target !== undefined) { send({ id: req.id, result: { cancelled: !!entry, dropped: entry ? 1 : 0, running: 0 } }); }
     else if (!entry) { send({ id: req.id, cancelled: false }); }

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Part of cmux's FSDB helper v2. GPL-3.0, as VaporView (see ../LICENSE).
 # Starts cmux's FSDB helper v2 on the host that holds the dumps.
-# Usage: cmux-helper-v2.sh [--workers N]
+# Usage: cmux-helper-v2.sh [--workers N|auto]
 # Protocol replies go to fd 3 (the ssh channel); Verdi's FsdbReader prints to
 # stdout (coordinator and workers), so fd 1 is sent to stderr where it cannot
 # corrupt the protocol. helper.env (written by build.sh) names the Node.js and

@@ -61,8 +61,9 @@ final class WaveformFSDBHelper: @unchecked Sendable {
         var requiredFiles: [String] {
             protocolVersion >= 2 ? ["addon/build/Release/fsdb_reader.node", "cmux-helper-v2.sh"] : ["fsdb_reader.node", "fsdb-helper.sh"]
         }
-        /// The launcher, relative to the install, with its arguments.
-        var launcher: String { protocolVersion >= 2 ? "cmux-helper-v2.sh\" --workers 4" : "fsdb-helper.sh\"" }
+        /// The launcher, relative to the install, with its arguments. v2 sizes its worker pool
+        /// from the host's cores and free memory (`--workers auto`, helper.js).
+        var launcher: String { protocolVersion >= 2 ? "cmux-helper-v2.sh\" --workers auto" : "fsdb-helper.sh\"" }
     }
 
     /// The installs to try, in order, for a setting.
@@ -111,9 +112,11 @@ final class WaveformFSDBHelper: @unchecked Sendable {
     static let notInstalledStatus: Int32 = 87
     /// Exit status of a launcher that refuses an install others can write.
     static let refusedStatus: Int32 = 86
-    /// What the page sends: host.js (open, children, signals, valueAt) and the
-    /// windowed viewer (window, valueAt, edge, search, searchText, count, cancel).
-    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "searchText", "count", "cancel"]
+    /// What the page sends: host.js (open, children, signals, valueAt), the windowed
+    /// viewer (window, valueAt, edge, search, searchText, count, cancel) and trace-X
+    /// (aliasHints: its design model's port bindings, so the helper can answer a rebuilt
+    /// port from the stored net it equals once the two are verified equal).
+    static let pageCommands: Set<String> = ["open", "children", "signals", "valueAt", "window", "edge", "search", "searchText", "count", "cancel", "aliasHints"]
     /// Verdi's libraries load slowly from NFS on a busy host.
     static let defaultReadyTimeout: TimeInterval = 90
     static let installTimeout: TimeInterval = 10 * 60

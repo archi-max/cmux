@@ -39,7 +39,11 @@ const RSS_HEADROOM = Number(process.env.FSDB_RSS_HEADROOM_MB ?? 16) * 1e6;  // (
 let rssFloor = 0, capRaised = null;
 const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6), rssFloor);
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
-const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
+const HOT_OPS = new Set(['hotLoad', 'hotWindow', 'hotNear']);
+let hotMode = false, warmCap = 0;
+// edge kinds (addon cacheEdge): VaporView's any / rise / fall, and SystemVerilog's posedge / negedge / edge
+const EDGE_KINDS = { any: 0, rise: 1, fall: 2, posedge: 3, negedge: 4, edge: 5 };
+const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'rangedFind', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
 // the RSS cap is undone before it is walked (the soft guard above recycles first).
@@ -188,6 +192,44 @@ const ops = {
     return addon.coldValueAt(signalIds, t).map((v) => (typeof v === 'string' ? v : null));
   },
 
+  // Warm readers (helper.js "warm readers"): the reader keeps the file's navigation DB, and
+  // every signal this process reads is in its first load (hotLoad); nothing else is loaded.
+  // rssCapMB: the warm reader's own cap (#5). Its calls fail at twice that, and the addon undoes a
+  // load that leaves the process over it before walking (the cold path's hard bound).
+  hotOpen({ file, rssCapMB }) {
+    addon.openFsdb(file);
+    openFile = file;
+    readVarTree();  // (as a worker's open: the reader's scope/var tree, before any load)
+    addon.readerNavOnce();
+    hotMode = true;
+    warmCap = Number(rssCapMB || 0) * 1e6;
+    if (warmCap) { addon.cacheSetBounds(0, 2 * warmCap); }
+    return {};
+  },
+  hotLoad({ signalIds }) { return addon.warmLoad(signalIds); },
+  hotWindow({ signalIds, t0, t1, buckets }) {
+    return addon.warmWindow(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
+      : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
+        counts: w.counts || null, cached: false, ranged: true, warm: true, loadMs: w.loadMs, walkMs: w.walkMs }));
+  },
+  // trace-X's fan-in reads on a warm reader: as coldNear (span 0: the value at t).
+  hotNear({ signalIds, t, span }) { return addon.warmNear(signalIds, t, span); },
+  // aliases: a stored signal's whole stream, hashed (the helper compares two).
+  digest({ signalId }) {
+    const l = ensure([signalId]).get(signalId);
+    if (l.error) { return { error: l.error }; }
+    return { hash: require('node:crypto').createHash('sha1').update(addon.cacheRecords(signalId)).digest('hex'), count: l.count };
+  },
+  // valueAt {prev: true}: the value at t and the last real change at or before t.
+  lastChange({ signalIds, t }) {
+    const info = ensure(signalIds);
+    return signalIds.map((id) => (info.get(id).error ? { value: null, prev: null } : { value: addon.cacheValueAt(id, t), prev: addon.cacheLastChange(id, t) }));
+  },
+  // ... of signals that aren't stored: one view window [t - span, t], nothing kept.
+  coldNear({ signalIds, t, span }) {
+    return addon.coldValueNear(signalIds, t, span);
+  },
+
   // A short range of signals that aren't stored: load and walk only [t0 - 1, t1]
   // into a scratch store (same answer as the whole signal; nothing kept).
   windowCold({ signalIds, t0, t1, buckets, textBudget }) {
@@ -219,10 +261,23 @@ const ops = {
     }));
   },
 
-  edge({ signalId, t, dir, kind }) {
+  edge({ signalId, t, dir, kind, start }) {
+    const k = EDGE_KINDS[kind ?? 'any'];
+    if (k === undefined) { throw new Error(`edge: unknown kind ${JSON.stringify(kind)}`); }
     const l = ensure([signalId]).get(signalId);
     if (l.error) { throw new Error(l.error); }
-    return { t: addon.cacheEdge(signalId, t, dir, { any: 0, rise: 1, fall: 2 }[kind || 'any'] ?? 0) };
+    return { t: addon.cacheEdge(signalId, t, dir, k, start || 0) };
+  },
+
+  // rangedFind: edge (kind) or value search (pattern) of a signal that isn't stored, over the
+  // reader's changes from t up to bound only (the coordinator grows bound: a signal too big for
+  // the store). -> {t | null, scanned (changes compared)}
+  rangedFind({ signalId, t, dir, bound, kind, pattern, start }) {
+    const k = kind === undefined ? -1 : EDGE_KINDS[kind ?? 'any'];
+    if (k === undefined) { throw new Error(`edge: unknown kind ${JSON.stringify(kind)}`); }
+    const r = addon.searchScan([signalId], t, dir, k >= 0 ? '' : String(pattern), bound, k, start || 0)[0];
+    if (r.error) { throw new Error(r.error); }
+    return { t: r.t, scanned: r.scanned || 0 };
   },
 
   search({ signalId, t, dir, value }) {
@@ -275,7 +330,13 @@ const ops = {
   // Split walk: this worker walks one time slice of a wide signal into a
   // store file; the owner then adopts all slices into its store.
   walkSlice({ signalId, s, e, path: file }) { return addon.cacheWalkSlice(signalId, s, e, file); },
-  adopt({ signalId, paths }) { const r = addon.cacheAdopt(signalId, paths); walkedNow.push(signalId); return r; },
+  adopt({ signalId, paths }) {
+    let r;
+    // (the pieces are in RAM: deleted as soon as they are joined, also when the join fails)
+    try { r = addon.cacheAdopt(signalId, paths); } finally { for (const p of paths) { try { fs.rmSync(p, { force: true }); } catch (e) { /* gone */ } } }
+    walkedNow.push(signalId);
+    return r;
+  },
 
   // Derived signals: operands are loaded here ('load') or loaded and written to
   // files for the worker that builds the result ('export'), then 'derive' merges.
@@ -402,8 +463,12 @@ process.on('message', (task) => {
   try {
     const fn = ops[task.op];
     if (!fn) { throw new Error('unknown op ' + task.op); }
-    if (!openFile && !NO_FILE_OK.has(task.op)) { throw new Error('no file open'); }  // the addon needs a reader
+    if (!openFile && !NO_FILE_OK.has(task.op) && task.op !== 'hotOpen') { throw new Error('no file open'); }  // the addon needs a reader
+    if (hotMode && !HOT_OPS.has(task.op)) { throw new Error(`${task.op} in a warm reader`); }  // (its first load fixed its signals)
     if (LOADS.has(task.op)) { memoryGuard(); }
+    if (hotMode && warmCap && process.memoryUsage.rss() > 2 * warmCap) {
+      throw new Error(`warm reader memory limit (${Math.round(process.memoryUsage.rss() / 1e6)} MB > ${Math.round(2 * warmCap / 1e6)} MB)`);
+    }
     taskFiles = task.files || null;
     walkedNow = []; badNow = [];
     reply = { tid: task.tid, result: fn(task) };

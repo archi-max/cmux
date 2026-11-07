@@ -118,6 +118,9 @@
 #                                        copy, nesting, collapse, undo, removal, and
 #                                        session save/load, reload, restore
 #   ./run.sh fsdb-array                  the FSDB helper nests the reader's arrays (a stand-in addon, no FSDB)
+#   ./run.sh fsdb-scopes                 the FSDB helper lists each scope path once (port trees merged; no FSDB)
+#   ./run.sh fsdb-sched                  the FSDB helper's first loads over its worker pool (a stand-in addon
+#                                        with per-signal load costs; no FSDB): balance, splits, cancels
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -430,6 +433,16 @@ case "${1:-}" in
     # fsdb-helper-v2's tree.js against the reader's callbacks for a dump with packed arrays (no FSDB needed).
     node "$HERE/fsdb-array/check.js" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-array.log"
     grep -q '^FSDB ARRAY CHECKS PASSED' "$OUT/fsdb-array.log"
+    ;;
+  fsdb-scopes)
+    # fsdb-helper-v2's tree.js scopeTree: scope trees that re-enter a path are one node (no FSDB needed).
+    node "$HERE/fsdb-scopes/check.js" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-scopes.log"
+    grep -q '^FSDB SCOPES CHECKS PASSED' "$OUT/fsdb-scopes.log"
+    ;;
+  fsdb-sched)
+    # fsdb-helper-v2's helper.js and worker.js on a stand-in addon (stub-addon.cjs); no FSDB needed.
+    node "$HERE/fsdb-sched/check.mjs" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-sched.log"
+    grep -q '^FSDB SCHED CHECKS PASSED' "$OUT/fsdb-sched.log"
     ;;
   split)
     swiftc -O "$HERE/split/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \

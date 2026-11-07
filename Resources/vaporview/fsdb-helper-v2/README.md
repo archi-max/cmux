@@ -27,7 +27,7 @@ build against that host's copy.
    request ids, allowlist,   JSON lines on stdin          │
    timeouts, fallback        ◀── JSON + bytes on fd 3 ─   helper.js        coordinator: hierarchy, routing,
                                                           │                cancel, caches, derived signals
-                                                          ├─ worker.js ×4  each has the dump open and a store
+                                                          ├─ worker.js ×N  each has the dump open and a store
                                                           │     │
                                                           │     ▼
                                                           │  fsdb_reader.node  (VaporView's addon + cmux's
@@ -38,7 +38,7 @@ build against that host's copy.
 
 1. **The page asks** (`window_cache.ts` in the VaporView patch) only for what it draws: windows, values, edges, searches.
 2. **The Mac relays** only the commands the page uses, and `open` only of the panel's own file.
-3. **The host answers.** `helper.js` answers the netlist itself and routes signal work to four `worker.js`
+3. **The host answers.** `helper.js` answers the netlist itself and routes signal work to a pool of `worker.js`
    processes, each keeping its signals' changes in a compact C++ store, so the file is walked once.
 4. **Replies** are one JSON line, optionally followed by `binLength` raw bytes, on fd 3.
 
@@ -69,7 +69,7 @@ Times are integers in the dump's unit. The full list, with every field, is the h
 | --- | --- |
 | `open`, `children` | Metadata and top scopes; one scope's children |
 | `window {signals, t0, t1, buckets}` | A signal's changes in `[t0, t1)`. Exact when there are at most 2 × `buckets` changes; otherwise each bucket's first and last change plus a count per bucket. Sent as deflated `[u64 delta][value]` records |
-| `valueAt`, `edge`, `search` | The value at a time; the next or previous change, rise or fall; the next match of a value pattern |
+| `valueAt`, `edge`, `search` | The value at a time (with `prev: true`, also each signal's last real change at or before it, for trace-X); the next or previous change, rise or fall; the next match of a value pattern. A signal too big for a worker's store (its whole load fails on the cap, or its size projected from fsdbdebug's change count, or for an unlisted row from the densest window drawn of it, says it would) is answered from ranged reads that grow x8 from t up to the first hit |
 | `count` | A signal's total change count, when known without a walk (the viewer uses it to load small signals whole) |
 | `cancel {id}` | Stops a request. Its reply becomes `{cancelled: true}` |
 | `signals` | The v1 whole-signal reply, for compatibility |
@@ -84,6 +84,33 @@ What is streamed, and when:
   signal, 512 MB in total), and is then an ordinary local signal. Only big or dense signals stay windowed.
 - A signal not yet in a worker's store is read "cold": a small time range is read directly from the file, and the
   full walk continues in the background.
+  Stored signals in one such read go to one worker in one call; rebuilt ones are spread over the other free workers.
+- A whole-dump load (a zoomed-out view, or the walk behind a cold read) is cut into time pieces that every worker
+  takes from one shared queue, about 250 ms of work each (100 ms in the background). A cheap signal added after a
+  heavy one waits for one piece at most, a heavy one is spread over the pool, and a pan never waits for a whole
+  load. Cancelling a load's last request keeps it going in the background (at most 8 such loads, the furthest along); `free` of the signal drops it.
+  Pieces wait in `/dev/shm` files until their join, which deletes them; that is RAM no worker's memory guard sees, so
+  their total is capped (`FSDB_SHM_CAP`, 512 MB): above it, only the load nearest done gets more pieces.
+- Stored and rebuilt signals load differently. On open, the helper lists the signals the dump stores, using
+  `fsdbdebug -top_n_var 0` (from `FSDB_FSDBDEBUG` or `$VERDI_HOME/bin`), run under `nice` with a memory and
+  time watchdog (`FSDB_FSDBDEBUG_TIMEOUT_MS`, 300 s). The result is cached next to the index (`kinds.v1.json`).
+  A signal not on that list is unknown, not rebuilt: wide packed-struct parents, for one, are stored but
+  unlisted. The helper keeps three kinds (`p` listed, `s` only on positive evidence, `u` unlisted), each with
+  its source in `stats.kinds`. Unknown rows are scheduled like rebuilt ones, but up to `FSDB_WARM_UNKNOWN` (2)
+  of them take spare warm-reader slots. Each is judged against its own cold cost: a warm call of its set
+  that is slower than the row's last cold read of a similar span (alone) marks it `warmSlow`, and it leaves
+  the set; one the warm call beats is `warmProven`, and only those unknowns go to the warm reader for point
+  reads. Until the list is ready, or if the tool is missing, loads run as above.
+  - A stored signal pays a fixed cost per reader call (about 110 ms on a 1.7 GB dump, learned as it runs), so
+    cheap ones are loaded several at a time in one call, and a heavy one gets a few large pieces, not many small ones.
+  - A rebuilt signal pays about 190 ms of setup on each worker it touches (`FSDB_SEC_SETUP_MS`), so it is spread
+    over only as many workers as its measured cost repays.
+- Aliases: a port bound to a single net is rebuilt on every load, though it equals a stored signal (a cluster's
+  clk: 6.8 s against 0.43 s). The app names candidate pairs from its design model (`aliasHints`); a pair whose 16
+  sampled windows match has its whole streams compared in the background, and only a verified pair is answered
+  from the stored signal: until then the rebuilt row answers its own (ranged) data, never another signal's.
+  Verified pairs are kept per file (`aliases.v1.json`); one found wrong later is dropped and reported
+  (`aliasDropped`) so the page asks again.
 - `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
   the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch). Format `string`
   matches a string or real signal's text with a case-insensitive regular expression.
@@ -139,12 +166,13 @@ In this tree:
 | Read the dump in place, on its host | Dumps are often gigabytes. Downloading or converting one (to VCD or FST) takes minutes and disk on both sides, and must be redone after each simulation. Reading in place sends only what's drawn. |
 | Compile on the host, never ship binaries | The reader links Verdi's proprietary libraries. Building against the host's own install means no Synopsys code is ever redistributed, and the addon always matches that host's Verdi and Node.js. See [NOTICE](NOTICE). |
 | Windows with caps, not whole signals | A busy signal can have hundreds of millions of changes. Decimated windows keep each reply proportional to the screen. Caps bound every reply: buckets per request, store budget per worker, hybrid whole-load limits. |
-| A pool of four workers | One reader process walks one signal at a time. Four processes, each with the file open, walk signals in parallel, and one big signal can be split across them by time. The coordinator never walks, so it always answers the netlist and cancels at once. |
+| A pool of workers, sized from the host | One reader process walks one signal at a time, and one whole load costs 1 ms to 10 s on a big dump, can't be interrupted, and costs about the same in time slices. So several processes, each with the file open, take whole loads in time pieces from one queue: requests before background work, nearly done loads first, then new ones, then the least remaining work. `--workers auto` (cmux's default) runs half the host's cores, at most 8, and only as many as fit in its free memory minus 4 GB. The coordinator never walks, so it always answers the netlist and cancels at once. |
+| Warm readers for the rows being viewed | A cold ranged read pays the reader's navigation floor on every call (~110 ms on a 1.7 GB dump, ~650 ms on 10 GB). A reader in navDB-once mode (`ffrSetLoadNavDBOnlyOnce`) keeps its navigation, but every signal it reads must be in its first load, so a warm reader is its own process with a fixed set: stored (primary) rows asked for in the last 3 s and not stored whole, at most 16 (`FSDB_WARM_SIGNALS`). It does its first load before it takes requests. Rows asked for together go to it as one call per window, and rows outside the set are read cold in parallel. A new set (a quarter of the viewed rows outside it) is built in the background once the requests pause for 150 ms, and the old reader retires. A stream that never pauses (a pan held down) gets a new set after 2 s, and that wait doubles (up to 16 s) until the requests pause for 1 s. Memory is bounded per reader and in total. A reader's calls fail at twice `FSDB_WARM_RSS_MB` (default 600), and the addon undoes a load past that bound before walking. The coordinator reads each warm process's RSS from outside, so a native call that can't yield is seen too, and kills a reader over that bound. Ready, building and retiring readers together are at most twice `FSDB_WARM_READERS` processes and `FSDB_WARM_TOTAL_MB` (default twice the cap per reader). All processes reading the dump, cold workers included, are at most `FSDB_READERS` (default: the workers plus `FSDB_WARM_READERS`). A set rebuilt at that budget retires the old reader first, and its rows are read cold until the new one is ready. Unlisted rows join a set one at a time, on trial. A row leaves the set if it adds more than max(10 ms, 10% of the call) to its set's warm calls, if the unlisted rows kept so far would add more than max(10 ms, 10%) together over the primaries-only call (both plus a noise margin, the spread of the primaries-only calls, at most 5 ms; `FSDB_WARM_BOUND_FRAC` sets the 10%), or if its call is slower than its own cold read. Each comparison uses calls over the same span (within 10%), and a fresh reader's first 2 calls aren't counted. The memory total is sampled every 500 ms, so it can be overshot for up to one interval before readers are killed. A call unanswered in `FSDB_WARM_CALL_MS` (60 s) ends its reader. Only growth well past a reader's own baseline rebuilds the same set. A set too big for the cap is halved and the old reader goes first. A set that failed (or was halved, or rebuilt for growth) backs off from 5 s, doubling, up to 5 min. Rebuilt (secondary) rows stay cold: their per-window rebuild costs the same either way. Unlisted rows can take up to 2 spare slots (see the kinds note above). 10 one-row requests at 0.1% of the dump: 553 → 12 ms (1.7 GB), 3.2 s → 34 ms (10 GB). `FSDB_WARM=0` turns it off. Answers equal the cold path change for change (`scripts/waveform-viewer-checks/fsdb-sched/warm-parity.mjs`). Point reads (valueAt, and valueAt {prev} while its search span is at most 1% of the dump) of rows in the set go to it too; prev is each row's real last change, and wider rounds are read cold. For 16 stored rows, warm against cold, p50: valueAt 9 against 235 ms and a trace step 38 against 277 ms (1.7 GB); 18 against 1,338 ms and 151 against 1,490 ms (10 GB), with equal answers (`warm-point-bench.mjs`). The reader's max tag is the current view window's end, so a warm reader keeps the file's end from before its first load. |
 | Replies on fd 3 | The FSDB reader prints to stdout. A separate descriptor keeps the protocol clean. |
 | Private install, private run directory | The helper runs code and loads libraries from its install. An install others can write is refused. The reader's log directory goes to a private folder on node-local `/tmp`, not a shared home. |
 | Memory bounds | Each worker has an RSS cap (1 GB by default). Over it, the store shrinks first, then the worker is replaced when idle. A load that would pass twice the cap is undone. |
 | Store cache on disk | Walked signals are saved under `/tmp/<user>-cmux-helper/` (keyed by path, size, mtime and inode, LRU-bounded), so a reopened dump draws about 20× faster. Not on an NFS home. |
-| Background work yields on SIGUSR2 | Background walks poll for SIGUSR2 every 4096 changes and between signals, and yield to interactive requests. A `cancel` drops queued parts; running ones finish and are discarded. *(coming)* searchText is cancelled by SIGUSR2 too, because a SIGINT-based cancel killed workers and cancelled unrelated requests. |
+| Background work yields on SIGUSR2 | Background walks poll for SIGUSR2 every 4096 changes and between signals, and yield to interactive requests. A `cancel` drops queued parts; running ones finish and are discarded. A whole load nobody else waits for goes on in the background. *(coming)* searchText is cancelled by SIGUSR2 too, because a SIGINT-based cancel killed workers and cancelled unrelated requests. |
 | Node.js on the host | It reuses VaporView's Node-API reader addon and worker code unmodified. The cost is Node.js 18 or later on the host (found on `PATH` and in common places, or set with `CMUX_FSDB_NODE`; build exit 11 if missing). |
 | Watchdog kills only its own children *(coming)* | A pid can be reused once a process exits. The watchdog signals only processes that are still children of the launch shell, so it never touches another user's process. |
 

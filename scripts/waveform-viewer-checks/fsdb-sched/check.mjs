@@ -1,0 +1,1315 @@
+// run.sh fsdb-sched: how fsdb-helper-v2 schedules first loads over its worker pool, against a
+// stand-in addon (stub-addon.cjs) whose per-signal load costs are set per case. No FSDB.
+// On a 1.7 GB dump one reader load costs 1 ms to 10 s, so the pool must balance work, not
+// signal counts, and keep what a cancelled request had asked for.
+// Usage: node check.mjs <fsdb-helper-v2 folder>
+import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const dir = path.resolve(process.argv[2]);
+const here = path.dirname(new URL(import.meta.url).pathname);
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fsdb-sched-'));
+const dump = path.join(tmp, 'stub.fsdb'); fs.writeFileSync(dump, 'stub');
+let fails = 0;
+const check = (ok, what) => { console.log((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) { fails++; } };
+
+function helper(workers, env = {}) {
+  const p = spawn(process.execPath, [path.join(dir, 'helper.js'), '--workers', String(workers), ...(env.ARGS ? env.ARGS.split(' ') : [])], {
+    stdio: ['pipe', 'ignore', 'ignore', 'pipe'],
+    env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), FSDB_STORE_CACHE: '0', FSDB_INDEX_DIR: path.join(tmp, 'idx'), TMPDIR: tmp, ...env },
+  });
+  let buf = Buffer.alloc(0), need = null, nid = 1, ready;
+  const pend = new Map();
+  const readyP = new Promise((r) => { ready = r; });
+  p.stdio[3].on('data', (d) => {
+    buf = Buffer.concat([buf, d]);
+    for (;;) {
+      if (need) { if (buf.length < need.n) { break; } buf = buf.subarray(need.n); deliver(need.msg); need = null; continue; }
+      const i = buf.indexOf(10); if (i < 0) { break; }
+      const line = buf.subarray(0, i).toString(); buf = buf.subarray(i + 1);
+      if (!line.trim()) { continue; }
+      const msg = JSON.parse(line);
+      if (msg.binLength) { need = { msg, n: msg.binLength }; continue; }
+      deliver(msg);
+    }
+  });
+  function deliver(m) {
+    if (m.id === 0) { if (m.ready) { ready(m); } return; }
+    const h = pend.get(m.id); if (!h) { return; }
+    pend.delete(m.id); h({ ...m, at: performance.now() - h.t0 });
+  }
+  return {
+    pid: p.pid,
+    ready: readyP,
+    send(cmd, a = {}) { const id = nid++; const t0 = performance.now(); return { id, reply: new Promise((res) => { res.t0 = t0; pend.set(id, Object.assign(res, { t0 })); p.stdin.write(JSON.stringify({ id, cmd, ...a }) + '\n'); }) }; },
+    close() { p.stdin.end(); p.kill(); },
+  };
+}
+const win = (ids) => ({ signals: ids.map((signalId) => ({ signalId, width: 1 })), t0: 0, t1: 1048576, buckets: 1024 });
+const loaded = async (h) => { const s = (await h.send('stats').reply).result; return s.workers.reduce((a, w) => a + w.loaded.length, 0); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function start(workers, costs, env = {}) {
+  const h = helper(workers, { STUB_COSTS: JSON.stringify(costs), ...env });
+  await h.ready;
+  const o = await h.send('open', { file: dump }).reply;
+  if (o.error) { throw new Error(o.error); }
+  await wait(200);  // the workers' own opens
+  return h;
+}
+
+// 1. Twelve signals added at once, two of them heavy. Round-robin on first sight put both
+// heavy ones (and two more) on worker 0: ~1.3 s while three workers idled after 60 ms.
+{
+  const costs = { 1: 600, 5: 600 };
+  const h = await start(4, costs);
+  const r = await h.send('window', win([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])).reply;
+  check(!r.error && r.result.signals.length === 12, `one request for 12 cold signals answers all: ${r.error || r.result.signals.length}`);
+  check(r.at < 1000, `the pool takes them as workers free up, so the two heavy loads run side by side: ${Math.round(r.at)} ms (round-robin ~1300)`);
+  h.close();
+}
+
+// 2. One request per added signal, sent together (adding signals one by one): coverage
+// (every one answers, in bounded time); an idle pool still splits the first.
+{
+  const costs = { 1: 600, 5: 600 };
+  const h = await start(4, costs);
+  const rs = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((id) => h.send('window', win([id])).reply));
+  const last = Math.max(...rs.map((r) => r.at));
+  check(rs.every((r) => !r.error), 'every per-signal request answers');
+  check(last < 1000, `the last of 12 per-signal requests: ${Math.round(last)} ms (both heavy ones on one worker: ~1300)`);
+  h.close();
+}
+
+// 3. A lone cold signal on an idle pool is still split over every worker.
+{
+  const h = await start(4, { 3: 800 });
+  const r = await h.send('window', win([3])).reply;
+  const s = r.result && r.result.signals[0];
+  check(s && s.split >= 4, `a lone signal on an idle pool is split over every worker: ${JSON.stringify(s && s.split)} pieces`);
+  check(r.at < 600, `... and drawn in about a quarter of its load: ${Math.round(r.at)} ms`);
+  h.close();
+}
+
+// 4. A cancelled request (the viewer's 10 s window timeout, or the user zoomed away) keeps
+// its first loads that had not started: they finish in the background, so asking again
+// finds them stored instead of queueing them again at the back.
+{
+  const costs = { 1: 300, 2: 300, 3: 300, 4: 300, 5: 300, 6: 300 };
+  const h = await start(2, costs, { FSDB_SPLIT_SINGLE: '0' });
+  const reqs = [1, 2, 3, 4, 5, 6].map((id) => h.send('window', win([id])));
+  await wait(60);
+  for (const q of reqs) { h.send('cancel', { target: q.id }); }
+  await wait(1500);
+  const n = await loaded(h);
+  check(n === 6, `after cancelling 6 first loads (2 running), all 6 are stored a little later: ${n}`);
+  const again = await h.send('window', win([1, 2, 3, 4, 5, 6])).reply;
+  check(!again.error && again.at < 150 && again.result.signals.every((s) => s.cached), `asking again is answered from the store: ${Math.round(again.at)} ms`);
+  h.close();
+}
+
+// 5. A signal another request already placed is not floated again (no second load).
+{
+  const h = await start(4, { 7: 400 });
+  const a = h.send('window', win([7, 8, 9, 10, 11]));
+  const b = h.send('valueAt', { signalIds: [7], t: 10 });
+  const [ra, rb] = await Promise.all([a.reply, b.reply]);
+  check(!ra.error && !rb.error, `a window and a valueAt of the same first-load signal both answer: ${ra.error || rb.error || 'ok'}`);
+  const st = (await h.send('stats').reply).result;
+  const owners = st.workers.filter((w) => w.loaded.includes(7)).length;
+  check(owners <= 1, `signal 7 is stored on one worker: ${owners}`);
+  h.close();
+}
+
+// 6. A cheap signal added right after a heavy one draws at once. A lone split put a slice of
+// the heavy load on every worker, so each cheap signal waited for a slice (~500 ms here,
+// 2.3 s on a 1.7 GB dump).
+{
+  const h = await start(4, { 1: 2000 });
+  const heavy = h.send('window', win([1]));
+  await wait(20);
+  const cheap = [2, 3, 4, 5].map((id) => h.send('window', win([id])));
+  const rs = await Promise.all(cheap.map((q) => q.reply));
+  const worst = Math.max(...rs.map((r) => r.at));
+  check(rs.every((r) => !r.error) && worst < 250, `4 cheap signals added after a 2 s one answer within 250 ms: ${Math.round(worst)} ms`);
+  const rh = await heavy.reply;
+  check(!rh.error && rh.at < 900, `... and the heavy one is still spread over the pool: ${Math.round(rh.at)} ms (alone on one worker: 2000)`);
+  h.close();
+}
+
+// 7. Two heavy signals among ten, one request each: the pool shares both heavy loads (~800 ms
+// of work per worker), instead of one worker per heavy signal (1600 ms).
+{
+  const h = await start(4, { 1: 1600, 2: 1600 });
+  const rs = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((id) => h.send('window', win([id])).reply));
+  const heavyLast = Math.max(rs[0].at, rs[1].at), cheapLast = Math.max(...rs.slice(2).map((r) => r.at));
+  check(rs.every((r) => !r.error), 'every one of the ten answers');
+  check(heavyLast < 1300, `both heavy loads are spread over the pool: last at ${Math.round(heavyLast)} ms (one worker each: ~1600)`);
+  check(cheapLast < 300, `the eight cheap ones draw first: last at ${Math.round(cheapLast)} ms`);
+  h.close();
+}
+
+// 8. Panning while the whole walks behind ranged first draws run: a background load is cut in
+// pieces, so an interactive request waits for one piece, not for a whole 3 s load.
+{
+  const h = await start(2, { 1: 3000, 2: 3000 });
+  const near = { t0: 0, t1: 100000, buckets: 1024 };  // 10% of the dump: ranged first draws
+  const r1 = await Promise.all([1, 2].map((id) => h.send('window', { signals: [{ signalId: id, width: 1 }], ...near }).reply));
+  check(r1.every((r) => !r.error && r.result.signals[0].ranged), `two ranged first draws: ${r1.map((r) => r.error || r.result.signals[0].ranged)}`);
+  await wait(100);  // their whole walks are now running in the background
+  const r = await h.send('window', win([3])).reply;
+  check(!r.error && r.at < 600, `a new signal added meanwhile answers within 600 ms: ${Math.round(r.at)} ms (behind a whole 3 s load: ~2900)`);
+  h.close();
+}
+
+// 9. A signal the reader can't read fails once: asking again answers the same error at once,
+// without loading it again.
+{
+  const h = await start(4, { 4: 400 }, { STUB_BAD: '[4]' });
+  const a = await h.send('window', win([4])).reply;
+  const e1 = a.result && a.result.signals[0].error;
+  check(!a.error && /unsupported/.test(e1 || ''), `an unreadable signal answers its error: ${a.error || e1}`);
+  const b = await h.send('window', win([4])).reply;
+  const e2 = b.result && b.result.signals[0].error;
+  check(!b.error && /unsupported/.test(e2 || '') && b.at < 60, `asking again answers the same error without a reload: ${Math.round(b.at)} ms`);
+  h.close();
+}
+
+// 11. A first load per worker that costs extra (the reader's per-process setup for a signal)
+// must not read as a per-load floor: the rest of a heavy signal still goes out in ~250 ms
+// pieces. Taking it as a floor gave one worker the last 3/4 of a clock (7.5 s on a 1.7 GB dump).
+{
+  const h = await start(4, { 1: 4000 }, { STUB_FIRST_MS: '150' });
+  const r = await h.send('window', win([1])).reply;
+  const s = r.result && r.result.signals[0];
+  check(!r.error && r.at < 1900, `a 4 s signal with a 150 ms first load per worker: ${Math.round(r.at)} ms, ${s && s.split} pieces (one worker for the rest: ~3200)`);
+  h.close();
+}
+
+// 12. A cheap signal whose first piece is done finishes before the first pieces of later heavy
+// signals: 50 signals added at once drew nothing for 2 s while every job's first piece ran.
+{
+  const costs = Object.fromEntries([5, 6, 7, 8, 9, 10, 11, 12].map((id) => [id, 1600]));
+  for (const id of [1, 2, 3, 4]) { costs[id] = 40; }
+  const h = await start(4, costs);
+  const rs = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((id) => h.send('window', win([id])).reply));
+  const cheap = Math.max(...rs.slice(0, 4).map((r) => r.at));
+  check(rs.every((r) => !r.error) && cheap < 120, `4 cheap signals ahead of 8 heavy ones are done within 120 ms: ${Math.round(cheap)} ms (after every first piece: ~200)`);
+  h.close();
+}
+
+
+// 14. Panning while background whole loads run: one worker is kept free of background pieces,
+// and ranged reads go to free workers, so a pan never waits for a piece (~250-500 ms).
+{
+  const h = await start(3, { 1: 3000, 2: 3000, 3: 3000, 4: 200 });
+  const near = (id, t0) => ({ signals: [{ signalId: id, width: 1 }], t0, t1: t0 + 10000, buckets: 1024 });  // 1% of the dump
+  await Promise.all([1, 2, 3].map((id) => h.send('window', near(id, 0)).reply));
+  await wait(150);  // their whole loads now run in the background
+  const lat = [];
+  for (let k = 1; k <= 6; k++) {
+    const r = await h.send('window', { signals: [1, 2, 3, 4].map((signalId) => ({ signalId, width: 1 })), t0: k * 10000, t1: k * 10000 + 10000, buckets: 1024 }).reply;
+    lat.push(r.error ? 1e9 : r.at);
+    await wait(40);
+  }
+  const worst = Math.max(...lat);
+  check(worst < 250, `pan steps over 4 signals while 3 whole loads run: worst ${Math.round(worst)} ms (behind a 250-500 ms piece: ~485)`);
+  h.close();
+}
+
+// 15. One unreadable signal in a multi-signal request doesn't make the others load again whole:
+// the request waits for each signal's own load, and only a failed one falls back.
+// (Promise.all settled at the first failure, then loaded the 2 s signal whole on one worker
+// while its pieces went on, and stored it twice.)
+{
+  const h = await start(4, { 1: 2000 }, { STUB_BAD: '[4]' });
+  const r = await h.send('window', win([4, 1])).reply;
+  const sig = r.result ? r.result.signals : [];
+  check(!r.error && /unsupported/.test(sig[0] && sig[0].error || '') && sig[1] && !sig[1].error, `an unreadable and a 2 s signal in one request: ${r.error || JSON.stringify(sig.map((x) => x.error || 'ok'))}`);
+  check(r.at < 1100, `... the 2 s one still loads in pieces over the pool: ${Math.round(r.at)} ms (whole on one worker: ~2000)`);
+  await wait(300);
+  const st = (await h.send('stats').reply).result;
+  const holders = st.workers.filter((w) => w.loaded.includes(1)).length;
+  check(holders === 1, `... and is stored once: ${holders} holders`);
+  h.close();
+}
+
+// 16. Removing rows drops their loads: `free` stops the background loads of cancelled
+// requests for those signals (nobody waits for them), so the pool goes idle and nothing is
+// stored again. (30 cancelled adds then free{} kept 5 workers busy ~24 s and stored 25 signals.)
+{
+  const costs = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((id) => [id, 1500]));
+  const h = await start(4, costs);
+  const qs = [1, 2, 3, 4, 5, 6, 7, 8].map((id) => h.send('window', win([id])));
+  await wait(150);
+  for (const q of qs) { h.send('cancel', { target: q.id }); }
+  await h.send('free', {}).reply;
+  await wait(600);  // the pieces running at the free end (<= 2 x 250 ms)
+  const st = (await h.send('stats').reply).result;
+  check(st.loads.length === 0 && st.workers.every((w) => !w.busy), `free {} after cancelling 8 loads: no load left, pool idle: ${st.loads.length} loads, busy ${st.workers.map((w) => w.busy)}`);
+  await wait(1500);
+  const n = await loaded(h);
+  check(n === 0, `... and none of them is stored afterwards: ${n}`);
+  // free {signalIds} drops only those signals' loads
+  const a = h.send('window', win([1])), b = h.send('window', win([2]));
+  await wait(150);
+  h.send('cancel', { target: a.id }); h.send('cancel', { target: b.id });
+  await h.send('free', { signalIds: [1] }).reply;
+  await wait(2500);
+  const st2 = (await h.send('stats').reply).result;
+  const has = (id) => st2.workers.some((w) => w.loaded.includes(id));
+  check(!has(1) && has(2), `free {signalIds: [1]} drops 1's load, 2's goes on: 1 ${has(1)}, 2 ${has(2)}`);
+  h.close();
+}
+
+// 17. Cancelled loads kept in the background are bounded: a burst of cancels (rows removed
+// without a free, a file switch) doesn't keep the pool busy for every one of them.
+{
+  const costs = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((id) => [id, 800]));
+  const h = await start(4, costs, { STUB_SIGNALS: '16' });
+  const qs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((id) => h.send('window', win([id])));
+  await wait(60);
+  for (const q of qs) { h.send('cancel', { target: q.id }); }
+  for (let t = 0; t < 60; t++) { const st = (await h.send('stats').reply).result; if (!st.loads.length && st.workers.every((w) => !w.busy)) { break; } await wait(100); }
+  const n = await loaded(h);
+  check(n <= 8, `14 cancelled loads: at most 8 go on in the background: ${n} stored`);
+  h.close();
+}
+
+// 18. Piece files live in RAM (/dev/shm) where no worker's RSS guard sees them: their total is
+// capped (FSDB_SHM_CAP), above it only the started load with the least work left gets more
+// pieces until its join deletes them. 48 loads at once: every one started its first piece
+// first, so uncapped their pieces peaked at ~730 KB; under a 1-byte cap (each load after
+// another) they all answer, and the files hold about two loads plus a piece per worker.
+{
+  const ids = Array.from({ length: 48 }, (_, k) => k + 1);
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 400])),
+    { STUB_SIGNALS: '48', STUB_COUNTS: JSON.stringify(Object.fromEntries(ids.map((id) => [id, 20000]))), FSDB_SHM_CAP: '1' });
+  const root = fs.existsSync('/dev/shm') ? '/dev/shm' : '/tmp';
+  const mine = fs.readdirSync(root).filter((n) => n.startsWith('fsdb-helper-v2-')).map((n) => path.join(root, n))
+    .find((d) => { try { return fs.readFileSync(path.join(d, 'pid'), 'utf8').trim() === String(h.pid); } catch (e) { return false; } });
+  let peak = 0, polling = true;
+  (async () => {
+    while (polling) {
+      let sum = 0;
+      try { for (const f of fs.readdirSync(mine)) { if (f !== 'pid') { try { sum += fs.statSync(path.join(mine, f)).size; } catch (e) { /* joined */ } } } } catch (e) { /* gone */ }
+      peak = Math.max(peak, sum);
+      await wait(2);
+    }
+  })();
+  const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  polling = false;
+  check(!!mine && rs.every((r) => !r.error), `48 loads of 200 KB of pieces each answer: ${rs.filter((r) => r.error).length} errors`);
+  check(peak > 0 && peak < 560000, `... piece files peak at ${Math.round(peak / 1000)} KB under a 1-byte cap (two loads + a piece per worker: < 560; uncapped ~730)`);
+  h.close();
+}
+
+// 19. A load's first piece shrinks on a bigger dump, as its load costs more: on a 10 GB dump a
+// 1/16 probe of a 10 s signal held a worker 5-7 s. A 10 GB (sparse) dump, four 16 s loads on
+// four workers, then a cheap signal: it waits for one short piece, not for a 1 s probe.
+{
+  fs.truncateSync(dump, 10e9);
+  const h = await start(4, { 1: 16000, 2: 16000, 3: 16000, 4: 16000 });
+  const heavy = [1, 2, 3, 4].map((id) => h.send('window', win([id])));
+  await wait(30);
+  const r = await h.send('window', win([5])).reply;
+  check(!r.error && r.at < 450, `a cheap signal added while four 16 s loads start: ${Math.round(r.at)} ms (behind 1/16 probes: ~1000)`);
+  for (const q of heavy) { h.send('cancel', { target: q.id }); }
+  await h.send('free', {}).reply;
+  h.close();
+  fs.writeFileSync(dump, 'stub');
+}
+
+// 20. Stored (primary) and rebuilt (secondary) signals are told apart once per file with
+// fsdbdebug -top_n_var 0 (it lists only stored vars, by idcode), cached next to the index;
+// without the tool every signal is loaded as before.
+const DEBUG = path.join(here, 'fsdbdebug-stub.cjs');
+const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await h.send('stats').reply).result.kinds; if (k && k.state !== 'pending') { return k; } await wait(20); } return null; };
+{
+  const log = path.join(tmp, 'debug.log');
+  const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3]', STUB_DEBUG_LOG: log };
+  const h = await start(2, {}, env);
+  const k = await kindsOf(h);
+  check(k && k.state === 'ready' && k.primaries === 3 && k.source === 'fsdbdebug', `the stored signals are listed by fsdbdebug: ${JSON.stringify(k)}`);
+  h.close();
+  const h2 = await start(2, {}, env);
+  const k2 = await kindsOf(h2);
+  const runs = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').length : 0;
+  check(k2 && k2.primaries === 3 && k2.source === 'cache' && runs === 1, `... and read from the index dir on the next open (fsdbdebug ran ${runs}x): ${JSON.stringify(k2)}`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h3 = await start(2, { 1: 50 }, { FSDB_FSDBDEBUG: path.join(tmp, 'no-such-tool') });
+  const k3 = await kindsOf(h3);
+  const r3 = await h3.send('window', win([1])).reply;
+  check(k3 && k3.state === 'none' && !r3.error, `without the tool, no kinds and loads as before: ${JSON.stringify(k3)} ${r3.error || 'ok'}`);
+  h3.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 21. Primaries cost a reader floor per load call (its navigation data, ~110 ms on 1.7 GB,
+// ~650 ms on 10 GB, whatever the range): cheap ones are loaded several in one call, and none
+// is cut in pieces shorter than a few floors. Eight 100 ms primaries with a 300 ms floor,
+// one request each, four workers: each in its own pieces paid the floor per piece.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const loadLog = path.join(tmp, 'loads21.log');
+  fs.rmSync(loadLog, { force: true });
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 100])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ids), STUB_FLOOR_MS: '300', STUB_LOAD_LOG: loadLog });
+  await kindsOf(h);
+  const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  // (counted in reader calls, each one floor, not in wall-clock time: a busy machine made the
+  // timed version flaky)
+  const calls = fs.readFileSync(loadLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.ids.length);
+  // (how many share a call depends on which workers are idle when each is picked: 4-5 calls)
+  check(rs.every((r) => !r.error) && calls.length <= 5 && calls.every((c) => c.op === 'load'),
+    `8 cheap primaries with a 300 ms floor: ${calls.length} reader calls of ${JSON.stringify(calls.map((c) => c.ids.length))} (batched: 4-5; one each or in pieces: 8+)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  // (its change count says what it costs: 20.8M changes of 1 bit ~ 3 s)
+  const h2 = await start(4, { 1: 3000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_FLOOR_MS: '300', STUB_COUNTS: '{"1": 20800000}' });
+  await kindsOf(h2);
+  const r = await h2.send('window', win([1])).reply;
+  const sp = r.result && r.result.signals[0].split;
+  check(!r.error && sp <= 6 && r.at < 1500, `a 3 s primary with a 300 ms floor: ${sp} pieces, ${Math.round(r.at)} ms (pieces of >= 4 floors: ~4, ~1.1 s)`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 22. A secondary costs its worker a setup the first time (~190 ms: the reader builds the
+// signal's network), so with other loads waiting a secondary's pieces stay on few workers
+// (setup <= 1/4 of its work); on an idle pool a lone one still spreads.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 600])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[16]', STUB_FIRST_MS: '200' });
+  await kindsOf(h);
+  const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  const last = Math.max(...rs.map((r) => r.at));
+  check(rs.every((r) => !r.error) && last < 2200, `8 secondaries of 600 ms with a 200 ms setup per worker: last at ${Math.round(last)} ms (each on one worker: ~1600; on all four: ~2800)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h2 = await start(4, { 1: 1200 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[16]', STUB_FIRST_MS: '200' });
+  await kindsOf(h2);
+  const r2 = await h2.send('window', win([1])).reply;
+  check(!r2.error && r2.at < 1000, `... a lone 1.2 s secondary on an idle pool still spreads: ${Math.round(r2.at)} ms (one worker: ~1400)`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 23. A ranged cold read (the visible window, nothing stored) of several primaries pays the
+// reader floor once per call, so the primaries of one request go to one worker in one call and
+// the secondaries (whose cost scales with the window) are spread over the other free workers.
+// 8 primaries (300 ms floor) + 3 secondaries of 400 ms over the window, four workers: spread
+// round-robin, three workers each paid a floor and a secondary (~700 ms).
+{
+  const ps = [1, 2, 3, 4, 5, 6, 7, 8], ss = [9, 10, 11];
+  const h = await start(4, { ...Object.fromEntries(ps.map((id) => [id, 100])), 9: 4000, 10: 4000, 11: 4000 },
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ps), STUB_FLOOR_MS: '300' });
+  await kindsOf(h);
+  const near = { signals: [...ps, ...ss].map((signalId) => ({ signalId, width: 1 })), t0: 0, t1: 100000, buckets: 1024 };  // 10% of the dump
+  const r = await h.send('window', near).reply;
+  const sg = (r.result && r.result.signals) || [];
+  check(!r.error && sg.length === 11 && sg.every((s) => s.ranged) && r.at < 550,
+    `a ranged read of 8 primaries + 3 secondaries: ${Math.round(r.at)} ms, ${sg.filter((s) => s.ranged).length} ranged (primaries in one call: ~400; spread: ~700)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 24. trace-X's point read: valueAt {prev: true} also gives each signal's last real change at or
+// before t ({t, value} | null). Stored signals answer from the store; the others from view
+// windows [t - span, t] that grow x8 until the change is found or the window reaches 0, with
+// the primaries of a round in one call (one floor) and the secondaries (cost ~ span) apart.
+{
+  const log = path.join(tmp, 'near.log');
+  fs.rmSync(log, { force: true });
+  const h = await start(4, { 1: 100, 2: 400, 3: 400, 4: 50, 5: 100 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,4,5]', STUB_FLOOR_MS: '100',
+    STUB_CHANGE_AT: JSON.stringify({ 1: 900000, 2: 10, 4: 500000, 5: 940000 }), STUB_NEAR_LOG: log });
+  await kindsOf(h);
+  await h.send('window', win([4])).reply;
+  for (let k = 0; k < 50 && (await loaded(h)) < 1; k++) { await wait(20); }
+  const r = await h.send('valueAt', { signalIds: [1, 2, 3, 4, 5], t: 950000, prev: true }).reply;
+  const prev = r.result && r.result.prev, vals = r.result && r.result.values;
+  const want = [{ t: 900000, value: '1' }, { t: 10, value: '1' }, null, { t: 500000, value: '1' }, { t: 940000, value: '1' }];
+  check(!r.error && JSON.stringify(prev) === JSON.stringify(want), `valueAt prev: ${r.error || JSON.stringify(prev)}`);
+  check(vals && vals[0] === '1' && vals[1] === '1' && vals[2] === 'x', `... and the cold values from the same reads: ${JSON.stringify(vals)}`);
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  const prim = (id) => id === 1 || id === 5;
+  check(calls.length > 0 && calls.every((c) => c.ids.every(prim) || !c.ids.some(prim)) && calls.some((c) => c.ids.includes(1) && c.ids.includes(5))
+    && !calls.some((c) => c.ids.includes(4)), `... primaries together, apart from secondaries, stored ones not read: ${JSON.stringify(calls)}`);
+  const s2 = calls.filter((c) => c.ids.includes(2)).map((c) => c.span);
+  check(s2.length >= 2 && s2.every((x, k) => !k || x === s2[k - 1] * 8), `... a change far back is found by growing windows: spans ${JSON.stringify(s2)}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 25. Aliases (a port rebuilt on every load that equals a stored net): the app names candidate
+// pairs (aliasHints). Sampled windows that differ: dropped at once. A pair whose samples match
+// has its whole streams compared in the background, and until that verdict the rebuilt signal
+// answers its own data (an unverified pair never serves another signal's data). Equal ->
+// verified (kept for the next open) and used: the rebuilt signal is answered from the stored
+// one (alias: its id); different -> dropped, nothing to report since it was never used.
+{
+  const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER: '[4]', STUB_DIFFER_FULL: '[3]' };
+  const costs = { 1: 50, 2: 3000, 3: 3000, 4: 3000 };
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const has = (list, id) => !!list && list.some(([x]) => x === id);
+  const h = await start(4, costs, env);
+  await kindsOf(h);
+  const a = await h.send('aliasHints', { pairs: [[2, 1], [3, 1], [4, 1], [1, 2], [5, 5]] }).reply;
+  check(!a.error && a.result.accepted === 3 && a.result.refused.length === 2, `aliasHints takes rebuilt -> stored pairs only: ${a.error || JSON.stringify(a.result)}`);
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = await al(h); if (st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id))) { break; } await wait(30); }
+  check(st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id)), `... sampled windows decide: ${JSON.stringify(st)}`);
+  const early = await h.send('window', { ...win([2, 3]), t1: 10000 }).reply;  // a view of 1%: a ranged read
+  const unverified = !st || !(has(st.verified, 2) || has(st.verified, 3));
+  check(!early.error && early.result.signals.every((x) => !x.alias && !x.error) && early.at < 1000,
+    `before the verdict, rebuilt rows answer their own data (ranged), not the stored one's: ${early.error || JSON.stringify(early.result.signals.map((x) => x.alias || 'own'))} in ${Math.round(early.at)} ms${unverified ? '' : ' (already verified: weak)'}`);
+  const r4 = await h.send('window', win([4])).reply;
+  check(!r4.error && !r4.result.signals[0].alias, `... one whose windows differ is never used: ${r4.error || JSON.stringify(r4.result.signals[0])}`);
+  for (let k = 0; k < 300; k++) { st = await al(h); if (!st || (has(st.verified, 2) && has(st.bad, 3))) { break; } await wait(50); }
+  check(st && has(st.verified, 2) && has(st.bad, 3), `... the whole streams verify one and drop the other: ${JSON.stringify(st)}`);
+  const r = await h.send('window', win([2])).reply;
+  const s0 = r.result && r.result.signals[0];
+  check(!r.error && s0 && s0.signalId === 2 && s0.alias === 1, `a verified pair is answered from the stored one: ${r.error || JSON.stringify(s0)}`);
+  const r3 = await h.send('window', win([3])).reply;
+  check(!r3.error && r3.result && !r3.result.aliasDropped && !r3.result.signals[0].alias, `... the dropped one answers its own, with no drop to report (never used): ${r3.error || JSON.stringify(r3.result)}`);
+  h.close();
+  const h2 = await start(4, costs, env);
+  await kindsOf(h2);
+  await h2.send('aliasHints', { pairs: [[2, 1]] }).reply;
+  const st2 = await al(h2);
+  check(st2 && has(st2.verified, 2), `... a verified pair is used at once on the next open: ${JSON.stringify(st2)}`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 26. aliasHints from the app's model: pairs may name paths; pairs sent before the stored
+// signals are known wait for them (not refused); `free` of a rebuilt signal drops its alias
+// (a later hint checks it again).
+{
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const has = (list, id) => !!list && list.some(([x]) => x === id);
+  const h = await start(4, { 1: 50, 2: 3000, 3: 3000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DEBUG_MS: '600' });
+  const a = await h.send('aliasHints', { pairs: [['tb.s2', 'tb.s1'], [3, 1]] }).reply;
+  check(!a.error && a.result.refused.length === 0 && a.result.pending === 2, `pairs sent before the stored signals are known wait: ${a.error || JSON.stringify(a.result)}`);
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = await al(h); if (st && has(st.on, 2) && has(st.on, 3)) { break; } await wait(30); }
+  check(st && has(st.on, 2) && has(st.on, 3), `... and are checked once they are, paths resolved: ${JSON.stringify(st)}`);
+  await h.send('free', { signalIds: [2] }).reply;
+  st = await al(h);
+  const r = await h.send('window', win([2])).reply;
+  check(st && !has(st.on, 2) && !has(st.verified, 2) && has(st.on, 3) && !r.error && !r.result.signals[0].alias,
+    `free of a rebuilt signal drops its alias: ${JSON.stringify(st)} ${r.error || JSON.stringify(r.result.signals[0])}`);
+  const b = await h.send('aliasHints', { pairs: [[2, 1]] }).reply;
+  check(!b.error && b.result.accepted === 1, `... and a later hint is taken again: ${b.error || JSON.stringify(b.result)}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 26b. A free during the background comparison (H1): the rebuilt row's load is dropped, and the
+// pair must not stay half-checked and in use; the row answers its own data from then on, and a
+// later hint checks the pair again. Also `free {}` (every row) during the comparison.
+{
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const has = (list, id) => !!list && list.some(([x]) => x === id);
+  for (const how of ['row', 'all']) {
+    const h = await start(4, { 1: 50, 3: 3000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER_FULL: '[3]' });
+    await kindsOf(h);
+    await h.send('aliasHints', { pairs: [[3, 1]] }).reply;
+    let st = null;
+    for (let k = 0; k < 100; k++) { st = await al(h); if (st && (has(st.on, 3) || has(st.bad, 3))) { break; } await wait(20); }
+    await h.send('free', how === 'row' ? { signalIds: [3] } : {}).reply;
+    await wait(3500);  // past the rebuilt row's whole load (3 s) had it gone on
+    st = await al(h);
+    const r = await h.send('window', win([3])).reply;
+    check(!r.error && !r.result.signals[0].alias && !(st && (has(st.on, 3) || has(st.verified, 3))),
+      `free (${how}) during the comparison: the row answers its own data, the pair isn't left in use: ${r.error || JSON.stringify(r.result.signals[0].alias || 'own')} ${JSON.stringify(st)}`);
+    const b = await h.send('aliasHints', { pairs: [[3, 1]] }).reply;
+    check(!b.error && b.result.accepted === 1, `... and a later hint is taken again (${how}): ${b.error || JSON.stringify(b.result)}`);
+    h.close();
+    fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  }
+}
+
+// 31. Review M1: the reader floor learned from batched loads must stay a floor. The walk estimate
+// per change can be ~3x low (here it is exactly 3x), and a batch's whole overrun was taken for
+// floor (1435 ms against ~112 on a 1.7 GB dump): a heavy primary then loaded in one piece. After
+// a burst of batched cheap primaries the learned floor stays near the real one (100 ms), a heavy
+// primary still loads in pieces over the workers, and a reopen forgets what was learned.
+{
+  const cheap = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const counts = { ...Object.fromEntries(cheap.map((id) => [id, 1000000])), 13: 10000000 };  // estimates: 144 ms, 1.44 s
+  const costs = { ...Object.fromEntries(cheap.map((id) => [id, 432])), 13: 1500 };  // 3x the estimate
+  const h = await start(4, costs, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify([...cheap, 13]), STUB_FLOOR_MS: '100', STUB_COUNTS: JSON.stringify(counts) });
+  await kindsOf(h);
+  await Promise.all(cheap.map((id) => h.send('window', win([id])).reply));
+  const f1 = (await h.send('stats').reply).result.kinds.floorMs;
+  check(f1 <= 300, `the floor learned from batched cheap primaries stays a floor: ${f1} ms (real: 100)`);
+  const r = await h.send('window', win([13])).reply;
+  const sp = r.result && r.result.signals[0].split;
+  check(!r.error && sp >= 4, `... and a heavy primary after them still loads in pieces: ${r.error || sp} pieces (4 workers)`);
+  await h.send('open', { file: dump }).reply;
+  await kindsOf(h);
+  const f2 = (await h.send('stats').reply).result.kinds.floorMs;
+  check(f2 <= 50, `... and a reopen forgets the learned floor: ${f2} ms`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 32. Review L3: the helper's exit (its stdin closed) ends a running fsdbdebug too; on a 10 GB
+// dump it otherwise ran on for ~27 s and 2.5 GB with nobody to read its answer.
+{
+  const pidFile = path.join(tmp, 'fsdbdebug.pid');
+  fs.rmSync(pidFile, { force: true });
+  const h = await start(2, { 1: 50 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DEBUG_MS: '20000', STUB_DEBUG_PIDFILE: pidFile });
+  for (let k = 0; k < 100 && !fs.existsSync(pidFile); k++) { await wait(20); }
+  const pid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8')) : 0;
+  h.close();
+  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return false; } };
+  let gone = false;
+  for (let k = 0; k < 50 && pid; k++) { if (!alive()) { gone = true; break; } await wait(40); }
+  check(pid > 0 && gone, `the helper's exit ends a running fsdbdebug: pid ${pid} ${gone ? 'gone' : 'still running'}`);
+  if (pid && !gone) { try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 33. Review L1 (N3, e4213c7): a load freed while its pieces are being joined settles its
+// promise, so what waits for it in the background (an alias comparison) ends instead of hanging
+// for the session.
+{
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const h = await start(4, { 1: 50, 3: 300 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER_FULL: '[3]', STUB_ADOPT_MS: '1500' });
+  await kindsOf(h);
+  await h.send('aliasHints', { pairs: [[3, 1]] }).reply;
+  await wait(1000);  // the rebuilt row's pieces are done (~300 ms) and being joined (1.5 s)
+  await h.send('free', { signalIds: [3] }).reply;
+  let st = null;
+  for (let k = 0; k < 60; k++) { st = await al(h); if (st && st.running === 0) { break; } await wait(50); }
+  check(st && st.running === 0, `a load freed during its join ends what waits for it: ${JSON.stringify(st && st.running)} comparison(s) still running`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 34. Review L4 (lows): a worker killed in the middle of a batched load. The batch's signals
+// are loaded again elsewhere and every request is answered, none with an error.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const loadLog = path.join(tmp, 'loads34.log');
+  fs.rmSync(loadLog, { force: true });
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 400])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ids), STUB_FLOOR_MS: '100', STUB_LOAD_LOG: loadLog });
+  await kindsOf(h);
+  const pending = Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  let victim = null;
+  for (let k = 0; k < 200 && !victim; k++) {
+    const calls = fs.existsSync(loadLog) ? fs.readFileSync(loadLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    victim = calls.find((c) => c.op === 'load' && c.ids.length > 1) || null;
+    if (!victim) { await wait(10); }
+  }
+  if (victim) { try { process.kill(victim.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+  const rs = await pending;
+  const calls = fs.readFileSync(loadLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const again = victim ? victim.ids.every((id) => calls.some((c) => c.pid !== victim.pid && c.ids.includes(id))) : false;
+  check(!!victim && rs.every((r) => !r.error && r.result.signals.every((x) => !x.error)) && again,
+    `a worker killed mid-batch: every row answered, its batch ${victim ? JSON.stringify(victim.ids) : '(none seen)'} loaded again elsewhere: ${again}; errors ${JSON.stringify(rs.map((r) => r.error || (r.result.signals[0].error || 'ok')))}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 35. trace-X's fan-in point reads (valueAt, valueAt {prev}) of rows in a ready warm set go to
+// the warm worker (a short cycle) instead of a cold read per call (the reader floor), with the
+// same answers; rows outside the set are read cold.
+{
+  const log = path.join(tmp, 'warm35.log');
+  fs.rmSync(log, { force: true });
+  const ids = [1, 2, 3, 4];
+  const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,5]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '10', STUB_WARM_LOG: log, FSDB_WARM: '1', FSDB_BG_LOAD: '0',
+    STUB_CHANGE_AT: JSON.stringify({ 1: 598000, 2: 597000, 3: 900000, 4: 599500, 5: 450000 }) };  // (3: after t, so none)
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const ask = async (h, prev, list = [...ids, 5]) => h.send('valueAt', { signalIds: list, t: 600000, ...(prev ? { prev: true } : {}) }).reply;
+  const same = (a, b) => JSON.stringify({ v: a.values, p: a.prev }) === JSON.stringify({ v: b.values, p: b.prev });
+  const cold = await start(4, {}, { ...env, FSDB_WARM: '0' });
+  await kindsOf(cold);
+  const c1 = await ask(cold, true), c0 = await ask(cold, false);
+  cold.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h = await start(4, {}, env);
+  await kindsOf(h);
+  let st = null;
+  for (let k = 0; k < 100; k++) { await h.send('window', near(ids, 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && ids.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
+  const w1 = await ask(h, true), w0 = await ask(h, false);
+  const t1 = performance.now(); const wp = await ask(h, true, [1, 2, 4]); const ms1 = performance.now() - t1;  // (found in the first, narrow round; wider rounds read cold)
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'near');
+  // (valueAt without prev: the stub's cold point read always answers '0', so a warm one is
+  // compared with the value its prev read gives; the real-dump check compares both)
+  check(!w1.error && !c1.error && same(w1.result, c1.result) && !w0.error && !c0.error && JSON.stringify(w0.result.values.slice(0, 4)) === JSON.stringify(w1.result.values.slice(0, 4)) && !wp.error,
+    `fan-in reads on the warm worker answer as cold ones: prev ${JSON.stringify(w1.result && w1.result.prev)} vs ${JSON.stringify(c1.result && c1.result.prev)}`);
+  check(calls.length > 0 && calls.every((c) => !c.ids.includes(5)) && ms1 < 250,
+    `... rows of the set go to it (${calls.length} warm point reads, row 5 never), valueAt prev of the set's rows in ${Math.round(ms1)} ms (cold: a 300 ms floor per round)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 39. Point reads on a ready warm reader (Refs #6): one request mixing rows in the warm set,
+// a stored-whole row, a listed row outside the set and a deep change; prev gives each row's
+// real last change (never a round's window edge), equal to a run with no warm reader. A
+// multi-step trace stays fast; a warm reader killed mid-read and a cancelled request fall
+// back cold with the same answers.
+{
+  const log = path.join(tmp, 'warm39.log');
+  fs.rmSync(log, { force: true });
+  const CH = { 1: 599000, 2: 100000, 3: 900000, 4: 10, 5: 598500, 6: 450000 };  // (2, 4: deep, found only in wider (cold) rounds; 3: after t)
+  const base = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,5,6]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '300', STUB_WARM_LOG: log, FSDB_BG_LOAD: '0', STUB_CHANGE_AT: JSON.stringify(CH) };
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const all = [1, 2, 3, 4, 5, 6], set = [1, 2, 3, 4];
+  const ask = (h, t, prev = true, list = all) => h.send('valueAt', { signalIds: list, t, ...(prev ? { prev: true } : {}) });
+  const warmUp = async (h) => {
+    await kindsOf(h);
+    await h.send('window', { ...win([6]), t1: 1000001 }).reply;  // (6: stored whole)
+    let st = null;
+    for (let k = 0; k < 100; k++) { await h.send('window', near(set, 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && set.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
+    return st;
+  };
+  const truth = (t) => all.map((id) => (CH[id] <= t ? { t: CH[id], value: '1' } : null));
+  const steps = [600000, 599200, 598800, 598000, 597000];
+  // the reference: no warm reader
+  const cold = await start(4, { 6: 100 }, { ...base, FSDB_WARM: '0' });
+  await kindsOf(cold);
+  await cold.send('window', { ...win([6]), t1: 1000001 }).reply;  // (6 stored whole here too: the stub's store answers '0' at t)
+  const ref = [];
+  for (const t of steps) { const r = await ask(cold, t).reply; ref.push(r.error ? r.error : r.result); }
+  cold.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+
+  const h = await start(4, { 6: 100 }, { ...base, FSDB_WARM: '1', STUB_WARM_MS: '10' });
+  const st = await warmUp(h);
+  const got = [], lat = [];
+  for (const t of steps) { const r = await ask(h, t).reply; lat.push(r.at); got.push(r.error ? r.error : r.result); }
+  const exact = got.every((g, k) => g && g.prev && JSON.stringify(g.prev) === JSON.stringify(truth(steps[k])));
+  const pick = (g) => JSON.stringify(g && { values: g.values, prev: g.prev });  // (cold: how many were read cold, differs by design)
+  const same = got.every((g, k) => pick(g) === pick(ref[k]));
+  const nearCalls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'near');
+  check(st && exact && same && nearCalls.length > 0 && nearCalls.every((c) => !c.ids.includes(5) && !c.ids.includes(6)),
+    `mixed warm / stored / outside-set / deep rows: prev is each row's real change and equals the no-warm run (${exact}, ${same}); ${nearCalls.length} warm point reads, rows 5 and 6 never: ${JSON.stringify(got[0] && got[0].prev)}`);
+  // a trace step whose rows change near t: one warm round for the set's rows (cold: a 300 ms floor per round)
+  const tl = [];
+  for (const t of [600000, 599500, 599100]) { const r = await ask(h, t, true, [1]).reply; tl.push(r.at); }
+  const pt = [];
+  for (let k = 0; k < 10; k++) { const r = await ask(h, 600000 - k * 100, false, set).reply; pt.push(r.at); }
+  pt.sort((a, b) => a - b);
+  check(Math.max(...tl) < 150 && pt[9] < 150,
+    `a multi-step trace of near changes ${tl.map(Math.round).join('/')} ms; repeated warm point reads p50 ${Math.round(pt[5])}, max ${Math.round(pt[9])} ms (cold floor 300)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+
+  // a warm reader killed mid-read; a cancelled read
+  fs.rmSync(log, { force: true });
+  const k2 = await start(4, { 6: 100 }, { ...base, FSDB_WARM: '1', STUB_WARM_MS: '600' });
+  await warmUp(k2);
+  const pids = [...new Set(fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'load').map((c) => c.pid))];
+  const q = ask(k2, 600000);
+  await wait(150);
+  for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  const kr = await q.reply;
+  const c = ask(k2, 599000);
+  await wait(50);
+  k2.send('cancel', { target: c.id });
+  const cr = await c.reply;
+  const after = await ask(k2, 600000).reply;
+  check(pids.length > 0 && !kr.error && JSON.stringify(kr.result.prev) === JSON.stringify(truth(600000)) && !after.error && JSON.stringify(after.result.prev) === JSON.stringify(truth(600000)),
+    `a warm reader killed mid point read: the read is answered cold, exactly (${JSON.stringify(kr.error || kr.result.prev)}); after a cancelled read (${cr.cancelled || cr.error ? 'cancelled' : 'answered'}) the next one is exact too`);
+  k2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 40. Prefetch (the page's left / right / level-out / level-in tiles, sent once what's on screen
+// is answered) must not hold up the next visible request: prefetch requests (prefetch: true) queue
+// behind visible work on a worker, and their rebuilt rows go one task per row, so a visible
+// request waits for at most one running prefetch task. Measured on a 10 GB dump: four prefetch
+// batches ahead of the first pan's cold rows made it 8.7 s.
+{
+  const ids = [1, 2, 3, 4];
+  const h = await start(1, Object.fromEntries(ids.map((id) => [id, 15000])),  // (150 ms per row per 1% window)
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', FSDB_WARM: '0', FSDB_BG_LOAD: '0' });
+  await kindsOf(h);
+  const W = (t0, prefetch) => ({ signals: ids.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024, ...(prefetch ? { prefetch: true } : {}) });
+  const pf = [0, 1, 2, 3].map((k) => h.send('window', W(100000 + k * 10000, true)));
+  await wait(20);
+  const vis = await h.send('window', W(500000, false)).reply;
+  const pr = await Promise.all(pf.map((q) => q.reply));
+  check(!vis.error && vis.at < 1000 && pr.every((r) => !r.error && r.result.signals.every((x) => !x.error)),
+    `a visible request after 4 prefetch batches (600 ms each) answers within one running prefetch task: ${Math.round(vis.at)} ms (FIFO: ~3000); prefetches answered: ${pr.map((r) => r.error || Math.round(r.at)).join('/')}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 40b. ... nor in three more paths (review M3). Each: the visible request alone, then after four
+// prefetch batches; it must wait for at most about one running prefetch task.
+//  A. 1 worker, a visible first window of a row loaded whole (job pieces): pieces ran only when
+//     the worker's queue was empty, so after every queued prefetch task (~2.9 s vs ~0.4 s).
+//  C. 3 workers all busy on solo prefetch tasks: a visible 6-row window went whole onto the least
+//     busy worker (6 x 150 ms after its running task) instead of over the three.
+//  E. a warm reader (rows 1-4, 150 ms a call): its pump took the whole queue and ran it in order,
+//     so a visible window waited for all four prefetch calls.
+{
+  const W = (ids, t0, span, prefetch) => ({ signals: ids.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + span, buckets: 1024, ...(prefetch ? { prefetch: true } : {}) });
+  const timed = async (h, pf, vis) => {
+    const ps = pf.map((q) => h.send('window', q));
+    await wait(30);
+    const r = await h.send('window', vis).reply;
+    const pr = await Promise.all(ps.map((q) => q.reply));
+    return { at: Math.round(r.at), ok: !r.error && r.result.signals.every((x) => !x.error) && pr.every((x) => !x.error) };
+  };
+  // A: rows 1-4 cold (600 ms per prefetch window), row 9 loaded whole (~400 ms)
+  {
+    const h = await start(1, { 1: 15000, 2: 15000, 3: 15000, 4: 15000, 9: 400 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', FSDB_WARM: '0', FSDB_BG_LOAD: '0' });
+    await kindsOf(h);
+    const r = await timed(h, [0, 1, 2, 3].map((k) => W([1, 2, 3, 4], 100000 + k * 10000, 10000, true)), W([9], 0, 1000000, false));
+    h.close(); fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    check(r.ok && r.at < 1300, `A: a visible whole-load window after 4 prefetch batches (600 ms each) waits for about one: ${r.at} ms (behind all: ~2900)`);
+  }
+  // C: 3 workers, 4 prefetch batches of 6 rows (150 ms per row: solo tasks), then a visible 6-row window
+  {
+    const six = [1, 2, 3, 4, 5, 6];
+    const h = await start(3, Object.fromEntries([...six, 7, 8, 9, 10, 11, 12].map((id) => [id, 15000])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', FSDB_WARM: '0', FSDB_BG_LOAD: '0' });
+    await kindsOf(h);
+    const r = await timed(h, [0, 1, 2, 3].map((k) => W(six, 100000 + k * 10000, 10000, true)), W([7, 8, 9, 10, 11, 12], 500000, 10000, false));
+    h.close(); fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    check(r.ok && r.at < 700, `C: a visible 6-row window with every worker on prefetch is spread over them: ${r.at} ms (on one worker: ~1050)`);
+  }
+  // E: a warm reader for rows 1-4 (150 ms a call), 4 prefetch windows of the set, then a visible one
+  {
+    const ids = [1, 2, 3, 4];
+    const h = await start(1, Object.fromEntries(ids.map((id) => [id, 1000])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_WARM_LOAD_MS: '50', STUB_WARM_MS: '150', FSDB_WARM: '1', FSDB_BG_LOAD: '0' });
+    await kindsOf(h);
+    for (let k = 0; k < 60; k++) { await h.send('window', W(ids, 0, 10000, false)).reply; const st = (await h.send('stats').reply).result.warm; if (st && st.ready && st.ready.length === 4 && !st.building) { break; } await wait(100); }
+    const r = await timed(h, [0, 1, 2, 3].map((k) => W(ids, 100000 + k * 10000, 10000, true)), W(ids, 500000, 10000, false));
+    h.close(); fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    check(r.ok && r.at < 450, `E: a visible warm window after 4 prefetch warm windows (150 ms each) waits for about one: ${r.at} ms (behind all: ~750)`);
+  }
+}
+
+// 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
+// the process's first load): the rows being viewed get a warm worker in the background, and
+// ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
+// the set is read cold at once and never sent to the warm worker.
+{
+  const log = path.join(tmp, 'warm.log');
+  fs.rmSync(log, { force: true });
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries([...ids, 9].map((id) => [id, 20000])),
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '600', STUB_WARM_MS: '15', STUB_WARM_LOG: log, FSDB_WARM: '1' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });  // 1% of the dump
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));  // the rows' first draws, one request each
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && ids.every((id) => st.ready.includes(id))) { break; } await wait(50); }
+  check(st && st.ready && ids.every((id) => st.ready.includes(id)), `the rows being viewed get a warm worker: ${JSON.stringify(st)}`);
+  const lat = [];
+  for (let k = 1; k <= 8; k++) { const r = await h.send('window', near(ids, k * 10000)).reply; lat.push(r.error ? 1e9 : r.at); }
+  check(lat[0] < 100, `the first pan once the set is ready: ${Math.round(lat[0])} ms (the reader's first load, 600 ms, is done before it is ready)`);
+  lat.sort((a, b) => a - b);
+  check(lat[4] < 80, `pans over 8 warm rows: p50 ${Math.round(lat[4])} ms (cold reads: 8 x 150 ms over the free workers, ~300+)`);
+  const r9 = await h.send('window', near([...ids, 9], 90000)).reply;
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  check(!r9.error && r9.result.signals.length === 9 && r9.result.signals.every((x) => !x.error) && !calls.some((c) => c.op === 'window' && c.ids.includes(9)),
+    `... a row outside the set is read cold, not sent to the warm worker: ${r9.error || JSON.stringify(r9.result.signals.map((x) => x.error || 'ok'))}`);
+  check(calls.length > 0 && calls.every((c) => c.op !== 'window' || calls.some((l) => l.op === 'load' && l.pid === c.pid && c.ids.every((id) => l.ids.includes(id)))),
+    `... and a warm worker only ever reads signals of its first load: ${calls.length} warm calls`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 28. ... of stored (primary) signals first, once the kinds are known. A signal fsdbdebug doesn't
+// list is unknown, not secondary (stored struct parents are listed nowhere; Refs #7): it may take a
+// spare slot, at most FSDB_WARM_UNKNOWN (2) of them. The kinds model is in stats, with provenance.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '15', FSDB_WARM: '1', FSDB_BG_LOAD: '0' });
+  let kk = null;
+  for (let k = 0; k < 100; k++) { kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
+  let st = null;
+  // (unknowns join one at a time, each after a trial against the set without it: review M2)
+  let most = 0;
+  for (let k = 0; k < 200; k++) {
+    st = (await h.send('stats').reply).result.warm;
+    const n = st && st.ready ? st.ready.filter((id) => id > 4).length : 0; most = Math.max(most, n);
+    if (n >= 2 && !st.building) { break; }
+    await Promise.all(ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply)); await wait(50);
+  }
+  const got = st && st.ready ? [...st.ready].sort((a, b) => a - b) : [];
+  const prim = got.filter((id) => id <= 4), unk = got.filter((id) => id > 4);
+  check(prim.length === 4 && unk.length === 2 && most <= 2, `with the kinds known, the warm set holds the primaries and 2 unlisted (unknown) rows: ${JSON.stringify(got)} (at most ${most} unknowns)`);
+  const c = kk && kk.counts;
+  check(c && c.p === 4 && c.s === 0 && c.u === 12 && kk.model && /fsdbdebug/.test(kk.model.p) && /not listed/.test(kk.model.u),
+    `stats.kinds models primary / secondary / unknown with provenance: ${JSON.stringify(kk && { counts: kk.counts, model: kk.model })}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 38. An unknown row is judged by its own cold cost (Refs #7, review M2/L7): a warm call of its
+// set slower than that row's own cold read of the same span marks it warmSlow, and it leaves
+// the set; each row is judged alone, so a cheap unknown (a stored struct parent, whose cold read
+// pays the floor) stays. Realistic costs: a rebuilt unknown adds ~60 ms to every warm call of its
+// set and reads cold in ~40 ms; the struct parent reads cold in ~300 ms and adds nothing warm; a
+// tiny unknown reads cold in ~5 ms, under any warm call. Primaries pay a 300 ms cold floor.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, { 1: 100, 2: 100, 3: 100, 4: 100, 5: 4000, 6: 4000, 7: 30000, 8: 500 },
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '10', STUB_WARM_SIG_COST: '{"5":60,"6":60}',
+      FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_UNKNOWN: '4' });
+  for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const lat = [];
+  for (let k = 0; k < 45; k++) {  // (unknowns are tried one at a time: four trials)
+    const t = performance.now();
+    const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply);
+    await Promise.all(rs.slice(0, 4));  // the primaries' answers
+    if (k >= 37) { lat.push(performance.now() - t); }
+    await Promise.all(rs);
+    await wait(100);
+  }
+  const s = (await h.send('stats').reply).result;
+  const got = s.warm && s.warm.ready ? [...s.warm.ready].sort((a, b) => a - b) : [];
+  const slow = (s.kinds.warmSlow || []).map((x) => x.id).sort((a, b) => a - b);
+  lat.sort((a, b) => a - b);
+  h.close();
+  check(JSON.stringify(got) === '[1,2,3,4,7]' && JSON.stringify(slow) === '[5,6,8]',
+    `unknowns judged each by its own cold cost: set ${JSON.stringify(got)} (want [1,2,3,4,7]), warmSlow ${JSON.stringify(s.kinds.warmSlow)} (want 5, 6, 8)`);
+  check(lat[Math.floor(lat.length / 2)] < 100, `... and the primaries' warm answers are fast: p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms (130+ while the rebuilt ones share their calls)`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 38b. The judgment is by the row's MARGINAL warm cost (review M2 round 2): on the real addon the
+// whole warm call (primaries + every unknown) was compared with a solo cold read that is mostly
+// the per-call floor, so it came out inverted. Costs as measured on big: every cold call pays
+// ~110 ms; rebuilt unknowns 5 and 7 read cold in ~210 ms and add ~60 ms each to every warm call
+// of their set; the stored struct parent 6 reads cold in ~126 ms and adds nothing warm. The
+// rebuilt ones must leave the set, the struct parent stay, and the primaries' warm answers come
+// back near primaries-only (~10 ms here; ~130 ms with both rebuilt rows in the set).
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7];
+  const h = await start(4, { 1: 100, 2: 100, 3: 100, 4: 100, 5: 10000, 6: 1600, 7: 10000 },
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '110', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '10', STUB_WARM_SIG_COST: '{"5":60,"7":60}',
+      FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_UNKNOWN: '3' });
+  for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const lat = [];
+  for (let k = 0; k < 45; k++) {
+    const t = performance.now();
+    const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply);
+    await Promise.all(rs.slice(0, 4));  // the primaries' answers
+    if (k >= 37) { lat.push(performance.now() - t); }
+    await Promise.all(rs);
+    await wait(100);
+  }
+  const s = (await h.send('stats').reply).result;
+  const got = s.warm && s.warm.ready ? [...s.warm.ready].sort((a, b) => a - b) : [];
+  const slow = (s.kinds.warmSlow || []).map((x) => x.id).sort((a, b) => a - b);
+  lat.sort((a, b) => a - b);
+  h.close();
+  check(JSON.stringify(got) === '[1,2,3,4,6]' && JSON.stringify(slow) === '[5,7]',
+    `unknowns judged by their marginal warm cost: set ${JSON.stringify(got)} (want [1,2,3,4,6]), warmSlow ${JSON.stringify(s.kinds.warmSlow)} (want 5, 7)`);
+  check(lat[Math.floor(lat.length / 2)] < 25, `... and the primaries' warm answers come back near primaries-only (~10 ms, within max(10%, 10 ms) and some jitter): p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 38c. The marginal judgment holds up to what the real addon does (review M2 round 2, addendum 2):
+// (A) proven unknowns compound: three rows each adding 24 ms to a 109 ms call are each under a
+//     quarter of it, but together they slow the primaries by 66%. What the proven unknowns add
+//     together is held to the same bound.
+// (B) a fresh reader's first calls are slower (on big 108 -> 85 -> 80 ms): a row that adds
+//     nothing must not be judged on them.
+// (C) a zoom-in during a trial: a span-scaled baseline is off by the call floor, so a row that
+//     adds nothing is judged on a baseline of the same span only, and is still judged (not tried
+//     forever) when its trial started at another span.
+{
+  const near = (list, t0, span = 10000) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + span, buckets: 1024 });
+  const run = async (env, unknowns, plan) => {
+    const sizes = { 1: 100, 2: 100, 3: 100, 4: 100 };
+    unknowns.forEach((id) => { sizes[id] = 10000; });
+    const h = await start(4, sizes, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '300', FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_UNKNOWN: '3', ...env });
+    for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+    const lat = [];
+    for (const [k, step] of plan.entries()) {
+      const t = performance.now();
+      const st = (await h.send('stats').reply).result;
+      const { ids, span } = step(st);
+      const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000, span)).reply);
+      await Promise.all(rs.slice(0, 4));
+      lat.push(performance.now() - t);
+      await Promise.all(rs);
+      await wait(60);
+    }
+    const s = (await h.send('stats').reply).result;
+    h.close();
+    fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    const p50 = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+    return { s, slow: (s.kinds.warmSlow || []).map((x) => x.id).sort((a, b) => a - b), proven: [...(s.kinds.warmProven || [])].sort((a, b) => a - b), p50Last: p50(lat.slice(-8)) };
+  };
+  const P = [1, 2, 3, 4];
+  // (A)
+  {
+    const r = await run({ STUB_WARM_MS: '109', STUB_WARM_SIG_COST: '{"5":24,"6":24,"7":24}' }, [5, 6, 7], Array.from({ length: 70 }, () => () => ({ ids: [...P, 5, 6, 7] })));
+    check(r.proven.length <= 1 && r.slow.length + r.proven.length === 3 && r.p50Last < 109 * 1.25 + 20,
+      `(A) three unknowns of +24 ms on a 109 ms call don't all stay: proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}; primaries' p50 ${Math.round(r.p50Last)} ms (P only 109; all three ~181)`);
+  }
+  // (B) P alone for 40 pans (its reader long settled), then the free row 6 joins.
+  {
+    const r = await run({ STUB_WARM_MS: '10', STUB_WARM_WARMUP: '[60,30]' }, [6], Array.from({ length: 70 }, (_, k) => () => ({ ids: k < 40 ? P : [...P, 6] })));
+    check(JSON.stringify(r.proven) === '[6]' && !r.slow.length,
+      `(B) a row that adds nothing isn't judged on its reader's slower first calls: proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}`);
+  }
+  // (D) the bound is max(10%, 10 ms) over primaries-only (FSDB_WARM_BOUND_FRAC): a row adding
+  //     15 ms to a 100 ms call leaves the set (under a quarter, it stayed).
+  {
+    const r = await run({ STUB_WARM_MS: '100', STUB_WARM_SIG_COST: '{"6":15}' }, [6], Array.from({ length: 50 }, () => () => ({ ids: [...P, 6] })));
+    check(JSON.stringify(r.slow) === '[6]' && !r.proven.length,
+      `(D) a row adding 15 ms to a 100 ms call breaks max(10%, 10 ms): slow ${JSON.stringify(r.s.kinds.warmSlow)}, proven ${JSON.stringify(r.proven)}`);
+  }
+  // (C) P alone at one span, then 6 joins; once its trial reader is up, the view zooms in 2x.
+  {
+    let zoomed = false;
+    const r = await run({ STUB_WARM_MS: '40' }, [6], Array.from({ length: 90 }, (_, k) => (st) => {
+      if (k >= 40 && st.warm && st.warm.ready && st.warm.ready.includes(6)) { zoomed = true; }
+      return { ids: k < 40 ? P : [...P, 6], span: zoomed ? 5000 : 10000 };
+    }));
+    check(zoomed && JSON.stringify(r.proven) === '[6]' && !r.slow.length,
+      `(C) a zoom-in during its trial doesn't mark a free row slow, and it is still judged: zoomed ${zoomed}, proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}`);
+  }
+}
+
+// 41. One set's backoff must not hold up another set's warm-up (Refs #5, review M1): a set whose
+// warm reader fails backs off (here 4 s); once other rows are viewed instead, their set is built
+// at once, not after that backoff.
+{
+  const log = path.join(tmp, 'warm41.log');
+  fs.rmSync(log, { force: true });
+  const h = await start(2, Object.fromEntries([1, 2, 3, 4, 9].map((id) => [id, 1000])),
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,9]', STUB_WARM_LOG: log, STUB_WARM_LOAD_FAIL: '[9]', FSDB_WARM: '1', FSDB_BG_LOAD: '0',
+      FSDB_WARM_BACKOFF_MS: '4000', FSDB_WARM_RECENT_MS: '400' });
+  await kindsOf(h);
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await h.send('window', near([9], 0)).reply;  // a set that fails
+  let failed = false;
+  for (let k = 0; k < 40 && !failed; k++) { await wait(50); failed = fs.existsSync(log) && /loadFail/.test(fs.readFileSync(log, 'utf8')); }
+  await wait(500);  // (9 is no longer recent)
+  const t0 = performance.now();
+  let st = null;
+  for (let k = 0; k < 80; k++) { await h.send('window', near([1, 2, 3, 4], 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && st.ready && [1, 2, 3, 4].every((id) => st.ready.includes(id))) { break; } await wait(50); }
+  const ms = performance.now() - t0;
+  h.close();
+  check(failed && st && [1, 2, 3, 4].every((id) => st.ready.includes(id)) && ms < 2000,
+    `another set warms up during a failed set's 4 s backoff: ready in ${Math.round(ms)} ms (failed first: ${failed})`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 29. The page asks for each row's window in its own request, all at once. A warm call loads the
+// whole set however many rows it names, so requests for the same window that arrive together
+// go to the warm worker as one call.
+{
+  const log = path.join(tmp, 'warm29.log');
+  fs.rmSync(log, { force: true });
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '60', STUB_WARM_LOG: log, FSDB_WARM: '1' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && ids.every((id) => st.ready.includes(id))) { break; } await wait(50); }
+  const lat = [];
+  for (let k = 1; k <= 4; k++) {
+    const t = performance.now();
+    const rs = await Promise.all(ids.map((id) => h.send('window', near([id], k * 10000)).reply));
+    lat.push(rs.some((r) => r.error || r.result.signals[0].error) ? 1e9 : performance.now() - t);
+  }
+  lat.sort((a, b) => a - b);
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'window');
+  const R = st.readers || 1, last = calls.slice(-4 * R);
+  check(lat[2] < 200, `8 one-row requests for one window over a warm set: ${Math.round(lat[2])} ms (one call per reader: ~60; one each: ~480)`);
+  check(last.length === 4 * R && last.reduce((a, c) => a + c.ids.length, 0) === 32, `... sent as one warm call per window and reader (${R}): ${JSON.stringify(last.map((c) => c.ids.length))}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 36. A warm call's cost is its walk, per signal: a set split over two warm readers
+// (FSDB_WARM_READERS=2) is read in parallel, about half the time of one reader walking all of it.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '5', STUB_WARM_SIG_MS: '40', FSDB_WARM: '1', FSDB_WARM_READERS: '2' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && ids.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
+  const lat = [];
+  for (let k = 1; k <= 5; k++) { const r = await h.send('window', near(ids, k * 10000)).reply; lat.push(r.error ? 1e9 : r.at); }
+  lat.sort((a, b) => a - b);
+  check(lat[2] < 240, `8 warm rows of 40 ms walk each: pan p50 ${Math.round(lat[2])} ms over ${st && st.readers} warm reader(s) (one: ~325; two: ~165)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 37d. A request stream that never settles (a pan held down: a request every 40 ms, the rows
+// in view shifting every 200 ms) is judged after HOT_SETTLE_MAX_MS anyway, but each such forced
+// replacement doubles the wait for the next one while the stream still hasn't settled: a warm
+// reader start costs its navigation (0.2-0.9 s on big dumps), and one every 2 s churns.
+{
+  const log = path.join(tmp, 'warm37d.log'); fs.rmSync(log, { force: true });
+  const ids = Array.from({ length: 24 }, (_, k) => k + 1);
+  const h = await start(1, Object.fromEntries(ids.map((id) => [id, 1000])), { STUB_COLD_MS: '5', STUB_WARM_LOAD_MS: '50', STUB_WARM_MS: '5', STUB_WARM_LOG: log, FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_SIGNALS: '4' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const t0 = performance.now(), pend = [];
+  for (let k = 0; performance.now() - t0 < 16000; k++) {
+    const s0 = Math.floor(k / 5) % 20 + 1;
+    pend.push(h.send('window', near([s0, s0 + 1, s0 + 2, s0 + 3], (k % 50) * 10000)).reply);
+    await wait(40);
+  }
+  await Promise.all(pend);
+  const navs = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.op === 'nav').length : 0;
+  h.close();
+  check(navs >= 1 && navs <= 3, `a pan that never settles, 16 s: ${navs} warm reader starts (a forced one every ~3 s: 5; the wait doubling from 2 s: <= 3)`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 37. Warm reader bounds (Refs #5). Warm readers are counted as the helper's children minus its
+// one load worker; their starts from the stub's log ({op: 'nav'}).
+{
+  const kids = (h) => { try { return execFileSync('pgrep', ['-P', String(h.pid), '-f', 'worker.js']).toString().trim().split('\n').filter(Boolean).length; } catch (e) { return 0; } };
+  const navs = (log) => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.op === 'nav') : []);
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const ask = (h, ids, t0) => Promise.all(ids.map((id) => h.send('window', near([id], t0)).reply));
+  const all = Array.from({ length: 16 }, (_, k) => k + 1);
+  const base = { STUB_COLD_MS: '20', STUB_WARM_LOAD_MS: '50', STUB_WARM_MS: '5', FSDB_WARM: '1', FSDB_BG_LOAD: '0' };
+
+  // (a) A cohort whose resident memory alone is over the cap (15 MB a signal, cap 150 MB): rebuilding
+  // it unchanged can't help. It is shrunk until it fits, then left alone.
+  {
+    const log = path.join(tmp, 'warm37a.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB_PER_SIG: '15', FSDB_WARM_RSS_MB: '150' });
+    const t0 = performance.now(); let lateNav = 0, k = 0;
+    while (performance.now() - t0 < 9000) { await ask(h, all, (k++ % 50) * 10000); await wait(250); if (performance.now() - t0 > 6000 && lateNav === 0) { lateNav = navs(log).length; } }
+    const n = navs(log).length, st = (await h.send('stats').reply).result.warm;
+    h.close();
+    // (on failure: each start's set size and the backoff reasons, to tell a timing flake from a churn)
+    const seq = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.op === 'load').map((c) => c.ids.length);
+    check(n <= 4, `an oversized warm cohort is shrunk, not rebuilt as is: ${n} reader starts in 9 s (one per check before)${n > 4 ? `; loads of ${JSON.stringify(seq)}, backoff ${JSON.stringify(st && st.backoff)}` : ''}`);
+    check(n === lateNav && st && st.ready.length > 0, `... and then left alone: ${n - lateNav} starts in the last 3 s, ready set of ${st && st.ready.length}`);
+  }
+  // (a2) A set smaller than the pan (4 of 16 rows) is not rebuilt partway through a pan: its rows'
+  // requests arrive one by one (here 25 ms apart), and a check between them saw the first few of
+  // the new pan as the most recent (want [3,2,1,16] against a ready [16,15,14,13]; 37a's 5 starts).
+  {
+    const log = path.join(tmp, 'warm37a2.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, FSDB_WARM_SIGNALS: '4' });
+    const t0 = performance.now(); let k = 0;
+    while (performance.now() - t0 < 6000) {
+      const t = (k++ % 50) * 10000, rs = [];
+      for (const id of all) { rs.push(h.send('window', near([id], t)).reply); await wait(25); }
+      await Promise.all(rs); await wait(250);
+    }
+    const sets = navs(log).length, st = (await h.send('stats').reply).result.warm;
+    h.close();
+    check(sets <= 2, `a warm set of 4 isn't rebuilt partway through each 16-row pan: ${sets} reader starts in 6 s, ready ${JSON.stringify(st && st.ready)}`);
+  }
+  // (a3) The set size halved for heavy rows grows back for light ones (review low): rows 1-8 keep
+  // 40 MB each against a 150 MB cap (halved to 2 rows), then rows 9-16 (1 MB each) are viewed.
+  {
+    const log = path.join(tmp, 'warm37a3.log'); fs.rmSync(log, { force: true });
+    const heavy = Object.fromEntries(all.slice(0, 8).map((id) => [id, 40]));
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB: JSON.stringify(heavy), STUB_WARM_MB_PER_SIG: '1', FSDB_WARM_RSS_MB: '150', FSDB_WARM_RECENT_MS: '600', FSDB_WARM_SIGNALS: '8' });
+    let t0 = performance.now(), k = 0;
+    while (performance.now() - t0 < 5000) { await ask(h, all.slice(0, 8), (k++ % 50) * 10000); await wait(150); }
+    const lim1 = (await h.send('stats').reply).result.warm.limit;
+    t0 = performance.now(); let st = null;
+    while (performance.now() - t0 < 8000) { await ask(h, all.slice(8), (k++ % 50) * 10000); await wait(150); st = (await h.send('stats').reply).result.warm; if (st.ready.length === 8 && st.ready.every((id) => id > 8)) { break; } }
+    h.close();
+    check(lim1 < 8 && st && st.ready.length === 8 && st.ready.every((id) => id > 8), `a set size halved for heavy rows (to ${lim1}) grows back for light ones: ready ${JSON.stringify(st && st.ready)}, limit ${st && st.limit}`);
+  }
+  // (b) A warm reader whose init fails is not restarted at once, over and over: its cohort backs off.
+  {
+    const log = path.join(tmp, 'warm37b.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_NAV_FAIL: '1' });
+    const t0 = performance.now(); let k = 0, bad = 0;
+    while (performance.now() - t0 < 4000) { const rs = await ask(h, all.slice(0, 8), (k++ % 50) * 10000); bad += rs.filter((r) => r.error || r.result.signals[0].error).length; await wait(100); }
+    const n = navs(log).length;
+    h.close();
+    check(n <= 2 && bad === 0, `a warm cohort whose init fails backs off: ${n} reader starts in 4 s (every ~0.1 s before), ${bad} rows unanswered`);
+  }
+  // (c) Cohorts replaced back and forth: ready, building and retiring readers together stay within
+  // two processes (one reader), and their memory is accounted.
+  {
+    const log = path.join(tmp, 'warm37c.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB_PER_SIG: '2', FSDB_WARM_RECENT_MS: '500', FSDB_WARM_SIGNALS: '8' });
+    const t0 = performance.now(); let k = 0, most = 0, total = 0;
+    const poll = setInterval(() => { most = Math.max(most, kids(h) - 1); }, 50);
+    while (performance.now() - t0 < 8000) {
+      const ids = Math.floor((performance.now() - t0) / 1500) % 2 ? all.slice(8) : all.slice(0, 8);
+      await ask(h, ids, (k++ % 50) * 10000);
+      const st = (await h.send('stats').reply).result.warm;
+      total = Math.max(total, (st && st.totalRss) || 0);
+      await wait(100);
+    }
+    clearInterval(poll);
+    const n = navs(log).length;
+    h.close();
+    check(n >= 3, `alternating cohorts are still replaced: ${n} reader starts`);
+    check(most <= 2, `ready + building + retiring warm readers stay within 2 processes: at most ${most}`);
+    check(total > 0, `stats.warm.totalRss accounts their memory: ${Math.round(total / 1e6)} MB`);
+  }
+  // (c2) One reader budget, cold workers included (Refs #6, review): a set rebuild started its new
+  // reader before retiring the old one, so 1 worker + old + new = 3 readers of a 10 GB dump. At the
+  // budget (FSDB_READERS, default workers + FSDB_WARM_READERS = 2 here) the old reader goes first
+  // (its rows are read cold meanwhile), and sets are still replaced.
+  {
+    const log = path.join(tmp, 'warm37c2.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB_PER_SIG: '2', FSDB_WARM_RECENT_MS: '500', FSDB_WARM_SIGNALS: '8' });
+    const t0 = performance.now(); let k = 0, most = 0, bad = 0;
+    const poll = setInterval(() => { most = Math.max(most, kids(h)); }, 20);
+    while (performance.now() - t0 < 8000) {
+      const ids = Math.floor((performance.now() - t0) / 1500) % 2 ? all.slice(8) : all.slice(0, 8);
+      const rs = await ask(h, ids, (k++ % 50) * 10000); bad += rs.filter((r) => r.error || r.result.signals[0].error).length;
+      await wait(100);
+    }
+    clearInterval(poll);
+    const n = navs(log).length;
+    h.close();
+    check(most <= 2 && n >= 3 && bad === 0, `readers, cold worker included, stay within the budget of 2 through set rebuilds: at most ${most}; ${n} warm starts; ${bad} rows unanswered`);
+  }
+  // (d) A native call that grows past twice the cap and can't yield (300 MB, blocked 15 s): the
+  // coordinator's watchdog kills the reader from outside, rows are read cold, and the same cohort
+  // is not started again at once (smaller ones are, each once: here each blocks again).
+  {
+    const log = path.join(tmp, 'warm37d.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, FSDB_WARM_RSS_MB: '100', STUB_WARM_BLOCK: JSON.stringify({ mb: 300, ms: 15000 }) });
+    await ask(h, all.slice(0, 8), 0);
+    let seen = false, gone = null; const t0 = performance.now();
+    while (performance.now() - t0 < 20000) { const w = kids(h) - 1; if (w > 0) { seen = true; } else if (seen) { gone = performance.now() - t0; break; } await wait(100); }
+    const t1 = performance.now(); const rs = await ask(h, all.slice(0, 8), 20000); const ms = performance.now() - t1;
+    await wait(1500);
+    const sets = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'load').map((c) => [...c.ids].sort((x, y) => x - y).join(','));
+    h.close();
+    check(seen && gone !== null && gone < 5000, `a warm reader blocked over twice its cap is killed from outside: after ${gone === null ? 'never (20 s)' : Math.round(gone) + ' ms'}`);
+    check(rs.every((r) => !r.error && !r.result.signals[0].error) && ms < 3000, `... its rows are read cold meanwhile: ${Math.round(ms)} ms`);
+    check(new Set(sets).size === sets.length && sets.length <= 4, `... and the same cohort isn't started again at once, only smaller ones (halved): sets of ${sets.map((x) => x.split(',').length)}`);
+  }
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
+// 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
+// keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
+// can be stored (clk of a 1.7 GB dump is 130 MB).
+{
+  const pool = async (env) => {
+    const h = helper('auto', { STUB_COSTS: '{}', ...env });
+    const r = await h.ready;
+    await h.send('open', { file: dump }).reply;
+    await wait(200);
+    const st = (await h.send('stats').reply).result;
+    h.close();
+    return { ready: r.workers, n: st.workers.length, limits: st.workers.map((w) => w.limit) };
+  };
+  const big = await pool({ FSDB_HOST_CPUS: '12', FSDB_HOST_AVAIL_MB: '14000' });
+  check(big.n === 6 && big.ready === 6, `12 cores, 14 GB available: 6 workers: ${JSON.stringify(big.n)}`);
+  check(big.limits.every((l) => l >= 256e6), `... each with a store share of at least 256 MB: ${big.limits.map((l) => Math.round(l / 1e6))}`);
+  const many = await pool({ FSDB_HOST_CPUS: '64', FSDB_HOST_AVAIL_MB: '200000' });
+  check(many.n === 8, `64 cores: at most 8 workers: ${many.n}`);
+  const tight = await pool({ FSDB_HOST_CPUS: '12', FSDB_HOST_AVAIL_MB: '5500' });
+  check(tight.n === 2, `12 cores but 5.5 GB available: 2 workers: ${tight.n}`);
+  const small = await pool({ FSDB_HOST_CPUS: '2', FSDB_HOST_AVAIL_MB: '14000' });
+  check(small.n === 1, `2 cores: 1 worker: ${small.n}`);
+  const fixed = helper(4, { STUB_COSTS: '{}', FSDB_HOST_CPUS: '12', FSDB_HOST_AVAIL_MB: '14000' });
+  check((await fixed.ready).workers === 4, 'an explicit --workers 4 is kept');
+  const o = await fixed.send('open', { file: dump, workers: 6 }).reply;
+  check(!o.error && o.result.workers === 6, `open {workers: 6} gives 6 (the old cap was 4): ${o.error || o.result.workers}`);
+  fixed.close();
+}
+
+// The dump's start time (the reader's min tag) is in open's metadata, so the page's dumpStart()
+// is not 0 for a dump that starts later (Refs #1).
+{
+  for (const [start, want] of [['100', 100], [undefined, 0]]) {
+    const h = helper(1, { STUB_COSTS: '{}', ...(start ? { STUB_TIME_START: start } : {}) });
+    await h.ready;
+    const o = await h.send('open', { file: dump }).reply;
+    h.close();
+    const m = o.result && o.result.metadata;
+    check(!o.error && m && m.timeStart === want && m.timeEnd > want, `open's metadata has timeStart ${want}: ${JSON.stringify(m && { timeStart: m.timeStart, timeEnd: m.timeEnd })}`);
+  }
+}
+
+// 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
+// changes, 755 MB, against a 244 MB store gave "signal larger than 244 MB"): answered from
+// ranged reads that grow from t until the first hit, never a whole load's cap error. Signal 5 is
+// a clock (period 1000) and 6 changes once, at 100; both are 1 M changes against a 1 MB store.
+{
+  const log = path.join(tmp, 'find.log'); fs.rmSync(log, { force: true });
+  const h = await start(1, {}, { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6, 6: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), STUB_CHANGE_AT: JSON.stringify({ 6: 100 }), STUB_FIND_LOG: log });
+  const ask = async (cmd, a) => { const r = await h.send(cmd, a).reply; return r.error ? `error: ${r.error}` : r.result.t; };
+  const got = {
+    nextPos: await ask('edge', { signalId: 5, t: 600000, dir: 1, kind: 'posedge' }),
+    prevPos: await ask('edge', { signalId: 5, t: 600000, dir: -1, kind: 'posedge' }),
+    nextNeg: await ask('edge', { signalId: 5, t: 600000, dir: 1, kind: 'negedge' }),
+    nextAny: await ask('edge', { signalId: 5, t: 600500, dir: 1, kind: 'any' }),
+    nextOne: await ask('search', { signalId: 5, t: 600000, dir: 1, value: '1' }),
+    prevZero: await ask('search', { signalId: 5, t: 600000, dir: -1, value: '0' }),
+  };
+  const want = { nextPos: 600500, prevPos: 599500, nextNeg: 601000, nextAny: 601000, nextOne: 600500, prevZero: 600000 - 1000 };
+  check(JSON.stringify(got) === JSON.stringify(want), `edge and value search on a clock larger than the store: ${JSON.stringify(got)} (want ${JSON.stringify(want)})`);
+  fs.rmSync(log, { force: true });
+  const far = await ask('edge', { signalId: 6, t: 900000, dir: -1, kind: 'any' });
+  const rounds = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  const none = await ask('edge', { signalId: 6, t: 900000, dir: 1, kind: 'any' });
+  const sv = await ask('edge', { signalId: 6, t: 900000, dir: -1, kind: 'posedge' });
+  h.close();
+  check(far === 100 && rounds.length > 1 && rounds.length <= 6, `... a change far back is found by growing reads: ${far} in ${rounds.length} rounds (bounds ${rounds.map((r) => r.bound)})`);
+  check(none === null && sv === 100, `... none ahead is null, not an error: ${none}; x->1 at 100 is a posedge: ${sv}`);
+}
+
+// 42c. An unlisted row too big for the store (a 10 GB dump's u_cluster.clk: fsdbdebug doesn't list
+// it, so it has no count) paid one failed whole load (18.5 s on huge) before its edge search went
+// ranged. Its drawn windows tell its density: a ranged read's change count over its span, so an
+// edge search on a row whose projected size is over the store goes ranged at once.
+{
+  const llog = path.join(tmp, 'load42c.log'); fs.rmSync(llog, { force: true });
+  const h = await start(1, { 1: 100, 7: 6000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', FSDB_CACHE_MB: '1', FSDB_BG_LOAD: '0', STUB_COUNTS: JSON.stringify({ 7: 1e6 }), STUB_CLOCK: JSON.stringify({ 7: 1000 }), STUB_LOAD_LOG: llog });
+  await kindsOf(h);
+  const w = await h.send('window', { signals: [{ signalId: 7, width: 1 }], t0: 600000, t1: 610000, buckets: 1024 }).reply;
+  const t = performance.now();
+  const r = await h.send('edge', { signalId: 7, t: 600000, dir: 1, kind: 'posedge' }).reply;
+  const ms = performance.now() - t;
+  const loads = fs.existsSync(llog) ? fs.readFileSync(llog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((x) => (x.ids || []).includes(7)) : [];
+  h.close();
+  check(!w.error && !r.error && r.result.t === 600500 && !loads.length && ms < 2000,
+    `an unlisted row drawn ranged and too big for the store: edge search goes ranged at once: ${r.error || r.result.t} (want 600500) in ${Math.round(ms)} ms, whole-load attempts ${loads.length}`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 42b. A ranged search with no hit stays bounded (review M5): its rounds stop growing once one
+// would read more than FSDB_RANGED_CHANGES changes (the reader's load of a round is its memory),
+// and each round resumes from the last one's bound instead of reading [t, bound] again. Clock 5
+// (2000 changes over the dump), a value it never takes, a cap of 300 changes a round.
+{
+  const log = path.join(tmp, 'find2.log'); fs.rmSync(log, { force: true });
+  const h = await start(1, {}, { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }), STUB_FIND_LOG: log, FSDB_RANGED_CHANGES: '300' });
+  const ask = async (cmd, a) => { const r = await h.send(cmd, a).reply; return r.error ? `error: ${r.error}` : r.result.t; };
+  const fwd = await ask('search', { signalId: 5, t: 0, dir: 1, value: 'z' });
+  const rf = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)); fs.rmSync(log, { force: true });
+  const back = await ask('edge', { signalId: 5, t: 1000000, dir: -1, kind: 'posedge' });
+  const nb = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').length : 0; fs.rmSync(log, { force: true });
+  const back2 = await ask('search', { signalId: 5, t: 1000000, dir: -1, value: 'z' });
+  const rb = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  h.close();
+  const spans = (rs) => rs.map((r) => Math.abs(r.bound - r.t));
+  const chained = (rs) => rs.every((r, k) => k === 0 || r.t === rs[k - 1].bound);
+  check(fwd === null && back2 === null && back === 999500 && nb <= 2, `no-hit searches answer null, a near edge in a round or two: ${fwd}, ${back2}, ${back} (${nb} rounds)`);
+  check(Math.max(...spans(rf), ...spans(rb)) <= 150000 + 1000, `... no round reads more than ~300 changes (150000 ns of the clock): widest ${Math.max(...spans(rf), ...spans(rb))}`);
+  check(chained(rf) && chained(rb), `... and each round resumes from the last bound: forward ${JSON.stringify(rf.map((r) => [r.t, r.bound]))}, back ${JSON.stringify(rb.map((r) => [r.t, r.bound]))}`);
+}
+
+fs.rmSync(tmp, { recursive: true, force: true });
+console.log(fails ? `FSDB SCHED CHECKS FAILED: ${fails}` : 'FSDB SCHED CHECKS PASSED');
+process.exit(fails ? 1 : 0);
