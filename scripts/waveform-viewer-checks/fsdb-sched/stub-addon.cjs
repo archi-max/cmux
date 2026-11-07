@@ -44,6 +44,16 @@ const share = (id, s, e) => SLICE_MS + first(id) + cost(id) * Math.max(0, Math.m
 const DIFFER = new Set(JSON.parse(process.env.STUB_DIFFER || '[]'));
 const DIFFER_FULL = new Set(JSON.parse(process.env.STUB_DIFFER_FULL || '[]'));
 const win1 = (id) => { const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = DIFFER.has(id) ? 0x31 : 0x30; return { signalId: id, exact: true, count: 1, records: rec, counts: null }; };
+// STUB_TEXT {id: bytes}: string rows (listed String): every window of one is a single text record of
+// that many bytes, refused past the window's text budget (its 5th argument; 16 MiB without one), as
+// the addon's windowOf does (warmWindow; STUB_WARM_LOG lines carry the budget).
+const TEXT = JSON.parse(process.env.STUB_TEXT || '{}');
+const textWin = (id, budget) => {
+  const n = Number(TEXT[id]), b = budget === undefined ? 16 * 1048576 : budget;
+  if (12 + n > b) { return { signalId: id, error: `text window over its ${(b / 1048576).toFixed(1)} MB reply budget (a narrower window fits)` }; }
+  const rec = Buffer.alloc(12 + n, 0x61); rec.writeBigUInt64LE(0n, 0); rec.writeUInt32LE(n, 8);
+  return { signalId: id, exact: true, count: 1, records: rec, counts: null, text: true, kind: 'string' };
+};
 const sleep = (ms) => { if (ms > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } };
 const store = new Map();  // signalId -> true
 // STUB_CLOCK {id: period}: a clock, '0' from time 0 (the dump's first value) and toggling every
@@ -79,7 +89,7 @@ module.exports = {
   readMetadata(meta, chunk) { meta(1, 0, 1, 'ns'); chunk(500, TIME_END, Number(process.env.STUB_TIME_START || 0)); },
   readScopes: () => [{ name: 'tb', type: 'module', netlistId: 0, scopeOffsetIdx: 0 }],
   getScopeChildren: () => ({ scopes: [], totalReturned: 0, remainingItems: 0 }),
-  readVars(p, idx, onVar) { for (let id = 1; id <= N; id++) { onVar('s' + id, 'reg', 'BitVector', p, id, id, 1, 0, 0); } },
+  readVars(p, idx, onVar) { for (let id = 1; id <= N; id++) { onVar('s' + id, TEXT[id] !== undefined ? 'string' : 'reg', TEXT[id] !== undefined ? 'String' : 'BitVector', p, id, id, 1, 0, 0); } },
   cacheSetLimit(n) { limit = n; }, cacheSetBounds() {},
   cacheStats: () => ({ bytes: 16 * store.size, limit, signals: [...store.keys()].map(entry) }),
   cacheLoad(ids) {
@@ -194,8 +204,8 @@ module.exports = {
     if (mb) { held.push(Buffer.alloc(mb * 1048576).fill(1)); }
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { signalId: id }));
   },
-  warmWindow(ids, t0, t1) {
-    warmLog({ op: 'window', ids });
+  warmWindow(ids, t0, t1, buckets, budget) {
+    warmLog({ op: 'window', ids, budget });
     // STUB_WARM_BLOCK {mb, ms}: the first window takes mb of memory and blocks ms (a native call
     // that can't yield, so only a watchdog outside the process sees it).
     if (process.env.STUB_WARM_BLOCK && !warmFirst) { const b = JSON.parse(process.env.STUB_WARM_BLOCK); held.push(Buffer.alloc(b.mb * 1048576).fill(1)); sleep(b.ms); }
@@ -207,7 +217,7 @@ module.exports = {
     // much each (on big a fresh reader's calls went 108 -> 85 -> 80 ms before settling)
     if (warmFirst) { sleep(Number(JSON.parse(process.env.STUB_WARM_WARMUP || '[]')[warmN++] || 0)); }
     sleep(WARM_MS + Number(process.env.STUB_WARM_SIG_MS || 0) * ids.length + (warmFirst ? 0 : WARM_LOAD_MS)); warmFirst = true;  // (the first window is the reader's first load; STUB_WARM_SIG_MS: the walk, per signal)
-    return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: WARM_MS, walkMs: 0 }));
+    return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...(TEXT[id] !== undefined ? textWin(id, budget) : win1(id)), loadMs: WARM_MS, walkMs: 0 }));
   },
   warmNear(ids, t, span) {
     warmLog({ op: 'near', ids });

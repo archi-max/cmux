@@ -1524,6 +1524,48 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   check(chained(rf) && chained(rb), `... and each round resumes from the last bound: forward ${JSON.stringify(rf.map((r) => [r.t, r.bound]))}, back ${JSON.stringify(rb.map((r) => [r.t, r.bound]))}`);
 }
 
+// The text budget on the warm path. (a) String rows never join a warm set (warm windows are bit
+// records; open's index learns every row's kind before any window). (b) A warm reader's hotWindow
+// still takes the range's text budget and text header, as windowCold does: driven directly here,
+// since (a) keeps strings off the protocol's warm path. Rows 6 (2 MB of text) and 7 (100 bytes) are
+// strings; under a 1 MB budget the first is refused (retryable), the second comes as text.
+{
+  const log = path.join(tmp, 'warmtext.log');
+  const TEXT = JSON.stringify({ 6: 2000000, 7: 100 });
+  fs.rmSync(log, { force: true });
+  const h = await start(4, {}, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,5,6,7]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '10',
+    STUB_WARM_LOG: log, FSDB_WARM: '1', FSDB_BG_LOAD: '0', STUB_TEXT: TEXT, ARGS: '--text-budget-mb 1' });
+  await kindsOf(h);
+  const near = { signals: [1, 2, 3, 4, 6, 7].map((signalId) => ({ signalId, width: 1 })), t0: 0, t1: 10000, buckets: 1024 };
+  let st = null;
+  for (let k = 0; k < 100; k++) { await h.send('window', near).reply; st = (await h.send('stats').reply).result.warm; if (st && st.ready.length && !st.building) { break; } await wait(50); }
+  const loads = (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []).filter((c) => c.op === 'load');
+  check(st && st.ready.length > 0 && loads.length > 0 && loads.every((c) => !c.ids.includes(6) && !c.ids.includes(7)),
+    `string rows never join a warm set: ready ${JSON.stringify(st && st.ready)}, warm loads ${JSON.stringify(loads.map((c) => c.ids))}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+
+  const w = spawn(process.execPath, [path.join(dir, 'worker.js')], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], serialization: 'advanced',
+    env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), STUB_TEXT: TEXT, TMPDIR: tmp } });
+  const replies = [];
+  let wake = null;
+  w.on('message', (m) => { replies.push(m); if (wake) { wake(); } });
+  const call = async (task) => {
+    const n = replies.length + 1; w.send({ tid: n, ...task });
+    while (!replies.some((m) => m.tid === n)) { await new Promise((r) => { wake = r; setTimeout(r, 1000); }); }
+    return replies.find((m) => m.tid === n);
+  };
+  while (!replies.some((m) => m.ready)) { await new Promise((r) => { wake = r; setTimeout(r, 1000); }); }
+  replies.length = 0;
+  const o = await call({ op: 'hotOpen', file: dump });
+  const l = await call({ op: 'hotLoad', signalIds: [6, 7] });
+  const hw = await call({ op: 'hotWindow', signalIds: [6, 7], t0: 0, t1: 10000, buckets: 1024, textBudget: 1048576 });
+  w.kill();
+  const [w6, w7] = (hw && hw.result) || [];
+  check(!o.error && !l.error && !hw.error && w6 && /budget/.test(w6.error || '') && w7 && !w7.error && w7.text === true && w7.kind === 'string',
+    `a warm reader's hotWindow takes the text budget and text header: ${JSON.stringify(hw && (hw.error || [w6, w7].map((x) => x && { ...x, records: undefined })))}`);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `FSDB SCHED CHECKS FAILED: ${fails}` : 'FSDB SCHED CHECKS PASSED');
 process.exit(fails ? 1 : 0);
