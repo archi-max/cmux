@@ -5,7 +5,8 @@
 //   tb.dut.state  4 bits, the counter's low 4 bits (a name the mock's synth dump also has)
 //   tb.x          4 bits, always xxxx
 //   tb.z          2 bits, always zz
-// `deposit tb.cnt` sets the counter. FAKE_WORKER_LOG (a file) gets {argv, pid}.
+// `deposit tb.cnt` sets the counter. An unwatch takes effect FAKE_UNWATCH_LAG_MS (default 30) later, as the
+// real worker's batches in flight still carry the signal. FAKE_WORKER_LOG (a file) gets {argv, pid}.
 'use strict';
 const fs = require('node:fs');
 if (process.env.FAKE_WORKER_LOG) fs.writeFileSync(process.env.FAKE_WORKER_LOG, JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }));
@@ -13,6 +14,7 @@ const out = (o, bin) => { process.stdout.write(JSON.stringify(o) + '\n'); if (bi
 const PERIOD = Number(process.env.FAKE_PERIOD) || 10;
 const HALF = PERIOD / 2;
 let t = 0, cnt = 0, running = null;
+const UNWATCH_LAG = process.env.FAKE_UNWATCH_LAG_MS !== undefined ? Number(process.env.FAKE_UNWATCH_LAG_MS) : 30;
 const width = { 'tb.clk': 1, 'tb.cnt': 8, 'tb.dut.state': 4, 'tb.x': 4, 'tb.z': 2 };
 const clkAt = (tt) => ((tt % PERIOD) < HALF ? '0' : '1'); // 0 for [0,5), 1 for [5,10), ...
 const value = (name) => name === 'tb.clk' ? clkAt(t) : name === 'tb.cnt' ? (cnt & 255).toString(2).padStart(8, '0')
@@ -22,7 +24,7 @@ let pend = [];   // [t, wid, value]
 function flush() {
   if (!pend.length) return;
   const per = new Map(); let tmin = Infinity, tmax = 0;
-  for (const [tt, wid, v] of pend) { if (!per.has(wid)) per.set(wid, []); per.get(wid).push([tt, v]); tmin = Math.min(tmin, tt); tmax = Math.max(tmax, tt); }
+  for (const [tt, wid, v] of pend) { if (!watches.has(wid)) continue; if (!per.has(wid)) per.set(wid, []); per.get(wid).push([tt, v]); tmin = Math.min(tmin, tt); tmax = Math.max(tmax, tt); }
   const parts = [], sigs = [];
   for (const [wid, recs] of per) {
     const w = width[watches.get(wid)];
@@ -32,6 +34,7 @@ function flush() {
   }
   const all = Buffer.concat(parts);
   pend = [];
+  if (!sigs.length) return;
   out({ id: 0, event: 'changes', t0: tmin, t1: tmax, signals: sigs, binLength: all.length }, all);
 }
 function step(to) {
@@ -92,7 +95,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       flush();
       return;
     }
-    case 'unwatch': { let n = 0; for (const w of r.signalIds || []) if (watches.delete(w)) n++; return out({ id, result: { unwatched: n } }); }
+    case 'unwatch': {
+      const ids = (r.signalIds || []).filter((w) => watches.has(w));
+      setTimeout(() => { for (const w of ids) watches.delete(w); }, UNWATCH_LAG);
+      return out({ id, result: { unwatched: ids.length } });
+    }
     case 'quit': out({ id, result: { t, quit: true } }); out({ id: 0, event: 'exit', code: 0 }); setTimeout(() => process.exit(0), 10); return;
     default: return out({ id, error: 'unknown cmd ' + r.cmd });
   }

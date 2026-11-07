@@ -124,6 +124,47 @@ const widths = new Map();
   const acc2 = new Map(); await pollUntilStop(acc2);
   expect(!acc2.has(0) && acc2.has(1), 'unwatched signals stop streaming');
 
+  // review #2, this side: watch/unwatch churn during a run (a viewer scrolling) while the worker's unwatch lags
+  // (its batches still carry the signal for a while): the signal that stays watched streams every change.
+  const CH = 100600;   // the fake runs the first 600 cycles in small chunks, so the churn overlaps them
+  const churnRun = await req('sim.run', { cycles: CH });
+  const accC = new Map(); let pairs = 0, churnErr = null;
+  const churn = (async () => {
+    while (pairs < 12) {
+      const x = await req('sim.watch', { signals: ['tb.dut.state'] });
+      const id = x.result && x.result.watch[0] && x.result.watch[0].simSignal;
+      if (id === undefined) { churnErr = x.error || 'no id'; return; }
+      widths.set(id, 4);
+      await new Promise((res) => setTimeout(res, 8));
+      const u = await req('sim.unwatch', { simSignals: [id] }); if (u.error) { churnErr = u.error; return; }
+      pairs++;
+    }
+  })();
+  const sc = await pollUntilStop(accC); await churn;
+  const cr = accC.get(1) || [];
+  let gaps = 0; for (let i = 1; i < cr.length; i++) if (parseInt(cr[i][1], 2) !== ((parseInt(cr[i - 1][1], 2) + 1) & 255)) gaps++;
+  expect(!churnRun.error && !churnErr && pairs === 12 && sc.stop && sc.stop.stopped === 'done' && cr.length >= CH && gaps === 0,
+    `churn during a run: ${pairs} watch/unwatch pairs, the counter kept ${cr.length} of ${CH} changes, ${gaps} gaps${churnErr ? ', ' + churnErr : ''}`);
+
+  // review #7, this side: a run and a stop sent together: the stop ends that run.
+  const [rr, rs] = await Promise.all([req('sim.run', { cycles: 1e6 }), req('sim.stop', {})]);
+  const rsStop = await pollUntilStop(new Map());
+  expect(!rr.error && !rs.error && !rs.result.idle && rsStop.stop && rsStop.stop.stopped === 'stop',
+    `run + stop together: the run stops (${JSON.stringify([rr.result || rr.error, rs.result || rs.error, rsStop.stop])})`);
+
+  // review #8, this side: names and expressions that could carry another protocol line are refused here,
+  // before they reach the worker.
+  for (const [cmd, args] of [
+    ['sim.read', { signals: ['tb.cnt\nQ 1'] }], ['sim.read', { signals: ['tb.cnt tb.x'] }],
+    ['sim.watch', { signals: ['tb.cnt\r'] }], ['sim.until', { expr: "tb.cnt == 'd3\nQ 1", maxCycles: 1 }],
+    ['sim.read', { signals: [42] }],
+  ]) {
+    const r = await req(cmd, args);
+    expect(!!r.error && /whitespace|control|signal name/.test(r.error), `${cmd} ${JSON.stringify(args)} refused here: ${r.error || JSON.stringify(r.result)}`);
+  }
+  const okRead = await req('sim.read', { signals: ['tb.cnt'] });
+  expect(!okRead.error && okRead.result.values[0] !== null, 'an ordinary read still works');
+
   const bad = await req('sim.frobnicate', {});
   expect(!!bad.error, 'an unknown sim command is refused');
   const deny = await req('sim.force', { signal: 'tb.cnt', value: "'d1" });
