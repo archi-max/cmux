@@ -262,13 +262,13 @@ const ops = {
 
   // rangedFind: edge (kind) or value search (pattern) of a signal that isn't stored, over the
   // reader's changes from t up to bound only (the coordinator grows bound: a signal too big for
-  // the store). -> {t | null}
+  // the store). -> {t | null, scanned (changes compared)}
   rangedFind({ signalId, t, dir, bound, kind, pattern, start }) {
     const k = kind === undefined ? -1 : EDGE_KINDS[kind ?? 'any'];
     if (k === undefined) { throw new Error(`edge: unknown kind ${JSON.stringify(kind)}`); }
     const r = addon.searchScan([signalId], t, dir, k >= 0 ? '' : String(pattern), bound, k, start || 0)[0];
     if (r.error) { throw new Error(r.error); }
-    return { t: r.t };
+    return { t: r.t, scanned: r.scanned || 0 };
   },
 
   search({ signalId, t, dir, value }) {
