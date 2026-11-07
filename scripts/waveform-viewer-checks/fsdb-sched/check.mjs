@@ -525,6 +525,31 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   }
 }
 
+// 31. Review M1: the reader floor learned from batched loads must stay a floor. The walk estimate
+// per change can be ~3x low (here it is exactly 3x), and a batch's whole overrun was taken for
+// floor (1435 ms against ~112 on a 1.7 GB dump): a heavy primary then loaded in one piece. After
+// a burst of batched cheap primaries the learned floor stays near the real one (100 ms), a heavy
+// primary still loads in pieces over the workers, and a reopen forgets what was learned.
+{
+  const cheap = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const counts = { ...Object.fromEntries(cheap.map((id) => [id, 1000000])), 13: 10000000 };  // estimates: 144 ms, 1.44 s
+  const costs = { ...Object.fromEntries(cheap.map((id) => [id, 432])), 13: 1500 };  // 3x the estimate
+  const h = await start(4, costs, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify([...cheap, 13]), STUB_FLOOR_MS: '100', STUB_COUNTS: JSON.stringify(counts) });
+  await kindsOf(h);
+  await Promise.all(cheap.map((id) => h.send('window', win([id])).reply));
+  const f1 = (await h.send('stats').reply).result.kinds.floorMs;
+  check(f1 <= 300, `the floor learned from batched cheap primaries stays a floor: ${f1} ms (real: 100)`);
+  const r = await h.send('window', win([13])).reply;
+  const sp = r.result && r.result.signals[0].split;
+  check(!r.error && sp >= 4, `... and a heavy primary after them still loads in pieces: ${r.error || sp} pieces (4 workers)`);
+  await h.send('open', { file: dump }).reply;
+  await kindsOf(h);
+  const f2 = (await h.send('stats').reply).result.kinds.floorMs;
+  check(f2 <= 50, `... and a reopen forgets the learned floor: ${f2} ms`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
