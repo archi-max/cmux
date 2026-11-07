@@ -99,7 +99,8 @@ public enum SVModelLoad {
 /// command then runs (with the sidecar sources as a tar on its stdin) and the launch is retried.
 /// A sidecar that exits is started again by the next request, and the last `load` is replayed
 /// into it first. Each load's reply (asked for or replayed) makes the loaded design: one with
-/// another `fingerprint` than the design before it, or none, is a new `designGeneration`, and
+/// another `fingerprint` than the design before it, or none, or from a sidecar whose ready line
+/// says another version (`model`: a cmux update rebuilt it), is a new `designGeneration`, and
 /// every reply says the generation it was answered in (`Reply.design`), so answers of two
 /// designs are never taken for one (SVDesignSession).
 public final class SVModelSidecar: @unchecked Sendable {
@@ -503,7 +504,9 @@ public final class SVModelSidecar: @unchecked Sendable {
         let ok = object["ok"] as? Bool != false
         let (continuation, design): (CheckedContinuation<Reply, any Error>?, Int) = lock.withLock {
             if loadIds.remove(id) != nil {
-                let fingerprint = ok ? object["fingerprint"] as? String : nil
+                // The sources read and the sidecar that read them (its ready line's version).
+                let version = (readyLine?["model"]).map { "\($0)" } ?? ""
+                let fingerprint = ok ? (object["fingerprint"] as? String).map { $0 + "|" + version } : nil
                 if fingerprint == nil || fingerprint != designFingerprintValue { designGenerationValue += 1 }
                 designFingerprintValue = fingerprint
                 lastLoadReplyValue = Reply(object: object, design: designGenerationValue)
