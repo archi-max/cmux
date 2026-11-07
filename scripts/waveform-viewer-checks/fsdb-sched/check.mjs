@@ -217,6 +217,23 @@ async function start(workers, costs, env = {}) {
   h.close();
 }
 
+// 15. One unreadable signal in a multi-signal request doesn't make the others load again whole:
+// the request waits for each signal's own load, and only a failed one falls back.
+// (Promise.all settled at the first failure, then loaded the 2 s signal whole on one worker
+// while its pieces went on, and stored it twice.)
+{
+  const h = await start(4, { 1: 2000 }, { STUB_BAD: '[4]' });
+  const r = await h.send('window', win([4, 1])).reply;
+  const sig = r.result ? r.result.signals : [];
+  check(!r.error && /unsupported/.test(sig[0] && sig[0].error || '') && sig[1] && !sig[1].error, `an unreadable and a 2 s signal in one request: ${r.error || JSON.stringify(sig.map((x) => x.error || 'ok'))}`);
+  check(r.at < 1100, `... the 2 s one still loads in pieces over the pool: ${Math.round(r.at)} ms (whole on one worker: ~2000)`);
+  await wait(300);
+  const st = (await h.send('stats').reply).result;
+  const holders = st.workers.filter((w) => w.loaded.includes(1)).length;
+  check(holders === 1, `... and is stored once: ${holders} holders`);
+  h.close();
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
