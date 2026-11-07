@@ -39,7 +39,7 @@ const RSS_HEADROOM = Number(process.env.FSDB_RSS_HEADROOM_MB ?? 16) * 1e6;  // (
 let rssFloor = 0, capRaised = null;
 const rssCap = () => Math.max(RSS_CAP || Math.max(1024e6, 2 * cacheLimit + 512e6), rssFloor);
 const NO_FILE_OK = new Set(['open', 'close', 'free']);
-const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
+const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
 // the RSS cap is undone before it is walked (the soft guard above recycles first).
@@ -179,6 +179,12 @@ const ops = {
     return addon.coldValueAt(signalIds, t).map((v) => (typeof v === 'string' ? v : null));
   },
 
+  // aliases: a stored signal's whole stream, hashed (the helper compares two).
+  digest({ signalId }) {
+    const l = ensure([signalId]).get(signalId);
+    if (l.error) { return { error: l.error }; }
+    return { hash: require('node:crypto').createHash('sha1').update(addon.cacheRecords(signalId)).digest('hex'), count: l.count };
+  },
   // valueAt {prev: true}: the value at t and the last real change at or before t.
   lastChange({ signalIds, t }) {
     const info = ensure(signalIds);
