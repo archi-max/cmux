@@ -829,6 +829,40 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 38b. The judgment is by the row's MARGINAL warm cost (review M2 round 2): on the real addon the
+// whole warm call (primaries + every unknown) was compared with a solo cold read that is mostly
+// the per-call floor, so it came out inverted. Costs as measured on big: every cold call pays
+// ~110 ms; rebuilt unknowns 5 and 7 read cold in ~210 ms and add ~60 ms each to every warm call
+// of their set; the stored struct parent 6 reads cold in ~126 ms and adds nothing warm. The
+// rebuilt ones must leave the set, the struct parent stay, and the primaries' warm answers come
+// back near primaries-only (~10 ms here; ~130 ms with both rebuilt rows in the set).
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7];
+  const h = await start(4, { 1: 100, 2: 100, 3: 100, 4: 100, 5: 10000, 6: 1600, 7: 10000 },
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '110', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '10', STUB_WARM_SIG_COST: '{"5":60,"7":60}',
+      FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_UNKNOWN: '3' });
+  for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const lat = [];
+  for (let k = 0; k < 45; k++) {
+    const t = performance.now();
+    const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply);
+    await Promise.all(rs.slice(0, 4));  // the primaries' answers
+    if (k >= 37) { lat.push(performance.now() - t); }
+    await Promise.all(rs);
+    await wait(100);
+  }
+  const s = (await h.send('stats').reply).result;
+  const got = s.warm && s.warm.ready ? [...s.warm.ready].sort((a, b) => a - b) : [];
+  const slow = (s.kinds.warmSlow || []).map((x) => x.id).sort((a, b) => a - b);
+  lat.sort((a, b) => a - b);
+  h.close();
+  check(JSON.stringify(got) === '[1,2,3,4,6]' && JSON.stringify(slow) === '[5,7]',
+    `unknowns judged by their marginal warm cost: set ${JSON.stringify(got)} (want [1,2,3,4,6]), warmSlow ${JSON.stringify(s.kinds.warmSlow)} (want 5, 7)`);
+  check(lat[Math.floor(lat.length / 2)] < 60, `... and the primaries' warm answers come back near primaries-only: p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 41. One set's backoff must not hold up another set's warm-up (Refs #5, review M1): a set whose
 // warm reader fails backs off (here 4 s); once other rows are viewed instead, their set is built
 // at once, not after that backoff.
