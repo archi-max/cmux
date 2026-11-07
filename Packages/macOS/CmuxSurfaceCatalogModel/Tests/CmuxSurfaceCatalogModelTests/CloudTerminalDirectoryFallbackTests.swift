@@ -105,7 +105,8 @@ import Testing
         let gaps = zip(starts.dropFirst(), starts).map { $0 - $1 }
         #expect(gaps.allSatisfy { $0 <= Fallback.maximumProbeSpacing + 0.5 }, "\(gaps)")
         // A directory that changes resets the spacing.
-        if let probe = running { _ = fallback.finish(probe, answer: .skipped, now: 100) }
+        var pending = running
+        while let probe = pending { pending = fallback.finish(probe, answer: .skipped, now: 100).next }
         let a = try #require(fallback.terminalTitleChanged("a", terminalID: "t1", now: 200))
         _ = fallback.finish(a, answer: .directory("/x"), now: 200.1)
         let b = try #require(fallback.terminalTitleChanged("b", terminalID: "t1", now: 200.2))

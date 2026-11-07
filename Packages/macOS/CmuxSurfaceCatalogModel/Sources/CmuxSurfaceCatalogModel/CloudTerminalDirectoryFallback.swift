@@ -6,7 +6,8 @@ import Foundation
 /// (OSC 7). Until a terminal does, its graph `cwd` stays the spawn directory. This
 /// keeps one live query per such terminal at a time, started by an event (the terminal
 /// appearing in a pane, or its title changing), never by a timer, and starts
-/// a terminal's queries at least `minimumProbeSpacing` apart.
+/// a terminal's queries at least `minimumProbeSpacing` apart, doubling up to
+/// `maximumProbeSpacing` while the answers change nothing.
 ///
 /// The query reads the foreground process's directory. That is the shell's own for a
 /// shell that never reports (fish, a configured command), but not inside tmux: there
@@ -64,6 +65,8 @@ public struct CloudTerminalDirectoryFallback: Sendable {
         var running: UInt64?
         var rerunQueued = false
         var failures = 0
+        /// Answers in a row that changed nothing (skipped, or the same directory).
+        var idleAnswers = 0
         var lastStart: TimeInterval?
         var directory: String?
     }
@@ -135,10 +138,11 @@ public struct CloudTerminalDirectoryFallback: Sendable {
             entry.failures = 0
             changed = entry.directory != directory
             entry.directory = directory
+            entry.idleAnswers = changed ? 0 : min(entry.idleAnswers + 1, 8)
         case .failed:
             entry.failures += 1
         case .skipped:
-            break
+            entry.idleAnswers = min(entry.idleAnswers + 1, 8)
         }
         let rerun = entry.rerunQueued
         entry.rerunQueued = false
@@ -155,7 +159,10 @@ public struct CloudTerminalDirectoryFallback: Sendable {
     private mutating func start(_ id: String, now: TimeInterval) -> Probe? {
         guard var entry = entries[id], !entry.reports, entry.running == nil,
               entry.failures < Self.maximumFailedProbes else { return nil }
-        let earliest = entry.lastStart.map { $0 + Self.minimumProbeSpacing } ?? now
+        // A title that keeps changing while the answers don't (tmux with a clock in
+        // its title is skipped every time) is asked less and less often.
+        let spacing = min(Self.minimumProbeSpacing * Double(1 << entry.idleAnswers), Self.maximumProbeSpacing)
+        let earliest = entry.lastStart.map { $0 + spacing } ?? now
         let delay = max(0, earliest - now)
         nextToken &+= 1
         entry.running = nextToken
