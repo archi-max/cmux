@@ -155,16 +155,18 @@ public enum SSHTuiShellIntegration {
     cmux_ssh_unsafe() {
       find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
     }
+    # A refusal leaves the refused path in cmux_ssh_refused.
     cmux_ssh_private() {
+      cmux_ssh_refused=
       [ -r "$1" ] && cmux_ssh_uid=$(id -u) || return 1
-      [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
+      [ -z "$(cmux_ssh_unsafe "$1")" ] || { cmux_ssh_refused=$1; return 1; }
       cmux_ssh_parent=$1
       while [ "$cmux_ssh_parent" != "$HOME" ]; do
         case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
         cmux_ssh_parent=${cmux_ssh_parent%/*}
         # HOME itself may be a symlink; check what it points to.
         if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
-        [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
+        [ -z "$(cmux_ssh_unsafe "$1")" ] || { cmux_ssh_refused=$1; return 1; }
       done
     }
     """#
@@ -176,6 +178,17 @@ public enum SSHTuiShellIntegration {
         cmux_ssh_dir="\#(installDirectory)"
         cmux_ssh_shell=${SHELL:-/bin/sh}
         \#(privateCheckCode)
+        # One line on the terminal when the chain was refused (the prelude
+        # records the host cmux's refusal in cmux_ssh_cli_refused), so a
+        # missing `cmux open` or Files `cd` tracking is explained. HOME-relative.
+        cmux_ssh_notice() {
+          case $1 in
+            "$HOME"|"$HOME/.") set -- "~" ;;
+            "$HOME"/*) set -- "~/${1#"$HOME"/}" ;;
+            *) return 0 ;;
+          esac
+          printf 'cmux: shell integration disabled: %s is a symlink, not yours, or writable by others; cmux open and Files cd tracking are unavailable\n' "$1" >&2
+        }
         case ${cmux_ssh_shell##*/} in
           bash)
             # bash expands ENV before reading it, so a path it would change
@@ -199,14 +212,17 @@ public enum SSHTuiShellIntegration {
             # zsh reads .zshenv.zwc instead when it is there and newer.
             if cmux_ssh_private "$cmux_ssh_dir/\#(zshEnvironmentPath)" && {
                 { [ ! -e "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc" ] && [ ! -h "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc" ]; } ||
-                [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc")" ]; }; then
+                [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc")" ] ||
+                { cmux_ssh_refused=$cmux_ssh_dir/\#(zshEnvironmentPath).zwc; false; }; }; then
               if [ -n "${ZDOTDIR+x}" ]; then CMUX_SSH_ZDOTDIR=$ZDOTDIR; export CMUX_SSH_ZDOTDIR; fi
               ZDOTDIR=$cmux_ssh_dir/\#((zshEnvironmentPath as NSString).deletingLastPathComponent); export ZDOTDIR
               exec "$cmux_ssh_shell" -l
             fi ;;
         esac
-        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent
-        unset -f cmux_ssh_private cmux_ssh_unsafe
+        cmux_ssh_refused=${cmux_ssh_cli_refused:-${cmux_ssh_refused-}}
+        [ -z "$cmux_ssh_refused" ] || cmux_ssh_notice "$cmux_ssh_refused"
+        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent cmux_ssh_refused cmux_ssh_cli_refused
+        unset -f cmux_ssh_private cmux_ssh_unsafe cmux_ssh_notice
 
         """#
     }
