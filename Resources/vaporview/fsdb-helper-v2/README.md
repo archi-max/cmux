@@ -97,9 +97,12 @@ Variable kinds:
   `inf`), the same as a VCD real in the viewer. A string or real change is an edge; a bit pattern `search` and
   expressions refuse them, and they are walked whole, never split or saved to the store cache.
 - **Long text** is stored once per distinct value, but a window repeats it per record, so a window carries
-  at most 4 KB of each value (cut at a character boundary, ended with `…`) and at most 16 MB of records (past
-  it the window is an error; a narrower one fits). `valueAt` and `searchText` use the whole text. A string's
-  header says `textMean`, the mean text bytes per change, which the viewer counts before loading it whole.
+  at most 4 KB of each value (cut at a character boundary, ended with `…`). A reply's string records stay
+  within 16 MB (`--text-budget-mb`, `FSDB_TEXT_BUDGET_MB`), shared equally by the strings in the request.
+  Each string gets at least a quarter, so a request for more than 4 strings can pass 16 MB in all. The cut
+  shrinks, down to 256 bytes, so the window fits; a window that doesn't fit even then is a retryable error
+  (a narrower window fits). `valueAt` and `searchText` use the whole text. A string's header says
+  `textMean`, the mean text bytes per change, which the viewer counts before loading it whole.
 - **Events** keep every occurrence, repeats included, in stored and cold searches alike.
 - **Parameters and time vars** are listed as Real by the reader, but most are bit vectors and work as
   expression operands; the addon refuses an operand whose values really are text or reals.
