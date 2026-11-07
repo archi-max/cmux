@@ -41,15 +41,18 @@ import Testing
         return m
     }
 
-    static func kdb(_ instances: [String: [String: Any]], compiled: Int64? = KDBAgreementTests.compiled) -> KDBDesignModel {
+    /// `overrides`: the compile's parameter overrides as the exporter lists them (nil: it couldn't tell).
+    static func kdb(_ instances: [String: [String: Any]], compiled: Int64? = KDBAgreementTests.compiled, overrides: [String]? = []) -> KDBDesignModel {
         var object: [String: Any] = ["tops": ["tb"], "instances": instances]
         if let compiled { object["compiled"] = compiled }
+        if let overrides { object["overrides"] = overrides }
         return KDBDesignModel(json: try! JSONSerialization.data(withJSONObject: object))!
     }
 
     /// tb > u_fifo (fifo), as slang has it; the KDB's chain is the same unless a test says otherwise.
     func resolve(slang: [String: [String: Any]], kdb: KDBDesignModel,
-                 sourceTimes: [String: Int64]? = [KDBAgreementTests.file: KDBAgreementTests.compiled - 10]) async throws -> SVModelResolve.Outcome {
+                 sourceTimes: [String: Int64]? = [KDBAgreementTests.file: KDBAgreementTests.compiled - 10],
+                 sameFiles: Bool = false) async throws -> SVModelResolve.Outcome {
         func lookup(_ path: String) -> (instance: String, name: String)? {
             let instance = slang.keys.filter { path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
             return instance.map { ($0, String(path.dropFirst($0.count + 1))) }
@@ -63,7 +66,8 @@ import Testing
             dumpChildren: { _ in nil },
             kdb: kdb,
             instances: { slang.keys.sorted() },
-            sourceTimes: sourceTimes.map { times in { times } }
+            sourceTimes: sourceTimes.map { times in { times } },
+            kdbSameFiles: sameFiles
         )
     }
 
@@ -74,14 +78,70 @@ import Testing
 
     static func compiledDesign(fifoParams: [String: Any]? = ["DEPTH": 8, "W": 8], tbParams: [String: Any]? = [:], width: Int = 8,
                                writes: [String: Int] = ["q": 20], ports: [[String: Any]] = [["name": "q", "dir": "Out", "width": 8]],
-                               compiled: Int64? = KDBAgreementTests.compiled) -> KDBDesignModel {
-        kdb([
+                               compiled: Int64? = KDBAgreementTests.compiled, overrides: [String]? = [],
+                               edit: (inout [String: Any]) -> Void = { _ in }) -> KDBDesignModel {
+        var fifo = compiledModel("tb.u_fifo", "fifo", parent: "tb", params: fifoParams, width: width, writes: writes, ports: ports)
+        edit(&fifo)
+        return kdb([
             "tb": compiledModel("tb", "tb", parent: nil, params: tbParams, writes: [:], ports: [], children: [("tb.u_fifo", "fifo")]),
-            "tb.u_fifo": compiledModel("tb.u_fifo", "fifo", parent: "tb", params: fifoParams, width: width, writes: writes, ports: ports),
-        ], compiled: compiled)
+            "tb.u_fifo": fifo,
+        ], compiled: compiled, overrides: overrides)
     }
 
-    static let mapped = (designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "")
+    static func approximate(_ differences: [KDBDifference]) -> SVModelResolve.Outcome {
+        .approximate(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "", differences: differences)
+    }
+
+    /// NPI reports a parameter's declared value when the compile overrode it (-pvalue: DEPTH=32
+    /// reads 16), so a compile with any override (or one whose command the export couldn't read)
+    /// leaves the parameters unchecked, whatever they compare as (Refs #9 F1).
+    @Test func aCompileWithParameterOverridesLeavesTheParametersUnchecked() async throws {
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(overrides: ["-pvalue+tb.u_fifo.DEPTH=32"]))
+                == Self.approximate([.notChecked(.overrides)]))
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(overrides: nil))
+                == Self.approximate([.notChecked(.overrides)]))
+    }
+
+    /// Every file slang's load read counts, not only those the chain's models point into: an
+    /// include of defines or a package edited after the compile changes slang's text (Refs #9 F2).
+    @Test func anIncludeNewerThanTheCompileIsApproximate() async throws {
+        let times = [Self.file: Self.compiled - 10, "/work/rtl/defs.svh": Self.compiled + 5_000]
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(), sourceTimes: times)
+                == Self.approximate([.sourceNewer(file: "/work/rtl/defs.svh")]))
+    }
+
+    /// What one side lacks is not taken as agreeing (Refs #9 L1).
+    @Test func whatOneSideLacksIsNotChecked() async throws {
+        let noShape = Self.compiledDesign { fifo in
+            var signals = fifo["signals"] as! [String: Any]
+            signals["q"] = ["kind": "var"]
+            fifo["signals"] = signals
+        }
+        #expect(try await resolve(slang: Self.slangDesign, kdb: noShape) == Self.approximate([.notChecked(.shape)]))
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign { $0["ports"] = nil }) == Self.approximate([.notChecked(.ports)]))
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign { $0["writes"] = nil }) == Self.approximate([.notChecked(.writes)]))
+        var noStatements = Self.slangDesign
+        noStatements["tb.u_fifo"]!["assigns"] = nil
+        noStatements["tb.u_fifo"]!["procs"] = nil
+        #expect(try await resolve(slang: noStatements, kdb: Self.compiledDesign()) == Self.approximate([.notChecked(.writes)]))
+        #expect(KDBAgreement.differences(chain: [], signal: "q", compiledAt: Self.compiled, sourceTimes: [:], overrides: []) == [.notChecked(.chain)])
+    }
+
+    /// The same file name in another folder is another file when slang and the KDB read one file
+    /// system (slang picked the other copy); across hosts only the name can be compared (Refs #9 L2).
+    @Test func aWriteInAnotherCopyOfTheFileDiffersOnOneFileSystem() async throws {
+        let otherCopy = Self.compiledDesign { $0["files"] = ["/work/rtl_v2/soc.sv"] }
+        #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: true) == Self.approximate([.writes(signal: "q")]))
+        #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: false) == Self.mapped)
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(), sameFiles: true) == Self.mapped)
+    }
+
+    /// An export whose KDB had no files to date it (compiled 0) has no compile time (Refs #9 L3).
+    @Test func aCompileTimeOfZeroIsNone() async throws {
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(compiled: 0)) == Self.approximate([.notChecked(.sources)]))
+    }
+
+    static let mapped = SVModelResolve.Outcome.signal(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "")
 
     @Test func theSameCompileIsExact() async throws {
         #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign())
@@ -179,7 +239,7 @@ import Testing
         #expect(a == .signal(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: ""))
         #expect(b == .approximate(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "", differences: [.writes(signal: "q")]))
         #expect(c == .approximate(designPath: "tb.u_fifo.q", designPrefix: "", dumpPrefix: "",
-                                  differences: [.parameter(instance: "tb.u_fifo", name: "AW", compiled: "5", slang: "4")]))
+                                  differences: [.notChecked(.overrides)]))
         if case .approximate(_, _, _, let found) = d {
             #expect(found.count == 1 && found.first?.kind == "sourceNewer", "\(found)")
         } else {

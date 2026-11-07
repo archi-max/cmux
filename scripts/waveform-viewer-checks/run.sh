@@ -68,6 +68,8 @@
 #                                        widths, ranges, arrays, written signals and port aliases;
 #                                        a second export comes from the host cache, without a seat
 #   ./run.sh trace-kdb-self-test         trace-kdb's comparison against its mutations, offline
+#   ./run.sh trace-kdb-exporter          npi-model.py's reading of a KDB folder without Verdi: the compile's
+#                                        parameter overrides (vcs_rebuild and its -f files) and compile time
 #   ./run.sh trace-kdb-launcher <ssh-host>
 #                                        npi-model.sh's seat rules with a stand-in Verdi and exporter (no
 #                                        seat): a denied or timed-out export is not tried again for the
@@ -343,6 +345,11 @@ case "${1:-}" in
       "$OUT/trace-kdb.cached.json" "$(cat "$OUT/trace-kdb.export2")" | tee "$OUT/trace-kdb.log"
     python3 "$HERE/trace-kdb/compare.py" --self-test "$OUT/trace-kdb.json" "$3" | tee -a "$OUT/trace-kdb.log"
     grep -q '^TRACE KDB CHECKS PASSED' "$OUT/trace-kdb.log" && grep -q '^TRACE KDB SELF-TEST PASSED' "$OUT/trace-kdb.log"
+    ;;
+  trace-kdb-exporter)
+    # trace-kdb/exporter.py on the Mac: npi-model.py's reading of the compile's overrides and time (no Verdi).
+    python3 "$HERE/trace-kdb/exporter.py" "$ROOT/Resources/vaporview/verdi-trace/npi-model.py" | tee "$OUT/trace-kdb-exporter.log"
+    grep -q '^TRACE KDB EXPORTER CHECKS PASSED' "$OUT/trace-kdb-exporter.log"
     ;;
   trace-kdb-launcher)
     if [ $# -lt 2 ]; then echo "trace-kdb-launcher: needs <ssh-host>"; exit 2; fi

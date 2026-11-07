@@ -47,8 +47,15 @@ import Testing
             ] as [String: Any]
         }
         let tops = instances.filter { $0.2 == nil }.map(\.0)
-        let data = try! JSONSerialization.data(withJSONObject: ["tops": tops, "instances": models, "compiled": 0])
+        let data = try! JSONSerialization.data(withJSONObject: ["tops": tops, "instances": models, "compiled": 1, "overrides": [String]()])
         return KDBDesignModel(json: data)!
+    }
+
+    /// The mapping a resolve made (these tests are about the mapping; whether the compiled design
+    /// and slang's agree on it is KDBAgreementTests'): an approximate row as its signal.
+    func mapping(_ outcome: SVModelResolve.Outcome) -> SVModelResolve.Outcome {
+        guard case .approximate(let designPath, let designPrefix, let dumpPrefix, _) = outcome else { return outcome }
+        return .signal(designPath: designPath, designPrefix: designPrefix, dumpPrefix: dumpPrefix)
     }
 
     func resolve(_ row: String, design: Design, dump: [String: [HierarchyNode]] = [:], kdb: KDBDesignModel?,
@@ -98,7 +105,7 @@ import Testing
         #expect(got == .compiledOnly(dumpPath: "tb.u_soc.u_mbox.rdata", reason: .notInSlang,
                                      writes: [KDBDesignModel.Write(kind: "nb", file: "/work/rtl/soc.sv", line: 40)]))
         // A signal slang has stays slang's (exact mapping, evaluated).
-        #expect(try await resolve("tb.clk", design: tbOnly, kdb: Self.socKDB, loadMessages: unknown)
+        #expect(mapping(try await resolve("tb.clk", design: tbOnly, kdb: Self.socKDB, loadMessages: unknown))
                 == .signal(designPath: "tb.clk", designPrefix: "", dumpPrefix: ""))
         // A row the KDB lacks too: as today.
         #expect(try await resolve("tb.nothing", design: tbOnly, kdb: Self.socKDB, loadMessages: unknown)
@@ -117,7 +124,7 @@ import Testing
             "tb.u_soc": [HierarchyNode(name: "u_mbox", isScope: true), HierarchyNode(name: "clk", isScope: false), HierarchyNode(name: "irq", isScope: false)],
         ]
         #expect(try await today("tb.u_soc.u_mbox.rdata", design: twoTops, dump: dump) == .notInDesign)
-        #expect(try await resolve("tb.u_soc.u_mbox.rdata", design: twoTops, dump: dump, kdb: Self.socKDB)
+        #expect(mapping(try await resolve("tb.u_soc.u_mbox.rdata", design: twoTops, dump: dump, kdb: Self.socKDB))
                 == .signal(designPath: "soc_a.u_mbox.rdata", designPrefix: "soc_a", dumpPrefix: "tb.u_soc"))
     }
 
@@ -202,8 +209,8 @@ import Testing
             ("top.dut.u_a", "blk", "top.dut", ["x"], ["x": 12]),
             ("top.dut.u_b", "blk", "top.dut", ["x"], ["x": 12]),
         ])
-        #expect(try await resolve("top.dut.u_a.x", design: design, kdb: kdb) == .signal(designPath: "soc.u_a.x", designPrefix: "soc", dumpPrefix: "top.dut"))
-        #expect(try await resolve("top.dut.clk", design: design, kdb: kdb) == .signal(designPath: "soc.clk", designPrefix: "soc", dumpPrefix: "top.dut"))
+        #expect(mapping(try await resolve("top.dut.u_a.x", design: design, kdb: kdb)) == .signal(designPath: "soc.u_a.x", designPrefix: "soc", dumpPrefix: "top.dut"))
+        #expect(mapping(try await resolve("top.dut.clk", design: design, kdb: kdb)) == .signal(designPath: "soc.clk", designPrefix: "soc", dumpPrefix: "top.dut"))
         // The testbench's own signal: slang's `top` is another module (harness), so not evaluated.
         #expect(try await resolve("top.clk", design: design, kdb: kdb) == .compiledOnly(dumpPath: "top.clk", reason: .otherModule, writes: []))
     }
