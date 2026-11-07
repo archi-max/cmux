@@ -27,7 +27,23 @@ import Testing
         #expect(schedule.model("k")?.tops == ["tb"])
         // Reopened later: the host's cache answers (a new KDB gives a new model).
         #expect(schedule.opened("k", enabled: true) == .start)
-        #expect(schedule.model("k")?.tops == ["tb"], "the model in hand stays while the next export runs")
+    }
+
+    /// A reopened dump (a reload after another simulation) may come with another KDB: the model in
+    /// hand is the old one's, so a trace uses slang's design until the export answers (Refs #8).
+    @Test func aReopenedDumpWaitsForItsKDBsAnswer() {
+        var schedule = KDBExportSchedule()
+        _ = schedule.opened("k", enabled: true)
+        _ = schedule.finished("k", .model(Self.model("old"), cached: false))
+        #expect(schedule.model("k")?.tops == ["old"])
+        #expect(schedule.opened("k", enabled: true) == .start)
+        #expect(schedule.model("k") == nil, "not the old KDB's model while the export of the reopened dump runs")
+        _ = schedule.finished("k", .model(Self.model("new"), cached: false))
+        #expect(schedule.model("k")?.tops == ["new"])
+        // The same KDB (the host answers `tried` after a failure): no model comes back from before.
+        _ = schedule.opened("k", enabled: true)
+        _ = schedule.finished("k", .unavailable(code: "tried", message: ""))
+        #expect(schedule.model("k") == nil)
     }
 
     @Test func theSettingOffAsksNothing() {
