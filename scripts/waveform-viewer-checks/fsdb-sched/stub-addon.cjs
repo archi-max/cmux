@@ -94,6 +94,8 @@ module.exports = {
   readerNavOnce() { warmLog({ op: 'nav' }); if (process.env.STUB_WARM_NAV_FAIL) { throw new Error('navigation retention failed'); } navOnce = true; },
   warmLoad(ids) {
     if (!navOnce || warmSet) { throw new Error('warmLoad: not a fresh navDB-once reader'); }
+    // STUB_WARM_LOAD_FAIL [ids]: a first load naming one of them fails (a set that backs off)
+    if (JSON.parse(process.env.STUB_WARM_LOAD_FAIL || '[]').some((id) => ids.includes(id))) { warmLog({ op: 'loadFail', ids }); throw new Error('warm load failed (stub)'); }
     warmSet = new Set(ids); warmLog({ op: 'load', ids });
     // STUB_WARM_MB_PER_SIG: resident memory the reader keeps per signal of its set (its navigation).
     const mb = Number(process.env.STUB_WARM_MB_PER_SIG || 0) * ids.length;
