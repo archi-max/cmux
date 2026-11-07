@@ -289,7 +289,14 @@ function handle(req, send) {
   });
 }
 // The helper is going away: SIGTERM makes the worker kill its simulator's process tree at once.
-function closeAll() { if (cur) { const s = cur; cur = null; kill(s); if (s.proc && !s.exited) { try { s.proc.kill('SIGTERM'); } catch { /* gone */ } } } }
+function closeAll() {
+  if (!cur) return;
+  const s = cur; cur = null;
+  kill(s);
+  if (s.proc && !s.exited) { try { s.proc.kill('SIGTERM'); } catch { /* gone */ } }
+  // The helper exits next, before the worker's exit event could remove this.
+  try { fs.rmSync(s.scratch, { recursive: true, force: true }); } catch { /* best effort */ }
+}
 const workerPid = () => (cur && cur.proc ? cur.proc.pid : null);
 
 module.exports = { handle, closeAll, parseDumpLog, runArgs, dumpFileOf, stubFrom, workerPid, PAGE_COMMANDS };
