@@ -235,6 +235,13 @@ enum WaveformTrace {
         }
     }
 
+    /// The page's design query for a design path traced from a dump path: the path and the
+    /// prefixes it maps fan-in paths back with.
+    private static func result(designPath: String, dumpPath: [String]) -> [String: Any] {
+        let prefixes = SVModelLoad.prefixes(dumpPath: dumpPath, designPath: HierarchyPathMapping.segments(designPath))
+        return ["designPath": designPath, "designPrefix": prefixes.designPrefix, "dumpPrefix": prefixes.dumpPrefix]
+    }
+
     /// The sidecar's `lookup`: the deepest instance of the design on `path` and the rest below it.
     private static func lookup(_ path: String, in design: Design) async -> (instance: String, name: String)? {
         guard let found = try? await design.sidecar.request(["cmd": "lookup", "path": path]),
