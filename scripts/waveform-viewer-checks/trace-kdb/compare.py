@@ -232,6 +232,33 @@ def mutations(kdb, slang, counts):
         s = first(m, lambda s: s.get("array"))
         s["array"]["dims"] = s["array"].get("dims", 1) + 1
 
+    def conns(f):
+        def g(m):
+            for inst in m["instances"].values():
+                for port in inst.get("ports", []):
+                    if port.get("conn"):
+                        f(port)
+        return g
+
+    def retarget(port):
+        c = port["conn"]
+        if c.get("leaves"):
+            c["leaves"] = [c["leaves"][0] + "_elsewhere"] + c["leaves"][1:]
+            c["src"] = c["leaves"][0]
+
+    def copies(m):
+        # Every write moved to a file of the same name in another folder (the instance then has two).
+        for inst in m["instances"].values():
+            files = inst.get("files", [])
+            moved = {}
+            for i, f in enumerate(list(files)):
+                moved[i] = len(files)
+                files.append("/elsewhere/copy/" + f.rsplit("/", 1)[-1])
+            for entries in inst.get("writes", {}).values():
+                for e in entries:
+                    if e.get("loc") and e["loc"][0] in moved:
+                        e["loc"] = [moved[e["loc"][0]]] + list(e["loc"][1:])
+
     def extra(m):
         for inst in m["instances"].values():
             inst["signals"]["zz_kdb_only"] = {"width": 1, "kind": "net", "msb": 0, "lsb": 0}
@@ -251,6 +278,9 @@ def mutations(kdb, slang, counts):
         ("module wiped", wipe("module", "")),
         ("an array's dims changed", dims),
         ("an extra kdb-only signal in every instance", extra),
+        ("every port connection dropped", conns(lambda p: p.pop("conn"))),
+        ("every port connection retargeted to another net", conns(retarget)),
+        ("every write moved to a same-name file in another folder", copies),
     ]
     if any(s.get("signed") for _, _, s in sigs(kdb)):
         out.append(("signed wiped", unsign))

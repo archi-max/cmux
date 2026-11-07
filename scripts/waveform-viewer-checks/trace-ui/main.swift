@@ -523,7 +523,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const h = cmuxWaveform.host, b = h.currentBackend;
       const own = b.signalChanges.bind(b);
       const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), fail: new Set(), refuse: new Set(), pending: new Map(), inFake: false,
-        custom: new Map(), sent: [], delay: 0, readDelay: 0 };
+        custom: new Map(), sent: [], delay: 0, readDelay: 0, hungIds: [] };
       // A signal's history as the test sets it (m.custom), else the VCD's.
       m.read = async (v, max) => {
         if (m.readDelay && !m.inFake) { await new Promise((r) => setTimeout(r, m.readDelay)); }
@@ -612,8 +612,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const ids = req.signalIds || [req.signalId];
           if (ids.some((id) => m.hang.has(id))) { m.hung = (m.hung || 0) + 1; return new Promise((resolve) => m.pending.set(req.id, resolve)); }
           // m.prevMode: how a helper answers valueAt with prev ('hang': never; 'error': an error reply;
-          // 'unread': its first signal unreadable, values[0] and prev[0] null).
-          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'hang') { return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          // 'unread': its first signal unreadable, values[0] and prev[0] null; 'hangLater': answered the
+          // first time, never the second, then again; 'limit': the first batch fails as one over the store limit does).
+          if (req.cmd === 'valueAt' && req.prev === true && (m.prevMode === 'hang' || m.prevMode === 'hangLater' && m.prevAnswered && !m.hungIds.length)) {
+            m.hungIds.push(req.id);
+            return new Promise((resolve) => m.pending.set(req.id, resolve));
+          }
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'limit' && !m.prevAnswered) {
+            m.prevAnswered = true;
+            return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } };
+          }
+          if (req.cmd === 'valueAt' && req.prev === true) { m.prevAnswered = true; }
           if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'error') { return { reply: { id: req.id, error: 'unknown field prev' } }; }
           if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'unread') {
             const r = await m.answer(req);
@@ -717,7 +726,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     // A helper whose valueAt with prev never answers, or answers with an error: the step does not wait
     // past twice its budget, is the same as without the helper's prev, and prev is not asked again this
     // session. A signal it can't read (values[i] null) is read as before, not taken as unchanged since 0.
-    for mode in ["hang", "error", "unread"] {
+    // After prev answered once, a timeout fails that read only (prev is asked again); a first batch
+    // that fails as one over the store limit does (one signal's error) doesn't turn prev off either.
+    // A read that timed out is cancelled at the helper.
+    for mode in ["hang", "error", "unread", "hangLater", "limit"] {
       let r = await call("""
         const h = cmuxWaveform.host, b = h.currentBackend, t = cmuxWaveform.trace, m = window.__v2mock;
         const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
@@ -727,7 +739,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         try {
           t.backendChanged();
           const plain = m.pick(await q()), plainChain = chain(await x());
-          m.install(); m.prev = true; m.prevMode = '\(mode)'; m.downloads = 0; m.sent = [];
+          m.install(); m.prev = true; m.prevMode = '\(mode)'; m.downloads = 0; m.sent = []; m.cancels = []; m.hungIds = []; m.prevAnswered = false;
           b.changes = async () => { throw new Error('not here'); };
           b.valuesAt = async () => { throw new Error('not here'); };
           t.backendChanged();
@@ -736,15 +748,24 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const ms = performance.now() - t0;
           const v2Chain = v2 === 'hung' ? 'hung' : chain(await x());
           const prevReads = m.sent.filter((r) => r.cmd === 'valueAt' && r.prev).length;
-          return { plain, v2, plainChain, v2Chain, ms, prevReads, downloads: m.downloads };
+          const hungIds = m.hungIds.slice();
+          const cancelled = hungIds.filter((id) => m.cancels.filter((c) => c === id).length === 1).length;
+          return { plain, v2, plainChain, v2Chain, ms, prevReads, downloads: m.downloads, hung: hungIds.length, cancelled };
         } finally { for (const p of m.pending.values()) { p({ reply: { cancelled: true } }); } m.pending.clear(); m.remove(); cmuxWaveform.traceVerdiBudgetMs = 1500; t.backendChanged(); }
         """) as? [String: Any]
       print("[v2 point reads] \(mode): \(String(describing: r?["ms"])) ms, \(String(describing: r?["prevReads"])) prev reads")
       expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
              "v2 helper, valueAt prev \(mode): the same step and chain as without prev: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
       expect((r?["ms"] as? Double ?? 1e9) < 2 * 800 + 1500, "v2 helper, valueAt prev \(mode): the step waits at most twice its budget (\(String(describing: r?["ms"])) ms)")
-      if mode != "unread" {
+      if mode == "hang" || mode == "error" {
         expect(r?["prevReads"] as? Int == 1, "v2 helper, valueAt prev \(mode): prev asked once, then not again (\(String(describing: r?["prevReads"])))")
+      }
+      if mode == "hangLater" || mode == "limit" {
+        expect(r?["prevReads"] as? Int ?? 0 >= 3, "v2 helper, valueAt prev \(mode): prev still asked after that read failed (\(String(describing: r?["prevReads"])) prev reads)")
+      }
+      if mode == "hang" || mode == "hangLater" {
+        expect(r?["hung"] as? Int ?? 0 >= 1 && r?["cancelled"] as? Int == r?["hung"] as? Int,
+               "v2 helper, valueAt prev \(mode): each read that timed out is cancelled once (\(String(describing: r?["cancelled"])) of \(String(describing: r?["hung"])))")
       }
       expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(mode): no history downloaded (\(String(describing: r?["downloads"])))")
     }
