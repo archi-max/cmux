@@ -751,7 +751,14 @@ function splitWalks(req, ids) {
     waits.push(j.promise.then((r) => [id, r]));
   }
   if (!waits.length) { return null; }
-  return Promise.all(waits).then((rs) => { req.split = new Map(rs); });
+  // Every signal's own load settles before this does: a load that failed must not send the
+  // others, still loading in pieces, to a whole load on one worker (stored twice). Rejects
+  // with the first failure once all are settled; the ones that loaded are stored by then.
+  return Promise.allSettled(waits).then((rs) => {
+    req.split = new Map(rs.filter((r) => r.status === 'fulfilled').map((r) => r.value));
+    const bad = rs.find((r) => r.status === 'rejected');
+    if (bad) { throw bad.reason; }
+  });
 }
 
 // Before a query: load signals that aren't stored (jobs above) and (re)materialize derived
@@ -1867,7 +1874,10 @@ const handlers = {
       const real = need.filter((x) => !derived.has(x) && !errors.has(x));
       if (real.length) {
         try { const sp = prep(req, real); if (sp) { await sp; } } catch (e) { /* a failed split: the load below reports it per signal */ }
-        const res = await scatter(req, 'load', real, {}, (m) => m.result);
+        // (a load that failed for good meanwhile is reported, not loaded again whole)
+        for (const id of real) { if (bgFailed.has(id)) { errors.set(id, bgFailed.get(id)); } }
+        const left = real.filter((id) => !errors.has(id));
+        const res = left.length ? await scatter(req, 'load', left, {}, (m) => m.result) : [];
         for (const r of res) {  // (load's results carry their ids)
           if (r && r.error) { errors.set(r.signalId, r.error); if (/larger than|0 bits|unsupported/.test(r.error)) { bgFailed.set(r.signalId, r.error); } }
         }
