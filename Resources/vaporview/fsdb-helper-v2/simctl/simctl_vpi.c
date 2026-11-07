@@ -913,7 +913,10 @@ PLI_INT32 simctl_serve_calltf(PLI_BYTE8 *ud) { (void)ud; if (fs_child) return 0;
   hold_st = a2 ? arg_by_name(a1) : NULL; hold_rel = a2 ? arg_by_name(a2) : NULL;
   vpiHandle sc = hold_rel ? vpi_handle(vpiScope, hold_rel) : NULL;
   hold_pulse = sc ? vpi_handle_by_name("pulse", sc) : NULL;
-  hold_nw = hold_st && !hold_writable(hold_st);
+  /* both st and rel must take writes: st says what to do, a change of rel wakes the TB (vcs-agent, src6: with rel
+   * read-only a checkpoint here printed its cp and never answered). Probing rel is safe here: nothing waits on it
+   * while the TB is inside this call. pulse is not probed (toggling it counts in the TB's pulses). */
+  hold_nw = hold_st && (!hold_writable(hold_st) || !hold_rel || !hold_writable(hold_rel));
   held = 0;   /* serving, not waiting */
   need_serve = 0;
   if (running) {   /* the TB reached its serve point during a run: the run ends here */

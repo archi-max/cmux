@@ -73,10 +73,11 @@ function line(l) {
     // the reusable testbench: one simctl_cfg and one simctl_port in the toy design (simctl_describe.c's reply)
     case 'H': send({ id, t, cfg: [{ path: 'tb.u_cfg', scenarios: 'smoke:plain adds' }], ports: [{ path: 'tb.u_in', name: 'in', kind: 'vr', width: 16, fields: 'hi[15:8] lo[7:0]' }], memories: [], memoriesTruncated: false }); return;
     // apply: the hook ran and the design settled (simctl_apply.c's reply)
-    case 'A': {   // apply: like the library, only registered entry points (its own three + SIMCTL_APPLY_SYMBOLS)
-      const reg = ['vcs_restore_apply_plan', 'vcs_restore_api_version', 'vcs_restore_last_error', ...APPLY_SYMBOLS];
-      const bad = [a[1], a[4], a[6]].find((n, i) => !(i && n === '-') && !reg.includes(n));
-      if (bad) { send({ id, error: `apply: ${bad} is not a registered apply entry point: simctl calls only vcs_restore_apply_plan, vcs_restore_api_version, vcs_restore_last_error and the names in the run's cmux-replay.json applySymbols` }); return; }
+    case 'A': {   // apply: like the library, only registered entry points (its own three, each in its own role, + SIMCTL_APPLY_SYMBOLS)
+      const builtin = ['vcs_restore_apply_plan', 'vcs_restore_api_version', 'vcs_restore_last_error'], role = ['symbol', 'versionSymbol', 'lastErrorSymbol'];
+      const ok = (n, i) => (builtin.includes(n) ? builtin.indexOf(n) === i : APPLY_SYMBOLS.includes(n));
+      const k = [a[1], a[4], a[6]].findIndex((n, i) => !(i && n === '-') && !ok(n, i));
+      if (k >= 0) { send({ id, error: `apply: ${[a[1], a[4], a[6]][k]} is not a registered apply entry point for ${role[k]}: simctl calls only vcs_restore_apply_plan (symbol), vcs_restore_api_version (versionSymbol), vcs_restore_last_error (lastErrorSymbol) and the names in the run's cmux-replay.json applySymbols` }); return; }
       send({ id, t, rc: 0, lastError: '', settled: true, held: false }); return;
     }
     // push: transactions queued for a port (simctl_push.c's reply); nothing pulls them in the toy design

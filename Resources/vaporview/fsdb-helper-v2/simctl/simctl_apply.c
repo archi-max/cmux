@@ -14,7 +14,8 @@
  *   int sym(const char *arg); unsigned versym(void) must == want; const char *errsym(void) for lastError
  * sym, versym and errsym must be registered entry points (apply_register, at registration): simctl's own plan
  * interface and the names the run's manifest lists (cmux-replay.json applySymbols, passed as
- * SIMCTL_APPLY_SYMBOLS). Any other loaded symbol (libc's system, getpid, ...) is refused before any lookup.
+ * SIMCTL_APPLY_SYMBOLS). Any other loaded symbol (libc's system, getpid, ...) is refused before any lookup, and so
+ * is a built-in name in another role than its own.
  * Restores: checkpoints are in this process (same list). A run restored from a forksave (simv -r) serves no
  * requests, so it has no apply. The worker refuses restoreFile (a VCS file restore cuts the controller off). */
 #include <dlfcn.h>
@@ -42,8 +43,13 @@ static void apply_register(void) {
   }
   unsetenv("SIMCTL_APPLY_SYMBOLS");
 }
-static int apply_allowed(const char *s) {
-  for (int i = 0; i < ap_n; i++) if (!strcmp(ap_names[i], s)) return 1;
+/* role 0 symbol, 1 versionSymbol, 2 lastErrorSymbol. A built-in name only in its own role (their signatures
+ * differ: int f(const char *), unsigned f(void), const char *f(void)); a manifest name in any role */
+static const char *const ap_role[] = { "symbol", "versionSymbol", "lastErrorSymbol" };
+static int apply_allowed(const char *s, int role) {
+  int nb = (int)(sizeof ap_builtin / sizeof *ap_builtin);
+  for (int i = 0; i < nb; i++) if (!strcmp(ap_builtin[i], s)) return i == role;
+  for (int i = nb; i < ap_n; i++) if (!strcmp(ap_names[i], s)) return 1;
   return 0;
 }
 
@@ -137,12 +143,13 @@ static int apply_req(long id, char **tok, int nt, int ctx) {
   if (ap.armed) { reply_err(id, "apply: another apply is pending"); return 0; }
   int serve = !strcmp(tok[2], "serve");
   if (!serve && strcmp(tok[2], "next")) { reply_err(id, "apply: at must be serve or next"); return 0; }
-  char m[400];
+  char m[600];
   const char *names[3] = { tok[3], tok[6], tok[8] };   /* symbol, versionSymbol, lastErrorSymbol (- for none) */
   for (int i = 0; i < 3; i++) {
-    if ((i && !strcmp(names[i], "-")) || apply_allowed(names[i])) continue;
-    snprintf(m, sizeof m, "apply: %.200s is not a registered apply entry point: simctl calls only vcs_restore_apply_plan, "
-             "vcs_restore_api_version, vcs_restore_last_error and the names in the run's cmux-replay.json applySymbols", names[i]);
+    if ((i && !strcmp(names[i], "-")) || apply_allowed(names[i], i)) continue;
+    snprintf(m, sizeof m, "apply: %.160s is not a registered apply entry point for %s: simctl calls only vcs_restore_apply_plan "
+             "(symbol), vcs_restore_api_version (versionSymbol), vcs_restore_last_error (lastErrorSymbol) and the names in "
+             "the run's cmux-replay.json applySymbols", names[i], ap_role[i]);
     reply_err(id, m); return 0;
   }
   void *lh = RTLD_DEFAULT;
