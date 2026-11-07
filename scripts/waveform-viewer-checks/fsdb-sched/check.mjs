@@ -175,6 +175,17 @@ async function start(workers, costs, env = {}) {
   h.close();
 }
 
+// 11. A first load per worker that costs extra (the reader's per-process setup for a signal)
+// must not read as a per-load floor: the rest of a heavy signal still goes out in ~250 ms
+// pieces. Taking it as a floor gave one worker the last 3/4 of a clock (7.5 s on a 1.7 GB dump).
+{
+  const h = await start(4, { 1: 4000 }, { STUB_FIRST_MS: '150' });
+  const r = await h.send('window', win([1])).reply;
+  const s = r.result && r.result.signals[0];
+  check(!r.error && r.at < 1900, `a 4 s signal with a 150 ms first load per worker: ${Math.round(r.at)} ms, ${s && s.split} pieces (one worker for the rest: ~3200)`);
+  h.close();
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that

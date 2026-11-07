@@ -12,7 +12,12 @@ const TIME_END = 1000000;
 const cost = (id) => Number(COSTS[id] ?? 10);
 const BAD = new Set(JSON.parse(process.env.STUB_BAD || '[]'));
 const SLICE_MS = Number(process.env.STUB_SLICE_MS || 0);
-const share = (id, s, e) => SLICE_MS + cost(id) * Math.max(0, Math.min(Number(e), TIME_END) - Number(s)) / TIME_END;
+// STUB_FIRST_MS: a signal's first load in a worker process costs that much more (the reader
+// reads the signal's block index once per process: ~120-200 ms for a clock on a 1.7 GB dump).
+const FIRST_MS = Number(process.env.STUB_FIRST_MS || 0);
+const seen = new Set();
+const first = (id) => (seen.has(id) ? 0 : (seen.add(id), FIRST_MS));
+const share = (id, s, e) => SLICE_MS + first(id) + cost(id) * Math.max(0, Math.min(Number(e), TIME_END) - Number(s)) / TIME_END;
 const win1 = (id) => { const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30; return { signalId: id, exact: true, count: 1, records: rec, counts: null }; };
 const sleep = (ms) => { if (ms > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } };
 const store = new Map();  // signalId -> true
