@@ -42,6 +42,9 @@
 //   valueAt {signalIds, t}         -> {values: [string | null], cold} (all 'x' before the first
 //     change; null = unreadable). Signals that aren't stored are read cold: a [t, t] view
 //     window, one value, ~2-16 ms each, nothing walked or kept (`cold` = how many).
+//     prev: true (trace-X) adds prev: [{t, value} | null], each signal's last real change at or
+//     before t (null: none yet). Cold ones are read from windows [t - span, t] growing x8 until
+//     the change is in one; stored (primary) signals go in one call per round, rebuilt ones apart.
 //   count {signalIds, exact?}     -> {counts: [{signalId, count, bits, xz, bytes, source} | {signalId, unknown: true}]}
 //     whole-signal normalized change count (= a [0, T+1) window's count), bytes = count * (8 + bits)
 //     (v1 packed size). source store | derived | file (.vvz header). Answered in the coordinator,
@@ -1077,6 +1080,33 @@ function coldTask(req, op, ids, extra, spread = false) {
     };
   }))).then((parts) => { const by = new Map(parts.flat()); return ids.map((id) => by.get(id)); });
 }
+// valueAt {prev: true} of signals that aren't stored: view windows [t - span, t] that grow x8
+// until each signal's last real change is in one or the window reaches 0 (then it has none:
+// null). Stored (primary) signals pay a floor per call, so they start wide (1/256 of the dump)
+// and go in one call; rebuilt ones cost by the span, so they start narrow (1/4096) and are
+// spread. -> Map id -> {value, prev: {t, value} | null} (value null: unreadable)
+async function coldNear(req, ids, t) {
+  const out = new Map();
+  const T = Math.max(1, timeEnd || 1);
+  const round = async (todo, span) => {
+    while (todo.length && !req.cancelled) {
+      const rs = await coldTask(req, 'coldNear', todo, { t, span }, true);
+      const next = [];
+      todo.forEach((id, k) => {
+        const r = rs[k];
+        if (!r || r.error) { out.set(id, { value: null, prev: null }); return; }
+        if (!r.none) { out.set(id, { value: r.value, prev: { t: r.t, value: r.value } }); return; }
+        out.set(id, { value: r.value, prev: null });
+        if (span < t) { next.push(id); }
+      });
+      todo = next; span *= 8;
+    }
+  };
+  const prim = ids.filter((id) => kindOf(id) === 'p'), rest = ids.filter((id) => kindOf(id) !== 'p');
+  await Promise.all([round(rest, Math.max(1, Math.ceil(T / 4096))), round(prim, Math.max(1, Math.ceil(T / 256)))]);
+  return out;
+}
+
 // Background whole walks (after a ranged first draw): a job nobody waits for, so it runs in
 // pieces only when no interactive work is queued (see jobs above).
 const bgFailed = new Map();  // signalId -> error: loads that failed for good (over the store cap, unreadable); not retried until a reopen
@@ -1489,7 +1519,7 @@ function pumpWarm() {
 // the file instead of walking: spike_rvfi 71 ms instead of 1,589 ms, clk 10 ms
 // instead of 256 ms. FSDB_STORE_CACHE=0 turns it off; FSDB_INDEX_MB caps it.
 const STORE_CACHE = process.env.FSDB_STORE_CACHE !== '0';
-const CACHE_FILE_OPS = new Set(['window', 'valueAt', 'edge', 'search', 'load', 'bgLoad', 'export', 'derive', 'searchExpr']);
+const CACHE_FILE_OPS = new Set(['window', 'valueAt', 'lastChange', 'edge', 'search', 'load', 'bgLoad', 'export', 'derive', 'searchExpr']);
 const persisting = new Set();
 function persistLater(w, ids) {
   if (!STORE_CACHE || !warm.dir || warm.epoch !== epoch) { return; }
@@ -2005,6 +2035,13 @@ const handlers = {
     const warmIds = [...new Set(ids.filter((id) => !cold.has(id)))];
     const sp = prep(req, warmIds);
     if (sp) { await sp; }
+    if (req.prev) {
+      const [wv, cv] = await Promise.all([
+        warmIds.length ? scatter(req, 'lastChange', warmIds, { t }, (m) => m.result) : [],
+        cold.size ? coldNear(req, [...cold], t) : new Map()]);
+      const byId = new Map([...warmIds.map((id, k) => [id, wv[k]]), ...cv]);
+      return { values: ids.map((id) => byId.get(id).value), prev: ids.map((id) => byId.get(id).prev), cold: cold.size };
+    }
     const [wv, cv] = await Promise.all([
       warmIds.length ? scatter(req, 'valueAt', warmIds, { t }, (m) => m.result) : [],
       cold.size ? coldTask(req, 'coldValueAt', [...cold], { t }, 'even') : []]);
