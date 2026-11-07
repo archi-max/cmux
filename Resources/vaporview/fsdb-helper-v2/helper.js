@@ -129,9 +129,6 @@ const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Re
 const arg = (name, env, dflt) => { const k = process.argv.indexOf(name); return Number(k > 0 ? process.argv[k + 1] : process.env[env] || dflt) || dflt; };
 const DEFAULT_WORKERS = Math.min(4, arg('--workers', 'FSDB_WORKERS', 4));
 const CACHE_BYTES = arg('--cache-mb', 'FSDB_CACHE_MB', 1024) * 1e6;  // LRU budget, split evenly across workers
-// A cold signal at least this wide is walked in time slices by every worker
-// (the reader's traversal cost grows with width; 480 bits ~1.5 us per change).
-const SPLIT_BITS = Number(process.env.FSDB_SPLIT_BITS || 128);
 // Store files handed between workers (split walks, derived operands) live in a
 // private 0700 directory (mkdtemp); the addon creates them O_EXCL 0600, checks
 // owner and size on read, and deletes them. Directories left by dead helpers
@@ -411,6 +408,9 @@ function pump(w) {
   }
   if (workers[w.i] !== w) { return; }  // replaced: its queues moved over or were failed
   pullFloat(w);  // before background work: a first load is interactive
+  // With nothing of its own queued: a piece of a whole load some request waits for, then the
+  // worker's background work, then a piece of a background whole load.
+  if (!w.busy && w.ready && !w.queue.length && !w.recycle && !w.hold) { pullPiece(w, true) || (!w.bgQueue.length && pullPiece(w, false)); }
   if (w.busy || !w.ready || !(w.queue.length || w.bgQueue.length)) { return; }
   const task = w.queue.length ? w.queue.shift() : w.bgQueue.shift();
   w.busy = task;
@@ -449,7 +449,7 @@ function onWorkerMessage(w, m) {
     if (changed) { scheduleManifest(); }
   }
   if (m.walked && !stale) { persistLater(w, m.walked); }
-  if (DEBUG && task) { process.stderr.write(`[w${w.i}] ${task.op} ${JSON.stringify(task.signalIds || task.signalId)} wait->done ${(performance.now() - task.startedAt).toFixed(1)} ms, worker ${m.ms.toFixed(1)} ms, queue ${w.queue.length}\n`); }
+  if (DEBUG && task) { process.stderr.write(`[w${w.i}] ${task.op} ${JSON.stringify(task.signalIds || task.signalId)}${task.piece ? ` [${task.s}, ${task.e})` : ''} wait->done ${(performance.now() - task.startedAt).toFixed(1)} ms, worker ${m.ms.toFixed(1)} ms, queue ${w.queue.length}\n`); }
   const memErr = (e) => /worker memory limit/.test(String(e || ''));
   if (task && task.tid === m.tid && task.done && !stale && !task.bg && !task.memRetried && workers[w.i] === w
       && (memErr(m.error) || (Array.isArray(m.result) && m.result.some((r) => r && memErr(r.error))))) {
@@ -544,67 +544,183 @@ function runTask(w, task, front) {
   });
 }
 
-// Walk cold wide signals in N time slices on all workers, then load the
-// slices into the owner's store. Other requests for the signal wait for it.
-// With view-window slices (each worker loads only its slice) a split also
-// pays for narrow signals, but only when it doesn't take workers from other
-// cold signals: a lone cold signal of any width is split (clk 317 -> 153 ms,
-// pc_rdata 313 -> 122 ms); with several, only wide ones (4 narrow ones split
-// took 427 ms instead of 309 ms in parallel walks).
-const SPLIT_SINGLE = process.env.FSDB_SPLIT_SINGLE !== '0';
+// ---- whole loads in pieces (jobs) ----
+// On a big dump one reader load of a whole signal costs up to ~10 s (clk 6.6 s, a 4-bit valid
+// 10.6 s on 1.7 GB), cannot be interrupted, and costs about the same whether it is done in one
+// go or in time slices (8 slices of clk: 8.9 s against 8.3 s; slice overhead ~1 ms, a ~110 ms
+// floor for some signals). So every whole load of a signal that isn't stored is a job of time
+// pieces, handed out one at a time from one shared pool: any worker with nothing of its own
+// queued takes the next piece (pump), so a cheap signal added behind a heavy one waits for at
+// most one piece, a heavy one is spread over the whole pool, and interactive requests on a
+// worker wait for at most one piece. The pieces are then adopted (joined) into the owner's store.
+// - Order: jobs some request waits for (interactive) before background ones (whole walks
+//   behind ranged first draws, cancelled requests' loads); then jobs not started yet (oldest
+//   first), then those whose cost is known, least remaining work first, then the rest.
+// - Piece length: a job's first piece covers 1/16 of the dump; while it runs, idle workers take
+//   1/128 pieces. Then about PIECE_MS of work, from a fit of the job's pieces to ms = floor +
+//   rate * length: some signals cost ~110 ms per load whatever the range (big reader blocks),
+//   so a piece cheaper than PIECE_MS is followed by one 4x longer, and a job whose floor is
+//   over PIECE_MS / 2 takes the rest in one piece.
+// - Cancelling every request of a job keeps it going in the background (asking again finds it
+//   done or further along). A job over the store cap is stopped as soon as its pieces say so.
+//   A signal the reader can't read fails once and is remembered (bgFailed), not loaded again.
+const PIECE_MS = Number(process.env.FSDB_PIECE_MS || 250);
+const PROBE_PARTS = 16, SMALL_PARTS = 128, MIN_PARTS = 1024;
+const jobs = new Map();  // signalId -> job
+let jobSeq = 0;
+const transient = (e) => /exited|pool resized|memory limit|cancelled/.test(String(e || ''));
+const permanent = (e) => /larger than|0 bits|unsupported|not a bit signal|no traverse handle/.test(String(e || ''));
+const storeCap = () => CACHE_BYTES / Math.max(1, workers.length);
+function capErrorOf(cap) { return `signal larger than ${Math.floor(cap / 1048576)} MB (worker store limit)`; }
+
+function startJob(id, req) {
+  let j = jobs.get(id);
+  if (!j) {
+    let resolve, reject;
+    const promise = new Promise((a, b) => { resolve = a; reject = b; });
+    promise.catch(() => {});  // a background job may have no waiter
+    j = { id, seq: ++jobSeq, epoch, end: timeEnd + 1, next: 0, pieces: [], redo: [], running: 0, doneMs: 0, doneLen: 0, doneCount: 0,
+      retries: 0, done: [], adopting: false, failed: false, reqs: new Set(), t0: performance.now(), promise, resolve, reject };
+    promise.sp = j;
+    jobs.set(id, j);
+    splitting.set(id, promise);
+  }
+  if (req) { j.reqs.add(req); (req.splits || (req.splits = [])).push(j); }
+  kickPool(!!req);
+  return j;
+}
+// Idle workers take pieces now; a worker in background work is asked to stop early (as enqueue).
+function kickPool(interactive) {
+  for (const w of workers) {
+    if (idleWorker(w)) { pump(w); } else if (interactive && w.busy && w.busy.bg && !w.busy.yieldSent && w.pid && !w.queue.length) {
+      w.busy.yieldSent = true;
+      try { process.kill(w.pid, 'SIGUSR2'); } catch (e) { /* exiting */ }
+    }
+  }
+}
+function pickJob(interactive) {
+  let best = null, bk = null;
+  for (const j of jobs.values()) {
+    if (j.failed || j.adopting || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
+    if (!j.redo.length && j.next >= j.end) { continue; }  // every piece handed out
+    const cls = !j.pieces.length ? 0 : j.doneLen > 0 ? 1 : 2;
+    const k = [cls, cls === 1 ? (j.doneMs / j.doneLen) * (j.end - j.next) : 0, j.seq];
+    if (!best || k[0] < bk[0] || (k[0] === bk[0] && (k[1] < bk[1] || (k[1] === bk[1] && k[2] < bk[2])))) { best = j; bk = k; }
+  }
+  return best;
+}
+function nextPiece(j) {
+  if (j.redo.length) { return j.redo.shift(); }
+  const left = j.end - j.next;
+  let len = Math.ceil(j.end / (j.pieces.length ? SMALL_PARTS : PROBE_PARTS));
+  if (j.done.length) {
+    let S = j.done[0], L = j.done[0];
+    for (const d of j.done) { if (d.len < S.len) { S = d; } if (d.len > L.len) { L = d; } }
+    if (L.len >= 2 * S.len) {
+      const rate = Math.max(1e-12, (L.ms - S.ms) / (L.len - S.len)), floor = Math.max(0, S.ms - rate * S.len);
+      len = floor >= PIECE_MS / 2 ? left : (PIECE_MS - floor) / rate;
+    } else {
+      len = PIECE_MS * L.len / Math.max(1e-3, L.ms);
+      if (L.ms <= PIECE_MS) { len = Math.max(len, 4 * L.len); }  // tells a per-load floor from a per-time cost
+    }
+    len = Math.max(Math.ceil(j.end / MIN_PARTS), Math.floor(len));
+  }
+  if (left - len < len / 2) { len = left; }  // no tiny tail
+  const p = { s: j.next, e: j.next + len, path: tmpPath(`s${j.id}`), state: 'queued', count: 0 };
+  j.next = p.e;
+  j.pieces.push(p);
+  return p;
+}
+// pump(w): w has nothing of its own queued; give it the next piece of `interactive` jobs.
+function pullPiece(w, interactive) {
+  const j = pickJob(interactive);
+  if (!j) { return false; }
+  const p = nextPiece(j);
+  p.state = 'running';
+  j.running++;
+  const task = { op: 'walkSlice', signalId: j.id, s: p.s, e: p.e >= j.end ? 1.8e19 : p.e, path: p.path, tid: nextTid++, epoch, piece: true };
+  task.done = (m) => pieceDone(j, p, m, w);
+  w.queue.push(task);
+  return true;
+}
+function rmPiece(p) { try { fs.rmSync(p.path, { force: true }); } catch (e) { /* gone */ } }
+function pieceDone(j, p, m, w) {
+  j.running--;
+  if (j.failed || j.epoch !== epoch) { rmPiece(p); return; }
+  if (m.error) {
+    rmPiece(p);
+    if (transient(m.error) && j.retries < 3) { j.retries++; p.state = 'queued'; j.redo.push(p); kickPool(j.reqs.size > 0); return; }
+    failJob(j, m.error);
+    return;
+  }
+  p.state = 'done';
+  p.count = (m.result && m.result.count) || 0;
+  j.doneMs += m.ms;
+  j.doneLen += Math.min(p.e, j.end) - p.s;
+  j.done.push({ len: Math.min(p.e, j.end) - p.s, ms: m.ms });
+  j.doneCount += p.count;
+  const bits = widthOf.get(j.id) || 1;
+  // (the bound adopt checks: slice counts before normalization, both planes)
+  if (j.doneCount * (8 + 2 * Math.ceil(bits / 8)) > storeCap()) { failJob(j, capErrorOf(storeCap())); return; }
+  if (j.next >= j.end && !j.redo.length && !j.running) { finishJob(j, w); }
+}
+// The worker that walked the last piece adopts them: it is free right now (any other may be in
+// the middle of a piece) and becomes the signal's owner (nothing of it is stored anywhere yet).
+function finishJob(j, w) {
+  j.adopting = true;
+  if (floating.has(j.id)) { pinFloat(floating.get(j.id)); }
+  const owner = workers[w.i] === w ? w : leastBusy();
+  route.set(j.id, owner.i);
+  const pieces = [...j.pieces].sort((a, b) => a.s - b.s);
+  const task = enqueue(owner, { op: 'adopt', signalId: j.id, paths: pieces.map((p) => p.path) }, j.reqs.size > 0);
+  task.done = (m) => {
+    for (const p of pieces) { rmPiece(p); }
+    if (j.epoch !== epoch) { return; }
+    if (m.error) { failJob(j, m.error); return; }
+    endJob(j);
+    // The requests waiting for it ask the owner next (promise callbacks, before setImmediate):
+    // don't let it start a piece of another load first.
+    owner.hold = true;
+    setImmediate(() => { owner.hold = false; pump(owner); });
+    j.resolve({ ms: performance.now() - j.t0, slices: pieces.map((p) => p.count) });
+  };
+}
+function endJob(j) {
+  if (jobs.get(j.id) === j) { jobs.delete(j.id); }
+  if (splitting.get(j.id) === j.promise) { splitting.delete(j.id); }
+}
+function failJob(j, error) {
+  j.failed = true;
+  for (const p of j.pieces) { if (p.state !== 'running') { rmPiece(p); } }
+  endJob(j);
+  if (permanent(error) && j.epoch === epoch) { bgFailed.set(j.id, error); }
+  j.reject(new Error(error));
+}
+function clearJobs() {
+  for (const j of jobs.values()) { j.failed = true; for (const p of j.pieces) { if (p.state !== 'running') { rmPiece(p); } } j.reject(new Error('file reopened')); }
+  jobs.clear();
+}
+
+// Before a query: start (or join) the whole load of every signal that isn't stored, has no
+// store-cache file and hasn't failed for good. Resolves when they are stored (req.split: per
+// signal {ms, slices}); null when nothing has to wait.
 function splitWalks(req, ids) {
   const waits = [];
   // (no workerFor here: it would fix the worker of a signal still waiting for the first free one)
   const stored = (id) => route.has(id) && !floating.has(id) && workerFor(id).state.cached.includes(id);
-  const coldIds = ids.filter((id) => !splitting.has(id) && !stored(id));
-  // A split needs spare workers (at least half idle, no first loads waiting): slices queued
-  // behind other loads made every signal of a 20-signal add wait for all of them, and a
-  // slice costs more than its share (a 385-bit signal: 4 slices of ~0.9 s against 0.66 s
-  // whole on a 1.7 GB dump), so with the pool busy a whole walk on one worker is cheaper.
-  const spare = !floatQueue.length && workers.filter(idleWorker).length * 2 >= workers.length;
   for (const id of ids) {
-    if (splitting.has(id)) {
-      const q = splitting.get(id);
-      q.sp.reqs.add(req); (req.splits || (req.splits = [])).push(q.sp);
-      waits.push(q.then((r) => [id, r])); continue;
+    if (!jobs.has(id)) {
+      if (!timeEnd || stored(id) || bgFailed.has(id)) { continue; }
+      if (STORE_CACHE && warm.epoch === epoch && warm.files.has(id)) { continue; }  // read from the store cache instead
     }
-    // A lone narrow signal is split only when no worker is in background work:
-    // every slice waits for its worker's current reader load (uninterruptible,
-    // up to ~0.5 s per searchAll candidate), so during a cold searchAll the
-    // split cost more than it saved (test-derive M5 wait 400-1100 ms).
-    const wide = widthOf.get(id) >= SPLIT_BITS && spare;
-    const lone = SPLIT_SINGLE && coldIds.length === 1 && widthOf.get(id) > 0 && workers.every((w) => !(w.busy && w.busy.bg)) && spare;
-    if (workers.length < 2 || !timeEnd || !(wide || lone) || stored(id)) { continue; }
-    if (STORE_CACHE && warm.epoch === epoch && warm.files.has(id)) { continue; }  // read from the store cache instead
-    const owner = floating.has(id) || !route.has(id) ? workerFor(id) : workers[route.get(id)];
-    const t0 = performance.now();
-    const n = workers.length;
-    const cuts = [0, ...Array.from({ length: n - 1 }, (_, k) => Math.floor(timeEnd * (k + 1) / n)), 1.8e19];
-    const paths = workers.map(() => tmpPath(`s${id}`));
-    // Shared by every request that waits for it (sp.reqs); cancelling the last of them cancels
-    // it (handlers.cancel): queued slices are dropped, running ones finish, nothing is adopted.
-    // allSettled: the tmp files are removed only once no slice is still writing one.
-    const sp = { reqs: new Set([req]), cancelled: false, tasks: [] };
-    (req.splits || (req.splits = [])).push(sp);
-    const part = (w, task, front) => { sp.tasks.push({ w, task }); return runTask(w, task, front); };
-    const p = Promise.allSettled(workers.map((w, k) => part(w, { op: 'walkSlice', signalId: id, s: cuts[k], e: cuts[k + 1], path: paths[k], req: sp })))
-      .then((rs) => {
-        const bad = rs.find((r) => r.status === 'rejected');
-        if (bad) { throw bad.reason; }
-        const slices = rs.map((r) => r.value);
-        return part(owner, { op: 'adopt', signalId: id, paths, req: sp }, true).then(() => slices);
-      })
-      .then((slices) => ({ ms: performance.now() - t0, slices: slices.map((r) => r.count) }))
-      .finally(() => { if (splitting.get(id) === p) { splitting.delete(id); } for (const f of paths) { fs.rmSync(f, { force: true }); } });
-    p.sp = sp;
-    splitting.set(id, p);
-    waits.push(p.then((r) => [id, r]));
+    const j = startJob(id, req);
+    waits.push(j.promise.then((r) => [id, r]));
   }
   if (!waits.length) { return null; }
   return Promise.all(waits).then((rs) => { req.split = new Map(rs); });
 }
 
-// Before a query: split-walk cold wide signals and (re)materialize derived
+// Before a query: load signals that aren't stored (jobs above) and (re)materialize derived
 // ones. Returns null when nothing has to wait, so callers only await then
 // (an unconditional await would let later request lines enqueue first).
 function prep(req, ids) {
@@ -623,7 +739,9 @@ function prep(req, ids) {
 const COLD_RANGE = Number(process.env.FSDB_COLD_RANGE || 0.25);
 const busyness = (w) => (w.busy && !w.busy.bg ? 1 : 0) + w.queue.length;
 const leastBusy = () => workers.reduce((b, w) => (busyness(w) < busyness(b) ? w : b));
-const isCold = (id) => !derived.has(id) && !splitting.has(id) && !workerFor(id).state.cached.includes(id);
+// (a signal whose whole load is still in pieces is cold too: a ranged read or one value is far
+// cheaper than waiting for the rest of its load)
+const isCold = (id) => !derived.has(id) && !workerFor(id).state.cached.includes(id);
 // One task on the least busy worker (cheap reads); with spread one per owner
 // worker in parallel (ranged walks); with spread 'even' split over the workers,
 // least busy first, at least COLD_SPREAD signals per part (cold reads keep
@@ -652,35 +770,14 @@ function coldTask(req, op, ids, extra, spread = false) {
     };
   }))).then((parts) => { const by = new Map(parts.flat()); return ids.map((id) => by.get(id)); });
 }
-const bgLoads = new Map();  // signalId -> attempts (background whole walks after a ranged first draw)
-// Walks that failed for good (over the store cap, unreadable): not retried on
-// every ranged pan; that signal stays on ranged cold reads until a reopen.
-const bgFailed = new Map();  // signalId -> error
+// Background whole walks (after a ranged first draw): a job nobody waits for, so it runs in
+// pieces only when no interactive work is queued (see jobs above).
+const bgFailed = new Map();  // signalId -> error: loads that failed for good (over the store cap, unreadable); not retried until a reopen
 function scheduleBgLoad(id) {
-  if (bgLoads.has(id) || bgFailed.has(id)) { return; }
-  bgLoads.set(id, 0);
-  const ep = epoch;
-  const go = () => {
-    if (epoch !== ep || !bgLoads.has(id)) { return; }
-    const w = workerFor(id);
-    if (w.state.cached.includes(id) || splitting.has(id)) { bgLoads.delete(id); return; }
-    const task = enqueue(w, { op: 'bgLoad', signalIds: [id], bg: true });
-    task.done = (m) => {
-      if (task.epoch !== epoch) { return; }
-      const r = m.result && m.result[0];
-      if ((r && r.error === 'yielded') || /exited|reopened/.test(m.error || '')) {
-        const n = bgLoads.get(id) + 1;
-        if (n > 20) { bgLoads.delete(id); bgFailed.set(id, 'kept yielding'); return; }
-        bgLoads.set(id, n);
-        setTimeout(go, 300);  // interactive work came first; try again shortly
-        return;
-      }
-      bgLoads.delete(id);
-      const err = m.error || (r && r.error);
-      if (err) { bgFailed.set(id, err); }
-    };
-  };
-  go();
+  if (jobs.has(id) || bgFailed.has(id) || !timeEnd || derived.has(id)) { return; }
+  if (STORE_CACHE && warm.epoch === epoch && warm.files.has(id)) { return; }
+  if (route.has(id) && !floating.has(id) && workerFor(id).state.cached.includes(id)) { return; }
+  startJob(id, null);
 }
 
 // ---- full hierarchy index (paths for expressions and searchAll) ----
@@ -1475,7 +1572,7 @@ const handlers = {
     }
     flushManifest();  // the previous file's headers
     lastOpen = null;
-    bgLoads.clear();
+    clearJobs();
     bgFailed.clear();
     persisting.clear();
     epoch++;
@@ -1545,13 +1642,16 @@ const handlers = {
     const buckets = Math.max(1, Math.min(MAX_BUCKETS, Math.floor(Number(req.buckets)) || 1));
     for (const s of signals) { if (s.width) { widthOf.set(s.signalId, s.width); } }
     const ranged = t1 > t0 && timeEnd > 0 && (t1 - t0) <= timeEnd * COLD_RANGE;
+    // A signal whose load failed for good (unreadable, over the store cap) answers that error,
+    // without loading it again; over the cap, ranged windows still read it cold.
+    const failed = new Map(ids.filter((id) => bgFailed.has(id) && !derived.has(id) && !(ranged && /larger than/.test(bgFailed.get(id)))).map((id) => [id, { signalId: id, error: bgFailed.get(id) }]));
     // (a signal in the persistent store cache is read from its file instead: <= ~70 ms, and it stays)
-    const cold = new Set(ranged ? ids.filter((id) => isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
-    const warmIds = [...new Set(ids.filter((id) => !cold.has(id)))];
+    const cold = new Set(ranged ? ids.filter((id) => !failed.has(id) && isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
+    const warmIds = [...new Set(ids.filter((id) => !cold.has(id) && !failed.has(id)))];
     const sp = prep(req, warmIds);
     // Signals that wait for nothing (no split walk, no derived rebuild) are asked for now,
     // not after the split walks: a 20-signal add waited for its wide signals' splits first.
-    const later = sp ? new Set(warmIds.filter((id) => splitting.has(id) || derived.has(id))) : new Set();
+    const later = sp ? new Set(warmIds.filter((id) => jobs.has(id) || derived.has(id))) : new Set();
     const now = warmIds.filter((id) => !later.has(id));
     const range = { t0, t1, buckets };
     const nowRes = now.length ? scatter(req, 'window', now, range, (m) => m.result, true) : null;
@@ -1560,13 +1660,15 @@ const handlers = {
     const afterSplit = sp ? sp.catch((e) => { if (req.cancelled || /reopened|closed/.test(String(e && e.message))) { throw e; } }) : null;
     const laterRes = afterSplit ? afterSplit.then(() => {
       if (req.cancelled) { return []; }
-      return later.size ? scatter(req, 'window', [...later], range, (m) => m.result, true) : [];
+      const ok = [...later].filter((id) => !bgFailed.has(id) || derived.has(id));  // failed for good while this waited
+      for (const id of later) { if (!ok.includes(id)) { failed.set(id, { signalId: id, error: bgFailed.get(id) }); } }
+      return ok.length ? scatter(req, 'window', ok, range, (m) => m.result, true) : [];
     }) : null;
     const [r1, r2, coldRes] = await Promise.all([nowRes || [], laterRes || [],
       cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets }, true) : []]);
     if (req.cancelled) { return {}; }
     const warmRes = [...r1, ...r2];
-    const byId = new Map([...warmRes, ...coldRes].map((r) => [r.signalId, r]));
+    const byId = new Map([...warmRes, ...coldRes, ...failed.values()].map((r) => [r.signalId, r]));
     for (const r of coldRes) { if (!r.error) { scheduleBgLoad(r.signalId); } }
     const res = ids.map((id) => byId.get(id));
     const head = [], bins = [];
@@ -1749,7 +1851,8 @@ const handlers = {
       ...(rssCapRaised ? { rssCapRaised } : {}),
       splitting: [...splitting.keys()],
       firstLoads: floatQueue.length,  // first loads waiting for a free worker (floatQueue)
-      coldWalks: { pending: [...bgLoads.keys()], failed: [...bgFailed.keys()] },
+      coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
+      loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
     };
   },
@@ -1779,14 +1882,11 @@ const handlers = {
         try { process.kill(x.pid, 'SIGUSR2'); } catch (e) { /* gone */ }
       }
     }
-    for (const sp of req.splits || []) {  // split walks no other request waits for are cancelled too
+    // A whole load no other request waits for goes on in the background (jobs): asking again
+    // finds it stored or further along. Its running pieces are counted as running.
+    for (const sp of req.splits || []) {
       sp.reqs.delete(req);
-      if (sp.reqs.size || sp.cancelled) { continue; }
-      sp.cancelled = true;
-      for (const { w, task } of sp.tasks) {
-        if (dequeue(w, task)) { dropped++; failTasks([task], 'cancelled'); } else if (runner(w, task)) { running++; }
-      }
-      for (const [id, q] of splitting) { if (q.sp === sp) { splitting.delete(id); } }  // a new request starts afresh
+      if (!sp.reqs.size && sp.running) { running += sp.running; }
     }
     req.cancelled = true;
     if (req.onCancel) { req.onCancel(); }
@@ -1811,7 +1911,7 @@ const handlers = {
   async close() {
     flushManifest();
     lastOpen = null;
-    bgLoads.clear();
+    clearJobs();
     bgFailed.clear();
     persisting.clear();
     epoch++;
