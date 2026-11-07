@@ -762,6 +762,12 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         WaveformFSDBHelper.Loading(rawValue: storedSettings()["fsdbLoading"] as? String ?? "") ?? .auto
     }
 
+    /// The `liveSimulation` setting (off by default): the page may rerun the dump's simulator
+    /// through the helper (WaveformSimRelay). A helper started with it off passes no sim.* at all.
+    static func liveSimulation() -> Bool {
+        storedSettings()["liveSimulation"] as? Bool == true
+    }
+
     /// Starts the FSDB helper for the setting: v2 (windowed) with v1 as its
     /// fallback, or v1 only.
     private func startFSDBHelper(for remote: RemoteFSDB) -> URL? {
@@ -777,7 +783,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
         fsdbHelperGeneration += 1
         let generation = fsdbHelperGeneration
         let helper = WaveformFSDBHelper(
-            sshArguments: remote.sshArguments, installs: installs, hostKey: host, allowedFile: remote.remotePath
+            sshArguments: remote.sshArguments, installs: installs, hostKey: host,
+            allowedCommands: Self.liveSimulation()
+                ? WaveformFSDBHelper.pageCommands.union(WaveformSimRelay.pageCommands) : WaveformFSDBHelper.pageCommands,
+            allowedFile: remote.remotePath
         ) { [weak self] status in
             Task { @MainActor [weak self] in
                 guard let self, self.fsdbHelperGeneration == generation else { return }
@@ -1070,9 +1079,10 @@ final class FilePreviewWaveformSession: NSObject, WKScriptMessageHandler, WKNavi
             if let panel { WaveformEnumLink.packedDimensionsRequested(body, waveform: panel) }
         case "settings":
             if let values = body["values"] as? [String: Any] {
-                let loading = Self.fsdbLoading()
+                let loading = Self.fsdbLoading(), live = Self.liveSimulation()
                 Self.storeSettings(values)
-                if Self.fsdbLoading() != loading { Self.fsdbLoadingChanged() }
+                // Either one changes what the helper is started with: restart it (the page reopens the file).
+                if Self.fsdbLoading() != loading || Self.liveSimulation() != live { Self.fsdbLoadingChanged() }
             }
         case "sessionState":
             if let state = body["state"] {

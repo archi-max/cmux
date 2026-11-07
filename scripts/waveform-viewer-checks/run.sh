@@ -364,11 +364,9 @@ case "${1:-}" in
     ;;
   sim)
     command -v node >/dev/null || { echo "sim: needs node"; exit 2; }
-    # Red until Sources/Panels/WaveformSimRelay.swift exists (the harness names WaveformSimRelay).
-    swiftc -swift-version 6 -typecheck "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
-      $(ls "$ROOT/Sources/Panels/WaveformSimRelay.swift" 2>/dev/null)
+    swiftc -swift-version 6 -typecheck "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift"
     swiftc -O "$HERE/sim/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
-      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" $(ls "$ROOT/Sources/Panels/WaveformSimRelay.swift" 2>/dev/null) -o "$OUT/sim"
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/sim"
     "$OUT/sim" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/sim/mock-helper-sim.cjs" \
       "$HERE/windowed/mock-helper-v2.cjs" "$HERE/sim/fake-worker.cjs" "$HERE/sim/fixture" "$OUT/sim-scratch" \
       | grep -v '^\[log\]' | tee "$OUT/sim.log"
