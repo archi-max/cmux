@@ -62,6 +62,10 @@
 #   ./run.sh trace-fsdb <ssh-host> <remote.fsdb> <model.json> <instance> <time>
 #                                        driver tracing on a remote FSDB through the helper: every signal
 #                                        of <instance> at <time> and two levels of fan-in, with timings
+#   ./run.sh trace-kdb <ssh-host> <remote simv.daidir> <slang model.json>
+#                                        the KDB design model (Verdi's Python NPI on the host, a seat held
+#                                        for the export only) against cmux-sv-model's: instances, signals,
+#                                        widths, ranges, arrays and written signals
 #   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
 #                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
 #                                        given; its models of the trace fixtures equal trace/models
@@ -292,6 +296,20 @@ case "${1:-}" in
       "$L/HierarchyPathMapping.swift" "$OUT/slang-target.swift" -o "$OUT/trace-fsdb"
     "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep --line-buffered -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
     grep -q '^TRACE FSDB CHECKS PASSED' "$OUT/trace-fsdb.log"
+    ;;
+  trace-kdb)
+    shift
+    if [ $# -lt 3 ]; then echo "trace-kdb: needs <ssh-host> <remote simv.daidir> <slang model.json>"; exit 2; fi
+    # The KDB design model (npi-model.py through npi-model.sh, one export holding a Verdi seat for
+    # seconds) against cmux-sv-model's of the same design: instances, signals, widths, writes.
+    V="$ROOT/Resources/vaporview/verdi-trace"
+    S=$(ssh "$1" 'umask 077; mktemp -d /tmp/cmux-trace-kdb.XXXXXX') || exit 1
+    scp -q "$V/npi-model.sh" "$V/npi-model.py" "$1:$S/" || { ssh "$1" "rm -rf '$S'"; exit 1; }
+    ssh "$1" "bash -l '$S/npi-model.sh' '$S' '$2' '$S/model.json'" | tee "$OUT/trace-kdb.export"
+    scp -q "$1:$S/model.json" "$OUT/trace-kdb.json"
+    ssh "$1" "rm -rf '$S'"
+    python3 "$HERE/trace-kdb/compare.py" "$OUT/trace-kdb.json" "$3" "$(head -1 "$OUT/trace-kdb.export")" | tee "$OUT/trace-kdb.log"
+    grep -q '^TRACE KDB CHECKS PASSED' "$OUT/trace-kdb.log"
     ;;
   trace-smoke)
     mkdir -p "$OUT/smoke/models" "$OUT/smoke/dumps" "$OUT/smoke/designs"
