@@ -591,6 +591,65 @@
         }
       }
     },
+    "menu.view.waveformTraceKDB": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trace with the Compiled Design (KDB)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル済みデザイン (KDB) でトレース"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mit dem kompilierten Design (KDB) verfolgen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tracer avec la conception compilée (KDB)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التتبع باستخدام التصميم المُترجَم (KDB)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rastrear con el diseño compilado (KDB)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以已編譯的設計 (KDB) 追蹤"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用已编译的设计 (KDB) 追踪"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일된 설계(KDB)로 추적"
+          }
+        }
+      }
+    },
     "projectPanel.reload": {
       "extractionState": "manual",
       "localizations": {

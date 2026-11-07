@@ -1270,6 +1270,7 @@ struct cmuxApp: App {
             Button(String(localized: "menu.view.resetLanguageServerTopLevel", defaultValue: "Reset Language Server Top Level")) {
                 WaveformSourceLink.resetTopLevel()
             }
+            WaveformTraceKDBToggle()
             WaveformInlineValuesMenu()
             WaveformDebuggerMenu()
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {

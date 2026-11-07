@@ -5,14 +5,17 @@
 # the daidir named, or the one next to the dump that holds kdb.elab++ (vcs -kdb), as verdi-trace.sh
 # finds it. It prints one JSON line: {"ok": true, "cached", "seconds"?, "instances"?, "signals"?,
 # "peakMB"?} or {"ok": false, "error": "noFile"|"noKDB"|"noVerdi"|"licence"|"memory"|"time"|"start"|
-# "walk", "message"}; with --print, the model's JSON (one line) follows an ok line.
+# "walk"|"tried", "message"}; with --print, the model's JSON (one line) follows an ok line.
 #
 # Models are kept in a cache of the user's own (CMUX_KDB_CACHE, default ~/.cache/cmux/kdb-model, the
 # newest 8), keyed by the KDB's path, its FILES' newest mtime and total size, and the exporter: a
 # model already there costs no licence seat. Not the kdb.elab++ folder's own mtime: load_design
 # creates and removes an entry there (the user's daidir is otherwise left as it was), which would
 # invalidate the key on every export. A daidir the user can't write to may not load. An export holds a Verdi seat for its load and walk only
-# (seconds); it is not retried here when the seat is denied. Guards: the host's MemAvailable
+# (seconds). An export that fails once the exporter ran (a seat denied, a guard, Verdi's error) is
+# not run again for that KDB: the cache keeps the failure ($KEY.failed) and later asks are answered
+# {"error": "tried", "message": "<the failure's code>: <its message>"} without Verdi, until the KDB
+# changes (a new key) or CMUX_KDB_RETRY=1. Guards: the host's MemAvailable
 # (CMUX_NPI_MIN_AVAILABLE_MB, default 5120), the exporter's RSS (CMUX_NPI_RSS_MB, default 2900) and
 # time (CMUX_NPI_SECONDS, default 120).
 W=$1
@@ -45,6 +48,13 @@ stamp=$(find "$DAIDIR/kdb.elab++" -type f -printf '%T@ %s\n' 2>/dev/null | awk '
 hash() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else cksum; fi; }
 KEY=$( { printf '%s\n%s\n' "$DAIDIR" "$stamp"; cat npi-model.py; } | hash | cut -c1-32 | tr -d ' ')
 MODEL="$CACHE/$KEY.json"
+FAILED="$CACHE/$KEY.failed"
+# The exporter ran and failed: kept, so this KDB holds no seat again (then said as `say` does).
+fail() {
+  mkdir -p "$CACHE" 2>/dev/null && printf '%s: %s\n' "$1" "$2" | tr -d '"\\' | tr '\000-\037' ' ' | cut -c1-400 > "$FAILED" 2>/dev/null
+  ls -1t "$CACHE"/*.failed 2>/dev/null | tail -n +9 | while read -r old; do rm -f "$old"; done
+  say "$@"
+}
 
 emit() {
   echo "$1"
@@ -54,6 +64,9 @@ emit() {
 if [ -s "$MODEL" ]; then
   touch "$MODEL" 2>/dev/null
   emit '{"ok":true,"cached":true}'
+fi
+if [ -s "$FAILED" ] && [ "${CMUX_KDB_RETRY:-}" != 1 ]; then
+  say tried "$(cat "$FAILED")"
 fi
 
 if ! command -v verdi >/dev/null 2>&1 && type module >/dev/null 2>&1; then
@@ -74,22 +87,26 @@ while kill -0 "$P" 2>/dev/null; do
   rss=$(ps -o rss= -p "$P" 2>/dev/null | tr -d ' ')
   rss=${rss:-0}
   [ "$rss" -gt "$peak" ] && peak=$rss
-  if [ "$rss" -gt $((RSS_MB * 1024)) ]; then kill "$P"; say memory "the exporter passed ${RSS_MB} MB"; fi
+  if [ "$rss" -gt $((RSS_MB * 1024)) ]; then kill "$P"; fail memory "the exporter passed ${RSS_MB} MB"; fi
   ticks=$((ticks + 1))
-  if [ "$ticks" -gt $((SECONDS_CAP * 5)) ]; then kill "$P"; say time "the exporter ran past ${SECONDS_CAP} s"; fi
+  if [ "$ticks" -gt $((SECONDS_CAP * 5)) ]; then kill "$P"; fail time "the exporter ran past ${SECONDS_CAP} s"; fi
   sleep 0.2
 done
 wait "$P"
 line=$(grep '^{' npi.out | tail -1)
-[ -n "$line" ] || say start "$(grep -i -m1 -E 'error|licen' npi.err)"
+[ -n "$line" ] || fail start "$(grep -i -m1 -E 'error|licen' npi.err)"
 case $line in
   '{"ok": true'*) ;;
   *)
     # Verdi's own words (a licence failure's) go with the exporter's error.
     why=$(grep -i -m1 -E 'licen[cs]e|error' npi.err | tr -d '"\\' | tr '\000-\037' ' ' | cut -c1-300)
+    code=$(printf '%s' "$line" | sed -n 's/.*"error": *"\([^"]*\)".*/\1/p')
+    said=$(printf '%s' "$line" | sed -n 's/.*"message": *"\([^"]*\)".*/\1/p')
+    mkdir -p "$CACHE" 2>/dev/null && printf '%s: %s%s\n' "${code:-walk}" "$said" "${why:+ (Verdi: $why)}" | tr -d '"\\' | cut -c1-400 > "$FAILED" 2>/dev/null
     if [ -n "$why" ]; then echo "$line" | sed "s/\"message\": \"\([^\"]*\)\"/\"message\": \"\1 (Verdi: $(printf '%s' "$why" | sed 's/[&/|]/ /g'))\"/"; else echo "$line"; fi
     exit 0 ;;
 esac
+rm -f "$FAILED"
 mv -f "$W/model.json" "$MODEL.tmp" && mv -f "$MODEL.tmp" "$MODEL" || say start "could not keep the model in $CACHE"
 # The newest 8 models stay.
 ls -1t "$CACHE"/*.json 2>/dev/null | tail -n +9 | while read -r old; do rm -f "$old"; done

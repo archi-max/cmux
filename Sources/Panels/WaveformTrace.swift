@@ -320,16 +320,18 @@ enum WaveformTrace {
     /// by the sidecar, which answers the viewer's trace requests one at a time too.
     static let maxAliasInstances = 400
 
-    /// Without a KDB model, the dump's port aliases from slang's models, once per viewer and rule (the
-    /// first trace resolved it): sent to the viewer's FSDB helper as the KDB's would be. In the
-    /// background, after the trace's own requests; a design with more instances below the prefix
-    /// than `maxAliasInstances` is left out.
+    /// With the hidden setting on (off by default) and no KDB model, the dump's port aliases from
+    /// slang's models, once per viewer and rule (the first trace resolved it): sent to the viewer's
+    /// FSDB helper as the KDB's would be, which uses a pair only once sampled windows of both match
+    /// and drops it on any difference. In the background, after the trace's own requests; a design
+    /// with more instances below the prefix than `maxAliasInstances` is left out.
     private static func sendSlangAliases(design: Design, designPrefix: String, dumpPrefix: String, waveform: FilePreviewPanel) {
+        guard KDBExportSchedule.sendsSlangAliases(enabled: WaveformTraceKDB.slangAliasesEnabled, model: WaveformTraceKDB.model(for: waveform)) else { return }
         let rule = design.key + "|" + designPrefix + "|" + dumpPrefix
         guard aliasRules.object(forKey: waveform) as String? != rule else { return }
         aliasRules.setObject(rule as NSString, forKey: waveform)
         Task { @MainActor [weak waveform] in
-            guard let waveform, await WaveformTraceKDB.model(for: waveform) == nil else { return }
+            guard let waveform, WaveformTraceKDB.model(for: waveform) == nil else { return }
             let hierarchy: (tops: [String], instances: [String])
             if let known = design.hierarchy {
                 hierarchy = known

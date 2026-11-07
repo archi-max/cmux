@@ -1,6 +1,7 @@
 import CmuxSyntaxHighlighting
 import Foundation
 import os
+import SwiftUI
 
 nonisolated private let waveformTraceKDBLogger = Logger(subsystem: "com.cmuxterm.app", category: "WaveformTraceKDB")
 
@@ -8,18 +9,25 @@ nonisolated private let waveformTraceKDBLogger = Logger(subsystem: "com.cmuxterm
 /// host with a KDB next to it (`<simv>.daidir` from `vcs -kdb`), cmux asks the host for the model
 /// VCS elaborated (KDBModelLaunch: cmux's npi-model.sh and npi-model.py, run with the host's Verdi).
 /// The host keeps each KDB's model in the user's cache, so only a new KDB holds a Verdi licence seat,
-/// for its export only (seconds); without a KDB, Verdi or a seat there is no model and nothing changes.
+/// for its export only (seconds), in the background; without a KDB, Verdi or a seat there is no model
+/// and tracing is slang's (one log line; the host doesn't try that KDB again until it changes).
 /// The model's port aliases go to the viewer's FSDB helper (helper v2's aliasHints), so a port that
 /// the dump only rebuilds is read from the net it is bound to.
 ///
 /// Nothing of Verdi is shipped: the two scripts are cmux's own, sent to a private scratch folder.
 @MainActor
 enum WaveformTraceKDB {
-    /// Each dump's latest export (`host|path`), least recently opened first.
-    private static var exports: [String: Task<KDBModelLaunch.Outcome, Never>] = [:]
-    private static var order = VerdiTraceLaunch.SessionKeys()
-    /// Models kept at most (each is the whole design's instances and signals).
-    private static let maxModels = 4
+    /// View > Trace with the Compiled Design (KDB): on by default; off, no export is asked for.
+    static let enabledKey = "waveformTrace.kdbModel"
+    static var isEnabled: Bool { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+    /// Slang's port aliases for a dump without a KDB model (off by default; a hidden setting).
+    static let slangAliasesKey = "waveformTrace.slangAliases"
+    static var slangAliasesEnabled: Bool { UserDefaults.standard.bool(forKey: slangAliasesKey) }
+
+    /// Which KDBs are exported, and their models (KDBExportSchedule's rules).
+    private static var schedule = KDBExportSchedule()
+    /// The viewers waiting for each in-flight export's port aliases.
+    private static var waiting: [String: NSHashTable<FilePreviewPanel>] = [:]
     /// Alias pairs sent at most per dump.
     static let maxAliasPairs = 400_000
     /// An export that takes longer is ended (the launcher's own cap is 120 s; then the transfer).
@@ -30,38 +38,55 @@ enum WaveformTraceKDB {
         return KDBModelLaunch.scripts(in: dir)
     }
 
-    /// The viewer opened (or reopened) its dump: the dump's model is asked for again (the host's
-    /// cache answers unless the KDB changed), and its port aliases go to the viewer's helper.
+    private static func key(for waveform: FilePreviewPanel) -> (key: String, remote: FilePreviewWaveformSession.RemoteFSDB)? {
+        guard let remote = FilePreviewWaveformSession.RemoteFSDB.resolve(panel: waveform) else { return nil }
+        return (KDBExportSchedule.key(host: remote.host, dumpPath: remote.remotePath), remote)
+    }
+
+    /// The viewer opened (or reopened) its dump: its KDB's model is asked for in the background
+    /// (the host's cache answers unless the KDB changed; one export per KDB at a time), and its
+    /// port aliases go to the viewer's helper. The open and its traces never wait for it.
     static func waveformOpened(_ waveform: FilePreviewPanel) {
-        guard let remote = FilePreviewWaveformSession.RemoteFSDB.resolve(panel: waveform),
-              let scripts = bundledScripts() else { return }
-        let key = remote.host + "|" + remote.remotePath
+        guard let (key, remote) = key(for: waveform) else { return }
+        let viewers = waiting[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+        switch schedule.opened(key, enabled: isEnabled) {
+        case .off:
+            return
+        case .join:
+            viewers.add(waveform)
+            waiting[key] = viewers
+            return
+        case .start:
+            break
+        }
+        guard let scripts = bundledScripts() else {
+            _ = schedule.finished(key, .unavailable(code: "start", message: "no bundled scripts"))
+            return
+        }
+        viewers.add(waveform)
+        waiting[key] = viewers
         let command = KDBModelLaunch.command(launcher: scripts.launcher, exporter: scripts.exporter, fsdbPath: remote.remotePath)
         let arguments = remote.sshArguments("sh -c '\(command)'")
-        let export = Task.detached(priority: .utility) { await Self.run(arguments: arguments) }
-        exports[key] = export
-        order.use(key)
-        for gone in order.evict(keeping: maxModels) { exports.removeValue(forKey: gone)?.cancel() }
-        Task { @MainActor [weak waveform] in
-            let outcome = await export.value
-            switch outcome {
-            case .model(let model, let cached):
-                let pairs = model.aliasPairs(limit: maxAliasPairs)
-                waveformTraceKDBLogger.info("KDB model: \(model.instancePaths.count) instances, cached \(cached), \(pairs.count) alias pairs")
-                guard !pairs.isEmpty, let waveform, exports[key] == export else { return }
-                _ = await waveform.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": pairs])
-            case .unavailable(let code, _):
-                waveformTraceKDBLogger.info("KDB model unavailable: \(code, privacy: .public)")
+        Task { @MainActor in
+            let outcome = await Task.detached(priority: .utility) { await Self.run(arguments: arguments) }.value
+            let viewers = waiting.removeValue(forKey: key)?.allObjects ?? []
+            if let line = schedule.finished(key, outcome) {
+                waveformTraceKDBLogger.info("\(line, privacy: .public)")
+            }
+            guard case .model(let model, let cached) = outcome else { return }
+            let pairs = model.aliasPairs(limit: maxAliasPairs)
+            waveformTraceKDBLogger.info("KDB model: \(model.instancePaths.count) instances, cached \(cached), \(pairs.count) alias pairs")
+            guard !pairs.isEmpty else { return }
+            for viewer in viewers {
+                _ = await viewer.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": pairs])
             }
         }
     }
 
-    /// The dump's model, when its latest export gave one (nil: none yet, or none to have).
-    static func model(for waveform: FilePreviewPanel) async -> KDBDesignModel? {
-        guard let remote = FilePreviewWaveformSession.RemoteFSDB.resolve(panel: waveform),
-              let export = exports[remote.host + "|" + remote.remotePath] else { return nil }
-        if case .model(let model, _) = await export.value { return model }
-        return nil
+    /// The dump's KDB model, when an export gave one; never waits (nil: none yet, or none to have).
+    static func model(for waveform: FilePreviewPanel) -> KDBDesignModel? {
+        guard isEnabled, let (key, _) = key(for: waveform) else { return nil }
+        return schedule.model(key)
     }
 
     /// Runs the launch over ssh and reads its output; ended past `exportTimeout`.
@@ -91,5 +116,15 @@ enum WaveformTraceKDB {
         timer.cancel()
         if Task.isCancelled { return .unavailable(code: "start", message: "") }
         return KDBModelLaunch.parse(output: output)
+    }
+}
+
+/// View > Trace with the Compiled Design (KDB): whether opening a remote dump asks its host for
+/// the KDB's model (a Verdi seat for seconds, once per KDB).
+struct WaveformTraceKDBToggle: View {
+    @AppStorage(WaveformTraceKDB.enabledKey) private var enabled = true
+
+    var body: some View {
+        Toggle(String(localized: "menu.view.waveformTraceKDB", defaultValue: "Trace with the Compiled Design (KDB)"), isOn: $enabled)
     }
 }
