@@ -5,13 +5,15 @@
 //
 //   node worker.js --simv <path> --lib <libsimctl.so> --scratch <dir> [--cwd <run folder>] [--run <name>] [--clock <sig>] [--period <t>]
 //                  [--rss-mb 2048] [--min-avail-mb 5120] [--poll-cycles 100] [--vmem-mb 4096] [--ucli-timeout-ms 120000]
+//                  [--no-ucli2proc | --no-ucli]
 //                  -- <simulator run arguments>
 //
 // The simv must have been elaborated with `-load <libsimctl_stub.so>:simctl_register` (a run-time simv -load
 // does not call VPI registration routines). The stub loads <lib> from SIMCTL_LIB, set here.
 // The simulation runs as `<simv> -ucli -ucli2Proc <args>` in <scratch>/<run>, a private copy of the original
 // run's folder (--cwd [--copy-mb 512]; see "run directory" below). Its command line is driven only for
-// checkpoint/restore.
+// checkpoint/restore. With --no-ucli it runs as `<simv> <args>`, with no command line: checkpoint/restore/save/
+// restoreFile are refused, and forksave (which needs it that way) is allowed.
 //
 // Requests (stdin, one JSON object per line) -> {id, result, ms} or {id, error}; events are {id: 0, event}.
 //   run {cycles | time}                         -> {t, stopped: done|until|stop|finish}
@@ -26,6 +28,10 @@
 // observed, a new watch's first record (at its reply's t) is where its coverage starts. Writes, checkpoints and
 // another run are refused while a run is in flight (stop it first); a stop always reaches the run at once.
 //   time {}                                     -> {t}
+//   forksave {file}  (--no-ucli workers only)   -> {t, pid, forkMs, file}; later event {saved: pid, file, t, status}.
+//                                                 A save without pausing: the library forks, the child $saves
+//                                                 (build with vpi/simctl_saver.sv, -top simctl_saver) at t+1 and
+//                                                 exits; restore with simv -r <file>. At most two at once.
 //   read {signals: [path]}                      -> {t, values: ['01xz..' | null]}
 //   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12, 1_000 (any width) -> {t, value}
 //   writes {writes: [{op: force|deposit|release, signal, value}]}  -> {t, writes: [{t, value} | {error}]}
@@ -182,8 +188,11 @@ function scanMissing(d) {
 }
 
 // ---------------------------------------------------------------- launch
-const ucli2 = !flag('--no-ucli2proc');
-const args = ['-n', '10', SIMV, '-ucli', ...(ucli2 ? ['-ucli2Proc'] : []), ...simArgs];
+// --no-ucli: no command line. A fork-save child of a -ucli simulation is stopped by the command line it inherits
+// (it prints the UCLI stop/finish lines) and the parent ends at once (SIGTERM, -ucli2Proc; exit 255, -ucli).
+const noUcli = flag('--no-ucli');
+const ucli2 = !noUcli && !flag('--no-ucli2proc');
+const args = ['-n', '10', SIMV, ...(noUcli ? [] : ['-ucli', ...(ucli2 ? ['-ucli2Proc'] : [])]), ...simArgs];
 // sh sets the hard memory limit, then execs nice, which execs the simulator (with -ucli2Proc it runs the design
 // in a child process). detached: a new session, whose process group holds all of the simulation's processes.
 // The limit cannot go above the hard limit the worker was started under: then that one is used (and said).
@@ -316,6 +325,7 @@ let readyResolve; const ready = new Promise((r) => (readyResolve = r));
 function onLib(m) {
   if (m.ev === 'ready') { readyResolve(m); return; }
   if (m.ev === 'finish') { event('finish', { t: m.t }); return; }
+  if (m.ev === 'saved') { event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status }); return; }
   const p = pending.get(m.id);
   if (!p) return;
   pending.delete(m.id);
@@ -492,6 +502,11 @@ async function handle(r) {
     }
     case 'stop': libIn.write(`S ${libId}\n`); pending.set(libId++, { id, sent: performance.now() }); return;
     case 'time': lib('T', id, ''); return;
+    // a file save without pausing the simulation (also during a run, at its next poll point): needs a build with
+    // the simctl_saver top; at most two at once; the end comes as a `saved` event
+    case 'forksave':
+      if (!noUcli) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save child is stopped and the simulation ended)' });
+      lib('V', id, scratchFile(r.file)); return;
     case 'read': lib('G', id, names(r.signals || []).join(' ')); return;
     case 'force': case 'deposit': case 'release': {
       if (busyRun()) return;   // the library applies writes only between runs: refused, not held (a stop must get through)
@@ -515,6 +530,7 @@ async function handle(r) {
     case 'list': lib('N', id, `${token(r.scope, 'scope')} ${Math.max(1, Math.floor(Number(r.limit) || 10000))}`); return;
     case 'option': lib('O', id, `poll ${Math.max(1, Math.floor(Number(r.poll) || 1))}`); return;
     case 'checkpoint': case 'restore': case 'save': case 'restoreFile': {
+      if (noUcli) return out({ id, error: `${r.cmd} needs the simulator's command line: this worker was started with --no-ucli` });
       if (busyRun()) return;
       if (lowMem) return out({ id, error: 'paused: host memory low (a checkpoint or restore forks the simulation)' });
       let ucliCmd;
@@ -545,7 +561,7 @@ async function handle(r) {
       return;
     }
     case 'stats': out({ id, result: { ...memStats(true), period, lastT, unwatchedKept: unwatchedWidth.size, skippedLinks, vmemKb: VMEM_KB } }); return;
-    case 'quit': lib('Q', id, ''); setTimeout(() => { try { sim.stdin.write('quit\n'); sim.stdin.end(); } catch {} }, 200);
+    case 'quit': lib('Q', id, ''); setTimeout(() => { try { if (!noUcli) sim.stdin.write('quit\n'); sim.stdin.end(); } catch {} }, 200);
       setTimeout(() => killGroup(), 10000).unref();
       return;
     default: out({ id, error: `unknown cmd ${r.cmd}` });
@@ -568,8 +584,10 @@ rl.on('close', () => { if (sim.exitCode === null) handle({ id: 0, cmd: 'quit' })
 
 // ---------------------------------------------------------------- startup
 (async () => {
-  await nextPrompt();                 // the simulator's command line at time 0
-  sim.stdin.write('run\n');           // the library parks the run at time 0 and serves
+  if (!noUcli) {
+    await nextPrompt();               // the simulator's command line at time 0
+    sim.stdin.write('run\n');         // the library parks the run at time 0 and serves
+  }                                   // (with --no-ucli the simulation starts at once and the library parks it)
   const r = await ready;
   if (!period && CLOCK) {
     // measure the clock: two rising edges
@@ -580,5 +598,5 @@ rl.on('close', () => { if (sim.exitCode === null) handle({ id: 0, cmd: 'quit' })
   if (period && POLL_CYCLES) await libCall('O', `poll ${period * POLL_CYCLES}`);
   const t = await libCall('T', '');
   isReady = true;
-  event('ready', { t: t.t, precision: r.precision, period, startupMs: Date.now() - t0, dir, ucli2Proc: ucli2 });
+  event('ready', { t: t.t, precision: r.precision, period, startupMs: Date.now() - t0, dir, ucli2Proc: ucli2, ucli: !noUcli });
 })();
