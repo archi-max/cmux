@@ -4,10 +4,10 @@
 //   tb.cnt   8 bits, counts on each rising edge from 0 (wraps)
 //   tb.x     4 bits, always xxxx
 //   tb.z     2 bits, always zz
-// `deposit tb.cnt` sets the counter. FAKE_WORKER_LOG (a file) gets the command line as JSON.
+// `deposit tb.cnt` sets the counter. FAKE_WORKER_LOG (a file) gets {argv, pid}.
 'use strict';
 const fs = require('node:fs');
-if (process.env.FAKE_WORKER_LOG) fs.writeFileSync(process.env.FAKE_WORKER_LOG, JSON.stringify(process.argv.slice(2)));
+if (process.env.FAKE_WORKER_LOG) fs.writeFileSync(process.env.FAKE_WORKER_LOG, JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }));
 const out = (o, bin) => { process.stdout.write(JSON.stringify(o) + '\n'); if (bin && bin.length) process.stdout.write(bin); };
 const PERIOD = 10;
 let t = 0, cnt = 0, running = null;
