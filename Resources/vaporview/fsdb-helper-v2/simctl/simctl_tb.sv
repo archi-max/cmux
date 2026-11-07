@@ -10,7 +10,10 @@
 //                edge of its cycle. KIND "vr": each value is presented with `valid` (non-blocking, at a rising
 //                edge) and held until `ready` is seen high at a rising edge; then the next one, or valid low.
 //                `active` is high while a file is being driven, for a testbench that muxes its own driver.
-//                The file comes from +simctl_stim_<NAME>=<packed file> or from simctl (`stim`).
+//                The file comes from +simctl_stim_<NAME>=<packed file> or from simctl (`stim`). Transactions can
+//                also be pushed over the pipe (simctl `push`): simctl queues them and changes push_req, and the
+//                driver pulls them with $simctl_next. A file is driven first, then what was pushed. No pull
+//                happens unless simctl pushed something, so a run without simctl makes no extra calls.
 // Packed file, one transaction per line: `<how> <n> <hex value>`; how 0: wait n rising edges after the previous
 // transaction (the first: after the arm), how 1: not before the n-th rising edge after the arm. A `#` line is
 // a comment. Driving uses only $fopen/$fscanf: no VPI access is needed for it (simctl uses VPI only to set
@@ -64,12 +67,18 @@ module simctl_port #(
   string           file = "";
   int              fd = 0;
   longint unsigned driven = 0;             // transactions driven so far (simctl reads it)
+  reg              push_req;               // changed by simctl after a push (no initial value, as load_req)
+  bit              pushed = 1'b0;
+  integer          p_how, p_ok;            // $simctl_next's outputs (module-level: VPI writes them)
+  longint unsigned p_n;
+  logic [W-1:0]    p_v;
   initial begin
     string f;
     valid = 1'b0; data = '0; active = 1'b0;
     if ($value$plusargs({"simctl_stim_", NAME, "=%s"}, f)) file = f;
     if (file != "") open_file();
   end
+  always @(push_req) if (push_req !== 1'bx) pushed = 1'b1;
   always @(load_req) if (load_req !== 1'bx && file_r != '0) begin
     file = string'(file_r);
     open_file();
@@ -92,24 +101,38 @@ module simctl_port #(
     return 1'b0;
   endfunction
 
+  // the next pushed transaction, or 0 when none is queued
+  function automatic bit pull(output int how, output longint unsigned n, output logic [W-1:0] v);
+    p_ok = 0;
+    $simctl_next(NAME, p_how, p_n, p_v, p_ok);
+    how = p_how; n = p_n; v = p_v;
+    return p_ok == 1;
+  endfunction
+  task automatic drive_one(input int how, input longint unsigned n, input logic [W-1:0] v);
+    if (how == 1) while (arm_cycle < n) @(posedge clk);
+    else for (longint unsigned k = 0; k < n; k++) @(posedge clk);
+    if (KIND == "pins") begin
+      @(posedge clk); data <= v;
+    end else begin
+      @(posedge clk); valid <= 1'b1; data <= v;
+      do @(posedge clk); while (!ready);
+      valid <= 1'b0;
+    end
+    driven++;
+  endtask
+
   initial begin : drive
     int how; longint unsigned n; logic [W-1:0] v;
     forever begin
-      wait (armed && fd != 0);
+      wait (armed && (fd != 0 || pushed));
       active = 1'b1;
-      while (next(how, n, v)) begin
-        if (how == 1) while (arm_cycle < n) @(posedge clk);
-        else for (longint unsigned k = 0; k < n; k++) @(posedge clk);
-        if (KIND == "pins") begin
-          @(posedge clk); data <= v;
-        end else begin
-          @(posedge clk); valid <= 1'b1; data <= v;
-          do @(posedge clk); while (!ready);
-          valid <= 1'b0;
-        end
-        driven++;
+      if (fd != 0) begin
+        while (next(how, n, v)) drive_one(how, n, v);
+        $fclose(fd); fd = 0;
+      end else begin
+        pushed = 1'b0;
+        while (pull(how, n, v)) drive_one(how, n, v);
       end
-      $fclose(fd); fd = 0;
       active = 1'b0;
     end
   end

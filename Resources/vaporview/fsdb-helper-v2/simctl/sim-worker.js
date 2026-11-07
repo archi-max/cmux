@@ -60,6 +60,10 @@
 //                                                 ports start driving
 //   stim {port, file | text}                    -> {port, transactions, packed} (format: tb.js); before or
 //                                                 after the arm
+//   push {port, txns: [{at | after, value | fields: {f: v}}] | text}  -> {port, transactions, queued, pulled}:
+//                                                 streamed over the pipe into the library's queue for the port
+//                                                 (same timing as a stim file; a file is driven first). The queue
+//                                                 is library memory: a checkpoint keeps it, a restore brings it back
 //   stimStatus {port}                           -> {port, driven, active}
 //   loadmem {path, file | text, format h|b, start?, end?, via vpi|ucli}  -> {via, t, words, ignored, ms}: a
 //                                                 $readmemh/$readmemb image into a memory (describe's memories)
@@ -599,6 +603,34 @@ async function tbRequest(r) {
   }
   const port = d.ports.find((p) => p.name === r.port);
   if (!port) throw rebuildErr(`no port ${JSON.stringify(r.port)} in this build (ports: ${d.ports.map((p) => p.name).join(', ') || 'none'})`, 'a drivable interface is a simctl_port in the testbench: add one and rebuild');
+  if (r.cmd === 'push') {
+    if (BAD_TOKEN.test(port.name)) throw new Error(`push: port name ${JSON.stringify(port.name)} has whitespace`);
+    if ((await readBits(`${port.path}.push_req`)) === undefined || (await readBits(`${port.path}.push_req`)) === null)
+      throw rebuildErr(`port ${port.name} has no push input (built with an older simctl_tb.sv)`, 'rebuild with the current simctl_tb.sv and stub');
+    let text = r.text;
+    if (text === undefined) {
+      if (!Array.isArray(r.txns) || !r.txns.length) throw new Error('push: give txns (a non-empty list) or text');
+      text = r.txns.map((x, i) => {
+        if (!x || typeof x !== 'object') throw new Error(`push: txns[${i}] must be an object`);
+        const when = x.at !== undefined ? `@${x.at}` : `+${x.after === undefined ? 0 : x.after}`;
+        if (!/^[@+]\d+$/.test(when)) throw new Error(`push: txns[${i}]: at/after must be a non-negative integer`);
+        if (x.value !== undefined) return `${when} ${x.value}`;
+        const f = x.fields && typeof x.fields === 'object' ? Object.entries(x.fields) : [];
+        if (!f.length) throw new Error(`push: txns[${i}] needs value or fields`);
+        return `${when} ${f.map(([k, v]) => `${k}=${v}`).join(' ')}`;
+      }).join('\n');
+    }
+    const { packed, count } = tbx.packStim(port, text);
+    const rows = packed.split('\n').filter((l) => l && l[0] !== '#');
+    let last = null;
+    for (let i = 0; i < rows.length; i += 20000) {   // a line holds at most 65534 tokens
+      const chunk = rows.slice(i, i + 20000);
+      last = await libCall('B', `${port.name} ${chunk.length} ${chunk.join(' ')}`);
+      if (last.error) throw new Error(last.error);
+    }
+    await mustWrite([{ op: 'deposit', signal: `${port.path}.push_req`, value: await toggle(`${port.path}.push_req`) }]);
+    return { port: port.name, transactions: count, queued: last ? last.queued : 0, pulled: last ? last.pulled : 0 };
+  }
   if (r.cmd === 'stimStatus') {
     const [driven, active] = await Promise.all([readBits(`${port.path}.driven`), readBits(`${port.path}.active`)]);
     return { port: port.name, driven: driven ? Number(BigInt('0b' + driven.replace(/[xz]/g, '0'))) : null, active: active === '1' };
@@ -736,7 +768,7 @@ async function handle(r) {
       const d = await describeBuild(true);
       out({ id, result: { ...d, mode: noUcli ? 'noUcli' : 'ucli', simv: SIMV, staleness: tbx.staleness(SIMV) } }); return;
     }
-    case 'scenario': case 'arm': case 'stim': case 'stimStatus': {
+    case 'scenario': case 'arm': case 'stim': case 'stimStatus': case 'push': {
       if (busyRun()) return;
       try { out({ id, result: await tbRequest(r) }); }
       catch (e) { out({ id, error: e.message, ...(e.needsRebuild ? { needsRebuild: true, hint: e.hint || '' } : {}) }); }

@@ -35,6 +35,7 @@
  *      V id file            fork-save: a file save in a forked copy; the simulation goes on (simctl_forksave.c)
  *      H id                 describe: the build's simctl_cfg/simctl_port instances (simctl_describe.c)
  *      M id mem packedfile  loadmem: write a memory image (index hex per line) one time unit later (simctl_mem.c)
+ *      B id port n txns...  push: queue transactions for a simctl_port, pulled by $simctl_next (simctl_push.c)
  *      A id at sym arg ...  apply: call an already-loaded native routine at a writable point, reply once settled
  *                           (simctl_apply.c; the TB holds at simctl_hold.sv)
  *      Q id                 finish
@@ -653,6 +654,7 @@ static void emit_all(void) {
 #include "simctl_describe.c"
 #include "simctl_mem.c"
 #include "simctl_apply.c"
+#include "simctl_push.c"
 static int is_quick(char op) { return op == 'T' || op == 'G' || op == 'W' || op == 'X' || op == 'I' || op == 'N' || op == 'V'; }
 static void quick_op(char op, long id, char **tok, int nt, uint64_t t) {
   switch (op) {
@@ -766,10 +768,11 @@ static void serve(int ctx) {
     if (nt < 2) continue;
     char op = tok[0][0]; long id = strtol(tok[1], NULL, 10);
     uint64_t t = now();
-    if (discarded && strchr("RUAFDLM", op)) { reply_err(id, "this branch is discarded (an apply returned -2): restore a checkpoint from before it"); continue; }
+    if (discarded && strchr("RUAFDLMB", op)) { reply_err(id, "this branch is discarded (an apply returned -2): restore a checkpoint from before it"); continue; }
     switch (op) {
     case 'T': case 'G': case 'W': case 'X': case 'I': case 'N': case 'V': quick_op(op, id, tok, nt, t); break;
     case 'A': if (apply_req(id, tok, nt, ctx)) return; break;
+    case 'B': push_req(id, tok, nt); break;
     case 'K': break;   /* a resume token that arrived while serving: nothing to do */
     case 'H': describe(id, t); break;
     case 'M':
@@ -960,6 +963,8 @@ void simctl_entry2(int stub_serves) {
   if (!stub_serves) {   /* the stub registers $simctl_serve itself (also at elaboration) and forwards it here */
     s_vpi_systf_data tf; memset(&tf, 0, sizeof tf);
     tf.type = vpiSysTask; tf.tfname = "$simctl_serve"; tf.calltf = simctl_serve_calltf;
+    vpi_register_systf(&tf);
+    tf.tfname = "$simctl_next"; tf.calltf = simctl_next_calltf;
     vpi_register_systf(&tf);
   }
   s_cb_data cb; memset(&cb, 0, sizeof cb);
