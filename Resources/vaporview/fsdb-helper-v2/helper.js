@@ -58,9 +58,12 @@
 //     whole-signal normalized change count (= a [0, T+1) window's count), bytes = count * (8 + bits)
 //     (v1 packed size). source store | derived | file (.vvz header). Answered in the coordinator,
 //     never queued; unknown unless exact: true, which loads (walks) them first.
-//   edge {signalId, t, dir: 1|-1, kind: any|rise|fall} -> {t} | {t: null}
+//   edge {signalId, t, dir: 1|-1, kind: any|rise|fall|posedge|negedge|edge} -> {t} | {t: null}
 //     first change after t (or last before t); rise/fall (1-bit signals) = new
-//     value '1' / '0' (x->1 is a rise); wider signals treat them as any.
+//     value '1' / '0' (x->1 is a rise); wider signals treat them as any. posedge / negedge / edge
+//     are SystemVerilog's, by the change from the previous value (posedge 0->1, 0->x, 0->z, x->1,
+//     z->1; negedge 1->0, 1->x, 1->z, x->0, z->0; edge either, x<->z none; the dump's first
+//     value is none), 1-bit signals only: wider ones, and unknown kinds, are errors.
 //   search {signalId, t, dir, value, wildcard?} -> {t} | {t: null}: first change after t (or
 //     last before t) whose new value matches `value` (MSB first, 'x' and '?' wildcards,
 //     short patterns left-padded with 0). wildcard: '?' -> only '?' is a wildcard,
@@ -575,6 +578,8 @@ function broadcast(op, extra) {
 const widthOf = new Map();  // signalId -> bits, learned from children and window requests
 const splitting = new Map();  // signalId -> Promise<{ms, slices}>
 let timeEnd = 0;
+const EDGE_KINDS = new Set(['any', 'rise', 'fall', 'posedge', 'negedge', 'edge']);
+let timeStart = 0;  // (the dump's start: its first values are no SystemVerilog edge)
 
 function runTask(w, task, front) {
   return new Promise((resolve, reject) => {
@@ -2442,6 +2447,7 @@ const handlers = {
       // timestart: the reader's min tag, the dump's first time (0 from an addon without it).
       (chunksize, timeend, timestart) => Object.assign(metadata, { timeStart: Number(timestart) || 0, timeEnd: Number(timeend), timeTableLoaded: true }));
     timeEnd = metadata.timeEnd;
+    timeStart = metadata.timeStart;
     const top = scopes.top();
     // The hierarchy index (paths, widths) is built now, while the workers open,
     // not by the first request (count's latency target; ~8-16 ms on this dump).
@@ -2555,8 +2561,10 @@ const handlers = {
 
   async edge(req) {
     const t = checkTime('t', req.t);
+    // (checked before the signal is loaded; the worker checks again, and the width)
+    if (req.kind !== undefined && req.kind !== null && !EDGE_KINDS.has(req.kind)) { throw new Error(`edge: unknown kind ${JSON.stringify(req.kind)}`); }
     const sp = prep(req, checkIds([req.signalId])); if (sp) { await sp; }
-    return single(req, 'edge', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, kind: req.kind });
+    return single(req, 'edge', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, kind: req.kind, start: timeStart });
   },
   async search(req) {
     const t = checkTime('t', req.t);

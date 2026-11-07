@@ -766,10 +766,14 @@ Napi::Value cacheValueAt(const Napi::CallbackInfo &info) {
   return Napi::String::New(env, out);
 }
 
-// cacheEdge(id, t, dir, kind) -> time of the next (dir 1, time > t) or previous
+// cacheEdge(id, t, dir, kind, start?) -> time of the next (dir 1, time > t) or previous
 // (dir -1, time < t) change, or null. kind 0 any change, 1 rise (new value '1',
 // so x->1 counts, as in VaporView), 2 fall (new value '0'); rise/fall look at
-// 1-bit signals, wider ones treat them as any.
+// 1-bit signals, wider ones treat them as any. SystemVerilog kinds, by the change from the
+// previous value (1-bit signals only; wider ones throw): 3 posedge (0->1, 0->x, 0->z, x->1,
+// z->1), 4 negedge (1->0, 1->x, 1->z, x->0, z->0), 5 edge (either; x<->z is none). The
+// dump's first value (a first change at or before `start`, the dump's start time) is never an
+// edge; a first change after it is one from 'x'.
 Napi::Value cacheEdge(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 4)) return env.Undefined();
@@ -778,14 +782,28 @@ Napi::Value cacheEdge(const Napi::CallbackInfo &info) {
   const uint64_t t = argTime(info[1]);
   const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
   int kind = info[3].As<Napi::Number>().Int32Value();
-  if (s->bits != 1) kind = 0;
+  const uint64_t start = info.Length() > 4 && info[4].IsNumber() ? argTime(info[4]) : 0;
+  if (kind >= 3 && s->bits != 1) {
+    Napi::Error::New(env, "edge: posedge, negedge and edge need a 1-bit signal").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  if (kind < 3 && s->bits != 1) kind = 0;
   const size_t n = s->times.size();
   auto bit2 = [&](size_t k) -> int {  // 0..3 like the reader's bit types
     int b = s->val[k] & 1;
     if (!s->xz.empty()) b |= (s->xz[k] & 1) << 1;
     return b;
   };
-  auto isEdge = [&](size_t k) -> bool { return kind == 0 || bit2(k) == (kind == 1 ? 1 : 0); };
+  auto isEdge = [&](size_t k) -> bool {
+    if (kind == 0) return true;
+    const int b = bit2(k);
+    if (kind <= 2) return b == (kind == 1 ? 1 : 0);
+    if (k == 0 && s->times[0] <= start) return false;
+    const int a = k > 0 ? bit2(k - 1) : 2;  // (before the first change: 'x')
+    const bool pos = (a == 0 && b != 0) || (a >= 2 && b == 1);
+    const bool neg = (a == 1 && b != 1) || (a >= 2 && b == 0);
+    return kind == 3 ? pos : kind == 4 ? neg : pos || neg;
+  };
   if (dir > 0) {
     for (size_t k = upperIdx(s, t, 0, n); k < n; k++)
       if (isEdge(k)) return Napi::Number::New(env, (double)s->times[k]);
