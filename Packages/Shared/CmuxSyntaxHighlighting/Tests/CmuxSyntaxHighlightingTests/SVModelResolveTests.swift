@@ -344,6 +344,36 @@ import Testing
             == .signal(designPath: "tb.u_dut.u_a.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
     }
 
+    /// An extra top whose names equal the renamed DUT's (or a leaf instance's) is no evidence against it, but the
+    /// row is below `tb`, a scope the design has as it is with a renamed child: inference stays inside `tb`.
+    @Test func aRowBelowAScopeTheDesignHasStaysInIt() async throws {
+        // The DUT's own level is the extra top's (u_fifo and q), its one scope too few for a root of its own.
+        let twin = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]),
+            "tb.u_dut": Self.signals(["q": Self.bit]), "tb.u_dut.u_fifo": Self.signals(["x": Self.bit]),
+            "other": Self.signals(["q": Self.bit]), "other.u_fifo": Self.signals(["x": Self.bit]),
+        ], tops: ["other", "tb"])
+        let twinDump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk"]),
+            "tb.dut": Self.scopes(["u_fifo"]) + Self.bits(["q"]), "tb.dut.u_fifo": Self.bits(["x"]),
+        ]
+        // A leaf instance with the extra top's signals (clk and d).
+        let leaf = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]), "tb.u_dut": Self.signals(["d": Self.bit]),
+            "tb.u_dut.g_a[0].u_a": Self.signals(["clk": Self.bit, "d": Self.bit]),
+            "other": Self.signals(["clk": Self.bit, "d": Self.bit]),
+        ], tops: ["other", "tb"])
+        let leafDump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk"]),
+            "tb.dut": Self.scopes(["g_a[0]"]) + Self.bits(["d"]), "tb.dut.g_a[0]": Self.scopes(["u_a"]),
+            "tb.dut.g_a[0].u_a": Self.bits(["clk", "d"]),
+        ]
+        for (row, design, dump) in [("tb.dut.q", twin, twinDump), ("tb.dut.u_fifo.x", twin, twinDump), ("tb.dut.g_a[0].u_a.d", leaf, leafDump)] {
+            let got = try await resolve(row, design: design, dump: dump)
+            if case .signal(let designPath, _, _) = got { #expect(designPath.hasPrefix("tb."), "\(row) -> \(designPath)") }
+        }
+    }
+
     @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
         let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
         #expect(roots["soc"] == [
