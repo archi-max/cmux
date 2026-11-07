@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..9a0b36f
+index 0000000..2983016
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,275 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -272,6 +272,13 @@ index 0000000..9a0b36f
 +queue them behind the next visible request. A row whose last window reply was a cold ranged
 +read (`ranged` and not `warm`) costs the helper by the span it reads, so its level-out prefetch
 +asks only for the level-out tiles over the view, not those for the screens either side.
++
++## Prefetch timeouts don't slow rows; cold rows are batched apart
++
++`src/webview/window_cache.ts`:
++- A prefetch request (priority > 0) has a timeout of its own: 3x the window timeout, capped. The helper queues prefetch behind visible work by design, and on a 10 GB dump its replies came at 11-18 s.
++- When a prefetch request expires it is only cancelled: no `slow()`, so its rows get no backoff, no "helper is slow" notice and no batch splitting.
++- Answered rows are batched cold apart from the others. The span asked for is then the cold rows' own (their level-out over the view only), not the union with the warm rows' wider span.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2908,10 +2915,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..e9763b0
+index 0000000..8cddd2e
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1964 @@
+@@ -0,0 +1,1971 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3454,7 +3461,10 @@ index 0000000..e9763b0
 +      // cmux: a signal no reply has named yet goes alone, so each added signal draws when its
 +      // own first load is done; one request for 20 drew none until the slowest load (~10 s).
 +      g.filter((s) => !s.solo && !s.answered && s.timeouts < 2).forEach((s) => groups.push({buckets, sigs: [s]}));
-+      groups.push({buckets, sigs: g.filter((s) => !s.solo && s.answered && s.timeouts < 2)});
++      // cmux: cold rows apart, so the span asked for is their own (their level-out covers the
++      // view only), not the union with the warm rows' (a cold read costs by its span).
++      groups.push({buckets, sigs: g.filter((s) => !s.solo && s.answered && s.timeouts < 2 && !s.cold)});
++      groups.push({buckets, sigs: g.filter((s) => !s.solo && s.answered && s.timeouts < 2 && s.cold)});
 +      // Each timeout level is split on its own (2^(t-1) parts), so signals that just became
 +      // slow are halved, not cut as finely as one that has timed out many times.
 +      const levels = new Map<number, SignalWindows[]>();
@@ -3707,12 +3717,16 @@ index 0000000..e9763b0
 +    who.forEach((s) => span.forEach((t) => s.inflight.add(t.key)));
 +    // A reply that never comes (lost on the wire, helper restart) must not keep these tiles
 +    // "in flight" forever: expire, count a failure, ask again after the backoff (M7).
++    // cmux: prefetch waits behind visible work in the helper's queue by design (on a 10 GB dump
++    // its replies came at 11-18 s), so it has a timeout of its own (3x, capped), and expiring
++    // only cancels it: no slow(), so its rows get no backoff, notice or batch splitting.
 +    const timer = setTimeout(() => {
 +      const f = this.inflight.get(id);
 +      if (!f) {return;}
 +      this.cancel(id);
++      if (priority > 0) {return;}
 +      f.signals.forEach((sid) => {const s = this.signals.get(sid); if (s) {this.slow(s);}});
-+    }, this.windowTimeout(who));
++    }, priority > 0 ? Math.min(this.windowTimeoutCap, 3 * this.windowTimeout(who)) : this.windowTimeout(who));
 +    this.inflight.set(id, {id, tiles: span, priority, buckets, signals: who.map((s) => s.signalId), sentAt: performance.now(), gen: this.generation, timer});
 +    this.stats.requests++;
 +    // cmux: prefetch is marked, so the helper queues it behind visible work (one running task at most)
