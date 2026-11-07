@@ -299,6 +299,7 @@ enum WaveformTrace {
         )
         switch outcome {
         case .signal(let designPath, let designPrefix, let dumpPrefix):
+            sendSlangAliases(design: design, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix]
         case .notElaborated(let instance):
             throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
@@ -310,6 +311,47 @@ enum WaveformTrace {
                 ),
                 HierarchyPathMapping.join(dumpPath)
             ))
+        }
+    }
+
+    /// The rules each viewer's slang aliases were sent for (`design key|design prefix|dump prefix`).
+    private static let aliasRules = NSMapTable<FilePreviewPanel, NSString>.weakToStrongObjects()
+    /// Instances below the prefix whose models are asked for the aliases at most: each is built anew
+    /// by the sidecar, which answers the viewer's trace requests one at a time too.
+    static let maxAliasInstances = 400
+
+    /// Without a KDB model, the dump's port aliases from slang's models, once per viewer and rule (the
+    /// first trace resolved it): sent to the viewer's FSDB helper as the KDB's would be. In the
+    /// background, after the trace's own requests; a design with more instances below the prefix
+    /// than `maxAliasInstances` is left out.
+    private static func sendSlangAliases(design: Design, designPrefix: String, dumpPrefix: String, waveform: FilePreviewPanel) {
+        let rule = design.key + "|" + designPrefix + "|" + dumpPrefix
+        guard aliasRules.object(forKey: waveform) as String? != rule else { return }
+        aliasRules.setObject(rule as NSString, forKey: waveform)
+        Task { @MainActor [weak waveform] in
+            guard let waveform, await WaveformTraceKDB.model(for: waveform) == nil else { return }
+            let hierarchy: (tops: [String], instances: [String])
+            if let known = design.hierarchy {
+                hierarchy = known
+            } else {
+                guard let reply = try? await design.sidecar.request(["cmd": "instances"]) else { return }
+                hierarchy = (reply["tops"] as? [String] ?? [], reply["instances"] as? [String] ?? [])
+                design.hierarchy = hierarchy
+            }
+            // The instances below the prefix, and the prefix's own (its ports bind to its parent's nets).
+            let below = hierarchy.instances.filter { designPrefix.isEmpty || $0.hasPrefix(designPrefix + ".") }
+            guard !below.isEmpty, below.count <= maxAliasInstances else { return }
+            var models: [String: [String: Any]] = [:]
+            for path in below {
+                guard aliasRules.object(forKey: waveform) as String? == rule else { return }
+                if let model = try? await design.sidecar.request(["cmd": "instance", "path": path])["model"] as? [String: Any] {
+                    models[path] = model
+                }
+            }
+            let pairs = DesignAliasPairs.pairs(models: models, designPrefix: designPrefix, dumpPrefix: dumpPrefix,
+                                               limit: WaveformTraceKDB.maxAliasPairs)
+            guard !pairs.isEmpty, aliasRules.object(forKey: waveform) as String? == rule else { return }
+            _ = await waveform.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": pairs])
         }
     }
 
