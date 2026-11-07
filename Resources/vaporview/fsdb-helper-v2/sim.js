@@ -14,7 +14,9 @@
 //       The simulator is novas_dump.log's option[0] (relative to dir) and its run arguments are
 //       the options before the compiler entry, without +fsdb*, -l <file>, -ucli, -ucli2Proc.
 //       -> {t, precision, period, simv, args, dumpFile}. Refused without the stub in <simv>.daidir's
-//       build record, with {needsFlag} and the line to add in the error.
+//       build record, with {needsFlag} and the line to add in the error. The replay runs in a private copy
+//       of `dir` (sim-worker.js "run directory": inputs copied, nested folders kept, outputs left out, an
+//       optional cmux-replay.json naming cwd/inputs/env); a run folder it can't copy is the open's error.
 //   sim.run {cycles | time}, sim.until {expr, maxCycles | maxTime}  -> {started: true} at once; the end
 //       comes in a poll's `stop`.
 //   sim.stop {}                     -> {t} once stopped
@@ -29,6 +31,8 @@
 //       and reported in `gaps: [{simSignal, from, through}]`: that signal's changes at from..through were lost,
 //       so its value is unknown from `from` until its next record (in this reply or a later one). Each gap
 //       is reported once; a consumer must show it as missing, not as the value before it.
+//       notices: [{event: 'missingInput', file, message, hint}]: the simulator could not open an input in
+//       the replay's copy of the run folder (each once).
 //   sim.close {}                    -> {} (the simulation is ended and its processes killed)
 // Times are in the simulator's precision (10^precision s).
 'use strict';
@@ -92,14 +96,15 @@ function buildRecord(simv) {
 let cur = null;   // {proc, ready, pending: Map, nextId, buf, hdr, records: [{simSignal, t, value}] , bytes, dropped, stop, running, waiters, t, widths}
 const flagLine = () => `-load ${STUB}:simctl_register`;
 
-function startWorker(simv, args, clock) {
+function startWorker(simv, args, clock, runDir) {
   const scratch = fs.mkdtempSync(path.join(process.env.CMUX_SIM_SCRATCH || process.cwd() || os.tmpdir(), 'sim-'));
   fs.chmodSync(scratch, 0o700);
-  const wargs = [WORKER, '--simv', simv, '--lib', LIB, '--scratch', scratch, '--run', 'run'];
+  // The replay runs in a private copy of the original run's folder: novas_dump.log's, where the dumper ran.
+  const wargs = [WORKER, '--simv', simv, '--lib', LIB, '--scratch', scratch, '--run', 'run', '--cwd', runDir];
   if (clock) wargs.push('--clock', clock);
   wargs.push('--', ...args);
   const proc = spawn(process.execPath, wargs, { stdio: ['pipe', 'pipe', 'pipe'], detached: false });
-  const s = { proc, scratch, pending: new Map(), nextId: 1, buf: Buffer.alloc(0), hdr: null, batches: [], bytes: 0, dropped: 0, gaps: new Map(),
+  const s = { proc, scratch, pending: new Map(), nextId: 1, buf: Buffer.alloc(0), hdr: null, batches: [], bytes: 0, dropped: 0, gaps: new Map(), notices: [], setupError: null,
     stop: null, running: false, waiters: [], t: 0, widths: new Map(), exited: null, stderr: '' };
   s.ready = new Promise((resolve, reject) => { s.readyRes = resolve; s.readyRej = reject; });
   proc.stderr.on('data', (d) => { s.stderr = (s.stderr + d).slice(-4000); });
@@ -107,7 +112,7 @@ function startWorker(simv, args, clock) {
   proc.on('exit', (code, signal) => {
     s.exited = { code, signal };
     s.running = false;
-    s.readyRej(new Error(`simulation exited before it was ready (${code ?? signal})${s.stderr ? ': ' + s.stderr.trim().split('\n').slice(-3).join(' ') : ''}`));
+    s.readyRej(new Error(s.setupError || `simulation exited before it was ready (${code ?? signal})${s.stderr ? ': ' + s.stderr.trim().split('\n').slice(-3).join(' ') : ''}`));
     for (const [, p] of s.pending) p.reject(new Error('simulation exited'));
     s.pending.clear();
     wake(s);
@@ -133,6 +138,10 @@ function onData(s, d) {
       if (m.event === 'changes') { if (m.binLength) { s.hdr = m; } continue; }
       if (m.event === 'ready') { s.t = m.t; s.period = Number(m.period) || 0; s.readyRes(m); }
       if (m.event === 'finish') { s.t = m.t; }
+      if (m.event === 'setupError') { s.setupError = String(m.message || 'the run folder could not be set up'); }
+      if (m.event === 'missingInput' && s.notices.length < 50) {
+        s.notices.push({ event: 'missingInput', file: m.file || null, message: String(m.message || ''), hint: String(m.hint || '') }); wake(s);
+      }
       continue;
     }
     const p = s.pending.get(m.id);
@@ -251,7 +260,7 @@ const handlers = {
     }
     if (!fs.existsSync(LIB)) throw new Error('live simulation is not built on this host (it needs VCS when cmux builds its helper)');
     const args = runArgs(parsed.args);
-    const s = startWorker(simv, args, req.clock ? names([req.clock])[0] : '');
+    const s = startWorker(simv, args, req.clock ? names([req.clock])[0] : '', path.resolve(dir));
     cur = s;
     let ready;
     try { ready = await s.ready; } catch (e) { kill(s); cur = null; throw e; }
@@ -292,15 +301,16 @@ const handlers = {
   async 'sim.poll'(req) {
     const s = needSim();
     const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, Number(req.waitMs) || 0));
-    if (!s.batches.length && !s.gaps.size && !s.stop && !s.exited) {
+    if (!s.batches.length && !s.gaps.size && !s.notices.length && !s.stop && !s.exited) {
       await new Promise((resolve) => { const t = setTimeout(resolve, waitMs); s.waiters.push(() => { clearTimeout(t); resolve(); }); });
     }
     const { signals, bin } = takeChanges(s);
     const stop = s.stop; s.stop = null;
     const dropped = s.dropped; s.dropped = 0;
+    const notices = s.notices; s.notices = [];
     const gaps = [...s.gaps].filter(([id]) => s.widths.has(id)).map(([simSignal, g]) => ({ simSignal, from: g.from, through: g.through }));
     s.gaps.clear();
-    return { result: { t: s.t, running: s.running, stop, signals, dropped, gaps, exited: s.exited }, bin };
+    return { result: { t: s.t, running: s.running, stop, signals, dropped, gaps, notices, exited: s.exited }, bin };
   },
   async 'sim.close'() {
     if (cur) { const s = cur; cur = null; kill(s); }

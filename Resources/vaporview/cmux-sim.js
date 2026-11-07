@@ -144,6 +144,8 @@
       const L = live();
       const res = r.result;
       let tMax = typeof res.t === 'number' ? res.t : st.t;
+      // The replay could not open an input (its copy of the run folder lacks it): say so, with the way out.
+      for (const n of res.notices || []) { if (n.event === 'missingInput') { st.error = n.hint ? `${n.message} (${n.hint})` : n.message; } }
       // Changes the helper had to drop (its buffer was full): missing from there until the signal's next record.
       for (const g of res.gaps || []) {
         const p = bySim.get(g.simSignal);
