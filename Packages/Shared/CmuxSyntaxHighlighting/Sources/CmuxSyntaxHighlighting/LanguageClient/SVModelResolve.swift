@@ -22,10 +22,12 @@ public enum SVModelResolve {
     /// `dumpPath` (a row's netlist path) mapped by `mapping`, else by a rule inferred against
     /// `designRoots` (each design top and its children). A row keeping a range as wide as its
     /// signal (FSDB's `x[0:0]` for a 1-bit vector) is the signal without it, as host.js
-    /// `withoutRange` reads rows.
+    /// `withoutRange` reads rows. `loadMessages`: slang's errors loading the design (the sidecar's
+    /// `messages`); a row below a scope the design lacks is `.notElaborated` only with some.
     public static func resolve(
         dumpPath: [String],
         mapping: HierarchyPathMapping,
+        loadMessages: [String] = [],
         lookup: Lookup,
         model: Model,
         designRoots: () async throws -> [String: [HierarchyNode]],
@@ -46,7 +48,9 @@ public enum SVModelResolve {
             if let found = await signal(dumpPath, mapping: mapping, lookup: lookup, model: model) { return found }
         }
         // The path as the mapping gives it (the dump's own hierarchy): inference may have moved it.
-        if let found = await lookup(mappedPath), let instanceModel = await model(found.instance),
+        // Only a load with errors (slang's UnknownModule) leaves a module out: in a clean design a
+        // scope the model lacks is a named block, a task, or a name the dump gives differently.
+        if !loadMessages.isEmpty, let found = await lookup(mappedPath), let instanceModel = await model(found.instance),
            let missing = SVModelLoad.missingInstance(below: found.instance, name: found.name, inModel: instanceModel) {
             return .notElaborated(instance: missing)
         }
@@ -131,6 +135,11 @@ public enum SVModelResolve {
             kept += 1
         }
         return roots
+    }
+
+    /// The load error to show with `.notElaborated`: the first UnknownModule, else the first.
+    public static func loadDetail(_ messages: [String]) -> String? {
+        messages.first { $0.hasSuffix("UnknownModule") } ?? messages.first
     }
 
     /// `name`'s trailing `[msb:lsb]`: the name before it and the bits it spans.
