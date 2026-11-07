@@ -403,7 +403,7 @@
     // $value$plusargs output, or an assignment whose right side calls a function that writes a
     // module variable) ran: what the model says it writes.
     function ranWrites(s, ctx) {
-      if (Array.isArray(s.writes)) { s.writes.forEach((w) => ctx.opaque.push({ stmt: s, name: w.name })); }
+      if (Array.isArray(s.writes)) { s.writes.forEach((w) => ctx.opaque.push({ stmt: s, name: w.name, at: writeSites(s, w) })); }
     }
 
     // X-propagation: run each branch from the same state and merge what they write, per bit
@@ -471,6 +471,17 @@
     }
     // What an opaque statement or a condition with side effects writes (the model's "writes").
     const opaqueWrites = (s, name) => Array.isArray(s.writes) && s.writes.some((w) => w.name === name);
+    // Where the model says a write is made inside such a statement ({src, loc}: the assignment, the
+    // ++ or the call): [] when it doesn't say. Used only for a block slang could not bind as a whole
+    // (opaque, Invalid: a call to a task it wasn't given), where the statement is the whole block;
+    // any other opaque statement is its own line already, and is shown as it is.
+    function writeSites(s, w) { return s && s.k === 'opaque' && s.why === 'Invalid' && w && Array.isArray(w.at) ? w.at.filter((a) => a && Array.isArray(a.loc)) : []; }
+    // An opaque statement's writes of `name`, as statements to show: for a block slang could not
+    // bind, the lines that write it; else the statement.
+    function opaqueSites(s, name) {
+      const at = writeSites(s, Array.isArray(s.writes) ? s.writes.find((w) => w.name === name) : null);
+      return at.length ? at.map((a) => ({ k: 'site', src: a.src || s.src, loc: a.loc, of: s })) : [s];
+    }
     function stmtWrites(s, name) {
       if (!s) { return false; }
       if (opaqueWrites(s, name)) { return true; }
@@ -851,7 +862,7 @@
         case 'timed': collectWrites(s.stmt, name, out); return;
         case 'if': collectWrites(s.t, name, out); collectWrites(s.f, name, out); return;
         case 'case': s.items.forEach((it) => collectWrites(it.s, name, out)); collectWrites(s.dflt, name, out); return;
-        default: if (opaqueWrites(s, name)) { out.push(s); }
+        default: if (opaqueWrites(s, name)) { out.push(...opaqueSites(s, name)); }
       }
     }
 
@@ -1107,7 +1118,11 @@
         const base = sg && sg.element ? sg.element.array : name;
         const ow = ctx.opaque.find((o) => o.name === base || o.name === name);
         if (ow) {
-          r.stmt = { src: ow.stmt.src, loc: locOf(m, ow.stmt.loc) };
+          // One line of it writes the signal: that line (still not re-executed, so approximate);
+          // several: the statement, with those lines as candidates.
+          const sites = ow.at || [];
+          r.stmt = sites.length === 1 ? { src: sites[0].src || ow.stmt.src, loc: locOf(m, sites[0].loc) } : { src: ow.stmt.src, loc: locOf(m, ow.stmt.loc || p.loc) };
+          if (sites.length > 1) { r.candidates = sites.slice(0, 32).map((a) => ({ src: a.src || ow.stmt.src, loc: locOf(m, a.loc) })); }
           if (!r.reasons.some((x) => x.code === 'statement' || x.code === 'lvalue')) { r.reasons.push({ code: 'statement', why: ow.stmt.why, src: ow.stmt.src }); }
           notDumped(r, ctx);
           return r;

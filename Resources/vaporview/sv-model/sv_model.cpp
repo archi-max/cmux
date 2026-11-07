@@ -401,10 +401,15 @@ bool readsOnlyByName(std::string_view n) {
 // are assignments too), x++ / x-- operands; the symbol under selects and member accesses. Also what
 // it may write that isn't re-executed: a variable given by name to a simulator's own task (one
 // slang doesn't know, such as a vendor $deposit-style task), and the module variables a called
-// task's or function's body writes (followed a few calls deep, without recursion).
-struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | VisitFlags::Expressions> {
+// task's or function's body writes (followed a few calls deep, without recursion). Into what slang
+// could not bind too (a block with a call to a task it wasn't given is Invalid as a whole; its
+// child still holds the statements). `sites`: for each of `out`, where it is written (the
+// assignment, the ++/--, or the call), at most 8.
+struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | VisitFlags::Expressions | VisitFlags::Bad> {
     std::vector<const Symbol*> out;
+    std::vector<std::vector<const Expression*>> sites;
     std::vector<const SubroutineSymbol*> calling;
+    const Expression* site = nullptr;
     static bool within(const Symbol& s, const Symbol& outer) {
         for (auto scope = s.getParentScope(); scope; scope = scope->asSymbol().getParentScope())
             if (&scope->asSymbol() == &outer)
@@ -421,9 +426,26 @@ struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | Vis
                 return p->as<PortSymbol>().direction == ArgumentDirection::In;
         return false;
     }
-    void addSymbol(const Symbol* sym) {
-        if (sym && std::find(out.begin(), out.end(), sym) == out.end())
+    void addSymbol(const Symbol* sym, const Expression* at) {
+        if (!sym)
+            return;
+        auto it = std::find(out.begin(), out.end(), sym);
+        if (it == out.end()) {
             out.push_back(sym);
+            sites.emplace_back();
+            it = out.end() - 1;
+        }
+        auto& here = sites[size_t(it - out.begin())];
+        if (at && here.size() < 8 && std::find(here.begin(), here.end(), at) == here.end())
+            here.push_back(at);
+    }
+    void handle(const InvalidStatement& s) {
+        if (s.child)
+            s.child->visit(*this);
+    }
+    void handle(const InvalidExpression& e) {
+        if (e.child)
+            e.child->visit(*this);
     }
     void handle(const CallExpression& c) {
         if (c.isSystemCall()) {
@@ -434,7 +456,7 @@ struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | Vis
                         continue;
                     auto sym = arg->as<ArbitrarySymbolExpression>().symbol;
                     if (sym && (sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Net) && !inputPort(*sym))
-                        addSymbol(sym);
+                        addSymbol(sym, &c);
                 }
             }
         }
@@ -447,7 +469,7 @@ struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | Vis
             // Its own locals and arguments aren't the caller's variables.
             for (auto sym : inner.out)
                 if (!within(*sym, *sub))
-                    addSymbol(sym);
+                    addSymbol(sym, &c);
         }
         visitDefault(c);
     }
@@ -471,16 +493,23 @@ struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | Vis
                 add(*op);
             return;
         }
-        addSymbol(base(&lv));
+        addSymbol(base(&lv), site);
     }
     void handle(const AssignmentExpression& a) {
+        auto outer = site;
+        site = &a;
         add(a.left());
+        site = outer;
         visitDefault(a);
     }
     void handle(const UnaryExpression& u) {
         if (u.op == UnaryOperator::Preincrement || u.op == UnaryOperator::Predecrement ||
-            u.op == UnaryOperator::Postincrement || u.op == UnaryOperator::Postdecrement)
+            u.op == UnaryOperator::Postincrement || u.op == UnaryOperator::Postdecrement) {
+            auto outer = site;
+            site = &u;
             add(u.operand());
+            site = outer;
+        }
         visitDefault(u);
     }
 };
@@ -790,6 +819,16 @@ private:
     }
     std::string text(const Expression& e) const { return e.syntax ? trim(e.syntax->toString()) : ""; }
     std::string text(const Statement& s) const { return s.syntax ? trim(s.syntax->toString()) : ""; }
+    // An expression's own text, without the comments and line breaks before it.
+    std::string ownText(const Expression& e) const {
+        if (!e.syntax)
+            return "";
+        auto all = e.syntax->toString();
+        size_t lead = 0;
+        for (auto& t : e.syntax->getFirstToken().trivia())
+            lead += t.getRawText().size();
+        return trim(lead <= all.size() ? all.substr(lead) : all);
+    }
     static std::string trim(std::string s) {
         // Comments and line breaks inside a statement: one line, spaces collapsed.
         std::string out;
@@ -1492,23 +1531,57 @@ private:
         w.endObject();
     }
 
-    // "writes": [{name}...], the variables `f` finds written (procedural locals left out), if any.
+    // "writes": [{name, at?: [{src, loc}...]}...], the variables `f` finds written (procedural locals
+    // left out), if any, with where each is written (an opaque statement's own lines).
     void writeWrites(JsonWriter& w, const WriteFinder& f) {
         std::vector<std::string> names;
-        for (auto sym : f.out) {
-            auto n = writtenName(throughModport(*sym));
-            if (n.rfind("$local:", 0) == 0 || std::find(names.begin(), names.end(), n) != names.end())
+        std::vector<std::vector<const Expression*>> at;
+        for (size_t i = 0; i < f.out.size(); i++) {
+            auto n = writtenName(throughModport(*f.out[i]));
+            if (n.rfind("$local:", 0) == 0)
                 continue;
-            names.push_back(n);
+            auto k = std::find(names.begin(), names.end(), n);
+            if (k == names.end()) {
+                names.push_back(n);
+                at.emplace_back();
+                k = names.end() - 1;
+            }
+            auto& here = at[size_t(k - names.begin())];
+            for (auto e : f.sites[i])
+                if (here.size() < 8)
+                    here.push_back(e);
         }
         if (names.empty())
             return;
         w.writeProperty("writes");
         w.startArray();
-        for (auto& n : names) {
+        for (size_t i = 0; i < names.size(); i++) {
             w.startObject();
             w.writeProperty("name");
-            w.writeValue(n);
+            w.writeValue(names[i]);
+            bool any = false;
+            for (auto e : at[i]) {
+                if (!loc(e->sourceRange).valid)
+                    continue;
+                if (!any) {
+                    w.writeProperty("at");
+                    w.startArray();
+                    any = true;
+                }
+                w.startObject();
+                auto src = ownText(*e);
+                if (src.size() > 160)
+                    src = src.substr(0, 157) + "...";
+                // (none for a write slang made up, such as a $value$plusargs output argument)
+                if (!src.empty()) {
+                    w.writeProperty("src");
+                    w.writeValue(src);
+                }
+                writeLocProp(w, "loc", e->sourceRange);
+                w.endObject();
+            }
+            if (any)
+                w.endArray();
             w.endObject();
         }
         w.endArray();
