@@ -1372,8 +1372,8 @@
       return { total: list.length, entries: list.slice(offset, offset + limit), next: offset + limit < list.length ? offset + limit : null };
     }
     // An interface's signal: each modport taking it as an input (kind 'modport', a connection),
-    // and its reads through the interface port in the instances under the interface's parent
-    // (where its ports can reach: `via: 'interface'`), walked down to INTERFACE_WALK instances.
+    // and its reads in the interface's parent and the instances under it (where its ports can
+    // reach: `via: 'interface'`), walked down to INTERFACE_WALK instances.
     const INTERFACE_WALK = 512;
     async function interfaceLoads(m, path, base, out, limits) {
       for (const mp of m.modports || []) {
@@ -1392,11 +1392,10 @@
       while (todo.length) {
         const x = todo.shift();
         if (++seen > INTERFACE_WALK) { limits.interfaceWalk = { instances: INTERFACE_WALK, capped: true }; return; }
-        if (x !== pm) {
-          const found = [];
-          loadsIn(x, path, found, limits);
-          found.forEach((e) => { e.via = 'interface'; out.push(e); });
-        }
+        // (the parent too: it can read the interface instance's members itself)
+        const found = [];
+        loadsIn(x, path, found, limits);
+        found.forEach((e) => { e.via = 'interface'; out.push(e); });
         for (const c of x.children || []) {
           if (c.path === m.path) { continue; }
           const cm = await model(c.path);
