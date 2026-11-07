@@ -45,26 +45,32 @@ enum WaveformTraceKDB {
 
     /// The viewer opened (or reopened) its dump: its KDB's model is asked for in the background
     /// (the host's cache answers unless the KDB changed; one export per KDB at a time), and its
-    /// port aliases go to the viewer's helper. The open and its traces never wait for it.
+    /// port aliases go to the viewer's helper. The open and its traces never wait for it. An open
+    /// while the export runs joins it, and the export runs once more when it ends (it may have
+    /// read the KDB before the simulation that this open follows rewrote it).
     static func waveformOpened(_ waveform: FilePreviewPanel) {
         guard let (key, remote) = key(for: waveform) else { return }
         let viewers = waiting[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+        viewers.add(waveform)
         switch schedule.opened(key, enabled: isEnabled) {
         case .off:
             return
         case .join:
-            viewers.add(waveform)
             waiting[key] = viewers
             return
         case .start:
-            break
+            waiting[key] = viewers
+            export(key: key, remote: remote)
         }
+    }
+
+    /// One export of the KDB `key`; run again while the schedule says it is still pending.
+    private static func export(key: String, remote: FilePreviewWaveformSession.RemoteFSDB) {
         guard let scripts = bundledScripts() else {
+            waiting.removeValue(forKey: key)
             _ = schedule.finished(key, .unavailable(code: "start", message: "no bundled scripts"))
             return
         }
-        viewers.add(waveform)
-        waiting[key] = viewers
         let command = KDBModelLaunch.command(launcher: scripts.launcher, exporter: scripts.exporter, fsdbPath: remote.remotePath)
         let arguments = remote.sshArguments("sh -c '\(command)'")
         Task { @MainActor in
@@ -74,8 +80,14 @@ enum WaveformTraceKDB {
                 guard case .model(let model, _) = outcome else { return (outcome, []) }
                 return (outcome, model.aliasPairs(limit: maxAliasPairs))
             }.value
+            let line = schedule.finished(key, outcome)
+            if schedule.pending(key) {
+                // An open joined it: its answer is dropped, and the viewers wait for the next one.
+                export(key: key, remote: remote)
+                return
+            }
             let viewers = waiting.removeValue(forKey: key)?.allObjects ?? []
-            if let line = schedule.finished(key, outcome) {
+            if let line {
                 waveformTraceKDBLogger.info("\(line, privacy: .public)")
             }
             guard case .model(let model, let cached) = outcome else { return }
@@ -87,6 +99,12 @@ enum WaveformTraceKDB {
                 }
             }
         }
+    }
+
+    /// Whether the viewer's dump has a KDB export in flight: a trace now uses slang's design.
+    static func pending(for waveform: FilePreviewPanel) -> Bool {
+        guard isEnabled, let (key, _) = key(for: waveform) else { return false }
+        return schedule.pending(key)
     }
 
     /// The dump's KDB model, when an export gave one; never waits (nil: none yet, or none to have).

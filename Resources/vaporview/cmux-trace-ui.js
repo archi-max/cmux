@@ -16,7 +16,9 @@
 //                                 designId (also in a resolve's answer): the design cmux traced in,
 //                                 sent back with every model request; another one starts a new session.
 //                                 A resolve's kdbDiffers (text): the KDB mapped the row, and the compiled
-//                                 design and slang's differ there; the steps are approximate and say so
+//                                 design and slang's differ there; the steps are approximate and say so.
+//                                 A resolve's kdbPending (true): the dump's KDB export still runs, so
+//                                 slang's design was used; each step says so
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
 //   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log?, focus?, entry? })
@@ -556,7 +558,9 @@
       if (!kept.has(key)) {
         kept.set(key, request('model', { cmd, path, design: s.designId }).catch((error) => {
           kept.delete(key);
-          if (error && error.code === 'designChanged' && session === s) { session = null; }
+          // cmux no longer has the design (another load, or none: evicted, its build failed):
+          // the session ends, so the next trace resolves anew and never takes these answers.
+          if (error && (error.code === 'designChanged' || error.code === 'noDesign') && session === s) { session = null; }
           throw error;
         }));
       }
@@ -639,16 +643,24 @@
       session.options = { xprop: q.xprop || 'auto' };
       session.engine = window.cmuxTrace.createEngine({ models: sessionModels(session), dump, options: session.options });
     }
-    // This row's (each trace resolves anew): what differs from the compiled design, if anything.
+    // This row's (each trace resolves anew): what differs from the compiled design, if anything,
+    // and whether the dump's KDB export still runs (slang's design is used until it answers).
     session.kdbDiffers = q.kdbDiffers ? String(q.kdbDiffers) : '';
+    session.kdbPending = q.kdbPending === true;
     return time;
   }
 
   // A step in a design whose row cmux mapped with the KDB where the compiled design and slang's
   // differ (resolve's kdbDiffers says what): slang's statements may not be what ran, so the step
   // is approximate and says why.
+  // While the dump's KDB export runs, the step says it was traced with slang's design (its trust
+  // is slang's own: the design a dump without a KDB is traced with).
   function kdbMark(s, step) {
-    if (!s || !s.kdbDiffers || !step || step.error) { return step; }
+    if (!s || !step || step.error) { return step; }
+    if (s.kdbPending && !(step.reasons || []).some((r) => r.code === 'kdbPending')) {
+      step.reasons = (step.reasons || []).concat([{ code: 'kdbPending' }]);
+    }
+    if (!s.kdbDiffers) { return step; }
     step.reasons = (step.reasons || []).concat([{ code: 'kdbDiffers', why: s.kdbDiffers }]);
     if (step.trust === 'exact' || step.trust === 'computed') { step.trust = 'approximate'; }
     return step;

@@ -45,14 +45,12 @@ enum WaveformTrace {
             self.hostIdentity = hostIdentity
         }
 
-        /// The page's name for this design in `generation` (resolve's and the editor's `designId`).
-        func id(_ generation: Int) -> String { key + "#" + String(generation) }
+        /// The page's name for this design in `generation` (resolve's and the editor's `designId`):
+        /// unique in the process, so a design made again under the same key is another one's.
+        func id(_ generation: Int) -> String { session.designId(key: key, generation: generation) }
 
         /// The generation a page's `designId` names, when it is this design's.
-        func generation(ofId id: String) -> Int? {
-            guard let hash = id.lastIndex(of: "#"), id[..<hash] == key else { return nil }
-            return Int(id[id.index(after: hash)...])
-        }
+        func generation(ofId id: String) -> Int? { session.generation(ofDesignId: id, key: key) }
     }
 
     struct Failure: Error {
@@ -317,14 +315,26 @@ enum WaveformTrace {
             }
         }
         guard let outcome else { throw Failure(message: designChangedMessage) }
+        // The dump's KDB export still runs (the viewer just opened or reloaded it): slang's design
+        // was used, and the steps say so; a row slang lacks may be in the compiled design.
+        let kdbPending = WaveformTraceKDB.pending(for: waveform)
         switch outcome {
         case .signal(let designPath, let designPrefix, let dumpPrefix):
             sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
-            return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation)]
+            return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation),
+                    "kdbPending": kdbPending]
         case .approximate(let designPath, let designPrefix, let dumpPrefix, let differences):
             sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation),
                     "kdbDiffers": kdbDiffersText(differences)]
+        case .notElaborated where kdbPending, .notInDesign where kdbPending:
+            throw Failure(message: String(
+                format: String(
+                    localized: "waveformTrace.kdbStillLoading",
+                    defaultValue: "%@ is not in slang’s design, and the compiled design (KDB) is still loading; it may have it. Trace again in a few seconds."
+                ),
+                HierarchyPathMapping.join(dumpPath)
+            ))
         case .notElaborated(let instance):
             throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
         case .compiledOnly(let row, let reason, let writes):
@@ -576,6 +586,7 @@ enum WaveformTrace {
         argument["time"] = NSNull()
         argument["design"] = built.key
         argument["designId"] = built.id(built.session.generation)
+        argument["kdbPending"] = WaveformTraceKDB.pending(for: waveform)
         editor.closeLinkProgress()
         // The build's done (queued behind its progress calls) before the trace, as the page expects.
         await buildSends[built.key]?.value
@@ -931,6 +942,7 @@ enum WaveformTrace {
             "traceReason_held": String(localized: "waveformTrace.reason.held", defaultValue: "The latch holds the value it had at %@."),
             "traceReason_enginesDiffer": String(localized: "waveformTrace.reason.enginesDiffer", defaultValue: "Verdi names another statement: %@."),
             "traceReason_kdbDiffers": String(localized: "waveformTrace.reason.kdbDiffers", defaultValue: "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@."),
+            "traceReason_kdbPending": String(localized: "waveformTrace.reason.kdbPending", defaultValue: "The compiled design (KDB) is still loading, so this was traced with slang’s design."),
         ]
     }
 }

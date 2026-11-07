@@ -5,7 +5,9 @@ import Foundation
 /// of the open or a trace: a trace takes the model when it has come and slang's design until then.
 /// - Off (the setting): no export, no model; tracing is slang's.
 /// - One export in flight per KDB (`key`: the host and the dump's folder, where the launcher finds
-///   the KDB), whichever viewers open its dumps: a viewer opening while it runs joins it.
+///   the KDB), whichever viewers open its dumps: a viewer opening while it runs joins it. That
+///   export may have read the KDB before a rerun rewrote it, so its answer is dropped and it runs
+///   once more when it ends (`pending` stays true; the host's cache answers an unchanged KDB).
 /// - An export that fails says so in one log line per KDB (until one gives a model), and its
 ///   KDB keeps slang's design; the host does not try that KDB again until it changes (npi-model.sh
 ///   answers `tried`), so a viewer opening it later costs no seat.
@@ -24,6 +26,8 @@ public struct KDBExportSchedule: Sendable {
 
     private let maxModels: Int
     private var running: Set<String> = []
+    /// Running exports an open joined: their answer is dropped and they run once more.
+    private var superseded: Set<String> = []
     private var models: [String: KDBDesignModel] = [:]
     /// KDBs whose failure was logged (until one gives a model).
     private var said: Set<String> = []
@@ -44,13 +48,23 @@ public struct KDBExportSchedule: Sendable {
     public mutating func opened(_ key: String, enabled: Bool) -> Opened {
         guard enabled else { return .off }
         use(key)
-        guard running.insert(key).inserted else { return .join }
         models[key] = nil
+        guard running.insert(key).inserted else {
+            superseded.insert(key)
+            return .join
+        }
         return .start
     }
 
-    /// The export ended: its model is kept, or the log line for its failure (nil: none to say again).
+    /// Whether an export of this KDB is in flight (a trace uses slang's design until it answers).
+    public func pending(_ key: String) -> Bool {
+        running.contains(key)
+    }
+
+    /// The export ended: its model is kept, or the log line for its failure (nil: none to say
+    /// again). An export an open joined is dropped and stays `pending`: the caller runs it again.
     public mutating func finished(_ key: String, _ outcome: KDBModelLaunch.Outcome) -> String? {
+        if superseded.remove(key) != nil, running.contains(key) { return nil }
         running.remove(key)
         switch outcome {
         case .model(let model, _):

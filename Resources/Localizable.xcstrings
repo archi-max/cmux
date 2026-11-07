@@ -485758,6 +485758,65 @@
         }
       }
     },
+    "waveformTrace.kdbStillLoading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not in slang’s design, and the compiled design (KDB) is still loading; it may have it. Trace again in a few seconds."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は slang のデザインにありません。コンパイル済みデザイン(KDB)はまだ読み込み中で、そちらにはあるかもしれません。数秒後にもう一度トレースしてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht in slangs Design, und das kompilierte Design (KDB) wird noch geladen; es kann es enthalten. Verfolgen Sie es in einigen Sekunden erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’est pas dans le design de slang, et le design compilé (KDB) est encore en cours de chargement ; il peut le contenir. Relancez le traçage dans quelques secondes."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ غير موجود في تصميم slang، ولا يزال التصميم المُصرَّف (KDB) قيد التحميل وقد يحتويه. أعد التتبع بعد بضع ثوانٍ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está en el diseño de slang, y el diseño compilado (KDB) aún se está cargando; puede que lo tenga. Vuelve a trazar en unos segundos."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在 slang 的設計中,而已編譯的設計(KDB)仍在載入,其中可能有它。請在幾秒後再追蹤一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在 slang 的设计中,而已编译的设计(KDB)仍在加载,其中可能有它。请在几秒后再追踪一次。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 은(는) slang의 설계에 없으며, 컴파일된 설계(KDB)를 아직 불러오는 중이라 그쪽에는 있을 수 있습니다. 몇 초 후 다시 추적하세요."
+          }
+        }
+      }
+    },
     "waveformTrace.noProvenance": {
       "extractionState": "manual",
       "localizations": {
@@ -487052,6 +487111,65 @@
           "stringUnit": {
             "state": "translated",
             "value": "여기서는 slang의 설계가 컴파일된 설계(KDB)와 달라, 그 문장이 실제로 실행된 것과 다를 수 있습니다: %@."
+          }
+        }
+      }
+    },
+    "waveformTrace.reason.kdbPending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The compiled design (KDB) is still loading, so this was traced with slang’s design."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル済みデザイン(KDB)をまだ読み込み中のため、slang のデザインでトレースしました。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das kompilierte Design (KDB) wird noch geladen, daher wurde mit slangs Design verfolgt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le design compilé (KDB) est encore en cours de chargement ; le traçage a donc utilisé le design de slang."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يزال التصميم المُصرَّف (KDB) قيد التحميل، لذا تم التتبع بتصميم slang."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño compilado (KDB) aún se está cargando, así que se trazó con el diseño de slang."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已編譯的設計(KDB)仍在載入,因此以 slang 的設計追蹤。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已编译的设计(KDB)仍在加载,因此使用 slang 的设计追踪。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일된 설계(KDB)를 아직 불러오는 중이라 slang의 설계로 추적했습니다."
           }
         }
       }

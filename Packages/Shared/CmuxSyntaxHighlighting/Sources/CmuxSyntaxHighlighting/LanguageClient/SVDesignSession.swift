@@ -37,14 +37,37 @@ public final class SVDesignSession: @unchecked Sendable {
     private var keptMessages: [String] = []
     private var keptSourceTimes: [String: Int64]?
 
+    /// This session's number, unique in the process: a design made again under the same key (a new
+    /// sidecar after an eviction or a failed build) counts its generations from 1 again, so its
+    /// ids name the session as well.
+    public let serial: Int
+    private static let serials = NSLock()
+    nonisolated(unsafe) private static var lastSerial = 0
+
     public init(sidecar: SVModelSidecar, args: [String], cwd: String) {
         self.sidecar = sidecar
         self.args = args
         self.cwd = cwd
+        serial = Self.serials.withLock {
+            Self.lastSerial += 1
+            return Self.lastSerial
+        }
     }
 
     /// The generation of the design the sidecar holds now.
     public var generation: Int { sidecar.designGeneration }
+
+    /// A page's name for this session's design in `generation` under `key`: `key#serial.generation`.
+    public func designId(key: String, generation: Int) -> String {
+        key + "#" + String(serial) + "." + String(generation)
+    }
+
+    /// The generation `id` names, when it is this session's under `key` (nil: another session's or key's).
+    public func generation(ofDesignId id: String, key: String) -> Int? {
+        let prefix = key + "#" + String(serial) + "."
+        guard id.hasPrefix(prefix), let generation = Int(id.dropFirst(prefix.count)) else { return nil }
+        return generation
+    }
 
     /// slang's messages from loading the current design (its errors first).
     public var loadMessages: [String] {
