@@ -1334,6 +1334,10 @@ const HOT_READERS = Math.max(1, Number(process.env.FSDB_WARM_READERS || 1));
 // is reopened). A set (fingerprint: its sorted ids) that failed, or was oversized or rebuilt for
 // growth, waits FSDB_WARM_BACKOFF_MS before it is tried again, doubling each time (at most 5 min).
 const HOT_PROCS = 2 * HOT_READERS;
+// One reader budget, cold workers included (Refs #6): FSDB_READERS processes reading the dump at
+// once (default: the workers plus HOT_READERS). A set rebuild at the budget retires the ready
+// readers first (their rows are read cold meanwhile) instead of running old and new together.
+const readerBudget = () => Number(process.env.FSDB_READERS || (workers.length + HOT_READERS));
 const HOT_TOTAL = Number(process.env.FSDB_WARM_TOTAL_MB || 2 * HOT_READERS * HOT_RSS / 1e6) * 1e6;
 const HOT_CALL_MS = Number(process.env.FSDB_WARM_CALL_MS || 60000);
 const HOT_BACKOFF_MS = Number(process.env.FSDB_WARM_BACKOFF_MS || 5000);
@@ -1347,7 +1351,7 @@ const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000;
 // HOT_TRIAL_FRAC of the call without it) and the call with it isn't slower than its own cold read.
 const HOT_TRIAL_N = 3, HOT_TRIAL_SLACK_MS = 10, HOT_TRIAL_FRAC = 0.25;
 const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
-const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, trial: null, calls: new Map(), cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, trial: null, calls: new Map(), alive: new Set(), replacing: false, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
 const hotProcs = () => [...hot.readers, ...(hot.building || []), ...hot.retiring].filter((r) => r.state !== 'dead');
 function hotFail(fp, why) {
@@ -1414,7 +1418,7 @@ function hotStop() {
   hot.limit = HOT_MAX; hot.fails.clear(); hot.totalRss = 0; hot.peakRss = 0;
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
   if (hot.backoffTimer) { clearTimeout(hot.backoffTimer); hot.backoffTimer = null; }
-  hot.cold.clear(); hot.calls.clear(); hot.lastNote = 0; hot.unsettled = 0; hot.trial = null;
+  hot.cold.clear(); hot.calls.clear(); hot.lastNote = 0; hot.unsettled = 0; hot.trial = null; hot.replacing = false;
 }
 function hotKill(r) {
   r.state = 'dead';
@@ -1445,7 +1449,9 @@ function hotSpawn(ids) {
     if (p) { r.pending.delete(m.tid); p(m); }
   });
   proc.on('error', () => {});
+  hot.alive.add(r);
   proc.on('exit', () => {
+    hot.alive.delete(r);
     hotKill(r);
     hot.readers = hot.readers.filter((x) => x !== r);
   });
@@ -1508,8 +1514,9 @@ function hotCheck() {
   const trialing = hot.trial !== null && !cur.some((r) => r.ids.has(hot.trial));
   if (cur.length && !grown.length && !oversized && !slow && !trialing && outside * 4 < want.length) { hot.unsettled = 0; return; }
   const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
-  // (only recency against a ready set: wait for the requests to settle, at most HOT_SETTLE_MAX_MS)
-  if (cur.length && !grown.length && !oversized && !slow && now - (hot.lastNote || 0) < HOT_SETTLE_MS) {
+  // (a set replaced for recency, its old reader ready or retired for the reader budget: wait for
+  // the requests to settle, at most HOT_SETTLE_MAX_MS; a first set doesn't wait)
+  if ((cur.length || hot.replacing) && !grown.length && !oversized && !slow && now - (hot.lastNote || 0) < HOT_SETTLE_MS) {
     if (!hot.unsettled) { hot.unsettled = now; }
     if (now - hot.unsettled < HOT_SETTLE_MAX_MS) { hotSoon(HOT_SETTLE_MS); return; }
   }
@@ -1518,9 +1525,16 @@ function hotCheck() {
     if (!hot.backoffTimer) { hot.backoffTimer = setTimeout(() => { hot.backoffTimer = null; hotCheck(); }, f.until - now + 10); }
     return;
   }
-  // At most HOT_PROCS warm processes with the new ones: idle retiring readers go first.
+  // At most HOT_PROCS warm processes with the new ones, and the reader budget (cold workers
+  // included): idle retiring readers go first; at the budget, the ready ones retire too.
   for (const x of [...hot.retiring]) { if (!x.pending.size) { hotKill(x); } }
-  if (hotProcs().length + Math.min(HOT_READERS, want.length) > HOT_PROCS) {
+  const need = Math.min(HOT_READERS, want.length);
+  if (workers.length + hotProcs().length + need > readerBudget() && !hot.retiring.length && hot.readers.length) {
+    const old = hot.readers; hot.readers = []; hot.replacing = true;
+    for (const x of old) { x.state = 'retiring'; hot.retiring.push(x); if (!x.pending.size) { hotKill(x); } }
+  }
+  // (a killed reader counts until it has exited: its memory is only freed then)
+  if (hotProcs().length + need > HOT_PROCS || workers.length + Math.max(hotProcs().length, hot.alive.size) + need > readerBudget()) {
     hotSoon(200);
     return;
   }
@@ -1541,7 +1555,7 @@ function hotParts(ids, k) {
 async function hotBuild(ids) {
   const ep = epoch, file = openFile;
   const rs = hotParts(ids, HOT_READERS).map((part) => hotSpawn(part));
-  hot.building = rs;
+  hot.building = rs; hot.replacing = false;
   // The row on trial is judged against the calls of the ready reader of the set without it
   // ('none': alone in its set, or a set split over readers: the whole call against its cold read).
   const unj = kinds.state === 'ready' ? ids.filter((id) => kindOf(id) === 'u' && !kinds.warmProven.has(id) && !kinds.warmSlow.has(id)) : [];
