@@ -291,6 +291,33 @@ const LOAD_CASES = [
   { d: 'a', sig: 'tb_a.dout', want: [] },
 ];
 
+// Active loads at a time (engine.loadsAt): each entry as 'line/role/status' in loads' order;
+// `follow` { line: [path, time] }: where following that entry goes (the change it caused);
+// `trust` { line: trust }. The reader's last activation at or before t is judged (the dump is
+// searched backward, as driver tracing does): a flop whose input changed after its last edge is
+// 'pending'.
+const LOAD_AT_CASES = [
+  // valid_q went 0 -> 1 at 45: sum = acc ^ {8{valid_q}} stays x (no change); the always_comb's
+  // if (valid_q) takes its then branch.
+  { d: 'a', sig: 'tb_a.dut.valid_q', t: 50, want: ['23/data/noChange', '28/condition/taken'] },
+  { d: 'a', sig: 'tb_a.dut.valid_q', t: 30, want: ['23/data/noChange', '28/condition/untaken'] },
+  // en rose at 40, sampled at the edge at 45: valid_q <= en made valid_q's change at 45.
+  { d: 'a', sig: 'tb_a.dut.en', t: 50, want: ['18/data/propagated', '21/condition/taken'], follow: { 18: ['tb_a.dut.valid_q', 45] }, trust: { 18: 'exact' } },
+  // At 42 the last edge (35) came before en's change: not sampled yet.
+  { d: 'a', sig: 'tb_a.dut.en', t: 42, want: ['18/data/pending', '21/condition/pending'] },
+  // The clock's posedge at 45 triggered each edge procedure; its negedge at 50 none.
+  { d: 'a', sig: 'tb_a.dut.clk', t: 45, want: ['16/sensitivity/triggered', '20/sensitivity/triggered', '32/sensitivity/triggered'] },
+  { d: 'a', sig: 'tb_a.dut.clk', t: 50, want: ['16/sensitivity/notTriggered', '20/sensitivity/notTriggered', '32/sensitivity/notTriggered'] },
+  // din: read into acc at 45 (acc stays x), and stage = din is on the else branch, not run at 50.
+  { d: 'a', sig: 'tb_a.dut.din', t: 50, want: ['21/data/noChange', '29/data/notRun'] },
+  // The testbench clock: the DUT's clk port follows it at 50; its own toggle is stimulus.
+  { d: 'a', sig: 'tb_a.clk', t: 50, want: ['6/connection/propagated', '7/data/stimulus'], follow: { 6: ['tb_a.dut.clk', 50] } },
+  // An output port: the parent's dout changed with it at 25.
+  { d: 'a', sig: 'tb_a.dut.dout', t: 30, want: ['6/connection/propagated'], follow: { 6: ['tb_a.dout', 25] } },
+  // Into a block-local temporary (not dumped): read, nothing to follow.
+  { d: 'a', sig: 'tb_a.dut.sum', t: 50, want: ['27/data/read'] },
+];
+
 function staleModel(all, invalidInitial) {
   const strip = (x) => {
     if (Array.isArray(x)) { x.forEach(strip); return; }
@@ -440,6 +467,33 @@ function runTraceChecks() {
         }
       }
       if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}: ${got.entries.length} of ${got.total}`); }
+    }
+    for (const c of LOAD_AT_CASES) {
+      results.cases++;
+      const what = `loadsAt ${c.d} ${c.sig} @${c.t}`;
+      let got;
+      try {
+        got = await engineFor(c.d, 'icarus').engine.loadsAt(c.sig, c.t);
+      } catch (error) {
+        got = { error: String(error && error.message || error) };
+      }
+      const bad = [];
+      if (got.error) {
+        bad.push('error ' + got.error);
+      } else {
+        const lines = got.entries.map((e) => `${e.loc ? e.loc.line : '?'}/${e.role}/${e.active ? e.active.status : '-'}`);
+        if (JSON.stringify(lines) !== JSON.stringify(c.want)) { bad.push(`entries ${JSON.stringify(lines)} != ${JSON.stringify(c.want)}`); }
+        for (const [line, [path, time]] of Object.entries(c.follow || {})) {
+          const e = got.entries.find((x) => x.loc && x.loc.line === Number(line));
+          const f = e && e.active && e.active.follow;
+          if (!f || f.path !== path || f.time !== time) { bad.push(`follow ${line}: ${JSON.stringify(f)} != ${path}@${time}`); }
+        }
+        for (const [line, trust] of Object.entries(c.trust || {})) {
+          const e = got.entries.find((x) => x.loc && x.loc.line === Number(line));
+          if (!e || !e.active || e.active.trust !== trust) { bad.push(`trust ${line}: ${e && e.active && e.active.trust} != ${trust}`); }
+        }
+      }
+      if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}`); }
     }
     // The replay oracle: every change of every design signal at its change time.
     for (const d of Object.keys(TRACE_DUMPS)) {
