@@ -557,6 +557,25 @@
           && isEdge('x', bitsOf(changes[0][1], width).slice(-1).toLowerCase(), edge)) { return Number(changes[0][0]); }
       return null;
     },
+    // The first change at or after `time` (null: none): helper v2's forward edge (the first
+    // change after time - 1; integer times; at the dump's start, the first one after it), else
+    // the change list. (The engine's nextOf: a load's follow forward.)
+    async nextChange(p, time) {
+      const v = await varOf(p);
+      if (!v) { return null; }
+      if (session.kind === 'v2') {
+        if (refusedByHelper(v)) { return null; }
+        const s0 = dumpStart();
+        const from = Math.max(s0, Math.ceil(time) - 1);
+        const r = await v2({ cmd: 'edge', signalId: v.signalId, t: from, dir: 1, kind: 'any' }, background);
+        if (r !== undefined) { return r.t === null || r.t === undefined ? null : Number(r.t); }
+        if (refusedByHelper(v)) { return null; }
+      }
+      const changes = await changesOf(v, background);
+      if (!changes) { return null; }
+      const c = changes.find((x) => Number(x[0]) >= time);
+      return c ? Number(c[0]) : null;
+    },
   };
   }
   const dump = makeDump(false);
@@ -1032,9 +1051,11 @@
   // dumpPrefix, time, designId, offset }) from the editor or an agent: the readers of the signal
   // (cmuxTrace's loadsAt) at the time, a page at a time, as a history step (Back returns to it).
   // Past LOADS_SUMMARY_OVER readers the panel shows their count first (List shows them); the
-  // answer lists the page anyway. followLoad({ index, jump }): the reader's follow (the change
-  // its read caused) traced the same way; its row is added and selected, the marker stays unless
-  // jump is true (the panel offers to move it). Readers outside the KDB's checked instances (or
+  // answer lists the page anyway. followLoad({ index, jump }): where the reader's target goes
+  // next, its first change at or after the time (engine.nextOf; direction 'forward'), or, when the
+  // dump can't search forward or the target never changes again, the change its read caused
+  // (direction 'backward'), traced the same way; its row is added and selected, the marker stays
+  // unless jump is true (the panel offers to move it). Readers outside the KDB's checked instances (or
   // with the KDB differing, or still exporting) are marked as driver steps are.
   const LOADS_PAGE = 64;
   const LOADS_SUMMARY_OVER = 64;
@@ -1098,6 +1119,7 @@
     view.offset = offset;
     view.listed = !!extra.listed || !(view.total > summaryOver());
     if (extra.gotoTime !== undefined) { view.gotoTime = extra.gotoTime; }
+    if (extra.direction !== undefined) { view.direction = extra.direction; }
     (view.entries || []).forEach((e) => loadMark(ours, e));
     if (push) { history.steps.push(view); history.at = history.steps.length - 1; } else { history.steps[history.at] = view; }
     render();
@@ -1109,12 +1131,15 @@
     const view = history.steps[history.at];
     if (!view || !view.loads) { return null; }
     const e = (view.entries || [])[Number(q.index)];
-    const f = e && e.active && e.active.follow;
+    let f = e && e.active && e.active.follow ? { path: e.active.follow.path, time: e.active.follow.time, direction: 'backward' } : null;
+    let n = null;
+    try { n = e && session && session.engine ? await session.engine.nextOf(e, view.time) : null; } catch (error) { host.log(error); }
+    if (n && n.time !== null) { f = n; }
     if (!f) { return null; }
     try { await waveform.link.addSignal(dumpSegments(toDump(f.path))); } catch (error) { host.log(error); }
     if (q.jump === true) { waveform.link.setMarker(f.time); }
     history.steps = history.steps.slice(0, history.at + 1);
-    return loadStep(f.path, f.time, 0, true, { gotoTime: f.time });
+    return loadStep(f.path, f.time, 0, true, { gotoTime: f.time, direction: f.direction });
   }
   async function addTargets(e) {
     for (const t of e.targets || []) {
@@ -1152,7 +1177,10 @@
         if (a.trust) { const b = el('span', 'badge ' + a.trust, s['traceTrust_' + a.trust] || a.trust); b.title = (a.reasons || []).map(reasonText).join('\n'); trust.append(b); }
         const actions = el('td');
         actions.append(button('+', s.traceLoadsAdd, () => addTargets(e)));
+        // (forward needs the target dumped: any non-local target can be followed, even with no backward follow)
+        const fwd = (e.targets || []).find((x) => x && !String(x).startsWith('$local:'));
         if (a.follow) { actions.append(button(s.traceLoadsFollow, format(s.traceStepTitle, a.follow.path, '', number(a.follow.time)), () => followLoad({ index: i }))); }
+        else if (fwd) { actions.append(button(s.traceLoadsFollow, format(s.traceStepTitle, fwd, '', ''), () => followLoad({ index: i }))); }
         tr.append(code, at, what, trust, actions);
         table.append(tr);
       });
