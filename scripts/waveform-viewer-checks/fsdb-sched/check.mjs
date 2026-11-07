@@ -454,7 +454,7 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   let st = null;
   for (let k = 0; k < 100; k++) { st = await al(h); if (st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id))) { break; } await wait(30); }
   check(st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id)), `... sampled windows decide: ${JSON.stringify(st)}`);
-  const early = await h.send('window', win([2, 3])).reply;
+  const early = await h.send('window', { ...win([2, 3]), t1: 10000 }).reply;  // a view of 1%: a ranged read
   const unverified = !st || !(has(st.verified, 2) || has(st.verified, 3));
   check(!early.error && early.result.signals.every((x) => !x.alias && !x.error) && early.at < 1000,
     `before the verdict, rebuilt rows answer their own data (ranged), not the stored one's: ${early.error || JSON.stringify(early.result.signals.map((x) => x.alias || 'own'))} in ${Math.round(early.at)} ms${unverified ? '' : ' (already verified: weak)'}`);
