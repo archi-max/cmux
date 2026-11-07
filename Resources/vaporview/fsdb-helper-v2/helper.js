@@ -2975,7 +2975,9 @@ const handlers = {
         const d = clockFor(id, t0);
         if (d) {  // (clockFor: it covers the whole dump)
           const w = clockdesc.window(d, t0, t1, buckets);  // (records deflated as the workers' are)
-          fromClock.set(id, { signalId: id, ...w, records: zlib.deflateRawSync(w.records, { level: 1 }), loadMs: 0, walkMs: 0, ranged: true, clock: true });
+          // (not ranged: the page treats a ranged row as a cold one, whose reads cost by span; and
+          // total, the row's whole normalized change count, as a stored row's: review L6)
+          fromClock.set(id, { signalId: id, ...w, records: zlib.deflateRawSync(w.records, { level: 1 }), loadMs: 0, walkMs: 0, clock: true, total: clockdesc.countIn(d, d.lo, d.verifiedEnd + 1) });
           clock.served++;
         }
       }
