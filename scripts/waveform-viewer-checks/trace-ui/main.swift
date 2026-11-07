@@ -296,11 +296,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       let shown = await panelText()
       engineAnswer = ["state": "unavailable", "reason": "noVerdi", "message": ""]
       _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
-      let bare = await panelText()
+      let bare = await call("return [...document.querySelectorAll('#cmux-trace .engine')].map((e) => e.textContent).join(' | ')") as? String ?? ""
       expect(!appText.isEmpty && shown.contains(hint) && shown.contains("CMUX_VERDI_SETUP") && !shown.contains("not installed"),
              "no Verdi on the host: the launcher's hint reaches the page: \(shown.prefix(300))")
       expect(bare.contains("VERDI_HOME") && !bare.contains("()") && !bare.contains("undefined"),
-             "no Verdi, no hint: the string alone, without empty brackets: \(bare.prefix(300))")
+             "no Verdi, no hint: the string alone, without empty brackets: \(bare)")
     }
     engineAnswer = nil
 
