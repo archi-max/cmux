@@ -409,6 +409,33 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 24. trace-X's point read: valueAt {prev: true} also gives each signal's last real change at or
+// before t ({t, value} | null). Stored signals answer from the store; the others from view
+// windows [t - span, t] that grow x8 until the change is found or the window reaches 0, with
+// the primaries of a round in one call (one floor) and the secondaries (cost ~ span) apart.
+{
+  const log = path.join(tmp, 'near.log');
+  fs.rmSync(log, { force: true });
+  const h = await start(4, { 1: 100, 2: 400, 3: 400, 4: 50, 5: 100 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,4,5]', STUB_FLOOR_MS: '100',
+    STUB_CHANGE_AT: JSON.stringify({ 1: 900000, 2: 10, 4: 500000, 5: 940000 }), STUB_NEAR_LOG: log });
+  await kindsOf(h);
+  await h.send('window', win([4])).reply;
+  for (let k = 0; k < 50 && (await loaded(h)) < 1; k++) { await wait(20); }
+  const r = await h.send('valueAt', { signalIds: [1, 2, 3, 4, 5], t: 950000, prev: true }).reply;
+  const prev = r.result && r.result.prev, vals = r.result && r.result.values;
+  const want = [{ t: 900000, value: '1' }, { t: 10, value: '1' }, null, { t: 500000, value: '1' }, { t: 940000, value: '1' }];
+  check(!r.error && JSON.stringify(prev) === JSON.stringify(want), `valueAt prev: ${r.error || JSON.stringify(prev)}`);
+  check(vals && vals[0] === '1' && vals[1] === '1' && vals[2] === 'x', `... and the cold values from the same reads: ${JSON.stringify(vals)}`);
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  const prim = (id) => id === 1 || id === 5;
+  check(calls.length > 0 && calls.every((c) => c.ids.every(prim) || !c.ids.some(prim)) && calls.some((c) => c.ids.includes(1) && c.ids.includes(5))
+    && !calls.some((c) => c.ids.includes(4)), `... primaries together, apart from secondaries, stored ones not read: ${JSON.stringify(calls)}`);
+  const s2 = calls.filter((c) => c.ids.includes(2)).map((c) => c.span);
+  check(s2.length >= 2 && s2.every((x, k) => !k || x === s2[k - 1] * 8), `... a change far back is found by growing windows: spans ${JSON.stringify(s2)}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
