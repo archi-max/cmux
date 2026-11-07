@@ -13,7 +13,7 @@
 # (packed.cpp.inc, window.cpp.inc, deval.h, derive.cpp.inc) into
 # addon/build/Release/fsdb_reader.node, and addon/clockseg.cpp into clockseg,
 # and installs them with helper.js,
-# worker.js, expr.js, text.js, formats.js, tree.js, cmux-helper-v2.sh and a
+# worker.js, expr.js, text.js, formats.js, tree.js, clockdesc.js, cmux-helper-v2.sh and a
 # helper.env naming the Node.js and Verdi it was built for. The install is
 # private to the user (the launcher refuses to run one that others can write).
 #
@@ -153,7 +153,7 @@ private() {
 usable() {
   private "$1" || return 1
   [ -f "$1/addon/build/Release/fsdb_reader.node" ] && [ -f "$1/cmux-helper-v2.sh" ] && [ -f "$1/helper.js" ] \
-    && [ -f "$1/worker.js" ] && [ -f "$1/expr.js" ] && [ -f "$1/text.js" ] && [ -f "$1/formats.js" ] && [ -f "$1/tree.js" ] || return 1
+    && [ -f "$1/worker.js" ] && [ -f "$1/expr.js" ] && [ -f "$1/text.js" ] && [ -f "$1/formats.js" ] && [ -f "$1/tree.js" ] && [ -f "$1/clockdesc.js" ] || return 1
   ( . "$1/helper.env" 2>/dev/null && [ -x "$NODE" ] && [ -f "$VERDI_HOME/share/FsdbReader/linux64/libnffr.so" ] )
 }
 # NFS can refuse to remove a folder whose files it is still closing.
@@ -165,7 +165,7 @@ STAGE=$(mktemp -d "$PARENT/.install.XXXXXX") || exit 15
 trap 'kill "$WATCH" 2>/dev/null; rm -rf "$WORK"; discard "$STAGE"' EXIT
 mkdir -p "$STAGE/addon/build/Release" \
   && cp "$WORK/fsdb_reader.node" "$STAGE/addon/build/Release/" \
-  && cp "$SRC/helper.js" "$SRC/worker.js" "$SRC/expr.js" "$SRC/text.js" "$SRC/formats.js" "$SRC/tree.js" "$SRC/cmux-helper-v2.sh" "$STAGE/" || exit 15
+  && cp "$SRC/helper.js" "$SRC/worker.js" "$SRC/expr.js" "$SRC/text.js" "$SRC/formats.js" "$SRC/tree.js" "$SRC/clockdesc.js" "$SRC/cmux-helper-v2.sh" "$STAGE/" || exit 15
 if [ -f "$WORK/clockseg" ]; then cp "$WORK/clockseg" "$STAGE/" || exit 15; fi
 # Single-quoted for the shell that sources it; a ' in a path becomes '\''.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }

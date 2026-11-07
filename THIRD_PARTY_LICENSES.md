@@ -623,8 +623,9 @@ The windowed viewer's helper, uploaded and built on the SSH host the same way
 - `addon/fsdb_reader.cpp` is VaporView's `src/fsdb_reader.cpp` at the commit
   above, unmodified. `helper.js` is adapted from VaporView's
   `src/extension_core/fsdb_worker.ts` (the same addon calls); `worker.js`,
-  `expr.js`, `tree.js`, `cmux-helper-v2.sh` and the addon additions (`packed.cpp.inc`,
-  `window.cpp.inc`, `deval.h`, `derive.cpp.inc`) are written for cmux. All
+  `expr.js`, `tree.js`, `clockdesc.js`, `cmux-helper-v2.sh` and the addon additions
+  (`packed.cpp.inc`, `window.cpp.inc`, `deval.h`, `derive.cpp.inc`, `clockseg.cpp`) are
+  written for cmux. All
   carry VaporView's GPL-3.0 license. `expr.js` sizes expressions per IEEE
   1800 (SystemVerilog) section 11.6, implemented from a reading of the
   standard; no text from it is included.

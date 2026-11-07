@@ -2680,7 +2680,7 @@ const CLOCK_MAX_FRAC = 0.01, CLOCK_VERSION = 1, CLOCK_MIN_SEGMENTS = 32, CLOCK_M
 // The reader keeps ~9 B per change read on a rebuilt row (measured on a 10 GB dump); a segment
 // aims at CLOCK_TARGET_MB, well under the CLOCK_RSS_MB kill.
 const CLOCK_BYTES_PER_CHANGE = 9, CLOCK_TARGET_MB = Number(process.env.FSDB_CLOCK_TARGET_MB || 200);
-const clock = { job: null, desc: new Map(), log: [] };  // desc: id -> descriptor | {state: 'notClock' | 'aborted', why}
+const clock = { job: null, desc: new Map(), log: [], served: 0 };  // desc: id -> descriptor | {state: 'notClock' | 'aborted', why}
 function clockKey(file) {
   const st = fs.statSync(file);
   return `${st.size}:${st.mtimeMs}:${st.ino}:${st.ctimeMs}:v${CLOCK_VERSION}:${process.env.VERDI_HOME ? path.basename(process.env.VERDI_HOME) : ''}`;
@@ -2744,17 +2744,21 @@ async function clockSegment(j, calls) {
     j.child = null;
   }
 }
-// Merge one range's scan into the descriptor being built (ranges in order, contiguous).
-function clockMerge(d, r, a) {
-  d.changes += r.changes; d.edges += r.edges;
-  const ivs = r.intervals;
-  let k = 0;
-  if (d.open) {
-    if (ivs.length && ivs[0][0] === a) { d.open[2].push(...ivs[0][2]); d.open[1] = ivs[0][1]; k = 1; if (d.open[1] !== -1) { d.open = null; } }
-    else { d.open[1] = a; d.open = null; }  // (in sync again at a)
-  }
-  for (; k < ivs.length; k++) { const iv = [ivs[k][0], ivs[k][1], ivs[k][2]]; d.intervals.push(iv); if (iv[1] === -1) { d.open = iv; } }
-  d.records = d.intervals.reduce((x, iv) => x + iv[2].length, 0);
+// Answers from a ready descriptor (clockdesc.js), exact against the reader's store: edge and
+// search of a verified row, for t within [lo, verifiedEnd + 1]. A hit past verifiedEnd, or none
+// while verifiedEnd is short of the dump's end, goes to the reader.
+const clockdesc = CLOCK ? require('./clockdesc.js') : null;
+function clockFor(id, t) {
+  if (!CLOCK || !openFile) { return null; }
+  const d = clock.desc.get(id);
+  if (!d || d.state !== 'ready' || !(t >= d.lo && t <= d.verifiedEnd + 1)) { return null; }
+  try { if (d.key !== clockKey(openFile)) { return null; } } catch (e) { return null; }
+  return d;
+}
+function clockAnswer(d, hit) {
+  if (hit === null ? d.verifiedEnd < (timeEnd || 0) : hit > d.verifiedEnd) { return undefined; }
+  clock.served++;
+  return { t: hit };
 }
 async function clockVerifyJob(j) {
   const T = Math.max(1, timeEnd || 1), lo = timeStart || 0, end = T + 1;
@@ -2811,7 +2815,7 @@ async function clockVerifyJob(j) {
     let n = 0;
     for (let c = 0; c < rs.length; c++) {
       if (rs[c].over) { return { state: 'aborted', why: `more than ${CLOCK_MAX_RECORDS} changes off the grid` }; }
-      clockMerge(d, rs[c], calls[c].a);
+      clockdesc.merge(d, rs[c], calls[c].a);
       n += rs[c].changes; openB = Math.max(openB, (rs[c].openMB || 0) * MiB);
     }
     dens = Math.max(dens, n / (b0 - a0));
@@ -3036,6 +3040,8 @@ const handlers = {
     if (req.kind !== undefined && req.kind !== null && !EDGE_KINDS.has(req.kind)) { throw new Error(`edge: unknown kind ${JSON.stringify(req.kind)}`); }
     checkIds([req.signalId]);
     const dir = req.dir < 0 ? -1 : 1;
+    const cd = clockFor(req.signalId, t);
+    if (cd) { const r = clockAnswer(cd, clockdesc.edge(cd, t, dir, req.kind ?? 'any', timeStart || 0)); if (r) { return r; } }
     return findStoredOrRanged(req, 'edge', req.signalId, { t, dir, kind: req.kind, start: timeStart }, { kind: req.kind ?? 'any' });
   },
   async search(req) {
@@ -3044,6 +3050,8 @@ const handlers = {
     checkIds([req.signalId]);
     // wildcard: '?' -> strict pattern: only ? matches anything, x and z are literal.
     const value = (strictWildcard(req) ? '!' : '') + req.value;
+    const dir = req.dir < 0 ? -1 : 1, cd = clockFor(req.signalId, t);
+    if (cd) { const r = clockAnswer(cd, clockdesc.search(cd, t, dir, value)); if (r) { return r; } }
     return findStoredOrRanged(req, 'search', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, value }, { pattern: value });
   },
 
@@ -3225,7 +3233,7 @@ const handlers = {
         ...(kinds.state === 'ready' ? kindCounts() : {}) },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
-      ...(CLOCK ? { clock: { job: clock.job ? { signalId: clock.job.id, segments: clock.job.desc ? clock.job.desc.segments : 0, peakMB: Math.round((clock.job.peak || 0) / 1e6), child: !!clock.job.child } : null, log: clock.log } } : {}),
+      ...(CLOCK ? { clock: { job: clock.job ? { signalId: clock.job.id, segments: clock.job.desc ? clock.job.desc.segments : 0, peakMB: Math.round((clock.job.peak || 0) / 1e6), child: !!clock.job.child } : null, log: clock.log, served: clock.served } } : {}),
     };
   },
 
