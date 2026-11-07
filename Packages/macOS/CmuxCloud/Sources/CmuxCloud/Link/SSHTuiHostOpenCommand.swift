@@ -244,22 +244,31 @@ public struct SSHTuiHostOpenCommand: Sendable {
     /// host never share it, and keyed by content so an update installs beside
     /// the old copy instead of rewriting a file another shell may be running.
     public var installDirectory: String {
-        let contents = script + "\u{0}" + SSHTuiShellIntegration.bashEnvironmentFile + "\u{0}" + SSHTuiShellIntegration.zshEnvironmentFile
-        let digest = SHA256.hash(data: Data(contents.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
-        return "$HOME/.local/share/cmux/ssh-cli/\(session)/\(digest)"
+        "$HOME/.local/share/cmux/ssh-cli/\(session)/\(contentDigest)"
     }
 
     /// Where the launch command installs the ``SSHTuiShellIntegration`` files the
-    /// login shell sources, as a `$HOME`-relative shell word.
-    public var shellIntegrationDirectory: String { installDirectory }
+    /// login shell sources, as a `$HOME`-relative shell word. Directly below HOME,
+    /// in directories the launch creates itself under `umask 077`, so the only
+    /// parent it did not create is HOME: a `~/.local` that a umask 002 login left
+    /// group-writable does not matter, and no group write is ever trusted.
+    public var shellIntegrationDirectory: String {
+        "$HOME/.cmux-ssh/\(session)/\(contentDigest)"
+    }
 
-    /// Shell code run before the login shell: installs ``script`` and the
-    /// ``SSHTuiShellIntegration`` files once and prepends their directory to
-    /// PATH. Any failure leaves PATH unchanged and the shell still starts.
+    private var contentDigest: String {
+        let contents = script + "\u{0}" + SSHTuiShellIntegration.bashEnvironmentFile + "\u{0}" + SSHTuiShellIntegration.zshEnvironmentFile
+        return SHA256.hash(data: Data(contents.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Shell code run before the login shell: installs ``script`` (prepending its
+    /// directory to PATH) and the ``SSHTuiShellIntegration`` files
+    /// (``shellIntegrationDirectory``) once. Any failure leaves PATH unchanged and the shell still starts.
     public var shellPrelude: String {
         let delimiter = "CMUX_SSH_CLI_EOF"
         return """
         cmux_cli_dir="\(installDirectory)"
+        cmux_ssh_hook_dir="\(shellIntegrationDirectory)"
         # Private directories: the shell runs and sources what is installed here.
         (
         umask 077
@@ -270,9 +279,9 @@ public struct SSHTuiHostOpenCommand: Sendable {
           chmod 755 "$cmux_cli_dir/.cmux.$$" && mv -f "$cmux_cli_dir/.cmux.$$" "$cmux_cli_dir/cmux" 2>/dev/null
           rm -f "$cmux_cli_dir/.cmux.$$" 2>/dev/null
         fi
-        \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_cli_dir")))
+        \(SSHTuiShellIntegration.installCode(directoryVariable: "cmux_ssh_hook_dir")))
         if [ -f "$cmux_cli_dir/cmux" ] && [ -x "$cmux_cli_dir/cmux" ]; then PATH="$cmux_cli_dir:$PATH"; export PATH; fi
-        unset cmux_cli_dir
+        unset cmux_cli_dir cmux_ssh_hook_dir
 
         """
     }
@@ -280,7 +289,7 @@ public struct SSHTuiHostOpenCommand: Sendable {
     /// Shell code that starts the interactive login shell so it reports its
     /// directory (``SSHTuiShellIntegration``); it falls through when it cannot.
     public var loginShellLaunch: String {
-        SSHTuiShellIntegration.launchCode(installDirectory: installDirectory)
+        SSHTuiShellIntegration.launchCode(installDirectory: shellIntegrationDirectory)
     }
 }
 

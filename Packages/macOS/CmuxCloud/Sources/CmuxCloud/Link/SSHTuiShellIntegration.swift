@@ -9,7 +9,8 @@ import Foundation
 /// (``SSHTuiConnection/shellCommand``), so without this the graph keeps the
 /// spawn directory after every `cd`.
 ///
-/// The launch command installs two small files beside the host `cmux` and
+/// The launch command installs two small files in a private directory chain
+/// below HOME (``SSHTuiHostOpenCommand/shellIntegrationDirectory``) and
 /// starts the login shell through them, the way terminals inject shell
 /// integration:
 /// - bash: `--posix -l` with `ENV` pointing at ``bashEnvironmentFile``. An
@@ -148,26 +149,16 @@ public enum SSHTuiShellIntegration {
         cmux_ssh_shell=${SHELL:-/bin/sh}
         # The shell sources the file, so nobody else may be able to rewrite or
         # swap it: the file and each parent up to HOME is the user's, not a
-        # symlink, with no other write, and no group write unless the group is
-        # the user's private one (only member: the user; Debian and Ubuntu
-        # create one per user and log in with umask 002). Only that chain is
-        # looked at: another terminal installing at the same moment adds and
-        # renames temporary files beside it, and a walk that lists one before
-        # it is renamed fails.
+        # symlink, with no group or other write. Group write is never trusted:
+        # on Linux the group bits are the ACL mask, so they would let named ACL
+        # entries write. Only that chain is looked at: another terminal
+        # installing at the same moment renames temporary files beside it, and
+        # a walk that lists one before it is renamed fails.
         cmux_ssh_unsafe() {
-          if [ -n "$cmux_ssh_gid" ]; then
-            find "$1" -prune \( -type l -o -perm -002 -o ! -user "$cmux_ssh_uid" -o \( -perm -020 ! -group "$cmux_ssh_gid" \) \) -print 2>/dev/null || echo error
-          else
-            find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
-          fi
+          find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
         }
         cmux_ssh_private() {
-          [ -r "$1" ] && cmux_ssh_uid=$(id -u) && cmux_ssh_user=$(id -un) || return 1
-          cmux_ssh_gid=$(id -g) && cmux_ssh_group=$(getent group "$cmux_ssh_gid" 2>/dev/null) || cmux_ssh_group=
-          case $cmux_ssh_group in
-            "$cmux_ssh_user:"*":$cmux_ssh_gid:"|"$cmux_ssh_user:"*":$cmux_ssh_gid:$cmux_ssh_user") ;;
-            *) cmux_ssh_gid= ;;
-          esac
+          [ -r "$1" ] && cmux_ssh_uid=$(id -u) || return 1
           [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
           cmux_ssh_parent=$1
           while [ "$cmux_ssh_parent" != "$HOME" ]; do
@@ -198,13 +189,16 @@ public enum SSHTuiShellIntegration {
                 fi ;;
             esac ;;
           zsh)
-            if cmux_ssh_private "$cmux_ssh_dir/\#(zshEnvironmentPath)"; then
+            # zsh reads .zshenv.zwc instead when it is there and newer.
+            if cmux_ssh_private "$cmux_ssh_dir/\#(zshEnvironmentPath)" && {
+                { [ ! -e "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc" ] && [ ! -h "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc" ]; } ||
+                [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir/\#(zshEnvironmentPath).zwc")" ]; }; then
               if [ -n "${ZDOTDIR+x}" ]; then CMUX_SSH_ZDOTDIR=$ZDOTDIR; export CMUX_SSH_ZDOTDIR; fi
               ZDOTDIR=$cmux_ssh_dir/\#((zshEnvironmentPath as NSString).deletingLastPathComponent); export ZDOTDIR
               exec "$cmux_ssh_shell" -l
             fi ;;
         esac
-        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_user cmux_ssh_gid cmux_ssh_group cmux_ssh_parent
+        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent
         unset -f cmux_ssh_private cmux_ssh_unsafe
 
         """#
