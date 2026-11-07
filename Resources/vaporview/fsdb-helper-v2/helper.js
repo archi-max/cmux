@@ -216,6 +216,9 @@ function writeAll(buf) {
 function shutdown(code) {
   try { flushManifest(); } catch (e) { /* best effort (L8) */ }
   for (const w of workers) { w.proc.kill(); }
+  // (and the processes that aren't workers: fsdbdebug, warm readers)
+  try { stopKinds(); } catch (e) { /* best effort */ }
+  try { hotStop(); } catch (e) { /* best effort */ }
   removeTmpDir();
   process.exit(code);
 }
