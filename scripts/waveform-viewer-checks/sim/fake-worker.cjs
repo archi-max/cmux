@@ -12,9 +12,9 @@ const out = (o, bin) => { process.stdout.write(JSON.stringify(o) + '\n'); if (bi
 const PERIOD = 10;
 let t = 0, cnt = 0, running = null;
 const width = { 'tb.clk': 1, 'tb.cnt': 8, 'tb.x': 4, 'tb.z': 2 };
-const clkAt = (tt) => (((tt + 5) % PERIOD) < 5 ? '0' : '1'); // 0 for [0,5), 1 for [5,10), ...
+const clkAt = (tt) => ((tt % PERIOD) < 5 ? '0' : '1'); // 0 for [0,5), 1 for [5,10), ...
 const value = (name) => name === 'tb.clk' ? clkAt(t) : name === 'tb.cnt' ? (cnt & 255).toString(2).padStart(8, '0') : name === 'tb.x' ? 'xxxx' : 'zz';
-const watches = new Map(); let nextWid = 0;
+const watches = new Map(); let nextWid = 0; const last = new Map();
 let pend = [];   // [t, wid, value]
 function flush() {
   if (!pend.length) return;
@@ -38,7 +38,10 @@ function step(to) {
     if (nt > to) { t = to; break; }
     t = nt;
     if (clkAt(t) === '1') cnt++;
-    for (const [wid, name] of watches) if (name === 'tb.clk' || name === 'tb.cnt') pend.push([t, wid, value(name)]);
+    for (const [wid, name] of watches) {
+      const v = value(name);
+      if (last.get(wid) !== v) { last.set(wid, v); pend.push([t, wid, v]); }   // only real changes, as the worker does
+    }
   }
 }
 function runTo(id, end, untilFn) {
@@ -81,7 +84,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     case 'read': return out({ id, result: { t, values: (r.signals || []).map((s) => (width[s] ? value(s) : null)) } });
     case 'deposit': if (r.signal === 'tb.cnt') cnt = parseInt(String(r.value).replace(/^'d/, ''), 10); return out({ id, result: { t: t + 1, value: value(r.signal) } });
     case 'watch': {
-      const ws = (r.signals || []).map((s) => { if (!width[s]) return null; const wid = nextWid++; watches.set(wid, s); pend.push([t, wid, value(s)]); return { signalId: wid, width: width[s] }; });
+      const ws = (r.signals || []).map((s) => { if (!width[s]) return null; const wid = nextWid++; watches.set(wid, s); last.set(wid, value(s)); pend.push([t, wid, value(s)]); return { signalId: wid, width: width[s] }; });
       out({ id, result: { t, watch: ws } });
       flush();
       return;

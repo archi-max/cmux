@@ -1,0 +1,324 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Part of cmux's FSDB helper v2 (live simulation; sim.js starts it).
+// simctl worker: launches one simulation under our VPI library and serves it as JSON lines on stdio.
+//
+//   node worker.js --simv <path> --lib <libsimctl.so> --scratch <dir> [--run <name>] [--clock <sig>] [--period <t>]
+//                  [--rss-mb 2048] [--min-avail-mb 5120] [--poll-cycles 100] -- <simulator run arguments>
+//
+// The simv must have been elaborated with `-load <libsimctl_stub.so>:simctl_register` (a run-time simv -load
+// does not call VPI registration routines). The stub loads <lib> from SIMCTL_LIB, set here.
+// The simulation runs as `<simv> -ucli -ucli2Proc <args>` in <scratch>/<run>
+// (a private directory; regular files next to simv other than dumps and logs are linked in, so relative
+// paths such as memory images resolve). Its command line is driven only for checkpoint/restore.
+//
+// Requests (stdin, one JSON object per line) -> {id, result, ms} or {id, error}; events are {id: 0, event}.
+//   run {cycles | time}                         -> {t, stopped: done|until|stop|finish}
+//   until {expr, maxCycles | maxTime}           expr: sig == lit / sig != lit joined by && / || (&& binds
+//                                                 tighter); true at a time step where one of its signals
+//                                                 changed, values after the step settles
+//   stop {}                                     ends a run in flight (that run replies stopped: stop)
+//   time {}                                     -> {t}
+//   read {signals: [path]}                      -> {t, values: ['01xz..' | null]}
+//   force|deposit {signal, value}, release {signal}  value: 'b1x0, 'hff, 'd12, 12 -> {t, value}
+//   watch {signals}                             -> {t, watch: [{signalId, width} | null]}
+//   unwatch {signalIds}                         -> {unwatched}
+//   watches {}                                  -> {watches: [{signalId, name, width}]}
+//   list {scope, limit}                         -> {vars: [{name, width}], truncated}
+//   checkpoint {}                               -> {cp, t}     (simulator checkpoint, -ucli2Proc)
+//   restore {cp}                                -> {t, watches} and a full-value changes event
+//   save {file} / restoreFile {file}            file-based save/restore, for comparison
+//   stats {}                                    -> {pids, pssMb, memAvailMb, licence?}
+//   quit {}
+// Events: ready {t, precision, period, startupMs}; changes {t0, t1, signals: [{signalId, count, bytes}],
+//   binLength} followed by binLength bytes: per signal `bytes` of records [u64 LE delta][width chars]
+//   (the first delta is from t0, then from the previous record; the window-record layout of helper-v2,
+//   not deflated); finish {t}; exit {code, signal}; memory {...}; error {message}.
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+
+const argv = process.argv.slice(2);
+const dd = argv.indexOf('--');
+const simArgs = dd >= 0 ? argv.slice(dd + 1) : [];
+const opts = dd >= 0 ? argv.slice(0, dd) : argv;
+const opt = (k, d) => { const i = opts.indexOf(k); return i >= 0 ? opts[i + 1] : d; };
+const flag = (k) => opts.includes(k);
+const SIMV = path.resolve(opt('--simv', ''));
+const LIB = path.resolve(opt('--lib', ''));
+const SCRATCH = opt('--scratch', '');
+const RUN = opt('--run', `run-${process.pid}`);
+const CLOCK = opt('--clock', '');
+let period = Number(opt('--period', 0)) || 0;
+const RSS_MB = Number(opt('--rss-mb', 2048));
+const MIN_AVAIL_MB = Number(opt('--min-avail-mb', 5120));
+const POLL_CYCLES = Number(opt('--poll-cycles', 100));
+if (!SIMV || !LIB || !SCRATCH) { process.stderr.write('usage: worker.js --simv <simv> --lib <lib.so> --scratch <dir> -- <args>\n'); process.exit(2); }
+
+const t0 = Date.now();
+const out = (obj, bin) => { process.stdout.write(JSON.stringify(obj) + '\n'); if (bin && bin.length) process.stdout.write(bin); };
+const event = (name, o = {}) => out({ id: 0, event: name, ...o });
+
+// ---------------------------------------------------------------- run directory
+const dir = path.join(SCRATCH, RUN);
+fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+const buildDir = path.dirname(SIMV);
+for (const f of fs.readdirSync(buildDir)) {
+  if (/\.(fsdb|vpd|vcd|log|key|time|out)$/.test(f) || /^novas/.test(f) || f === path.basename(SIMV)) continue;
+  const src = path.join(buildDir, f);
+  let st; try { st = fs.statSync(src); } catch { continue; }
+  if (!st.isFile()) continue;
+  try { fs.symlinkSync(src, path.join(dir, f)); } catch {}
+}
+
+// ---------------------------------------------------------------- launch
+const ucli2 = !flag('--no-ucli2proc');
+const args = ['-n', '10', SIMV, '-ucli', ...(ucli2 ? ['-ucli2Proc'] : []), ...simArgs];
+const sim = spawn('nice', args, {
+  cwd: dir,
+  stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+  env: { ...process.env, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB },
+});
+const simLog = fs.createWriteStream(path.join(dir, 'sim.out'));
+const libIn = sim.stdio[3], libOut = sim.stdio[4];
+// a file-based `restore` brings back the simulation's memory but not these pipes: report it, don't crash
+for (const st of [libIn, libOut, sim.stdin]) st.on('error', (e) => event('error', { message: `library channel: ${e.code || e.message}` }));
+libOut.on('close', () => { for (const [, p] of pending) if (!p.resolve) out({ id: p.id, error: 'library channel closed' }); });
+sim.stderr.pipe(simLog);
+sim.on('exit', (code, signal) => {
+  event('exit', { code, signal, ms: Date.now() - t0 });
+  for (const [, p] of pending) out({ id: p.id, error: 'simulation exited' });
+  pending.clear();
+  setTimeout(() => process.exit(0), 50);
+});
+
+// ---------------------------------------------------------------- simulator command line (UCLI)
+let ucliBuf = '', ucliWaiters = [], promptsSeen = 0;
+sim.stdout.on('data', (d) => {
+  simLog.write(d);
+  ucliBuf += d.toString('latin1');
+  let k;
+  while ((k = ucliBuf.indexOf('ucli% ')) >= 0) {
+    const text = ucliBuf.slice(0, k); ucliBuf = ucliBuf.slice(k + 6);
+    promptsSeen++;
+    const w = ucliWaiters.shift();
+    if (w) w(text);
+  }
+});
+const nextPrompt = () => new Promise((res) => ucliWaiters.push(res));
+const ucli = (cmd) => { const p = nextPrompt(); sim.stdin.write(cmd + '\n'); return p; };
+
+// ---------------------------------------------------------------- library channel
+let libId = 1;
+const pending = new Map();          // libId -> {id, cmd, sent, resolve?}
+let rbuf = Buffer.alloc(0), needBin = 0, chgHdr = null;
+const watches = new Map();          // wid -> {name, width}
+let lastT = 0, inflightRun = null;
+libOut.on('data', (d) => {
+  rbuf = rbuf.length ? Buffer.concat([rbuf, d]) : d;
+  for (;;) {
+    if (chgHdr) {
+      if (rbuf.length < chgHdr.bin) return;
+      const bin = rbuf.subarray(0, chgHdr.bin); rbuf = rbuf.subarray(chgHdr.bin);
+      onChanges(chgHdr.n, bin); chgHdr = null; continue;
+    }
+    const nl = rbuf.indexOf(10);
+    if (nl < 0) return;
+    const line = rbuf.subarray(0, nl).toString(); rbuf = rbuf.subarray(nl + 1);
+    let m; try { m = JSON.parse(line); } catch { event('error', { message: 'bad line from library: ' + line.slice(0, 200) }); continue; }
+    if (m.ev === 'chg') { chgHdr = m; continue; }
+    onLib(m);
+  }
+});
+function onChanges(n, bin) {
+  // regroup [u64 t][u32 wid][chars] records per signal as [u64 delta][chars]
+  const per = new Map(); let off = 0, tmin = Infinity, tmax = 0;
+  for (let i = 0; i < n; i++) {
+    const t = Number(bin.readBigUInt64LE(off)); const wid = bin.readUInt32LE(off + 8);
+    const w = watches.get(wid); const width = w ? w.width : 0;
+    if (!w) { event('error', { message: `record for unknown watch ${wid}` }); return; }
+    let s = per.get(wid); if (!s) per.set(wid, (s = []));
+    s.push([t, bin.subarray(off + 12, off + 12 + width)]);
+    if (t < tmin) tmin = t; if (t > tmax) tmax = t;
+    off += 12 + width;
+  }
+  const parts = [], sigs = [];
+  for (const [wid, recs] of per) {
+    const w = watches.get(wid);
+    const b = Buffer.allocUnsafe(recs.length * (8 + w.width));
+    let o = 0, prev = tmin;
+    for (const [t, v] of recs) { b.writeBigUInt64LE(BigInt(t - prev), o); v.copy(b, o + 8); o += 8 + w.width; prev = t; }
+    parts.push(b); sigs.push({ signalId: wid, count: recs.length, bytes: b.length });
+  }
+  const all = Buffer.concat(parts);
+  lastT = Math.max(lastT, tmax);
+  out({ id: 0, event: 'changes', t0: tmin, t1: tmax, signals: sigs, binLength: all.length }, all);
+}
+let readyResolve; const ready = new Promise((r) => (readyResolve = r));
+function onLib(m) {
+  if (m.ev === 'ready') { readyResolve(m); return; }
+  if (m.ev === 'finish') { event('finish', { t: m.t }); return; }
+  const p = pending.get(m.id);
+  if (!p) return;
+  pending.delete(m.id);
+  if (m.t !== undefined) lastT = m.t;
+  if (p === inflightRun) inflightRun = null;
+  if (p.resolve) { p.resolve(m); return; }
+  if (m.error) { out({ id: p.id, error: m.error }); return; }
+  delete m.id;
+  if (m.watch && p.names) {
+    m.watch = m.watch.map((w, i) => { if (!w) return null; watches.set(w.wid, { name: p.names[i], width: w.width }); return { signalId: w.wid, width: w.width }; });
+  }
+  if (m.watches) m.watches = m.watches.map((w) => ({ signalId: w.wid, name: w.name, width: w.width }));
+  out({ id: p.id, result: m, ms: +(performance.now() - p.sent).toFixed(3) });
+}
+function lib(op, id, rest, extra = {}) {
+  const lid = libId++;
+  const p = { id, sent: performance.now(), ...extra };
+  pending.set(lid, p);
+  libIn.write(`${op} ${lid}${rest ? ' ' + rest : ''}\n`);
+  return p;
+}
+const libCall = (op, rest) => new Promise((resolve) => lib(op, 0, rest, { resolve }));
+
+// ---------------------------------------------------------------- memory guards
+function descendants(root) {
+  const kids = new Map();
+  for (const p of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(p)) continue;
+    try { const st = fs.readFileSync(`/proc/${p}/stat`, 'latin1'); const pp = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]); if (!kids.has(pp)) kids.set(pp, []); kids.get(pp).push(Number(p)); } catch {}
+  }
+  const outp = [], st = [root];
+  while (st.length) { const x = st.pop(); outp.push(x); for (const k of kids.get(x) || []) st.push(k); }
+  return outp;
+}
+function pssKb(pid) {
+  try { const s = fs.readFileSync(`/proc/${pid}/smaps_rollup`, 'latin1'); const m = /^Pss:\s+(\d+)/m.exec(s); return m ? Number(m[1]) : 0; } catch { return 0; }
+}
+function memAvailMb() { const m = /MemAvailable:\s+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'latin1')); return m ? Number(m[1]) / 1024 : 0; }
+let lowMem = false, peakPss = 0, treePids = [], treeAt = 0;
+function memStats(fresh) {
+  // walking /proc for the process tree is the expensive part: redo it every 10 s (checkpoints add processes)
+  if (fresh || Date.now() - treeAt > 10000) { treePids = descendants(sim.pid); treeAt = Date.now(); }
+  const pids = treePids;
+  const pss = pids.reduce((a, p) => a + pssKb(p), 0) / 1024;
+  if (pss > peakPss) peakPss = pss;
+  return { pids, pssMb: +pss.toFixed(1), peakPssMb: +peakPss.toFixed(1), memAvailMb: +memAvailMb().toFixed(0) };
+}
+const guard = setInterval(() => {
+  if (sim.exitCode !== null) return;
+  const s = memStats();
+  if (s.pssMb > RSS_MB) {
+    event('memory', { ...s, killed: true, message: `simulation over ${RSS_MB} MB; killed` });
+    for (const p of descendants(sim.pid).reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} }
+    return;
+  }
+  const low = s.memAvailMb < MIN_AVAIL_MB;
+  if (low && !lowMem) { event('memory', { ...s, paused: true }); if (inflightRun) libIn.write(`S ${libId++}\n`); }
+  if (!low && lowMem) event('memory', { ...s, paused: false });
+  lowMem = low;
+}, 1000);
+guard.unref();
+
+// ---------------------------------------------------------------- requests
+const queue = []; let parked = false;
+async function park(work) {
+  // checkpoint/restore need the simulator's command line: park the library there, do the work, come back.
+  parked = true;
+  const prompt = nextPrompt();
+  const pr = await libCall('P', '');
+  await prompt;
+  let result;
+  try { result = await work(); } catch (e) { result = { error: String(e.message || e) }; }
+  libIn.write(`K ${libId++}\n`);      // the library's resume callback serves again once it sees this
+  sim.stdin.write('run\n');
+  parked = false;
+  return { parkedAt: pr.t, ...result };
+}
+const toTicks = (r, c, t) => (r[t] !== undefined ? Number(r[t]) : r[c] !== undefined ? Math.round(Number(r[c]) * period) : NaN);
+async function handle(r) {
+  const id = r.id;
+  const busyRun = () => inflightRun && out({ id, error: 'a run is in flight; stop it first' });
+  switch (r.cmd) {
+    case 'run': case 'until': {
+      if (busyRun()) return;
+      if (lowMem) return out({ id, error: 'paused: host memory low' });
+      const dt = r.cmd === 'run' ? toTicks(r, 'cycles', 'time') : toTicks(r, 'maxCycles', 'maxTime');
+      if (!Number.isFinite(dt) || dt < 0) return out({ id, error: 'need cycles (with a known period) or time' });
+      if (r.cmd === 'run') { inflightRun = lib('R', id, String(dt)); return; }
+      const toks = String(r.expr || '').replace(/(&&|\|\||==|!=)/g, ' $1 ').trim().split(/\s+/).filter(Boolean);
+      inflightRun = lib('U', id, `${dt} ${toks.join(' ')}`); return;
+    }
+    case 'stop': libIn.write(`S ${libId}\n`); pending.set(libId++, { id, sent: performance.now() }); return;
+    case 'time': lib('T', id, ''); return;
+    case 'read': lib('G', id, (r.signals || []).join(' ')); return;
+    case 'force': case 'deposit': lib(r.cmd === 'force' ? 'F' : 'D', id, `${r.signal} ${r.value}`); return;
+    case 'release': lib('L', id, r.signal); return;
+    case 'watch': lib('W', id, (r.signals || []).join(' '), { names: r.signals || [] }); return;
+    case 'unwatch': for (const w of r.signalIds || []) watches.delete(w); lib('X', id, (r.signalIds || []).join(' ')); return;
+    case 'watches': lib('I', id, ''); return;
+    case 'list': lib('N', id, `${r.scope} ${r.limit || 10000}`); return;
+    case 'option': lib('O', id, `poll ${r.poll}`); return;
+    case 'checkpoint': case 'restore': case 'save': case 'restoreFile': {
+      if (busyRun()) return;
+      const s0 = performance.now();
+      const res = await park(async () => {
+        const u0 = performance.now();
+        let txt;
+        if (r.cmd === 'checkpoint') txt = await ucli('checkpoint -add simctl');
+        else if (r.cmd === 'restore') txt = await ucli(`checkpoint -join ${r.cp}`);
+        else if (r.cmd === 'save') txt = await ucli(`save ${r.file}`);
+        else txt = await ucli(`restore ${r.file}`);
+        const ucliMs = performance.now() - u0;
+        const o = { ucliMs: +ucliMs.toFixed(1), ucli: txt.trim().slice(-400) };
+        if (r.cmd === 'checkpoint') { const m = /(\d+)\s*$/.exec(txt.trim()); o.cp = m ? Number(m[1]) : null; }
+        return o;
+      });
+      if (r.cmd === 'restore' || r.cmd === 'restoreFile') {
+        // the library's own state (watches, last values) rewinds with the simulation
+        const info = await libCall('I', '');
+        watches.clear();
+        for (const w of info.watches || []) watches.set(w.wid, { name: w.name, width: w.width });
+        res.watches = (info.watches || []).map((w) => ({ signalId: w.wid, name: w.name, width: w.width }));
+        await libCall('E', '');
+        res.t = info.t;
+      }
+      out({ id, result: res, ms: +(performance.now() - s0).toFixed(1) });
+      return;
+    }
+    case 'stats': out({ id, result: { ...memStats(true), period, lastT } }); return;
+    case 'quit': lib('Q', id, ''); setTimeout(() => { try { sim.stdin.write('quit\n'); sim.stdin.end(); } catch {} }, 200);
+      setTimeout(() => { for (const p of descendants(sim.pid).reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} } }, 10000).unref();
+      return;
+    default: out({ id, error: `unknown cmd ${r.cmd}` });
+  }
+}
+let chain = Promise.resolve();
+const rl = require('node:readline').createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  let r; try { r = JSON.parse(line); } catch { out({ id: null, error: 'bad JSON' }); return; }
+  // stop goes straight through (it must reach a run in flight); everything else keeps order
+  if (r.cmd === 'stop' && !parked) { handle(r); return; }
+  chain = chain.then(() => handle(r)).catch((e) => out({ id: r.id, error: String(e) }));
+});
+rl.on('close', () => { if (sim.exitCode === null) handle({ id: 0, cmd: 'quit' }); });
+// The helper is exiting: no time for a clean quit, kill the simulation's process tree now.
+process.on('SIGTERM', () => { for (const p of descendants(sim.pid).reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} } process.exit(0); });
+
+// ---------------------------------------------------------------- startup
+(async () => {
+  await nextPrompt();                 // the simulator's command line at time 0
+  sim.stdin.write('run\n');           // the library parks the run at time 0 and serves
+  const r = await ready;
+  if (!period && CLOCK) {
+    // measure the clock: two rising edges
+    const a = await libCall('U', `100000000 ${CLOCK} == 1`);
+    const b = await libCall('U', `100000000 ${CLOCK} == 1`);
+    if (a.stopped === 'until' && b.stopped === 'until') period = b.t - a.t;
+  }
+  if (period && POLL_CYCLES) await libCall('O', `poll ${period * POLL_CYCLES}`);
+  const t = await libCall('T', '');
+  event('ready', { t: t.t, precision: r.precision, period, startupMs: Date.now() - t0, dir, ucli2Proc: ucli2 });
+})();
