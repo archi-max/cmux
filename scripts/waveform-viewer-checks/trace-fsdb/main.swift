@@ -84,6 +84,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     window.setFrameOrigin(NSPoint(x: -30000, y: -30000))
     window.alphaValue = 0
     window.ignoresMouseEvents = true
+    // Ordered in (behind everything, never key): WebKit holds back a page whose window was never
+    // ordered in, so a cold open that takes longer (a fresh helper install) never says initialized.
+    window.orderBack(nil)
     let env = ProcessInfo.processInfo.environment
     // The helper's store cache too (FSDB_INDEX_DIR; by default a folder under /tmp shared with the
     // helpers in use), so a test starts cold when the folder is new and never fills theirs.
