@@ -2754,12 +2754,13 @@ const clockdesc = CLOCK ? require('./clockdesc.js') : null;
 function clockFor(id, t) {
   if (!CLOCK || !openFile) { return null; }
   const d = clock.desc.get(id);
-  if (!d || d.state !== 'ready' || !(t >= d.lo && (t <= d.verifiedEnd + 1 || d.verifiedEnd >= (timeEnd || 0)))) { return null; }
+  // (a descriptor is ready only after a whole pass, so it covers the dump to its end; one that
+  // doesn't, e.g. a dump that grew, answers nothing: review L3)
+  if (!d || d.state !== 'ready' || d.verifiedEnd < (timeEnd || 0) || !(t >= d.lo)) { return null; }
   try { if (d.key !== clockKey(openFile)) { return null; } } catch (e) { return null; }
   return d;
 }
-function clockAnswer(d, hit) {
-  if (hit === null ? d.verifiedEnd < (timeEnd || 0) : hit > d.verifiedEnd) { return undefined; }
+function clockAnswer(d, hit) {  // (clockFor: d covers the whole dump, so every hit and null is final)
   clock.served++;
   return { t: hit };
 }
@@ -2972,7 +2973,7 @@ const handlers = {
     if (CLOCK && buckets <= CLOCK_WIN_BUCKETS) {
       for (const id of new Set(ids)) {
         const d = clockFor(id, t0);
-        if (d && (t1 <= d.verifiedEnd + 1 || d.verifiedEnd >= (timeEnd || 0))) {  // (changes at times < t1)
+        if (d) {  // (clockFor: it covers the whole dump)
           const w = clockdesc.window(d, t0, t1, buckets);  // (records deflated as the workers' are)
           fromClock.set(id, { signalId: id, ...w, records: zlib.deflateRawSync(w.records, { level: 1 }), loadMs: 0, walkMs: 0, ranged: true, clock: true });
           clock.served++;
