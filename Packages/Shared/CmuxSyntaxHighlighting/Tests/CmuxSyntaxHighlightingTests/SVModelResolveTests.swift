@@ -206,6 +206,37 @@ import Testing
             == .signal(designPath: "tb.u_dut.u_alu.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
     }
 
+    /// Past the root cap (more than 512 scoped instances), the true DUT (soc.u_sub.u_dut, at a depth
+    /// the cap drops) would win; a look-alike kept at a shallower depth (soc.u_look, two of its
+    /// three scopes) must not win alone: the row is not in the design (a tie it can't settle).
+    @Test func aRootDroppedByTheCapThatCouldTieMakesTheWinnerAmbiguous() async throws {
+        var models: [String: [String: Any]] = [
+            "soc": Self.signals(["clk": Self.bit]),
+            "soc.u_look": Self.signals(["clk": Self.bit]),
+            "soc.u_sub": Self.signals(["clk": Self.bit]),
+            "soc.u_sub.u_dut": Self.signals(["clk": Self.bit]),
+        ]
+        for sub in ["u_a", "u_b"] { models["soc.u_look.\(sub)"] = Self.signals(["x": Self.bit]) }
+        for sub in ["u_a", "u_b", "u_c"] { models["soc.u_sub.u_dut.\(sub)"] = Self.signals(["x": Self.bit]) }
+        for i in 0..<600 {
+            models["soc.fill.f\(i)"] = Self.signals(["clk": Self.bit])
+            models["soc.fill.f\(i).u_p"] = Self.signals(["y": Self.bit])
+            models["soc.fill.f\(i).u_q"] = Self.signals(["y": Self.bit])
+        }
+        models["soc.fill"] = Self.signals(["clk": Self.bit])
+        let design = FakeDesign(models: models, tops: ["soc"])
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true)],
+            "tb.dut": ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) },
+            "tb.dut.u_a": [HierarchyNode(name: "x", isScope: false, width: 1)],
+            "tb.dut.u_b": [HierarchyNode(name: "x", isScope: false, width: 1)],
+            "tb.dut.u_c": [HierarchyNode(name: "x", isScope: false, width: 1)],
+        ]
+        let got = try await resolve("tb.dut.u_a.x", design: design, dump: dump)
+        #expect(got == .notInDesign, "\(got)")
+    }
+
     /// Two identical cores (`u_core0`, `u_core1`, each with `u_a`/`u_b`/`u_c`) below `root`, dumped below `tb.dut`.
     static func twoCores(below root: String, models: [String: [String: Any]], tops: [String], dumpTb: [HierarchyNode]) -> (FakeDesign, FakeDump) {
         var models = models
