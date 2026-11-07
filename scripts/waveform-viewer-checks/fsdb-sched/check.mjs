@@ -725,12 +725,12 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
-// 36. A warm call's cost is its walk, per signal: a set split over two warm readers is read in
-// parallel, about half the time of one reader walking all of it.
+// 36. A warm call's cost is its walk, per signal: a set split over two warm readers
+// (FSDB_WARM_READERS=2) is read in parallel, about half the time of one reader walking all of it.
 {
   const ids = [1, 2, 3, 4, 5, 6, 7, 8];
   const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
-    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '5', STUB_WARM_SIG_MS: '40', FSDB_WARM: '1' });
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '5', STUB_WARM_SIG_MS: '40', FSDB_WARM: '1', FSDB_WARM_READERS: '2' });
   const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
   await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
   let st = null;
