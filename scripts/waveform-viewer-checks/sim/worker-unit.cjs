@@ -178,7 +178,11 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     const file = rf && rf.result ? rf.result.file : '';
     const end = Date.now() + 3000; let ev = null;
     while (!ev && Date.now() < end) { ev = w.events.find((e) => e.event === 'saved'); if (!ev) await sleep(20); }
-    expect(!!ev && ev.file === file && path.isAbsolute(file) && ev.status === 0, `and its end is a saved event naming the file: ${JSON.stringify(ev)} (${file})`);
+    expect(!!ev && ev.file === file && path.isAbsolute(file) && ev.status === 0 && ev.ok === true && ev.bytes > 0, `and its end is a saved event naming the file, checked: ${JSON.stringify(ev)} (${file})`);
+    const nf = await w.reply(w.send({ cmd: 'forksave', file: 'nofile.save' }).id);
+    const end2 = Date.now() + 3000; let ev2 = null;
+    while (!ev2 && Date.now() < end2) { ev2 = w.events.find((e) => e.event === 'saved' && nf && nf.result && e.pid === nf.result.pid); if (!ev2) await sleep(20); }
+    expect(!!ev2 && ev2.ok === false && !!ev2.error, `a saved event whose image is not there is not ok, whatever the status: ${JSON.stringify(ev2)}`);
     const bad = w.send({ cmd: 'forksave', file: '/etc/outside.save' });
     const rb = await w.reply(bad.id);
     const libLog = fs.existsSync(w.log) ? fs.readFileSync(w.log, 'utf8') : '';

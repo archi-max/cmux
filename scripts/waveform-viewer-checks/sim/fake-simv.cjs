@@ -37,7 +37,8 @@ function quick(op, id, a) {
     case 'E': send({ id, t }); return true;
     // fork-save: the reply at once (the fork), the save's end as a `saved` event a little later
     case 'V': { const pid = 90000 + id; send({ id, t, pid, forkMs: 1.5, file: a[0] });
-      setTimeout(() => { try { fs.writeFileSync(a[0], 'fake save'); } catch { /* bad path */ } send({ ev: 'saved', pid, file: a[0], t, status: 0 }); }, 200); return true; }
+      // a name with "nofile" in it: the child says 0 but writes nothing (the worker must not trust the status)
+      setTimeout(() => { try { if (!/nofile/.test(a[0])) fs.writeFileSync(a[0], 'fake save'); } catch { /* bad path */ } send({ ev: 'saved', pid, file: a[0], t, status: 0 }); }, 200); return true; }
     default: return false;
   }
 }
