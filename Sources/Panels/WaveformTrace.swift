@@ -112,7 +112,6 @@ enum WaveformTrace {
         }
         if let waveform { activeDesigns.setObject(design, forKey: waveform) }
         let host = editor.linkRemoteRoute?.configuration.destination
-        let key = design.key
         design.sidecar.onStatus = { status in
             Task { @MainActor in
                 switch status {
