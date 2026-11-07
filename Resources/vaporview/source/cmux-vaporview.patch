@@ -814,6 +814,233 @@ index 51613df..dacb442 100644
      }
      this.draggableRows.forEach((rowId) => {
        const element = this.labels.querySelector(`#label-${rowId}`);
+diff --git a/src/webview/live.ts b/src/webview/live.ts
+new file mode 100644
+index 0000000..88e18f1
+--- /dev/null
++++ b/src/webview/live.ts
+@@ -0,0 +1,221 @@
++// cmux: live simulation. The page (cmux-sim.js, outside this frame) runs a simulation through
++// cmux's FSDB helper and hands its value changes in here through window.__vvLive:
++//   rows()                      the shown signal rows: {rowId, signalId, netlistId, width, path, visible}
++//                               (visible: on screen vertically; path: the dotted hierarchical name)
++//   append(signalId, width, records, from)  [[t, value]] changes of a watched signal, in time order. The
++//                               first append of a signal replaces its dump data: missing before `from` (the
++//                               time its watch began), then the changes. Later appends extend it.
++//   missing(signalId, t)        the signal's changes from t on were lost: missing until its next record
++//   gap(signalId, t)            the signal is no longer watched from t: missing from there
++//   coverage(signalId)          [[from, to | null]] its missing spans (null: still open)
++//   valueAt(signalId, t)        its live value at t; null inside a missing span or past the simulation's time
++//                               (no exact answer there); undefined for a signal that isn't live
++//   setLimit(n)                 keep at most n changes per live signal (default 1,000,000): older ones are
++//                               evicted, and become missing
++//   coverageDrawn()             how many missing spans were drawn (the page's checks)
++// Missing coverage is drawn over the row as a grey hatch, apart from an x (an x is a value the design had;
++// a missing span is time with no record). The data underneath holds x there.
++//   extend(timeEnd)             the simulation reached timeEnd: the time range grows to it, and a view
++//                               showing the old end follows the new one
++//   isLive(signalId), live()    which signals show simulation data
++//   end()                       live mode is over (the page reloads the dump)
++//   viewport()                  the viewport (the page's checks)
++import { type ValueChange, type SignalId } from '../common/types';
++import { NetlistVariable, setAfterRowRender } from './signal_item';
++import { viewport, viewerState, rowHandler, labelsPanel, events, dataManager, styles } from './vaporview';
++
++const live = new Set<SignalId>();
++type Hole = [number, number | null];          // [from, to): to null = open, until the next record
++const holes = new Map<SignalId, Hole[]>();
++const pendingGap = new Set<SignalId>();         // a gap came before the row's first append
++let limit = 1000000;
++let simEnd = 0;
++let drawnSegments = 0;
++
++function openHole(signalId: SignalId, t: number) {
++  let h = holes.get(signalId);
++  if (!h) {holes.set(signalId, (h = []));}
++  const last = h[h.length - 1];
++  if (last && last[1] === null) {return;}
++  if (last && last[1] !== null && last[1] >= t) {last[1] = null; return;}   // touching: one span
++  h.push([t, null]);
++}
++function closeHole(signalId: SignalId, t: number) {
++  const h = holes.get(signalId);
++  const last = h ? h[h.length - 1] : undefined;
++  if (last && last[1] === null) {last[1] = Math.max(t, last[0]);}
++}
++// Drops the oldest changes past the limit; the span they covered (from 0) becomes missing.
++function evict(signalId: SignalId, list: ValueChange[]) {
++  if (list.length <= limit) {return;}
++  const keep = Math.max(2, Math.floor(limit * 0.9));
++  list.splice(1, list.length - keep);
++  const first = list[1][0];
++  list[0] = [0, 'x'.repeat(list[1][1].length)];
++  const h = (holes.get(signalId) || []).filter((x) => x[1] === null || x[1] > first);
++  if (h.length && h[0][0] <= first) {h[0][0] = 0;} else {h.unshift([0, first]);}
++  holes.set(signalId, h);
++}
++
++function rowsOf(signalId: SignalId): NetlistVariable[] {
++  const out: NetlistVariable[] = [];
++  viewerState.displayedSignalsFlat.forEach((rowId) => {
++    const item = rowHandler.rowItems[rowId];
++    if (item instanceof NetlistVariable && item.signalId === signalId) {out.push(item);}
++  });
++  return out;
++}
++
++function redraw(signalId: SignalId) {
++  rowsOf(signalId).forEach((item) => {
++    labelsPanel.valueAtMarker[item.rowId] = item.getValueAtTime(viewerState.markerTime);
++    events.redrawVariable(item.rowId);
++    rowHandler.setValueFormat(item.getWaveformData(), item.valueFormat, false);
++  });
++}
++
++function pathOf(item: NetlistVariable): string {
++  return [...(item.scopePath || []), item.signalName].filter((s) => s !== '').join('.');
++}
++
++function rows() {
++  const top = viewport.pseudoScrollTop, bottom = top + viewport.viewerHeight;
++  const out: {rowId: number; signalId: SignalId; netlistId: number | undefined; width: number; path: string; visible: boolean}[] = [];
++  viewerState.displayedSignalsFlat.forEach((rowId) => {
++    const item = rowHandler.rowItems[rowId];
++    if (!(item instanceof NetlistVariable) || item.signalId === undefined) {return;}
++    const shown = viewerState.visibleSignalsFlat.includes(rowId);
++    const bounds = shown ? viewport.getRowIdBounds(rowId) : null;
++    const visible = bounds !== null && bounds[1] > top && bounds[0] < bottom;
++    out.push({rowId, signalId: item.signalId, netlistId: item.netlistId, width: item.signalWidth, path: pathOf(item), visible});
++  });
++  return out;
++}
++
++// Appends in place (the renderer reads valueChangeData), dropping repeats of the last value.
++function push(list: ValueChange[], t: number, v: string) {
++  const last = list[list.length - 1];
++  if (last && last[0] === t) {
++    const prev = list[list.length - 2];
++    if (prev && prev[1] === v) {list.pop();} else {last[1] = v;}
++    return;
++  }
++  if (last && (last[0] > t || last[1] === v)) {return;}
++  list.push([t, v]);
++}
++
++function append(signalId: SignalId, width: number, records: [number, string][], from: number) {
++  let data = dataManager.valueChangeData[signalId];
++  if (!live.has(signalId) || data === undefined) {
++    live.add(signalId);
++    const list: ValueChange[] = [[0, 'x'.repeat(width)]];
++    data = dataManager.valueChangeData[signalId] = {valueChangeData: list, formattedValues: {}, signalWidth: width, min: 0, max: 1};
++    // A gap before the first append (the batch with the row's first records was dropped): nothing is known
++    // of the row before the first delivered record, so it is missing from 0 until then.
++    const early = pendingGap.has(signalId);
++    pendingGap.delete(signalId);
++    holes.set(signalId, early ? [[0, null]] : from > 0 ? [[0, from]] : []);
++    if (from > 0 && !early) {push(list, from, 'x'.repeat(width));}
++  }
++  const list = data.valueChangeData;
++  if (records.length) {closeHole(signalId, records[0][0]);}
++  for (const [t, v] of records) {push(list, t, v); if (t > simEnd) {simEnd = t;}}
++  evict(signalId, list);
++  data.formattedValues = {};
++  redraw(signalId);
++}
++
++// From t on there is no record of the signal: x underneath, missing on screen and to queries.
++function missingFrom(signalId: SignalId, t: number) {
++  const data = dataManager.valueChangeData[signalId];
++  if (!live.has(signalId) || data === undefined) {pendingGap.add(signalId); return;}
++  push(data.valueChangeData, t, 'x'.repeat(data.signalWidth));
++  openHole(signalId, t);
++  data.formattedValues = {};
++  redraw(signalId);
++}
++function gap(signalId: SignalId, t: number) {missingFrom(signalId, t);}
++
++function valueAt(signalId: SignalId, t: number): string | null | undefined {
++  const data = dataManager.valueChangeData[signalId];
++  if (!live.has(signalId) || data === undefined) {return undefined;}
++  if (!(t >= 0) || t > simEnd) {return null;}
++  for (const [a, b] of holes.get(signalId) || []) {if (t >= a && (b === null || t < b)) {return null;}}
++  const list = data.valueChangeData;
++  let lo = 0, hi = list.length - 1, at = -1;
++  while (lo <= hi) {const mid = (lo + hi) >> 1; if (list[mid][0] <= t) {at = mid; lo = mid + 1;} else {hi = mid - 1;}}
++  return at >= 0 ? String(list[at][1]) : null;
++}
++
++// Over a live row: its missing spans as a grey hatch (x is drawn in the error colour; this is not a value).
++function drawCoverage(item: NetlistVariable) {
++  if (item.signalId === undefined || !live.has(item.signalId)) {return;}
++  const h = holes.get(item.signalId);
++  const ctx = viewport.waveformsCanvas;
++  if (!h || !h.length || !ctx || item.topBounds === null) {return;}
++  const rowHeight = item.rowHeight * styles.rowHeight;
++  const height = rowHeight - (styles.rowPadding * 2);
++  const top = item.topBounds + styles.rowPadding - viewport.pseudoScrollTop;
++  const end = Math.max(simEnd, viewport.timeStop);
++  ctx.save();
++  for (const [a, b] of h) {
++    const x0 = Math.max(0, (a * viewport.zoomRatio) - viewport.pseudoScrollLeft);
++    const x1 = Math.min(viewport.viewerWidth, ((b === null ? end : b) * viewport.zoomRatio) - viewport.pseudoScrollLeft);
++    if (!(x1 > x0)) {continue;}
++    ctx.beginPath(); ctx.rect(x0, top, x1 - x0, height); ctx.save(); ctx.clip();
++    ctx.fillStyle = 'rgba(128, 128, 128, 0.35)';
++    ctx.fillRect(x0, top, x1 - x0, height);
++    ctx.strokeStyle = 'rgba(160, 160, 160, 0.8)'; ctx.lineWidth = 1;
++    ctx.beginPath();
++    for (let x = x0 - height; x < x1; x += 6) {ctx.moveTo(x, top + height); ctx.lineTo(x + height, top);}
++    ctx.stroke();
++    ctx.restore();
++    drawnSegments++;
++  }
++  ctx.restore();
++}
++
++function extend(timeEnd: number) {
++  if (timeEnd > simEnd) {simEnd = timeEnd;}
++  if (!(timeEnd > viewport.timeStop)) {
++    labelsPanel.renderValueDisplay();
++    viewport.renderAllWaveforms();
++    return;
++  }
++  const oldEnd = viewport.timeStop;
++  const following = viewport.timeScrollRight >= oldEnd - viewport.pixelTime;
++  const span = viewport.timeScrollRight - viewport.timeScrollLeft;
++  viewport.timeStop = timeEnd;
++  viewport.maxScrollLeft = Math.round(Math.max((viewport.timeStop * viewport.zoomRatio) - viewport.viewerWidth, 0));
++  viewport.minZoomRatio = viewport.viewerWidth / viewport.timeStop;
++  if (following) {
++    // Same span, its right edge at the new end (a view of the whole dump keeps showing the whole run).
++    const start = span >= oldEnd - viewport.pixelTime ? 0 : Math.max(0, timeEnd - span);
++    viewport.updatePending = false;
++    viewport.setViewportRange(start, timeEnd);
++  } else {
++    viewport.updateHorizontalScrollbar();
++    viewport.renderAllWaveforms();
++  }
++  labelsPanel.renderValueDisplay();
++}
++
++export function endLive() {
++  live.clear();
++  holes.clear();
++  pendingGap.clear();
++  simEnd = 0;
++}
++
++export function installLive() {
++  setAfterRowRender(drawCoverage);
++  (window as unknown as {__vvLive: object}).__vvLive = {
++    rows, append, gap, missing: missingFrom, extend, end: endLive, valueAt,
++    coverage: (signalId: SignalId) => (holes.get(signalId) || []).map((x) => [x[0], x[1]]),
++    setLimit: (n: number) => {if (Number.isInteger(n) && n >= 2) {limit = n;}},
++    coverageDrawn: () => drawnSegments,
++    isLive: (signalId: SignalId) => live.has(signalId),
++    live: () => [...live],
++    viewport: () => viewport,
++  };
++}
 diff --git a/src/webview/riscv_disasm.ts b/src/webview/riscv_disasm.ts
 new file mode 100644
 index 0000000..d9cd6bb
@@ -1468,7 +1695,7 @@ index b17e96e..908f1b8 100644
          children.shift(); // Remove the group itself from the list
          groupChildren = groupChildren.concat(children);
 diff --git a/src/webview/signal_item.ts b/src/webview/signal_item.ts
-index e6c206c..7591072 100644
+index e6c206c..5033840 100644
 --- a/src/webview/signal_item.ts
 +++ b/src/webview/signal_item.ts
 @@ -1,10 +1,10 @@
@@ -1527,7 +1754,7 @@ index e6c206c..7591072 100644
      return result;
    }
  
-@@ -189,6 +197,89 @@ export class SignalSeparator extends SignalItem implements RowItem {
+@@ -189,6 +197,93 @@ export class SignalSeparator extends SignalItem implements RowItem {
    setLabelText(newLabel: string) {this.label = newLabel;}
  }
  
@@ -1614,10 +1841,14 @@ index e6c206c..7591072 100644
 +  return {cmuxSlices: shownSlices(item) !== null, cmuxSliceName: name, cmuxMsb: msb, cmuxLsb: lsb, cmuxDeclared: declared};
 +}
 +
++// cmux: drawn over a variable's row after its waveform (live.ts draws missing coverage).
++let afterRowRender: ((item: NetlistVariable) => void) | null = null;
++export function setAfterRowRender(f: ((item: NetlistVariable) => void) | null) {afterRowRender = f;}
++
  export class NetlistVariable extends SignalItem implements RowItem {
  
    public valueFormat: ValueFormat;
-@@ -205,6 +296,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -205,6 +300,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
    public min: number = 0;
    public max: number = 0;
    public readonly missingSignal: boolean;
@@ -1625,7 +1856,7 @@ index e6c206c..7591072 100644
  
    constructor(
      public readonly rowId: RowId,
-@@ -260,7 +352,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -260,7 +356,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
    }
  
    public createWaveformRowContent(): string {
@@ -1634,7 +1865,7 @@ index e6c206c..7591072 100644
      const signalName  = htmlSafe(this.signalName + bitRangeString(this.msb, this.lsb, true));
      if (this.nameType === NameType.fullPath) {
        const scopePath = htmlSafe(this.scopePath.join('.') + '.');
-@@ -279,16 +371,16 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -279,16 +375,16 @@ export class NetlistVariable extends SignalItem implements RowItem {
      let missingSignalClass = "";
      if (this.missingSignal) {missingSignalClass = 'missing-signal';}
      const height        = getRowHeightCssClass(this.rowHeight);
@@ -1656,7 +1887,7 @@ index e6c206c..7591072 100644
      }
  
    public createValueDisplayElement() {
-@@ -304,11 +396,12 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -304,11 +400,12 @@ export class NetlistVariable extends SignalItem implements RowItem {
      const pElement      = value.map((v: string) => {
        const is9State     = valueIs9State(v);
        const colorStyle   = is9State ? styles.xzColor : this.color;
@@ -1671,7 +1902,7 @@ index e6c206c..7591072 100644
    }
  
    public setSignalContextAttribute() {
-@@ -326,6 +419,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -326,6 +423,7 @@ export class NetlistVariable extends SignalItem implements RowItem {
        rowId: this.rowId,
        isAnalog: isAnalog,
        enum: this.enumType !== "",
@@ -1679,7 +1910,7 @@ index e6c206c..7591072 100644
      };
      this.vscodeContext = `${JSON.stringify(context).replace(/\s/g, '%x20')}`;
    }
-@@ -342,7 +436,8 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -342,7 +440,8 @@ export class NetlistVariable extends SignalItem implements RowItem {
        nameType:         this.nameType,
        customName:       this.customName,
        renderType:       this.renderType.id,
@@ -1689,7 +1920,7 @@ index e6c206c..7591072 100644
      };
    }
  
-@@ -361,16 +456,20 @@ export class NetlistVariable extends SignalItem implements RowItem {
+@@ -361,31 +460,38 @@ export class NetlistVariable extends SignalItem implements RowItem {
      this.nameType = NameType.custom;
    }
  
@@ -1712,7 +1943,10 @@ index e6c206c..7591072 100644
      if (!data) {return;}
  
      const valueChangeChunk = setRenderBounds(this, data);
-@@ -380,12 +479,14 @@ export class NetlistVariable extends SignalItem implements RowItem {
+     this.renderType.draw(valueChangeChunk, this);
++    if (afterRowRender) {afterRowRender(this);} // cmux: live simulation's missing coverage
+     this.wasRendered = true;
+   }
  
    public getValueAtTime(time: number | null) {
      if (this.signalId === undefined) {return [];}
@@ -1727,7 +1961,7 @@ index e6c206c..7591072 100644
      const data = dataManager.valueChangeData[this.signalId];
      return dataManager.getNearestTransition(data, time);
    }
-@@ -482,6 +583,7 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -482,6 +588,7 @@ export class CustomVariable extends SignalItem implements RowItem {
    public encoding: VariableEncoding = VariableEncoding.BitVector;
    public enumType: string = "";
    public readonly missingSignal: boolean;
@@ -1735,7 +1969,7 @@ index e6c206c..7591072 100644
  
    constructor(
      public readonly rowId: number,
-@@ -502,9 +604,9 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -502,9 +609,9 @@ export class CustomVariable extends SignalItem implements RowItem {
    public createWaveformRowContent(): string {
  
      if (this.nameType === NameType.custom) {
@@ -1747,7 +1981,7 @@ index e6c206c..7591072 100644
      }
    }
  
-@@ -513,14 +615,15 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -513,14 +620,15 @@ export class CustomVariable extends SignalItem implements RowItem {
      let missingSignalClass = "";
      if (this.missingSignal) {missingSignalClass = 'missing-signal';}
      const height        = getRowHeightCssClass(this.rowHeight);
@@ -1766,7 +2000,7 @@ index e6c206c..7591072 100644
      }
  
      public createValueDisplayElement() {
-@@ -537,11 +640,12 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -537,11 +645,12 @@ export class CustomVariable extends SignalItem implements RowItem {
        const pElement      = value.map((v: string) => {
          const is9State     = valueIs9State(v);
          const colorStyle   = is9State ? styles.xzColor : this.color;
@@ -1781,7 +2015,7 @@ index e6c206c..7591072 100644
      }
  
    public setSignalContextAttribute() {
-@@ -556,6 +660,7 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -556,6 +665,7 @@ export class CustomVariable extends SignalItem implements RowItem {
        rowId: this.rowId,
        netlistId: this.source[0].netlistId || -1,
        isAnalog: isAnalog,
@@ -1789,7 +2023,7 @@ index e6c206c..7591072 100644
      };
      this.vscodeContext = `${JSON.stringify(context).replace(/\s/g, '%x20')}`;
    }
-@@ -572,6 +677,7 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -572,6 +682,7 @@ export class CustomVariable extends SignalItem implements RowItem {
        customName:       this.customName,
        renderType:       this.renderType.id,
        valueLinkEnable:  this.valueLinkEnable,
@@ -1797,7 +2031,7 @@ index e6c206c..7591072 100644
      };
    }
  
-@@ -590,10 +696,12 @@ export class CustomVariable extends SignalItem implements RowItem {
+@@ -590,10 +701,12 @@ export class CustomVariable extends SignalItem implements RowItem {
      this.nameType = NameType.custom;
    }
  
@@ -1812,7 +2046,7 @@ index e6c206c..7591072 100644
  
    public renderWaveform() {
  
-@@ -675,7 +783,7 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -675,7 +788,7 @@ export class SignalGroup extends SignalItem implements RowItem {
    public createWaveformRowContent() {
      const icon = this.collapseState === CollapseState.Expanded ? 
        'codicon-chevron-down' : 'codicon-chevron-right';
@@ -1821,7 +2055,7 @@ index e6c206c..7591072 100644
    }
  
    public createLabelElement() {
-@@ -695,7 +803,8 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -695,7 +808,8 @@ export class SignalGroup extends SignalItem implements RowItem {
      const lastSelectedClass = viewerState.lastSelectedSignal === this.rowId ? 'last-selected' : '';
      const selectorClass = isSelectedClass + ' ' + lastSelectedClass;
      //const tooltip       = "Name: " + fullPath + "\nType: " + this.variableType + "\nWidth: " + this.signalWidth + "\nEncoding: " + this.encoding;
@@ -1831,7 +2065,7 @@ index e6c206c..7591072 100644
                <div class="waveform-row ${selectorClass} height1x">${this.createWaveformRowContent()}</div>
                <div class="labels-group child-group">${childElements}</div>
              </div>`;
-@@ -707,7 +816,8 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -707,7 +821,8 @@ export class SignalGroup extends SignalItem implements RowItem {
      const isSelectedClass   = this.isSelected ? 'is-selected' : '';
      const lastSelectedClass = viewerState.lastSelectedSignal === this.rowId ? 'last-selected' : '';
      const selectorClass = isSelectedClass + ' ' + lastSelectedClass;
@@ -1841,7 +2075,7 @@ index e6c206c..7591072 100644
      if (value === undefined) {value = [];}
      if (this.collapseState === CollapseState.Expanded) {
        this.children.forEach((childRowId) => {
-@@ -845,4 +955,11 @@ export class SignalGroup extends SignalItem implements RowItem {
+@@ -845,4 +960,11 @@ export class SignalGroup extends SignalItem implements RowItem {
      this.viewportElement = null;
      this.label = "";
    }
@@ -2773,10 +3007,10 @@ index 0000000..dfc9b0a
 +  return bits === '0' ? '0' : '0' + bits;
 +}
 diff --git a/src/webview/vaporview.ts b/src/webview/vaporview.ts
-index c7771b9..69640a0 100644
+index c7771b9..f5aa7ca 100644
 --- a/src/webview/vaporview.ts
 +++ b/src/webview/vaporview.ts
-@@ -5,8 +5,9 @@ import { LabelsPanels } from './labels';
+@@ -5,8 +5,10 @@ import { LabelsPanels } from './labels';
  import { ControlBar } from './control_bar';
  import { RowHandler } from './row_handler';
  import { WaveformDataManager } from './data_manager';
@@ -2784,10 +3018,11 @@ index c7771b9..69640a0 100644
 +import { NetlistVariable, SignalGroup, SliceGroup, type RowItem } from './signal_item'; // cmux: SliceGroup
  import { Configuration, OS, ThemeColors, VscodeWrapper } from './vscode_wrapper';
 +import { WindowCache } from './window_cache'; // cmux: windowed loading (protocol v2)
++import { installLive, endLive } from './live'; // cmux: live simulation
  
  export class ViewerState {
    uri: string | null                 = null;
-@@ -332,8 +333,9 @@ class VaporviewWebview {
+@@ -332,8 +334,9 @@ class VaporviewWebview {
      }
  
      else if (e.key === 'Escape') {
@@ -2798,7 +3033,7 @@ index c7771b9..69640a0 100644
      }
      else if (e.key === 'Delete' || e.key === 'Backspace') {
        //viewerState.selectedSignal.forEach((rowId) => {
-@@ -386,6 +388,8 @@ class VaporviewWebview {
+@@ -386,6 +389,8 @@ class VaporviewWebview {
  
      // First check to see if we're moving it outside the parent group
      if (newIndex < 0 || newIndex >= parentList.length) {
@@ -2807,7 +3042,15 @@ index c7771b9..69640a0 100644
        const parentGroupRowId = rowHandler.groupIdTable[parentGroupId];
        const grandparentGroupId = getParentGroupId(parentGroupRowId);
        if (grandparentGroupId === null) {return;}
-@@ -458,6 +462,7 @@ export const styles        = new ThemeColors(events);
+@@ -446,6 +451,7 @@ export function unload() {
+   viewerState.visibleSignalsFlat   = [];
+   viewerState.zoomRatio            = 1;
+   dataManager.unload();
++  endLive(); // cmux: live simulation
+   labelsPanel.renderLabelsPanels();
+   labelsPanel.renderValueDisplay();
+   // we don't need to do anything to the viewport, because the ready message will reinitialize it
+@@ -458,11 +464,13 @@ export const styles        = new ThemeColors(events);
  export const config        = new Configuration();
  export const vscodeWrapper = new VscodeWrapper(events);
  export const dataManager   = new WaveformDataManager(events);
@@ -2815,6 +3058,12 @@ index c7771b9..69640a0 100644
  export const rowHandler    = new RowHandler(events);
  export const controlBar    = new ControlBar(events);
  export const viewport      = new Viewport(events);
+ export const labelsPanel   = new LabelsPanels(events);
+ const vaporview            = new VaporviewWebview(events);
++installLive(); // cmux: live simulation
+ 
+ vscodeWrapper.webviewReady();
+ 
 diff --git a/src/webview/viewport.ts b/src/webview/viewport.ts
 index 13ed9a8..cfc36da 100644
 --- a/src/webview/viewport.ts

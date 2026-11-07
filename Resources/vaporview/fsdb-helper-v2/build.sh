@@ -163,6 +163,32 @@ mkdir -p "$STAGE/addon/build/Release" \
   && cp "$WORK/fsdb_reader.node" "$STAGE/addon/build/Release/" \
   && cp "$SRC/helper.js" "$SRC/worker.js" "$SRC/expr.js" "$SRC/text.js" "$SRC/formats.js" "$SRC/tree.js" "$SRC/clockdesc.js" "$SRC/cmux-helper-v2.sh" "$STAGE/" || exit 15
 if [ -f "$WORK/clockseg" ]; then cp "$WORK/clockseg" "$STAGE/" || exit 15; fi
+# Live simulation (optional; sim.js says so when it is missing): the simctl VPI library, compiled
+# against this host's own VCS headers ($VCS_HOME/include, never shipped with cmux), and the stub a
+# simulator names at elaboration (-load <stub>:simctl_register), at a path that outlives versions.
+# The worker's testbench helper (tb.js), the build-manifest tool, and the testbench pieces a user compiles in
+# (simctl_tb.sv: simctl_cfg/simctl_port; simctl_hold.sv: the apply hold; simctl_saver.sv: fork-save).
+cp "$SRC/sim.js" "$STAGE/" && mkdir -p "$STAGE/simctl" && cp "$SRC/simctl/sim-worker.js" "$SRC/simctl/tb.js" "$SRC/simctl/simctl-manifest.js" "$SRC/simctl/LICENSE" \
+  "$SRC/simctl/simctl_saver.sv" "$SRC/simctl/simctl_tb.sv" "$SRC/simctl/simctl_hold.sv" "$STAGE/simctl/" || exit 15
+build_simctl() {
+  vcs_home=${VCS_HOME:-}
+  if [ -z "$vcs_home" ] && v=$(command -v vcs 2>/dev/null); then vcs_home=$(cd "$(dirname "$v")/.." && pwd); fi
+  [ -n "$vcs_home" ] && [ -f "$vcs_home/include/vpi_user.h" ] || { say "live simulation: no VCS headers (set VCS_HOME, or put vcs on PATH); skipped"; return 0; }
+  cc=$(command -v gcc 2>/dev/null || command -v cc 2>/dev/null) || { say "live simulation: no C compiler; skipped"; return 0; }
+  nice -n 10 "$cc" -O2 -fPIC -shared -Wall -Wno-unused-parameter -I"$vcs_home/include" \
+    -o "$STAGE/simctl/libsimctl.so" "$SRC/simctl/simctl_vpi.c" >>"$WORK/build.log" 2>&1 \
+    || { rm -f "$STAGE/simctl/libsimctl.so"; say "live simulation: the VPI library did not compile; skipped"; return 0; }
+  stubdir=$HOME/.cache/cmux/simctl
+  mkdir -p "$stubdir" && chmod 700 "$stubdir" || return 0
+  "$cc" -O2 -fPIC -shared -Wall -I"$vcs_home/include" -o "$WORK/libsimctl_stub.so" "$SRC/simctl/simctl_stub.c" -ldl >>"$WORK/build.log" 2>&1 \
+    || { say "live simulation: the stub did not compile; skipped"; return 0; }
+  # A simulator built against the stub loads it on every run: replace it only when it differs, by rename.
+  cmp -s "$WORK/libsimctl_stub.so" "$stubdir/libsimctl_stub.so" \
+    || { cp "$WORK/libsimctl_stub.so" "$stubdir/.stub.$$" && chmod 755 "$stubdir/.stub.$$" && mv -f "$stubdir/.stub.$$" "$stubdir/libsimctl_stub.so"; }
+  cp "$SRC/simctl/LICENSE" "$stubdir/LICENSE" 2>/dev/null || true   # the stub's licence notice, next to it
+  say "live simulation: built (stub: $stubdir/libsimctl_stub.so)"
+}
+build_simctl
 # Single-quoted for the shell that sources it; a ' in a path becomes '\''.
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 printf 'NODE=%s\nVERDI_HOME=%s\n' "$(quote "$NODE")" "$(quote "$VERDI")" > "$STAGE/helper.env"

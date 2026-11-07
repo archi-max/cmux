@@ -161,6 +161,7 @@ const { fork, spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const expr = require('./expr.js');
 const { scopeTree } = require('./tree.js');
+const sim = require('./sim.js');   // live simulation: sim.* requests (kept apart from the FSDB code)
 
 const OUT = 3;
 const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Release/fsdb_reader.node');
@@ -239,6 +240,7 @@ function writeAll(buf) {
   }
 }
 function shutdown(code) {
+  sim.closeAll();
   try { flushManifest(); } catch (e) { /* best effort (L8) */ }
   for (const w of workers) { w.proc.kill(); }
   // (and the processes that aren't workers: fsdbdebug, warm readers, a clock segment)
@@ -3441,6 +3443,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
     if (req.target !== undefined) { send({ id: req.id, result: r }); } else if (!r.cancelled) { send({ id: req.id, cancelled: false }); }
     return;
   }
+  if (typeof req.cmd === 'string' && req.cmd.startsWith('sim.')) { sim.handle(req, send); return; }
   inflight.set(req.id, req);
   try {
     const fn = handlers[req.cmd];

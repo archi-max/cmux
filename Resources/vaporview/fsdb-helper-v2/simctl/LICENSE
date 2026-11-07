@@ -1,0 +1,32 @@
+Licences in this folder, as each file's SPDX-License-Identifier header says:
+
+MIT (the licence below) applies to these files and to what is built from them:
+  simctl_vpi.c, simctl_forksave.c, simctl_describe.c, simctl_mem.c, simctl_apply.c and
+    simctl_push.c (one unit: simctl_vpi.c includes the others), and the libsimctl.so built from them;
+  simctl_stub.c, and the libsimctl_stub.so built from it (installed in ~/.cache/cmux/simctl);
+  simctl_saver.sv (the fork-save top), simctl_tb.sv (simctl_cfg, simctl_port) and simctl_hold.sv
+    (the apply hold): testbench pieces a design is built with;
+  tb.js (the worker's testbench helper) and simctl-manifest.js (the build-manifest tool).
+
+GPL-3.0-or-later applies to sim-worker.js, as to the rest of the FSDB helper outside this folder.
+The MIT licence below does not apply to it.
+
+Copyright (c) 2026 The cmux authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -233,6 +233,16 @@ enum WaveformViewerStrings {
             "setting.fsdbLoading": String(localized: "filePreview.waveform.settings.fsdbLoading", defaultValue: "FSDB signal loading"),
             "settingsOptionFsdbAuto": String(localized: "filePreview.waveform.settings.option.fsdbAuto", defaultValue: "Windowed: large signals load as needed"),
             "settingsOptionFsdbWhole": String(localized: "filePreview.waveform.settings.option.fsdbWhole", defaultValue: "Whole signals"),
+            "setting.liveSimulation": String(localized: "filePreview.waveform.settings.liveSimulation", defaultValue: "Live simulation of an FSDB's run (rebuild with the cmux stub)"),
+            "simLive": String(localized: "filePreview.waveform.sim.live", defaultValue: "Live"),
+            "simRun": String(localized: "filePreview.waveform.sim.run", defaultValue: "Run"),
+            "simStop": String(localized: "filePreview.waveform.sim.stop", defaultValue: "Stop"),
+            "simStep": String(localized: "filePreview.waveform.sim.step", defaultValue: "Step"),
+            "simUntil": String(localized: "filePreview.waveform.sim.until", defaultValue: "Run Until"),
+            "simUntilPlaceholder": String(localized: "filePreview.waveform.sim.untilPlaceholder", defaultValue: "Condition, e.g. tb.count == 'd10"),
+            "simClose": String(localized: "filePreview.waveform.sim.close", defaultValue: "End Live"),
+            "simTime": String(localized: "filePreview.waveform.sim.time", defaultValue: "Simulation at %@"),
+            "simOpenFailed": String(localized: "filePreview.waveform.sim.failed", defaultValue: "Live simulation: %@"),
         ]
         return strings
     }

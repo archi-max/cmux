@@ -1,0 +1,16 @@
+#######################################################################################
+# log primitive debug message of FSDB dumping                                         #
+#######################################################################################
+ANF: vcsd_get_serial_mode_status('./simv: undefined symbol: vcsd_get_serial_mode_status')
+VCS compile option:
+ option[0]: ./simv
+ option[1]: +iters=3
+ option[2]: +fsdb=/work/elsewhere/dump.fsdb
+ option[3]: -l
+ option[4]: run.log
+ option[5]: +ntb_random_seed=7
+ option[6]: /opt/eda/vcs/linux64/bin/vcs1
+ option[7]: -Mcc=gcc
+ option[8]: -debug_access+all
+ option[9]: -load
+ option[10]: /opt/eda/verdi/share/PLI/VCS/LINUX64/libnovas.so:FSDBDumpCmd

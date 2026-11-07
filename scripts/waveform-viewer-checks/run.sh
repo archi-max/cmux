@@ -88,6 +88,11 @@
 #                                        while the debugger's Locals shows,
 #                                        refills and removes the same signals
 #                                        (helper stand-in, no host)
+#   ./run.sh sim-worker                  fsdb-helper-v2/simctl/sim-worker.js itself, against a fake simulator
+#                                        (fake-simv.cjs) on the library's fd 3/4
+#   ./run.sh sim-unit                    live simulation's host side (fsdb-helper-v2/sim.js): novas_dump.log
+#                                        run arguments, the stub check, open/watch/run/until/stop/poll/read/
+#                                        close against a stand-in worker (no simulator)
 #   ./run.sh windowed                    windowed FSDB viewing (protocol v2) with a mock
 #                                        helper run locally through the real
 #                                        WaveformFSDBHelper (sh in place of ssh):
@@ -431,6 +436,16 @@ case "${1:-}" in
     "$OUT/fsdb-locals" "$ASSETS" "$OUT/fsdb-locals.png" | grep -v '^\[log\]' | tee "$OUT/fsdb-locals.log"
     grep -q '^FSDB LOCALS CHECKS PASSED' "$OUT/fsdb-locals.log"
     ;;
+  sim-worker)
+    command -v node >/dev/null || { echo "sim-worker: needs node"; exit 2; }
+    node "$HERE/sim/worker-unit.cjs" "$ASSETS/fsdb-helper-v2" "$OUT" | tee "$OUT/sim-worker.log"
+    grep -q '^WORKER UNIT CHECKS PASSED' "$OUT/sim-worker.log"
+    ;;
+  sim-unit)
+    command -v node >/dev/null || { echo "sim-unit: needs node"; exit 2; }
+    node "$HERE/sim/sim-unit.cjs" "$ASSETS/fsdb-helper-v2" "$OUT" | tee "$OUT/sim-unit.log"
+    grep -q '^SIM UNIT CHECKS PASSED' "$OUT/sim-unit.log"
+    ;;
   windowed)
     command -v node >/dev/null || { echo "windowed: needs node"; exit 2; }
     # The app builds these in Swift 6 mode; the harness itself is built in 5.
@@ -442,6 +457,16 @@ case "${1:-}" in
     grep -q '^WINDOWED CHECKS PASSED' "$OUT/windowed.log"
     # The real build.sh and cmux-helper-v2.sh, against the mock, on a scratch HOME.
     bash "$HERE/windowed/scripts-check.sh" "$ASSETS/fsdb-helper-v2" "$HERE/windowed/mock-helper-v2.cjs" "$OUT/scripts-check"
+    ;;
+  sim)
+    command -v node >/dev/null || { echo "sim: needs node"; exit 2; }
+    swiftc -swift-version 6 -typecheck "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift"
+    swiftc -O "$HERE/sim/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
+      "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/sim"
+    "$OUT/sim" "$ASSETS" "$ASSETS/fsdb-helper-v2" "$ASSETS/fsdb-helper" "$HERE/sim/mock-helper-sim.cjs" \
+      "$HERE/windowed/mock-helper-v2.cjs" "$HERE/sim/fake-worker.cjs" "$HERE/sim/fixture" "$OUT/sim-scratch" \
+      | grep -v '^\[log\]' | tee "$OUT/sim.log"
+    grep -q '^SIM CHECKS PASSED' "$OUT/sim.log"
     ;;
   windowed-launcher)
     shift
