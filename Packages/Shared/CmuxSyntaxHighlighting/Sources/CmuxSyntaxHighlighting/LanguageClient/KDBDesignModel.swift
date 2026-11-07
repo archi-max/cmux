@@ -163,6 +163,14 @@ public enum KDBModelLaunch {
 /// dump paths: the design's paths below `designPrefix` with it replaced by `dumpPrefix` (pairs with
 /// an end outside it are left out), at most `limit` pairs, in instance order.
 public enum DesignAliasPairs {
+    /// Pairs sent to the page per call at most (each call's JSON goes through the web view whole).
+    public static let pageChunk = 20_000
+
+    /// `pairs` in calls of at most `size` (none for none).
+    public static func chunked(_ pairs: [[String]], size: Int = pageChunk) -> [[[String]]] {
+        [pairs]
+    }
+
     public static func pairs(models: [String: [String: Any]], designPrefix: String, dumpPrefix: String, limit: Int = .max) -> [[String]] {
         func dump(_ path: String) -> String? {
             if designPrefix.isEmpty { return dumpPrefix.isEmpty ? path : dumpPrefix + "." + path }

@@ -7,6 +7,10 @@
 # - A failure before the exporter ran (the host's memory too low) leaves no such mark.
 # - CMUX_KDB_RETRY=1 runs it again regardless.
 # - A model in the cache is answered from it (cached), without the exporter.
+# - Two asks for a new KDB at once run the exporter once (one seat); the other waits and is
+#   answered from the cache.
+# - Of several KDBs next to the dump, the first by name in C order is taken, whatever the locale
+#   (as verdi-trace.sh does).
 S=$1
 LAUNCHER=$2
 set -u
@@ -18,8 +22,11 @@ printf '#!/bin/sh\nexit 0\n' > "$S/bin/verdi"
 chmod +x "$S/bin/verdi"
 # The stand-in exporter: counts its runs, and fails as $S/mode says (or writes an empty model).
 cat > "$S/npi-model.py" <<EOF
-import json, sys
+import json, os, sys, time
 open("$S/runs", "a").write("x")
+open("$S/daidir", "w").write(sys.argv[1])
+if os.path.exists("$S/sleep"):
+    time.sleep(float(open("$S/sleep").read()))
 mode = open("$S/mode").read().strip()
 if mode == "ok":
     json.dump({"tops": [], "instances": {}}, open(sys.argv[2], "w"))
@@ -58,5 +65,26 @@ echo three > "$S/sim/simv.daidir/kdb.elab++/c.db"
 check "low memory before the export: reported" "$(CMUX_NPI_MIN_AVAILABLE_MB=999999999 ask)" '"error":"memory"' 3
 check "and not marked: the next ask exports" "$(ask)" '"ok": true, "cached": false' 4
 check "then the cache answers" "$(ask)" '"ok":true,"cached":true' 4
+
+# Two at once, a new KDB: one export.
+echo four > "$S/sim/simv.daidir/kdb.elab++/d.db"
+echo 2 > "$S/sleep"
+ask > "$S/one" & A=$!
+sleep 0.5
+ask > "$S/two" & B=$!
+wait $A $B
+rm -f "$S/sleep"
+check "two at once: the first exports" "$(cat "$S/one")" '"ok": true, "cached": false' 5
+check "two at once: the second waits for it, cached" "$(cat "$S/two")" '"ok":true,"cached":true' 5
+
+# Several KDBs next to the dump: the first in C order, in any locale.
+mkdir -p "$S/sim/Simv_gl.daidir/kdb.elab++"
+echo gl > "$S/sim/Simv_gl.daidir/kdb.elab++/a.db"
+LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 ask > /dev/null
+got=$(cat "$S/daidir" 2>/dev/null)
+case $got in
+  */Simv_gl.daidir) echo "ok   several KDBs: the first by name in C order ($got)" ;;
+  *) echo "FAIL several KDBs: took $got, not Simv_gl.daidir"; pass=0 ;;
+esac
 
 [ "$pass" = 1 ] && echo "TRACE KDB LAUNCHER CHECKS PASSED" || echo "TRACE KDB LAUNCHER CHECKS FAILED"

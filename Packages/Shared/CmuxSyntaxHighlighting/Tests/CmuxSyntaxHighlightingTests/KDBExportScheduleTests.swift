@@ -73,6 +73,14 @@ import Testing
         #expect(schedule.model("c") == nil && schedule.model("b") != nil && schedule.model("d") != nil)
     }
 
+    @Test func aliasPairsGoToThePageInChunks() {
+        let pairs = (0..<45_001).map { ["tb.u.p\($0)", "tb.n\($0)"] }
+        let chunks = DesignAliasPairs.chunked(pairs)
+        #expect(chunks.map(\.count) == [20_000, 20_000, 5_001])
+        #expect(Array(chunks.joined()) == pairs)
+        #expect(DesignAliasPairs.chunked([]).isEmpty)
+    }
+
     @Test func slangAliasesAreOffByDefaultAndNeverBesideAKDBModel() {
         #expect(KDBExportSchedule.sendsSlangAliases(enabled: false, model: nil) == false)
         #expect(KDBExportSchedule.sendsSlangAliases(enabled: true, model: nil) == true)
