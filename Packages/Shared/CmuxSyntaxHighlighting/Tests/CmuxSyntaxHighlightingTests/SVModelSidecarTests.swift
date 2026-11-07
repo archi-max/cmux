@@ -38,7 +38,7 @@ import Testing
         #expect(SVModelLoad.arguments(target: nil, configBuild: "  ", root: "/w") == nil)
     }
 
-    // MARK: Prefixes
+    // MARK: Signals
 
     @Test func aSignalIsANameTheInstanceModelHas() {
         // The sidecar's lookup names the rest of a path below its deepest instance, signal or
@@ -51,11 +51,28 @@ import Testing
         for name in ["rdata", "box", "box[0]", "box[8]", "box[63]", "rev[0]", "rev[7]"] {
             #expect(SVModelLoad.isSignal(name, inModel: model), "\(name)")
         }
-        for name in ["", "box[64]", "box[-1]", "box(8)", "box[8][31:0]", "u_mbox.box[8]", "rdata[3]", "nope", "rev[8]", "$local:k"] {
+        for name in ["", "box[64]", "box[-1]", "box(8)", "box[8][31:0]", "u_mbox.box[8]", "rdata[3]", "rdata[31:0]", "nope", "rev[8]", "$local:k"] {
             #expect(!SVModelLoad.isSignal(name, inModel: model), "\(name)")
         }
         #expect(!SVModelLoad.isSignal("rdata", inModel: [:]))
     }
+
+    @Test func aLookupThatStopsAboveTheSignalNamesTheInstanceTheDesignLacks() {
+        // A design that leaves a module out (slang could not find it: "UnknownModule") still
+        // answers lookup for a path below it, from the deepest instance it has: the rest's first
+        // segment is the instance it lacks. That is what a row below it reports.
+        let tb: [String: Any] = ["signals": ["clk": ["width": 1, "kind": "var"], "pkt": ["width": 8, "kind": "var"]]]
+        #expect(SVModelLoad.missingInstance(below: "tb_bigsoc", name: "u_soc.g_cl[0].u_cluster.g_tile[1].u_tile.mmio_rdata", inModel: tb)
+            == "tb_bigsoc.u_soc")
+        #expect(SVModelLoad.missingInstance(below: "tb_bigsoc", name: "u_soc.u_mbox.box[8]", inModel: tb) == "tb_bigsoc.u_soc")
+        #expect(SVModelLoad.missingInstance(below: "tb", name: "g_cl[0].x", inModel: tb) == "tb.g_cl[0]")
+        // A name of the instance itself, or a member of one of its signals, is not a missing instance.
+        for name in ["clk", "nope", "pkt.valid", "", "$local:k.x"] {
+            #expect(SVModelLoad.missingInstance(below: "tb", name: name, inModel: tb) == nil, "\(name)")
+        }
+    }
+
+    // MARK: Prefixes
 
     @Test func samePathsHaveNoPrefixes() {
         let p = SVModelLoad.prefixes(dumpPath: ["tb", "dut", "x"], designPath: ["tb", "dut", "x"])
