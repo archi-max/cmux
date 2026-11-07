@@ -1045,6 +1045,28 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 37d. A request stream that never settles (a pan held down: a request every 40 ms, the rows
+// in view shifting every 200 ms) is judged after HOT_SETTLE_MAX_MS anyway, but each such forced
+// replacement doubles the wait for the next one while the stream still hasn't settled: a warm
+// reader start costs its navigation (0.2-0.9 s on big dumps), and one every 2 s churns.
+{
+  const log = path.join(tmp, 'warm37d.log'); fs.rmSync(log, { force: true });
+  const ids = Array.from({ length: 24 }, (_, k) => k + 1);
+  const h = await start(1, Object.fromEntries(ids.map((id) => [id, 1000])), { STUB_COLD_MS: '5', STUB_WARM_LOAD_MS: '50', STUB_WARM_MS: '5', STUB_WARM_LOG: log, FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_SIGNALS: '4' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const t0 = performance.now(), pend = [];
+  for (let k = 0; performance.now() - t0 < 16000; k++) {
+    const s0 = Math.floor(k / 5) % 20 + 1;
+    pend.push(h.send('window', near([s0, s0 + 1, s0 + 2, s0 + 3], (k % 50) * 10000)).reply);
+    await wait(40);
+  }
+  await Promise.all(pend);
+  const navs = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.op === 'nav').length : 0;
+  h.close();
+  check(navs >= 1 && navs <= 3, `a pan that never settles, 16 s: ${navs} warm reader starts (a forced one every ~3 s: 5; the wait doubling from 2 s: <= 3)`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 37. Warm reader bounds (Refs #5). Warm readers are counted as the helper's children minus its
 // one load worker; their starts from the stub's log ({op: 'nav'}).
 {
