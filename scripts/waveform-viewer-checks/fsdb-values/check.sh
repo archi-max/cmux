@@ -9,9 +9,11 @@
 # The check runs under rss-guard.sh (1.5 GB per process, 2 GB in all) with one worker per
 # helper, one helper at a time, and doesn't start when the host has under 4 GB available.
 # Usage: check.sh <helper-v2 folder> <this folder> <ssh-host> <remote-dir>
+# CMUX_VERDI_SETUP, if set here (a command that puts verdi on PATH on the host), is passed to build.sh.
 set -u
 SRC=$1 HERE=$2 HOST=$3 RDIR=$4
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+VS=""; [ -n "${CMUX_VERDI_SETUP:-}" ] && VS="CMUX_VERDI_SETUP=$(q "$CMUX_VERDI_SETUP") "
 remote() { ssh -o BatchMode=yes -T "$HOST" "$@" 2>&1 | grep -v -e bashrc -e 'not a valid identifier'; }
 tarball() { (cd "$1" && COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --format ustar -cf - .); }
 
@@ -22,7 +24,7 @@ remote "rm -rf $(q "$RDIR") && mkdir -p $(q "$H") $(q "$RDIR/src") $(q "$RDIR/ch
 tarball "$SRC" | ssh -o BatchMode=yes -T "$HOST" "tar -xf - -C $(q "$RDIR/src")"
 tarball "$HERE" | ssh -o BatchMode=yes -T "$HOST" "tar -xf - -C $(q "$RDIR/check")"
 echo "building the helper on the host"
-remote "HOME=$(q "$H"); export HOME; nice sh $(q "$RDIR/src/build.sh") $(q "$RDIR/src") $(q "$D") >$(q "$RDIR/build.log") 2>&1; echo build=\$?" | tail -1 | grep -q '^build=0$' \
+remote "HOME=$(q "$H"); export HOME; ${VS}nice sh $(q "$RDIR/src/build.sh") $(q "$RDIR/src") $(q "$D") >$(q "$RDIR/build.log") 2>&1; echo build=\$?" | tail -1 | grep -q '^build=0$' \
   || { remote "tail -20 $(q "$RDIR/build.log")"; echo "FSDB VALUES CHECKS FAILED: build"; exit 1; }
 # The writer next to the reader the build found.
 remote "cd $(q "$RDIR/check") && . $(q "$D/helper.env") && W=\"\$VERDI_HOME/share/FsdbWriter\" && nice g++ -O1 -I\"\$W\" -o mkvalues make-values-fsdb.cpp -L\"\$W/linux64\" -lnffw -Wl,-rpath,\"\$W/linux64\" -lpthread -ldl -lz >mk.log 2>&1 && ./mkvalues values.fsdb >>mk.log 2>&1 && ./mkvalues cap.fsdb >>mk.log 2>&1 && ./mkvalues big.fsdb big >>mk.log 2>&1 && ./mkvalues long.fsdb long >>mk.log 2>&1; echo mk=\$?" | tail -1 | grep -q '^mk=0$' \

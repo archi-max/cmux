@@ -7,11 +7,14 @@
 #   87 when its Node.js is gone; build.sh rebuilds a non-private install; a build whose
 #   ssh went away stops.
 # Usage: launcher-check.sh <helper-v2 folder> <ssh-host> <remote-dir>
+# CMUX_VERDI_SETUP, if set here (a command that puts verdi on PATH on the host), is passed to build.sh.
 set -u
 SRC=$1 HOST=$2 RDIR=$3
 fails=0
 check() { if [ "$1" = "$2" ]; then echo "ok   $3"; else echo "FAIL $3 (got $1, want $2)"; fails=$((fails + 1)); fi; }
 remote() { ssh -o BatchMode=yes -T "$HOST" "$@" 2>&1 | grep -v -e bashrc -e 'not a valid identifier'; }
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+VS=""; [ -n "${CMUX_VERDI_SETUP:-}" ] && VS="CMUX_VERDI_SETUP=$(q "$CMUX_VERDI_SETUP") "
 tarball() { (cd "$SRC" && COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --format ustar -cf - .); }
 
 H="$RDIR/home"
@@ -19,7 +22,7 @@ D="$H/.cache/cmux/fsdb-helper-v2/check"
 remote "rm -rf '$RDIR' && mkdir -p '$H' && chmod 700 '$RDIR' '$H'"
 # The build, as cmux runs it (sources on stdin).
 build() {
-  tarball | ssh -o BatchMode=yes -T "$HOST" "HOME='$H'; export HOME; S=\$(mktemp -d /tmp/cmux-fsdb-src.XXXXXX) && tar -xf - -C \"\$S\" && nice sh \"\$S/build.sh\" \"\$S\" '$D'; rc=\$?; rm -rf \"\$S\"; exit \$rc" >/dev/null 2>&1
+  tarball | ssh -o BatchMode=yes -T "$HOST" "HOME='$H'; export HOME; S=\$(mktemp -d /tmp/cmux-fsdb-src.XXXXXX) && tar -xf - -C \"\$S\" && ${VS}nice sh \"\$S/build.sh\" \"\$S\" '$D'; rc=\$?; rm -rf \"\$S\"; exit \$rc" >/dev/null 2>&1
   echo $?
 }
 # One stats request through the launcher; prints its exit code and whether it answered.
@@ -54,7 +57,7 @@ check "$(launch | head -1)" 1 "... and runs"
 
 # A build whose ssh goes away stops (heartbeat): no compiler or build.sh left after ~10 s.
 remote "rm -rf '$D'"
-tarball | ssh -o BatchMode=yes -T "$HOST" "HOME='$H'; export HOME; S=\$(mktemp -d /tmp/cmux-fsdb-src.XXXXXX) && tar -xf - -C \"\$S\" && echo \"\$S\" > '$RDIR/src-dir' && nice sh \"\$S/build.sh\" \"\$S\" '$D'" >/dev/null 2>&1 &
+tarball | ssh -o BatchMode=yes -T "$HOST" "HOME='$H'; export HOME; S=\$(mktemp -d /tmp/cmux-fsdb-src.XXXXXX) && tar -xf - -C \"\$S\" && echo \"\$S\" > '$RDIR/src-dir' && ${VS}nice sh \"\$S/build.sh\" \"\$S\" '$D'" >/dev/null 2>&1 &
 SSHPID=$!
 # Kill the ssh once the compiler proper (cc1plus) runs, so the check covers it.
 seen=no
