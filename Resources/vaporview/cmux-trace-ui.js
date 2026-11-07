@@ -227,6 +227,51 @@
     const span = spans && spans.find(([at, upTo]) => at <= time && time <= upTo);
     return span ? span[0] : undefined;
   }
+  // The last SystemVerilog `edge` of a 1-bit signal at or before `time`, from the helper's edges
+  // (rise, fall: a change to 1, to 0; any). A change to 1 is a posedge and one to 0 a negedge
+  // whatever the value before (x->1, z->0 too); one to x or z is an edge only from 0 (posedge) or
+  // 1 (negedge). So: the last rise (fall; both for BothEdges), then the changes after it, newest
+  // first, each a change to x/z (neither the last rise nor a fall at its time) checked against the
+  // change before it. The dump's first value (no change before it) is no edge. Undefined when the
+  // helper fails or past V2_EDGE_STEPS changes (the caller reads the changes instead).
+  async function v2NarrowEdge(v, time, edge, bg) {
+    const before = Math.floor(time) + 1;
+    // What the change at `at` went to: '1', '0', or 'xz'.
+    const to = async (at) => {
+      const [r, f] = await Promise.all([v2Edge(v, at + 1, 'rise', bg), v2Edge(v, at + 1, 'fall', bg)]);
+      if (r === undefined || f === undefined) { return undefined; }
+      return r === at ? '1' : f === at ? '0' : 'xz';
+    };
+    // (the last change: known from a point read's prev when there was one)
+    const known = knownSince(session, v, time);
+    const [rise, fall, last] = await Promise.all([v2Edge(v, before, 'rise', bg), v2Edge(v, before, 'fall', bg),
+      known !== undefined ? known : v2Edge(v, before, 'any', bg)]);
+    if (rise === undefined || fall === undefined || last === undefined) { return undefined; }
+    const later = (a, b) => (a === null ? b : b === null ? a : Math.max(a, b));
+    const base = edge === 'PosEdge' ? rise : edge === 'NegEdge' ? fall : later(rise, fall);
+    const from = edge === 'PosEdge' ? '0' : edge === 'NegEdge' ? '1' : '01';
+    let at = last, steps = 0;
+    while (at !== null && (base === null || at > base)) {
+      if (++steps > V2_EDGE_STEPS) { return undefined; }
+      const went = at === last ? (fall === at ? '0' : rise === at ? '1' : 'xz') : await to(at);
+      if (went === undefined) { return undefined; }
+      const earlier = await v2Edge(v, at, 'any', bg);
+      if (earlier === undefined) { return undefined; }
+      if (earlier === null) { return null; }
+      if (went === 'xz') {
+        const was = await to(earlier);
+        if (was === undefined) { return undefined; }
+        if (from.includes(was)) { return at; }
+      }
+      at = earlier;
+    }
+    if (base === null) { return null; }
+    const first = await v2Edge(v, base, 'any', bg);
+    if (first === undefined) { return undefined; }
+    return first === null ? null : base;
+  }
+  const V2_EDGE_STEPS = 32;
+
   // The last `edge` of a wide signal's last bit at or before `time`, from the helper: from the
   // run of the last bit in effect at `time`, back over the runs (the last change before a run
   // whose last bit differs, by search; the run starts at the next change) until one starts with
@@ -438,11 +483,12 @@
       const v = await varOf(p);
       if (!v) { return null; }
       const width = Number(v.width) || 1;
-      // The helper's rise/fall is a change to 1/0 (x to 1 counts, 0 to x does not); a wide
-      // clock's edge (its last bit) is searched for.
+      // SystemVerilog's edges (isEdge), from both values of each change: the helper's rise/fall
+      // test the new bit only (a change to 1/0: 0 to x is none there), so a 1-bit clock's changes
+      // are walked back with their values; a wide clock's edge (its last bit) is searched for.
       if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
       if (session.kind === 'v2' && width === 1) {
-        const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any', background);
+        const at = await v2NarrowEdge(v, time, edge, background);
         if (at !== undefined) { return at; }
       }
       if (session.kind === 'v2' && width > 1) {

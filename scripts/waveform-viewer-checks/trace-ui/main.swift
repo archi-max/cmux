@@ -687,7 +687,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "v2 helper, a failed value batch: values asked again of the helper, none downloaded: \(String(describing: miss?["asked"])) downloads \(String(describing: miss?["downloads"]))")
 
     // valueAt with prev (helper-v2's point read for trace-X): a step's values and each one's last change come
-    // from one batched read per time, with no edge search for a last change; a helper without prev is
+    // from one batched read per time, with no edge search for a last change (a clock's edge walk is
+    // counted apart: SystemVerilog edges need rise, fall and the change before); a helper without prev is
     // searched as before. Trace Driver and Trace X to Root give the same steps either way.
     func pointReads(prev: Bool) async -> [String: Any]? {
       await call("""
@@ -705,7 +706,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const v2 = m.pick(await q()), v2Chain = chain(await x());
           const sent = m.sent.filter((r) => r.cmd !== 'cancel');
           return { plain, v2, plainChain, v2Chain, downloads: m.downloads,
-            anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any').length,
+            // (a last change's searches: not a clock's, whose edges are walked with rise/fall/any)
+            anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any' && !sent.some((o) => o.signalId === r.signalId && o.cmd === 'edge' && o.kind !== 'any')).length,
+            clockEdges: sent.filter((r) => r.cmd === 'edge' && sent.some((o) => o.signalId === r.signalId && o.cmd === 'edge' && o.kind !== 'any')).length,
             prevReads: sent.filter((r) => r.cmd === 'valueAt' && r.prev).length, requests: sent.length,
             byCmd: Object.entries(sent.reduce((a, r) => { const k = r.cmd + (r.prev ? '+prev' : '') + (r.kind ? ':' + r.kind : '') + (r.ids > 1 ? ' batch' : ''); a[k] = (a[k] || 0) + 1; return a; }, {})).sort().map(([k, n]) => k + ' ' + n).join(', ') };
         } finally { m.remove(); t.backendChanged(); }
@@ -713,7 +716,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     }
     for prev in [true, false] {
       let r = await pointReads(prev: prev)
-      print("[v2 point reads] prev \(prev): \(String(describing: r?["requests"])) requests, \(String(describing: r?["anyEdges"])) last-change searches, \(String(describing: r?["prevReads"])) prev reads; \(r?["byCmd"] as? String ?? "")")
+      print("[v2 point reads] prev \(prev): \(String(describing: r?["requests"])) requests, \(String(describing: r?["anyEdges"])) last-change searches, \(String(describing: r?["clockEdges"])) clock edge queries, \(String(describing: r?["prevReads"])) prev reads; \(r?["byCmd"] as? String ?? "")")
       expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
              "v2 helper, valueAt prev \(prev): the same step and chain: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
       expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(prev): no history downloaded (\(String(describing: r?["downloads"])))")
