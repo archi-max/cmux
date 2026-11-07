@@ -332,6 +332,40 @@ const NEXT_CASES = [
   { d: 'a', sig: 'tb_a.dut.sum', t: 50, line: 27, want: null },
 ];
 
+// The load list against Verdi's (oracle-loads/<design>.json: npi-loads.py's lang.trace_load2 on
+// each design's VCS KDB, is_pass_thr off = `stop`, on = `through`). A load is keyed by file:line,
+// a port connection by the signals it reaches (Verdi places it at the child's port declaration, we
+// at the instance). Verdi's "load in an upper statement" entries (statements under a condition or
+// event that reads the signal) are ours as that condition or event entry. `through` is compared
+// with ours followed through each port connection. The differences left, each with its reason:
+// verdiOnly (and upper: an upper statement with no condition or event of ours reading the signal)
+//   modport: an interface's modport port connection (not modelled as a port load);
+//   dumpTask: $dumpvars naming the signal (a dump directive, not a design read);
+//   sysFunctionOutput: $value$plusargs's output argument (it writes the signal), and the statement
+//     under that condition (upper);
+// oursOnly
+//   assignmentPattern: a read inside an assignment pattern ('{a: x, ...}), which Verdi does not list;
+//   localInitializer: a procedural block local's declaration initializer, which Verdi does not list.
+const LOAD_ORACLE_DIFFS = [
+  'verdiOnly f tb_f.bus.addr port:tb_f.bus.mem.addr modport',
+  'verdiOnly f tb_f.bus.clk port:tb_f.bus.ctrl.clk modport',
+  'verdiOnly f tb_f.bus.clk port:tb_f.bus.mem.clk modport',
+  'verdiOnly f tb_f.bus.rdata port:tb_f.bus.ctrl.rdata modport',
+  'verdiOnly f tb_f.bus.req port:tb_f.bus.mem.req modport',
+  'verdiOnly f tb_f.bus.resp port:tb_f.bus.ctrl.resp modport',
+  'verdiOnly h tb_h.dut.mem tb_h.sv:17 dumpTask',
+  'verdiOnly i tb_i.dut.lost tb_i.sv:25 dumpTask',
+  'verdiOnly i tb_i.dut.mem tb_i.sv:26 dumpTask',
+  'verdiOnly i tb_i.iters tb_i.sv:16 sysFunctionOutput',
+  'verdiOnly l tb_l.iters tb_l.sv:23 sysFunctionOutput',
+  'upper i tb_i.iters tb_i.sv:16 sysFunctionOutput',
+  'upper l tb_l.iters tb_l.sv:23 sysFunctionOutput',
+  'oursOnly c tb_c.dut.u_src.data_q c_struct.sv:37 assignmentPattern',
+  'oursOnly c tb_c.dut.u_src.id_q c_struct.sv:37 assignmentPattern',
+  'oursOnly c tb_c.dut.u_src.valid_q c_struct.sv:37 assignmentPattern',
+  'oursOnly j tb_j.dut.b j_temps.sv:71 localInitializer',
+];
+
 function staleModel(all, invalidInitial) {
   const strip = (x) => {
     if (Array.isArray(x)) { x.forEach(strip); return; }
@@ -508,6 +542,79 @@ function runTraceChecks() {
         }
       }
       if (bad.length) { results.failures++; out.push(`FAIL ${what}: ${bad.join('; ')}`); } else { out.push(`ok   ${what}`); }
+    }
+    // The load lists against Verdi's (LOAD_ORACLE_DIFFS).
+    {
+      const oracle = traceFiles.loadOracle || {};
+      const seen = [];
+      const counts = { match: 0, upper: 0, through: 0, throughMatch: 0 };
+      const keyOurs = (e) => (e.kind === 'portIn' || e.kind === 'portOut' ? 'port:' + (e.targets || []).slice().sort().join(',') : base(e.loc && e.loc.file) + ':' + (e.loc && e.loc.line));
+      const keyVerdi = (x) => (/Port$/.test(x.type || '') ? 'port:' + x.targets.slice().sort().join(',') : x.file + ':' + x.line);
+      // (the model VCS compiled, without __ICARUS__: loads read no dump)
+      const oracleEngines = {};
+      const oracleEngine = (d) => {
+        if (oracleEngines[d]) { return oracleEngines[d]; }
+        const all = JSON.parse(traceFiles.models[d]);
+        const models = {
+          instance: async (p) => all.instances[p],
+          writers: async () => [],
+          lookup: async (p) => {
+            let best = null;
+            for (const k of Object.keys(all.instances)) { if ((p === k || p.startsWith(k + '.')) && (!best || k.length > best.length)) { best = k; } }
+            return best ? { instance: best, name: p.slice(best.length + 1) } : null;
+          },
+        };
+        const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
+        oracleEngines[d] = cmuxTrace.createEngine({ models, dump: none });
+        return oracleEngines[d];
+      };
+      const oursOf = async (d, sig) => ((await oracleEngine(d).loads(sig, { limit: 100000 })).entries || []);
+      for (const d of Object.keys(oracle).sort()) {
+        const signals = JSON.parse(oracle[d]).signals;
+        for (const sig of Object.keys(signals).sort()) {
+          results.cases++;
+          const o = signals[sig];
+          let ours;
+          try { ours = await oursOf(d, sig); } catch (error) { results.failures++; out.push(`FAIL load oracle ${d} ${sig}: ${error && error.message || error}`); continue; }
+          const ok = new Set(ours.map(keyOurs));
+          const direct = o.stop.filter((x) => !x.upper);
+          const vk = new Set(direct.map(keyVerdi));
+          for (const x of direct) { if (ok.has(keyVerdi(x))) { counts.match++; } else { seen.push(`verdiOnly ${d} ${sig} ${keyVerdi(x)}`); } }
+          for (const y of ours) { if (!vk.has(keyOurs(y))) { seen.push(`oursOnly ${d} ${sig} ${keyOurs(y)}`); } }
+          // An upper statement's signal read in a condition or event of ours.
+          const ctl = ours.some((y) => y.role === 'condition' || y.role === 'sensitivity');
+          for (const x of o.stop.filter((z) => z.upper)) { counts.upper++; if (!ctl) { seen.push(`upper ${d} ${sig} ${keyVerdi(x)}`); } }
+          // Through ports: ours followed through each port connection, transitively.
+          const closure = new Set();
+          const todo = [sig];
+          const done = new Set();
+          while (todo.length) {
+            const s0 = todo.pop();
+            if (done.has(s0)) { continue; }
+            done.add(s0);
+            let es = [];
+            try { es = await oursOf(d, s0); } catch (error) { es = []; }
+            for (const e of es) {
+              closure.add(keyOurs(e));
+              if (e.kind === 'portIn' || e.kind === 'portOut') { (e.targets || []).forEach((t) => todo.push(t)); }
+            }
+          }
+          for (const x of o.through.filter((z) => !z.upper)) {
+            counts.through++;
+            if (closure.has(keyVerdi(x))) { counts.throughMatch++; } else { seen.push(`through ${d} ${sig} ${keyVerdi(x)}`); }
+          }
+        }
+      }
+      // A through-only difference is fine when it is one of the stop differences (of a signal the ports reach).
+      const stopKeys = new Set(LOAD_ORACLE_DIFFS.map((l) => l.split(' ')[3]));
+      const left = seen.filter((l) => !(l.startsWith('through ') && stopKeys.has(l.split(' ')[3])));
+      const expected = LOAD_ORACLE_DIFFS.map((l) => l.split(' ').slice(0, 4).join(' '));
+      const extra = left.filter((l) => !expected.includes(l));
+      const gone = expected.filter((l) => !left.includes(l));
+      results.cases++;
+      if (Object.keys(oracle).length === 0) { results.failures++; out.push('FAIL load oracle: no fixtures'); }
+      else if (extra.length || gone.length) { results.failures++; out.push(`FAIL load oracle: ${counts.match} match, ${extra.length} unexplained: ${extra.join('; ')}${gone.length ? '; listed but not seen: ' + gone.join('; ') : ''}`); }
+      else { out.push(`ok   load oracle: ${counts.match} match, ${counts.upper} upper, through ${counts.throughMatch}/${counts.through}, ${expected.length} listed differences`); }
     }
     for (const c of NEXT_CASES) {
       results.cases++;

@@ -1,0 +1,3137 @@
+{
+"signals": {
+"tb_h.bus": {
+"stop": [],
+"through": []
+},
+"tb_h.c": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.c",
+"line": 22,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.c"
+],
+"text": "c",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.c",
+"line": 22,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.c"
+],
+"text": "c",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (c) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 80,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= 'h5a;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.clk": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.clk",
+"line": 14,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_h.sv",
+"from": "tb_h.clk",
+"line": 11,
+"scope": "tb_h",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.clk",
+"line": 14,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_h.sv",
+"from": "tb_h.clk",
+"line": 11,
+"scope": "tb_h",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 38,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 52,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 78,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 53,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.tmp"
+],
+"text": "tmp = (din ^ 'h0f);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[1] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[2] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[3] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 80,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= 'h5a;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.cx": {
+"stop": [],
+"through": []
+},
+"tb_h.din": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.din",
+"line": 18,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.din"
+],
+"text": "din",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.din",
+"line": 18,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.din"
+],
+"text": "din",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 53,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.tmp"
+],
+"text": "tmp = (din ^ 'h0f);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 60,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_a ? din : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 61,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_b ? (~din) : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 83,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.dly"
+],
+"text": "assign #(1) dly = din",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.dly": {
+"stop": [],
+"through": []
+},
+"tb_h.dut.bus": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.bus",
+"line": 32,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.bus"
+],
+"text": "bus",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.bus",
+"line": 32,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.bus"
+],
+"text": "bus",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.c": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (c) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 80,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= 'h5a;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (c) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.c",
+"line": 80,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= 'h5a;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.dut.clk": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 38,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 52,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 78,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 53,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.tmp"
+],
+"text": "tmp = (din ^ 'h0f);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[1] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[2] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[3] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 80,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= 'h5a;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 38,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 52,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 78,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 53,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.tmp"
+],
+"text": "tmp = (din ^ 'h0f);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[1] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[2] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[3] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.clk",
+"line": 80,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= 'h5a;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.dut.cx": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.cx",
+"line": 25,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.cx"
+],
+"text": "cx",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.cx",
+"line": 25,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.cx"
+],
+"text": "cx",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.din": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 53,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.tmp"
+],
+"text": "tmp = (din ^ 'h0f);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 60,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_a ? din : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 61,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_b ? (~din) : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 83,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.dly"
+],
+"text": "assign #(1) dly = din",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 53,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.tmp"
+],
+"text": "tmp = (din ^ 'h0f);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 60,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_a ? din : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 61,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_b ? (~din) : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 79,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mv"
+],
+"text": "mv <= din;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.din",
+"line": 83,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.dly"
+],
+"text": "assign #(1) dly = din",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.dut.dly": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.dly",
+"line": 31,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dly"
+],
+"text": "dly",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.dly",
+"line": 31,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dly"
+],
+"text": "dly",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.mem": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.mem",
+"line": 57,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.rd0"
+],
+"text": "assign rd0 = mem[0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.mem",
+"line": 58,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.rd1"
+],
+"text": "assign rd1 = mem[1]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "tb_h.sv",
+"from": "tb_h.dut.mem",
+"line": 17,
+"scope": "tb_h",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$dumpvars",
+"type": "npiSysTaskCall",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.mem",
+"line": 57,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.rd0"
+],
+"text": "assign rd0 = mem[0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.mem",
+"line": 58,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.rd1"
+],
+"text": "assign rd1 = mem[1]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "tb_h.sv",
+"from": "tb_h.dut.mem",
+"line": 17,
+"scope": "tb_h",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$dumpvars",
+"type": "npiSysTaskCall",
+"upper": false
+}
+]
+},
+"tb_h.dut.mv": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.mv",
+"line": 30,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.mv"
+],
+"text": "mv",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.mv",
+"line": 30,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.mv"
+],
+"text": "mv",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.oe_a": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.oe_a",
+"line": 60,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_a ? din : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.oe_a",
+"line": 60,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_a ? din : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.dut.oe_b": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.oe_b",
+"line": 61,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_b ? (~din) : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.oe_b",
+"line": 61,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_b ? (~din) : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.dut.pr": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 64,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (pr) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 71,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (pr) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 65,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h01;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 66,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h02;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 67,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h03;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 72,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h11;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 73,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h12;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 74,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h13;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 64,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (pr) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 71,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (pr) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 65,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h01;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 66,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h02;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 67,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h03;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 72,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h11;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 73,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h12;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 74,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h13;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.dut.pv": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pv",
+"line": 28,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.pv"
+],
+"text": "pv",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pv",
+"line": 28,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.pv"
+],
+"text": "pv",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.q": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.q",
+"line": 23,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.q",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.q",
+"line": 23,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.q"
+],
+"text": "q",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.q",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_h.dut.r": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.r",
+"line": 24,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.r"
+],
+"text": "r",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.r",
+"line": 24,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.r"
+],
+"text": "r",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.rd0": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rd0",
+"line": 26,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.rd0"
+],
+"text": "rd0",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rd0",
+"line": 26,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.rd0"
+],
+"text": "rd0",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.rd1": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rd1",
+"line": 27,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.rd1"
+],
+"text": "rd1",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rd1",
+"line": 27,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.rd1"
+],
+"text": "rd1",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.rst_n": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 38,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[1] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[2] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[3] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 38,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[1] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[2] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[3] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.dut.sel": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 7,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 44,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (sel) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 45,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'ha1;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 46,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hb2;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 47,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hc3;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 48,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hd4;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 7,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 44,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (sel) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 45,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'ha1;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 46,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hb2;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 47,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hc3;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 48,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hd4;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.u_leaf.sel",
+"line": 10,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel_o"
+],
+"text": "assign sel_o = sel",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.dut.sel_o": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel_o",
+"line": 33,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.sel_o"
+],
+"text": "sel_o",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel_o",
+"line": 33,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.sel_o"
+],
+"text": "sel_o",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.tmp": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.tmp",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.tmp",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_h.dut.u_leaf.sel": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.u_leaf.sel",
+"line": 10,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel_o"
+],
+"text": "assign sel_o = sel",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.u_leaf.sel",
+"line": 10,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel_o"
+],
+"text": "assign sel_o = sel",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.dut.u_leaf.sel_o": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.u_leaf.sel_o",
+"line": 8,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.sel_o"
+],
+"text": "sel_o",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.u_leaf.sel_o",
+"line": 8,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.sel_o"
+],
+"text": "sel_o",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel_o",
+"line": 33,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.sel_o"
+],
+"text": "sel_o",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.uv": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.uv",
+"line": 29,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.uv"
+],
+"text": "uv",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.uv",
+"line": 29,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.uv"
+],
+"text": "uv",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_h.dut.widx": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.widx",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.widx",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_h.ms": {
+"stop": [],
+"through": []
+},
+"tb_h.mv": {
+"stop": [],
+"through": []
+},
+"tb_h.oe_a": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.oe_a",
+"line": 19,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.oe_a"
+],
+"text": "oe_a",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.oe_a",
+"line": 19,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.oe_a"
+],
+"text": "oe_a",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.oe_a",
+"line": 60,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_a ? din : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.oe_b": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.oe_b",
+"line": 20,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.oe_b"
+],
+"text": "oe_b",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.oe_b",
+"line": 20,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.oe_b"
+],
+"text": "oe_b",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.oe_b",
+"line": 61,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.bus"
+],
+"text": "assign bus = (oe_b ? (~din) : 'bzzzzzzzz)",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.pr": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.pr",
+"line": 21,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pr"
+],
+"text": "pr",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.pr",
+"line": 21,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pr"
+],
+"text": "pr",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 64,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (pr) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 71,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (pr) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 65,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h01;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 66,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h02;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 67,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.pv"
+],
+"text": "pv = 'h03;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 72,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h11;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 73,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h12;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.pr",
+"line": 74,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.uv"
+],
+"text": "uv = 'h13;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.pv": {
+"stop": [],
+"through": []
+},
+"tb_h.q": {
+"stop": [],
+"through": []
+},
+"tb_h.r": {
+"stop": [],
+"through": []
+},
+"tb_h.rd0": {
+"stop": [],
+"through": []
+},
+"tb_h.rd1": {
+"stop": [],
+"through": []
+},
+"tb_h.rst_n": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.rst_n",
+"line": 15,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.rst_n",
+"line": 15,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 38,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 39,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.q"
+],
+"text": "q <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 40,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.r"
+],
+"text": "r <= (q + 'h01);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[1] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[2] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 54,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[3] <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem"
+],
+"text": "mem[0] <= din;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.rst_n",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_h.sel": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.sel",
+"line": 16,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.sel",
+"line": 16,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 7,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 44,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (sel) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 45,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'ha1;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 46,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hb2;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 47,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hc3;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.sel",
+"line": 48,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.cx"
+],
+"text": "cx = 'hd4;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.u_leaf.sel",
+"line": 10,
+"scope": "tb_h.dut.u_leaf",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.u_leaf.sel_o"
+],
+"text": "assign sel_o = sel",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_h.sel_o": {
+"stop": [],
+"through": []
+},
+"tb_h.uv": {
+"stop": [],
+"through": []
+},
+"tb_h.widx": {
+"stop": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.widx",
+"line": 17,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.widx"
+],
+"text": "widx",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "h_mix.sv",
+"from": "tb_h.widx",
+"line": 17,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.widx"
+],
+"text": "widx",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "h_mix.sv",
+"from": "tb_h.dut.widx",
+"line": 55,
+"scope": "tb_h.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_h.dut.mem[widx]"
+],
+"text": "mem[widx] <= tmp;",
+"type": "npiAssignment",
+"upper": false
+}
+]
+}
+}
+}

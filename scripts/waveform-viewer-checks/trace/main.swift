@@ -21,7 +21,7 @@ func files(in sub: String, ext: String) -> [String: String] {
 }
 var designs: [String: String] = [:]
 for (name, text) in files(in: "designs", ext: ".sv") { designs[name + ".sv"] = text }
-context.setObject(["designs": designs, "models": files(in: "models", ext: ".json"), "dumps": files(in: "dumps", ext: ".vcd")],
+context.setObject(["designs": designs, "models": files(in: "models", ext: ".json"), "dumps": files(in: "dumps", ext: ".vcd"), "loadOracle": files(in: "oracle-loads", ext: ".json")],
                   forKeyedSubscript: "traceFiles" as NSString)
 for path in [args[1], args[2], folder.appendingPathComponent("vcd.js").path, folder.appendingPathComponent("cases.js").path] {
     guard let source = try? String(contentsOfFile: path, encoding: .utf8) else { print("cannot read", path); exit(2) }

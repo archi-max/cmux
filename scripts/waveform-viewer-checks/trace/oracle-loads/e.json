@@ -1,0 +1,3246 @@
+{
+"signals": {
+"tb_e.a": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.a",
+"line": 13,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.a"
+],
+"text": "a",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.a",
+"line": 13,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.a"
+],
+"text": "a",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.lat"
+],
+"text": "lat = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 45,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"hi_lo[7:4]"
+],
+"text": "assign hi_lo[7:4] = a[3:0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 42,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.carry",
+"tb_e.dut.sum"
+],
+"text": "assign ({carry , sum}) = (a + b)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 74,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.asc"
+],
+"text": "assign asc = ({a[0] , a[1] , a[2] , a[3] , a[4] , a[5] , a[6] , a[7]})",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_e.asc": {
+"stop": [],
+"through": []
+},
+"tb_e.b": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.b",
+"line": 14,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.b"
+],
+"text": "b",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.b",
+"line": 14,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.b"
+],
+"text": "b",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 46,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"hi_lo[3:0]"
+],
+"text": "assign hi_lo[3:0] = b[7:4]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 56,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 42,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.carry",
+"tb_e.dut.sum"
+],
+"text": "assign ({carry , sum}) = (a + b)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_e.clk": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.clk",
+"line": 8,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_e.sv",
+"from": "tb_e.clk",
+"line": 10,
+"scope": "tb_e",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.clk",
+"line": 8,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_e.sv",
+"from": "tb_e.clk",
+"line": 10,
+"scope": "tb_e",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 49,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 62,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 62,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 78,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 80,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 81,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.dec": {
+"stop": [],
+"through": []
+},
+"tb_e.dut.a": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.lat"
+],
+"text": "lat = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 45,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"hi_lo[7:4]"
+],
+"text": "assign hi_lo[7:4] = a[3:0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 42,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.carry",
+"tb_e.dut.sum"
+],
+"text": "assign ({carry , sum}) = (a + b)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 74,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.asc"
+],
+"text": "assign asc = ({a[0] , a[1] , a[2] , a[3] , a[4] , a[5] , a[6] , a[7]})",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.lat"
+],
+"text": "lat = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 45,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"hi_lo[7:4]"
+],
+"text": "assign hi_lo[7:4] = a[3:0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = a;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 42,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.carry",
+"tb_e.dut.sum"
+],
+"text": "assign ({carry , sum}) = (a + b)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.a",
+"line": 74,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.asc"
+],
+"text": "assign asc = ({a[0] , a[1] , a[2] , a[3] , a[4] , a[5] , a[6] , a[7]})",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_e.dut.asc": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.asc",
+"line": 22,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.asc"
+],
+"text": "asc",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.asc",
+"line": 22,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.asc"
+],
+"text": "asc",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.b": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 46,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"hi_lo[3:0]"
+],
+"text": "assign hi_lo[3:0] = b[7:4]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 56,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 42,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.carry",
+"tb_e.dut.sum"
+],
+"text": "assign ({carry , sum}) = (a + b)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 46,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"hi_lo[3:0]"
+],
+"text": "assign hi_lo[3:0] = b[7:4]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 56,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = b;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 42,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.carry",
+"tb_e.dut.sum"
+],
+"text": "assign ({carry , sum}) = (a + b)",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.b",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_e.dut.carry": {
+"stop": [],
+"through": []
+},
+"tb_e.dut.clk": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 49,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 62,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 62,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 78,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 80,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 81,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 49,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 62,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 62,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 78,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 80,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 81,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.clk",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.dut.dec": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.dec",
+"line": 18,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dec"
+],
+"text": "dec",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.dec",
+"line": 18,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dec"
+],
+"text": "dec",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.en": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.en",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.en",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.lat"
+],
+"text": "lat = a;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.en",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.en",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.lat"
+],
+"text": "lat = a;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.dut.hi_lo": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.hi_lo",
+"line": 17,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.hi_lo"
+],
+"text": "hi_lo",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.hi_lo",
+"line": 17,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.hi_lo"
+],
+"text": "hi_lo",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.lane[0].r": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[0].r",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[0].r",
+"line": 66,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.y"
+],
+"text": "assign y = (lane[0].r ^ lane[1].r)",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[0].r",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[0].r",
+"line": 66,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.y"
+],
+"text": "assign y = (lane[0].r ^ lane[1].r)",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_e.dut.lane[1].r": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[1].r",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[1].r",
+"line": 66,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.y"
+],
+"text": "assign y = (lane[0].r ^ lane[1].r)",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[1].r",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lane[1].r",
+"line": 66,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.y"
+],
+"text": "assign y = (lane[0].r ^ lane[1].r)",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_e.dut.lane_q": {
+"stop": [],
+"through": []
+},
+"tb_e.dut.lat": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lat",
+"line": 15,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.lat"
+],
+"text": "lat",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.lat",
+"line": 15,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.lat"
+],
+"text": "lat",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.op": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 31,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (op) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 71,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words[op[1:0]]"
+],
+"text": "assign pk = words[op[1:0]]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 32,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd8;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 33,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd4;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 34,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd2;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 35,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd0;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 31,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (op) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 71,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words[op[1:0]]"
+],
+"text": "assign pk = words[op[1:0]]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 32,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd8;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 33,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd4;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 34,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd2;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 35,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.dut.pk": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.pk",
+"line": 21,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.pk"
+],
+"text": "pk",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.pk",
+"line": 21,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.pk"
+],
+"text": "pk",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.rst_n": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 49,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 62,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 62,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 78,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 79,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 80,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 81,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 49,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 62,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 62,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 78,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 79,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 80,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 81,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.dut.sel": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 56,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = b;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 56,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.dut.sum": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sum",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sum",
+"line": 70,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words"
+],
+"text": "assign words = ({a , b , sum , 'h5a})",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_e.dut.t2": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.t2",
+"line": 23,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.t2"
+],
+"text": "t2",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.t2",
+"line": 23,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.t2"
+],
+"text": "t2",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.tmp2": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.tmp2",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.tmp2",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_e.dut.words": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.words",
+"line": 71,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.pk"
+],
+"text": "assign pk = words[op[1:0]]",
+"type": "npiContAssign",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.words",
+"line": 71,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.pk"
+],
+"text": "assign pk = words[op[1:0]]",
+"type": "npiContAssign",
+"upper": false
+}
+]
+},
+"tb_e.dut.xc": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.xc",
+"line": 20,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.xc"
+],
+"text": "xc",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.xc",
+"line": 20,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.xc"
+],
+"text": "xc",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.xf": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.xf",
+"line": 19,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.xf"
+],
+"text": "xf",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.xf",
+"line": 19,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.xf"
+],
+"text": "xf",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.dut.y": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.y",
+"line": 16,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.y"
+],
+"text": "y",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.y",
+"line": 16,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.y"
+],
+"text": "y",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_e.en": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.en",
+"line": 10,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.en"
+],
+"text": "en",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.en",
+"line": 10,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.en"
+],
+"text": "en",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.en",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (en) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.en",
+"line": 27,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.lat"
+],
+"text": "lat = a;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.hi_lo": {
+"stop": [],
+"through": []
+},
+"tb_e.lat": {
+"stop": [],
+"through": []
+},
+"tb_e.op": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.op",
+"line": 12,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.op"
+],
+"text": "op",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.op",
+"line": 12,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.op"
+],
+"text": "op",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 31,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "case (op) ...",
+"type": "npiCase",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 71,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.words[op[1:0]]"
+],
+"text": "assign pk = words[op[1:0]]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 32,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd8;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 33,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd4;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 34,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd2;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.op",
+"line": 35,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.dec"
+],
+"text": "dec = 'd0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.pk": {
+"stop": [],
+"through": []
+},
+"tb_e.rst_n": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.rst_n",
+"line": 9,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.rst_n",
+"line": 9,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 49,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 62,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 62,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 78,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 79,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 50,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 64,
+"scope": "tb_e.dut.lane[0]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[0].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 63,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= 8'(g);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 64,
+"scope": "tb_e.dut.lane[1]",
+"scopeType": "npiGenScope",
+"targets": [
+"tb_e.dut.lane[1].r"
+],
+"text": "r <= (r + a);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 80,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 81,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= 'h00;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 83,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.tmp2"
+],
+"text": "tmp2 = (a ^ b);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.rst_n",
+"line": 84,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.t2"
+],
+"text": "t2 <= (tmp2 + 'd1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.sel": {
+"stop": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.sel",
+"line": 11,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "e_misc.sv",
+"from": "tb_e.sel",
+"line": 11,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.sel"
+],
+"text": "sel",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (sel) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 51,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 52,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xf"
+],
+"text": "xf <= b;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 55,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = a;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "e_misc.sv",
+"from": "tb_e.dut.sel",
+"line": 56,
+"scope": "tb_e.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_e.dut.xc"
+],
+"text": "xc = b;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_e.t2": {
+"stop": [],
+"through": []
+},
+"tb_e.xc": {
+"stop": [],
+"through": []
+},
+"tb_e.xf": {
+"stop": [],
+"through": []
+},
+"tb_e.y": {
+"stop": [],
+"through": []
+}
+}
+}

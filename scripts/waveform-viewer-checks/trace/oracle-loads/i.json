@@ -1,0 +1,1958 @@
+{
+"signals": {
+"tb_i.clk": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.clk",
+"line": 7,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.clk",
+"line": 13,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.clk",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.clk",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.clk",
+"line": 7,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.clk"
+],
+"text": "clk",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.clk",
+"line": 13,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.clk"
+],
+"text": "clk = (~clk);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.clk",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.clk",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 25,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 29,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.dut.clk": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 25,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 29,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 25,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 29,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@((posedge clk))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.clk",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.dut.lost": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.lost",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.lost",
+"line": 32,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.lost0"
+],
+"text": "assign lost0 = lost[0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.dut.lost",
+"line": 25,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$dumpvars",
+"type": "npiSysTaskCall",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.lost",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.lost",
+"line": 32,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.lost0"
+],
+"text": "assign lost0 = lost[0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.dut.lost",
+"line": 25,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$dumpvars",
+"type": "npiSysTaskCall",
+"upper": false
+}
+]
+},
+"tb_i.dut.lost0": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.lost0",
+"line": 16,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.lost0"
+],
+"text": "lost0",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.lost0",
+"line": 16,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.lost0"
+],
+"text": "lost0",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_i.dut.mem": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.mem",
+"line": 33,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.word0"
+],
+"text": "assign word0 = mem[0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.dut.mem",
+"line": 26,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$dumpvars",
+"type": "npiSysTaskCall",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.mem",
+"line": 33,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.word0"
+],
+"text": "assign word0 = mem[0]",
+"type": "npiContAssign",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.dut.mem",
+"line": 26,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "$dumpvars",
+"type": "npiSysTaskCall",
+"upper": false
+}
+]
+},
+"tb_i.dut.pick": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 23,
+"scope": "tb_i.dut.unnamed$$_0",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.pop[t]"
+],
+"text": "pop[t] = (valid[t] && (pick == 2'(t)));",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if ((valid[c] && (pick != 2'(c)))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 23,
+"scope": "tb_i.dut.unnamed$$_0",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.pop[t]"
+],
+"text": "pop[t] = (valid[t] && (pick == 2'(t)));",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if ((valid[c] && (pick != 2'(c)))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.dut.pop": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pop",
+"line": 15,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.pop"
+],
+"text": "pop",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pop",
+"line": 15,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.pop"
+],
+"text": "pop",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_i.dut.rst_n": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 25,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 25,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.dut.valid": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 23,
+"scope": "tb_i.dut.unnamed$$_0",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.pop[t]"
+],
+"text": "pop[t] = (valid[t] && (pick == 2'(t)));",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if ((valid[c] && (pick != 2'(c)))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 23,
+"scope": "tb_i.dut.unnamed$$_0",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.pop[t]"
+],
+"text": "pop[t] = (valid[t] && (pick == 2'(t)));",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if ((valid[c] && (pick != 2'(c)))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.dut.wdata": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wdata",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wdata",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_i.dut.we": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (we) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (we) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.dut.widx": {
+"stop": [],
+"through": []
+},
+"tb_i.dut.word0": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.word0",
+"line": 17,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.word0"
+],
+"text": "word0",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.word0",
+"line": 17,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.word0"
+],
+"text": "word0",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_i.dut.wstrb": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wstrb",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if (wstrb[b]) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wstrb",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wstrb",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if (wstrb[b]) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wstrb",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.epoch": {
+"stop": [],
+"through": []
+},
+"tb_i.iters": {
+"stop": [
+{
+"file": "tb_i.sv",
+"from": "tb_i.iters",
+"line": 16,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!$value$plusargs(\"iters=%d\", iters))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.iters",
+"line": 17,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.epoch"
+],
+"text": "epoch = iters;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.iters",
+"line": 16,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.iters"
+],
+"text": "iters = 4;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "tb_i.sv",
+"from": "tb_i.iters",
+"line": 16,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!$value$plusargs(\"iters=%d\", iters))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.iters",
+"line": 17,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.epoch"
+],
+"text": "epoch = iters;",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.iters",
+"line": 16,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.iters"
+],
+"text": "iters = 4;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.lost0": {
+"stop": [],
+"through": []
+},
+"tb_i.pick": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.pick",
+"line": 10,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.pick"
+],
+"text": "pick",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.pick",
+"line": 10,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.pick"
+],
+"text": "pick",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 23,
+"scope": "tb_i.dut.unnamed$$_0",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.pop[t]"
+],
+"text": "pop[t] = (valid[t] && (pick == 2'(t)));",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if ((valid[c] && (pick != 2'(c)))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.pick",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.pop": {
+"stop": [],
+"through": []
+},
+"tb_i.rst_n": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.rst_n",
+"line": 8,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.rst_n",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (rst_n) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.rst_n",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.rst_n",
+"line": 8,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.rst_n"
+],
+"text": "rst_n",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.rst_n",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (rst_n) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "tb_i.sv",
+"from": "tb_i.rst_n",
+"line": 14,
+"scope": "tb_i",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.settle"
+],
+"text": "settle++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 25,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "@(((posedge clk) or (negedge rst_n)))",
+"type": "npiEventControl",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if ((!rst_n)) ... else ...",
+"type": "npiIfElse",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= 'b0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 26,
+"scope": "tb_i.dut.unnamed$$_1",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_1.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.rst_n",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_2.c"
+],
+"text": "c = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.settle": {
+"stop": [],
+"through": []
+},
+"tb_i.valid": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.valid",
+"line": 9,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.valid"
+],
+"text": "valid",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.valid",
+"line": 9,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.valid"
+],
+"text": "valid",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 23,
+"scope": "tb_i.dut.unnamed$$_0",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.pop[t]"
+],
+"text": "pop[t] = (valid[t] && (pick == 2'(t)));",
+"type": "npiAssignment",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if ((valid[c] && (pick != 2'(c)))) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.valid",
+"line": 27,
+"scope": "tb_i.dut.unnamed$$_2",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.lost[c]"
+],
+"text": "lost[c] <= (lost[c] + 'b1);",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.wdata": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.wdata",
+"line": 14,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.wdata"
+],
+"text": "wdata",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.wdata",
+"line": 14,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.wdata"
+],
+"text": "wdata",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wdata",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": false
+}
+]
+},
+"tb_i.we": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.we",
+"line": 11,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.we"
+],
+"text": "we",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.we",
+"line": 11,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.we"
+],
+"text": "we",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [],
+"text": "if (we) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b++;",
+"type": "npiAssignment",
+"upper": true
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.we",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"tb_i.dut.unnamed$$_3.b"
+],
+"text": "b = 0;",
+"type": "npiAssignment",
+"upper": true
+}
+]
+},
+"tb_i.widx": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.widx",
+"line": 12,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.widx"
+],
+"text": "widx",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.widx",
+"line": 12,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.widx"
+],
+"text": "widx",
+"type": "npiPort",
+"upper": false
+}
+]
+},
+"tb_i.word0": {
+"stop": [],
+"through": []
+},
+"tb_i.wstrb": {
+"stop": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.wstrb",
+"line": 13,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.wstrb"
+],
+"text": "wstrb",
+"type": "npiPort",
+"upper": false
+}
+],
+"through": [
+{
+"file": "i_drivers.sv",
+"from": "tb_i.wstrb",
+"line": 13,
+"scope": "tb_i.dut",
+"scopeType": "npiModule",
+"targets": [
+"tb_i.dut.wstrb"
+],
+"text": "wstrb",
+"type": "npiPort",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wstrb",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [],
+"text": "if (wstrb[b]) ...",
+"type": "npiIf",
+"upper": false
+},
+{
+"file": "i_drivers.sv",
+"from": "tb_i.dut.wstrb",
+"line": 30,
+"scope": "tb_i.dut.unnamed$$_3",
+"scopeType": "npiFor",
+"targets": [
+"mem[widx][(8 * b)+:8]"
+],
+"text": "mem[widx][(8 * b)+:8] <= wdata[(8 * b)+:8];",
+"type": "npiAssignment",
+"upper": true
+}
+]
+}
+}
+}
