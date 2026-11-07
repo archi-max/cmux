@@ -621,7 +621,7 @@ const SEC_SETUP_MS = Number(process.env.FSDB_SEC_SETUP_MS || 190);
 // loads as a secondary (few workers; the conservative use of the pool), may take a spare warm
 // slot (at most FSDB_WARM_UNKNOWN), and is not taken as a stored alias target. warmSlow: unknowns
 // measured making their warm calls slow (likely rebuilt per window), kept out of warm sets.
-const kinds = { state: 'none', source: null, primaries: null, secondaries: new Map(), warmSlow: new Map(), error: null, ms: 0, proc: null };
+const kinds = { state: 'none', source: null, primaries: null, secondaries: new Map(), warmSlow: new Map(), warmProven: new Set(), error: null, ms: 0, proc: null };
 function kindOf(id) {
   if (kinds.state !== 'ready') { return null; }
   return kinds.primaries.has(id) ? 'p' : kinds.secondaries.has(id) ? 's' : 'u';
@@ -640,12 +640,12 @@ function kindCounts() {
   const counts = { p: 0, s: 0, u: 0 };
   for (const id of ids) { counts[kindOf(id)]++; }
   return { counts, model: { p: `listed by fsdbdebug (${kinds.source})`, s: 'positive evidence only (none from the reader)', u: 'not listed by fsdbdebug' },
-    warmSlow: [...kinds.warmSlow].map(([id, why]) => ({ id, why })) };
+    warmSlow: [...kinds.warmSlow].map(([id, why]) => ({ id, why })), warmProven: [...kinds.warmProven] };
 }
 function stopKinds() {
   if (kinds.proc) { try { kinds.proc.kill('SIGKILL'); } catch (e) { /* gone */ } }
   if (kinds.timer) { clearInterval(kinds.timer); }
-  Object.assign(kinds, { state: 'none', source: null, primaries: null, secondaries: new Map(), warmSlow: new Map(), error: null, ms: 0, proc: null, timer: null });
+  Object.assign(kinds, { state: 'none', source: null, primaries: null, secondaries: new Map(), warmSlow: new Map(), warmProven: new Set(), error: null, ms: 0, proc: null, timer: null });
 }
 function startKinds(file) {
   stopKinds();
@@ -1281,6 +1281,7 @@ function coldTask(req, op, ids, extra, spread = false) {
     req.parts = [...(req.parts || []), { w, task }];
     task.done = (m) => {
       req.workerMs = Math.max(req.workerMs || 0, m.ms);
+      if (op === 'windowCold' && gids.length === 1 && !m.error && m.result[0] && !m.result[0].error) { hotColdCost(gids[0], extra, m.ms); }
       if (m.error) { reject(new Error(m.error)); } else { resolve(gids.map((id, k) => [id, m.result[k]])); }
     };
   }))).then((parts) => { const by = new Map(parts.flat()); return ids.map((id) => by.get(id)); });
@@ -1300,8 +1301,6 @@ const HOT_MAX = Number(process.env.FSDB_WARM_SIGNALS || 16);
 const HOT_RECENT_MS = Number(process.env.FSDB_WARM_RECENT_MS || 3000);
 const HOT_RSS = Number(process.env.FSDB_WARM_RSS_MB || 600) * 1e6;
 const HOT_UNKNOWN = Number(process.env.FSDB_WARM_UNKNOWN ?? 2);
-// A warm call over this (and over 3 floors) with unknowns in its set marks them slow.
-const HOT_SLOW_MS = Number(process.env.FSDB_WARM_SLOW_MS || 250);
 // A set can be split over HOT_READERS processes (by estimated changes), read in parallel: a
 // warm call's cost is mostly its walk. Off by default: at 1% of a 10 GB dump, 10 rows went from
 // 201 to 184 ms with two (one heavy row's walk dominates), for a second ~250 MB process.
@@ -1321,7 +1320,7 @@ const HOT_TOTAL = Number(process.env.FSDB_WARM_TOTAL_MB || 2 * HOT_READERS * HOT
 const HOT_CALL_MS = Number(process.env.FSDB_WARM_CALL_MS || 60000);
 const HOT_BACKOFF_MS = Number(process.env.FSDB_WARM_BACKOFF_MS || 5000);
 const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
-const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
 const hotProcs = () => [...hot.readers, ...(hot.building || []), ...hot.retiring].filter((r) => r.state !== 'dead');
 function hotFail(fp, why) {
@@ -1364,10 +1363,12 @@ function hotWatch() {
 }
 const hotReady = () => hot.readers.filter((r) => r.state === 'ready');
 // ids -> {parts: [[reader, ids]], rest}: the ids each ready warm reader holds, and the others
-function hotSplit(ids) {
+// (point: point reads; an unknown goes warm only once warmProven)
+const pointWarm = (id) => kindOf(id) !== 'u' || kinds.warmProven.has(id);
+function hotSplit(ids, point = false) {
   const parts = [], taken = new Set();
   for (const r of hotReady()) {
-    const mine = [...new Set(ids.filter((id) => r.ids.has(id) && !taken.has(id)))];
+    const mine = [...new Set(ids.filter((id) => r.ids.has(id) && !taken.has(id) && (!point || pointWarm(id))))];
     mine.forEach((id) => taken.add(id));
     if (mine.length) { parts.push([r, mine]); }
   }
@@ -1379,6 +1380,8 @@ function hotStop() {
   hot.readers = []; hot.building = null; hot.retiring = []; hot.asked.clear();
   hot.limit = HOT_MAX; hot.fails.clear(); hot.totalRss = 0; hot.peakRss = 0;
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
+  if (hot.backoffTimer) { clearTimeout(hot.backoffTimer); hot.backoffTimer = null; }
+  hot.cold.clear();
 }
 function hotKill(r) {
   r.state = 'dead';
@@ -1430,11 +1433,20 @@ function hotWanted() {
   const unk = recent.filter((id) => kindOf(id) === 'u' && !kinds.warmSlow.has(id)).slice(0, Math.max(0, Math.min(HOT_UNKNOWN, max - prim.length)));
   return [...prim, ...unk];
 }
+// The next hotCheck, in ms (an earlier one already scheduled stands). A set's backoff has its own
+// timer (hot.backoffTimer), so it never holds up another set's check (review M1/L8).
+function hotSoon(ms) {
+  const at = performance.now() + ms;
+  if (hot.timer && hot.timerAt <= at) { return; }
+  if (hot.timer) { clearTimeout(hot.timer); }
+  hot.timerAt = at;
+  hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, ms);
+}
 function hotNote(ids) {
   if (!HOT || !openFile) { return; }
   const now = performance.now();
   for (const id of ids) { hot.asked.delete(id); hot.asked.set(id, now); }
-  if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, 200); }
+  hotSoon(200);
 }
 function hotCheck() {
   if (!HOT || !openFile || hot.building) { return; }
@@ -1449,11 +1461,14 @@ function hotCheck() {
   const slow = cur.some((r) => [...r.ids].some((id) => kinds.warmSlow.has(id)));
   if (cur.length && !grown.length && !oversized && !slow && outside * 4 < want.length) { return; }
   const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
-  if (f && f.until > now) { if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, f.until - now + 10); } return; }
+  if (f && f.until > now) {
+    if (!hot.backoffTimer) { hot.backoffTimer = setTimeout(() => { hot.backoffTimer = null; hotCheck(); }, f.until - now + 10); }
+    return;
+  }
   // At most HOT_PROCS warm processes with the new ones: idle retiring readers go first.
   for (const x of [...hot.retiring]) { if (!x.pending.size) { hotKill(x); } }
   if (hotProcs().length + Math.min(HOT_READERS, want.length) > HOT_PROCS) {
-    if (!hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, 200); }
+    hotSoon(200);
     return;
   }
   grown.forEach((r) => { if (r.fp === fp) { hotFail(fp, `grew to ${Math.round(r.rss / 1e6)} MB from ${Math.round(r.base / 1e6)} MB`); } });
@@ -1527,6 +1542,31 @@ function hotWindowBatched(r, ids, range, op = 'hotWindow') {
     if (!r.busy && !r.pumpSoon) { r.pumpSoon = true; setTimeout(() => { r.pumpSoon = false; hotPump(r); }, HOT_GATHER_MS); }
   });
 }
+// Unknowns (#7) are judged one by one against their own cold cost (review M2/L7): a warm call
+// loads the whole set, so a row it would have read faster cold (a rebuilt one adds its rebuild
+// to every call; a tiny one's cold read is cheaper than any call) leaves the set (warmSlow, with
+// the numbers as its provenance); one the call beat is warmProven, and only those go to the warm
+// reader for point reads (valueAt, prev). The cold cost is the row's last cold ranged read alone
+// (hot.cold), scaled to this span, and only within 2x of it; a row with none isn't judged.
+function hotJudge(r, range, ms) {
+  const T = Math.max(1, timeEnd || 1), frac = (range.t1 - range.t0) / T;
+  if (!(frac > 0)) { return; }
+  let marked = false;
+  for (const id of r.ids) {
+    if (kindOf(id) !== 'u' || kinds.warmSlow.has(id)) { continue; }
+    const c = hot.cold.get(id);
+    if (!c || frac > 2 * c.frac || frac < c.frac / 2) { continue; }
+    const est = c.ms * frac / c.frac;
+    if (ms > est) { kinds.warmSlow.set(id, `measured: a warm call of its set took ${Math.round(ms)} ms, its own cold read ~${Math.round(est)} ms`); kinds.warmProven.delete(id); marked = true; }
+    else { kinds.warmProven.add(id); }
+  }
+  if (marked) { hotSoon(0); }
+}
+// A cold ranged read of one row alone: its cost, for hotJudge.
+function hotColdCost(id, range, ms) {
+  const T = Math.max(1, timeEnd || 1), frac = (range.t1 - range.t0) / T;
+  if (frac > 0 && ms > 0) { hot.cold.set(id, { frac, ms }); }
+}
 async function hotPump(r) {
   if (r.busy || !r.queue || !r.queue.length) { return; }
   r.busy = true;
@@ -1535,13 +1575,7 @@ async function hotPump(r) {
   for (const qs of groups.values()) {
     const ids = [...new Set(qs.flatMap((q) => q.ids))];
     const a = await hotCall(r, { op: qs[0].op, signalIds: ids, ...qs[0].range });
-    // Unknowns in a set whose warm call is slow are likely rebuilt per window (the whole set loads
-    // each call): measured, they leave the next set (hotCheck), and keep that as their provenance.
-    if (!a.error && kinds.state === 'ready' && (a.ms || 0) > Math.max(HOT_SLOW_MS, 3 * primFloor())) {
-      const unk = [...r.ids].filter((id) => kindOf(id) === 'u' && !kinds.warmSlow.has(id));
-      unk.forEach((id) => kinds.warmSlow.set(id, `measured: a warm call of its set took ${Math.round(a.ms)} ms`));
-      if (unk.length && !hot.timer) { hot.timer = setTimeout(() => { hot.timer = null; hotCheck(); }, 0); }
-    }
+    if (!a.error && kinds.state === 'ready' && qs[0].op === 'hotWindow') { hotJudge(r, qs[0].range, a.ms || 0); }
     for (const q of qs) {
       if (a.error) { q.resolve({ error: a.error }); continue; }
       const want = new Set(q.ids);
@@ -1561,7 +1595,7 @@ async function rangedRead(req, ids, range) {
 // The ids each ready warm reader holds read on it (op), all in parallel with the rest cold
 // (coldOp); a warm read that fails is read cold. -> results in ids order
 async function warmOrCold(req, ids, extra, op, coldOp, useWarm = true) {
-  const { parts, rest } = useWarm ? hotSplit(ids) : { parts: [], rest: ids };
+  const { parts, rest } = useWarm ? hotSplit(ids, op === 'hotNear') : { parts: [], rest: ids };
   const by = new Map();
   await Promise.all([
     ...parts.map(async ([r, mine]) => {
@@ -2560,7 +2594,7 @@ const handlers = {
     }
     // (cold rows in a ready warm set are read on it: a point read there is the value at t)
     const hr = hotReady();
-    const coldList = [...cold], onWarm = coldList.filter((id) => hr.some((r) => r.ids.has(id))), offWarm = coldList.filter((id) => !onWarm.includes(id));
+    const coldList = [...cold], onWarm = coldList.filter((id) => pointWarm(id) && hr.some((r) => r.ids.has(id))), offWarm = coldList.filter((id) => !onWarm.includes(id));
     if (HOT) { hotNote(coldList); }
     const [wv, cw, co] = await Promise.all([
       warmIds.length ? scatter(req, 'valueAt', warmIds, { t }, (m) => m.result) : [],
