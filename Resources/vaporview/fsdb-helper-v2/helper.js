@@ -717,14 +717,23 @@ function startJob(id, req) {
     const promise = new Promise((a, b) => { resolve = a; reject = b; });
     promise.catch(() => {});  // a background job may have no waiter
     j = { id, seq: ++jobSeq, epoch, end: timeEnd + 1, next: 0, pieces: [], redo: [], running: 0, doneMs: 0, doneLen: 0, doneCount: 0,
-      retries: 0, done: [], adopting: false, failed: false, reqs: new Set(), t0: performance.now(), promise, resolve, reject };
+      retries: 0, done: [], adopting: false, failed: false, reqs: new Set(), t0: performance.now(), promise, resolve, reject,
+      kind: kindOf(id), workers: new Set(), maxW: 1, walkMs: 0, small: false };
+    if (j.kind === 'p') { j.walkMs = primWalkMs(id); j.small = j.walkMs < 2 * PIECE_MS; }
     promise.sp = j;
     jobs.set(id, j);
     splitting.set(id, promise);
   }
   if (req) { j.reqs.add(req); (req.splits || (req.splits = [])).push(j); }
-  kickPool(!!req);
+  scheduleKick(!!req);
   return j;
+}
+// (after the request lines that arrived together have started their jobs: cheap primaries batch)
+let kickPending = null;
+function scheduleKick(interactive) {
+  if (kickPending) { kickPending.interactive ||= interactive; return; }
+  kickPending = { interactive };
+  setImmediate(() => { const k = kickPending; kickPending = null; kickPool(k.interactive); });
 }
 // Idle workers take pieces now; a worker in background work is asked to stop early (as enqueue).
 function kickPool(interactive) {
@@ -735,20 +744,22 @@ function kickPool(interactive) {
     }
   }
 }
-function pickJob(interactive) {
+function pickJob(interactive, w = null, limit = false) {
   let best = null, bk = null;
   const over = shmBytes >= SHM_CAP;
   if (over) {  // (the started load with the least work left, interactive or not)
     for (const j of jobs.values()) {
-      if (j.failed || j.adopting || j.epoch !== epoch || !j.shm || (!j.redo.length && j.next >= j.end)) { continue; }
+      if (j.failed || j.adopting || j.batching || j.epoch !== epoch || !j.shm || (!j.redo.length && j.next >= j.end)) { continue; }
       const rest = (j.doneMs / Math.max(1, j.doneLen)) * (j.end - j.next);
       if (!best || rest < bk) { best = j; bk = rest; }
     }
     return best && (best.reqs.size > 0) === interactive ? best : null;
   }
   for (const j of jobs.values()) {
-    if (j.failed || j.adopting || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
+    if (j.failed || j.adopting || j.batching || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
     if (!j.redo.length && j.next >= j.end) { continue; }  // every piece handed out
+    // (a secondary's pieces stay on few workers while other loads can use the rest)
+    if (limit && w && j.kind === 's' && !j.workers.has(w.i) && j.workers.size >= j.maxW) { continue; }
     const rest = j.doneLen > 0 ? (j.doneMs / j.doneLen) * (j.end - j.next) : 0;  // est. ms still to hand out
     // (a measured job with at most one piece of work left finishes first: that is a draw)
     const cls = !j.pieces.length ? 0 : j.doneLen > 0 ? (rest <= PIECE_MS ? -1 : 1) : 2;
@@ -780,6 +791,13 @@ function nextPiece(j, target) {
     if (N !== L && N.len >= L.len / 2) { len = Math.min(len, 2 * target * N.len / Math.max(1e-3, N.ms)); }
     len = Math.max(Math.ceil(j.end / MIN_PARTS), Math.floor(len));
   }
+  if (j.kind === 'p') {  // a primary: equal pieces of several floors each, no probe
+    if (!j.plen) {
+      const n = Math.max(1, Math.min(workers.length, Math.round(j.walkMs / Math.max(4 * primFloor(), PIECE_MS))));
+      j.plen = Math.ceil(j.end / n);
+    }
+    len = j.plen;
+  }
   if (left - len < len / 2) { len = left; }  // no tiny tail
   const p = { s: j.next, e: j.next + len, path: tmpPath(`s${j.id}`), state: 'queued', count: 0 };
   j.next = p.e;
@@ -789,8 +807,10 @@ function nextPiece(j, target) {
 const bgRoom = () => workers.length < 3 || workers.filter((x) => x.busy && x.busy.bgPiece).length < workers.length - 1;
 // pump(w): w has nothing of its own queued; give it the next piece of `interactive` jobs.
 function pullPiece(w, interactive) {
-  const j = pickJob(interactive);
+  const j = pickJob(interactive, w, true) || pickJob(interactive, w, false);
   if (!j) { return false; }
+  if (j.kind === 'p' && j.small && !j.pieces.length) { return pullBatch(w, j, interactive); }
+  j.workers.add(w.i);
   const p = nextPiece(j, interactive ? PIECE_MS : BG_PIECE_MS);
   p.state = 'running';
   j.running++;
@@ -804,6 +824,69 @@ function pullPiece(w, interactive) {
 // deletes its files), so the total stays under the cap plus one load and a piece per worker.
 const SHM_CAP = Number(process.env.FSDB_SHM_CAP || 512 * 1048576);
 let shmBytes = 0, shmPeak = 0;
+// Cheap primaries are loaded several in one reader call on one worker, which stores them (no
+// piece files): the call's floor is paid once. As many per call as spread them over the idle
+// workers, at most min(store share / 2, 128 MB) of estimated store and 4 x PIECE_MS of work.
+const estBytes = (id) => ((kinds.primaries && kinds.primaries.get(id)) || 0) * (8 + 2 * Math.ceil((widthOf.get(id) || 1) / 8));
+function pullBatch(w, j, interactive) {
+  const cands = [...jobs.values()].filter((x) => x !== j && x.kind === 'p' && x.small && !x.pieces.length && !x.batching && !x.failed && !x.adopting
+    && x.epoch === epoch && (x.reqs.size > 0) === interactive).sort((a, b) => a.seq - b.seq);
+  const idle = Math.max(1, workers.filter((x) => x === w || idleWorker(x)).length);
+  const per = Math.ceil((cands.length + 1) / idle);
+  const byteCap = Math.min(storeCap() / 2, 128 * 1048576);
+  const batch = [j];
+  let bytes = estBytes(j.id), ms = j.walkMs;
+  for (const x of cands) {
+    if (batch.length >= per) { break; }
+    if (bytes + estBytes(x.id) > byteCap || ms + x.walkMs > 4 * PIECE_MS) { continue; }
+    batch.push(x); bytes += estBytes(x.id); ms += x.walkMs;
+  }
+  for (const x of batch) { x.batching = true; x.running++; x.workers.add(w.i); }
+  const task = { op: 'load', signalIds: batch.map((x) => x.id), tid: nextTid++, epoch, piece: true, bgPiece: !interactive, s: 0, e: 'all' };
+  task.done = (m) => batchDone(batch, m, w);
+  w.queue.push(task);
+  return true;
+}
+function batchDone(batch, m, w) {
+  for (const x of batch) { x.running--; x.batching = false; }
+  const live = batch.filter((x) => x.epoch === epoch);
+  if (m.error) {
+    for (const x of live) {
+      if (x.dropped) { x.reject(new Error('freed')); continue; }
+      if (x.failed) { continue; }
+      if (transient(m.error) && x.retries < 3) { x.retries++; } else { failJob(x, m.error); }
+    }
+    scheduleKick(true);
+    return;
+  }
+  learnFloor(m.ms, batch.reduce((a, x) => a + x.walkMs, 0));
+  const owner = workers[w.i] === w ? w : null;
+  batch.forEach((x, k) => {
+    if (x.epoch !== epoch) { return; }
+    const r = m.result && m.result[k];
+    if (x.dropped) {  // freed while it loaded: drop what it stored
+      if (owner && r && !r.error) { runTask(owner, { op: 'free', signalIds: [x.id] }).catch(() => {}); }
+      x.reject(new Error('freed'));
+      return;
+    }
+    if (x.failed) { return; }
+    if (!owner) { if (x.retries < 3) { x.retries++; } else { failJob(x, 'worker exited'); } return; }
+    if (!r || r.error) {
+      const e = r ? r.error : 'no result';
+      if (transient(e) && x.retries < 3) { x.retries++; } else { failJob(x, e); }
+      return;
+    }
+    if (floating.has(x.id)) { pinFloat(floating.get(x.id)); }
+    route.set(x.id, owner.i);
+    endJob(x);
+    x.resolve({ ms: performance.now() - x.t0, slices: [r.count || 0], batch: batch.length });
+  });
+  if (owner) {  // the waiters ask the owner next (as finishJob)
+    owner.hold = true;
+    setImmediate(() => { owner.hold = false; pump(owner); });
+  }
+  scheduleKick(true);
+}
 function rmPiece(p) {
   if (p.bytes) { shmBytes -= p.bytes; p.bytes = 0; }
   try { fs.rmSync(p.path, { force: true }); } catch (e) { /* gone */ }
@@ -825,6 +908,15 @@ function pieceDone(j, p, m, w) {
   j.doneMs += m.ms;
   j.doneLen += Math.min(p.e, j.end) - p.s;
   j.done.push({ len: Math.min(p.e, j.end) - p.s, ms: m.ms });
+  if (j.kind === 's') {  // as many workers as keep their setup under 1/4 of the work
+    // (a worker's first piece of the signal includes its setup: not part of the work's rate)
+    j.firstOn = j.firstOn || new Set();
+    const first = !j.firstOn.has(w.i);
+    j.firstOn.add(w.i);
+    j.workMs = (j.workMs || 0) + Math.max(0, m.ms - (first ? SEC_SETUP_MS : 0));
+    const est = (j.workMs / Math.max(1, j.doneLen)) * j.end;
+    j.maxW = Math.max(1, Math.min(workers.length, Math.floor(est / (4 * SEC_SETUP_MS))));
+  }
   j.doneCount += p.count;
   const bits = widthOf.get(j.id) || 1;
   // (the bound adopt checks: slice counts before normalization, both planes)
@@ -871,7 +963,7 @@ function failJob(j, error) {
 function dropJob(j) {
   if (j.reqs.size || j.dropped) { return false; }
   j.dropped = true;
-  if (j.adopting) { endJob(j); return true; }  // finishJob drops what the join stores
+  if (j.adopting || j.batching) { endJob(j); return true; }  // finishJob / batchDone drop what it stores
   j.failed = true;
   for (const p of j.pieces) { if (p.state !== 'running') { rmPiece(p); } }
   endJob(j);

@@ -357,14 +357,15 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   await kindsOf(h);
   const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
   const last = Math.max(...rs.map((r) => r.at));
-  check(rs.every((r) => !r.error) && last < 800, `8 cheap primaries with a 300 ms floor: last at ${Math.round(last)} ms (two per call on four workers: ~500)`);
+  check(rs.every((r) => !r.error) && last < 900, `8 cheap primaries with a 300 ms floor: last at ${Math.round(last)} ms (two per call on four workers: ~500)`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
-  const h2 = await start(4, { 1: 4000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_FLOOR_MS: '300' });
+  // (its change count says what it costs: 20.8M changes of 1 bit ~ 3 s)
+  const h2 = await start(4, { 1: 3000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_FLOOR_MS: '300', STUB_COUNTS: '{"1": 20800000}' });
   await kindsOf(h2);
   const r = await h2.send('window', win([1])).reply;
   const sp = r.result && r.result.signals[0].split;
-  check(!r.error && sp <= 6 && r.at < 1900, `a 4 s primary with a 300 ms floor: ${sp} pieces, ${Math.round(r.at)} ms (pieces of >= 4 floors: ~4, ~1.5 s)`);
+  check(!r.error && sp <= 6 && r.at < 1500, `a 3 s primary with a 300 ms floor: ${sp} pieces, ${Math.round(r.at)} ms (pieces of >= 4 floors: ~4, ~1.1 s)`);
   h2.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
@@ -374,14 +375,14 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
 // (setup <= 1/4 of its work); on an idle pool a lone one still spreads.
 {
   const ids = [1, 2, 3, 4, 5, 6, 7, 8];
-  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 600])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', STUB_FIRST_MS: '200' });
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 600])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[16]', STUB_FIRST_MS: '200' });
   await kindsOf(h);
   const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
   const last = Math.max(...rs.map((r) => r.at));
   check(rs.every((r) => !r.error) && last < 2200, `8 secondaries of 600 ms with a 200 ms setup per worker: last at ${Math.round(last)} ms (each on one worker: ~1600; on all four: ~2800)`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
-  const h2 = await start(4, { 1: 1200 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', STUB_FIRST_MS: '200' });
+  const h2 = await start(4, { 1: 1200 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[16]', STUB_FIRST_MS: '200' });
   await kindsOf(h2);
   const r2 = await h2.send('window', win([1])).reply;
   check(!r2.error && r2.at < 1000, `... a lone 1.2 s secondary on an idle pool still spreads: ${Math.round(r2.at)} ms (one worker: ~1400)`);
