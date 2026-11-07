@@ -4,7 +4,7 @@
 // case (1'b1) matched (a CPU core's ALU result for an x instruction), and a flop rewritten with x
 // from a different source than the one that first made it x (x to x writes aren't changes), and a
 // word whose x bits came from a whole write that a later part-select write (of known bits) overlaid.
-module j_temps (
+module automatic j_temps (
   input  logic       clk,
   input  logic [7:0] a,
   input  logic [7:0] b,
@@ -49,4 +49,29 @@ module j_temps (
     p1 <= p0;
     p1[3:0] <= 4'h0;
   end
+
+  // An x part-select write a later narrower write of known bits overlays (the x write chosen,
+  // compared over its own bits), also inside a wider word; a local declared with an initializer
+  // that a flop reads (its fan-in goes on through the initializer); a net declaration assignment
+  // with a width extension (no source text for the initializer); and an unreset counter (x from
+  // the start, written with x every clock: uninitialised, not a loop).
+  logic [7:0] st;
+  logic [15:0] w16;
+  always @* begin
+    st[7:2] = 6'bx;
+    st[3:0] = a[3:0];
+  end
+  always @* begin
+    w16 = '0;
+    w16[7:0] = 'bx;
+    w16[3:0] = a[3:0];
+  end
+  logic [7:0] dq;
+  always @(posedge clk) begin
+    logic [7:0] t2 = b + 8'd1;
+    dq <= t2;
+  end
+  wire [7:0] wz = go;
+  logic [3:0] cnt;
+  always @(posedge clk) cnt <= cnt + 4'd1;
 endmodule

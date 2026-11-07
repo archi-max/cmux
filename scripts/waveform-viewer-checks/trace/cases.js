@@ -189,6 +189,15 @@ const TRACE_CASES = [
   // p1 <= p0 then p1[3:0] <= 4'h0: p1's x bits (the high nibble, from a) came from the whole write.
   { d: 'j', sig: 'tb_j.dut.p1', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 49, stmt: 'p1 <= p0;', value: 'xxxx000100100000',
     fanin: { 'tb_j.dut.p0': 'xxxx000100100010' } },
+  // The x part-select write a later narrower write of known bits overlaid is the one shown, compared
+  // over its own bits with the later write laid over them; also inside a wider word.
+  { d: 'j', sig: 'tb_j.dut.st', t: 30000, kind: 'proc', line: 61, stmt: "st[7:2] = 6'bx;", value: 'xxxx0011', trust: 'exact' },
+  { d: 'j', sig: 'tb_j.dut.w16', t: 30000, kind: 'proc', line: 66, stmt: "w16[7:0] = 'bx;", value: '00000000xxxx0011', trust: 'exact' },
+  // A local declared with an initializer: the fan-in goes on through the initializer's reads.
+  // (Icarus 12 does not run a block local's initializer, so its dump keeps dq at x: fan-in only.)
+  { d: 'j', sig: 'tb_j.dut.dq', t: 20000, kind: 'proc', line: 72, stmt: 'dq <= t2;', fanin: { t2: '*', 'tb_j.dut.b': '00100010' } },
+  // A net declaration assignment whose initializer has no source text (a width extension).
+  { d: 'j', sig: 'tb_j.dut.wz', t: 20000, kind: 'assign', stmt: 'wz = go', value: '00000001', fanin: { 'tb_j.dut.go': '1' }, trust: 'exact' },
 
   // ---- K: writes that aren't re-executed: a driver that may have written, never a confident "nothing" ----
   // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
@@ -348,6 +357,36 @@ function runTraceChecks() {
         if (expectClean && tally.unexplained) { results.failures++; out.push('FAIL oracle ' + line); } else { out.push('oracle ' + line); }
       }
     }
+    // Trace X to Root over the engine (the page's step and probe are its active()).
+    const xc = (d, path, t, config) => {
+      const { engine } = engineFor(d, 'icarus');
+      return cmuxTrace.xChain({ path, time: t }, Object.assign({ step: (p, at) => engine.active(p, at) }, config || {}));
+    };
+    const chainWant = (what, got, exp) => {
+      results.cases++;
+      if (JSON.stringify(got) === JSON.stringify(exp)) { out.push(`ok   chain ${what}`); return; }
+      results.failures++;
+      out.push(`FAIL chain ${what}: ${JSON.stringify(got)} != ${JSON.stringify(exp)}`);
+    };
+    // An unreset counter (cnt <= cnt + 1, x since the start): uninitialised storage, not a loop.
+    const cnt = await xc('j', 'tb_j.dut.cnt', 30000);
+    chainWant('unreset counter', [cnt.end.code, cnt.root, cnt.steps.map((e) => e.signal)], ['uninit', 0, ['tb_j.dut.cnt']]);
+    // A step whose value has no x though its probe had (the two disagree): the next candidate.
+    const fake = {
+      q: { signal: 'q', time: 10, value: 'x', since: 8, driver: { kind: 'proc' }, fanin: [{ path: 'a', value: 'x', time: 9 }, { path: 'b', value: 'x', time: 9 }] },
+      a: { signal: 'a', time: 9, value: 'x', since: 2, driver: { kind: 'proc' }, fanin: [] },
+      b: { signal: 'b', time: 9, value: 'x', since: 5, driver: { kind: 'none' }, fanin: [] },
+    };
+    const mismatch = await cmuxTrace.xChain({ path: 'q', time: 10 }, {
+      probe: async (p) => fake[p],
+      step: async (p) => (p === 'a' ? Object.assign({}, fake.a, { value: '0' }) : fake[p]),
+    });
+    chainWant('a step with no x is not followed', [mismatch.end.code, mismatch.steps.map((e) => e.signal)], ['uninit', ['q', 'b']]);
+    const none = await cmuxTrace.xChain({ path: 'q', time: 10 }, {
+      probe: async (p) => fake[p],
+      step: async (p) => (p === 'q' ? fake.q : Object.assign({}, fake[p], { value: '0' })),
+    });
+    chainWant('no candidate with x left', [none.end.code, none.root, none.steps.map((e) => e.signal)], ['failed', -1, ['q']]);
     return out;
   }
   return run().then((lines) => { globalThis.__traceDone = { lines, results }; }, (error) => { globalThis.__traceDone = { lines: out.concat(['FAIL ' + (error && error.stack || error)]), results: { failures: 1 } }; });
