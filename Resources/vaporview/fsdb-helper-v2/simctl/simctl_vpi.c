@@ -57,6 +57,11 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include "vpi_user.h"
+#if defined(__has_include)
+#if __has_include("sv_vpi_user.h")
+#include "sv_vpi_user.h"   /* the SystemVerilog object types (strings, chandles, classes) */
+#endif
+#endif
 
 #ifndef vpiInternalScope
 #define vpiInternalScope 92
@@ -167,6 +172,33 @@ static void hput(int idx) {
   uint64_t h = hstr(sigs[idx].name);
   for (int i = (int)(h & (hcap - 1));; i = (i + 1) & (hcap - 1)) if (!htab[i]) { htab[i] = idx + 1; return; }
 }
+/* Objects whose value is not a vector of bits are not signals here: reals, strings, events, handles and classes
+ * (and scopes, arrays and anything else that has no binary-string value; that is checked by reading one). */
+static int value_type(int ty) {
+  switch (ty) {
+  case vpiRealVar: case vpiNamedEvent: case vpiModule: case vpiTask: case vpiFunction:
+#ifdef vpiRealNet
+  case vpiRealNet:
+#endif
+#ifdef vpiShortRealVar
+  case vpiShortRealVar:
+#endif
+#ifdef vpiStringVar
+  case vpiStringVar:
+#endif
+#ifdef vpiChandleVar
+  case vpiChandleVar:
+#endif
+#ifdef vpiClassVar
+  case vpiClassVar:
+#endif
+#ifdef vpiNamedEventArray
+  case vpiNamedEventArray:
+#endif
+    return 0;
+  default: return 1;
+  }
+}
 /* index of the signal, or -1 if the name doesn't resolve to something with a value */
 static int sig_get(const char *name) {
   if (hcap) {
@@ -184,6 +216,7 @@ static int sig_get(const char *name) {
   s->name = strdup(name);
   s->h = vpi_handle_by_name(s->name, NULL);
   s->width = 0;
+  if (s->h && !value_type(vpi_get(vpiType, s->h))) s->h = NULL;
   if (s->h) {
     s->width = vpi_get(vpiSize, s->h);
     /* only objects that give a binary string value are signals here (not scopes, arrays, reals, strings) */
@@ -209,7 +242,8 @@ static void getbin(const simsig_t *s, char *dst) {
   for (size_t i = 0; i < w; i++) dst[i] = (char)tolower((unsigned char)dst[i]);
 }
 
-/* literal -> width chars. 'b1x0, 'hff, 'd12, 12, 8'h3f, 0x3f. Returns 0 on success. */
+/* literal -> width chars. 'b1x0, 'hff, 'd12, 12, 8'h3f, 0x3f, 1_000, 'dx. Wider than the signal: the low bits
+ * (as Verilog truncates). Returns 0 on success. */
 static int lit2bin(const char *lit, int width, char *dst) {
   const char *q = strchr(lit, '\'');
   int base = 10; const char *d = lit;
@@ -223,9 +257,27 @@ static int lit2bin(const char *lit, int width, char *dst) {
   else if (lit[0] == '0' && (lit[1] == 'b' || lit[1] == 'B')) { base = 2; d = lit + 2; }
   char tmp[8192]; size_t n = 0;
   if (base == 10) {
-    char *end; unsigned long long v = strtoull(d, &end, 10);
-    if (end == d || *end) return -1;
-    for (int i = 63; i >= 0; i--) tmp[n++] = (char)('0' + ((v >> i) & 1));
+    /* any number of digits (no saturation at 64 bits), '_' between them; 'dx / 'dz: all bits x / z */
+    char dig[2600]; size_t nd = 0;
+    char lc = (char)tolower((unsigned char)d[0]);
+    if ((lc == 'x' || lc == 'z' || lc == '?') && !d[1]) { tmp[n++] = lc == '?' ? 'x' : lc; goto fit; }
+    for (const char *c = d; *c; c++) {
+      if (*c == '_' && c != d) continue;
+      if (!isdigit((unsigned char)*c) || nd + 1 >= sizeof dig) return -1;
+      if (nd || *c != '0') dig[nd++] = (char)(*c - '0');
+    }
+    if (d[0] == 0 || d[0] == '_') return -1;
+    char bits[8192]; size_t nb = 0;   /* LSB first: repeated division by 2 */
+    while (nd) {
+      int rem = 0; size_t k = 0;
+      for (size_t i = 0; i < nd; i++) { int cur = rem * 10 + dig[i]; dig[i] = (char)(cur / 2); rem = cur % 2; }
+      while (k < nd && !dig[k]) k++;
+      memmove(dig, dig + k, nd - k); nd -= k;
+      if (nb >= sizeof bits) return -1;
+      bits[nb++] = (char)('0' + rem);
+    }
+    if (!nb) bits[nb++] = '0';
+    while (nb) tmp[n++] = bits[--nb];
   } else {
     int bits = base == 2 ? 1 : base == 8 ? 3 : 4;
     for (; *d; d++) {
@@ -239,6 +291,7 @@ static int lit2bin(const char *lit, int width, char *dst) {
     }
     if (!n) return -1;
   }
+fit:
   if ((int)n >= width) memcpy(dst, tmp + n - width, width);
   else { char pad = (tmp[0] == 'x' || tmp[0] == 'z') ? tmp[0] : '0'; memset(dst, pad, width - n); memcpy(dst + width - n, tmp, n); }
   return 0;
@@ -345,7 +398,7 @@ static void stop_run(const char *why) {
   need_serve = 1;
   sched_ro();
 }
-static PLI_INT32 end_rtn(p_cb_data d) { (void)d; end_cb = NULL; stop_run("done"); return 0; }
+static PLI_INT32 end_rtn(p_cb_data d) { (void)d; if (end_cb) vpi_release_handle(end_cb); end_cb = NULL; stop_run("done"); return 0; }
 
 /* input buffer shared by the serve loop and the poll callback */
 static char *inb; static size_t inlen, incap;
@@ -394,7 +447,10 @@ static PLI_INT32 poll_rtn(p_cb_data d) {
 /* ---------------------------------------------------------------- writes
  * A value written in the read-only region has no effect, so writes asked for while parked in a cbReadOnlySynch
  * are applied one time unit later (cbAfterDelay(1), a writable region), then the loop serves again at that time's
- * ReadOnlySynch and replies with the settled values. From $simctl_serve they are applied at once. */
+ * ReadOnlySynch and replies with the settled values. From $simctl_serve they are applied at once.
+ * Known race: one time unit is the simulation's precision. When the design's own delays are that small (e.g.
+ * 1ns/1ns with #1 clocks), t+1 can be a time the design also acts at, and the order of the write against that
+ * activity is the simulator's; the reply's value is what settled. */
 typedef struct { char op; int sig; long id; char *val; } wr_t;
 static wr_t *wq; static int nwq, capwq;
 static long *wdone; static int nwdone, capwdone;
@@ -424,7 +480,10 @@ static PLI_INT32 write_rtn(p_cb_data d) {
 
 /* After P, vpi_control(vpiStop) takes effect only after the sim has moved on, so this callback can fire before the
  * simulator's command line has had its turn. It serves only once the controller has written a `K` line (sent after
- * its command-line work); until then it re-arms itself one time unit later without blocking. */
+ * its command-line work); until then it re-arms itself one time unit later without blocking.
+ * Why a delay of 1 and not cbNextSimTime: next-sim-time callbacks fire only when there is a next event, so with
+ * no scheduled activity left (a quiet design while parked) they would never fire and the library would never
+ * serve again. The 1-unit steps last only from P until the controller's K, a short window. */
 static PLI_INT32 resume_rtn(p_cb_data d) {
   (void)d;
   if (fill(0) < 0) { lost_controller(); return 0; }
@@ -459,17 +518,22 @@ static char *nextline(void) {
     if (fill(1) < 0) return NULL;
   }
 }
+/* Tokens of a line; -1 when it has more than max (refused, never truncated). */
+#define MAXTOK (1 << 16)
 static int split(char *s, char **tok, int max) {
   int n = 0;
-  while (*s && n < max) {
+  for (;;) {
     while (*s == ' ') s++;
     if (!*s) break;
+    if (n == max) return -1;
     tok[n++] = s;
     while (*s && *s != ' ') s++;
     if (*s) *s++ = 0;
   }
   return n;
 }
+static void reply_err(long id, const char *msg);
+static void too_long(const char *line) { reply_err(strtol(line + 1, NULL, 10), "too many names in one request (limit 65534)"); }
 static void reply_err(long id, const char *msg) { bfmt(&ob, "{\"id\":%ld,\"error\":", id); bjson(&ob, msg); bstr(&ob, "}"); send_ob(); }
 
 static void list_scope(vpiHandle scope, int limit, int *count, int *trunc) {
@@ -585,13 +649,15 @@ static void quick_op(char op, long id, char **tok, int nt, uint64_t t) {
 
 /* During a run: serve the waiting lines from the front while they are quick ones (whole lines only). */
 static void serve_quick(void) {
-  static char *qtok[1 << 16];
+  static char *qtok[MAXTOK];
   uint64_t t = now();
   for (;;) {
     char *nl = inlen ? memchr(inb, '\n', inlen) : NULL;
     if (!nl || !is_quick(inb[0])) break;
     char *line = nextline();
-    int nt = split(line, qtok, 1 << 16);
+    char head[32]; snprintf(head, sizeof head, "%s", line);
+    int nt = split(line, qtok, MAXTOK);
+    if (nt < 0) { too_long(head); continue; }
     if (nt < 2) continue;
     quick_op(qtok[0][0], strtol(qtok[1], NULL, 10), qtok, nt, t);
   }
@@ -608,11 +674,13 @@ static void serve(int ctx) {
   for (int i = 0; i < nwdone; i += 2) reply_write(wdone[i], (int)wdone[i + 1]);
   nwdone = 0;
   if (stop_id >= 0) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", stop_id, (unsigned long long)now()); send_ob(); stop_id = -1; }
-  static char *tok[1 << 16];
+  static char *tok[MAXTOK];
   for (;;) {
     char *line = nextline();
     if (!line) { lost_controller(); return; }
-    int nt = split(line, tok, 1 << 16);
+    char head[32]; snprintf(head, sizeof head, "%s", line);
+    int nt = split(line, tok, MAXTOK);
+    if (nt < 0) { too_long(head); continue; }
     if (nt < 2) continue;
     char op = tok[0][0]; long id = strtol(tok[1], NULL, 10);
     uint64_t t = now();
