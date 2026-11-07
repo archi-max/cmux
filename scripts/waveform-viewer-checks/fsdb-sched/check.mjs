@@ -1241,6 +1241,86 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   }
 }
 
+// 43. Clock descriptors (FSDB_CLOCK_DESC=1; off by default): a verify job fits a 1-bit row's grid
+// from its first rises and checks its whole history in fresh segment processes (a rebuilt row's
+// reader keeps ~9 B per change read for the life of its process), each killed past
+// FSDB_CLOCK_RSS_MB, which aborts the job and never touches a reader. Aborted, not a clock: more
+// than FSDB_CLOCK_MAX_RECORDS changes off the grid, or deviations over 1% of the grid edges. One
+// job at a time, inside the reader budget, and a segment waits while visible work is queued.
+{
+  const clk = { 5: 1000, 6: 1000, 7: 1000, 8: 1000 };
+  const dev = { 6: [[100200, 'x'], [100300, '1']], 7: Array.from({ length: 40 }, (_, k) => [10000 * k + 200, '1']) };
+  const verify = async (h, id, ms = 20000) => {
+    const s = await h.send('clockVerify', { signalId: id }).reply;
+    if (s.error) { return { error: s.error }; }
+    const t0 = performance.now();
+    for (;;) { const i = (await h.send('clockInfo', { signalId: id }).reply).result; if (i.state !== 'verifying' || performance.now() - t0 > ms) { return i; } await wait(50); }
+  };
+  {
+    const h = await start(1, {}, { STUB_CLOCK: JSON.stringify(clk) });
+    const r = await h.send('clockVerify', { signalId: 5 }).reply;
+    h.close();
+    check(!!r.error && /off/.test(r.error), `clock descriptors are off by default: ${r.error || JSON.stringify(r.result)}`);
+  }
+  {
+    const log = path.join(tmp, 'clock43.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_DEV: JSON.stringify(dev), STUB_CLOCK_LOG: log, FSDB_CLOCK_SEGMENTS: '4' });
+    const a = await verify(h, 5), b = await verify(h, 6), c = await verify(h, 7);
+    const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const pids = new Set(calls.filter((x) => x.P).map((x) => x.pid));
+    const st = (await h.send('stats').reply).result;
+    h.close();
+    check(a.state === 'ready' && a.period === 1000 && a.high === 500 && a.firstRise === 500 && a.records === 1 && a.intervals === 1,
+      `a regular clock verifies: ${JSON.stringify(a)} (period 1000, high 500, first rise 500; before it, 0 at 0 verbatim)`);
+    check(b.state === 'ready' && b.records >= 2 && b.intervals >= 2, `... an x then a late rise is kept verbatim in an interval: ${JSON.stringify(b)}`);
+    check(c.state === 'aborted' && /1%/.test(c.why || ''), `... 40 glitches against ~2000 edges (2%) is not a clock: ${JSON.stringify(c)}`);
+    check(pids.size === 12 && !pids.has(st.workers[0].pid), `... each segment is its own process, not the worker: ${pids.size} verify processes for 3 rows x 4 segments`);
+  }
+  {
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_DEV: JSON.stringify(dev), FSDB_CLOCK_MAX_RECORDS: '1' });
+    const r = await verify(h, 6);
+    h.close();
+    check(r.state === 'aborted' && /more than 1 changes/.test(r.why || ''), `more than FSDB_CLOCK_MAX_RECORDS changes off the grid aborts: ${JSON.stringify(r)}`);
+  }
+  {
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_MB: '120', FSDB_CLOCK_RSS_MB: '100', STUB_CLOCK_MS: '300' });
+    const pid0 = (await h.send('stats').reply).result.workers[0].pid;
+    const r = await verify(h, 5);
+    const w = await h.send('window', win([5])).reply;
+    const pid1 = (await h.send('stats').reply).result.workers[0].pid;
+    h.close();
+    check(r.state === 'aborted' && /over 100 MB/.test(r.why || '') && pid0 === pid1 && !w.error,
+      `a segment process past FSDB_CLOCK_RSS_MB aborts the job, the worker is untouched: ${JSON.stringify(r)}, worker ${pid0 === pid1 ? 'same' : 'restarted'}, window ${w.error || 'ok'}`);
+  }
+  {
+    const log = path.join(tmp, 'clock43b.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, { 9: 1500 }, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_LOG: log, STUB_CLOCK_MS: '100', FSDB_BG_LOAD: '0' });
+    const busy = h.send('window', win([9])).reply;  // (visible work: 1.5 s)
+    await wait(30);
+    const t0 = performance.now();
+    const s1 = (await h.send('clockVerify', { signalId: 5 }).reply).result;
+    const s2 = (await h.send('clockVerify', { signalId: 6 }).reply).result;
+    await busy;
+    const tBusy = performance.now() - t0;
+    let first = null;
+    for (let k = 0; k < 100 && first === null; k++) { if (fs.existsSync(log)) { first = performance.now() - t0; } else { await wait(20); } }
+    const r = await verify(h, 5);
+    h.close();
+    check(s1.state === 'verifying' && s2.state === 'busy' && r.state === 'ready', `one verify job at a time: ${s1.state}, then ${s2.state} for another row; the first ends ${r.state}`);
+    check(first !== null && first >= tBusy - 50, `... and it waits for visible work: its first scan at ${Math.round(first)} ms, the visible read done at ${Math.round(tBusy)} ms`);
+  }
+  {
+    const log = path.join(tmp, 'clock43c.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_LOG: log, FSDB_READERS: '1' });
+    await h.send('clockVerify', { signalId: 5 }).reply;
+    await wait(600);
+    const ran = fs.existsSync(log);
+    const i = (await h.send('clockInfo', { signalId: 5 }).reply).result;
+    h.close();
+    check(!ran && i.state === 'verifying', `at the reader budget (FSDB_READERS=1, one worker) no segment process starts: ${ran ? 'ran' : 'waiting'}, ${i.state}`);
+  }
+}
+
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
 // changes, 755 MB, against a 244 MB store gave "signal larger than 244 MB"): answered from
 // ranged reads that grow from t until the first hit, never a whole load's cap error. Signal 5 is
