@@ -97,8 +97,10 @@ What is streamed, and when:
   A signal not on that list is unknown, not rebuilt: wide packed-struct parents, for one, are stored but
   unlisted. The helper keeps three kinds (`p` listed, `s` only on positive evidence, `u` unlisted), each with
   its source in `stats.kinds`. Unknown rows are scheduled like rebuilt ones, but up to `FSDB_WARM_UNKNOWN` (2)
-  of them take spare warm-reader slots; one whose warm call is slow (over `FSDB_WARM_SLOW_MS`, 250 ms, or 3x
-  the stored floor) leaves the set. Until the list is ready, or if the tool is missing, loads run as above.
+  of them take spare warm-reader slots. Each is judged against its own cold cost: a warm call of its set
+  that is slower than the row's last cold read of a similar span (alone) marks it `warmSlow`, and it leaves
+  the set; one the warm call beats is `warmProven`, and only those unknowns go to the warm reader for point
+  reads. Until the list is ready, or if the tool is missing, loads run as above.
   - A stored signal pays a fixed cost per reader call (about 110 ms on a 1.7 GB dump, learned as it runs), so
     cheap ones are loaded several at a time in one call, and a heavy one gets a few large pieces, not many small ones.
   - A rebuilt signal pays about 190 ms of setup on each worker it touches (`FSDB_SEC_SETUP_MS`), so it is spread
