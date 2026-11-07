@@ -167,6 +167,7 @@ enum WaveformTrace {
         let outcome = try await SVModelResolve.resolve(
             dumpPath: dumpPath,
             mapping: mapping,
+            loadMessages: design.loadMessages,
             lookup: { path in await lookup(path, in: design) },
             model: { path in await instanceModel(path, in: design) },
             designRoots: { try await designRoots(of: design) },
@@ -221,8 +222,8 @@ enum WaveformTrace {
             ),
             instance
         )
-        guard let first = messages.first, !first.isEmpty else { return text }
-        return text + "\n\n" + first
+        guard let detail = SVModelResolve.loadDetail(messages), !detail.isEmpty else { return text }
+        return text + "\n\n" + detail
     }
 
     /// Each design top and its children (child instances, then its signals), for inference.
