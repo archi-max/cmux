@@ -170,3 +170,10 @@ public enum KDBModelLaunch {
         return object["ok"] is Bool
     }
 }
+
+/// A design's port aliases from its instance models (the KDB's or slang's: the same shape).
+public enum DesignAliasPairs {
+    public static func pairs(models: [String: [String: Any]], designPrefix: String, dumpPrefix: String, limit: Int = .max) -> [[String]] {
+        []
+    }
+}

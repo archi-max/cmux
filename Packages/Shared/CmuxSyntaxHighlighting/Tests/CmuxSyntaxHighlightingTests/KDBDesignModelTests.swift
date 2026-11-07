@@ -76,3 +76,19 @@ import Testing
         #expect(model.aliasPairs(limit: 2).count == 2)
     }
 }
+
+/// The same port aliases from slang's instance models (cmux-sv-model's shape), whose paths are the
+/// design's: mapped to the dump's with the rule a trace resolved (design prefix -> dump prefix).
+@Suite struct DesignAliasPairsTests {
+    @Test func slangsPortsGiveTheDumpsAliasesUnderTheResolvedPrefix() throws {
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(KDBDesignModelTests.model.utf8)) as? [String: Any])
+        let models = try #require(object["instances"] as? [String: [String: Any]])
+        // The design's tb.u_dut is the dump's top.dut (another testbench dumped it).
+        let pairs = Set(DesignAliasPairs.pairs(models: models, designPrefix: "tb.u_dut", dumpPrefix: "top.dut").map { $0.joined(separator: " ") })
+        // Only below the prefix: tb.u_dut's own ports bind to tb's nets, which the dump doesn't name so.
+        #expect(pairs == ["top.dut.u_core.clk top.dut.clk", "top.dut.clk top.dut.u_core.clk"])
+        let same = DesignAliasPairs.pairs(models: models, designPrefix: "", dumpPrefix: "")
+        #expect(same.count == 6)
+        #expect(DesignAliasPairs.pairs(models: models, designPrefix: "", dumpPrefix: "", limit: 3).count == 3)
+    }
+}
