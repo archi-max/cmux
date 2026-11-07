@@ -2066,7 +2066,7 @@ Napi::Value warmLoad(const Napi::CallbackInfo &info) {
   return out;
 }
 
-// warmWindow(ids[], t0, t1, buckets) -> as cacheWindowCold, for ids of the first load only.
+// warmWindow(ids[], t0, t1, buckets, textBudget?) -> as cacheWindowCold, for ids of the first load only.
 // A warm load that leaves the process over the hard bound (cacheSetBounds, set by a warm reader's
 // open) is undone before anything is walked, as on the cold path (#5): each id answers an error.
 static bool warmOverBound(Napi::Env env, const std::vector<fsdbVarIdcode> &ids, Napi::Array &out) {
@@ -2108,7 +2108,7 @@ Napi::Value warmWindow(const Napi::CallbackInfo &info) {
       auto tw = clk::now();
       std::string err;
       SigStore *s = walkSignal(ids[k], err);
-      Napi::Object o = s ? windowOf(env, s, t0, t1, B) : Napi::Object::New(env);
+      Napi::Object o = s ? windowOf(env, s, t0, t1, B, argBudget(info, 4)) : Napi::Object::New(env);
       o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
       if (!s) o.Set("error", Napi::String::New(env, err));
       o.Set("loadMs", Napi::Number::New(env, loadMs));

@@ -207,10 +207,10 @@ const ops = {
     return {};
   },
   hotLoad({ signalIds }) { return addon.warmLoad(signalIds); },
-  hotWindow({ signalIds, t0, t1, buckets }) {
-    return addon.warmWindow(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
+  hotWindow({ signalIds, t0, t1, buckets, textBudget }) {
+    return addon.warmWindow(signalIds, t0, t1, buckets, textBudget).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
       : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
-        counts: w.counts || null, cached: false, ranged: true, warm: true, loadMs: w.loadMs, walkMs: w.walkMs }));
+        counts: w.counts || null, cached: false, ranged: true, warm: true, loadMs: w.loadMs, walkMs: w.walkMs, ...textHead(w, true) }));
   },
   // trace-X's fan-in reads on a warm reader: as coldNear (span 0: the value at t).
   hotNear({ signalIds, t, span }) { return addon.warmNear(signalIds, t, span); },
