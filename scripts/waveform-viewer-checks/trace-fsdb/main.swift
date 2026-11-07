@@ -13,7 +13,8 @@
 // TRACE_FSDB_V2=1 runs the helpers as cmux does by default (waveform.fsdbLoading auto: helper v2,
 // <assetRoot>/fsdb-helper-v2, else v1); TRACE_FSDB_HOME=<dir> installs them under <dir> on the host
 // instead of the user's home, with v2's store cache in <dir>/index (so a test never replaces or
-// fills the helpers' in use). Default: helper v1.
+// fills the helpers' in use). Default: helper v1. TRACE_FSDB_HELPER_ENV="FSDB_WORKERS=2 ..." sets more of the
+// helper's environment on the host.
 // TRACE_FSDB_START=<signal path> traces that signal (at <time>) and its fan-in instead of every
 // signal of <instance>; its step is the first step printed.
 // TRACE_FSDB_ROWS=<path>,<path>... instead runs Trace Driver from each signal's waveform row (the
@@ -86,7 +87,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let env = ProcessInfo.processInfo.environment
     // The helper's store cache too (FSDB_INDEX_DIR; by default a folder under /tmp shared with the
     // helpers in use), so a test starts cold when the folder is new and never fills theirs.
-    let home = env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " FSDB_INDEX_DIR=" + shellQuoted($0 + "/index") + " " } ?? ""
+    // TRACE_FSDB_HELPER_ENV="NAME=value ...": more of the helper's environment (FSDB_WORKERS, FSDB_WORKER_RSS_MB).
+    let extraEnv = (env["TRACE_FSDB_HELPER_ENV"] ?? "").split(separator: " ").filter { $0.contains("=") }.map { shellQuoted(String($0)) + " " }.joined()
+    let home = (env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " FSDB_INDEX_DIR=" + shellQuoted($0 + "/index") + " " } ?? "") + extraEnv
     let installs = env["TRACE_FSDB_V2"] == "1"
       ? WaveformFSDBHelper.installs(v2Root: assetRoot.appendingPathComponent("fsdb-helper-v2", isDirectory: true), v1Root: helperRoot, loading: .auto)
       : [WaveformFSDBHelper.Install(protocolVersion: 1, resourceRoot: helperRoot)]
