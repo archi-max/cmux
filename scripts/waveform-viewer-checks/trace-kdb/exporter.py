@@ -120,6 +120,12 @@ with tempfile.TemporaryDirectory() as tmp:
                              files={"opts.f": "-o out/simv\n-pvalue+tb.W=1\n", "out/opts.f": "t.sv\n"})), None)
     check("-o=out/simv (another -o spelling): unknown",
           npi.overrides(case("oeq", rebuild="vcs '-f' 'opts.f' '-o=out/simv'", sub="out", files={"out/opts.f": "t.sv\n"})), None)
+    # Only -o's own spellings: options that merely start with -o are read as usual.
+    check("-override_timescale on the command line and in a -f file: no override",
+          npi.overrides(case("otimescale", rebuild="vcs '-override_timescale=1ns/1ps' '-f' 'files.f'",
+                             files={"files.f": "-override_timescale=1ns/1ps\nt.sv\n"})), [])
+    check("-o./out/simv glued (no space): unknown",
+          npi.overrides(case("oglued", rebuild="vcs '-f' 'files.f' '-o./out/simv'", files={"files.f": "t.sv\n"})), None)
     # F1f: only one vcs line can be the compile; with two the scan can't tell which made the KDB.
     check("two vcs lines: unknown",
           npi.overrides(case("twovcs", rebuild="vcs 't.sv'\nvcs '-pvalue+tb.W=1' 't.sv'")), None)
