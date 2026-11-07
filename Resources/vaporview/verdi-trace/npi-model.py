@@ -119,6 +119,12 @@ OVERRIDE_WORDS = ("pvalue", "parameters", "gfile")
 FILE_LISTS = ("-f", "-F", "-file")
 
 
+def sets_output(arg):
+    """-o, or another spelling of it: -o=path, or the path glued on (-o./x, -o/x). Options that only
+    start with -o (-override_timescale) are not."""
+    return arg == "-o" or arg.startswith("-o=") or (len(arg) > 2 and arg.startswith("-o") and not arg[2].isalpha())
+
+
 def unresolved(text):
     """True when shell text has an expansion the scan can't resolve ($VAR, ${...}, $(...), `...`)."""
     return "$" in text or "`" in text
@@ -130,7 +136,7 @@ def overrides(daidir):
     folder above it that -o's directory part names). Fails closed: None (unknown) when the command
     or one of its files can't be read, when it holds an expansion the scan can't resolve, when no
     line's command is vcs (after env and VAR= assignments) or more than one is, when a file list
-    sets -o, when any token spells -o another way (-o=...), or when a relative file list's folder is
+    sets -o, when any token spells -o another way (-o=..., -o./...), or when a relative file list's folder is
     unknown (an absolute -o, a daidir that is not where -o put it, or, with no -o on the command
     line, a file of the same name in a folder above the daidir's: a file list there may have set -o)."""
     try:
@@ -151,7 +157,7 @@ def overrides(daidir):
     if len(found_args) != 1:
         return None  # no vcs command, or more than one: which compile made this KDB is unknown
     args = found_args[0]
-    if any(a.startswith("-o") and a != "-o" for a in args):
+    if any(sets_output(a) and a != "-o" for a in args):
         return None  # an -o spelling the scan doesn't place
     folder = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
     base = folder
@@ -206,7 +212,7 @@ def scan(args, base, found, depth, unplaced=None):
             except (OSError, ValueError):
                 return False
             # An -o in a file list moves the daidir, after `base` was worked out: unknown.
-            if any(a == "-o" or a.startswith("-o") for a in inner):
+            if any(sets_output(a) for a in inner):
                 return False
             # Paths in a -F file are relative to it; in a -f file, to where VCS ran.
             if not scan(inner, os.path.dirname(path) if arg == "-F" else base, found, depth + 1,
