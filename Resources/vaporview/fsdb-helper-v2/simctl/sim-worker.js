@@ -51,7 +51,11 @@
 //                                                 the ReadOnlySynch park after an apply's settle) the stop takes
 //                                                 effect at the next activity: t > requestedAt; show t
 //   restore {cp}                                -> {t, watches} and a full-value changes event
-//   save {file} / restoreFile {file}            file-based save/restore, for comparison
+//   save {file}                                 a VCS file save (for comparison; restore it outside simctl, simv -r)
+//   restoreFile {file}                          refused: a VCS file restore reopens the controller's pipes as
+//                                                 /dev/null, so the restored run could not be reached (use
+//                                                 checkpoint/restore in the run, or forksave and a new run)
+// A checkpoint, restore or save the simulator itself refuses (its Error-[...] text) is an error with that text.
 //   stats {}                                    -> {pids, pssMb, memAvailMb, licence?, skippedLinks, vmemKb}
 // Reusable testbench (simctl_tb.sv in the build, tb.js): stimulus as data, no rebuild. Requests outside what
 // the build has answer {id, error, needsRebuild: true, hint}.
@@ -77,9 +81,7 @@
 //                                                 nothing is ever loaded). symbol, versionSymbol and
 //                                                 lastErrorSymbol must be registered entry points (the defaults
 //                                                 below, or cmux-replay.json applySymbols); others are refused
-//                                                 before any lookup; after a restoreFile too, the list is this
-//                                                 run's own (a save does not carry its run's list). Never from a
-//                                                 read-only region:
+//                                                 before any lookup. Never from a read-only region:
 //                                                 at serve, inside the TB's held serve point (simctl_hold.sv) at
 //                                                 this time (from a ReadOnlySynch park with the TB held there: at
 //                                                 t+1, back inside its serve point); at next, one time unit later
@@ -532,6 +534,9 @@ async function park(work) {
 }
 // ---------------------------------------------------------------- request validation
 const BAD_TOKEN = /[\s\x00-\x1f\x7f]/;
+const RESTORE_FILE_MSG = 'restoreFile is not supported while simctl controls the simulation: a VCS file restore reopens ' +
+  "the controller's pipes as /dev/null, so the restored run could no longer be reached. Use checkpoint and restore {cp} " +
+  'in this run, or forksave and start a new run from the save (simv -r); a file save can be restored outside simctl';
 function names(list, what = 'signal') {
   if (!Array.isArray(list)) throw new Error(`${what}s: expected a list`);
   return list.map((n) => token(n, what));
@@ -765,7 +770,7 @@ async function handle(r) {
       let ucliCmd;
       if (r.cmd === 'checkpoint') ucliCmd = 'checkpoint -add simctl';
       else if (r.cmd === 'restore') { if (!Number.isSafeInteger(r.cp) || r.cp < 0) return out({ id, error: 'restore: cp must be a checkpoint number' }); ucliCmd = `checkpoint -join ${r.cp}`; }
-      else { if (r.cmd === 'restoreFile') { const why = saveMissing(scratchFile(r.file)); if (why) return out({ id, error: why }); }
+      else { if (r.cmd === 'restoreFile') return out({ id, error: RESTORE_FILE_MSG });
         ucliCmd = `${r.cmd === 'save' ? 'save' : 'restore'} {${scratchFile(r.file)}}`; }   // brace-quoted Tcl word, charset already safe   // brace-quoted Tcl word, charset already safe
       const s0 = performance.now();
       let res;
@@ -773,11 +778,15 @@ async function handle(r) {
         const u0 = performance.now();
         const txt = await ucli(ucliCmd);
         const ucliMs = performance.now() - u0;
+        // the simulator's own refusal (e.g. UCLI-SAVE-STOP: no file save at a $stop, which a held serve point is)
+        const refused = /Error-\[[A-Za-z0-9_-]+\][^\n]*(\n[^\n]*){0,3}/.exec(txt);
+        if (refused) throw new Error(`${r.cmd}: the simulator refused it: ${refused[0].replace(/\s+/g, ' ').trim().slice(0, 400)}`);
         const o = { ucliMs: +ucliMs.toFixed(1), ucli: txt.trim().slice(-400) };
         if (r.cmd === 'checkpoint') { const m = /(\d+)\s*$/.exec(txt.trim()); o.cp = m ? Number(m[1]) : null; }
         return o;
       }); } catch (e) { return out({ id, error: String(e.message || e) }); }
-      if (r.cmd === 'restore' || r.cmd === 'restoreFile') {
+      if (res.error) return out({ id, error: res.error, t: res.t });
+      if (r.cmd === 'restore') {
         // the library's own state (watches, last values) rewinds with the simulation
         const info = await libCall('I', '');
         watches.clear();
