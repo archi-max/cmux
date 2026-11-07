@@ -2,8 +2,8 @@
 # cmux driver tracing, the Verdi engine's launcher (ours; it runs the host's installed Verdi and
 # ships nothing of it). cmux sends this script and serve.tcl over SSH into a private scratch
 # folder and runs `bash -l verdi-trace.sh <scratch> <dump.fsdb> [<simv>.daidir]`; stdin and stdout
-# are serve.tcl's JSON lines. The KDB is the daidir next to the FSDB that holds kdb.elab++ (vcs
-# -kdb), unless one is named. Without the FSDB, a KDB, Verdi, or a Verdi licence seat, it prints
+# are serve.tcl's JSON lines. The KDB is the first daidir next to the FSDB (by name, in C order)
+# that holds kdb.elab++ (vcs -kdb), unless one is named. Without the FSDB, a KDB, Verdi, or a Verdi licence seat, it prints
 # {"id":0,"ready":false,"error":"noFile"|"noKDB"|"noVerdi"|"licence"|"start","message":...}.
 # Verdi's banner and logs stay in the scratch folder, removed when the session ends. While Verdi
 # waits for a licence seat it says "cmux-verdi: waiting for a Verdi licence" on stderr, and when
@@ -59,9 +59,10 @@ fail() {
 }
 [ -r "$FSDB" ] || fail noFile "$FSDB"
 if [ -z "$DAIDIR" ]; then
-  for d in "$(dirname "$FSDB")"/*.daidir; do
-    if [ -d "$d/kdb.elab++" ]; then DAIDIR=$d; break; fi
-  done
+  # (C order whatever the locale: the same KDB as npi-model.sh's)
+  DAIDIR=$(LC_ALL=C; for d in "$(dirname "$FSDB")"/*.daidir; do
+    if [ -d "$d/kdb.elab++" ]; then printf '%s' "$d"; break; fi
+  done)
 fi
 { [ -n "$DAIDIR" ] && [ -d "$DAIDIR/kdb.elab++" ]; } || fail noKDB "$(dirname "$FSDB")"
 if ! command -v verdi >/dev/null 2>&1 && type module >/dev/null 2>&1; then

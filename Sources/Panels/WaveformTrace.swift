@@ -341,7 +341,7 @@ enum WaveformTrace {
         Task { @MainActor [weak waveform] in
             guard let waveform, WaveformTraceKDB.model(for: waveform) == nil,
                   let hierarchy = try? await hierarchy(of: design) else { return }
-            // The instances below the prefix, and the prefix's own (its ports bind to its parent's nets).
+            // The instances below the prefix (the prefix's own ports bind to nets outside it: no pair).
             let below = hierarchy.instances.filter { designPrefix.isEmpty || $0.hasPrefix(designPrefix + ".") }
             guard !below.isEmpty, below.count <= maxAliasInstances else { return }
             var models: [String: [String: Any]] = [:]
@@ -354,7 +354,10 @@ enum WaveformTrace {
             let pairs = DesignAliasPairs.pairs(models: models, designPrefix: designPrefix, dumpPrefix: dumpPrefix,
                                                limit: WaveformTraceKDB.maxAliasPairs)
             guard !pairs.isEmpty, aliasRules.object(forKey: waveform) as String? == rule else { return }
-            _ = await waveform.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": pairs])
+            for chunk in DesignAliasPairs.chunked(pairs) {
+                guard aliasRules.object(forKey: waveform) as String? == rule else { return }
+                _ = await waveform.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": chunk])
+            }
         }
     }
 

@@ -29,7 +29,7 @@ enum WaveformTraceKDB {
     /// The viewers waiting for each in-flight export's port aliases.
     private static var waiting: [String: NSHashTable<FilePreviewPanel>] = [:]
     /// Alias pairs sent at most per dump.
-    static let maxAliasPairs = 400_000
+    nonisolated static let maxAliasPairs = 400_000
     /// An export that takes longer is ended (the launcher's own cap is 120 s; then the transfer).
     nonisolated static let exportTimeout: TimeInterval = 300
 
@@ -68,17 +68,23 @@ enum WaveformTraceKDB {
         let command = KDBModelLaunch.command(launcher: scripts.launcher, exporter: scripts.exporter, fsdbPath: remote.remotePath)
         let arguments = remote.sshArguments("sh -c '\(command)'")
         Task { @MainActor in
-            let outcome = await Task.detached(priority: .utility) { await Self.run(arguments: arguments) }.value
+            // The export and its alias pairs (a sort over every instance) off the main actor.
+            let (outcome, pairs) = await Task.detached(priority: .utility) { () -> (KDBModelLaunch.Outcome, [[String]]) in
+                let outcome = await Self.run(arguments: arguments)
+                guard case .model(let model, _) = outcome else { return (outcome, []) }
+                return (outcome, model.aliasPairs(limit: maxAliasPairs))
+            }.value
             let viewers = waiting.removeValue(forKey: key)?.allObjects ?? []
             if let line = schedule.finished(key, outcome) {
                 waveformTraceKDBLogger.info("\(line, privacy: .public)")
             }
             guard case .model(let model, let cached) = outcome else { return }
-            let pairs = model.aliasPairs(limit: maxAliasPairs)
             waveformTraceKDBLogger.info("KDB model: \(model.instancePaths.count) instances, cached \(cached), \(pairs.count) alias pairs")
-            guard !pairs.isEmpty else { return }
-            for viewer in viewers {
-                _ = await viewer.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": pairs])
+            // In calls of DesignAliasPairs.pageChunk (each call's JSON crosses the web view whole).
+            for chunk in DesignAliasPairs.chunked(pairs) {
+                for viewer in viewers {
+                    _ = await viewer.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": chunk])
+                }
             }
         }
     }
@@ -89,7 +95,9 @@ enum WaveformTraceKDB {
         return schedule.model(key)
     }
 
-    /// Runs the launch over ssh and reads its output; ended past `exportTimeout`.
+    /// Runs the launch over ssh and reads its output; ended past `exportTimeout`. Ending it ends the
+    /// local ssh only: the host's launcher runs on to its own time cap (CMUX_NPI_SECONDS, 120 s),
+    /// the real bound on the seat.
     nonisolated private static func run(arguments: [String]) async -> KDBModelLaunch.Outcome {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")

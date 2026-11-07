@@ -2,17 +2,19 @@
 # cmux driver tracing, the KDB design model's launcher (ours; it runs the host's installed Verdi and
 # ships nothing of it). cmux sends this script and npi-model.py over SSH into a private scratch
 # folder and runs `bash -l npi-model.sh <scratch> <dump.fsdb | simv.daidir> [--print]`. The KDB is
-# the daidir named, or the one next to the dump that holds kdb.elab++ (vcs -kdb), as verdi-trace.sh
-# finds it. It prints one JSON line: {"ok": true, "cached", "seconds"?, "instances"?, "signals"?,
+# the daidir named, or the first next to the dump (by name, in C order) that holds kdb.elab++
+# (vcs -kdb), as verdi-trace.sh finds it. It prints one JSON line: {"ok": true, "cached", "seconds"?, "instances"?, "signals"?,
 # "peakMB"?} or {"ok": false, "error": "noFile"|"noKDB"|"noVerdi"|"licence"|"memory"|"time"|"start"|
-# "walk"|"tried", "message"}; with --print, the model's JSON (one line) follows an ok line.
+# "walk"|"tried"|"busy", "message"}; with --print, the model's JSON (one line) follows an ok line.
 #
 # Models are kept in a cache of the user's own (CMUX_KDB_CACHE, default ~/.cache/cmux/kdb-model, the
 # newest 8), keyed by the KDB's path, its FILES' newest mtime and total size, and the exporter: a
 # model already there costs no licence seat. Not the kdb.elab++ folder's own mtime: load_design
 # creates and removes an entry there (the user's daidir is otherwise left as it was), which would
-# invalidate the key on every export. A daidir the user can't write to may not load. An export holds a Verdi seat for its load and walk only
-# (seconds). An export that fails once the exporter ran (a seat denied, a guard, Verdi's error) is
+# invalidate the key on every export. A daidir the user can't write to loads too (run.sh trace-kdb
+# checks a read-only copy). An export holds a Verdi seat for its load and walk only (seconds), one
+# per KDB at a time: an ask for a KDB that is being exported waits for it (flock on $KEY.lock, at
+# most the time cap and a minute; then "busy") and is answered from the cache. An export that fails once the exporter ran (a seat denied, a guard, Verdi's error) is
 # not run again for that KDB: the cache keeps the failure ($KEY.failed) and later asks are answered
 # {"error": "tried", "message": "<the failure's code>: <its message>"} without Verdi, until the KDB
 # changes (a new key) or CMUX_KDB_RETRY=1. Guards: the host's MemAvailable
@@ -34,10 +36,10 @@ if [ -d "$TARGET/kdb.elab++" ]; then
   DAIDIR=$TARGET
 else
   [ -r "$TARGET" ] || say noFile "$TARGET"
-  DAIDIR=
-  for d in "$(dirname "$TARGET")"/*.daidir; do
-    if [ -d "$d/kdb.elab++" ]; then DAIDIR=$d; break; fi
-  done
+  # (C order whatever the locale: the same KDB as verdi-trace.sh's)
+  DAIDIR=$(LC_ALL=C; for d in "$(dirname "$TARGET")"/*.daidir; do
+    if [ -d "$d/kdb.elab++" ]; then printf '%s' "$d"; break; fi
+  done)
   [ -n "$DAIDIR" ] || say noKDB "$(dirname "$TARGET")"
 fi
 DAIDIR=$(cd "$DAIDIR" && pwd -P) || say noKDB "$TARGET"
@@ -67,6 +69,20 @@ if [ -s "$MODEL" ]; then
 fi
 if [ -s "$FAILED" ] && [ "${CMUX_KDB_RETRY:-}" != 1 ]; then
   say tried "$(cat "$FAILED")"
+fi
+# One export of a KDB at a time (two viewers opening a new KDB: one seat); the one that waited is
+# answered from what the other left.
+if command -v flock >/dev/null 2>&1; then
+  mkdir -p "$CACHE" || say start "no cache folder $CACHE"
+  exec 9> "$CACHE/$KEY.lock"
+  flock -w $((SECONDS_CAP + 60)) 9 || say busy "another export of this KDB is still running"
+  if [ -s "$MODEL" ]; then
+    touch "$MODEL" 2>/dev/null
+    emit '{"ok":true,"cached":true}'
+  fi
+  if [ -s "$FAILED" ] && [ "${CMUX_KDB_RETRY:-}" != 1 ]; then
+    say tried "$(cat "$FAILED")"
+  fi
 fi
 
 if ! command -v verdi >/dev/null 2>&1 && type module >/dev/null 2>&1; then
@@ -110,4 +126,5 @@ rm -f "$FAILED"
 mv -f "$W/model.json" "$MODEL.tmp" && mv -f "$MODEL.tmp" "$MODEL" || say start "could not keep the model in $CACHE"
 # The newest 8 models stay.
 ls -1t "$CACHE"/*.json 2>/dev/null | tail -n +9 | while read -r old; do rm -f "$old"; done
+ls -1t "$CACHE"/*.lock 2>/dev/null | tail -n +17 | while read -r old; do rm -f "$old"; done
 emit "$(printf '%s' "$line" | sed 's/^{"ok": true, /{"ok": true, "cached": false, /; s/}$//'), \"peakMB\": $((peak / 1024))}"

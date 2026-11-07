@@ -168,7 +168,8 @@ public enum DesignAliasPairs {
 
     /// `pairs` in calls of at most `size` (none for none).
     public static func chunked(_ pairs: [[String]], size: Int = pageChunk) -> [[[String]]] {
-        [pairs]
+        let size = max(1, size)
+        return stride(from: 0, to: pairs.count, by: size).map { Array(pairs[$0..<min($0 + size, pairs.count)]) }
     }
 
     public static func pairs(models: [String: [String: Any]], designPrefix: String, dumpPrefix: String, limit: Int = .max) -> [[String]] {
