@@ -6,8 +6,9 @@
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
 //   fanin { path or local name: bits, or '*' for any value }, noFanin [names that must not be fan-in], roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
-//   trust, root, reasons [codes that must be there], viol [each decision's case violation or null],
-//   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
+//   trust, noTrust (a trust it must not have), root, reasons [codes that must be there], viol [each decision's case violation or null],
+//   noReasons [codes that must not], dumps [variants it runs on; default all of the design's; 'stale' is
+//   the Icarus dump with staleModel's model].
 /* global cmuxTrace, traceVcd, traceFiles */
 /* exported runTraceChecks */
 
@@ -24,6 +25,8 @@ const TRACE_DUMPS = {
   j: ['icarus'],
   // The vendor task is $deposit under Icarus (the model sees $cmux_poke).
   k: ['icarus'],
+  // The classes a Verdi oracle run found exact but wrong on a larger SoC testbench, small.
+  l: ['icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -220,7 +223,48 @@ const TRACE_CASES = [
   // lq <= c17 through 18 blocking temps: the fan-in stops at 16 of them, with a 'limits' reason.
   { d: 'k', sig: 'tb_k.dut.lq', t: 20000, kind: 'proc', file: 'k_writes.sv', stmt: 'lq <= c17;', trust: 'approximate', reasons: ['limits'] },
   { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 35, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
+  // ---- L: classes a Verdi oracle run found exact but wrong, as Verdi answers them ----
+  // A: a reset declared low and raised by the initial block after clock edges: the write that
+  // raised it (approximate, the testbench's), never the declaration; through the port too.
+  { d: 'l', sig: 'tb_l.rst_n', t: 40000, kind: 'initial', file: 'tb_l.sv', line: 27, stmt: "rst_n = 1'b1;", since: 26000, value: '1', trust: 'approximate', root: 'testbench' },
+  { d: 'l', sig: 'tb_l.dut.rst_n', t: 40000, kind: 'portIn', since: 26000, fanin: { 'tb_l.rst_n': '1' } },
+  // Values from the initial block's opening statements (a plusarg, then a copy): their writes.
+  { d: 'l', sig: 'tb_l.epoch_iters', t: 40000, kind: 'initial', file: 'tb_l.sv', line: 24, stmt: 'epoch_iters = iters;', trust: 'approximate' },
+  { d: 'l', sig: 'tb_l.iters', t: 40000, kind: 'initial', file: 'tb_l.sv', stmt: 'iters = 4;', trust: 'approximate' },
+  // A counter incremented in a clocked block of the testbench: that statement.
+  { d: 'l', sig: 'tb_l.settle', t: 40000, file: 'tb_l.sv', stmt: 'settle++;', trust: 'approximate' },
+  // A, as the oracle's model had it ('stale': no statement lists what it writes, and the initial
+  // block is one statement slang could not elaborate). The block may write anything: it is named,
+  // approximate; a value nothing explains is never exact, and the declaration did not make a
+  // value that changed at 26.
+  { d: 'l', sig: 'tb_l.rst_n', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, since: 26000, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.epoch_iters', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.iters', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.settle', t: 40000, dumps: ['stale'], since: 35000, noTrust: 'exact', reasons: ['writeNotFound'] },
+  // B: y unchanged since 35 (the override made it); at 40 and 50 the default gives the same value
+  // (sel fell at 45). The statement that made the value, run when it changed, as Verdi names it.
+  { d: 'l', sig: 'tb_l.dut.y', t: 50000, kind: 'proc', proc: 'Always', file: 'l_oracle.sv', line: 19, stmt: 'y = b;', since: 35000, sample: 35000, value: '00110011', trust: 'exact' },
+  { d: 'l', sig: 'tb_l.dut.y', t: 40000, kind: 'proc', line: 19, stmt: 'y = b;', since: 35000, value: '00110011', trust: 'exact' },
+  // c = 0 by the override while in reset (2), then by the default (26): the override, as Verdi
+  // names picorv32's clear_prefetched_high_word at t=0. (Both write 1'b0: the line tells them apart.)
+  { d: 'l', sig: 'tb_l.dut.c', t: 40000, kind: 'proc', file: 'l_oracle.sv', line: 24, since: 2000, value: '0', trust: 'exact' },
+
 ];
+
+// The model an older cmux-sv-model gave (the one the Verdi oracle ran on): no statement lists what
+// it writes, and an initial block slang could not elaborate is one opaque statement.
+function staleModel(all) {
+  const strip = (x) => {
+    if (Array.isArray(x)) { x.forEach(strip); return; }
+    if (!x || typeof x !== 'object') { return; }
+    delete x.writes;
+    Object.values(x).forEach(strip);
+  };
+  for (const m of Object.values(all.instances)) {
+    strip(m.procs);
+    for (const p of m.procs) { if (p.kind === 'Initial') { p.body = { k: 'opaque', why: 'Invalid', src: p.body.src || '', loc: p.loc }; } }
+  }
+}
 
 function runTraceChecks() {
   const out = [];
@@ -239,7 +283,9 @@ function runTraceChecks() {
     if (engines[key]) { return engines[key]; }
     const modelName = d === 'c' && variant === 'icarus' ? 'c.icarus' : d;
     const all = JSON.parse(traceFiles.models[modelName]);
-    const vcd = traceVcd(traceFiles.dumps[`${d}.${variant}`]);
+    // 'stale': the Icarus dump with the model an older sidecar gave for that testbench.
+    if (variant === 'stale') { staleModel(all); }
+    const vcd = traceVcd(traceFiles.dumps[`${d}.${variant === 'stale' ? 'icarus' : variant}`]);
     const models = {
       instance: async (p) => all.instances[p],
       // What cmux-sv-model's `writers` answers: the instances that write into `p` from outside it.
@@ -273,6 +319,7 @@ function runTraceChecks() {
     if (c.since !== undefined) { want('since', step.since, c.since); }
     if (c.value !== undefined) { want('value', step.value, c.value); }
     if (c.trust) { want('trust', step.trust, c.trust); }
+    if (c.noTrust && step.trust === c.noTrust) { bad.push(`trust is ${step.trust}, which it must not be`); }
     if (c.root) { want('root', step.root, c.root); }
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
