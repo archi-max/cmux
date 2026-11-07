@@ -920,6 +920,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let known = (svEdges?["shifted"] as? [String: Any])?["known"] as? [String: Int] ?? [:]
     expect((svEdges?["shiftWrong"] as? [String])?.isEmpty == true && known.count == 4 && known.values.allSatisfy { $0 == cases3 },
            "a dump from 100 with its start known gives the same edges as one from 0 (every path), and with it unknown misses only a phantom edge at 100: \(String(describing: svEdges?["shiftWrong"])); known \(known)")
+    // The phantom edges are pinned: 54 per path (an edge at 100 where SystemVerilog has none, for
+    // the histories whose first change is at the dump's start), so a growth fails.
+    let unknown = (svEdges?["shifted"] as? [String: Any])?["unknown"] as? [String: Int] ?? [:]
+    expect(svEdges?["phantom"] as? Int == 54 * 4 && unknown.count == 4 && unknown.values.allSatisfy { cases3 - $0 == 54 },
+           "with the start unknown, exactly 54 phantom edges per path: \(String(describing: svEdges?["phantom"])) in all; per path \(unknown.mapValues { cases3 - $0 })")
 
     // The check hooks are not in the shipped page: only with the checks' window.cmuxTraceChecks.
     let hooks = await call("return { shipped: 'prevEdge' in (window.cmuxTraceUI || {}), checks: typeof (window.cmuxTraceChecks || {}).prevEdge }") as? [String: Any]

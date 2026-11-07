@@ -8,7 +8,8 @@
 //   fanin { path or local name: bits, or '*' for any value }, noFanin [names that must not be fan-in], roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
 //   trust, noTrust (a trust it must not have), root, reasons [codes that must be there], viol [each decision's case violation or null],
 //   noReasons [codes that must not], dumps [variants it runs on; default all of the design's; 'stale' is
-//   the Icarus dump with staleModel's model, 'nowrites' with that model's write lists removed only].
+//   the Icarus dump with staleModel's model, 'nowrites' with that model's write lists removed only;
+//   'missing' is design M's Icarus dump with models/m.missing.json, where slang could not bind the blocks].
 /* global cmuxTrace, traceVcd, traceFiles */
 /* exported runTraceChecks */
 
@@ -27,6 +28,8 @@ const TRACE_DUMPS = {
   k: ['icarus'],
   // The classes a Verdi oracle run found exact but wrong on a larger SoC testbench, small.
   l: ['icarus'],
+  // A testbench shaped like a large SoC run's: an FSDB dump started with the simulator's own tasks.
+  m: ['icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -264,6 +267,19 @@ const TRACE_CASES = [
   // F: a flop that never took a value is its start value (x since 0), not its block.
   { d: 'l', sig: 'tb_l.dut.k', t: 40000, kind: 'none', since: 0, value: 'xxxxxxxx', trust: 'exact' },
 
+  // M (R1): the testbench's initial block calls $fsdbDumpfile/$fsdbDumpvars, which slang doesn't
+  // know. Each is one opaque call; the rest of the block is modelled, so the reset is the
+  // assignment that raised it (a testbench's write: approximate, but not opaque), not the block.
+  { d: 'm', sig: 'tb_m.rst_n', t: 220000, kind: 'initial', file: 'tb_m.sv', line: 29, stmt: "rst_n = 1'b1;", since: 195000, value: '1', trust: 'approximate', root: 'testbench', noReasons: ['opaque'] },
+  { d: 'm', sig: 'tb_m.epoch_iters', t: 220000, kind: 'initial', file: 'tb_m.sv', line: 19, stmt: 'epoch_iters = iters;', trust: 'approximate', noReasons: ['opaque'] },
+  { d: 'm', sig: 'tb_m.dut.q', t: 220000, kind: 'proc', file: 'm_count.sv', line: 16, stmt: "q <= q + 8'd1;", trust: 'exact' },
+  // 'missing': the blocks also call a task the model wasn't given, so slang binds neither (each is
+  // one opaque statement). What the model says each writes, and where, still names the line.
+  { d: 'm', sig: 'tb_m.rst_n', t: 220000, dumps: ['missing'], kind: 'initial', file: 'tb_m.sv', line: 29, stmt: "rst_n = 1'b1", since: 195000, trust: 'approximate', root: 'testbench' },
+  { d: 'm', sig: 'tb_m.epoch_iters', t: 220000, dumps: ['missing'], kind: 'initial', file: 'tb_m.sv', line: 19, stmt: 'epoch_iters = iters', trust: 'approximate' },
+  // Two lines write q (the reset and the count): the block, approximate, with both as candidates.
+  { d: 'm', sig: 'tb_m.dut.q', t: 220000, dumps: ['missing'], kind: 'proc', file: 'm_count.sv', line: 10, trust: 'approximate', candidates: [11, 16] },
+
 ];
 
 // The model an older cmux-sv-model gave (the one the Verdi oracle ran on): no statement lists what
@@ -282,6 +298,27 @@ function staleModel(all, invalidInitial) {
   }
 }
 
+// The bits a signal starts with, from the model alone: its initializer when that is a literal
+// (sized or a plain decimal), else all x for a 4-state type, all 0 for a 2-state one (twoState);
+// null when it can't be told (an initializer that reads other signals).
+function startBits(sig) {
+  if (!sig) { return null; }
+  const w = Math.max(1, Number(sig.width) || 1);
+  if (!sig.init) { return (sig.twoState === true ? '0' : 'x').repeat(w); }
+  if ((sig.init.leaves || []).length) { return null; }
+  const text = String(sig.init.text || '').replace(/_/g, '');
+  const fit = (bits) => (bits.length >= w ? bits.slice(bits.length - w) : (/^[xz]/.test(bits) ? bits[0] : '0').repeat(w - bits.length) + bits);
+  let m = /^\d*'s?([bho])([0-9a-fxz]+)$/i.exec(text);
+  if (m) {
+    const per = { b: 1, o: 3, h: 4 }[m[1].toLowerCase()];
+    const bits = [...m[2].toLowerCase()].map((c) => (c === 'x' || c === 'z' ? c.repeat(per) : parseInt(c, 16).toString(2).padStart(per, '0'))).join('');
+    return fit(bits);
+  }
+  m = /^(?:\d*'s?d)?(\d+)$/i.exec(text);
+  if (m) { return fit(BigInt(m[1]).toString(2)); }
+  return null;
+}
+
 function runTraceChecks() {
   const out = [];
   const designText = traceFiles.designs;
@@ -297,7 +334,7 @@ function runTraceChecks() {
   function engineFor(d, variant) {
     const key = d + '.' + variant;
     if (engines[key]) { return engines[key]; }
-    const modelName = d === 'c' && variant === 'icarus' ? 'c.icarus' : d;
+    const modelName = d === 'c' && variant === 'icarus' ? 'c.icarus' : variant === 'missing' ? d + '.missing' : d;
     const all = JSON.parse(traceFiles.models[modelName]);
     // 'stale': the Icarus dump with the model an older sidecar gave for that testbench.
     if (variant === 'stale' || variant === 'nowrites') { staleModel(all, variant === 'stale'); }
@@ -305,7 +342,7 @@ function runTraceChecks() {
     if (variant === 'hidden') { for (const m of Object.values(all.instances)) { m.procs = m.procs.filter((p) => p.kind !== 'Initial'); } }
     // 'two': the DUT's first always @* listed twice (two writers that both explain the value).
     if (variant === 'two') { const m = all.instances['tb_l.dut']; m.procs.splice(1, 0, JSON.parse(JSON.stringify(m.procs[0]))); }
-    const onIcarus = ['stale', 'nowrites', 'hidden', 'two'].includes(variant);
+    const onIcarus = ['stale', 'nowrites', 'hidden', 'two', 'missing'].includes(variant);
     const vcd = traceVcd(traceFiles.dumps[`${d}.${onIcarus ? 'icarus' : variant}`]);
     const models = {
       instance: async (p) => all.instances[p],
@@ -343,6 +380,7 @@ function runTraceChecks() {
     if (c.trust) { want('trust', step.trust, c.trust); }
     if (c.noTrust && step.trust === c.noTrust) { bad.push(`trust is ${step.trust}, which it must not be`); }
     if (c.root) { want('root', step.root, c.root); }
+    if (c.candidates) { want('candidate lines', JSON.stringify((step.candidates || []).map((x) => x.loc && x.loc.line)), JSON.stringify(c.candidates)); }
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
       if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (v !== '*' && f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
@@ -408,9 +446,12 @@ function runTraceChecks() {
             for (const [t] of s.changes) {
               const step = await engine.active(p, t);
               tally.steps++;
-              // Held since 0 at the value it started with (x, or 0 for a 2-state type), with no write
-              // missing: nothing drove it yet, which is no missing driver.
-              const held = Number(step.since) === 0 && !(step.reasons || []).some((r) => r.code === 'writeNotFound');
+              // Held since 0 at the value it started with, with no write missing: nothing drove it
+              // yet, which is no missing driver. The start value is worked out here, not taken from
+              // the engine: x for a 4-state type, 0 for a 2-state one, else the initializer's.
+              const start = startBits(m.signals[name]);
+              const held = Number(step.since) === 0 && !(step.reasons || []).some((r) => r.code === 'writeNotFound')
+                && start !== null && step.value === start;
               if (step.driver && step.driver.kind === 'none' && held) { tally.startValue = (tally.startValue || 0) + 1; }
               if (step.driver && step.driver.kind === 'none' && !held) { tally.noDriver = (tally.noDriver || 0) + 1; if (tally.noDriver <= 3) { out.push(`ORACLE ${d}.${variant} ${p} @${t}: no driver`); } }
               tally[step.trust] = (tally[step.trust] || 0) + 1;
