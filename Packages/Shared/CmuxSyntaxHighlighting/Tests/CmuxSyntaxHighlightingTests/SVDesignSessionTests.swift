@@ -13,11 +13,12 @@ import Testing
     /// A sidecar whose design is the text of `<dir>/fp` (empty: a load that names no sources),
     /// read at each load; `stale` says changed when `fp` differs from what was loaded, or once
     /// after `<dir>/touched` appears (a save that left the text as it was). Instance replies name
-    /// the design they came from; each request is logged to `<dir>/log`.
+    /// the design they came from; each request is logged to `<dir>/log`. The ready line's model
+    /// version is `<dir>/model` (1 without it), read at each start.
     static func script(_ dir: URL) -> String {
         """
         D='\(dir.path)'
-        printf '{"id":0,"ready":true,"model":1}\\n'
+        printf '{"id":0,"ready":true,"model":%s}\\n' "$(cat "$D/model" 2>/dev/null || echo 1)"
         loaded=
         while IFS= read -r line; do
           id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9]*\\).*/\\1/p')
@@ -59,6 +60,7 @@ import Testing
         }
 
         func set(_ fingerprint: String) throws { try Data(fingerprint.utf8).write(to: dir.appendingPathComponent("fp")) }
+        func setModel(_ version: Int) throws { try Data(String(version).utf8).write(to: dir.appendingPathComponent("model")) }
         func touch() throws { try Data().write(to: dir.appendingPathComponent("touched")) }
         func asked(_ cmd: String) -> Int {
             ((try? String(contentsOf: dir.appendingPathComponent("log"), encoding: .utf8)) ?? "")
@@ -104,6 +106,25 @@ import Testing
         #expect(first.session.generation(ofDesignId: id1, key: "k") == g1)
         #expect(first.session.generation(ofDesignId: id1, key: "other") == nil)
         #expect(first.session.generation(ofDesignId: "k#" + String(g1), key: "k") == nil, "the old form names no session")
+    }
+
+    /// A sidecar of another version (a cmux update rebuilt it) that restarts onto the same sources
+    /// is another design: its answers may differ, so nothing kept from the old one is used (Refs #8 L3).
+    @Test func aRestartOfAnotherSidecarVersionIsANewDesign() async throws {
+        let fake = try Fake("A")
+        let g = try await fake.session.load().generation
+        _ = try await fake.session.model("tb", generation: g)
+        try fake.setModel(2)
+        await fake.restart()
+        await #expect(throws: SVDesignSession.Failure.designChanged) {
+            _ = try await fake.session.lookup("tb.q", generation: g)
+        }
+        #expect(fake.session.generation > g)
+        // The same version again keeps its design.
+        let h = fake.session.generation
+        await fake.restart()
+        #expect(try await fake.session.lookup("tb.q", generation: h)?.name == "A")
+        #expect(fake.session.generation == h)
     }
 
     @Test func aRestartOntoEditedSourcesIsANewDesign() async throws {
