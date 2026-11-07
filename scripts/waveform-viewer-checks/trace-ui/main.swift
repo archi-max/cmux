@@ -586,6 +586,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           }
           return { counts };
         }
+        if (req.cmd === 'aliasHints') {
+          // helper v2's aliasHints (m.noAliasHints: an older helper, which doesn't know it).
+          if (m.noAliasHints) { throw new Error('unknown cmd aliasHints'); }
+          m.aliasHints.push(req.pairs.length);
+          return { accepted: req.pairs.length, refused: [] };
+        }
         throw new Error('not here: ' + req.cmd);
       };
       m.install = () => {
@@ -620,7 +626,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       // The plain (whole-signal) page on the same histories, to compare with.
       m.plain = () => { b.signalChanges = (v, max) => m.read(v, max); };
-      m.remove = () => { m.custom.clear(); m.sent = []; m.delay = 0; m.readDelay = 0; m.prev = false; m.prevMode = undefined; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
+      m.remove = () => { m.custom.clear(); m.sent = []; m.aliasHints = []; m.noAliasHints = false; m.delay = 0; m.readDelay = 0; m.prev = false; m.prevMode = undefined; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
       m.pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
       return null
       """)
@@ -740,6 +746,32 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       }
       expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(mode): no history downloaded (\(String(describing: r?["downloads"])))")
     }
+
+    // The dump's port aliases (from the KDB model, cmux's aliasHints call): sent to helper v2 in
+    // chunks of 4096 pairs; nothing to a page without helper v2; an older helper that doesn't know
+    // aliasHints is not asked again for the rest.
+    let aliases = await call("""
+      const t = cmuxWaveform.trace, m = window.__v2mock;
+      const pairs = (n) => Array.from({ length: n }, (_, i) => ['tb.u.p' + i, 'tb.n' + i]);
+      try {
+        t.backendChanged();
+        const plain = await t.aliasHints({ pairs: pairs(10) });
+        m.install(); m.aliasHints = []; m.sent = [];
+        t.backendChanged();
+        const sent = await t.aliasHints({ pairs: pairs(5000) });
+        const chunks = m.aliasHints.slice();
+        m.aliasHints = []; m.noAliasHints = true; m.sent = [];
+        const old = await t.aliasHints({ pairs: pairs(9000) });
+        const oldAsked = m.sent.filter((r) => r.cmd === 'aliasHints').length;
+        return { plain, sent, chunks, old, oldAsked };
+      } finally { m.remove(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] aliasHints: \(String(describing: aliases))")
+    expect(aliases?["plain"] as? Int == 0, "aliasHints: nothing sent without helper v2 (\(String(describing: aliases?["plain"])))")
+    expect(aliases?["chunks"] as? [Int] == [4096, 904] && aliases?["sent"] as? Int == 5000,
+           "aliasHints: 5000 pairs go to helper v2 as 4096 + 904 (\(String(describing: aliases?["chunks"])), \(String(describing: aliases?["sent"])) sent)")
+    expect(aliases?["oldAsked"] as? Int == 1 && aliases?["old"] as? Int == 0,
+           "aliasHints: an older helper is asked once, not for every chunk (\(String(describing: aliases?["oldAsked"])) asked, \(String(describing: aliases?["old"])) sent)")
 
     // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
     // whole read is capped too and only costs time; its last change is unknown.
