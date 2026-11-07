@@ -13,8 +13,8 @@
 //       folder); clock: a 1-bit signal whose period makes the cycles of run/until (without it, by time only).
 //       forkSave (default false): the run's mode. Off ("ucli"): the simulator runs with its command line, so
 //       sim.checkpoint/sim.restore work and sim.forksave is refused. On ("forkSave"): it runs without (worker
-//       --no-ucli), so sim.forksave works and sim.checkpoint/sim.restore are refused. A fork-save child of a
-//       simulation with its command line is stopped by it (measured; see the worker).
+//       --no-ucli), so sim.forksave works and sim.checkpoint/sim.restore are refused. With the command line a
+//       fork-save does not complete (measured; see the worker).
 //       The simulator is novas_dump.log's option[0] (relative to dir) and its run arguments are
 //       the options before the compiler entry, without +fsdb*, -l <file>, -ucli, -ucli2Proc.
 //       -> {t, precision, period, simv, args, dumpFile, mode: 'ucli' | 'forkSave'}. Refused without the stub in <simv>.daidir's

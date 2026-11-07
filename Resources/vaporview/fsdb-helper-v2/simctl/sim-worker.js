@@ -189,8 +189,10 @@ function scanMissing(d) {
 }
 
 // ---------------------------------------------------------------- launch
-// --no-ucli: no command line. A fork-save child of a -ucli simulation is stopped by the command line it inherits
-// (it prints the UCLI stop/finish lines) and the parent ends at once (SIGTERM, -ucli2Proc; exit 255, -ucli).
+// --no-ucli: no command line. Fork-save needs it (measured, W-2024.09): with -ucli2Proc the child's $save asks
+// the command-line process first (it writes `ucliCore::ucliPreSsave <file>.FILES` to its output) and waits for
+// an answer that cannot come, so no image; with single-process -ucli the image is written but `simv -r` of it
+// does not run to the end.
 const noUcli = flag('--no-ucli');
 const ucli2 = !noUcli && !flag('--no-ucli2proc');
 const args = ['-n', '10', SIMV, ...(noUcli ? [] : ['-ucli', ...(ucli2 ? ['-ucli2Proc'] : [])]), ...simArgs];
@@ -514,7 +516,7 @@ async function handle(r) {
     // a file save without pausing the simulation (also during a run, at its next poll point): needs a build with
     // the simctl_saver top; at most two at once; the end comes as a `saved` event
     case 'forksave':
-      if (!noUcli) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save child is stopped and the simulation ended)' });
+      if (!noUcli) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save does not complete: -ucli2Proc writes no image, -ucli an image simv -r does not finish)' });
       lib('V', id, scratchFile(r.file)); return;
     case 'read': lib('G', id, names(r.signals || []).join(' ')); return;
     case 'force': case 'deposit': case 'release': {

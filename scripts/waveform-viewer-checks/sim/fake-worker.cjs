@@ -113,7 +113,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
     }
     // the two worker modes, as sim-worker.js: --no-ucli has forksave and no checkpoints, the default the reverse
     case 'forksave': {
-      if (!NO_UCLI) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save child is stopped and the simulation ended)' });
+      if (!NO_UCLI) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save does not complete: -ucli2Proc writes no image, -ucli an image simv -r does not finish)' });
       const pid = 90000 + id; out({ id, result: { t, pid, forkMs: 1.2, file: '/scratch/run/' + r.file } });
       setTimeout(() => out({ id: 0, event: 'saved', pid, file: '/scratch/run/' + r.file, t, status: 0, ok: true, bytes: 9 }), 100);
       return;
