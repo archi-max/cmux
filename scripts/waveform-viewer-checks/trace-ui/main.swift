@@ -1303,6 +1303,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let asked = events.dropFirst(before4).first { $0["event"] as? String == "resolve" }?["dumpPath"] as? [String]
     expect(asked == ["tb_c", "dut", "u_mid", "u_sink", "d"], "build: Retry after an editor-started build traces the editor's signal: \(String(describing: asked))")
     _ = await call("await cmuxWaveform.trace.settled(); return null")
+    // cmux traces from the editor once the design is built, and the build's done may come after
+    // the trace (it is queued behind the design's other progress calls): the trace is shown.
+    let built = Date().timeIntervalSince1970 * 1000 + 1
+    await progress("{ stage: 'compile', percent: 80, host: 'build-host', startedAt: \(built) }")
+    let traced = await call("""
+      const s = await cmuxWaveform.trace.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      return !!s
+      """) as? Bool
+    await progress("{ stage: 'done', host: 'build-host', startedAt: \(built) }")
+    text = await panelText()
+    expect(traced == true && text.contains("q <= mix") && !text.contains("Building"),
+           "build: an editor trace that comes before the build's done is traced and shown: \(String(describing: traced)) \(text.prefix(200))")
     // Every page string of the build panel is sent by cmux and localized.
     let resources = assetRoot.deletingLastPathComponent()
     let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
