@@ -25,7 +25,10 @@
 //       bytes}], dropped, exited} + per signal `bytes` of records [u64 LE delta][width chars], the first
 //       delta from 0 (an absolute time), then from the previous record (helper-v2's window layout, not
 //       deflated). Answers as soon as there is something, else after waitMs. Changes not polled for are
-//       kept up to SIM_BUFFER bytes; beyond that the oldest are dropped and counted in `dropped`.
+//       kept up to CMUX_SIM_BUFFER bytes (64 MB); beyond that the oldest are dropped, counted in `dropped`,
+//       and reported in `gaps: [{simSignal, from, through}]`: that signal's changes at from..through were lost,
+//       so its value is unknown from `from` until its next record (in this reply or a later one). Each gap
+//       is reported once; a consumer must show it as missing, not as the value before it.
 //   sim.close {}                    -> {} (the simulation is ended and its processes killed)
 // Times are in the simulator's precision (10^precision s).
 'use strict';
@@ -37,7 +40,7 @@ const { spawn } = require('node:child_process');
 const WORKER = process.env.CMUX_SIM_WORKER || path.join(__dirname, 'simctl/sim-worker.js');
 const LIB = process.env.CMUX_SIM_LIB || path.join(__dirname, 'simctl/libsimctl.so');
 const STUB = process.env.CMUX_SIM_STUB || path.join(os.homedir(), '.cache/cmux/simctl/libsimctl_stub.so');
-const SIM_BUFFER = Number(process.env.CMUX_SIM_BUFFER) || 64 * 1024 * 1024;
+const simBuffer = () => Number(process.env.CMUX_SIM_BUFFER) || 64 * 1024 * 1024;   // read each time (tests shrink it)
 const MAX_WAIT_MS = 2000;
 const PAGE_COMMANDS = new Set(['sim.open', 'sim.run', 'sim.until', 'sim.stop', 'sim.read', 'sim.watch', 'sim.unwatch', 'sim.poll', 'sim.close']);
 
@@ -96,7 +99,7 @@ function startWorker(simv, args, clock) {
   if (clock) wargs.push('--clock', clock);
   wargs.push('--', ...args);
   const proc = spawn(process.execPath, wargs, { stdio: ['pipe', 'pipe', 'pipe'], detached: false });
-  const s = { proc, scratch, pending: new Map(), nextId: 1, buf: Buffer.alloc(0), hdr: null, batches: [], bytes: 0, dropped: 0,
+  const s = { proc, scratch, pending: new Map(), nextId: 1, buf: Buffer.alloc(0), hdr: null, batches: [], bytes: 0, dropped: 0, gaps: new Map(),
     stop: null, running: false, waiters: [], t: 0, widths: new Map(), exited: null, stderr: '' };
   s.ready = new Promise((resolve, reject) => { s.readyRes = resolve; s.readyRej = reject; });
   proc.stderr.on('data', (d) => { s.stderr = (s.stderr + d).slice(-4000); });
@@ -149,7 +152,16 @@ function onChanges(s, h, bin) {
     s.batches.push({ simSignal: sig.signalId, width, t0: h.t0, count: sig.count, bytes });
     s.bytes += bytes.length;
   }
-  while (s.bytes > SIM_BUFFER && s.batches.length > 1) { const b = s.batches.shift(); s.bytes -= b.bytes.length; s.dropped += b.count; }
+  // Over the buffer: the oldest batches go, and each signal's lost span is kept (merged) for the next poll.
+  const limit = simBuffer();
+  while (s.bytes > limit && s.batches.length > 1) {
+    const b = s.batches.shift(); s.bytes -= b.bytes.length; s.dropped += b.count;
+    if (!b.count) continue;
+    let t = b.t0, first = null;
+    for (let o = 0; o < b.bytes.length; o += 8 + b.width) { t += Number(b.bytes.readBigUInt64LE(o)); if (first === null) first = t; }
+    const g = s.gaps.get(b.simSignal);
+    if (g) { g.from = Math.min(g.from, first); g.through = Math.max(g.through, t); } else s.gaps.set(b.simSignal, { from: first, through: t });
+  }
   wake(s);
 }
 function wake(s) { const w = s.waiters; s.waiters = []; for (const f of w) f(); }
@@ -276,13 +288,15 @@ const handlers = {
   async 'sim.poll'(req) {
     const s = needSim();
     const waitMs = Math.max(0, Math.min(MAX_WAIT_MS, Number(req.waitMs) || 0));
-    if (!s.batches.length && !s.stop && !s.exited) {
+    if (!s.batches.length && !s.gaps.size && !s.stop && !s.exited) {
       await new Promise((resolve) => { const t = setTimeout(resolve, waitMs); s.waiters.push(() => { clearTimeout(t); resolve(); }); });
     }
     const { signals, bin } = takeChanges(s);
     const stop = s.stop; s.stop = null;
     const dropped = s.dropped; s.dropped = 0;
-    return { result: { t: s.t, running: s.running, stop, signals, dropped, exited: s.exited }, bin };
+    const gaps = [...s.gaps].filter(([id]) => s.widths.has(id)).map(([simSignal, g]) => ({ simSignal, from: g.from, through: g.through }));
+    s.gaps.clear();
+    return { result: { t: s.t, running: s.running, stop, signals, dropped, gaps, exited: s.exited }, bin };
   },
   async 'sim.close'() {
     if (cur) { const s = cur; cur = null; kill(s); }
