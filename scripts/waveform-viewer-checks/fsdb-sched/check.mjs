@@ -589,6 +589,31 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 34. Review L4 (lows): a worker killed in the middle of a batched load. The batch's signals
+// are loaded again elsewhere and every request is answered, none with an error.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const loadLog = path.join(tmp, 'loads34.log');
+  fs.rmSync(loadLog, { force: true });
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 400])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ids), STUB_FLOOR_MS: '100', STUB_LOAD_LOG: loadLog });
+  await kindsOf(h);
+  const pending = Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  let victim = null;
+  for (let k = 0; k < 200 && !victim; k++) {
+    const calls = fs.existsSync(loadLog) ? fs.readFileSync(loadLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    victim = calls.find((c) => c.op === 'load' && c.ids.length > 1) || null;
+    if (!victim) { await wait(10); }
+  }
+  if (victim) { try { process.kill(victim.pid, 'SIGKILL'); } catch (e) { /* gone */ } }
+  const rs = await pending;
+  const calls = fs.readFileSync(loadLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const again = victim ? victim.ids.every((id) => calls.some((c) => c.pid !== victim.pid && c.ids.includes(id))) : false;
+  check(!!victim && rs.every((r) => !r.error && r.result.signals.every((x) => !x.error)) && again,
+    `a worker killed mid-batch: every row answered, its batch ${victim ? JSON.stringify(victim.ids) : '(none seen)'} loaded again elsewhere: ${again}; errors ${JSON.stringify(rs.map((r) => r.error || (r.result.signals[0].error || 'ok')))}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside

@@ -58,7 +58,7 @@ module.exports = {
   cacheSetLimit(n) { limit = n; }, cacheSetBounds() {},
   cacheStats: () => ({ bytes: 16 * store.size, limit, signals: [...store.keys()].map(entry) }),
   cacheLoad(ids) {
-    if (process.env.STUB_LOAD_LOG) { fs.appendFileSync(process.env.STUB_LOAD_LOG, JSON.stringify({ op: 'load', ids: ids.filter((id) => !store.has(id)) }) + '\n'); }
+    if (process.env.STUB_LOAD_LOG) { fs.appendFileSync(process.env.STUB_LOAD_LOG, JSON.stringify({ op: 'load', pid: process.pid, ids: ids.filter((id) => !store.has(id)) }) + '\n'); }
     sleep(floorOf(ids.filter((id) => !store.has(id))));
     return ids.map((id) => {
       if (store.has(id)) { return { ...entry(id), cached: true, loadMs: 0, walkMs: 0 }; }
