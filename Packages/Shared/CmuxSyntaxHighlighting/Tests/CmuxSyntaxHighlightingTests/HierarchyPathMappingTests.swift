@@ -199,6 +199,25 @@ import Testing
         #expect(rule == nil)
     }
 
+    /// Roots listed by their scopes alone (signalsListed: false) are compared by the scopes they
+    /// share with the dump, two points each: a root listing many signals the dump also has (a
+    /// testbench's clk, rst and data) does not outscore the root with both of the dump's instances.
+    @Test func scopeOnlyRootsCompareByTheirSharedScopes() async {
+        let dump: [String: [HierarchyNode]] = [
+            "tb": [.init(name: "u_a", isScope: true), .init(name: "u_b", isScope: true)]
+                + ["clk", "rst", "d0", "d1", "d2"].map { HierarchyNode(name: $0, isScope: false) },
+            "tb.u_a": [.init(name: "q", isScope: false)],
+        ]
+        let roots: [String: [HierarchyNode]] = [
+            "both": [.init(name: "u_a", isScope: true), .init(name: "u_b", isScope: true)],
+            "signals": [.init(name: "u_a", isScope: true)] + ["clk", "rst", "d0", "d1", "d2"].map { HierarchyNode(name: $0, isScope: false) },
+        ]
+        let rule = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_a.q", designRoots: roots, dumpChildren: Self.children(of: dump), signalsListed: false
+        )
+        #expect(rule == .init(designPrefix: "both", dumpPrefix: "tb", isInferred: true), "\(String(describing: rule))")
+    }
+
     @Test func aMemoryWordInfersItsDesignRoot() async {
         // An FSDB lists a memory's words by index (`mem[3]`); the design has the memory `mem`.
         // Traced from the waveform under another top name, the word still finds its root.
