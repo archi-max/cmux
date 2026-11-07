@@ -219,15 +219,43 @@ import Testing
     // to another instance (a sibling, another index or top) nor evaluates it where slang's module
     // differs; compiledOnly instead.
 
-    /// slang lacks tb.u_dut but has a sibling of the same module: not a stand-in.
-    @Test func aSiblingOfTheSameModuleIsNoStandIn() async throws {
+    /// slang lacks tb.u_dut; tb's one child of module dut (u_other) stands for it, as the KDB's tb
+    /// has one too: matched by unique module type, evaluated, never exact.
+    @Test func aLoneChildOfTheModuleMatchesByModuleType() async throws {
         let design = Design(models: [
             "tb": Self.inst("tb", ["clk"]), "tb.u_other": Self.inst("dut", ["clk"]), "tb.u_other.u_core": Self.inst("core", ["x"]),
         ], tops: ["tb"])
         let kdb = Self.kdb([
             ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
         ])
+        let got = try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb)
+        guard case .approximate(let path, _, _, let differences) = got else {
+            Issue.record("not evaluated: \(got)")
+            return
+        }
+        #expect(path == "tb.u_other.u_core.x")
+        #expect(differences.contains(.matchedByModuleType(compiled: "tb.u_dut", slang: "tb.u_other")), "\(differences)")
+    }
+
+    /// slang lacks tb.u_dut and has two children of module dut: neither stands for it (the
+    /// reviewer's sibling case); nor when the KDB's tb has two.
+    @Test func twoSameTypeSiblingsAreNoStandIn() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.u_other": Self.inst("dut", ["clk"]), "tb.u_other.u_core": Self.inst("core", ["x"]),
+            "tb.u_spare": Self.inst("dut", ["clk"]), "tb.u_spare.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
+        ])
         #expect(try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.u_dut.u_core.x")))
+        let lone = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.u_other": Self.inst("dut", ["clk"]), "tb.u_other.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let twoCompiled = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
+            ("tb.u_dut2", "dut", "tb", ["clk"], [:]),
+        ])
+        #expect(try await resolve("tb.u_dut.u_core.x", design: lone, kdb: twoCompiled) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(twoCompiled, "tb.u_dut.u_core.x")))
     }
 
     /// VCS elaborated g[0..3]; slang only g[0]: g[3] is not g[0], for every row of it.
@@ -268,20 +296,20 @@ import Testing
         let env = ProcessInfo.processInfo.environment
         let n = Int(env["KDB_SWEEP_N"] ?? "") ?? 12, start = Int(env["KDB_SWEEP_START"] ?? "") ?? 90000
         for p in 0..<4 { for mode in 0..<6 {
-            var rows = 0, wrong = 0, other = 0, wrongToday = 0, lost = 0
+            var rows = 0, wrong = 0, other = 0, wrongToday = 0, lost = 0, byType = 0
             var bad: [String] = []
             for i in start..<(start + n) {
                 let seed = UInt64(i) &* 0x9E3779B97F4A7C15 &+ 777
                 let o = try await Self.sweepOne(seed: seed, mode: mode, perturbation: p)
-                rows += o.rows; wrong += o.wrong; other += o.other; wrongToday += o.wrongToday; lost += o.lost
+                rows += o.rows; wrong += o.wrong; other += o.other; wrongToday += o.wrongToday; lost += o.lost; byType += o.byType
                 if bad.count < 8 { bad += o.samples.prefix(8 - bad.count) }
             }
-            print("KDB SWEEP p\(p) mode \(mode): rows \(rows) wrong \(wrong) otherModule evaluated \(other) | without the KDB: wrong \(wrongToday) | lost (right without the KDB, not evaluated with it) \(lost)")
+            print("KDB SWEEP p\(p) mode \(mode): rows \(rows) wrong \(wrong) otherModule evaluated \(other) | without the KDB: wrong \(wrongToday) | lost (right without the KDB, not evaluated with it) \(lost) | matched by unique module type \(byType)")
             #expect(wrong == 0 && other == 0, "p\(p) mode \(mode): \(wrong) wrong, \(other) evaluated in another module: \(bad)")
         } }
     }
 
-    struct SweepOut { var rows = 0, wrong = 0, other = 0, wrongToday = 0, lost = 0; var samples: [String] = [] }
+    struct SweepOut { var rows = 0, wrong = 0, other = 0, wrongToday = 0, lost = 0, byType = 0; var samples: [String] = [] }
 
     static func sweepOne(seed: UInt64, mode: Int, perturbation: Int) async throws -> SweepOut {
         let g = InferenceSweepTests.generate(seed: seed, mode: mode)
@@ -333,8 +361,19 @@ import Testing
                 default: return nil
                 }
             }
-            let withKDB = evaluated(try await run(kdb))
-            if let p = withKDB {
+            let outcome = try await run(kdb)
+            let withKDB = evaluated(outcome)
+            var labelled = false
+            if case .approximate(_, _, _, let differences) = outcome {
+                labelled = differences.contains { if case .matchedByModuleType = $0 { return true } else { return false } }
+            }
+            if labelled { o.byType += 1 }
+            // p3: the renamed instance is the design's own (slang names it changed_r): evaluated there
+            // only when labelled as matched by unique module type.
+            let renamedPath = perturbation == 3 && leaf.design.hasPrefix(changed + ".") ? changed + "_r" + leaf.design.dropFirst(changed.count) : nil
+            if let p = withKDB, labelled, p == renamedPath {
+                // right
+            } else if let p = withKDB {
                 if perturbation == 2, p == leaf.design, leaf.design.hasPrefix(changed + ".") {
                     o.other += 1
                     if o.samples.count < 3 { o.samples.append("OTHER MODULE seed \(seed) mode \(mode) p\(perturbation): \(leaf.dump) -> \(p) (\(changed) is mX)") }
