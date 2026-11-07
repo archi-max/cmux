@@ -5500,5 +5500,27 @@
       "es": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required.",
       "ko": "A listing location and its address in parentheses: invariant notation in this locale. The translated entry is still required."
     }
+  },
+  "waveformTrace.loads.role.condition": {
+    "source": "condition",
+    "identityLocales": {
+      "fr": {
+        "reason": "Condition is the standard French word for this label (an if/case condition). The translated French entry is still required.",
+        "values": [
+          "condition"
+        ]
+      }
+    }
+  },
+  "waveformTrace.loads.role.index": {
+    "source": "index",
+    "identityLocales": {
+      "fr": {
+        "reason": "Index is the standard French word for an array index. The translated French entry is still required.",
+        "values": [
+          "index"
+        ]
+      }
+    }
   }
 }
