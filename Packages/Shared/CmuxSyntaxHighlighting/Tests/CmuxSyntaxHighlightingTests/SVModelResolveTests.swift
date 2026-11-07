@@ -239,6 +239,39 @@ import Testing
             == .signal(designPath: "tb.u_dut.u_core1.u_a.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
     }
 
+    static func scopes(_ names: [String]) -> [HierarchyNode] { names.map { HierarchyNode(name: $0, isScope: true) } }
+    static func bits(_ names: [String]) -> [HierarchyNode] { names.map { HierarchyNode(name: $0, isScope: false, width: 1) } }
+
+    /// Rules that map the row to one design path agree: a top and its own child instance tying is no tie.
+    @Test func aTopAndItsChildInstanceScoringAlikeMapTheRow() async throws {
+        let design = FakeDesign(models: [
+            "soc": Self.signals(["clk": Self.bit, "rst": Self.bit]), "soc.u_mem": Self.signals(["d": Self.bit]),
+            "soc.u_core": Self.signals(["clk": Self.bit]), "soc.u_core.u_a": Self.signals(["x": Self.bit]),
+            "soc.u_core.u_b": Self.signals(["x": Self.bit]), "soc.u_core.u_c": Self.signals(["x": Self.bit]),
+        ], tops: ["soc"])
+        let dump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]),
+            "tb.dut": Self.scopes(["u_core", "u_mem"]) + Self.bits(["clk", "rst"]),
+            "tb.dut.u_core": Self.scopes(["u_a", "u_b", "u_c"]), "tb.dut.u_core.u_a": Self.bits(["x"]),
+        ]
+        #expect(try await resolve("tb.dut.u_core.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "soc.u_core.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func aTestbenchTopAndItsDutScoringAlikeMapTheRow() async throws {
+        let design = FakeDesign(models: [
+            "tb_soc": Self.signals(["clk": Self.bit, "rst": Self.bit]), "tb_soc.dut": Self.signals(["clk": Self.bit]),
+            "tb_soc.dut.u_a": Self.signals(["x": Self.bit]), "tb_soc.dut.u_b": Self.signals(["x": Self.bit]),
+            "glbl": Self.signals(["GSR": Self.bit]),
+        ], tops: ["glbl", "tb_soc"])
+        let dump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk", "rst"]),
+            "tb.dut": Self.scopes(["u_a", "u_b"]) + Self.bits(["clk"]), "tb.dut.u_a": Self.bits(["x"]),
+        ]
+        #expect(try await resolve("tb.dut.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "tb_soc.dut.u_a.x", designPrefix: "tb_soc", dumpPrefix: "tb"))
+    }
+
     @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
         let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
         #expect(roots["soc"] == [
