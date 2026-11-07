@@ -67,6 +67,7 @@
 #                                        for the export only) against cmux-sv-model's: instances, signals,
 #                                        widths, ranges, arrays, written signals and port connections;
 #                                        a second export comes from the host cache, without a seat
+#   ./run.sh trace-kdb-self-test         trace-kdb's comparison against its mutations, offline
 #   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
 #                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
 #                                        given; its models of the trace fixtures equal trace/models
@@ -302,21 +303,37 @@ case "${1:-}" in
     shift
     if [ $# -lt 3 ]; then echo "trace-kdb: needs <ssh-host> <remote dump.fsdb or simv.daidir> <slang model.json>"; exit 2; fi
     # The KDB design model (npi-model.py through npi-model.sh, one export holding a Verdi seat for
-    # seconds) against cmux-sv-model's of the same design: instances, signals, widths, writes, port
-    # connections. Exported twice into a cache of the check's own: the second is the cache's (no seat).
+    # seconds) against cmux-sv-model's of the same design (trace-kdb/compare.py), and compare.py's
+    # self-test on the pair. Exported twice into a cache of the check's own: the second is the cache's
+    # (no seat; the first's load_design must not have changed the key). The remote scratch folder is
+    # removed however the check ends.
     V="$ROOT/Resources/vaporview/verdi-trace"
-    S=$(ssh "$1" 'umask 077; mktemp -d /tmp/cmux-trace-kdb.XXXXXX') || exit 1
-    scp -q "$V/npi-model.sh" "$V/npi-model.py" "$1:$S/" || { ssh "$1" "rm -rf '$S'"; exit 1; }
+    KDB_HOST=$1
+    S=$(ssh "$KDB_HOST" 'umask 077; mktemp -d /tmp/cmux-trace-kdb.XXXXXX') || exit 1
+    kdb_cleanup() { ssh "$KDB_HOST" "rm -rf '$S'" || true; [ -n "${KEEP_OUT:-}" ] || rm -rf "$OUT"; }
+    trap kdb_cleanup EXIT
+    scp -q "$V/npi-model.sh" "$V/npi-model.py" "$KDB_HOST:$S/"
     for run in 1 2; do
-      ssh "$1" "mkdir -p '$S/w$run' && cp '$S/npi-model.sh' '$S/npi-model.py' '$S/w$run/' && CMUX_KDB_CACHE='$S/cache' bash -l '$S/w$run/npi-model.sh' '$S/w$run' '$2' --print" > "$OUT/trace-kdb.$run" || true
+      ssh "$KDB_HOST" "mkdir -p '$S/w$run' && cp '$S/npi-model.sh' '$S/npi-model.py' '$S/w$run/' && CMUX_KDB_CACHE='$S/cache' bash -l '$S/w$run/npi-model.sh' '$S/w$run' '$2' --print" > "$OUT/trace-kdb.$run" || true
       head -1 "$OUT/trace-kdb.$run" | tee "$OUT/trace-kdb.export$run"
+      if ! grep -q '"ok": *true' "$OUT/trace-kdb.export$run"; then
+        echo "FAIL export $run: $(head -c 400 "$OUT/trace-kdb.export$run")"
+        echo "TRACE KDB CHECKS FAILED"
+        exit 1
+      fi
     done
-    ssh "$1" "rm -rf '$S'"
     sed -n 2p "$OUT/trace-kdb.1" > "$OUT/trace-kdb.json"
     sed -n 2p "$OUT/trace-kdb.2" > "$OUT/trace-kdb.cached.json"
     python3 "$HERE/trace-kdb/compare.py" "$OUT/trace-kdb.json" "$3" "$(cat "$OUT/trace-kdb.export1")" \
       "$OUT/trace-kdb.cached.json" "$(cat "$OUT/trace-kdb.export2")" | tee "$OUT/trace-kdb.log"
-    grep -q '^TRACE KDB CHECKS PASSED' "$OUT/trace-kdb.log"
+    python3 "$HERE/trace-kdb/compare.py" --self-test "$OUT/trace-kdb.json" "$3" | tee -a "$OUT/trace-kdb.log"
+    grep -q '^TRACE KDB CHECKS PASSED' "$OUT/trace-kdb.log" && grep -q '^TRACE KDB SELF-TEST PASSED' "$OUT/trace-kdb.log"
+    ;;
+  trace-kdb-self-test)
+    # compare.py's self-test offline (no host, no seat): it passes on a saved export and its slang
+    # model (trace-kdb/fixture), and fails on each of its mutations of the export.
+    python3 "$HERE/trace-kdb/compare.py" --self-test "$HERE/trace-kdb/fixture/kdb.json" "$HERE/trace-kdb/fixture/slang.json" | tee "$OUT/trace-kdb-self-test.log"
+    grep -q '^TRACE KDB SELF-TEST PASSED' "$OUT/trace-kdb-self-test.log"
     ;;
   trace-smoke)
     mkdir -p "$OUT/smoke/models" "$OUT/smoke/dumps" "$OUT/smoke/designs"
