@@ -796,6 +796,49 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(aliases?["oldAsked"] as? Int == 1 && aliases?["old"] as? Int == 0,
            "aliasHints: an older helper is asked once, not for every chunk (\(String(describing: aliases?["oldAsked"])) asked, \(String(describing: aliases?["old"])) sent)")
 
+    // A 1-bit clock's edges are SystemVerilog's, through helper v2 (whose rise/fall test the new
+    // bit only) as through the whole history (the VCD provider): posedge 0->1, 0->x, 0->z, x->1,
+    // z->1; negedge 1->0, 1->x, 1->z, x->0, z->0; x<->z is no edge. Every pair of 0/1/x/z, there
+    // and back, at the transition, just before and after it, and from the dump's start.
+    let svEdges = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock, ui = window.cmuxTraceUI;
+      const clk = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'clk'], true);
+      const pos = new Set(['01', '0x', '0z', 'x1', 'z1']), neg = new Set(['10', '1x', '1z', 'x0', 'z0']);
+      const sv = (a, b, edge) => edge === 'PosEdge' ? pos.has(a + b) : edge === 'NegEdge' ? neg.has(a + b) : pos.has(a + b) || neg.has(a + b);
+      const expected = (hist, time, edge) => {
+        let at = null;
+        for (let i = 1; i < hist.length; i++) { if (hist[i][0] <= time && hist[i][1] !== hist[i - 1][1] && sv(hist[i - 1][1], hist[i][1], edge)) { at = hist[i][0]; } }
+        return at;
+      };
+      const cases = [];
+      for (const a of '01xz') { for (const b of '01xz') {
+        for (const time of [9, 10, 11]) { cases.push({ name: a + '->' + b + ' @' + time, hist: [[0, a], [10, b]], time }); }
+        cases.push({ name: a + '->' + b + '->' + a + ' @25', hist: [[0, a], [10, b], [20, a]], time: 25 });
+        cases.push({ name: a + '->' + b + '->' + a + ' @19', hist: [[0, a], [10, b], [20, a]], time: 19 });
+      } cases.push({ name: 'start ' + a, hist: [[0, a]], time: 5 }); }
+      const wrong = [], ok = { v2: 0, plain: 0 };
+      const run = async (kind) => {
+        for (const c of cases) {
+          m.custom.set(clk.signalId, c.hist);
+          t.backendChanged();
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          for (const edge of ['PosEdge', 'NegEdge', 'BothEdges']) {
+            const got = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', c.time, edge);
+            const want = expected(c.hist, c.time, edge);
+            if ((got === undefined ? null : got) === want) { ok[kind]++; } else if (wrong.length < 12) { wrong.push(kind + ' ' + edge + ' ' + c.name + ': ' + got + ', not ' + want); }
+          }
+        }
+      };
+      try {
+        m.plain(); await run('plain');
+        m.install(); await run('v2');
+        return { wrong, ok, cases: cases.length * 3 };
+      } finally { m.remove(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] SV clock edges: \(String(describing: svEdges?["ok"])) of \(String(describing: svEdges?["cases"])) each")
+    expect((svEdges?["wrong"] as? [String])?.isEmpty == true && (svEdges?["cases"] as? Int ?? 0) >= 240,
+           "a 1-bit clock's edges are SystemVerilog's on helper v2 and the whole history, every 0/1/x/z pair: \(String(describing: svEdges?["wrong"]))")
+
     // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
     // whole read is capped too and only costs time; its last change is unknown.
     let refused = await call("""

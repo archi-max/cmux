@@ -1423,5 +1423,6 @@
 
   const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged, aliasHints });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
-  window.cmuxTraceUI = { rowMenuItems };
+  // prevEdge: the dump provider's, for the checks (the session of the last trace; null without one).
+  window.cmuxTraceUI = { rowMenuItems, prevEdge: (path, time, edge) => (session ? dump.prevEdge(String(path), Number(time), String(edge)) : null) };
 })();
