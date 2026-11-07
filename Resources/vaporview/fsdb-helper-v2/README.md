@@ -102,9 +102,10 @@ What is streamed, and when:
     over only as many workers as its measured cost repays.
 - Aliases: a port bound to a single net is rebuilt on every load, though it equals a stored signal (a cluster's
   clk: 6.8 s against 0.43 s). The app names candidate pairs from its design model (`aliasHints`); a pair whose 16
-  sampled windows match is answered from the stored signal at once, the whole streams are compared in the
-  background, and a pair that differs is dropped and reported (`aliasDropped`) so the page asks again. Verified
-  pairs are kept per file (`aliases.v1.json`).
+  sampled windows match has its whole streams compared in the background, and only a verified pair is answered
+  from the stored signal: until then the rebuilt row answers its own (ranged) data, never another signal's.
+  Verified pairs are kept per file (`aliases.v1.json`); one found wrong later is dropped and reported
+  (`aliasDropped`) so the page asks again.
 - *(coming)* `searchText`: value searches on rows shown as RISC-V, ASCII or alias text are formatted and matched on
   the host, with the viewer's own formatters (`formats.js`, bundled from the VaporView patch).
 

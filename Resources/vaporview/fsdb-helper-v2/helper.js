@@ -42,11 +42,11 @@
 //   aliasHints {pairs: [[rebuilt, stored], ...]} -> {accepted, refused: [{pair, why}], pending}: candidate
 //     aliases from the app's design model (single-net port bindings), as signal ids or full
 //     paths. Pairs sent while the stored signals are still being listed wait (pending; refusals
-//     then go to stats.aliases.log). free of the rebuilt signal drops its alias. A pair is used once the
-//     stored signal is loaded and 16 short windows of both match: window, valueAt, count, edge
-//     and search of the rebuilt id are then answered from the stored one (window and count
-//     entries say alias: storedId). The whole streams are compared in the background; a pair
-//     that differs is dropped and the next window/valueAt/count reply carries
+//     then go to stats.aliases.log). free of the rebuilt signal drops its alias. A pair whose 16 short
+//     windows match has its whole streams compared in the background; only once they are equal
+//     (verified) are window, valueAt, count, edge and search of the rebuilt id answered from the
+//     stored one (window and count entries say alias: storedId). Until then the rebuilt id answers
+//     its own data. A verified pair dropped later makes the next window/valueAt/count reply carry
 //     aliasDropped: [rebuiltIds] (ask for those rows again). Verified pairs are kept per file.
 //   valueAt {signalIds, t}         -> {values: [string | null], cold} (all 'x' before the first
 //     change; null = unreadable). Signals that aren't stored are read cold: a [t, t] view
@@ -687,15 +687,16 @@ function learnFloor(ms, walkMs) {
 // A port bound to a single net is rebuilt by the reader on every load (u_cluster.clk: 6.8 s
 // against 0.43 s for the stored clk it equals). The app names candidate pairs from its design
 // model (aliasHints: port bindings only; the dump has no alias map for them). A pair is used
-// once the stored signal is loaded and ALIAS_SAMPLES short windows (1/1024 of the dump each)
-// of the rebuilt one equal its own; requests for the rebuilt one are then answered from the
-// stored one (alias: its id on each answer). Meanwhile the rebuilt one loads whole in the
-// background, and the two whole streams are compared: equal -> verified (kept in the index dir,
-// used at once next time, the rebuilt copy freed); different -> dropped and logged, and the
-// next replies carry aliasDropped: [ids] so the page asks for those rows again.
+// once ALIAS_SAMPLES short windows (1/1024 of the dump each) of the rebuilt one equal the stored
+// one's, the rebuilt one loads whole in the background and the two whole streams are compared:
+// equal -> verified (kept in the index dir, used at once next time, the rebuilt copy freed), and
+// requests for the rebuilt one are then answered from the stored one (alias: its id on each
+// answer); different -> dropped and logged. Until the verdict the rebuilt row answers its own
+// data. A verified pair that is dropped later (a stale file entry) makes the next replies carry
+// aliasDropped: [ids] so the page asks for those rows again.
 const ALIASES_FILE = 'aliases.v1.json';
 const ALIAS_SAMPLES = 16;
-const aliases = new Map();  // rebuilt id -> {p, state: 'checking' | 'on' | 'verified' | 'bad', why?}
+const aliases = new Map();  // rebuilt id -> {p, state: 'checking' | 'on' (samples match, comparing) | 'verified' | 'bad', why?}
 const aliasLog = [];        // the last few drops and refusals, for stats
 let aliasDropped = [];      // ids to report on the next replies
 let aliasKnown = new Map(); // verified pairs from the index dir: rebuilt id -> stored id
@@ -712,7 +713,9 @@ function addAlias(s, p) {
   checkAlias(s, p);
   return null;
 }
-const aliasFor = (id) => { const a = aliases.get(id); return a && (a.state === 'on' || a.state === 'verified') ? a.p : null; };
+// Only a verified pair is used: until the whole streams are compared, the rebuilt row answers its
+// own data (ranged reads are cheap), never another signal's.
+const aliasFor = (id) => { const a = aliases.get(id); return a && a.state === 'verified' ? a.p : null; };
 function aliasNote(s, p, why) {
   aliasLog.push({ s, p, why }); if (aliasLog.length > 16) { aliasLog.shift(); }
   if (DEBUG) { process.stderr.write(`[helper] alias ${s} -> ${p}: ${why}\n`); }
@@ -773,7 +776,10 @@ async function checkAlias(s, p) {
     if (a.state !== 'verified') { a.state = 'verified'; saveAliases(); }
     if (!aliases.has(p)) { runTask(workerFor(s), { op: 'free', signalIds: [s] }).catch(() => {}); }
   } catch (e) {
-    if (live() && !/reopened|closed|freed/.test(String(e && e.message))) { dropAlias(s, `check failed: ${(e && e.message) || e}`); }
+    const m = String(e && e.message);
+    // (the rebuilt row's load was dropped under the check: no verdict, so the pair goes, unused,
+    // and a later hint checks it again)
+    if (live() && /freed/.test(m)) { aliases.delete(s); aliasNote(s, p, 'freed during the comparison'); } else if (live() && !/reopened|closed/.test(m)) { dropAlias(s, `check failed: ${m}`); }
   } finally {
     for (const sp of req.splits || []) { sp.reqs.delete(req); }
   }
