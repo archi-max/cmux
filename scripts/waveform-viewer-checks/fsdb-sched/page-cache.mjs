@@ -105,8 +105,43 @@ function page(rows, L, R, stop) {
   wc.reset && wc.reset();
 }
 
-// M6: a pan onto prefetched tiles, then idle.
+// M6: a pan onto prefetched tiles, then idle; then the helper answers. On a virtual clock (setTimeout
+// and performance.now replaced), so nothing depends on wall-clock timing.
 {
+  const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, perf: globalThis.performance };
+  let vnow = 1e6, tid = 0;
+  const timers = new Map();
+  globalThis.setTimeout = (fn, ms = 0, ...a) => { const id = { tid: ++tid, unref() { return this; }, ref() { return this; }, hasRef() { return true; } }; timers.set(id, { at: vnow + Math.max(0, ms), fn: () => fn(...a) }); return id; };
+  globalThis.clearTimeout = (id) => { timers.delete(id); };
+  Object.defineProperty(globalThis, 'performance', { value: { now: () => vnow }, configurable: true, writable: true });
+  const drain = async () => { for (let k = 0; k < 20; k++) { await new Promise((r) => setImmediate(r)); } };  // (replies decode via streams)
+  // Runs every timer due up to vnow + ms, in time order; after each one, check().
+  const advance = async (ms, check) => {
+    const end = vnow + ms;
+    for (;;) {
+      let next = null;
+      for (const [id, t] of timers) { if (t.at <= end && (!next || t.at < next[1].at)) { next = [id, t]; } }
+      if (!next) { break; }
+      timers.delete(next[0]); vnow = Math.max(vnow, next[1].at);
+      next[1].fn(); await drain(); check && check();
+    }
+    vnow = end;
+  };
+  const zlib = await import('node:zlib');
+  let answer = false;
+  const reply = (m) => {
+    if (!answer || m.cmd !== 'window') { return; }
+    const signals = [], bins = [];
+    for (const x of m.signals) {
+      const rec = Buffer.alloc(9); rec.writeBigUInt64LE(BigInt(m.t0), 0); rec[8] = 0x30;
+      const z = zlib.deflateRawSync(rec); bins.push(z);
+      signals.push({ signalId: x.signalId, exact: true, count: 1, bytes: z.length, bucketBytes: 0, min: 0, max: 1 });
+    }
+    setImmediate(() => wc.handleReply({ reply: { id: m.id, result: { signals } }, bin: new Uint8Array(Buffer.concat(bins)) }));
+  };
+  const send0 = g.vscodeWrapper.sendV2Request;
+  g.vscodeWrapper.sendV2Request = (m) => { g.sent.push(m); reply(m); };
+
   const L = 400000, R = 500000, W = R - L;
   const { wc } = page([{ id: 1 }], L, R, 1e6);
   wc.ensure();
@@ -116,25 +151,35 @@ function page(rows, L, R, stop) {
   wc.ensure();
   const vis = wc.wantedTiles().filter((t) => t.priority === 0);
   const s1 = wc.signals.get(1);
-  const asked = () => vis.filter((t) => [...wc.inflight.values()].some((f) => f.priority === 0 && f.tiles.some((x) => x.key === t.key))).length;
-  const drawnOrAsked = () => vis.filter((t) => s1.windows.has(t.key) || [...wc.inflight.values()].some((f) => f.tiles.some((x) => x.key === t.key))).length;
+  const inflightHas = (t, vis0) => [...wc.inflight.values()].some((f) => (!vis0 || f.priority === 0) && f.tiles.some((x) => x.key === t.key));
+  const asked = () => vis.filter((t) => inflightHas(t, true)).length;
   check(pre.length > 0 && asked() === vis.filter((t) => !s1.windows.has(t.key)).length,
     `after a pan onto prefetched tiles, every visible tile not drawn is asked for as visible: ${asked()} of ${vis.filter((t) => !s1.windows.has(t.key)).length} (${g.sent.filter((m) => m.cmd === 'window' && !m.prefetch).length} visible requests)`);
-  // Nothing answers, so every request expires. A visible one marks the row slow, which is the
-  // existing backoff; the row then waits and an ensure is scheduled. Sampled every 10 ms over 2.5 s,
-  // a visible tile must never stay un-asked for more than 50 ms outside a backoff (the scheduled
-  // ensure after a backoff takes a few ms, so a single sample there is not a miss).
-  let worst = vis.length, since = null;
-  for (let k = 0; k < 250; k++) {
-    await wait(10);
-    const now = performance.now();
-    const ok = s1.slowUntil > now ? vis.length : drawnOrAsked();
-    if (ok === vis.length) { since = null; continue; }
-    if (since === null) { since = now; }
-    if (now - since > 50) { worst = Math.min(worst, ok); }
-  }
-  check(worst === vis.length, `... and with requests expiring and no user action, no visible tile is left un-asked: at worst ${worst} of ${vis.length}`);
+  // Nothing answers for 120 s (virtual), so every request expires; a visible expiry backs the row
+  // off (slow()) and schedules an ensure at its end (+5 ms). After every timer, a visible tile must
+  // be drawn, in flight, or waiting on a timer due by the end of the row's backoff + 10 ms.
+  let bad = 0, firstBad = '';
+  const invariant = () => {
+    const by = Math.max(vnow, s1.slowUntil) + 10;
+    const reask = [...timers.values()].some((t) => t.at <= by);
+    for (const t of vis) {
+      if (s1.windows.has(t.key) || inflightHas(t, false)) { continue; }
+      if (reask) { continue; }
+      bad++; if (!firstBad) { firstBad = `${t.key} at +${Math.round(vnow - 1e6)} ms (slowUntil ${Math.round(s1.slowUntil - vnow)} ms ahead, ${timers.size} timers)`; }
+    }
+  };
+  await advance(120000, invariant);
+  check(!bad, `... and with requests expiring and no user action, no visible tile is left un-asked (virtual 120 s, after every timer): ${bad} misses${firstBad ? ', first ' + firstBad : ''}`);
+  // Then the helper answers: the row loads, with no user action.
+  answer = true;
+  const t0 = vnow;
+  let loadedAt = null;
+  await advance(120000, () => { if (loadedAt === null && vis.every((t) => s1.windows.has(t.key))) { loadedAt = vnow; } });
+  check(loadedAt !== null, `... and once the helper answers, the row loads by itself: after ${loadedAt === null ? 'never (120 s)' : Math.round(loadedAt - t0) + ' ms'} (virtual)`);
   wc.reset && wc.reset();
+  g.vscodeWrapper.sendV2Request = send0;
+  globalThis.setTimeout = real.setTimeout; globalThis.clearTimeout = real.clearTimeout;
+  Object.defineProperty(globalThis, 'performance', { value: real.perf, configurable: true, writable: true });
 }
 
 // L16: prefetch replies don't feed the visible timeout.
