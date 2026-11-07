@@ -919,7 +919,9 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     while (performance.now() - t0 < 9000) { await ask(h, all, (k++ % 50) * 10000); await wait(250); if (performance.now() - t0 > 6000 && lateNav === 0) { lateNav = navs(log).length; } }
     const n = navs(log).length, st = (await h.send('stats').reply).result.warm;
     h.close();
-    check(n <= 4, `an oversized warm cohort is shrunk, not rebuilt as is: ${n} reader starts in 9 s (one per check before)`);
+    // (on failure: each start's set size and the backoff reasons, to tell a timing flake from a churn)
+    const seq = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.op === 'load').map((c) => c.ids.length);
+    check(n <= 4, `an oversized warm cohort is shrunk, not rebuilt as is: ${n} reader starts in 9 s (one per check before)${n > 4 ? `; loads of ${JSON.stringify(seq)}, backoff ${JSON.stringify(st && st.backoff)}` : ''}`);
     check(n === lateNav && st && st.ready.length > 0, `... and then left alone: ${n - lateNav} starts in the last 3 s, ready set of ${st && st.ready.length}`);
   }
   // (b) A warm reader whose init fails is not restarted at once, over and over: its cohort backs off.
