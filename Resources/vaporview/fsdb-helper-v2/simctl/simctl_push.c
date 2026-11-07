@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT
  * simctl push (included by simctl_vpi.c): transactions streamed over the pipe to a simctl_port, held here in a
  * queue per port name until the port's driver pulls them with $simctl_next (simctl_tb.sv). The queues are
- * the library's memory, so a checkpoint keeps them and a restore brings them back with the simulation.
+ * the library's memory, so a checkpoint keeps them and a restore brings them back with the simulation; a
+ * forksave image carries them too, and a run restored from it (simv -r) still pulls them.
  *
  * B id port n how1 n1 hex1 ... how_n n_n hex_n     queue n transactions (the packed format of tb.js)
  * $simctl_next(NAME, how, n, v, ok)                pop the next one for port NAME: ok = 1 and how/n/v set, or
@@ -39,7 +40,10 @@ static void push_req(long id, char **tok, int nt) {
 }
 static void put_int(vpiHandle h, int v) { s_vpi_value x; x.format = vpiIntVal; x.value.integer = v; vpi_put_value(h, &x, NULL, vpiNoDelay); }
 static void put_hex(vpiHandle h, const char *hx) { s_vpi_value x; x.format = vpiHexStrVal; x.value.str = (PLI_BYTE8 *)hx; vpi_put_value(h, &x, NULL, vpiNoDelay); }
-PLI_INT32 simctl_next_calltf(PLI_BYTE8 *ud) { (void)ud; if (fs_child) return 0;
+/* Served everywhere, also in a save child and in a run restored from a forksave (whose library is otherwise inert):
+ * it only reads the queues in this process's memory and sets the caller's arguments, so the child's step and a
+ * restored run drive exactly what the parent would (re-review 3, M-p2). */
+PLI_INT32 simctl_next_calltf(PLI_BYTE8 *ud) { (void)ud;
   vpiHandle call = vpi_handle(vpiSysTfCall, NULL), it = call ? vpi_iterate(vpiArgument, call) : NULL, a[5] = { 0 };
   int k = 0;
   if (it) { while (k < 5 && (a[k] = vpi_scan(it))) k++; if (k == 5) vpi_release_handle(it); }

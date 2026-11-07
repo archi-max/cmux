@@ -22,19 +22,29 @@
  * A process restored from such a save (simv -r <file>) carries the child's state: its library stays inert.
  *
  * Hardening (review M-a, L-a..L-d, M5, M6):
- *   - the child saves to <file>.simctl-<pid>.tmp and, only once that image checks out, renames its .FILES and
- *     then the image to <file> (the rename is the commit point; a renamed image restores: measured). So a
- *     failed re-save never leaves or reads an old <file> as its result: its exit status 0 is this save's own
- *     completion record;
- *   - a failed or timed-out save's temporaries (<tmp>, <tmp>.FILES, <tmp>_tmp.save_in_progress) are removed;
+ *   - one commit (re-review 2, M-new): each save is written into its own folder, <file>.simctl.d/<pid>/ (img,
+ *     img.FILES), and <file> / <file>.FILES are fixed symlinks to <file>.simctl.d/cur/img and cur/img.FILES.
+ *     Once the image checks out, the child points cur at its folder with one rename of a fresh symlink over cur
+ *     (atomic), then removes the folder cur pointed at before. So whatever ends a save, at any step, <file> and
+ *     <file>.FILES are always the image and file list of one and the same save (the old one or the new one), and
+ *     the exit status 0 is this save's own completion record. A name that is not such a symlink yet (a first
+ *     save, or a file from elsewhere) is turned into one before the commit;
+ *   - a second save to a name with a save of this process still in flight is refused;
+ *   - to move or copy a save, take all three: <file>, <file>.FILES and <file>.simctl.d (the links are relative;
+ *     copy with the links as links, e.g. cp -a). <file> and <file>.FILES alone are just links (re-review 3, L1);
+ *   - a failed or timed-out save's folder is removed;
  *   - at the deadline one outcome wins: timeout only if the kill is what ended the child;
  *   - after a kill the parent waits at most FS_KILL_WAIT_MS for the child (never blocks on a stuck one);
  *   - a simulation that ends with saves out (quit, $finish) ends them and reports each once, simExited;
  *   - refused when the simulator runs more than one thread (fork copies only the calling thread);
- *   - in the child every inherited descriptor >= 3 that is open for writing is pointed at /dev/null right after
- *     the fork, so nothing the child does can write into the parent's dumps, logs or sockets. Read-only ones are
- *     kept: $save reads the build's database through an inherited one (simv.daidir/dsa.sdb; with it replaced,
- *     $save fails with Error-[VFS_SDB_ERROR]: measured). */
+ *   - in the child every inherited descriptor >= 3 that is open for writing gets its own open file description
+ *     right after the fork (re-review 2, H-new): a regular file is opened again by its path, same access mode,
+ *     no O_TRUNC/O_APPEND, at the same offset; anything else (pipe, socket, device) is pointed at /dev/null. So
+ *     the child never moves the parent's file offsets, the child's own stdio buffers are never flushed into the
+ *     parent's files (no fflush(NULL) in the child), and $save records each $fopen file by its real path and
+ *     offset, so a restored run goes on writing it (with /dev/null there, the restored run wrote nothing:
+ *     measured). Read-only ones are kept: $save reads the build's database through an inherited one
+ *     (simv.daidir/dsa.sdb; with it replaced, $save fails with Error-[VFS_SDB_ERROR]: measured). */
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <ftw.h>
@@ -42,19 +52,72 @@
 
 #define FS_MAX 2
 static pid_t fs_child_pid;
+static int fs_nsave;   /* forksaves accepted by this process (the test hook below counts them) */
+/* test hook, inert unless SIMCTL_FORKSAVE_TEST_DIE=commit:<n>: the n-th save of the process _exit(9)s in the middle
+ * of its commit, as a crash there would (review.js forkfopen) */
+static int fs_test_die(void) { const char *e = getenv("SIMCTL_FORKSAVE_TEST_DIE"); return e && !strncmp(e, "commit:", 7) && atoi(e + 7) == fs_nsave; }
 static struct { pid_t pid; char *file; double t0; } fs_out[FS_MAX];
 static pid_t fs_zomb[16]; static int nzomb;   /* killed children not yet collected (L-d): reaped later */
-static char fs_tmp[1200];                     /* the child's save name: <file>.simctl-<pid>.tmp */
-static void fs_tmpname(char *out, size_t n, const char *file, pid_t pid) { snprintf(out, n, "%s.simctl-%d.tmp", file, (int)pid); }
+static char fs_tmp[1200];                     /* the child's save name: <file>.simctl.d/<pid>/img */
+static void fs_gendir(char *out, size_t n, const char *file, pid_t pid) { snprintf(out, n, "%s.simctl.d/%d", file, (int)pid); }
+static void fs_tmpname(char *out, size_t n, const char *file, pid_t pid) { snprintf(out, n, "%s.simctl.d/%d/img", file, (int)pid); }
 static int rm_one(const char *p, const struct stat *sb, int fl, struct FTW *ftw) { (void)sb; (void)fl; (void)ftw; remove(p); return 0; }
 static void rm_tree(const char *p) { struct stat sb; if (lstat(p, &sb) == 0) nftw(p, rm_one, 16, FTW_DEPTH | FTW_PHYS); }
 /* a failed, killed or abandoned save leaves nothing behind */
 static void fs_cleanup(const char *file, pid_t pid) {
-  char t[1200], x[1300];
-  fs_tmpname(t, sizeof t, file, pid);
-  rm_tree(t);
-  snprintf(x, sizeof x, "%s.FILES", t); rm_tree(x);
-  snprintf(x, sizeof x, "%s_tmp.save_in_progress", t); rm_tree(x);
+  char g[1200], x[1300];
+  fs_gendir(g, sizeof g, file, pid);
+  char cur[1300]; snprintf(x, sizeof x, "%s.simctl.d/cur", file);
+  ssize_t k = readlink(x, cur, sizeof cur - 1);
+  if (k > 0) { cur[k] = 0; if (atoi(cur) == (int)pid) return; }   /* it got as far as its commit: it is <file> now */
+  rm_tree(g);
+  snprintf(x, sizeof x, "%s.simctl.d/cur.%d", file, (int)pid); unlink(x);
+}
+/* <link> is a symlink to <to>, or made one (a fresh symlink renamed over whatever is there) */
+static int fs_link(const char *link, const char *to) {
+  char got[1300]; ssize_t k = readlink(link, got, sizeof got - 1);
+  if (k > 0) { got[k] = 0; if (!strcmp(got, to)) return 0; }
+  char t[1300]; snprintf(t, sizeof t, "%s.simctl-%d.ln", link, (int)getpid());
+  unlink(t);
+  if (symlink(to, t) != 0) return -1;
+  struct stat sb;
+  if (lstat(link, &sb) == 0 && S_ISDIR(sb.st_mode)) rm_tree(link);   /* rename can't replace a folder */
+  if (rename(t, link) != 0) { unlink(t); return -1; }
+  return 0;
+}
+/* the child: its own open file description for each inherited writable descriptor >= 3 (H-new, M6) */
+static char fs_warn[2048]; static size_t fs_nwarn;   /* the child: files it could not reopen (L3), for its log */
+static void fs_private_fds(void) {
+  int dn = open("/dev/null", O_RDWR);
+  DIR *fd_d = opendir("/proc/self/fd"); struct dirent *fe; int fds[1024], nfd = 0, dfd = fd_d ? dirfd(fd_d) : -1;
+  while (fd_d && (fe = readdir(fd_d)) && nfd < 1024) {
+    int k = atoi(fe->d_name);
+    if (!isdigit((unsigned char)fe->d_name[0]) || k < 3 || k == dn || k == dfd) continue;
+    int fl = fcntl(k, F_GETFL);
+    if (fl == -1 || (fl & O_ACCMODE) == O_RDONLY) continue;   /* read-only: kept ($save reads the database) */
+    fds[nfd++] = k;
+  }
+  if (fd_d) closedir(fd_d);
+  for (int i = 0; i < nfd; i++) {
+    int k = fds[i], fl = fcntl(k, F_GETFL), n = -1;
+    struct stat sb; char lp[64], tp[4096];
+    snprintf(lp, sizeof lp, "/proc/self/fd/%d", k);
+    ssize_t m = readlink(lp, tp, sizeof tp - 1);
+    if (m > 0 && tp[0] == '/' && fstat(k, &sb) == 0 && S_ISREG(sb.st_mode)) {
+      tp[m] = 0;
+      off_t at = lseek(k, 0, SEEK_CUR);   /* the shared offset, read before anything moves it */
+      n = open(tp, (fl & O_ACCMODE));
+      struct stat nb;
+      if (n >= 0 && (fstat(n, &nb) != 0 || nb.st_ino != sb.st_ino || nb.st_dev != sb.st_dev || at < 0 || lseek(n, at, SEEK_SET) != at)) { close(n); n = -1; }
+    }
+    if (n >= 0) { dup2(n, k); close(n); }
+    else {
+      if (m > 0 && tp[0] == '/' && S_ISREG(sb.st_mode) && fs_nwarn < sizeof fs_warn - 1)   /* a file it could not reopen */
+        fs_nwarn += snprintf(fs_warn + fs_nwarn, sizeof fs_warn - fs_nwarn, "simctl-forksave: warning: %s (fd %d) could not be reopened: a run restored from this save writes nothing to it\n", tp, k);
+      if (dn >= 0) dup2(dn, k);
+    }
+  }
+  if (dn >= 0) close(dn);
 }
 static int fs_threads(void) {
   FILE *f = fopen("/proc/self/status", "r"); char l[256]; int n = -1;
@@ -139,23 +202,48 @@ static void fs_end_all(void) {
 static PLI_INT32 fs_exit(p_cb_data d) {
   (void)d;
   if (getpid() != fs_child_pid) return 0;
-  fflush(NULL);
+  fflush(stdout); fflush(stderr);   /* the child's own log only: never its copies of the parent's file buffers */
   for (;;) { pid_t r = waitpid(-1, NULL, 0); if (r < 0 && errno == EINTR) continue; if (r < 0) break; }
   struct stat sb;
   if (stat(fs_tmp, &sb) != 0 || sb.st_size <= 0) _exit(2);
   char lf[1200]; snprintf(lf, sizeof lf, "%s.log", fs_file);
   FILE *f = fopen(lf, "r");
   if (f) { char line[1024]; while (fgets(line, sizeof line, f)) if (strstr(line, "[VCS_SAVE_RESTORE]") && strstr(line, "Error")) { fclose(f); _exit(3); } fclose(f); }
-  /* commit: this save's .FILES, then the image itself (the image's rename is the commit point) */
-  char tf[1300], ff[1300];
-  snprintf(tf, sizeof tf, "%s.FILES", fs_tmp); snprintf(ff, sizeof ff, "%s.FILES", fs_file);
-  if (stat(tf, &sb) == 0) { rm_tree(ff); if (rename(tf, ff) != 0) _exit(4); }
-  if (rename(fs_tmp, fs_file) != 0) _exit(4);
+  /* commit (M-new): <file> and <file>.FILES are (made) the fixed links through cur; then cur is pointed at this
+   * save's folder in one rename; then the folder it pointed at before goes */
+  char dd[1200], x[1500], to[1300], old[1300] = "", base[1100];
+  const char *sl = strrchr(fs_file, '/'); snprintf(base, sizeof base, "%s", sl ? sl + 1 : fs_file);
+  snprintf(dd, sizeof dd, "%s.simctl.d", fs_file);
+  snprintf(x, sizeof x, "%s.FILES", fs_tmp);
+  if (stat(x, &sb) != 0 && mkdir(x, 0755) != 0) _exit(4);   /* no .FILES from $save: an empty one keeps the pair whole */
+  snprintf(to, sizeof to, "%s.simctl.d/cur/img", base); if (fs_link(fs_file, to) != 0) _exit(4);
+  if (fs_test_die()) _exit(9);
+  snprintf(x, sizeof x, "%s.FILES", fs_file); snprintf(to, sizeof to, "%s.simctl.d/cur/img.FILES", base); if (fs_link(x, to) != 0) _exit(4);
+  snprintf(x, sizeof x, "%s/cur", dd);
+  ssize_t k = readlink(x, old, sizeof old - 1); old[k > 0 ? k : 0] = 0;
+  char me[32], tl[1500]; snprintf(me, sizeof me, "%d", (int)getpid()); snprintf(tl, sizeof tl, "%s/cur.%d", dd, (int)getpid());
+  unlink(tl);
+  if (symlink(me, tl) != 0 || rename(tl, x) != 0) { unlink(tl); _exit(4); }   /* the commit point */
+  /* the old folder, and any a crashed save left after its own commit (L2): every <pid> folder but this one whose
+   * process is gone (a live one may be another simulation's save in flight) */
+  if (*old && strcmp(old, me) && !strchr(old, '/')) { snprintf(x, sizeof x, "%s/%s", dd, old); rm_tree(x); }   /* committed before: done */
+  DIR *gd = opendir(dd); struct dirent *ge;
+  while (gd && (ge = readdir(gd))) {
+    const char *nm = ge->d_name; int digits = *nm != 0;
+    for (const char *c = nm; *c; c++) if (!isdigit((unsigned char)*c)) digits = 0;
+    if (!digits || !strcmp(nm, me)) continue;
+    pid_t gp = (pid_t)atoi(nm);
+    if (gp > 0 && (kill(gp, 0) == 0 || errno == EPERM)) continue;   /* alive */
+    snprintf(x, sizeof x, "%s/%s", dd, nm); rm_tree(x);
+  }
+  if (gd) closedir(gd);
   _exit(0);
 }
 static PLI_INT32 fs_trigger(p_cb_data d) {
   (void)d;
   if (getpid() != fs_child_pid) return 0;      /* restored from the save: not the child */
+  char gd[1200], sd[1300]; fs_gendir(gd, sizeof gd, fs_file, fs_child_pid); snprintf(sd, sizeof sd, "%s.simctl.d", fs_file);
+  if ((mkdir(sd, 0755) != 0 && errno != EEXIST) || mkdir(gd, 0755) != 0) _exit(4);
   s_vpi_value v; v.format = vpiStringVal; v.value.str = fs_tmp; vpi_put_value(fs_name_h, &v, NULL, vpiNoDelay);
   s_vpi_value g; g.format = vpiIntVal; vpi_get_value(fs_go_h, &g); g.value.integer = !g.value.integer; vpi_put_value(fs_go_h, &g, NULL, vpiNoDelay);
   vpiHandle h = after(1, fs_exit); if (h) vpi_release_handle(h);   /* $save runs as the last event of this step */
@@ -167,6 +255,8 @@ static void forksave(long id, const char *file, uint64_t t) {
   if (strlen(file) >= sizeof fs_file || strlen(file) >= 1024) { reply_err(id, "forksave: file name too long (limit 1023)"); return; }
   if (!fs_name_h) { fs_name_h = vpi_handle_by_name("simctl_saver.name", NULL); fs_go_h = vpi_handle_by_name("simctl_saver.go", NULL); }
   if (!fs_name_h || !fs_go_h) { reply_err(id, "forksave: this build has no simctl_saver top (compile simctl_saver.sv with -top simctl_saver)"); return; }
+  for (int i = 0; i < FS_MAX; i++)
+    if (fs_out[i].pid && !strcmp(fs_out[i].file, file)) { reply_err(id, "forksave: a save to this file is in progress; try again when it has ended"); return; }
   if (fs_alive >= FS_MAX) { reply_err(id, "forksave: two saves in progress; try again when one has ended"); return; }
   int nth = fs_threads();
   if (nth != 1) {   /* fork copies only this thread: a multi-threaded simulator (e.g. -fgp) can't be saved this way */
@@ -174,6 +264,7 @@ static void forksave(long id, const char *file, uint64_t t) {
     reply_err(id, m); return;
   }
   snprintf(fs_file, sizeof fs_file, "%s", file);
+  fs_nsave++;
   fflush(NULL);
   double t0 = wall_ms();
   pid_t p = fork();
@@ -183,24 +274,11 @@ static void forksave(long id, const char *file, uint64_t t) {
     if (in_fd >= 0) close(in_fd);
     if (out_fd >= 0) close(out_fd);
     fs_tmpname(fs_tmp, sizeof fs_tmp, fs_file, fs_child_pid);
-    /* nothing inherited is written by the child: every writable descriptor >= 3 now refers to /dev/null (M6) */
-    int dn = open("/dev/null", O_RDWR);
-    if (dn >= 0) {
-      DIR *fd_d = opendir("/proc/self/fd"); struct dirent *fe; int fds[1024], nfd = 0, dfd = fd_d ? dirfd(fd_d) : -1;
-      while (fd_d && (fe = readdir(fd_d)) && nfd < 1024) {
-        int k = atoi(fe->d_name);
-        if (!isdigit((unsigned char)fe->d_name[0]) || k < 3 || k == dn || k == dfd) continue;
-        int fl = fcntl(k, F_GETFL);
-        if (fl != -1 && (fl & O_ACCMODE) == O_RDONLY) continue;   /* read-only: kept ($save reads the database) */
-        fds[nfd++] = k;
-      }
-      if (fd_d) closedir(fd_d);
-      for (int k = 0; k < nfd; k++) dup2(dn, fds[k]);
-      close(dn);
-    }
+    fs_private_fds();   /* nothing the child does moves or writes through the parent's open files (H-new, M6) */
     char lf[1200]; snprintf(lf, sizeof lf, "%s.log", fs_file);
     int o = open(lf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (o >= 0) { dup2(o, 1); dup2(o, 2); close(o); }
+    if (fs_nwarn) { ssize_t w = write(2, fs_warn, fs_nwarn > sizeof fs_warn - 1 ? sizeof fs_warn - 1 : fs_nwarn); (void)w; }
     /* the simulator's command-line channel arrives on stdin: the child must not take the parent's input */
     int nul[2]; if (pipe(nul) == 0) { dup2(nul[0], 0); close(nul[0]); /* write end kept open: no EOF */ }
     vpiHandle h = after(1, fs_trigger); if (h) vpi_release_handle(h);

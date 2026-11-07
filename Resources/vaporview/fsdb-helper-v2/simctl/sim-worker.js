@@ -30,6 +30,8 @@
 // another run are refused while a run is in flight (stop it first); a stop always reaches the run at once.
 //   time {}                                     -> {t}
 //   forksave {file}  (--no-ucli workers only)   -> {t, pid, forkMs, file}; later event {saved: pid, file, t, status, ok, bytes, timeout?, error?}; ok: the child checked the image and it is there, not empty.
+//     <file> and <file>.FILES are symlinks into <file>.simctl.d/cur (one save's pair, switched in one rename); a second save to a name in flight is refused.
+//     Move or copy all three (<file>, <file>.FILES, <file>.simctl.d; links as links, cp -a). warnings: $fopen files the save could not reopen (a restored run writes nothing to them).
 //                                                 A save without pausing: the library forks, the child $saves
 //                                                 (build with vpi/simctl_saver.sv, -top simctl_saver) at t+1 and
 //                                                 exits; restore with simv -r <file>. At most two at once.
@@ -235,6 +237,14 @@ function scanMissing(d) {
 // does not run to the end.
 const noUcli = flag('--no-ucli');
 const ucli2 = !noUcli && !flag('--no-ucli2proc');
+// L1: a forksave is three entries; <file> and <file>.FILES are links into <file>.simctl.d. Copied or moved without
+// that folder, VCS fails with a confusing "Can't restore state": say what is missing instead.
+function saveMissing(file) {
+  try { if (!fs.lstatSync(file).isSymbolicLink() || fs.existsSync(file)) return ''; } catch { return ''; }
+  return `${file} is a forksave whose folder ${path.basename(file)}.simctl.d/ is missing next to it: move or copy all three (${path.basename(file)}, ${path.basename(file)}.FILES, ${path.basename(file)}.simctl.d), links as links (cp -a)`;
+}
+{ const ri = simArgs.indexOf('-r'); const why = ri >= 0 && simArgs[ri + 1] ? saveMissing(path.resolve(RUN_CWD, simArgs[ri + 1])) : '';
+  if (why) { event('error', { message: why }); process.stderr.write(why + '\n'); process.exit(3); } }
 const args = ['-n', '10', SIMV, ...(noUcli ? [] : ['-ucli', ...(ucli2 ? ['-ucli2Proc'] : [])]), ...simArgs];
 // sh sets the hard memory limit, then execs nice, which execs the simulator (with -ucli2Proc it runs the design
 // in a child process). detached: a new session, whose process group holds all of the simulation's processes.
@@ -391,7 +401,9 @@ function onLib(m) {
     const why = m.simExited ? 'simExited: the simulation ended during the save' : m.timeout ? `still running after --forksave-timeout-ms ${FORKSAVE_MS}: ended` : m.status === 2 ? 'no image written' : m.status === 3 ? 'the simulator reported a save error (see <file>.log)'
       : m.status === 4 ? 'the checked image could not be moved to its name'
       : m.status !== 0 ? `the save child ended with status ${m.status}` : bytes > 0 ? '' : 'the image is missing or empty';
-    event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status, ok, bytes, ...(m.timeout ? { timeout: true } : {}), ...(m.simExited ? { simExited: true } : {}), ...(why ? { error: why } : {}) });
+    // files the save child could not reopen: a restored run writes nothing to them (the child logs each)
+    let warnings = []; try { warnings = fs.readFileSync(`${m.file}.log`, 'latin1').split('\n').filter((l) => l.startsWith('simctl-forksave: warning:')).map((l) => l.slice(26)); } catch { /* no log */ }
+    event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status, ok, bytes, ...(warnings.length ? { warnings } : {}), ...(m.timeout ? { timeout: true } : {}), ...(m.simExited ? { simExited: true } : {}), ...(why ? { error: why } : {}) });
     return;
   }
   const p = pending.get(m.id);
@@ -739,7 +751,8 @@ async function handle(r) {
       let ucliCmd;
       if (r.cmd === 'checkpoint') ucliCmd = 'checkpoint -add simctl';
       else if (r.cmd === 'restore') { if (!Number.isSafeInteger(r.cp) || r.cp < 0) return out({ id, error: 'restore: cp must be a checkpoint number' }); ucliCmd = `checkpoint -join ${r.cp}`; }
-      else ucliCmd = `${r.cmd === 'save' ? 'save' : 'restore'} {${scratchFile(r.file)}}`;   // brace-quoted Tcl word, charset already safe
+      else { if (r.cmd === 'restoreFile') { const why = saveMissing(scratchFile(r.file)); if (why) return out({ id, error: why }); }
+        ucliCmd = `${r.cmd === 'save' ? 'save' : 'restore'} {${scratchFile(r.file)}}`; }   // brace-quoted Tcl word, charset already safe   // brace-quoted Tcl word, charset already safe
       const s0 = performance.now();
       let res;
       try { res = await park(async () => {
