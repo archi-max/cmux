@@ -10,6 +10,7 @@ const COSTS = JSON.parse(process.env.STUB_COSTS || '{}');
 const N = Number(process.env.STUB_SIGNALS || 16);
 const TIME_END = 1000000;
 const cost = (id) => Number(COSTS[id] ?? 10);
+const COUNTS_ = JSON.parse(process.env.STUB_COUNTS || '{}');
 const BAD = new Set(JSON.parse(process.env.STUB_BAD || '[]'));
 const SLICE_MS = Number(process.env.STUB_SLICE_MS || 0);
 // STUB_FIRST_MS: a signal's first load in a worker process costs that much more (the reader
@@ -56,7 +57,9 @@ module.exports = {
     sleep(ms);
     if (BAD.has(id)) { throw new Error('unsupported encoding'); }
     fs.writeFileSync(path, 'x');
-    return { count: 1, xz: false, loadMs: ms, walkMs: 0 };
+    // STUB_COUNTS: a signal's whole change count, spread evenly over the dump (default 1 per slice)
+    const n = COUNTS_[id] ? Math.round(COUNTS_[id] * (Math.min(Number(e), TIME_END) - Number(s)) / TIME_END) : 1;
+    return { count: n, xz: false, loadMs: ms, walkMs: 0 };
   },
   cacheAdopt(id) { store.set(id, true); return { count: 2, bytes: 16 }; },
 };

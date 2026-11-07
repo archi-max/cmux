@@ -186,6 +186,19 @@ async function start(workers, costs, env = {}) {
   h.close();
 }
 
+// 12. A cheap signal whose first piece is done finishes before the first pieces of later heavy
+// signals: 50 signals added at once drew nothing for 2 s while every job's first piece ran.
+{
+  const costs = Object.fromEntries([5, 6, 7, 8, 9, 10, 11, 12].map((id) => [id, 1600]));
+  for (const id of [1, 2, 3, 4]) { costs[id] = 40; }
+  const h = await start(4, costs);
+  const rs = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((id) => h.send('window', win([id])).reply));
+  const cheap = Math.max(...rs.slice(0, 4).map((r) => r.at));
+  check(rs.every((r) => !r.error) && cheap < 120, `4 cheap signals ahead of 8 heavy ones are done within 120 ms: ${Math.round(cheap)} ms (after every first piece: ~200)`);
+  h.close();
+}
+
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
