@@ -329,17 +329,37 @@ public enum HierarchyPrefixInference {
     /// `ties`: which of the rules tying for a score wins (see `Ties`). `signalsListed: false`: some roots list
     /// their scopes alone (instances below the tops, `SVModelResolve.designRoots`), so roots with scopes compare
     /// by their scopes only (a shared clk and rst say nothing), and a row that is a dump signal matches a root
-    /// listing no signals by its scopes.
+    /// listing no signals by its scopes. `maxScoredRoots`: past that many roots below the tops, only whole
+    /// depths (the shallowest first) are scored; with `.ambiguous`, a winner that a root left unscored could
+    /// tie (its scope count allows the score, its names hold the row's) is no winner.
     public static func designRule(
         forDumpPath dumpPath: String,
         designRoots: [String: [HierarchyNode]],
         dumpChildren: Children,
         ties: Ties = .first,
         signalsListed: Bool = true,
+        maxScoredRoots: Int = Int.max,
         isolation: isolated (any Actor)? = #isolation
     ) async -> HierarchyPathMapping.Rule? {
         let path = HierarchyPathMapping.segments(dumpPath)
         guard path.count >= 2 else { return nil }
+        // Past the cap, whole depths only (a depth cut through would keep one copy of a module, and a
+        // row of the other copy would match the kept one alone). The rest are kept by name, unscored.
+        var scoredRoots = designRoots
+        var unscored: [String: [(root: String, scopes: Int)]] = [:]
+        let below = designRoots.keys.filter { HierarchyPathMapping.segments($0).count > 1 }
+            .map { (path: $0, depth: HierarchyPathMapping.segments($0).count) }
+            .sorted { ($0.depth, $0.path) < ($1.depth, $1.path) }
+        if below.count > maxScoredRoots {
+            let cut = below[maxScoredRoots].depth
+            for root in below where root.depth >= cut {
+                let children = scoredRoots.removeValue(forKey: root.path) ?? []
+                let scopes = Set(children.filter(\.isScope).map(\.name))
+                for name in Set(children.map(\.name)) { unscored[name, default: []].append((root.path, scopes.count)) }
+            }
+        }
+        // Each unscored root that could match the row: the most it could score, and where it maps it.
+        var couldTie: [(score: Int, designPath: String)] = []
         // Each score's rules, in the order found (shorter dump prefixes first), with the design path each maps the row to.
         var byScore: [Int: [(rule: HierarchyPathMapping.Rule, designPath: String)]] = [:]
         for length in 1..<path.count {
@@ -357,7 +377,13 @@ public enum HierarchyPrefixInference {
                     designName = memory
                 }
             }
-            for (root, rootChildren) in designRoots.sorted(by: { $0.key < $1.key })
+            if !unscored.isEmpty {
+                let dumpScopes = kids.filter(\.isScope).count
+                for candidate in (unscored[name] ?? []) + (designName == name ? [] : unscored[designName] ?? []) {
+                    couldTie.append((2 * min(candidate.scopes, dumpScopes), HierarchyPathMapping.join(HierarchyPathMapping.segments(candidate.root) + path[length...])))
+                }
+            }
+            for (root, rootChildren) in scoredRoots.sorted(by: { $0.key < $1.key })
             where rootChildren.contains(where: { $0.name == name || $0.name == designName })
                 || (!signalsListed && isSignalRow && !rootChildren.isEmpty && rootChildren.allSatisfy(\.isScope)) {
                 var match = score(kids, against: rootChildren)
@@ -391,6 +417,8 @@ public enum HierarchyPrefixInference {
                 let broad = Set(found.filter { depth($0) == shallowest }.map(\.designPath))
                 let deeper = Dictionary(grouping: found.filter { depth($0) > shallowest }, by: depth).values.map { Set($0.map(\.designPath)) }
                 if broad.count == 1, deeper.allSatisfy({ $0 == broad || $0.count > 1 }) {
+                    // A root left unscored that could reach this score and maps the row elsewhere: no winner.
+                    if couldTie.contains(where: { $0.score >= score && !broad.contains($0.designPath) }) { return nil }
                     return found.first { depth($0) == shallowest }!.rule
                 }
                 limit = shallowest
