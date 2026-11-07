@@ -280,11 +280,11 @@ import Testing
         process.standardInput = input
         process.standardOutput = output
         try process.run()
-        input.fileHandleForWriting.write(Data("[  1%] Building CXX object a.o\n[  1%] Building b.o\nwarning: x\n[ 37%] Linking\n[3/8] Building c.o\n[100%] Built target cmux-sv-model\n".utf8))
+        input.fileHandleForWriting.write(Data("[  0%] Building CXX object fmt.o\n[  1%] Building CXX object a.o\n[  1%] Building b.o\nwarning: x\n[ 37%] Linking\n[3/8] Building c.o\n[100%] Built target cmux-sv-model\n".utf8))
         try input.fileHandleForWriting.close()
         process.waitUntilExit()
         let lines = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n").map(String.init)
-        #expect(lines == ["cmux-sv-model-build: progress 1", "cmux-sv-model-build: progress 37", "cmux-sv-model-build: progress 100"], "\(lines)")
+        #expect(lines == ["cmux-sv-model-build: progress 0", "cmux-sv-model-build: progress 1", "cmux-sv-model-build: progress 37", "cmux-sv-model-build: progress 100"], "\(lines)")
     }
 
     @Test func aFailedInstallReportsItsExitCode() async throws {
