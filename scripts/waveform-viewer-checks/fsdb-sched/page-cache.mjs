@@ -8,6 +8,9 @@
 //      11-18 s, past the 10 s window timeout.
 //  L14 a cold row (a ranged read, which costs by its span) batched with a warm one is asked
 //      for level-out only over the view, not over the warm row's wider span.
+//  M6  after a pan onto tiles a prefetch request is still reading, those (now visible) tiles are
+//      asked for as visible, not left on the deprioritized prefetch; and a prefetch that expires
+//      leaves nothing un-asked: its tiles are asked again without any user action.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -94,6 +97,27 @@ function page(rows, L, R, stop) {
   const warmSpan = levelOut.filter((m) => m.signals.some((x) => x.signalId === 1)).reduce((a, m) => a + (m.t1 - m.t0), 0);
   check(levelOut.length > 0 && warmSpan > hi - lo, `the warm row's level-out covers more than the view: ${warmSpan} > ${hi - lo}`);
   check(coldReqs.length > 0 && coldReqs.every((m) => m.t0 >= lo && m.t1 <= hi), `the cold row's level-out stays over the view [${lo}, ${hi}]: ${JSON.stringify(coldReqs.map((m) => [m.t0, m.t1, m.signals.map((x) => x.signalId)]))}`);
+  wc.reset && wc.reset();
+}
+
+// M6: a pan onto prefetched tiles, then idle.
+{
+  const L = 400000, R = 500000, W = R - L;
+  const { wc } = page([{ id: 1 }], L, R, 1e6);
+  wc.ensure();
+  const pre = g.sent.filter((m) => m.prefetch);
+  g.sent.length = 0;
+  Object.assign(g.viewport, { timeScrollLeft: L + W, timeScrollRight: R + W });  // one screen right
+  wc.ensure();
+  const vis = wc.wantedTiles().filter((t) => t.priority === 0);
+  const s1 = wc.signals.get(1);
+  const asked = () => vis.filter((t) => [...wc.inflight.values()].some((f) => f.priority === 0 && f.tiles.some((x) => x.key === t.key))).length;
+  const drawnOrAsked = () => vis.filter((t) => s1.windows.has(t.key) || [...wc.inflight.values()].some((f) => f.tiles.some((x) => x.key === t.key))).length;
+  check(pre.length > 0 && asked() === vis.filter((t) => !s1.windows.has(t.key)).length,
+    `after a pan onto prefetched tiles, every visible tile not drawn is asked for as visible: ${asked()} of ${vis.filter((t) => !s1.windows.has(t.key)).length} (${g.sent.filter((m) => m.cmd === 'window' && !m.prefetch).length} visible requests)`);
+  // nothing answers; every request expires (visible ones mark the row slow, as before)
+  await wait(2500);
+  check(drawnOrAsked() === vis.length, `... and after requests expire with no user action, every visible tile is drawn or asked again: ${drawnOrAsked()} of ${vis.length}`);
   wc.reset && wc.reset();
 }
 
