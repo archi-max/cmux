@@ -355,6 +355,18 @@ import Testing
         #expect(try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.u_dut.u_core.x")))
     }
 
+    /// A lone g[3].u_dut in the KDB and a lone g[0].u_dut in slang: another generate index is no
+    /// stand-in, even with one on each side (the genvar is no parameter, so nothing else shows it).
+    @Test func aLoneOtherGenerateIndexIsNoStandIn() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.g[0].u_dut": Self.inst("dut", ["clk"]), "tb.g[0].u_dut.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.g[3].u_dut", "dut", "tb", ["clk"], [:]), ("tb.g[3].u_dut.u_core", "core", "tb.g[3].u_dut", ["x"], ["x": 9]),
+        ])
+        #expect(try await resolve("tb.g[3].u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.g[3].u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.g[3].u_dut.u_core.x")))
+    }
+
     /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
     /// anything below it.
     @Test func belowAnotherModuleNothingIsEvaluated() async throws {
