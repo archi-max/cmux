@@ -8,7 +8,10 @@
 //
 // cmux calls window.cmuxWaveform.trace through callAsyncJavaScript:
 //   driver({ path, time })        path: dump segments (null: the selected row); time: null for the
-//                                 marker. Asks cmux for the design path, then traces.
+//                                 marker. Asks cmux for the design path, then traces. cmux may
+//                                 answer { compiledOnly, dumpPath, reason, writes: [{ file, line,
+//                                 kind }] } instead: a row only the compiled design (the dump's
+//                                 KDB) has, shown as one approximate step, not evaluated.
 //   driverOfDesign({ designPath, designPrefix, dumpPrefix, time })   from the editor (cmux mapped it)
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
@@ -519,7 +522,7 @@
     lastEntry = () => driver(query);
     stopChain();
     const q = await resolved(query);
-    return q ? driverOfDesign(q) : null;
+    return q ? (q.compiledOnly ? compiledOnly(q) : driverOfDesign(q)) : null;
   }
   // From the editor (cmux mapped the path); a click while the design model builds points at it.
   // cmux traces from the editor only once the design is built: a build of it still shown is over
@@ -556,6 +559,37 @@
     return traceStep(query.designPath, time, true);
   }
 
+  // A row only the compiled design has (cmux resolved it with the dump's KDB model: slang's design
+  // lacks its instance, or has another module there): one approximate step with the KDB's write
+  // lines and the dumped value; slang's statements are not evaluated for it.
+  async function compiledOnly(q) {
+    const dumpPath = String(q.dumpPath || '');
+    const time = designQuery({ designPath: dumpPath, designPrefix: '', dumpPrefix: '', time: q.time });
+    if (time === null) { return null; }
+    stopChain();
+    history.steps = history.steps.slice(0, history.at + 1);
+    const run = ++running;
+    showBusy(format(S().traceRunning, dumpPath, number(time)));
+    let value = null, since = null;
+    const ours = session;
+    stepStarted(ours);
+    try {
+      const got = (await dump.values([dumpPath], time)).get(dumpPath);
+      value = got === undefined ? null : got;
+      since = await dump.lastChange(dumpPath, time);
+    } catch (error) { host.log(error); } finally { stepEnded(ours); }
+    if (run !== running) { return null; }
+    const writes = (Array.isArray(q.writes) ? q.writes : []).filter((w) => w && w.file && Number.isFinite(Number(w.line)))
+      .map((w) => ({ file: String(w.file), line: Number(w.line), kind: String(w.kind || '') }));
+    const step = { signal: dumpPath, dumpPath, time, value, since, trust: 'approximate', engine: { name: 'kdb' },
+      compiledOnly: { reason: String(q.reason || 'notInSlang'), writes } };
+    history.steps.push(step);
+    history.at = history.steps.length - 1;
+    render();
+    host.toNative({ type: 'trace', event: 'step', step: plain(step) });
+    return plain(step);
+  }
+
   // ---- Trace X to Root ----
   // The chain shown (null: the panel shows the history's step). Its steps come as they are found;
   // a new trace, Close or Cancel stops it.
@@ -567,6 +601,7 @@
     stopChain();
     const q = query && query.designPath ? query : await resolved(query);
     if (!q) { return null; }
+    if (q.compiledOnly) { return compiledOnly(q); }
     const time = designQuery(q);
     if (time === null) { return null; }
     stopChain();
@@ -1029,6 +1064,30 @@
     return format(text, r.path || r.src || (r.time !== undefined ? number(r.time) : '') || r.count || r.why || r.error || '', r.predicted ? valueText(r.predicted) : '');
   }
 
+  function renderCompiledOnly(st, p, body) {
+    const s = S();
+    const badge = p.querySelector('.head .badge');
+    if (badge) { badge.title = s.traceCompiledOnly || ''; }
+    body.append(el('div', '', s.traceCompiledOnly));
+    body.append(el('div', 'muted', s['traceCompiledOnly_' + st.compiledOnly.reason] || st.compiledOnly.reason));
+    const line = el('div');
+    if (st.compiledOnly.writes.length) {
+      line.append(el('span', '', s.traceCompiledWrites + ' '));
+      st.compiledOnly.writes.forEach((w, i) => {
+        if (i) { line.append(el('span', '', ', ')); }
+        const a = el('a', '', where(w));
+        a.title = s.traceOpen || '';
+        a.addEventListener('click', () => open({ file: w.file, line: w.line }));
+        line.append(a);
+      });
+    } else {
+      line.append(el('span', '', s.traceCompiledNoWrites));
+    }
+    if (st.since !== null && st.since !== undefined) { line.append(el('span', 'muted', ' · ' + format(s.traceSince, number(st.since)))); }
+    body.append(line);
+    p.append(body);
+  }
+
   function render() {
     if (chain) { renderChain(); return; }
     const st = history.steps[history.at];
@@ -1042,6 +1101,7 @@
       p.append(body);
       return;
     }
+    if (st.compiledOnly) { renderCompiledOnly(st, p, body); return; }
     // Driver kind, where, when.
     const line = el('div');
     line.append(el('span', '', driverText(st) + ' '));

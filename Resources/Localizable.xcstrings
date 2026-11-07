@@ -486053,6 +486053,301 @@
         }
       }
     },
+    "waveformTrace.page.compiledOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drivers come from the compiled design (KDB); values aren't evaluated."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ドライバーはコンパイル済みデザイン (KDB) から取得しています。値は評価されません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Treiber stammen aus dem kompilierten Design (KDB); Werte werden nicht ausgewertet."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les pilotes viennent de la conception compilée (KDB) ; les valeurs ne sont pas évaluées."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تأتي المشغِّلات من التصميم المُترجَم (KDB)؛ ولا تُقيَّم القيم."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los controladores proceden del diseño compilado (KDB); los valores no se evalúan."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "驅動來自已編譯的設計 (KDB)；不評估數值。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "驱动来自已编译的设计 (KDB)；不求值。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "드라이버는 컴파일된 설계(KDB)에서 가져오며, 값은 평가하지 않습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.noWrites": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The compiled design has no statement writing it here (it is driven through a port, or is an input)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル済みデザインには、ここでこれに書き込むステートメントがありません (ポート経由で駆動されているか、入力です)。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Im kompilierten Design schreibt hier keine Anweisung darauf (es wird über einen Port getrieben oder ist ein Eingang)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La conception compilée n'a ici aucune instruction qui l'écrit (il est piloté par un port, ou c'est une entrée)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي التصميم المُترجَم هنا على عبارة تكتب فيه (يُشغَّل عبر منفذ، أو هو مدخل)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño compilado no tiene aquí ninguna sentencia que lo escriba (se controla a través de un puerto o es una entrada)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已編譯的設計在此沒有寫入它的陳述式（它經由連接埠驅動，或是輸入）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已编译的设计在此没有写入它的语句（它通过端口驱动，或是输入）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일된 설계에는 여기서 이것을 기록하는 문이 없습니다(포트를 통해 구동되거나 입력입니다)."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.notInSlang": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slang's design model doesn't have this instance (its module may be in a file it didn't read)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang のデザインモデルにはこのインスタンスがありません (モジュールが読み込まれなかったファイルにある可能性があります)。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell von slang enthält diese Instanz nicht (ihr Modul liegt eventuell in einer Datei, die es nicht gelesen hat)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle de conception de slang n'a pas cette instance (son module est peut-être dans un fichier qu'il n'a pas lu)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي نموذج تصميم slang على هذا المثيل (قد تكون وحدته في ملف لم يقرأه)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo de diseño de slang no tiene esta instancia (su módulo puede estar en un archivo que no leyó)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的設計模型沒有此實例（其模組可能位於它未讀取的檔案中）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的设计模型中没有此实例（其模块可能位于它未读取的文件中）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang의 설계 모델에 이 인스턴스가 없습니다(모듈이 읽지 않은 파일에 있을 수 있습니다)."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.otherModule": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slang's design model has another module at this instance, so its statements aren't used."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang のデザインモデルではこのインスタンスが別のモジュールのため、そのステートメントは使用しません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell von slang hat an dieser Instanz ein anderes Modul, daher werden seine Anweisungen nicht verwendet."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle de conception de slang a un autre module à cette instance ; ses instructions ne sont donc pas utilisées."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يحتوي نموذج تصميم slang على وحدة أخرى في هذا المثيل، لذا لا تُستخدم عباراته."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo de diseño de slang tiene otro módulo en esta instancia, así que no se usan sus sentencias."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的設計模型在此實例處是另一個模組，因此不使用其陳述式。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的设计模型在此实例处是另一个模块，因此不使用其语句。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang의 설계 모델에서는 이 인스턴스가 다른 모듈이므로 해당 문을 사용하지 않습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.writes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Written at:"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "書き込み箇所:"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geschrieben in:"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Écrit à :"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مكتوب في:"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escrito en:"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "寫入位置："
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入位置："
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기록 위치:"
+          }
+        }
+      }
+    },
     "workspace.agentChat.defaultTitle": {
       "extractionState": "manual",
       "localizations": {

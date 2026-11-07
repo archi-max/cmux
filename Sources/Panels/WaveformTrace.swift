@@ -288,6 +288,8 @@ enum WaveformTrace {
         let design = try await design(for: editor, waveform: waveform)
         let key = await WaveformSourceLink.mappingKey(rootKey: editor.linkRootKey, waveform: waveform)
         let mapping = key.map(WaveformSourceLink.mapping(forKey:)) ?? HierarchyPathMapping()
+        // The dump's KDB model when its export has come (never waited for): it decides what exists
+        // and how the row maps to slang's design.
         let outcome = try await SVModelResolve.resolve(
             dumpPath: dumpPath,
             mapping: mapping,
@@ -295,7 +297,10 @@ enum WaveformTrace {
             lookup: { path in await lookup(path, in: design) },
             model: { path in await instanceModel(path, in: design) },
             designRoots: { try await designRoots(of: design) },
-            dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) }
+            dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) },
+            kdb: WaveformTraceKDB.model(for: waveform),
+            instances: { try await hierarchy(of: design).instances },
+            log: { line in waveformTraceLogger.info("\(line, privacy: .public)") }
         )
         switch outcome {
         case .signal(let designPath, let designPrefix, let dumpPrefix):
@@ -303,7 +308,10 @@ enum WaveformTrace {
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix]
         case .notElaborated(let instance):
             throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
-        case .notInDesign, .compiledOnly:
+        case .compiledOnly(let row, let reason, let writes):
+            return ["compiledOnly": true, "dumpPath": row, "reason": reason.rawValue,
+                    "writes": writes.map { ["file": $0.file, "line": $0.line, "kind": $0.kind] as [String: Any] }]
+        case .notInDesign:
             throw Failure(message: String(
                 format: String(
                     localized: "waveformTrace.notInDesign",
@@ -331,15 +339,8 @@ enum WaveformTrace {
         guard aliasRules.object(forKey: waveform) as String? != rule else { return }
         aliasRules.setObject(rule as NSString, forKey: waveform)
         Task { @MainActor [weak waveform] in
-            guard let waveform, WaveformTraceKDB.model(for: waveform) == nil else { return }
-            let hierarchy: (tops: [String], instances: [String])
-            if let known = design.hierarchy {
-                hierarchy = known
-            } else {
-                guard let reply = try? await design.sidecar.request(["cmd": "instances"]) else { return }
-                hierarchy = (reply["tops"] as? [String] ?? [], reply["instances"] as? [String] ?? [])
-                design.hierarchy = hierarchy
-            }
+            guard let waveform, WaveformTraceKDB.model(for: waveform) == nil,
+                  let hierarchy = try? await hierarchy(of: design) else { return }
             // The instances below the prefix, and the prefix's own (its ports bind to its parent's nets).
             let below = hierarchy.instances.filter { designPrefix.isEmpty || $0.hasPrefix(designPrefix + ".") }
             guard !below.isEmpty, below.count <= maxAliasInstances else { return }
@@ -355,6 +356,15 @@ enum WaveformTrace {
             guard !pairs.isEmpty, aliasRules.object(forKey: waveform) as String? == rule else { return }
             _ = await waveform.nativeViewSessions.waveform.callTrace("aliasHints", argument: ["pairs": pairs])
         }
+    }
+
+    /// The design's instance paths and tops (the sidecar's `instances`, asked once).
+    private static func hierarchy(of design: Design) async throws -> (tops: [String], instances: [String]) {
+        if let known = design.hierarchy { return known }
+        let reply = try await design.sidecar.request(["cmd": "instances"])
+        let hierarchy = (tops: reply["tops"] as? [String] ?? [], instances: reply["instances"] as? [String] ?? [])
+        design.hierarchy = hierarchy
+        return hierarchy
     }
 
     /// The page's design query for a design path traced from a dump path: the path and the
@@ -776,6 +786,11 @@ enum WaveformTrace {
             "traceTrustHelp_approximate": String(localized: "waveformTrace.page.trustHelp.approximate", defaultValue: "The result rests on assumptions listed below."),
             "traceTrustHelp_inconsistent": String(localized: "waveformTrace.page.trustHelp.inconsistent", defaultValue: "Re-executing the statement does not give the dumped value."),
             "traceError_notInDesign": String(localized: "waveformTrace.page.error.notInDesign", defaultValue: "This signal is not in the design model."),
+            "traceCompiledOnly": String(localized: "waveformTrace.page.compiledOnly", defaultValue: "Drivers come from the compiled design (KDB); values aren't evaluated."),
+            "traceCompiledOnly_notInSlang": String(localized: "waveformTrace.page.compiledOnly.notInSlang", defaultValue: "Slang's design model doesn't have this instance (its module may be in a file it didn't read)."),
+            "traceCompiledOnly_otherModule": String(localized: "waveformTrace.page.compiledOnly.otherModule", defaultValue: "Slang's design model has another module at this instance, so its statements aren't used."),
+            "traceCompiledWrites": String(localized: "waveformTrace.page.compiledOnly.writes", defaultValue: "Written at:"),
+            "traceCompiledNoWrites": String(localized: "waveformTrace.page.compiledOnly.noWrites", defaultValue: "The compiled design has no statement writing it here (it is driven through a port, or is an input)."),
             "traceError_notASignal": String(localized: "waveformTrace.page.error.notASignal", defaultValue: "This is not a signal of its instance."),
             "traceWriter": String(localized: "waveformTrace.page.writer", defaultValue: "in %@, through its interface port"),
             "traceEngineCmux": String(localized: "waveformTrace.page.engine.cmux", defaultValue: "Traced by cmux (slang design model)"),
