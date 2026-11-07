@@ -1319,6 +1319,19 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     h.close();
     check(!ran && i.state === 'verifying', `at the reader budget (FSDB_READERS=1, one worker) no segment process starts: ${ran ? 'ran' : 'waiting'}, ${i.state}`);
   }
+  {
+    // Segments sized from the measurement: a segment's open baseline (STUB_CLOCK_OPEN_MB), its
+    // load setup (STUB_CLOCK_LOAD_MB, whatever it reads) and its per-change growth (STUB_CLOCK_BPC,
+    // 1 MB a change here) stay under FSDB_CLOCK_TARGET_MB after the first segment, which can only
+    // assume the reader's 9 B a change. Fixed at 32 segments, each would take ~62 MB over its open;
+    // the setup taken for growth would shrink the segments to nothing (~2000 changes in all here).
+    const h = await start(1, {}, { FSDB_CLOCK_DESC: '1', STUB_CLOCK: JSON.stringify(clk), STUB_CLOCK_OPEN_MB: '100', STUB_CLOCK_LOAD_MB: '10', STUB_CLOCK_BPC: String(1 << 20), FSDB_CLOCK_TARGET_MB: '195', FSDB_CLOCK_RSS_MB: '400' });
+    const r = await verify(h, 5, 60000);
+    h.close();
+    const sp = r.segPeakMB || [];
+    check(r.state === 'ready' && r.segments > 32 && r.segments <= 400 && sp[1] > 0 && sp[1] <= 195 + 8 && r.openMB >= 100,
+      `segments sized from the measured open baseline, load setup and per-change growth: ${JSON.stringify({ state: r.state, why: r.why, segments: r.segments, openMB: r.openMB, setupMB: r.setupMB, bytesPerChange: r.bytesPerChange, segPeakMB: sp })} (33 to 400, every one after the first under 195 + 8 MB)`);
+  }
 }
 
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
