@@ -18,7 +18,8 @@
 // Changes are normalized (WINDOWING.md "Change normalization") in everything below
 // except v1 `signals`: changes at one time collapse to the last, a change to the value
 // already in effect is dropped, and before the first change the value is all x.
-//   open {file, workers?, warm?, reload?} -> {metadata, top, workers, index, reused?} (warm: start
+//   open {file, workers? (<= 8; default: the --workers count, auto = sized from the host), warm?, reload?}
+//     -> {metadata, top, workers, index, reused?} (warm: start
 //     the search-index warm-up, see warm below; index = its state). Reopening the open file
 //     unchanged (same real path, device, inode, size, mtime, ctime; same pool) keeps all
 //     stores, derived signals and queued work and replies {reused: true}; reload: true forces
@@ -127,8 +128,28 @@ const { scopeTree } = require('./tree.js');
 const OUT = 3;
 const addonPath = process.env.FSDB_ADDON || path.join(__dirname, 'addon/build/Release/fsdb_reader.node');
 const arg = (name, env, dflt) => { const k = process.argv.indexOf(name); return Number(k > 0 ? process.argv[k + 1] : process.env[env] || dflt) || dflt; };
-const DEFAULT_WORKERS = Math.min(4, arg('--workers', 'FSDB_WORKERS', 4));
-const CACHE_BYTES = arg('--cache-mb', 'FSDB_CACHE_MB', 1024) * 1e6;  // LRU budget, split evenly across workers
+// Workers: `--workers auto` (what cmux asks for) sizes the pool from the host. Whole loads run
+// in pieces over every worker (jobs below), so more workers mean faster first draws, but each
+// costs memory (its store share plus ~300 MB of reader and V8) and the host is shared: half the
+// cores, at most MAX_WORKERS, and only as many as fit in the available memory minus 4 GB at
+// ~600 MB each (FSDB_HOST_CPUS / FSDB_HOST_AVAIL_MB stand in for the host in tests).
+const MAX_WORKERS = 8;
+function autoWorkers() {
+  const os = require('node:os');
+  const cpus = Number(process.env.FSDB_HOST_CPUS) || (os.availableParallelism ? os.availableParallelism() : os.cpus().length);
+  let availMB = Number(process.env.FSDB_HOST_AVAIL_MB);
+  if (!availMB) {
+    try { availMB = Number(/MemAvailable:\s+(\d+) kB/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))[1]) / 1024; } catch (e) { availMB = os.freemem() / 1048576; }
+  }
+  return Math.max(1, Math.min(MAX_WORKERS, Math.floor(cpus / 2), Math.floor((availMB - 4096) / 600)));
+}
+const workersArg = (() => { const k = process.argv.indexOf('--workers'); return k > 0 ? process.argv[k + 1] : process.env.FSDB_WORKERS; })();
+const DEFAULT_WORKERS = workersArg === 'auto' ? autoWorkers() : Math.max(1, Math.min(MAX_WORKERS, Number(workersArg) || 4));
+// LRU budget, split evenly across workers; without an explicit size, no worker's share (which is
+// also the largest signal it can store) drops below 256 MB as the pool grows.
+const CACHE_SET = process.argv.includes('--cache-mb') || !!process.env.FSDB_CACHE_MB;
+const CACHE_BYTES = arg('--cache-mb', 'FSDB_CACHE_MB', 1024) * 1e6;
+const storeShare = (n) => (CACHE_SET ? CACHE_BYTES / n : Math.max(CACHE_BYTES / n, 256e6));
 // Store files handed between workers (split walks, derived operands) live in a
 // private 0700 directory (mkdtemp); the addon creates them O_EXCL 0600, checks
 // owner and size on read, and deletes them. Directories left by dead helpers
@@ -236,7 +257,7 @@ function startWorker(i) {
     send({ id: 0, error: `worker ${i} exited (${code ?? signal}), restarted` });
     const nw = startWorker(i);
     workers[i] = nw;
-    if (openFile) { enqueue(nw, { op: 'open', file: openFile, cacheBytes: CACHE_BYTES / workers.length, barrier: true }).done = () => {}; }
+    if (openFile) { enqueue(nw, { op: 'open', file: openFile, cacheBytes: storeShare(workers.length), barrier: true }).done = () => {}; }
     failTasks(lost, `worker ${i} exited (${code ?? signal})`);
   });
   return w;
@@ -374,7 +395,7 @@ function recycleWorker(w) {
   w.queue = []; w.bgQueue = [];
   workers[w.i] = nw;
   recycled++;
-  if (openFile) { enqueue(nw, { op: 'open', file: openFile, cacheBytes: CACHE_BYTES / workers.length, barrier: true }, true).done = () => {}; }
+  if (openFile) { enqueue(nw, { op: 'open', file: openFile, cacheBytes: storeShare(workers.length), barrier: true }, true).done = () => {}; }
   if (openFile && held.length) { nw.reloaded = true; enqueue(nw, { op: 'bgLoad', signalIds: held, bg: true }).done = () => {}; }
   w.proc.kill();
 }
@@ -570,7 +591,7 @@ const jobs = new Map();  // signalId -> job
 let jobSeq = 0;
 const transient = (e) => /exited|pool resized|memory limit|cancelled/.test(String(e || ''));
 const permanent = (e) => /larger than|0 bits|unsupported|not a bit signal|no traverse handle/.test(String(e || ''));
-const storeCap = () => CACHE_BYTES / Math.max(1, workers.length);
+const storeCap = () => storeShare(Math.max(1, workers.length));
 function capErrorOf(cap) { return `signal larger than ${Math.floor(cap / 1048576)} MB (worker store limit)`; }
 
 function startJob(id, req) {
@@ -1560,7 +1581,7 @@ function countOf(id) {
 const handlers = {
   async open({ file, workers: n, warm: wantWarm, reload }) {
     if (typeof file !== 'string' || !file) { throw new Error('open needs a file'); }
-    const want = Math.max(1, Math.min(4, n || DEFAULT_WORKERS));
+    const want = Math.max(1, Math.min(MAX_WORKERS, n || DEFAULT_WORKERS));
     // Reopening the file that is already open, unchanged (same real path, device,
     // inode, size, mtime and ctime) and with the same pool keeps everything: the
     // workers' stores, derived signals, routes and the search index.
@@ -1593,7 +1614,7 @@ const handlers = {
       failTasks(lost, 'file reopened');
     }
     // Workers open in parallel with the hierarchy read below; queued work waits behind it.
-    const opens = workers.map((w) => runTask(w, { op: 'open', file, cacheBytes: CACHE_BYTES / want, barrier: true }, true));
+    const opens = workers.map((w) => runTask(w, { op: 'open', file, cacheBytes: storeShare(want), barrier: true }, true));
     if (openFile) { addon.unload(); openFile = null; }
     try {
       addon.openFsdb(file);
