@@ -4,3 +4,4 @@ an instance u_fifo of a module with parameter DEPTH), each run in its own folder
   ffile    -f ../opts.f, which holds -pvalue+tb.u_fifo.DEPTH=32
   cmdline  -pvalue+tb.u_fifo.DEPTH=8 given through a shell variable (VCS records it expanded)
   plus     +pvalue+tb.u_fifo.DEPTH=4 (VCS accepted this spelling: exit 0)
+  outdir   -f opts.f with -o out/simv (the daidir is out/simv.daidir; VCS read ./opts.f)

@@ -74,6 +74,8 @@ const TRACE_CASES = [
   { d: 'c', sig: 'tb_c.dut.u_mid.u_sink.mix', t: 54, kind: 'assign', line: 49, stmt: 'mix = in.data + {4\'b0, in.id}', since: 0 },
   { d: 'c', sig: 'tb_c.dut.u_mid.u_sink.in', t: 54, kind: 'portIn', line: 68, since: 45, fanin: { 'tb_c.dut.u_mid.pin': '1xxxx00010000' }, trust: 'exact' },
   { d: 'c', sig: 'tb_c.dut.u_mid.pin', t: 54, kind: 'portIn', line: 81, fanin: { 'tb_c.dut.p': '1xxxx00010000' } },
+  // A port's connection is evaluated in the parent: the driver says so (the page checks it against the KDB).
+  { d: 'c', sig: 'tb_c.dut.u_mid.u_sink.in', t: 54, kind: 'portIn', from: 'tb_c.dut.u_mid' },
   { d: 'c', sig: 'tb_c.dut.p', t: 54, kind: 'portOut', line: 80, fanin: { 'tb_c.dut.u_src.out': '1xxxx00010000' } },
   { d: 'c', sig: 'tb_c.dut.u_src.out', t: 54, kind: 'assign', line: 37, stmt: "out = '{valid: valid_q", fanin: { 'tb_c.dut.u_src.id_q': 'xxxx' }, trust: 'exact', dumps: ['plain', 'flowctrl', 'tmerge', 'course'] },
   { d: 'c', sig: 'tb_c.dut.u_src.out', t: 54, kind: 'assign', line: 35, stmt: 'out = {valid_q, id_q, data_q}', fanin: { 'tb_c.dut.u_src.id_q': 'xxxx' }, trust: 'exact', dumps: ['icarus'] },
@@ -313,6 +315,7 @@ function runTraceChecks() {
     const kind = step.driver && step.driver.kind;
     if (c.kind) { want('kind', kind, c.kind); }
     if (c.writer) { want('writer', step.driver && step.driver.writer, c.writer); }
+    if (c.from) { want('from', step.driver && step.driver.from, c.from); }
     if (c.proc) { want('proc', step.procKind || (step.driver && step.driver.procKind), c.proc); }
     if (c.file) { want('file', base(step.stmt && step.stmt.loc && step.stmt.loc.file), c.file); }
     if (c.line) { want('line', step.stmt && step.stmt.loc && step.stmt.loc.line, c.line); }

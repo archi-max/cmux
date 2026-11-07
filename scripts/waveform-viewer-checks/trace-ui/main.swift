@@ -642,6 +642,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             if (r.prev && r.values.length) { r.values[0] = null; r.prev[0] = null; }
             return { reply: { id: req.id, result: r } };
           }
+          // The helper's checkTime: a time before 0 is an error (counted: the page must not ask one).
+          if (typeof req.t === 'number' && req.t < 0) { m.negative = (m.negative || 0) + 1; return { reply: { id: req.id, error: 't: out of range' } }; }
           if (req.cmd !== 'count' && ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
           if (req.cmd !== 'valueAt' && ids.some((id) => m.refuse.has(id))) { return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } }; }
           try { return { reply: { id: req.id, result: await m.answer(req) } }; }
@@ -667,16 +669,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       try {
         t.backendChanged();
         const plain = m.pick(await q());
-        m.install(); m.downloads = 0; m.asked = [];
+        m.install(); m.downloads = 0; m.asked = []; m.negative = 0;
         t.backendChanged();
         const v2 = m.pick(await q());
-        return { plain, v2, downloads: m.downloads, asked: [...new Set(m.asked)].sort() };
+        return { plain, v2, downloads: m.downloads, asked: [...new Set(m.asked)].sort(), negative: m.negative };
       } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
       """) as? [String: Any]
     expect(wide?["plain"] as? String != nil && wide?["v2"] as? String == wide?["plain"] as? String,
            "v2 helper, a 2-bit clock: the same step: \(String(describing: wide?["v2"])) vs \(String(describing: wide?["plain"]))")
     expect(wide?["downloads"] as? Int == 0 && (wide?["asked"] as? [String])?.contains("search") == true,
            "v2 helper, a 2-bit clock: its edge is searched for, no history downloaded: \(String(describing: wide?["asked"])) downloads \(String(describing: wide?["downloads"]))")
+    expect(wide?["negative"] as? Int == 0,
+           "v2 helper, a 2-bit clock in a dump from 0: no request for a time before 0 (the helper rejects it): \(String(describing: wide?["negative"]))")
 
     // Values the helper's batch can't give (a signal it fails, which fails the batch): each is
     // asked again on its own, not downloaded.
@@ -1793,6 +1797,19 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let signalOutside = await trace(row)
     expect(signalOutside?["trust"] as? String == "approximate" && codes(signalOutside).contains("kdbNotChecked"),
            "kdb checked: a signal not compared is approximate though its instance agreed: \(String(describing: signalOutside?["trust"])) \(codes(signalOutside))")
+    // An input port's step (the engine's own portIn step: the driver's instance is the row's): its
+    // connection is evaluated in the parent, so the parent must be checked too.
+    let portRow = "driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 54 })"
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.in", "designPrefix": "", "dumpPrefix": "", "designId": "c#1c",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.in"]]
+    let parentOutside = await trace(portRow)
+    expect(((parentOutside?["driver"] as? [String: Any])?["kind"] as? String) == "portIn"
+           && parentOutside?["trust"] as? String == "approximate" && codes(parentOutside).contains("kdbNotChecked"),
+           "kdb checked: an input port whose parent was not checked is approximate: \(String(describing: parentOutside?["trust"])) \(codes(parentOutside))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.in", "designPrefix": "", "dumpPrefix": "", "designId": "c#1d",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.in"]]
+    let parentInside = await trace(portRow)
+    expect(parentInside != nil && !codes(parentInside).contains("kdbNotChecked"), "kdb checked: with its parent checked, the input port is: \(codes(parentInside))")
     resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#2", "kdbChecked": ["tb_c"]]
     let outside = await trace(row)
     let text = await panelText()
