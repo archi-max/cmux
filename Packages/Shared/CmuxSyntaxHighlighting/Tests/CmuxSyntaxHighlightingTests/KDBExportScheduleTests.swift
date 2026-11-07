@@ -96,6 +96,21 @@ import Testing
         #expect(schedule.finished("k", .unavailable(code: "time", message: "past 120 s")) != nil)
     }
 
+    /// Retry KDB Export: a KDB whose failure was said (and that the host marks `tried`) is asked
+    /// again, and a new failure is said again; one in flight is joined, as an open is.
+    @Test func aRetryStartsATriedKDBAndSaysItsFailureAgain() {
+        var schedule = KDBExportSchedule()
+        _ = schedule.opened("k", enabled: true)
+        #expect(schedule.finished("k", .unavailable(code: "time", message: "past 120 s")) != nil)
+        #expect(schedule.retry("k", enabled: true) == .start)
+        #expect(schedule.pending("k"))
+        #expect(schedule.retry("k", enabled: true) == .join)
+        _ = schedule.finished("k", .unavailable(code: "time", message: "past 120 s"))
+        #expect(schedule.pending("k"), "a retry joined the running one: it runs once more")
+        #expect(schedule.finished("k", .unavailable(code: "time", message: "past 120 s")) != nil, "the retry's failure is said")
+        #expect(schedule.retry("k", enabled: false) == .off)
+    }
+
     @Test func aKDBThatIsGoneTakesItsModel() {
         var schedule = KDBExportSchedule()
         _ = schedule.finished("k", .model(Self.model("tb"), cached: true))

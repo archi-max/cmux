@@ -47,6 +47,14 @@ import Testing
         #expect(command.contains("npi-model.sh") && command.contains("--print") && command.contains("rm -rf"))
     }
 
+    /// View > Retry KDB Export: the host runs a KDB marked `tried` again (CMUX_KDB_RETRY=1); a plain ask does not.
+    @Test func aRetryAsksTheHostToRunATriedKDBAgain() {
+        let plain = KDBModelLaunch.command(launcher: Data("L".utf8), exporter: Data("E".utf8), fsdbPath: "/runs/x.fsdb")
+        let retry = KDBModelLaunch.command(launcher: Data("L".utf8), exporter: Data("E".utf8), fsdbPath: "/runs/x.fsdb", retry: true)
+        #expect(!plain.contains("CMUX_KDB_RETRY"))
+        #expect(retry.contains("CMUX_KDB_RETRY=1 bash -l") && !retry.contains("'"))
+    }
+
     @Test func aDumpPathIsLookedUpAsItIs() throws {
         let model = try #require(KDBDesignModel(json: Data(Self.model.utf8)))
         #expect(model.lookup("tb.u_dut.data")?.instance == "tb.u_dut")

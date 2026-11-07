@@ -9,6 +9,8 @@
 # - A model in the cache is answered from it (cached), without the exporter.
 # - Two asks for a new KDB at once run the exporter once (one seat); the other waits and is
 #   answered from the cache.
+# - A launcher killed mid-export (kill -9: its watchdog is gone) leaves no exporter running past
+#   the time cap and a few seconds (the exporter runs under timeout -k).
 # - Of several KDBs next to the dump, the first by name in C order is taken, whatever the locale
 #   (as verdi-trace.sh does).
 S=$1
@@ -24,6 +26,7 @@ chmod +x "$S/bin/verdi"
 cat > "$S/npi-model.py" <<EOF
 import json, os, sys, time
 open("$S/runs", "a").write("x")
+open("$S/pid", "w").write(str(os.getpid()))
 open("$S/daidir", "w").write(sys.argv[1])
 if os.path.exists("$S/sleep"):
     time.sleep(float(open("$S/sleep").read()))
@@ -76,6 +79,29 @@ wait $A $B
 rm -f "$S/sleep"
 check "two at once: the first exports" "$(cat "$S/one")" '"ok": true, "cached": false' 5
 check "two at once: the second waits for it, cached" "$(cat "$S/two")" '"ok":true,"cached":true' 5
+
+# The launcher killed mid-export: the orphaned exporter still ends by the time cap (2 s) plus the
+# kill grace (5 s), not when it finishes on its own (30 s).
+echo five > "$S/sim/simv.daidir/kdb.elab++/e.db"
+echo 30 > "$S/sleep"
+rm -f "$S/pid"
+PATH="$S/bin:$PATH" CMUX_KDB_CACHE="$S/cache" CMUX_NPI_SECONDS=2 bash "$S/w/npi-model.sh" "$S/w" "$S/sim/dump.fsdb" > /dev/null 2>&1 & L=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$S/pid" ] && break; sleep 0.2; done
+kill -9 "$L" 2>/dev/null
+wait "$L" 2>/dev/null
+orphan=$(cat "$S/pid" 2>/dev/null)
+left=gone
+for _ in $(seq 1 60); do
+  if [ -n "$orphan" ] && kill -0 "$orphan" 2>/dev/null; then left=running; sleep 0.2; else left=gone; break; fi
+done
+if [ -n "$orphan" ] && [ "$left" = gone ]; then
+  echo "ok   a killed launcher's exporter ends by the time cap"
+else
+  echo "FAIL a killed launcher's exporter (pid ${orphan:-none}) still runs 12 s after the kill"
+  pass=0
+  [ -n "$orphan" ] && kill -9 "$orphan" 2>/dev/null
+fi
+rm -f "$S/sleep"
 
 # Several KDBs next to the dump: the first in C order, in any locale.
 mkdir -p "$S/sim/Simv_gl.daidir/kdb.elab++"
