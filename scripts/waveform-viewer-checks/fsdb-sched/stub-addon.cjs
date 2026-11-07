@@ -46,6 +46,29 @@ const DIFFER_FULL = new Set(JSON.parse(process.env.STUB_DIFFER_FULL || '[]'));
 const win1 = (id) => { const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = DIFFER.has(id) ? 0x31 : 0x30; return { signalId: id, exact: true, count: 1, records: rec, counts: null }; };
 const sleep = (ms) => { if (ms > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } };
 const store = new Map();  // signalId -> true
+// STUB_CLOCK {id: period}: a clock, '0' from time 0 (the dump's first value) and toggling every
+// half period. searchScan (the ranged search/edge scan) reads it, and the STUB_CHANGE_AT rows ('x'
+// until their one change to '1'); STUB_FIND_LOG gets a line per call: {t, dir, bound, kind}.
+const CLOCK = JSON.parse(process.env.STUB_CLOCK || '{}');
+// The normalized changes of id with times in [a, b] (ascending), each with the value before it.
+function changesIn(id, a, b) {
+  const out = [];
+  if (CLOCK[id]) {
+    const h = Number(CLOCK[id]) / 2;
+    for (let k = Math.max(0, Math.ceil(a / h)); k * h <= Math.min(b, TIME_END); k++) { out.push({ t: k * h, v: k % 2 ? '1' : '0', was: k === 0 ? 'x' : (k % 2 ? '0' : '1') }); }
+  } else {
+    const c = changeOf(id);
+    if (c !== null && c >= a && c <= b) { out.push({ t: c, v: '1', was: 'x' }); }
+  }
+  return out;
+}
+const EDGE_OK = (kind, was, v) => {
+  if (kind === 0) { return true; }
+  if (kind === 1 || kind === 2) { return v === (kind === 1 ? '1' : '0'); }
+  const pos = (was === '0' && v !== '0') || (was !== '0' && was !== '1' && v === '1');
+  const neg = (was === '1' && v !== '1') || (was !== '0' && was !== '1' && v === '0');
+  return kind === 3 ? pos : kind === 4 ? neg : pos || neg;
+};
 let limit = 0;
 const entry = (id) => ({ signalId: id, count: 2, bits: 1, xz: false, bytes: 16 });
 module.exports = {
@@ -71,6 +94,22 @@ module.exports = {
     });
   },
   cacheEvict() {},
+  // searchScan(ids, t, dir, pattern, bound, kind?, start?): as the addon's (kind >= 0: an edge
+  // kind instead of the pattern; a change at or before start is no SystemVerilog edge). Costs the
+  // scanned span's share.
+  searchScan(ids, t, dir, pattern, bound, kind = -1, start = 0) {
+    if (process.env.STUB_FIND_LOG) { fs.appendFileSync(process.env.STUB_FIND_LOG, JSON.stringify({ ids, t, dir, bound, kind }) + '\n'); }
+    return ids.map((id) => {
+      const lo = dir > 0 ? t : bound, hi = dir > 0 ? bound : t;
+      sleep(share(id, lo, hi));
+      const p = String(pattern).replace(/^!/, '').slice(-1);
+      const ok = (c) => (kind >= 0 ? !(kind >= 3 && c.t <= start) && EDGE_OK(kind, c.was, c.v) : (p === 'x' || p === '?' || p === c.v));
+      const cs = changesIn(id, lo, hi).filter((c) => (dir > 0 ? c.t > t : c.t < t));
+      if (dir < 0) { cs.reverse(); }
+      const hit = cs.find(ok);
+      return { signalId: id, t: hit ? hit.t : null, scanned: cs.length };
+    });
+  },
   coldValueAt: (ids) => ids.map(() => '0'),
   cacheValueAt: () => '0',
   cacheLastChange(id, t) { const c = changeOf(id); return c !== null && c <= t ? { t: c, value: '1' } : null; },
