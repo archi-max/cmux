@@ -199,6 +199,24 @@ async function start(workers, costs, env = {}) {
 }
 
 
+// 14. Panning while background whole loads run: one worker is kept free of background pieces,
+// and ranged reads go to free workers, so a pan never waits for a piece (~250-500 ms).
+{
+  const h = await start(3, { 1: 3000, 2: 3000, 3: 3000, 4: 200 });
+  const near = (id, t0) => ({ signals: [{ signalId: id, width: 1 }], t0, t1: t0 + 10000, buckets: 1024 });  // 1% of the dump
+  await Promise.all([1, 2, 3].map((id) => h.send('window', near(id, 0)).reply));
+  await wait(150);  // their whole loads now run in the background
+  const lat = [];
+  for (let k = 1; k <= 6; k++) {
+    const r = await h.send('window', { signals: [1, 2, 3, 4].map((signalId) => ({ signalId, width: 1 })), t0: k * 10000, t1: k * 10000 + 10000, buckets: 1024 }).reply;
+    lat.push(r.error ? 1e9 : r.at);
+    await wait(40);
+  }
+  const worst = Math.max(...lat);
+  check(worst < 250, `pan steps over 4 signals while 3 whole loads run: worst ${Math.round(worst)} ms (behind a 250-500 ms piece: ~485)`);
+  h.close();
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
