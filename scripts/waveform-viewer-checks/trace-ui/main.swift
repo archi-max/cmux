@@ -563,6 +563,17 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             for (const [at, val] of ch) { if (at <= req.t) { v = val; } }
             values.push(v);
           }
+          // helper-v2's `prev: true` (m.prev on): also the last change at or before t per signal, null with none.
+          if (req.prev === true && m.prev) {
+            const prev = [];
+            for (const id of req.signalIds) {
+              const ch = await m.changes(id);
+              let at = null;
+              for (const c of ch) { if (c[0] <= req.t) { at = { t: c[0], value: c[1] }; } }
+              prev.push(at);
+            }
+            return { values, prev };
+          }
           return { values };
         }
         if (req.cmd === 'count') {
@@ -582,7 +593,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         b.windowed = () => true;
         b.v2 = async (req) => {
           m.asked.push(req.cmd);
-          m.sent.push({ cmd: req.cmd, signalId: req.signalId, at: performance.now() });
+          m.sent.push({ cmd: req.cmd, signalId: req.signalId, kind: req.kind, prev: req.prev === true, ids: (req.signalIds || []).length, at: performance.now() });
           if (m.delay && req.cmd !== 'cancel') { await new Promise((r) => setTimeout(r, m.delay)); }
           if (req.cmd === 'cancel') {
             m.cancels.push(req.target);
@@ -600,7 +611,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       // The plain (whole-signal) page on the same histories, to compare with.
       m.plain = () => { b.signalChanges = (v, max) => m.read(v, max); };
-      m.remove = () => { m.custom.clear(); m.sent = []; m.delay = 0; m.readDelay = 0; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
+      m.remove = () => { m.custom.clear(); m.sent = []; m.delay = 0; m.readDelay = 0; m.prev = false; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
       m.pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
       return null
       """)
@@ -648,6 +659,42 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "v2 helper, a failed value batch: the same step: \(String(describing: miss?["v2"])) vs \(String(describing: miss?["plain"]))")
     expect(miss?["downloads"] as? Int == 0 && (miss?["asked"] as? [String])?.contains("valueAt") == true,
            "v2 helper, a failed value batch: values asked again of the helper, none downloaded: \(String(describing: miss?["asked"])) downloads \(String(describing: miss?["downloads"]))")
+
+    // valueAt with prev (helper-v2's point read for trace-X): a step's values and each one's last change come
+    // from one batched read per time, with no edge search for a last change; a helper without prev is
+    // searched as before. Trace Driver and Trace X to Root give the same steps either way.
+    func pointReads(prev: Bool) async -> [String: Any]? {
+      await call("""
+        const h = cmuxWaveform.host, b = h.currentBackend, t = cmuxWaveform.trace, m = window.__v2mock;
+        const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const x = () => t.xRoot({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 });
+        const chain = (c) => JSON.stringify(((c && c.steps) || []).map((e) => [e.signal, e.time, e.value, e.since]).concat([c && c.end && c.end.code]));
+        try {
+          t.backendChanged();
+          const plain = m.pick(await q()), plainChain = chain(await x());
+          m.install(); m.prev = \(prev); m.downloads = 0; m.sent = [];
+          b.changes = async () => { throw new Error('not here'); };
+          b.valuesAt = async () => { throw new Error('not here'); };
+          t.backendChanged();
+          const v2 = m.pick(await q()), v2Chain = chain(await x());
+          const sent = m.sent.filter((r) => r.cmd !== 'cancel');
+          return { plain, v2, plainChain, v2Chain, downloads: m.downloads,
+            anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any').length,
+            prevReads: sent.filter((r) => r.cmd === 'valueAt' && r.prev).length, requests: sent.length };
+        } finally { m.remove(); t.backendChanged(); }
+        """) as? [String: Any]
+    }
+    for prev in [true, false] {
+      let r = await pointReads(prev: prev)
+      print("[v2 point reads] prev \(prev): \(String(describing: r?["requests"])) requests, \(String(describing: r?["anyEdges"])) last-change searches, \(String(describing: r?["prevReads"])) prev reads")
+      expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
+             "v2 helper, valueAt prev \(prev): the same step and chain: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
+      expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(prev): no history downloaded (\(String(describing: r?["downloads"])))")
+      if prev {
+        expect(r?["anyEdges"] as? Int == 0 && (r?["prevReads"] as? Int ?? 0) > 0,
+               "v2 helper, valueAt prev: last changes come with the values, no edge search: \(String(describing: r?["anyEdges"])) searches, \(String(describing: r?["prevReads"])) prev reads")
+      }
+    }
 
     // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
     // whole read is capped too and only costs time; its last change is unknown.
