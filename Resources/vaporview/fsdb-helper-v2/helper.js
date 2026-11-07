@@ -223,9 +223,10 @@ function writeAll(buf) {
 function shutdown(code) {
   try { flushManifest(); } catch (e) { /* best effort (L8) */ }
   for (const w of workers) { w.proc.kill(); }
-  // (and the processes that aren't workers: fsdbdebug, warm readers)
+  // (and the processes that aren't workers: fsdbdebug, warm readers, a clock segment)
   try { stopKinds(); } catch (e) { /* best effort */ }
   try { hotStop(); } catch (e) { /* best effort */ }
+  try { clockStop('exit'); } catch (e) { /* best effort (also: before the clock state exists) */ }
   removeTmpDir();
   process.exit(code);
 }
