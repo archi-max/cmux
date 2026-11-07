@@ -62,39 +62,113 @@ extension SVModelResolve {
         }
         func module(_ path: String) async -> String? { await slangModel(path)?["module"] as? String }
         func below(_ path: String, _ prefix: String) -> String { path == prefix ? "" : String(path.dropFirst(prefix.count + 1)) }
-        var otherModule = false
+        // Whether slang's instance chain for the row under a rule (dump prefix -> design prefix) has
+        // the KDB's modules from the prefix down: nil when it does, else .otherModule (an instance of
+        // another module) or .notInSlang (one missing).
+        func chainDiffers(from level: Int, prefix: String, at candidate: String) async -> CompiledOnlyReason? {
+            for path in chain[level...] {
+                let rest = below(path, prefix)
+                guard let theirs = await module(rest.isEmpty ? candidate : candidate + "." + rest) else { return .notInSlang }
+                if theirs != kdb.instance(path)?["module"] as? String { return .otherModule }
+            }
+            return nil
+        }
+        // today()'s answer only where its instance chain, from its rule's prefixes down, has the
+        // KDB's modules (the row's instance and each above it, up to the dump prefix); else the
+        // compiled design's row (never another module's statements).
+        func checkedToday() async throws -> Outcome {
+            let answer = try await today()
+            guard case .signal(_, let designPrefix, let dumpPrefix) = answer else { return answer }
+            for path in chain where dumpPrefix.isEmpty || path == dumpPrefix || path.hasPrefix(dumpPrefix + ".") {
+                let rest = dumpPrefix.isEmpty ? path : below(path, dumpPrefix)
+                let there = rest.isEmpty ? designPrefix : designPrefix.isEmpty ? rest : designPrefix + "." + rest
+                if await module(there) != kdb.instance(path)?["module"] as? String {
+                    log("KDB mapping of \(row): the inferred rule's \(there) is not \(path)'s module; the compiled design's row")
+                    return .compiledOnly(dumpPath: row, reason: .otherModule, writes: kdb.writes(of: row))
+                }
+            }
+            return answer
+        }
+        // slang's instance above `path` (nil: a top).
+        func slangParent(_ path: String) -> String? {
+            var segments = HierarchyPathMapping.segments(path)
+            while segments.count > 1 {
+                segments.removeLast()
+                let parent = HierarchyPathMapping.join(segments)
+                if known.contains(parent) { return parent }
+            }
+            return nil
+        }
+        // Where a candidate for chain[level] starts in slang: up slang's instances above it while
+        // each is the module of the KDB's instance above (slang's counterpart of that scope). Below
+        // the highest, only the same relative names stand for the KDB's (u_fifo[0] is no stand-in
+        // for u_fifo[1] under a counterpart of their parent).
+        func anchored(_ level: Int, _ candidate: String) async -> (level: Int, at: String) {
+            var (k, at) = (level, candidate)
+            while k > 0, let parent = slangParent(at), let theirs = await module(parent),
+                  theirs == kdb.instance(chain[k - 1])?["module"] as? String {
+                k -= 1
+                at = parent
+            }
+            return (k, at)
+        }
+        let topSet = Set(tops)
         for (level, prefix) in chain.enumerated() {
             let suffix = below(instance, prefix)
-            // Slang instances standing where the dump's scope `prefix` does: those with the same path below.
-            let candidates: [String] = suffix.isEmpty
-                ? Array(Set(tops + (known.contains(prefix) ? [prefix] : [])))
-                : slang.compactMap { $0.hasSuffix("." + suffix) ? String($0.dropLast(suffix.count + 1)) : nil }.filter { known.contains($0) }
-            var matched: [String] = []
-            for candidate in candidates.sorted() {
-                var same = true
-                for path in chain[level...] {
-                    let rest = below(path, prefix)
-                    let there = rest.isEmpty ? candidate : candidate + "." + rest
-                    guard let theirs = await module(there), theirs == kdb.instance(path)?["module"] as? String else {
-                        same = false
-                        break
-                    }
-                }
-                if same {
-                    matched.append(candidate)
-                } else if candidate == prefix {
-                    // slang has the dump's own path, as other modules: never evaluated with its statements.
-                    otherModule = true
-                }
+            let kdbModule = kdb.instance(prefix)?["module"] as? String
+            // Slang instances standing where the dump's scope `prefix` does: slang's instance of the
+            // dump's own path, those with the same path below, and (slang's counterpart, whatever is
+            // below it) those with the same child instance below.
+            var candidates: Set<String> = known.contains(prefix) ? [prefix] : []
+            var sameBelow: Set<String> = []
+            if suffix.isEmpty {
+                candidates.formUnion(tops)
+            } else {
+                sameBelow = Set(slang.compactMap { $0.hasSuffix("." + suffix) ? String($0.dropLast(suffix.count + 1)) : nil }.filter { known.contains($0) })
+                let child = below(chain[level + 1], prefix)
+                candidates.formUnion(sameBelow)
+                candidates.formUnion(slang.compactMap { $0.hasSuffix("." + child) ? String($0.dropLast(child.count + 1)) : nil }.filter { known.contains($0) })
             }
-            if otherModule {
-                return .compiledOnly(dumpPath: row, reason: .otherModule, writes: kdb.writes(of: row))
+            // Each candidate of the scope's module from where it starts in slang (`anchored`):
+            // matched when slang's chain from there has the KDB's modules under the same relative
+            // names, else a counterpart whose chain differs (slang has another module or nothing
+            // where the dump does). A candidate of another module at the dump's own path or with
+            // its whole path below (not a top: a testbench of its own) is slang's scope as another
+            // module. The shallowest start decides: a counterpart there whose chain differs is the
+            // compiled design's row, never a stand-in found deeper (a sibling, another index or
+            // another top of the same module).
+            var entries: [(level: Int, at: String, reason: CompiledOnlyReason?)] = []
+            for candidate in candidates.sorted() {
+                guard await module(candidate) == kdbModule else {
+                    let here = candidate == prefix || sameBelow.contains(candidate)
+                    if here, suffix.isEmpty ? candidate == prefix : !topSet.contains(candidate) {
+                        entries.append((level, candidate, .otherModule))
+                    }
+                    continue
+                }
+                let start = await anchored(level, candidate)
+                var reason = await chainDiffers(from: start.level, prefix: chain[start.level], at: start.at)
+                // Where slang's chain starts below a scope that is not the dump's (another testbench),
+                // it starts under the dump's own instance name (tb_soc.dut for tb.dut), else at a top
+                // (soc): a renamed instance (dut_r) is no stand-in either.
+                if reason == nil, !topSet.contains(start.at),
+                   HierarchyPathMapping.segments(start.at).last != HierarchyPathMapping.segments(chain[start.level]).last {
+                    reason = .notInSlang
+                }
+                if !entries.contains(where: { $0.level == start.level && $0.at == start.at }) { entries.append((start.level, start.at, reason)) }
+            }
+            guard let shallowest = entries.map(\.level).min() else { continue }
+            let decisive = entries.filter { $0.level == shallowest }
+            let matched = decisive.filter { $0.reason == nil }
+            if matched.isEmpty {
+                return .compiledOnly(dumpPath: row, reason: decisive.contains { $0.reason == .otherModule } ? .otherModule : .notInSlang,
+                                     writes: kdb.writes(of: row))
             }
             if matched.count > 1 {
-                log("KDB mapping of \(row): \(matched.joined(separator: ", ")) are all \(prefix)'s modules; the inferred rule instead")
-                return try await today()
+                log("KDB mapping of \(row): \(matched.map(\.at).joined(separator: ", ")) are all \(chain[shallowest])'s modules; the inferred rule instead")
+                return try await checkedToday()
             }
-            guard let designPrefix = matched.first else { continue }
+            let (level, prefix, designPrefix) = (shallowest, chain[shallowest], matched[0].at)
             let rest = below(row, prefix)
             let designPath = designPrefix + "." + rest
             let designInstance = below(instance, prefix).isEmpty ? designPrefix : designPrefix + "." + below(instance, prefix)

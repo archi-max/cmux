@@ -240,7 +240,7 @@ import Testing
         let kdb = Self.kdb(compiled)
         #expect(try await resolve("tb.g[3].u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.g[3].u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.g[3].u_dut.u_core.x")))
         #expect(try await resolve("tb.g[3].u_dut.clk", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.g[3].u_dut.clk", reason: .notInSlang, writes: []))
-        #expect(mapping(try await resolve("tb.g[0].u_dut.u_core.x", design: design, kdb: kdb)) == .signal(designPath: "tb.g[0].u_dut.u_core.x", designPrefix: "tb", dumpPrefix: "tb"))
+        #expect(mapping(try await resolve("tb.g[0].u_dut.u_core.x", design: design, kdb: kdb)) == .signal(designPath: "tb.g[0].u_dut.u_core.x", designPrefix: "", dumpPrefix: ""))
     }
 
     /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
@@ -268,20 +268,20 @@ import Testing
         let env = ProcessInfo.processInfo.environment
         let n = Int(env["KDB_SWEEP_N"] ?? "") ?? 12, start = Int(env["KDB_SWEEP_START"] ?? "") ?? 90000
         for p in 0..<4 { for mode in 0..<6 {
-            var rows = 0, wrong = 0, other = 0, wrongToday = 0
+            var rows = 0, wrong = 0, other = 0, wrongToday = 0, lost = 0
             var bad: [String] = []
             for i in start..<(start + n) {
                 let seed = UInt64(i) &* 0x9E3779B97F4A7C15 &+ 777
                 let o = try await Self.sweepOne(seed: seed, mode: mode, perturbation: p)
-                rows += o.rows; wrong += o.wrong; other += o.other; wrongToday += o.wrongToday
+                rows += o.rows; wrong += o.wrong; other += o.other; wrongToday += o.wrongToday; lost += o.lost
                 if bad.count < 8 { bad += o.samples.prefix(8 - bad.count) }
             }
-            print("KDB SWEEP p\(p) mode \(mode): rows \(rows) wrong \(wrong) otherModule evaluated \(other) | without the KDB: wrong \(wrongToday)")
+            print("KDB SWEEP p\(p) mode \(mode): rows \(rows) wrong \(wrong) otherModule evaluated \(other) | without the KDB: wrong \(wrongToday) | lost (right without the KDB, not evaluated with it) \(lost)")
             #expect(wrong == 0 && other == 0, "p\(p) mode \(mode): \(wrong) wrong, \(other) evaluated in another module: \(bad)")
         } }
     }
 
-    struct SweepOut { var rows = 0, wrong = 0, other = 0, wrongToday = 0; var samples: [String] = [] }
+    struct SweepOut { var rows = 0, wrong = 0, other = 0, wrongToday = 0, lost = 0; var samples: [String] = [] }
 
     static func sweepOne(seed: UInt64, mode: Int, perturbation: Int) async throws -> SweepOut {
         let g = InferenceSweepTests.generate(seed: seed, mode: mode)
@@ -333,7 +333,8 @@ import Testing
                 default: return nil
                 }
             }
-            if let p = evaluated(try await run(kdb)) {
+            let withKDB = evaluated(try await run(kdb))
+            if let p = withKDB {
                 if perturbation == 2, p == leaf.design, leaf.design.hasPrefix(changed + ".") {
                     o.other += 1
                     if o.samples.count < 3 { o.samples.append("OTHER MODULE seed \(seed) mode \(mode) p\(perturbation): \(leaf.dump) -> \(p) (\(changed) is mX)") }
@@ -342,7 +343,9 @@ import Testing
                     if o.samples.count < 3 { o.samples.append("WRONG seed \(seed) mode \(mode) p\(perturbation): \(leaf.dump) -> \(p), not \(leaf.design) (\(changed))") }
                 }
             }
-            if let p = evaluated(try await run(nil)), p != leaf.design { o.wrongToday += 1 }
+            let without = evaluated(try await run(nil))
+            if let p = without, p != leaf.design { o.wrongToday += 1 }
+            if without == leaf.design, withKDB == nil { o.lost += 1 }
         }
         return o
     }
