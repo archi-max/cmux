@@ -117,7 +117,7 @@ public enum SVModelResolve {
         return result(designPath: strippedPath, dumpPath: rowPath)
     }
 
-    private static func result(designPath: String, dumpPath: [String]) -> Outcome {
+    static func result(designPath: String, dumpPath: [String]) -> Outcome {
         let prefixes = SVModelLoad.prefixes(dumpPath: dumpPath, designPath: HierarchyPathMapping.segments(designPath))
         return .signal(designPath: designPath, designPrefix: prefixes.designPrefix, dumpPrefix: prefixes.dumpPrefix)
     }

@@ -157,6 +157,32 @@ import Testing
         #expect(logged.count == 1 && logged[0].contains("soc_a") && logged[0].contains("soc_b"), "\(logged)")
     }
 
+    /// A real design (env KDB_MODEL: npi-model.py's export; SLANG_MODEL: cmux-sv-model's `--once '*'`
+    /// of the same design; skipped without them): every signal row of the KDB maps to slang's same path.
+    @Test func aRealDesignsRowsMapAsTheyAre() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let kdbPath = env["KDB_MODEL"], let slangPath = env["SLANG_MODEL"] else { return }
+        let kdb = try #require(KDBDesignModel(json: try Data(contentsOf: URL(fileURLWithPath: kdbPath))))
+        let slangObject = try #require(try JSONSerialization.jsonObject(with: try Data(contentsOf: URL(fileURLWithPath: slangPath))) as? [String: Any])
+        let design = Design(models: try #require(slangObject["instances"] as? [String: [String: Any]]), tops: slangObject["tops"] as? [String] ?? [])
+        var rows = 0, same = 0, other: [String] = []
+        for path in kdb.instancePaths {
+            for name in ((kdb.instance(path)?["signals"] as? [String: Any]) ?? [:]).keys.sorted() {
+                let row = path + "." + name
+                guard design.models[path].map({ ($0["signals"] as? [String: Any])?[name] != nil }) == true else { continue }
+                rows += 1
+                let got = try await resolve(row, design: design, kdb: kdb)
+                if case .signal(let designPath, _, _) = got, designPath == row {
+                    same += 1
+                } else if other.count < 5 {
+                    other.append("\(row): \(got)")
+                }
+            }
+        }
+        print("[kdb resolve] \(rows) rows, \(same) as they are")
+        #expect(rows > 0 && same == rows, "\(other)")
+    }
+
     // (c) No KDB: exactly today's answers.
     @Test func withoutAKDBTheAnswersAreTodays() async throws {
         let whole = Design(models: [
