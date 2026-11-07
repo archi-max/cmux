@@ -89,7 +89,10 @@ extension SVModelResolve {
                             let q = HierarchyPathMapping.join(segments)
                             if known.contains(q) { up = q; break }
                         }
-                        if up == slangParent, await module(p) == kdbModule { slangSame.append(p) }
+                        guard up == slangParent, await module(p) == kdbModule else { continue }
+                        // slang's namesake of another of the KDB parent's children is that child, retyped: no stand-in.
+                        if kdb.instance(parent + "." + below(p, slangParent)) != nil { continue }
+                        slangSame.append(p)
                     }
                     guard kdbSame.count == 1, slangSame.count == 1 else { return (paths, .notInSlang, renamed) }
                     renamed.append(.matchedByModuleType(compiled: path, slang: slangSame[0]))
