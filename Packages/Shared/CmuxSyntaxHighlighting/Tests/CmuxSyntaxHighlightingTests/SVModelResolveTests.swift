@@ -272,6 +272,55 @@ import Testing
             == .signal(designPath: "tb_soc.dut.u_a.x", designPrefix: "tb_soc", dumpPrefix: "tb"))
     }
 
+    /// `soc` (dumped as `tb.dut`) with `cores` identical cores (`u_a`..`u_d`) and a `u_dma` whose children share
+    /// `shared` of a core's names (`u_a`, ...; the rest are its own).
+    static func coresAndDma(cores: Int, shared: Int) -> (FakeDesign, FakeDump) {
+        let coreKids = ["u_a", "u_b", "u_c", "u_d"]
+        let dmaKids = Array(coreKids.prefix(shared)) + ["u_z", "u_y", "u_w", "u_v"].prefix(4 - shared)
+        var models: [String: [String: Any]] = ["soc": signals(["clk": bit]), "soc.u_dma": signals(["clk": bit])]
+        var dump: FakeDump = ["": scopes(["tb"]), "tb": scopes(["dut"])]
+        let coreNames = (0..<cores).map { "u_core\($0)" }
+        dump["tb.dut"] = scopes(coreNames + ["u_dma"]) + bits(["clk"])
+        for core in coreNames {
+            models["soc.\(core)"] = signals(["clk": bit])
+            dump["tb.dut.\(core)"] = scopes(coreKids)
+            for kid in coreKids { models["soc.\(core).\(kid)"] = signals(["x": bit]); dump["tb.dut.\(core).\(kid)"] = bits(["x"]) }
+        }
+        dump["tb.dut.u_dma"] = scopes(dmaKids)
+        for kid in dmaKids { models["soc.u_dma.\(kid)"] = signals(["x": bit]); dump["tb.dut.u_dma.\(kid)"] = bits(["x"]) }
+        return (FakeDesign(models: models, tops: ["soc"]), dump)
+    }
+
+    /// Probe D: the cores tie at their own scope, and the lone u_dma scoring lower there is another module.
+    @Test func aNarrowerRuleBelowATieIsNotTaken() async throws {
+        var (design, dump) = Self.coresAndDma(cores: 2, shared: 3)
+        dump["tb.dut"] = Self.scopes(["u_core0", "u_core1"]) + Self.bits(["clk"])
+        #expect(try await resolve("tb.dut.u_core1.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "soc.u_core1.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    /// Whatever the overlap between instances' children, a row maps to its own instance (the top's rule) or to nothing,
+    /// never to another instance's signal of the same name.
+    @Test func aRowNeverMapsToAnotherInstance() async throws {
+        for cores in 1...3 {
+            for shared in 0...4 {
+                for dumpDma in [true, false] {
+                    var (design, dump) = Self.coresAndDma(cores: cores, shared: shared)
+                    if !dumpDma { dump["tb.dut"] = dump["tb.dut"]!.filter { $0.name != "u_dma" } }
+                    let rows = dump.keys.filter { $0.hasPrefix("tb.dut.") && dump[$0]!.allSatisfy { !$0.isScope } }.sorted()
+                        .filter { dumpDma || !$0.hasPrefix("tb.dut.u_dma") }
+                    for row in rows {
+                        let got = try await resolve("\(row).x", design: design, dump: dump)
+                        let own = "soc" + "\(row).x".dropFirst("tb.dut".count)
+                        if case .signal(let designPath, _, _) = got {
+                            #expect(designPath == own, "cores \(cores), shared \(shared), dma dumped \(dumpDma): \(row).x -> \(designPath)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
         let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
         #expect(roots["soc"] == [
