@@ -199,6 +199,7 @@ const DERIVED_BASE = 1e9;  // derived signal ids start here (FSDB ids are small)
 const SEARCH_CHUNK = 16;   // signals per searchAll task (one batched reader load)
 const COLD_CHUNK = 4;      // cold-scan pool chunk (small, so the pool balances across workers)
 const MAX_BUCKETS = 1 << 22; // per signal in a window request (16 MB of counts)
+const CLOCK_WIN_BUCKETS = 65536;  // descriptor windows answered on the main thread, at most (review M1)
 const MAX_LINE = 1 << 20;    // request line bytes
 
 function send(obj, bin) {
@@ -2961,9 +2962,13 @@ const handlers = {
     for (const s of signals) { if (s.width) { widthOf.set(s.signalId, s.width); } }
     const ranged = t1 > t0 && timeEnd > 0 && (t1 - t0) <= timeEnd * COLD_RANGE;
     // Rows with a ready clock descriptor covering [t0, t1) answer from it (clockdesc.js), as the
-    // addon's windowOf would, byte for byte.
+    // addon's windowOf would, byte for byte. Only up to CLOCK_WIN_BUCKETS buckets (so at most
+    // 2 x that many changes exact, or that many buckets' first and last): it runs on this main
+    // thread, and a 2^22-bucket window over a fast clock took 4-9 s and 1.8 GB here (review M1).
+    // Wider ones go to the reader worker, under its RSS cap. (The page's tiles are <= 3 x 1024
+    // buckets and its value scan 32768.)
     const fromClock = new Map();
-    if (CLOCK) {
+    if (CLOCK && buckets <= CLOCK_WIN_BUCKETS) {
       for (const id of new Set(ids)) {
         const d = clockFor(id, t0);
         if (d && (t1 <= d.verifiedEnd + 1 || d.verifiedEnd >= (timeEnd || 0))) {  // (changes at times < t1)
