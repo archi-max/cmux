@@ -1296,6 +1296,7 @@ function coldTask(req, op, ids, extra, spread = false) {
     req.parts = [...(req.parts || []), { w, task }];
     task.done = (m) => {
       req.workerMs = Math.max(req.workerMs || 0, m.ms);
+      if (op === 'windowCold' && !m.error) { gids.forEach((id, k) => { const x = m.result[k]; if (x && !x.error) { noteDensity(id, extra, x.count); } }); }
       if (op === 'windowCold' && gids.length === 1 && !m.error && m.result[0] && !m.result[0].error) { hotColdCost(gids[0], extra, m.ms); }
       // (batched: an even share each, for rows with no read of their own; a share is a lower
       // bound, so it errs toward reading them cold)
@@ -1711,6 +1712,7 @@ async function hotPump(r) {
     const ids = [...new Set(qs.flatMap((q) => q.ids))];
     const a = await hotCall(r, { op: qs[0].op, signalIds: ids, ...qs[0].range });
     if (!a.error && kinds.state === 'ready' && qs[0].op === 'hotWindow') { hotJudge(r, qs[0].range, a.ms || 0); }
+    if (!a.error && qs[0].op === 'hotWindow') { a.result.forEach((x) => { if (x && !x.error) { noteDensity(x.signalId, qs[0].range, x.count); } }); }
     for (const q of qs) {
       if (a.error) { q.resolve({ error: a.error }); continue; }
       const want = new Set(q.ids);
@@ -1793,10 +1795,21 @@ async function coldNear(req, ids, t) {
 // so far), and each round resumes at the last one's bound, so a search with no hit reads the
 // dump once, in steps.
 const RANGED_CHANGES = Number(process.env.FSDB_RANGED_CHANGES || 8e6);
+// A row's density, changes per time unit, the densest of its ranged and warm windows: an unlisted
+// row has no fsdbdebug count, so this is its only size estimate before a whole load (review M5
+// low: the 10 GB dump's u_cluster.clk paid an 18.5 s failed whole load before going ranged).
+const rowDensity = new Map();
+function noteDensity(id, range, count) {
+  const span = Number(range.t1) - Number(range.t0);
+  if (!(span > 0) || typeof count !== 'number' || !(count > 0)) { return; }
+  const d = count / span;
+  if (!(rowDensity.get(id) >= d)) { rowDensity.set(id, d); }
+}
 function tooBig(id) {
   if (derived.has(id)) { return false; }
   if (bgFailed.has(id) && /larger than/.test(bgFailed.get(id))) { return true; }
-  const n = kinds.primaries && kinds.primaries.get(id), bits = widthOf.get(id) || 1;
+  const bits = widthOf.get(id) || 1;
+  const n = (kinds.primaries && kinds.primaries.get(id)) || (rowDensity.get(id) || 0) * Math.max(0, (timeEnd || 0) - (timeStart || 0));
   return !!n && n * (8 + Math.ceil(bits / 8)) > storeCap();
 }
 function taskOn(req, w, task) {
@@ -1810,7 +1823,7 @@ async function rangedFind(req, id, t, dir, extra) {
   const T = Math.max(1, timeEnd || 1), lo = timeStart || 0;
   let span = Math.max(1, Math.ceil(T / (kindOf(id) === 'p' ? 256 : 4096))), from = t;
   const n = kinds.primaries && kinds.primaries.get(id);
-  let density = n ? n / Math.max(1, T - lo) : 0;  // changes per time unit
+  let density = n ? n / Math.max(1, T - lo) : (rowDensity.get(id) || 0);  // changes per time unit (an unlisted row: its windows')
   req.ranged = 0;
   for (;;) {
     if (req.cancelled) { throw new Error('cancelled'); }
@@ -2648,7 +2661,7 @@ const handlers = {
     flushManifest();  // the previous file's headers
     lastOpen = null;
     clearJobs();
-    bgFailed.clear();
+    bgFailed.clear(); rowDensity.clear();
     persisting.clear();
     epoch++;
     hotStop();
@@ -3050,7 +3063,7 @@ const handlers = {
     flushManifest();
     lastOpen = null;
     clearJobs();
-    bgFailed.clear();
+    bgFailed.clear(); rowDensity.clear();
     persisting.clear();
     epoch++;
     hotStop();

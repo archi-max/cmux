@@ -69,7 +69,7 @@ Times are integers in the dump's unit. The full list, with every field, is the h
 | --- | --- |
 | `open`, `children` | Metadata and top scopes; one scope's children |
 | `window {signals, t0, t1, buckets}` | A signal's changes in `[t0, t1)`. Exact when there are at most 2 × `buckets` changes; otherwise each bucket's first and last change plus a count per bucket. Sent as deflated `[u64 delta][value]` records |
-| `valueAt`, `edge`, `search` | The value at a time (with `prev: true`, also each signal's last real change at or before it, for trace-X); the next or previous change, rise or fall; the next match of a value pattern. A signal too big for a worker's store (its whole load fails on the cap, or fsdbdebug's change count says it would) is answered from ranged reads that grow x8 from t up to the first hit |
+| `valueAt`, `edge`, `search` | The value at a time (with `prev: true`, also each signal's last real change at or before it, for trace-X); the next or previous change, rise or fall; the next match of a value pattern. A signal too big for a worker's store (its whole load fails on the cap, or its size projected from fsdbdebug's change count, or for an unlisted row from the densest window drawn of it, says it would) is answered from ranged reads that grow x8 from t up to the first hit |
 | `count` | A signal's total change count, when known without a walk (the viewer uses it to load small signals whole) |
 | `cancel {id}` | Stops a request. Its reply becomes `{cancelled: true}` |
 | `signals` | The v1 whole-signal reply, for compatibility |
