@@ -84,6 +84,7 @@ const widths = new Map();
   expect(dd > 0 && eq(argv.slice(dd + 1), ['+iters=3', '+ntb_random_seed=7']), 'worker: run arguments without +fsdb and -l');
   const scr = argv[argv.indexOf('--scratch') + 1] || '';
   expect(scr && !scr.startsWith(runDir) && fs.existsSync(scr) && (fs.statSync(scr).mode & 0o077) === 0, 'worker: a private scratch folder outside the build folder');
+  expect(argv[argv.indexOf('--cwd') + 1] === runDir, `worker: the run folder (novas_dump.log's) is its --cwd, not the simulator's: ${argv[argv.indexOf('--cwd') + 1]}`);
   const again = await req('sim.open', { dir: runDir });
   expect(!!again.error && /already/.test(again.error), 'open: a second open while one runs is refused');
 
@@ -227,6 +228,20 @@ const widths = new Map();
   const gapAgain = await req('sim.poll', { waitMs: 0 });
   expect(lossEnd.stop && lossEnd.stop.stopped === 'done' && !((gapAgain.result.gaps || []).length), 'and a gap is reported once');
 
+  await req('sim.close', {});
+
+  // GitHub #11, this side: the worker's setup refusal is the open's error; missing inputs reach the poll.
+  process.env.FAKE_SETUP_ERROR = 'the run folder /x holds 900 MB to copy (limit 512 MB). List the inputs in /x/cmux-replay.json';
+  const se = await req('sim.open', { dir: runDir, clock: 'tb.clk' });
+  delete process.env.FAKE_SETUP_ERROR;
+  expect(!!se.error && /cmux-replay\.json/.test(se.error), `open: the worker's setup refusal is the error: ${se.error}`);
+  process.env.FAKE_MISSING = 'images/program.hex';
+  const mo = await req('sim.open', { dir: runDir, clock: 'tb.clk' });
+  delete process.env.FAKE_MISSING;
+  await new Promise((res) => setTimeout(res, 200));
+  const mp = await req('sim.poll', { waitMs: 0 });
+  const notes = (mp.result && mp.result.notices) || [];
+  expect(!mo.error && notes.some((n) => n.event === 'missingInput' && n.file === 'images/program.hex' && /cmux-replay/.test(n.hint || '')), `missing inputs reach the poll as notices: ${JSON.stringify(notes)}`);
   await req('sim.close', {});
 
   // The helper's shutdown: closeAll, then process.exit at once. Nothing of the simulation's is left behind.

@@ -109,4 +109,10 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
 });
 // FAKE_REPORT_PERIOD=0: a simulation whose clock period isn't known (no clock given or found).
 const REPORTED = process.env.FAKE_REPORT_PERIOD !== undefined ? Number(process.env.FAKE_REPORT_PERIOD) : PERIOD;
-setTimeout(() => out({ id: 0, event: 'ready', t: 0, precision: -12, period: REPORTED, startupMs: 1 }), 20);
+// FAKE_SETUP_ERROR: the worker refuses its run folder (as sim-worker.js does) and exits before ready.
+// FAKE_MISSING: after ready, the simulator could not open that file (a missingInput event).
+if (process.env.FAKE_SETUP_ERROR) { out({ id: 0, event: 'setupError', message: process.env.FAKE_SETUP_ERROR }); setTimeout(() => process.exit(3), 10); }
+else setTimeout(() => {
+  out({ id: 0, event: 'ready', t: 0, precision: -12, period: REPORTED, startupMs: 1 });
+  if (process.env.FAKE_MISSING) out({ id: 0, event: 'missingInput', file: process.env.FAKE_MISSING, message: `Cannot open file '${process.env.FAKE_MISSING}'`, hint: 'name it in cmux-replay.json' });
+}, 20);
