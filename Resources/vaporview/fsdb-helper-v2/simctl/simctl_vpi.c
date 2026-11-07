@@ -93,6 +93,7 @@ static int group_pids(pid_t pgid, pid_t *pids, int max) {
   return n;
 }
 static void lost_controller(void) {
+  if (fs_child) return;               /* a save child has no controller: it only saves and _exit()s */
   if (own_group > 0) {
     static pid_t pids[256]; int n = group_pids(own_group, pids, 256);
     /* SIGTERM blocked across the fork: the group's SIGTERM below must not kill the reaper before its setsid. */
@@ -150,6 +151,7 @@ static void bjson(buf_t *b, const char *s) {
   bput(b, "\"", 1);
 }
 static void wr(const void *p, size_t n) {
+  if (fs_child) return;               /* a save child's copy of the channel is closed: it says nothing */
   const char *c = p;
   while (n) {
     ssize_t k = write(out_fd, c, n);
@@ -406,6 +408,7 @@ static PLI_INT32 end_rtn(p_cb_data d) { if (fs_child) return 0; (void)d; if (end
 /* input buffer shared by the serve loop and the poll callback */
 static char *inb; static size_t inlen, incap;
 static int fill(int block) {
+  if (fs_child) return -1;
   if (!block) { struct pollfd p = { in_fd, POLLIN, 0 }; if (poll(&p, 1, 0) <= 0) return 0; }
   else while (fs_alive) {   /* waiting for a request while saves are out: report their ends meanwhile */
     struct pollfd p = { in_fd, POLLIN, 0 };
@@ -670,6 +673,7 @@ static void serve_quick(void) {
     if (nt < 0) { too_long(head); continue; }
     if (nt < 2) continue;
     quick_op(qtok[0][0], strtol(qtok[1], NULL, 10), qtok, nt, t);
+    if (fs_child) return;   /* a forksave child: back to the simulation, to its save; no more lines */
   }
   send_recs();
 }
@@ -686,6 +690,7 @@ static void serve(int ctx) {
   if (stop_id >= 0) { bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", stop_id, (unsigned long long)now()); send_ob(); stop_id = -1; }
   static char *tok[MAXTOK];
   for (;;) {
+    if (fs_child) return;   /* a forksave child (V just forked it): back to the simulation, to its save */
     char *line = nextline();
     if (!line) { lost_controller(); return; }
     char head[32]; snprintf(head, sizeof head, "%s", line);

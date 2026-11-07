@@ -5,7 +5,7 @@
 //
 //   node worker.js --simv <path> --lib <libsimctl.so> --scratch <dir> [--cwd <run folder>] [--run <name>] [--clock <sig>] [--period <t>]
 //                  [--rss-mb 2048] [--min-avail-mb 5120] [--poll-cycles 100] [--vmem-mb 4096] [--ucli-timeout-ms 120000]
-//                  [--no-ucli2proc | --no-ucli]
+//                  [--no-ucli2proc | --no-ucli] [--forksave-timeout-ms 120000]
 //                  -- <simulator run arguments>
 //
 // The simv must have been elaborated with `-load <libsimctl_stub.so>:simctl_register` (a run-time simv -load
@@ -28,7 +28,7 @@
 // observed, a new watch's first record (at its reply's t) is where its coverage starts. Writes, checkpoints and
 // another run are refused while a run is in flight (stop it first); a stop always reaches the run at once.
 //   time {}                                     -> {t}
-//   forksave {file}  (--no-ucli workers only)   -> {t, pid, forkMs, file}; later event {saved: pid, file, t, status}.
+//   forksave {file}  (--no-ucli workers only)   -> {t, pid, forkMs, file}; later event {saved: pid, file, t, status, ok, bytes, timeout?, error?}; ok: the child checked the image and it is there, not empty.
 //                                                 A save without pausing: the library forks, the child $saves
 //                                                 (build with vpi/simctl_saver.sv, -top simctl_saver) at t+1 and
 //                                                 exits; restore with simv -r <file>. At most two at once.
@@ -79,6 +79,7 @@ const RSS_MB = Number(opt('--rss-mb', 2048));
 const MIN_AVAIL_MB = Number(opt('--min-avail-mb', 5120));
 const POLL_CYCLES = Number(opt('--poll-cycles', 100));
 const UCLI_MS = Number(opt('--ucli-timeout-ms', 120000));   // a checkpoint/restore's command-line work
+const FORKSAVE_MS = Math.max(1, Number(opt('--forksave-timeout-ms', 120000)) || 120000);   // a fork-save child's deadline
 const VMEM_MB = Number(opt('--vmem-mb', 4096));   // hard limit (ulimit -v) per simulator process; 0: none
 if (!SIMV || !LIB || !SCRATCH) { process.stderr.write('usage: worker.js --simv <simv> --lib <lib.so> --scratch <dir> -- <args>\n'); process.exit(2); }
 
@@ -207,7 +208,7 @@ if (VMEM_KB > 0) {
 const sim = spawn('/bin/sh', ['-c', 'if [ "$1" -gt 0 ]; then ulimit -v "$1" || exit 70; fi; shift; exec nice "$@"', 'simctl', String(VMEM_KB), ...args], {
   cwd: dir,
   stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-  env: { ...process.env, ...replayEnv, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1' },
+  env: { ...process.env, ...replayEnv, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1', SIMCTL_FORKSAVE_TIMEOUT_MS: String(FORKSAVE_MS) },
   detached: true,
 });
 // The simulator leaves /tmp/vcs_{attachable,dve_general}.<user>.<pid> when killed: remove those of the group.
@@ -325,7 +326,15 @@ let readyResolve; const ready = new Promise((r) => (readyResolve = r));
 function onLib(m) {
   if (m.ev === 'ready') { readyResolve(m); return; }
   if (m.ev === 'finish') { event('finish', { t: m.t }); return; }
-  if (m.ev === 'saved') { event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status }); return; }
+  if (m.ev === 'saved') {
+    // ok only when the child said so (status 0: it checked the image) and the image is there and not empty
+    let bytes = 0; try { bytes = fs.statSync(m.file).size; } catch { /* not there */ }
+    const ok = m.status === 0 && bytes > 0;
+    const why = m.timeout ? `still running after --forksave-timeout-ms ${FORKSAVE_MS}: ended` : m.status === 2 ? 'no image written' : m.status === 3 ? 'the simulator reported a save error (see <file>.log)'
+      : m.status !== 0 ? `the save child ended with status ${m.status}` : bytes > 0 ? '' : 'the image is missing or empty';
+    event('saved', { pid: m.pid, file: m.file, t: m.t, status: m.status, ok, bytes, ...(m.timeout ? { timeout: true } : {}), ...(why ? { error: why } : {}) });
+    return;
+  }
   const p = pending.get(m.id);
   if (!p) return;
   pending.delete(m.id);
