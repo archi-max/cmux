@@ -155,7 +155,7 @@ public enum SVModelResolve {
         return .signal(designPath: designPath, designPrefix: prefixes.designPrefix, dumpPrefix: prefixes.dumpPrefix)
     }
 
-    /// Instances below the tops kept as roots, at most.
+    /// Instances below the tops kept as roots, at most (whole depths, the shallowest first).
     static let maxInstanceRoots = 512
 
     /// The design's roots for inference (`HierarchyPrefixInference.designRule`): each top with
@@ -196,12 +196,23 @@ public enum SVModelResolve {
         }
         let topSet = Set(tops)
         // One shared scope name (a u_fifo) is too weak a match for an instance known by its scopes alone.
-        var kept = 0
-        for path in instances where !topSet.contains(path) && kept < maxInstanceRoots {
+        var found: [(path: String, depth: Int, names: [String])] = []
+        for path in instances where !topSet.contains(path) {
             let names = scopes(below: path)
             guard names.count >= 2 else { continue }
-            roots[path] = names.sorted().map { HierarchyNode(name: $0, isScope: true) }
-            kept += 1
+            found.append((path, HierarchyPathMapping.segments(path).count, names))
+        }
+        // Past the cap, whole depths only (the shallowest first): a depth cut through would keep one
+        // copy of a module (g_regs[0]'s instances, not g_regs[1]'s), and a row of the other copy
+        // would match the kept one alone (another top's instances, sorted first by name, filled the
+        // cap that way: `--top` given twice).
+        if found.count > maxInstanceRoots {
+            found.sort { ($0.depth, $0.path) < ($1.depth, $1.path) }
+            let cut = found[maxInstanceRoots].depth
+            found.removeAll { $0.depth >= cut }
+        }
+        for root in found {
+            roots[root.path] = root.names.sorted().map { HierarchyNode(name: $0, isScope: true) }
         }
         return roots
     }
