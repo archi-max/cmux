@@ -1703,8 +1703,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     answerIn("e#1")
     _ = await trace("driver({ path: \(path), time: 60 })")
     noDesign = true
+    answerIn("e#1", "d")
+    k = events.count
     _ = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    expect(!asked(since: k).isEmpty, "design: the noDesign trace asked a model (\(asked(since: k).count))")
     noDesign = false
+    answerIn("e#1")
     k = events.count
     let anew = await trace("driver({ path: \(path), time: 60 })")
     expect(anew?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !asked(since: k).isEmpty,
