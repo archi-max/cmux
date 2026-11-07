@@ -1319,8 +1319,12 @@ const HOT_PROCS = 2 * HOT_READERS;
 const HOT_TOTAL = Number(process.env.FSDB_WARM_TOTAL_MB || 2 * HOT_READERS * HOT_RSS / 1e6) * 1e6;
 const HOT_CALL_MS = Number(process.env.FSDB_WARM_CALL_MS || 60000);
 const HOT_BACKOFF_MS = Number(process.env.FSDB_WARM_BACKOFF_MS || 5000);
+// A set is replaced for its recency only once the requests have settled (none for this long):
+// one pan's rows arrive one by one, and partway through, its first rows look the most recent.
+// A stream that never settles is judged after HOT_SETTLE_MAX_MS anyway.
+const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000;
 const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
-const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
 const hotProcs = () => [...hot.readers, ...(hot.building || []), ...hot.retiring].filter((r) => r.state !== 'dead');
 function hotFail(fp, why) {
@@ -1387,7 +1391,7 @@ function hotStop() {
   hot.limit = HOT_MAX; hot.fails.clear(); hot.totalRss = 0; hot.peakRss = 0;
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
   if (hot.backoffTimer) { clearTimeout(hot.backoffTimer); hot.backoffTimer = null; }
-  hot.cold.clear();
+  hot.cold.clear(); hot.lastNote = 0; hot.unsettled = 0;
 }
 function hotKill(r) {
   r.state = 'dead';
@@ -1452,6 +1456,7 @@ function hotNote(ids) {
   if (!HOT || !openFile) { return; }
   const now = performance.now();
   for (const id of ids) { hot.asked.delete(id); hot.asked.set(id, now); }
+  hot.lastNote = now;
   hotSoon(200);
 }
 function hotCheck() {
@@ -1465,8 +1470,14 @@ function hotCheck() {
   const grown = cur.filter((r) => r.rss > HOT_RSS && r.rss > r.base + Math.max(64e6, r.base / 4));
   const oversized = cur.some((r) => r.base > HOT_RSS) && hotKey(want) !== hotKey(cur.flatMap((r) => [...r.ids]));
   const slow = cur.some((r) => [...r.ids].some((id) => kinds.warmSlow.has(id)));
-  if (cur.length && !grown.length && !oversized && !slow && outside * 4 < want.length) { return; }
+  if (cur.length && !grown.length && !oversized && !slow && outside * 4 < want.length) { hot.unsettled = 0; return; }
   const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
+  // (only recency against a ready set: wait for the requests to settle, at most HOT_SETTLE_MAX_MS)
+  if (cur.length && !grown.length && !oversized && !slow && now - (hot.lastNote || 0) < HOT_SETTLE_MS) {
+    if (!hot.unsettled) { hot.unsettled = now; }
+    if (now - hot.unsettled < HOT_SETTLE_MAX_MS) { hotSoon(HOT_SETTLE_MS); return; }
+  }
+  hot.unsettled = 0;
   if (f && f.until > now) {
     if (!hot.backoffTimer) { hot.backoffTimer = setTimeout(() => { hot.backoffTimer = null; hotCheck(); }, f.until - now + 10); }
     return;
