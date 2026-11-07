@@ -188,7 +188,10 @@
       const my = session;
       st.phase = 'opening'; render();
       try {
-        const { result } = await request('sim.open');
+        // The clock cycles count in: the debugger's (chosen or default), so Step steps the same clock.
+        const dbg = wf.debugger;
+        const clock = dbg && dbg.clockOrDefaultPath ? await dbg.clockOrDefaultPath().catch(() => null) : null;
+        const { result } = await request('sim.open', clock ? { clock } : {});
         if (my !== session) { request('sim.close').catch(() => {}); return; }
         st = { phase: 'ready', running: false, t: result.t || 0, period: result.period || 0, stopped: null, error: null };
       } catch (e) {

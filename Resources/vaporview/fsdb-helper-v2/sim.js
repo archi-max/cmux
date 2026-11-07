@@ -10,7 +10,8 @@
 //
 // Requests (each answered once, as the other commands: {id, result, ms} or {id, error}):
 //   sim.open {dir, clock?}  dir: the folder holding novas_dump.log (cmux pins it to the panel file's
-//       folder). The simulator is novas_dump.log's option[0] (relative to dir) and its run arguments are
+//       folder); clock: a 1-bit signal whose period makes the cycles of run/until (without it, by time only).
+//       The simulator is novas_dump.log's option[0] (relative to dir) and its run arguments are
 //       the options before the compiler entry, without +fsdb*, -l <file>, -ucli, -ucli2Proc.
 //       -> {t, precision, period, simv, args, dumpFile}. Refused without the stub in <simv>.daidir's
 //       build record, with {needsFlag} and the line to add in the error.
@@ -127,7 +128,7 @@ function onData(s, d) {
     if (!m) continue;
     if (m.id === 0) {
       if (m.event === 'changes') { if (m.binLength) { s.hdr = m; } continue; }
-      if (m.event === 'ready') { s.t = m.t; s.readyRes(m); }
+      if (m.event === 'ready') { s.t = m.t; s.period = Number(m.period) || 0; s.readyRes(m); }
       if (m.event === 'finish') { s.t = m.t; }
       continue;
     }
@@ -188,6 +189,8 @@ function takeChanges(s) {
 }
 
 function needSim() { if (!cur || cur.exited) throw new Error('no simulation'); return cur; }
+// Cycles need the clock's period, which the worker measures on the clock sim.open names.
+function needPeriod(s) { if (!s.period) throw new Error('no clock period known: open the simulation with a clock, or run by time'); }
 async function startRun(s, cmd, args) {
   if (s.running) throw new Error('a run is in flight; stop it first');
   s.running = true; s.stop = null;
@@ -223,11 +226,15 @@ const handlers = {
     try { ready = await s.ready; } catch (e) { kill(s); cur = null; throw e; }
     return { t: ready.t, precision: ready.precision, period: ready.period, simv, args, dumpFile: dumpFileOf(parsed.args), stub };
   },
-  'sim.run'(req) { const s = needSim(); return startRun(s, 'run', req.time !== undefined ? { time: Number(req.time) } : { cycles: Number(req.cycles) }); },
+  'sim.run'(req) {
+    const s = needSim();
+    if (req.time === undefined) needPeriod(s);
+    return startRun(s, 'run', req.time !== undefined ? { time: Number(req.time) } : { cycles: Number(req.cycles) });
+  },
   'sim.until'(req) {
     const s = needSim();
     const a = { expr: String(req.expr || '') };
-    if (req.maxTime !== undefined) a.maxTime = Number(req.maxTime); else a.maxCycles = Number(req.maxCycles);
+    if (req.maxTime !== undefined) a.maxTime = Number(req.maxTime); else { needPeriod(s); a.maxCycles = Number(req.maxCycles); }
     return startRun(s, 'until', a);
   },
   async 'sim.stop'() {
