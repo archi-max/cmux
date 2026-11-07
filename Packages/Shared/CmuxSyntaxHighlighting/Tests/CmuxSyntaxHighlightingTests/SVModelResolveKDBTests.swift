@@ -215,6 +215,138 @@ import Testing
         #expect(try await resolve("top.clk", design: design, kdb: kdb) == .compiledOnly(dumpPath: "top.clk", reason: .otherModule, writes: []))
     }
 
+    // (d) slang's design differs from what VCS compiled (Refs T2a round 3): the KDB never maps a row
+    // to another instance (a sibling, another index or top) nor evaluates it where slang's module
+    // differs; compiledOnly instead.
+
+    /// slang lacks tb.u_dut but has a sibling of the same module: not a stand-in.
+    @Test func aSiblingOfTheSameModuleIsNoStandIn() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.u_other": Self.inst("dut", ["clk"]), "tb.u_other.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
+        ])
+        #expect(try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.u_dut.u_core.x")))
+    }
+
+    /// VCS elaborated g[0..3]; slang only g[0]: g[3] is not g[0], for every row of it.
+    @Test func anotherGenerateIndexIsNoStandIn() async throws {
+        var models: [String: [String: Any]] = ["tb": Self.inst("tb", ["clk"]), "tb.g[0].u_dut": Self.inst("dut", ["clk"]), "tb.g[0].u_dut.u_core": Self.inst("core", ["x"])]
+        models["tb"]!["signals"] = ["clk": ["width": 1, "kind": "var"]]
+        let design = Design(models: models, tops: ["tb"])
+        var compiled: [(String, String, String?, [String], [String: Int])] = [("tb", "tb", nil, ["clk"], [:])]
+        for k in 0..<4 { compiled += [("tb.g[\(k)].u_dut", "dut", "tb", ["clk"], [:]), ("tb.g[\(k)].u_dut.u_core", "core", "tb.g[\(k)].u_dut", ["x"], ["x": 9])] }
+        let kdb = Self.kdb(compiled)
+        #expect(try await resolve("tb.g[3].u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.g[3].u_dut.u_core.x", reason: .notInSlang, writes: Self.writes(kdb, "tb.g[3].u_dut.u_core.x")))
+        #expect(try await resolve("tb.g[3].u_dut.clk", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.g[3].u_dut.clk", reason: .notInSlang, writes: []))
+        #expect(mapping(try await resolve("tb.g[0].u_dut.u_core.x", design: design, kdb: kdb)) == .signal(designPath: "tb.g[0].u_dut.u_core.x", designPrefix: "tb", dumpPrefix: "tb"))
+    }
+
+    /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
+    /// anything below it.
+    @Test func belowAnotherModuleNothingIsEvaluated() async throws {
+        let design = Design(models: [
+            "tb": Self.inst("tb", ["clk"]), "tb.u_dut": Self.inst("dut_v2", ["clk"]),
+            "tb.u_spare": Self.inst("dut", ["clk"]), "tb.u_spare.u_core": Self.inst("core", ["x"]),
+        ], tops: ["tb"])
+        let kdb = Self.kdb([
+            ("tb", "tb", nil, ["clk"], [:]), ("tb.u_dut", "dut", "tb", ["clk"], [:]), ("tb.u_dut.u_core", "core", "tb.u_dut", ["x"], ["x": 9]),
+        ])
+        #expect(try await resolve("tb.u_dut.clk", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.clk", reason: .otherModule, writes: []))
+        #expect(try await resolve("tb.u_dut.u_core.x", design: design, kdb: kdb) == .compiledOnly(dumpPath: "tb.u_dut.u_core.x", reason: .otherModule, writes: Self.writes(kdb, "tb.u_dut.u_core.x")))
+    }
+
+    static func writes(_ kdb: KDBDesignModel, _ row: String) -> [KDBDesignModel.Write] { kdb.writes(of: row) }
+
+    /// The reviewer's sweep: InferenceSweepTests' designs with modules, a KDB of the true design under
+    /// the dump's names, and slang's design perturbed: p0 none, p1 a subtree removed, p2 an
+    /// instance's module changed, p3 an instance renamed. With the KDB no row maps to another design
+    /// path (wrong) and none is evaluated where slang's module differs. `KDB_SWEEP_N` designs per mode
+    /// and perturbation (default 12), seeds from `KDB_SWEEP_START` (default 90000).
+    @Test func perturbedDesignsNeverMapToAnotherInstanceOrModule() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let n = Int(env["KDB_SWEEP_N"] ?? "") ?? 12, start = Int(env["KDB_SWEEP_START"] ?? "") ?? 90000
+        for p in 0..<4 { for mode in 0..<6 {
+            var rows = 0, wrong = 0, other = 0, wrongToday = 0
+            var bad: [String] = []
+            for i in start..<(start + n) {
+                let seed = UInt64(i) &* 0x9E3779B97F4A7C15 &+ 777
+                let o = try await Self.sweepOne(seed: seed, mode: mode, perturbation: p)
+                rows += o.rows; wrong += o.wrong; other += o.other; wrongToday += o.wrongToday
+                if bad.count < 8 { bad += o.samples.prefix(8 - bad.count) }
+            }
+            print("KDB SWEEP p\(p) mode \(mode): rows \(rows) wrong \(wrong) otherModule evaluated \(other) | without the KDB: wrong \(wrongToday)")
+            #expect(wrong == 0 && other == 0, "p\(p) mode \(mode): \(wrong) wrong, \(other) evaluated in another module: \(bad)")
+        } }
+    }
+
+    struct SweepOut { var rows = 0, wrong = 0, other = 0, wrongToday = 0; var samples: [String] = [] }
+
+    static func sweepOne(seed: UInt64, mode: Int, perturbation: Int) async throws -> SweepOut {
+        let g = InferenceSweepTests.generate(seed: seed, mode: mode)
+        // The KDB: every dumped design instance under its dump path, plus the dump's own scopes
+        // above the DUT (tb, top_tb, top_tb.wrap), each with its module and parent.
+        var compiled: [String: (module: String, signals: [String])] = [:]
+        for (design, path) in g.dumpOf {
+            compiled[path] = (g.modules[design] ?? "?", ((g.models[design]?["signals"] as? [String: Any]) ?? [:]).keys.sorted())
+        }
+        for scope in ["tb", "top_tb", "top_tb.wrap"] where g.dump[scope] != nil && compiled[scope] == nil {
+            compiled[scope] = (String(scope.split(separator: ".").last!), (g.dump[scope] ?? []).filter { !$0.isScope }.map(\.name))
+        }
+        func parent(_ path: String) -> String? {
+            var segs = HierarchyPathMapping.segments(path)
+            while segs.count > 1 { segs.removeLast(); let p = HierarchyPathMapping.join(segs); if compiled[p] != nil { return p } }
+            return nil
+        }
+        let kdb = Self.kdb(compiled.keys.sorted().map { ($0, compiled[$0]!.module, parent($0), compiled[$0]!.signals, [:]) })
+        // slang's design, with modules, perturbed at one dumped non-top instance.
+        var models = g.models
+        for (path, module) in g.modules where models[path] != nil { models[path]!["module"] = module }
+        var r = InferenceSweepTests.RNG(s: (seed ^ UInt64(perturbation &* 7919 &+ 1)) | 1)
+        let picks = g.dumpOf.keys.filter { $0.contains(".") && models[$0] != nil }.sorted()
+        var changed = ""
+        if perturbation > 0, !picks.isEmpty {
+            changed = picks[r.int(picks.count)]
+            let under = models.keys.filter { $0 == changed || $0.hasPrefix(changed + ".") }
+            switch perturbation {
+            case 1: under.forEach { models[$0] = nil }
+            case 2: models[changed]!["module"] = "mX"
+            default:
+                for old in under { models[changed + "_r" + old.dropFirst(changed.count)] = models.removeValue(forKey: old) }
+            }
+        }
+        let design = Design(models: models, tops: g.tops)
+        var o = SweepOut()
+        for leaf in g.leaves {
+            o.rows += 1
+            func run(_ kdb: KDBDesignModel?) async throws -> SVModelResolve.Outcome {
+                try await SVModelResolve.resolve(
+                    dumpPath: HierarchyPathMapping.segments(leaf.dump), mapping: .init(), loadMessages: [],
+                    lookup: { design.lookup($0) }, model: { design.models[$0] },
+                    designRoots: { await SVModelResolve.designRoots(tops: design.tops, instances: design.instances, model: { design.models[$0] }) },
+                    dumpChildren: { g.dump[HierarchyPathMapping.join($0)] }, kdb: kdb, instances: { design.instances }, kdbSameFiles: true)
+            }
+            func evaluated(_ outcome: SVModelResolve.Outcome) -> String? {
+                switch outcome {
+                case .signal(let p, _, _), .approximate(let p, _, _, _): return p
+                default: return nil
+                }
+            }
+            if let p = evaluated(try await run(kdb)) {
+                if perturbation == 2, p == leaf.design, leaf.design.hasPrefix(changed + ".") {
+                    o.other += 1
+                    if o.samples.count < 3 { o.samples.append("OTHER MODULE seed \(seed) mode \(mode) p\(perturbation): \(leaf.dump) -> \(p) (\(changed) is mX)") }
+                } else if p != leaf.design {
+                    o.wrong += 1
+                    if o.samples.count < 3 { o.samples.append("WRONG seed \(seed) mode \(mode) p\(perturbation): \(leaf.dump) -> \(p), not \(leaf.design) (\(changed))") }
+                }
+            }
+            if let p = evaluated(try await run(nil)), p != leaf.design { o.wrongToday += 1 }
+        }
+        return o
+    }
+
     // (c) No KDB: exactly today's answers.
     @Test func withoutAKDBTheAnswersAreTodays() async throws {
         let whole = Design(models: [

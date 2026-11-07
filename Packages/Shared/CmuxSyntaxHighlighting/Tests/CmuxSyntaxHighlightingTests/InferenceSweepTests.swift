@@ -19,7 +19,18 @@ import Testing
 
     struct Out { var rows = 0, wrong = 0, none = 0, lost = 0, base = 0; var samples: [String] = [] }
 
-    static func runOne(seed: UInt64, mode: Int) async throws -> Out {
+    /// One generated design and its dump. `modules`: each design instance's module (`m<i>`, the TB
+    /// tops their own names); `dumpOf`: the dump path of each design instance that is dumped.
+    struct Generated {
+        var models: [String: [String: Any]]
+        var dump: [String: [HierarchyNode]]
+        var leaves: [(dump: String, design: String)]
+        var tops: [String]
+        var modules: [String: String]
+        var dumpOf: [String: String]
+    }
+
+    static func generate(seed: UInt64, mode: Int) -> Generated {
         var r = RNG(s: seed | 1)
         let nMods = 3 + r.int(5)
         // A child: its path segments below the parent (1 or 2: a generate scope then the instance) and its module.
@@ -46,16 +57,19 @@ import Testing
         var models: [String: [String: Any]] = [:]
         var dump: [String: [HierarchyNode]] = [:]
         var leaves: [(dump: String, design: String)] = []
+        var modules: [String: String] = [:], dumpOf: [String: String] = [:]
         func addDump(_ path: String, _ node: HierarchyNode) { if !(dump[path] ?? []).contains(node) { dump[path, default: []].append(node) } }
         func build(_ m: Int, design: String, dumpPath: String, depth: Int, record: Bool = true) {
             // Not dumped (an extra top): the dump and leaves are kept as they were.
             if !record {
-                let (keptDump, keptLeaves) = (dump, leaves)
-                defer { (dump, leaves) = (keptDump, keptLeaves) }
+                let (keptDump, keptLeaves, keptDumpOf) = (dump, leaves, dumpOf)
+                defer { (dump, leaves, dumpOf) = (keptDump, keptLeaves, keptDumpOf) }
                 build(m, design: design, dumpPath: dumpPath, depth: depth, record: true)
                 return
             }
             models[design] = ["signals": Dictionary(uniqueKeysWithValues: sigs[m].map { ($0, bit) })]
+            modules[design] = "m\(m)"
+            dumpOf[design] = dumpPath
             if dump[dumpPath] == nil { dump[dumpPath] = [] }
             if depth < 6 {
                 for (segs, c) in kids[m] {
@@ -87,6 +101,14 @@ import Testing
             build(0, design: "tb_soc.dut", dumpPath: "tb.dut", depth: 0); tb("tb", "dut"); dump["tb"]!.append(HierarchyNode(name: "rst", isScope: false, width: 1))
             tops = ["tb_soc"]
         }
+        for top in ["tb", "tb_soc"] where models[top] != nil { modules[top] = top }
+        if modules["tb"] != nil { dumpOf["tb"] = "tb" }
+        return Generated(models: models, dump: dump, leaves: leaves, tops: tops, modules: modules, dumpOf: dumpOf)
+    }
+
+    static func runOne(seed: UInt64, mode: Int) async throws -> Out {
+        let g = generate(seed: seed, mode: mode)
+        let (models, dump, leaves, tops) = (g.models, g.dump, g.leaves, g.tops)
         let design = D(models: models, tops: tops)
         // Tops-only roots: each top with its direct child instances and every signal name.
         var topRoots: [String: [HierarchyNode]] = [:]
@@ -119,6 +141,13 @@ import Testing
             }
         }
         return o
+    }
+
+    /// A design the T2a round-3 review's sweep found (mode 5, `--top` given twice: an extra top of
+    /// the DUT's module 1): rows of g_regs[1] mapped to g_regs[0], with no KDB, 4,782 rows.
+    @Test func modeFiveSeedFromTheReviewMapsNoRowToAnotherIndex() async throws {
+        let o = try await Self.runOne(seed: 3533599938826411720, mode: 5)
+        #expect(o.rows > 0 && o.wrong == 0, "\(o.wrong) of \(o.rows) rows wrong: \(o.samples)")
     }
 
     @Test func sweep() async throws {
