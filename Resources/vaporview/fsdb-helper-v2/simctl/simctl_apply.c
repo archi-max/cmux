@@ -11,8 +11,39 @@
  * back a state from before it, and reads carry tainted:true.
  *
  * A AID at sym arg lib versym want errsym     (arg: x + hex of the bytes; lib, versym, errsym: - for none)
- *   int sym(const char *arg); unsigned versym(void) must == want; const char *errsym(void) for lastError */
+ *   int sym(const char *arg); unsigned versym(void) must == want; const char *errsym(void) for lastError
+ * sym, versym and errsym must be registered entry points (apply_register, at registration): simctl's own plan
+ * interface and the names the run's manifest lists (cmux-replay.json applySymbols, passed as
+ * SIMCTL_APPLY_SYMBOLS). Any other loaded symbol (libc's system, getpid, ...) is refused before any lookup. */
 #include <dlfcn.h>
+
+#define AP_MAX 64
+static char *ap_names[AP_MAX]; static int ap_n;
+static const char *const ap_builtin[] = { "vcs_restore_apply_plan", "vcs_restore_api_version", "vcs_restore_last_error" };
+static int ap_ident(const char *s) {
+  if (!*s || strlen(s) > 128 || !(isalpha((unsigned char)*s) || *s == '_')) return 0;
+  for (; *s; s++) if (!(isalnum((unsigned char)*s) || *s == '_')) return 0;
+  return 1;
+}
+/* once, at registration: the allowlist is fixed before the simulation runs; nothing a request sends changes it */
+static void apply_register(void) {
+  for (size_t i = 0; i < sizeof ap_builtin / sizeof *ap_builtin; i++) ap_names[ap_n++] = strdup(ap_builtin[i]);
+  const char *e = getenv("SIMCTL_APPLY_SYMBOLS");
+  if (e && *e) {
+    char *c = strdup(e), *sv = NULL;
+    for (char *t = strtok_r(c, ",", &sv); t; t = strtok_r(NULL, ",", &sv)) {
+      if (!ap_ident(t)) { fprintf(stderr, "simctl: warning: applySymbols entry %.80s is not a C identifier; ignored\n", t); continue; }
+      if (ap_n == AP_MAX) { fprintf(stderr, "simctl: warning: more than %d apply entry points; the rest are ignored\n", AP_MAX); break; }
+      ap_names[ap_n++] = strdup(t);
+    }
+    free(c);
+  }
+  unsetenv("SIMCTL_APPLY_SYMBOLS");
+}
+static int apply_allowed(const char *s) {
+  for (int i = 0; i < ap_n; i++) if (!strcmp(ap_names[i], s)) return 1;
+  return 0;
+}
 
 static vpiHandle hold_st, hold_rel;   /* the arguments of the TB's latest $simctl_serve(st, rel) */
 static vpiHandle hold_pulse;          /* simctl_hold's pulse, if there: HDL activity while a park waits for its stop */
@@ -104,12 +135,19 @@ static int apply_req(long id, char **tok, int nt, int ctx) {
   if (ap.armed) { reply_err(id, "apply: another apply is pending"); return 0; }
   int serve = !strcmp(tok[2], "serve");
   if (!serve && strcmp(tok[2], "next")) { reply_err(id, "apply: at must be serve or next"); return 0; }
+  char m[400];
+  const char *names[3] = { tok[3], tok[6], tok[8] };   /* symbol, versionSymbol, lastErrorSymbol (- for none) */
+  for (int i = 0; i < 3; i++) {
+    if ((i && !strcmp(names[i], "-")) || apply_allowed(names[i])) continue;
+    snprintf(m, sizeof m, "apply: %.200s is not a registered apply entry point: simctl calls only vcs_restore_apply_plan, "
+             "vcs_restore_api_version, vcs_restore_last_error and the names in the run's cmux-replay.json applySymbols", names[i]);
+    reply_err(id, m); return 0;
+  }
   void *lh = RTLD_DEFAULT;
   if (strcmp(tok[5], "-")) {
     lh = dlopen(tok[5], RTLD_NOW | RTLD_NOLOAD);
     if (!lh) { reply_err(id, "apply: lib is not loaded in the simulation (simctl never loads one)"); return 0; }
   }
-  char m[400];
   int (*fn)(const char *) = (int (*)(const char *))dlsym(lh, tok[3]);
   if (!fn) { snprintf(m, sizeof m, "apply: no symbol %.200s in the simulation", tok[3]); reply_err(id, m); return 0; }
   if (strcmp(tok[6], "-")) {

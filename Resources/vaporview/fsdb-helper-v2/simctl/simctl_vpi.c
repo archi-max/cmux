@@ -959,6 +959,7 @@ void simctl_entry2(int stub_serves) {
     if (f) { fprintf(f, "register pid %d in %d(%d) out %d(%d)\n", (int)getpid(), in_fd, fcntl(in_fd, F_GETFD), out_fd, fcntl(out_fd, F_GETFD)); fclose(f); }
   }
   /* nothing the simulation starts ($system, its own tools) inherits the channel */
+  apply_register();   /* apply's entry points, fixed now (it unsets SIMCTL_APPLY_SYMBOLS) */
   unsetenv("SIMCTL_IN_FD"); unsetenv("SIMCTL_OUT_FD"); unsetenv("SIMCTL_LIB"); unsetenv("SIMCTL_OWN_GROUP");
   if (!stub_serves) {   /* the stub registers $simctl_serve itself (also at elaboration) and forwards it here */
     s_vpi_systf_data tf; memset(&tf, 0, sizeof tf);

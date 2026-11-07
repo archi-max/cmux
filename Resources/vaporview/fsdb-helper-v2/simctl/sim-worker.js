@@ -74,7 +74,10 @@
 //                                               -> {t, rc, lastError, settled, held, tainted?}: calls
 //                                                 `int symbol(const char *arg)`, ALREADY loaded in the simulation
 //                                                 (dlsym; lib: an absolute path of a loaded library to look in;
-//                                                 nothing is ever loaded). Never from a read-only region:
+//                                                 nothing is ever loaded). symbol, versionSymbol and
+//                                                 lastErrorSymbol must be registered entry points (the defaults
+//                                                 below, or cmux-replay.json applySymbols); others are refused
+//                                                 before any lookup. Never from a read-only region:
 //                                                 at serve, inside the TB's held serve point (simctl_hold.sv) at
 //                                                 this time (from a ReadOnlySynch park with the TB held there: at
 //                                                 t+1, back inside its serve point); at next, one time unit later
@@ -138,7 +141,9 @@ process.stdout.on('error', () => process.exit(0));
 // Left out: the run's own outputs (dumps, logs, novas*, ucli.key), build folders (*.daidir, csrc) and the
 // simulator. A cmux-replay.json in that folder makes it explicit:
 //   {"cwd": "<folder, relative to the manifest>", "inputs": ["<file or folder, relative to cwd>", ...],
-//    "env": {"NAME": "value"}}   (only those inputs are copied; env is added to the simulator's environment)
+//    "env": {"NAME": "value"}, "applySymbols": ["<C identifier>", ...]}   (only those inputs are copied; env is
+//   added to the simulator's environment; applySymbols: the native entry points apply may call besides
+//   vcs_restore_apply_plan/_api_version/_last_error, fixed when the simulation starts, at most 61)
 // More than --copy-mb (512) to copy is refused before starting, naming the largest files and the manifest.
 // While it runs, the simulator's "cannot open" messages become missingInput events naming the file.
 const setupFail = (message) => { event('setupError', { message }); process.exit(3); };
@@ -149,6 +154,7 @@ try { manifest = JSON.parse(fs.readFileSync(path.join(RUN_CWD, 'cmux-replay.json
   if (e.code !== 'ENOENT') setupFail(`cmux-replay.json in ${RUN_CWD}: ${e.message}`);
 }
 const replayEnv = {};
+let applySymbols = [];
 if (manifest) {
   if (typeof manifest !== 'object' || Array.isArray(manifest)) setupFail('cmux-replay.json: expected an object');
   if (manifest.cwd !== undefined) RUN_CWD = path.resolve(RUN_CWD, String(manifest.cwd));
@@ -156,6 +162,12 @@ if (manifest) {
   for (const [k, v] of Object.entries(manifest.env || {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || k.startsWith('SIMCTL_') || typeof v !== 'string') setupFail(`cmux-replay.json: bad env entry ${JSON.stringify(k)}`);
     replayEnv[k] = v;
+  }
+  if (manifest.applySymbols !== undefined) {
+    const ok = Array.isArray(manifest.applySymbols) && manifest.applySymbols.length <= 61 &&
+      manifest.applySymbols.every((x) => typeof x === 'string' && x.length <= 128 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(x));
+    if (!ok) setupFail('cmux-replay.json: applySymbols must be a list of at most 61 C identifiers');
+    applySymbols = manifest.applySymbols;
   }
 }
 const dir = path.join(SCRATCH, RUN);
@@ -260,7 +272,7 @@ if (VMEM_KB > 0) {
 const sim = spawn('/bin/sh', ['-c', 'if [ "$1" -gt 0 ]; then ulimit -v "$1" || exit 70; fi; shift; exec nice "$@"', 'simctl', String(VMEM_KB), ...args], {
   cwd: dir,
   stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-  env: { ...process.env, ...replayEnv, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1', SIMCTL_FORKSAVE_TIMEOUT_MS: String(FORKSAVE_MS) },
+  env: { ...process.env, ...replayEnv, SIMCTL_IN_FD: '3', SIMCTL_OUT_FD: '4', SIMCTL_LIB: LIB, SIMCTL_OWN_GROUP: '1', SIMCTL_FORKSAVE_TIMEOUT_MS: String(FORKSAVE_MS), SIMCTL_APPLY_SYMBOLS: applySymbols.join(',') },
   detached: true,
 });
 // The simulator leaves /tmp/vcs_{attachable,dve_general}.<user>.<pid> when killed: remove those of the group.
