@@ -779,16 +779,23 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
 {
   const ids = [1, 2, 3, 4, 5, 6, 7, 8];
   const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
-    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '15', FSDB_WARM: '1' });
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '15', FSDB_WARM: '1', FSDB_BG_LOAD: '0' });
   let kk = null;
   for (let k = 0; k < 100; k++) { kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
   const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
   await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
   let st = null;
-  for (let k = 0; k < 60; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && st.ready.length && !st.building) { break; } await h.send('window', near(ids, 0)).reply; await wait(50); }
+  // (unknowns join one at a time, each after a trial against the set without it: review M2)
+  let most = 0;
+  for (let k = 0; k < 200; k++) {
+    st = (await h.send('stats').reply).result.warm;
+    const n = st && st.ready ? st.ready.filter((id) => id > 4).length : 0; most = Math.max(most, n);
+    if (n >= 2 && !st.building) { break; }
+    await Promise.all(ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply)); await wait(50);
+  }
   const got = st && st.ready ? [...st.ready].sort((a, b) => a - b) : [];
   const prim = got.filter((id) => id <= 4), unk = got.filter((id) => id > 4);
-  check(prim.length === 4 && unk.length === 2, `with the kinds known, the warm set holds the primaries and 2 unlisted (unknown) rows: ${JSON.stringify(got)}`);
+  check(prim.length === 4 && unk.length === 2 && most <= 2, `with the kinds known, the warm set holds the primaries and 2 unlisted (unknown) rows: ${JSON.stringify(got)} (at most ${most} unknowns)`);
   const c = kk && kk.counts;
   check(c && c.p === 4 && c.s === 0 && c.u === 12 && kk.model && /fsdbdebug/.test(kk.model.p) && /not listed/.test(kk.model.u),
     `stats.kinds models primary / secondary / unknown with provenance: ${JSON.stringify(kk && { counts: kk.counts, model: kk.model })}`);
@@ -810,11 +817,11 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
   const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
   const lat = [];
-  for (let k = 0; k < 30; k++) {
+  for (let k = 0; k < 45; k++) {  // (unknowns are tried one at a time: four trials)
     const t = performance.now();
     const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply);
     await Promise.all(rs.slice(0, 4));  // the primaries' answers
-    if (k >= 22) { lat.push(performance.now() - t); }
+    if (k >= 37) { lat.push(performance.now() - t); }
     await Promise.all(rs);
     await wait(100);
   }
