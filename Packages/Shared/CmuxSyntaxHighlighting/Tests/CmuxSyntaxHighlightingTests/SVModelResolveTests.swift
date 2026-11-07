@@ -34,10 +34,11 @@ import Testing
     /// The dump's hierarchy: each scope path's children.
     typealias FakeDump = [String: [HierarchyNode]]
 
-    func resolve(_ row: String, design: FakeDesign, dump: FakeDump = [:], mapping: HierarchyPathMapping = .init()) async throws -> SVModelResolve.Outcome {
+    func resolve(_ row: String, design: FakeDesign, dump: FakeDump = [:], mapping: HierarchyPathMapping = .init(), loadMessages: [String] = []) async throws -> SVModelResolve.Outcome {
         try await SVModelResolve.resolve(
             dumpPath: HierarchyPathMapping.segments(row),
             mapping: mapping,
+            loadMessages: loadMessages,
             lookup: { design.lookup($0) },
             model: { design.models[$0] },
             designRoots: { await SVModelResolve.designRoots(tops: design.tops, instances: design.instances, model: { design.models[$0] }) },
@@ -66,8 +67,43 @@ import Testing
         // Was: lookup stopped at tb_bigsoc with the rest `u_soc.…`, taken as a signal, and the
         // page said "This is not a signal of its instance."
         for row in ["tb_bigsoc.u_soc.g_cl[0].u_cluster.g_tile[1].u_tile.mmio_rdata", "tb_bigsoc.u_soc.u_mbox.box[8]", "tb_bigsoc.u_soc.mmio_rdata"] {
-            #expect(try await resolve(row, design: Self.tbOnly) == .notElaborated(instance: "tb_bigsoc.u_soc"), "\(row)")
+            #expect(try await resolve(row, design: Self.tbOnly, loadMessages: Self.unknownModule) == .notElaborated(instance: "tb_bigsoc.u_soc"), "\(row)")
         }
+    }
+
+    /// What the real sidecar says loading tb_bigsoc.sv alone.
+    static let unknownModule = ["rtl/tb_bigsoc.sv:19: UnknownModule"]
+
+    @Test func aCleanLoadsRowBelowAScopeTheModelLacksIsNotInTheDesign() async throws {
+        // Hotfix review M1: with no load errors, a scope the model has no instance for (a named
+        // block's locals, a task, a child instance the dump names differently) is a mapping or
+        // modelling gap, not a module slang left out: the path-mapping hint, not the profile one.
+        let clean = FakeDesign(models: ["tb": Self.signals(["clk": Self.bit])], tops: ["tb"])
+        for row in ["tb.blk.t", "tb.dut.x", "tb.do_write.addr"] {
+            #expect(try await resolve(row, design: clean) == .notInDesign, "\(row)")
+        }
+        // The same rows when the load had errors: the instance the design lacks.
+        #expect(try await resolve("tb.dut.x", design: clean, loadMessages: ["tb.sv:3: UnknownModule"]) == .notElaborated(instance: "tb.dut"))
+    }
+
+    @Test func theLoadDetailIsTheUnknownModuleError() {
+        #expect(SVModelResolve.loadDetail(["a.sv:4: PortDoesNotExist", "tb.sv:19: UnknownModule"]) == "tb.sv:19: UnknownModule")
+        #expect(SVModelResolve.loadDetail(["a.sv:4: PortDoesNotExist"]) == "a.sv:4: PortDoesNotExist")
+        #expect(SVModelResolve.loadDetail([]) == nil)
+    }
+
+    @Test func theMissingInstanceIsNamedFromTheDumpsOwnPath() async throws {
+        // The testbench-only design: a dump that also holds tb_bigsoc.u_soc's clk could let
+        // inference map the testbench onto u_soc; the missing instance still comes from the row
+        // as the dump names it.
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb_bigsoc", isScope: true)],
+            "tb_bigsoc": [HierarchyNode(name: "u_soc", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1), HierarchyNode(name: "rst_n", isScope: false, width: 1)],
+            "tb_bigsoc.u_soc": [HierarchyNode(name: "clk", isScope: false, width: 1), HierarchyNode(name: "rst_n", isScope: false, width: 1), HierarchyNode(name: "u_mbox", isScope: true)],
+            "tb_bigsoc.u_soc.u_mbox": [HierarchyNode(name: "rdata", isScope: false, width: 32)],
+        ]
+        #expect(try await resolve("tb_bigsoc.u_soc.u_mbox.rdata", design: Self.tbOnly, dump: dump, loadMessages: Self.unknownModule)
+            == .notElaborated(instance: "tb_bigsoc.u_soc"))
     }
 
     @Test func aNameTheInstanceLacksIsNotInTheDesign() async throws {
@@ -92,6 +128,9 @@ import Testing
             == .signal(designPath: "tb_bigsoc.u_soc.mmio_rdata", designPrefix: "", dumpPrefix: ""))
         #expect(try await resolve("tb_bigsoc.u_soc.u_mbox.box[8][31:0]", design: Self.whole)
             == .signal(designPath: "tb_bigsoc.u_soc.u_mbox.box[8]", designPrefix: "", dumpPrefix: ""))
+        // An ascending range spans its bits too.
+        #expect(try await resolve("tb_bigsoc.u_soc.mmio_rdata[0:31]", design: Self.whole)
+            == .signal(designPath: "tb_bigsoc.u_soc.mmio_rdata", designPrefix: "", dumpPrefix: ""))
         // A narrower range is a part-select, another signal.
         #expect(try await resolve("tb_bigsoc.u_soc.mmio_rdata[7:0]", design: Self.whole) == .notInDesign)
     }
