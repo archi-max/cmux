@@ -819,6 +819,8 @@
   let netlistShown = false;
 
   function closeBackend() {
+    // cmux-sim.js: a live simulation ends with its dump.
+    if (window.cmuxWaveform && window.cmuxWaveform.sim) { window.cmuxWaveform.sim.backendClosed(); }
     if (backend && backend.close) { backend.close(); }
     backend = null;
     netlistShown = false;
@@ -869,6 +871,7 @@
     document.querySelector('#status-reload .text').textContent = strings.messageFileChanged || '';
     document.querySelector('#status-reload button').textContent = strings['command.reloadFile'] || '';
     window.cmuxCommands.init(config);
+    if (window.cmuxWaveform.sim) { window.cmuxWaveform.sim.configure(config); }
     doc.uri = config.url;
     if (config.format === 'fsdb' && !config.fsdb) {
       showMessage(strings.fsdbNeedsRemoteTitle, strings.fsdbNeedsRemoteDetail);
@@ -907,6 +910,7 @@
     postedView = null;
     pendingAdds.clear();
     closeBackend();
+    if (window.cmuxWaveform.sim) { window.cmuxWaveform.sim.configure(config); }
     doc.metadata = null;
     doc.netlist = [];
     doc.items.clear();

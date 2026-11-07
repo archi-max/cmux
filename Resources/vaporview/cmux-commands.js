@@ -287,6 +287,8 @@
     // cmux: how an FSDB on an SSH host loads. auto: windowed (big signals load what
     // is on screen, small ones whole); whole: every signal whole (the v1 helper).
     { key: 'fsdbLoading', type: 'enum', options: [['auto', 'settingsOptionFsdbAuto'], ['whole', 'settingsOptionFsdbWhole']], value: 'auto' },
+    // cmux: live simulation of an FSDB's own run (cmux-sim.js); off by default.
+    { key: 'liveSimulation', type: 'boolean', value: false },
     { key: 'enableInstancePathTerminalLinks', type: 'boolean', value: true },
     { key: 'overrideDevicePixelRatio', type: 'boolean', value: false },
     { key: 'userPixelRatio', type: 'number', value: 1, step: 0.25, min: 0.1, max: 10 },

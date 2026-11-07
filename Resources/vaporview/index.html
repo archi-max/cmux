@@ -60,6 +60,9 @@
     #status-reload, #status-fallback { display: flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
     #status-reload[hidden], #status [hidden] { display: none; }
     #status-reload button, #status-fallback button { font: inherit; padding: 0 6px; }
+    #sim-controls { display: flex; align-items: center; gap: 4px; color: var(--vscode-foreground); }
+    #sim-controls button { font: inherit; padding: 0 6px; }
+    #sim-until-expr { font: inherit; width: 14em; height: 16px; padding: 0 4px; }
     /* State machine pane (cmux-fsm.js). */
     #fsm { position: relative; box-sizing: border-box; width: min(340px, 35%); min-width: 200px; max-width: 70%; flex: none; display: flex; flex-direction: column;
       border-left: 1px solid var(--vscode-widget-border); overflow: hidden; }
@@ -167,6 +170,7 @@
     <span id="status-time"></span>
     <span id="status-delta" hidden></span>
     <span id="status-signal" hidden></span>
+    <span id="sim-controls" hidden><button type="button" class="cmux-button" id="sim-open">Live</button><button type="button" class="cmux-button" id="sim-run">Run</button><button type="button" class="cmux-button" id="sim-stop">Stop</button><button type="button" class="cmux-button" id="sim-step">Step</button><input type="text" id="sim-until-expr" autocomplete="off" spellcheck="false"><button type="button" class="cmux-button" id="sim-until">Run Until</button><button type="button" class="cmux-button" id="sim-close">End Live</button><span id="sim-info"></span></span>
     <span class="spacer"></span>
     <span id="status-reload" hidden><span class="text"></span><button type="button" class="cmux-button"></button></span>
     <span id="status-fallback" hidden><span class="text"></span><button type="button" class="cmux-button"></button></span>
@@ -190,5 +194,6 @@
   <script src="cmux-fsm.js"></script>
   <script src="cmux-trace.js"></script>
   <script src="cmux-trace-ui.js"></script>
+  <script src="cmux-sim.js"></script>
 </body>
 </html>
