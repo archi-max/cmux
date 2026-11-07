@@ -17,6 +17,7 @@ const send = (o) => lout.write(JSON.stringify(o) + '\n');
 let t = 0, run = null, deferred = [], started = false, writes = [];
 const cnt = () => (Math.floor(t / 10) & 255).toString(2).padStart(8, '0');
 const watches = []; // wid -> name
+let queued = 0;     // pushed transactions (B)
 function endRun(why, stopId) {
   const r = run; if (!r) return;
   clearTimeout(r.timer); run = null;
@@ -30,7 +31,7 @@ function quick(op, id, a) {
   switch (op) {
     case 'T': send({ id, t }); return true;
     case 'O': send({ id, poll: Number(a[1]) || 1 }); return true;
-    case 'G': send({ id, t, values: a.slice(0).map((n) => (n === 'tb.cnt' ? cnt() : null)) }); return true;
+    case 'G': send({ id, t, values: a.slice(0).map((n) => (n === 'tb.cnt' ? cnt() : n === 'tb.u_in.push_req' ? '0' : null)) }); return true;
     case 'W': send({ id, t, watch: a.map((n) => (n === 'tb.cnt' ? { wid: watches.push(n) - 1, width: 8 } : null)) }); return true;
     case 'X': send({ id, t, unwatched: a.length }); return true;
     case 'I': send({ id, t, watches: [] }); return true;
@@ -70,6 +71,8 @@ function line(l) {
     case 'H': send({ id, t, cfg: [{ path: 'tb.u_cfg', scenarios: 'smoke:plain adds' }], ports: [{ path: 'tb.u_in', name: 'in', kind: 'vr', width: 16, fields: 'hi[15:8] lo[7:0]' }], memories: [], memoriesTruncated: false }); return;
     // apply: the hook ran and the design settled (simctl_apply.c's reply)
     case 'A': send({ id, t, rc: 0, lastError: '', settled: true, held: false }); return;
+    // push: transactions queued for a port (simctl_push.c's reply); nothing pulls them in the toy design
+    case 'B': { const n = Number(a[1]); queued += n; send({ id, t, port: a[0], queued, pulled: 0 }); return; }
     case 'Q': send({ id, t, quit: true }); setTimeout(() => process.exit(0), 20); return;
     default: send({ id, error: 'unknown op' });
   }

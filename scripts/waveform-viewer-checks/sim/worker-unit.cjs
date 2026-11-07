@@ -236,6 +236,18 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(!!c && /hold/.test(c.error || '') && ms < 1500 && !!r && !!r.result && !w.exited, `a refused park errors at once and the simulation goes on: ${JSON.stringify(c)} in ${ms} ms; then ${JSON.stringify(r)}`);
     await w.quit().catch(() => {});
   }
+  // Push (from the simctl library, prototype 0291dce): transactions for a simctl_port go to the library as one B
+  // line (how n hex per transaction, packed by the port's fields), then the port's push_req is toggled.
+  {
+    const w = start(['--period', '10']); await w.ready;
+    const p = await w.reply(w.send({ cmd: 'push', port: 'in', txns: [{ after: 0, fields: { hi: 1, lo: 2 } }, { at: 100, value: 5 }] }).id);
+    const lines = w.libLines(), b = lines.find((l) => l.startsWith('B ')), dep = lines.find((l) => l.startsWith('D ') && / tb\.u_in\.push_req /.test(l));
+    expect(!!p && !!p.result && p.result.transactions === 2 && p.result.queued === 2 && !!b && / in 2 0 0 102 1 100 5$/.test(b) && !!dep,
+      `push: one B line, then push_req toggled: ${JSON.stringify(p)} (${b}; ${dep})`);
+    const np = await w.reply(w.send({ cmd: 'push', port: 'nope', txns: [{ value: 1 }] }).id);
+    expect(!!np && /no port/.test(np.error || '') && np.needsRebuild === true, `push to a port the build doesn't have: refused, needsRebuild: ${JSON.stringify(np)}`);
+    await w.quit().catch(() => {});
+  }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the
   // worker: the request errors after --ucli-timeout-ms and the simulation is ended.
   {
