@@ -4,8 +4,8 @@ import Foundation
 ///
 /// A terminal's graph `cwd` follows `cd` only when its shell reports the directory
 /// (OSC 7). Until a terminal does, its graph `cwd` stays the spawn directory. This
-/// keeps one live query per such terminal at a time, started by a graph event (the
-/// terminal appearing in a pane, or its title changing), never by a timer, and starts
+/// keeps one live query per such terminal at a time, started by an event (the terminal
+/// appearing in a pane, or its title changing), never by a timer, and starts
 /// a terminal's queries at least `minimumProbeSpacing` apart.
 ///
 /// The query reads the foreground process's directory. That is the shell's own for a
@@ -54,7 +54,10 @@ public struct CloudTerminalDirectoryFallback: Sendable {
     private struct Entry: Sendable {
         /// The graph `cwd` when first seen; a different one means the shell reports.
         var spawnDirectory: String?
+        /// The graph's title.
         var title: String
+        /// The last title the terminal's own output set, as the Mac shows it.
+        var terminalTitle: String?
         var reports = false
         var running: UInt64?
         var rerunQueued = false
@@ -103,8 +106,20 @@ public struct CloudTerminalDirectoryFallback: Sendable {
 
     /// Records a title the terminal itself set (OSC 0/2), as the Mac's own view of the
     /// terminal shows it, at monotonic time `now`. Returns the query to start, if any.
+    ///
+    /// The daemon's graph keeps the title it had when the terminal last changed for
+    /// another reason: a title change alone publishes no graph event. So this, not
+    /// `observe`, is what follows a shell's prompt title (`user@host: ~/dir`). Only a
+    /// terminal `observe` already tracks (shown, not reporting) is asked.
     public mutating func terminalTitleChanged(_ title: String, terminalID: String, now: TimeInterval) -> Probe? {
-        nil
+        guard var entry = entries[terminalID], !entry.reports, entry.terminalTitle != title else { return nil }
+        entry.terminalTitle = title
+        entries[terminalID] = entry
+        if entry.running != nil {
+            entries[terminalID]?.rerunQueued = true
+            return nil
+        }
+        return start(terminalID, now: now)
     }
 
     /// Records a query's answer at monotonic time `now`. `directoryChanged` says whether

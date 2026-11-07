@@ -139,8 +139,9 @@ extension SurfaceCatalog {
 
 /// The Files panel follows a cmux-tui terminal's graph `cwd`, which moves only when the
 /// remote shell reports its directory. For a terminal whose shell never does (fish, a
-/// configured command), ask the daemon for the foreground process's directory instead:
-/// when the terminal is shown and when its title changes, one query per terminal at a
+/// configured command, a shell started before its hook was installed), ask the daemon
+/// for the foreground process's directory instead: when the terminal is shown and when
+/// its title changes (graph or the terminal's own output), one query per terminal at a
 /// time, starts at least a second apart, each bounded to 3 s, over an already connected
 /// link only. No timer. Inside tmux the foreground process is the tmux client, whose
 /// directory never moves, so that answer is skipped.
@@ -161,6 +162,19 @@ extension SurfaceCatalog {
         let probes = fallback.observe(state.terminals, projected: shown, now: ProcessInfo.processInfo.systemUptime)
         cloudDirectoryFallbacks[machine] = fallback
         for probe in probes { startCloudDirectoryProbe(probe, on: machine) }
+    }
+
+    /// A title the terminal's own output set, as its local surface shows it. The daemon
+    /// publishes no graph event for a title change, so this is what asks again after
+    /// a `cd` in a shell that sets a `user@host: dir` title but never reports its
+    /// directory. Terminals the fallback does not track ask nothing.
+    func cloudTerminalTitleDidChange(_ resource: SurfaceResourceID, title: String) {
+        guard resource.kind == .terminal, resource.machine.tuiMachineID != nil,
+              cloudStateObservations[resource.machine]?.freshness == .current,
+              var fallback = cloudDirectoryFallbacks[resource.machine] else { return }
+        let probe = fallback.terminalTitleChanged(title, terminalID: resource.key, now: ProcessInfo.processInfo.systemUptime)
+        cloudDirectoryFallbacks[resource.machine] = fallback
+        if let probe { startCloudDirectoryProbe(probe, on: resource.machine) }
     }
 
     /// The live directory for a terminal that does not report its own, if one was found.
