@@ -249,7 +249,7 @@ typedef struct { int sig; vpiHandle cb; char *last; int dirty, active; } watch_t
 static watch_t *watches; static int nwatch, capwatch;
 static int *dirty; static int ndirty, capdirty;
 static buf_t recs; static int nrecs; static double last_flush;
-static int ro_pending, need_serve, cond_dirty, in_ro;
+static int ro_pending, need_serve, cond_dirty, in_ro, quick_pending;
 static char serve_reason[16];
 
 static void send_recs(void) {
@@ -364,6 +364,7 @@ static vpiHandle after(uint64_t dt, PLI_INT32 (*rtn)(p_cb_data)) {
   cb.reason = cbAfterDelay; cb.cb_rtn = rtn; cb.time = &t;
   return vpi_register_cb(&cb);
 }
+static int is_quick(char op);
 static PLI_INT32 poll_rtn(p_cb_data d) {
   (void)d;
   if (poll_cb) { vpi_release_handle(poll_cb); poll_cb = NULL; }   /* fired: its handle is ours to free */
@@ -382,6 +383,9 @@ static PLI_INT32 poll_rtn(p_cb_data d) {
     }
     p = nl + 1;
   }
+  /* the first waiting line only looks or changes the watches: serve it (and those after it) at this time's
+   * ReadOnlySynch, while the run goes on; anything else waits for the run's end, and so do the lines after it */
+  if (inlen && is_quick(inb[0]) && memchr(inb, '\n', inlen)) { quick_pending = 1; sched_ro(); }
   if (nrecs && wall_ms() - last_flush > 30) send_recs();
   poll_cb = after(poll_dt, poll_rtn);
   return 0;
@@ -510,6 +514,90 @@ static void emit_all(void) {
   send_recs();
 }
 
+/* Requests that only look (time, read, list, watches) or change what is watched: served by the loop, and also
+ * during a run at its poll points (see poll_rtn), at that time's ReadOnlySynch, without ending the run. A read's
+ * reply carries the time it observed; a new watch's first record (its value then) is where its coverage starts. */
+static int is_quick(char op) { return op == 'T' || op == 'G' || op == 'W' || op == 'X' || op == 'I' || op == 'N'; }
+static void quick_op(char op, long id, char **tok, int nt, uint64_t t) {
+  switch (op) {
+    case 'T': bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", id, (unsigned long long)t); send_ob(); break;
+    case 'G': {
+      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"values\":[", id, (unsigned long long)t);
+      for (int i = 2; i < nt; i++) {
+        if (i > 2) bput(&ob, ",", 1);
+        int si = sig_get(tok[i]);
+        if (si < 0) { bstr(&ob, "null"); continue; }
+        bgrow(&ob, sigs[si].width + 2);
+        ob.p[ob.n++] = '"'; getbin(&sigs[si], ob.p + ob.n); ob.n += sigs[si].width; ob.p[ob.n++] = '"';
+      }
+      bstr(&ob, "]}"); send_ob(); break;
+    }
+    case 'W': {
+      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"watch\":[", id, (unsigned long long)t);
+      int first_new = nwatch;
+      for (int i = 2; i < nt; i++) {
+        if (i > 2) bput(&ob, ",", 1);
+        int si = sig_get(tok[i]);
+        if (si < 0) { bstr(&ob, "null"); continue; }
+        if (nwatch == capwatch) { capwatch = capwatch ? capwatch * 2 : 256; watches = realloc(watches, capwatch * sizeof *watches); }
+        watch_t *w = &watches[nwatch];
+        w->sig = si; w->dirty = 0; w->active = 1; w->last = malloc(sigs[si].width);
+        getbin(&sigs[si], w->last);
+        w->cb = vc_register(sigs[si].h, vc_rtn, (void *)(intptr_t)nwatch);
+        if (!w->cb) { w->active = 0; bstr(&ob, "null"); nwatch++; continue; }
+        bfmt(&ob, "{\"wid\":%d,\"width\":%d}", nwatch, sigs[si].width);
+        nwatch++;
+      }
+      bstr(&ob, "]}"); send_ob();
+      for (int i = first_new; i < nwatch; i++) if (watches[i].active) add_rec(t, i, watches[i].last, sigs[watches[i].sig].width);
+      send_recs();
+      break;
+    }
+    case 'X': {
+      int n = 0;
+      for (int i = 2; i < nt; i++) {
+        int wid = atoi(tok[i]);
+        if (wid < 0 || wid >= nwatch || !watches[wid].active) continue;
+        vpi_remove_cb(watches[wid].cb); watches[wid].active = 0; free(watches[wid].last); watches[wid].last = NULL; n++;
+      }
+      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"unwatched\":%d}", id, (unsigned long long)t, n); send_ob();
+      break;
+    }
+    case 'I': {
+      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"watches\":[", id, (unsigned long long)t);
+      int k = 0;
+      for (int i = 0; i < nwatch; i++) if (watches[i].active) {
+        bstr(&ob, k++ ? ",{\"wid\":" : "{\"wid\":"); bfmt(&ob, "%d,\"name\":", i); bjson(&ob, sigs[watches[i].sig].name);
+        bfmt(&ob, ",\"width\":%d}", sigs[watches[i].sig].width);
+      }
+      bstr(&ob, "]}"); send_ob(); break;
+    }
+    case 'N': {
+      vpiHandle sc = nt >= 3 ? vpi_handle_by_name(tok[2], NULL) : NULL;
+      if (!sc) { reply_err(id, "unknown scope"); break; }
+      int limit = nt >= 4 ? atoi(tok[3]) : 10000, count = 0, trunc = 0;
+      bfmt(&ob, "{\"id\":%ld,\"vars\":[", id);
+      list_scope(sc, limit, &count, &trunc);
+      bfmt(&ob, "],\"truncated\":%s}", trunc ? "true" : "false"); send_ob(); break;
+    }
+  }
+}
+
+/* During a run: serve the waiting lines from the front while they are quick ones (whole lines only). */
+static void serve_quick(void) {
+  static char *qtok[1 << 16];
+  uint64_t t = now();
+  for (;;) {
+    char *nl = inlen ? memchr(inb, '\n', inlen) : NULL;
+    if (!nl || !is_quick(inb[0])) break;
+    char *line = nextline();
+    int nt = split(line, qtok, 1 << 16);
+    if (nt < 2) continue;
+    quick_op(qtok[0][0], strtol(qtok[1], NULL, 10), qtok, nt, t);
+  }
+  send_recs();
+}
+
 static void serve(int ctx) {
   if (need_serve) need_serve = 0;
   flush_dirty(); send_recs();
@@ -529,7 +617,7 @@ static void serve(int ctx) {
     char op = tok[0][0]; long id = strtol(tok[1], NULL, 10);
     uint64_t t = now();
     switch (op) {
-    case 'T': bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", id, (unsigned long long)t); send_ob(); break;
+    case 'T': case 'G': case 'W': case 'X': case 'I': case 'N': quick_op(op, id, tok, nt, t); break;
     case 'K': break;   /* a resume token that arrived while serving: nothing to do */
     case 'S': bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"idle\":true}", id, (unsigned long long)t); send_ob(); break;
     case 'R': case 'U': {
@@ -565,17 +653,6 @@ static void serve(int ctx) {
       last_flush = wall_ms();
       return;
     }
-    case 'G': {
-      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"values\":[", id, (unsigned long long)t);
-      for (int i = 2; i < nt; i++) {
-        if (i > 2) bput(&ob, ",", 1);
-        int si = sig_get(tok[i]);
-        if (si < 0) { bstr(&ob, "null"); continue; }
-        bgrow(&ob, sigs[si].width + 2);
-        ob.p[ob.n++] = '"'; getbin(&sigs[si], ob.p + ob.n); ob.n += sigs[si].width; ob.p[ob.n++] = '"';
-      }
-      bstr(&ob, "]}"); send_ob(); break;
-    }
     case 'F': case 'D': case 'L': {
       int si = nt >= 3 ? sig_get(tok[2]) : -1;
       if (si < 0) { reply_err(id, "unknown signal"); break; }
@@ -600,55 +677,7 @@ static void serve(int ctx) {
       vpiHandle h = after(1, write_rtn); if (h) vpi_release_handle(h);
       return;
     }
-    case 'W': {
-      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"watch\":[", id, (unsigned long long)t);
-      int first_new = nwatch;
-      for (int i = 2; i < nt; i++) {
-        if (i > 2) bput(&ob, ",", 1);
-        int si = sig_get(tok[i]);
-        if (si < 0) { bstr(&ob, "null"); continue; }
-        if (nwatch == capwatch) { capwatch = capwatch ? capwatch * 2 : 256; watches = realloc(watches, capwatch * sizeof *watches); }
-        watch_t *w = &watches[nwatch];
-        w->sig = si; w->dirty = 0; w->active = 1; w->last = malloc(sigs[si].width);
-        getbin(&sigs[si], w->last);
-        w->cb = vc_register(sigs[si].h, vc_rtn, (void *)(intptr_t)nwatch);
-        if (!w->cb) { w->active = 0; bstr(&ob, "null"); nwatch++; continue; }
-        bfmt(&ob, "{\"wid\":%d,\"width\":%d}", nwatch, sigs[si].width);
-        nwatch++;
-      }
-      bstr(&ob, "]}"); send_ob();
-      for (int i = first_new; i < nwatch; i++) if (watches[i].active) add_rec(t, i, watches[i].last, sigs[watches[i].sig].width);
-      send_recs();
-      break;
-    }
-    case 'X': {
-      int n = 0;
-      for (int i = 2; i < nt; i++) {
-        int wid = atoi(tok[i]);
-        if (wid < 0 || wid >= nwatch || !watches[wid].active) continue;
-        vpi_remove_cb(watches[wid].cb); watches[wid].active = 0; free(watches[wid].last); watches[wid].last = NULL; n++;
-      }
-      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"unwatched\":%d}", id, (unsigned long long)t, n); send_ob();
-      break;
-    }
     case 'E': emit_all(); bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", id, (unsigned long long)t); send_ob(); break;
-    case 'I': {
-      bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"watches\":[", id, (unsigned long long)t);
-      int k = 0;
-      for (int i = 0; i < nwatch; i++) if (watches[i].active) {
-        bstr(&ob, k++ ? ",{\"wid\":" : "{\"wid\":"); bfmt(&ob, "%d,\"name\":", i); bjson(&ob, sigs[watches[i].sig].name);
-        bfmt(&ob, ",\"width\":%d}", sigs[watches[i].sig].width);
-      }
-      bstr(&ob, "]}"); send_ob(); break;
-    }
-    case 'N': {
-      vpiHandle sc = nt >= 3 ? vpi_handle_by_name(tok[2], NULL) : NULL;
-      if (!sc) { reply_err(id, "unknown scope"); break; }
-      int limit = nt >= 4 ? atoi(tok[3]) : 10000, count = 0, trunc = 0;
-      bfmt(&ob, "{\"id\":%ld,\"vars\":[", id);
-      list_scope(sc, limit, &count, &trunc);
-      bfmt(&ob, "],\"truncated\":%s}", trunc ? "true" : "false"); send_ob(); break;
-    }
     case 'O':
       if (nt >= 4 && !strcmp(tok[2], "poll")) poll_dt = strtoull(tok[3], NULL, 10);
       if (!poll_dt) poll_dt = 1;
@@ -677,6 +706,7 @@ static PLI_INT32 ro_rtn(p_cb_data d) {
   ro_pending = 0; in_ro = 1;
   flush_dirty();
   if (running && cond_dirty && nconds) { cond_dirty = 0; if (eval_conds()) stop_run("until"); }
+  if (quick_pending) { quick_pending = 0; if (running && !finished) serve_quick(); }
   if (need_serve && !finished) serve(CTX_RO);
   in_ro = 0;
   return 0;
