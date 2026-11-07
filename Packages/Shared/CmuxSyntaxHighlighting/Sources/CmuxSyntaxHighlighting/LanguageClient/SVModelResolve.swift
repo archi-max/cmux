@@ -82,23 +82,53 @@ public enum SVModelResolve {
         return .signal(designPath: designPath, designPrefix: prefixes.designPrefix, dumpPrefix: prefixes.dumpPrefix)
     }
 
-    /// Each design top and its children (child instances, then its signals), for inference:
-    /// `tops` and `instances` as the sidecar's `instances` answers them.
+    /// Instances below the tops kept as roots, at most.
+    static let maxInstanceRoots = 512
+
+    /// The design's roots for inference (`HierarchyPrefixInference.designRule`): each top with
+    /// its children (its scopes, then its signals), and each instance below the tops with its
+    /// scopes only (no model is fetched for them; two scopes at least), so a dump scope named for a deeper instance
+    /// (dump `tb.dut`, design `tb.u_dut`) can match by its child instances. A scope is a child
+    /// instance's or generate block's first segment below the root (`g[0]` of `g[0].u_sub`,
+    /// `g_blk` of the signal `g_blk.x`), listed once. `tops` and `instances` as the sidecar's
+    /// `instances` answers them.
     public static func designRoots(
         tops: [String],
         instances: [String],
         model: Model,
         isolation: isolated (any Actor)? = #isolation
     ) async -> [String: [HierarchyNode]] {
+        // Each instance's scopes, in one pass: every instance path names a scope below each instance on it.
+        let known = Set(instances).union(tops)
+        var below: [String: Set<String>] = [:]
+        for path in instances {
+            let parts = HierarchyPathMapping.segments(path)
+            guard parts.count >= 2 else { continue }
+            for k in 1..<parts.count where !parts[k].isEmpty {
+                let prefix = HierarchyPathMapping.join(Array(parts[..<k]))
+                if known.contains(prefix) { below[prefix, default: []].insert(parts[k]) }
+            }
+        }
+        func scopes(below root: String) -> [String] { Array(below[root] ?? []) }
         var roots: [String: [HierarchyNode]] = [:]
         for top in tops {
-            var children = instances
-                .filter { $0.hasPrefix(top + ".") && !$0.dropFirst(top.count + 1).contains(".") }
-                .map { HierarchyNode(name: String($0.dropFirst(top.count + 1)), isScope: true) }
-            if let signals = await model(top)?["signals"] as? [String: Any] {
-                children += signals.keys.sorted().map { HierarchyNode(name: $0, isScope: false) }
+            var scopeNames = Set(scopes(below: top))
+            var signalNames: [String] = []
+            for name in ((await model(top)?["signals"] as? [String: Any]) ?? [:]).keys {
+                let parts = HierarchyPathMapping.segments(name)
+                if parts.count > 1 { scopeNames.insert(parts[0]) } else { signalNames.append(name) }
             }
-            roots[top] = children
+            roots[top] = scopeNames.sorted().map { HierarchyNode(name: $0, isScope: true) }
+                + signalNames.sorted().map { HierarchyNode(name: $0, isScope: false) }
+        }
+        let topSet = Set(tops)
+        // One shared scope name (a u_fifo) is too weak a match for an instance known by its scopes alone.
+        var kept = 0
+        for path in instances where !topSet.contains(path) && kept < maxInstanceRoots {
+            let names = scopes(below: path)
+            guard names.count >= 2 else { continue }
+            roots[path] = names.sorted().map { HierarchyNode(name: $0, isScope: true) }
+            kept += 1
         }
         return roots
     }

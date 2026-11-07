@@ -172,7 +172,11 @@ import Testing
             HierarchyNode(name: "g[0]", isScope: true), HierarchyNode(name: "g[1]", isScope: true), HierarchyNode(name: "g_blk", isScope: true),
             HierarchyNode(name: "clk", isScope: false),
         ])
-        #expect(roots["soc.g[0].u_sub"] == [])
+        // An instance below the tops is a root by its scopes, and only with two at least.
+        #expect(roots["soc.g[0].u_sub"] == nil)
+        let deep = await SVModelResolve.designRoots(tops: ["tb"], instances: ["tb", "tb.u_dut", "tb.u_dut.u_alu", "tb.u_dut.u_reg", "tb.u_dut.u_alu.u_add"], model: { _ in nil })
+        #expect(deep["tb.u_dut"] == [HierarchyNode(name: "u_alu", isScope: true), HierarchyNode(name: "u_reg", isScope: true)])
+        #expect(deep["tb.u_dut.u_alu"] == nil)
     }
 
     @Test func wordIndexesAreTheEnginesDigits() {
