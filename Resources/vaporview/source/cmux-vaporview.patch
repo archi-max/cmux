@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..2983016
+index 0000000..4486eac
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,275 @@
+@@ -0,0 +1,281 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -279,6 +279,12 @@ index 0000000..2983016
 +- A prefetch request (priority > 0) has a timeout of its own: 3x the window timeout, capped. The helper queues prefetch behind visible work by design, and on a 10 GB dump its replies came at 11-18 s.
 +- When a prefetch request expires it is only cancelled: no `slow()`, so its rows get no backoff, no "helper is slow" notice and no batch splitting.
 +- Answered rows are batched cold apart from the others. The span asked for is then the cold rows' own (their level-out over the view only), not the union with the warm rows' wider span.
++
++## Visible tiles never ride on a prefetch request
++
++`src/webview/window_cache.ts`:
++- After a pan onto tiles that a prefetch request is still reading, that request is cancelled, so the tiles are asked for as visible. Before, they waited on the deprioritized request.
++- A prefetch request that expires schedules the next ensure, so its tiles are asked for again. Before, nothing did until the user acted, because slow() had been the only caller.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2915,10 +2921,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..8cddd2e
+index 0000000..66fcced
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1971 @@
+@@ -0,0 +1,1975 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -3422,9 +3428,13 @@ index 0000000..8cddd2e
 +    const tiles = this.wantedTiles();
 +    this.wantedKeys = new Set(tiles.map((t) => t.key));
 +
-+    // Drop requests the viewport no longer needs.
++    // Drop requests the viewport no longer needs. cmux: a prefetch request holding tiles that are
++    // now on screen (a pan onto them) goes too, so they are asked for as visible, not left behind
++    // visible work in the helper's queue.
++    const onScreen = new Set(tiles.filter((t) => t.priority === 0).map((t) => t.key));
 +    this.inflight.forEach((f, id) => {
 +      if (!f.tiles.some((t) => this.wantedKeys.has(t.key))) {this.cancel(id);}
++      else if (f.priority > 0 && f.tiles.some((t) => onScreen.has(t.key))) {this.cancel(id);}
 +    });
 +
 +    // Batched requests: per run of contiguous tiles (same level and priority) and bucket
@@ -3719,12 +3729,12 @@ index 0000000..8cddd2e
 +    // "in flight" forever: expire, count a failure, ask again after the backoff (M7).
 +    // cmux: prefetch waits behind visible work in the helper's queue by design (on a 10 GB dump
 +    // its replies came at 11-18 s), so it has a timeout of its own (3x, capped), and expiring
-+    // only cancels it: no slow(), so its rows get no backoff, notice or batch splitting.
++    // cancels it and asks again: no slow(), so its rows get no backoff, notice or batch splitting.
 +    const timer = setTimeout(() => {
 +      const f = this.inflight.get(id);
 +      if (!f) {return;}
 +      this.cancel(id);
-+      if (priority > 0) {return;}
++      if (priority > 0) {this.scheduleEnsure(0); return;} // (its tiles, if still wanted, are asked again)
 +      f.signals.forEach((sid) => {const s = this.signals.get(sid); if (s) {this.slow(s);}});
 +    }, priority > 0 ? Math.min(this.windowTimeoutCap, 3 * this.windowTimeout(who)) : this.windowTimeout(who));
 +    this.inflight.set(id, {id, tiles: span, priority, buckets, signals: who.map((s) => s.signalId), sentAt: performance.now(), gen: this.generation, timer});
