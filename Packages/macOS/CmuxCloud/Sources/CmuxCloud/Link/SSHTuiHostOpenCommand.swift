@@ -249,6 +249,10 @@ public struct SSHTuiHostOpenCommand: Sendable {
         return "$HOME/.local/share/cmux/ssh-cli/\(session)/\(digest)"
     }
 
+    /// Where the launch command installs the ``SSHTuiShellIntegration`` files the
+    /// login shell sources, as a `$HOME`-relative shell word.
+    public var shellIntegrationDirectory: String { installDirectory }
+
     /// Shell code run before the login shell: installs ``script`` and the
     /// ``SSHTuiShellIntegration`` files once and prepends their directory to
     /// PATH. Any failure leaves PATH unchanged and the shell still starts.

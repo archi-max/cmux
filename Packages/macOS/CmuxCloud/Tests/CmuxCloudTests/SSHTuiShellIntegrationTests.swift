@@ -215,12 +215,18 @@ struct SSHTuiShellIntegrationTests {
         let sandbox = try ShellSandbox(shell: try #require(Self.gnuBash), name: "bash")
         let target = try sandbox.makeDirectory("t")
         _ = try sandbox.runLoginShell(input: "true\n", umask: "000")
-        let install = sandbox.installDirectory
+        let install = sandbox.hookDirectory
         for file in ["shell/bash-env", "shell/zsh/.zshenv"] {
             #expect(try sandbox.mode(install + "/" + file) == 0o644, "\(file)")
         }
         for dir in ["", "/shell", "/shell/zsh"] {
             #expect(try sandbox.mode(install + dir) == 0o700, "\(install + dir)")
+        }
+        // cmux creates the whole chain below HOME itself.
+        var parent = (install as NSString).deletingLastPathComponent
+        while parent != sandbox.home {
+            #expect(try sandbox.mode(parent) == 0o700, "\(parent)")
+            parent = (parent as NSString).deletingLastPathComponent
         }
         // A file someone else could have rewritten is not sourced.
         try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: install + "/shell/bash-env")
@@ -270,11 +276,11 @@ struct SSHTuiShellIntegrationTests {
         var shells: [(String, String)] = [("/bin/zsh", "zsh")]
         if let bash = Self.gnuBash { shells.append((bash, "bash")) }
         for (shell, name) in shells {
-            for (levels, mode) in [(1, 0o775), (2, 0o757), (4, 0o775)] {
+            for (levels, mode) in [(1, 0o775), (2, 0o757), (3, 0o775)] {
                 let sandbox = try ShellSandbox(shell: shell, name: name)
                 let target = try sandbox.makeDirectory("t")
                 _ = try sandbox.runLoginShell(input: "true\n")
-                var parent = sandbox.installDirectory
+                var parent = sandbox.hookDirectory
                 for _ in 0..<levels { parent = (parent as NSString).deletingLastPathComponent }
                 try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: parent)
                 // The user's group is not a private one here, whatever this machine's is.
@@ -287,36 +293,94 @@ struct SSHTuiShellIntegrationTests {
         }
     }
 
-    /// Ubuntu and Debian give each user a private group and a login umask of
-    /// 002, so the `mkdir -p ~/.local/bin` of the cmux-tui install leaves
-    /// `~/.local` group-writable. A group whose only member is the user grants
-    /// nobody else anything (Debian's OpenSSH StrictModes accepts it too).
-    @Test("A parent writable only by the user's private group still gets the hook")
-    func privateGroupWritableParentIsUsed() throws {
+    /// Ubuntu and Debian log in with umask 002, so the `mkdir -p ~/.local/bin`
+    /// of the cmux-tui install leaves `~/.local` group-writable. The sourced
+    /// files live in a chain cmux creates itself below HOME, so that does not
+    /// matter, and no group write is ever trusted.
+    @Test("A group-writable ~/.local from a umask 002 login does not stop the hook")
+    func umask002LocalDirectoryDoesNotStopTheHook() throws {
         var shells: [(String, String)] = [("/bin/zsh", "zsh")]
         if let bash = Self.gnuBash { shells.append((bash, "bash")) }
-        let user = NSUserName()
         for (shell, name) in shells {
-            for (group, used) in [("\(user):x:\(getgid()):", true), ("\(user):x:\(getgid()):\(user)", true),
-                                  ("\(user):x:\(getgid()):\(user),someone", false), ("shared:x:\(getgid()):", false)] {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("t")
+            for dir in [".local", ".local/bin", ".local/share"] {
+                try FileManager.default.createDirectory(atPath: sandbox.home + "/" + dir, withIntermediateDirectories: true)
+                try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home + "/" + dir)
+            }
+            let path = try sandbox.fakeGroupDatabase(nil)
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n",
+                                                   extraEnvironment: ["PATH": path], umask: "002")
+            #expect(result.stdout.contains("marker-done"), "\(name): \(result.stderr)")
+            #expect(result.reportedDirectories.last == target, "\(name): \(result.stdout.debugDescription)")
+        }
+    }
+
+    /// Group write is never trusted, even for a group whose only listed member
+    /// is the user: on Linux the group bits are the ACL mask, so they would
+    /// let every named ACL entry write, and the group database cannot show
+    /// every member (primary-group users, duplicate GIDs, sssd).
+    @Test("A HOME writable by the user's own group keeps the plain login launch")
+    func groupWritableHomeStaysPlain() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("t")
+            let path = try sandbox.fakeGroupDatabase("\(NSUserName()):x:\(getgid()):")
+            _ = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+            try sandbox.giveHookChainTheUsersGroup()
+            try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: sandbox.home)
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n",
+                                                   extraEnvironment: ["PATH": path])
+            #expect(result.reportedDirectories.isEmpty, "\(name): \(result.stdout.debugDescription)")
+            #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name): \(result.stdout)")
+        }
+    }
+
+    /// zsh reads `$ZDOTDIR/.zshenv.zwc` instead of `.zshenv` when it exists and is newer.
+    @Test("zsh: a compiled .zshenv.zwc someone else could write keeps the plain login launch")
+    func zshUnsafeCompiledEnvStaysPlain() throws {
+        let sandbox = try ShellSandbox(shell: "/bin/zsh", name: "zsh")
+        let target = try sandbox.makeDirectory("t")
+        _ = try sandbox.runLoginShell(input: "true\n")
+        let compiled = sandbox.hookDirectory + "/shell/zsh/.zshenv.zwc"
+        FileManager.default.createFile(atPath: compiled, contents: Data())
+        try FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: compiled)
+        let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"zdotdir=[${ZDOTDIR-unset}]\"\n")
+        #expect(result.reportedDirectories.isEmpty, "\(result.stdout.debugDescription)")
+        #expect(result.stdout.contains("zdotdir=[unset]"), "\(result.stdout)")
+    }
+
+    static let setfacl: String? = ["/usr/bin/setfacl", "/bin/setfacl"].first { FileManager.default.isExecutableFile(atPath: $0) }
+
+    /// POSIX ACLs (Linux): a named entry that can write HOME or the hook chain
+    /// could swap the sourced file. Each case keeps the plain launch, also when
+    /// the group database calls the user's group private.
+    @Test("An ACL that lets someone else write HOME or the hook chain keeps the plain login launch",
+          .enabled(if: setfacl != nil, "needs setfacl (Linux)"))
+    func aclWritableChainStaysPlain() throws {
+        guard let setfacl = Self.setfacl else { return }
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        // (ACL, where, before the first install)
+        let cases: [(String, String, Bool)] = [
+            ("u:nobody:rwx", "", false), ("g:nobody:rwx", "", false), ("d:u:nobody:rwx", "", true),
+            ("u:nobody:rwx", "/.cmux-ssh", false),
+        ]
+        for (shell, name) in shells where FileManager.default.isExecutableFile(atPath: shell) {
+            for (acl, relative, before) in cases {
                 let sandbox = try ShellSandbox(shell: shell, name: name)
                 let target = try sandbox.makeDirectory("t")
-                let path = try sandbox.fakeGroupDatabase(group)
-                _ = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path], umask: "002")
-                try sandbox.giveInstallChainTheUsersGroup()
-                for levels in [1, 5] {
-                    var parent = sandbox.installDirectory
-                    for _ in 0..<levels { parent = (parent as NSString).deletingLastPathComponent }
-                    try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: parent)
-                }
-                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n",
-                                                       extraEnvironment: ["PATH": path], umask: "002")
-                #expect(result.stdout.contains("marker-done"), "\(name) \(group): \(result.stderr)")
-                if used {
-                    #expect(result.reportedDirectories.last == target, "\(name) \(group): \(result.stdout.debugDescription)")
-                } else {
-                    #expect(result.reportedDirectories.isEmpty, "\(name) \(group): \(result.stdout.debugDescription)")
-                }
+                let path = try sandbox.fakeGroupDatabase("\(NSUserName()):x:\(getgid()):")
+                let apply = { _ = try sandbox.run([setfacl, "-m", acl, sandbox.home + relative], environment: [:], input: "") }
+                if before { try apply() }
+                _ = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path])
+                if !before { try apply() }
+                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n",
+                                                       extraEnvironment: ["PATH": path])
+                #expect(result.reportedDirectories.isEmpty, "\(name) \(acl) on ~\(relative): \(result.stdout.debugDescription)")
+                #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name) \(acl) on ~\(relative): \(result.stdout)")
             }
         }
     }
@@ -454,21 +518,26 @@ private final class ShellSandbox {
         return fakeBin + ":/usr/bin:/bin"
     }
 
-    /// New directories take their parent's group on macOS; make the install,
+    /// New directories take their parent's group on macOS; make the hook files,
     /// its files and each parent up to HOME the user's primary group.
-    func giveInstallChainTheUsersGroup() throws {
+    func giveHookChainTheUsersGroup() throws {
         var paths = [home]
-        var parent = installDirectory
+        var parent = hookDirectory
         while parent != home {
             paths.append(parent)
             parent = (parent as NSString).deletingLastPathComponent
         }
-        if let walk = FileManager.default.enumerator(atPath: installDirectory) {
-            for case let relative as String in walk { paths.append(installDirectory + "/" + relative) }
+        if let walk = FileManager.default.enumerator(atPath: hookDirectory) {
+            for case let relative as String in walk { paths.append(hookDirectory + "/" + relative) }
         }
         for path in paths where chown(path, uid_t.max, getgid()) != 0 {
             throw POSIXError(.EPERM)
         }
+    }
+
+    /// Where the sourced shell files are installed under this HOME.
+    var hookDirectory: String {
+        home + "/" + Self.connection().hostOpenCommand.shellIntegrationDirectory.replacingOccurrences(of: "$HOME/", with: "")
     }
 
     func mode(_ path: String) throws -> Int {
