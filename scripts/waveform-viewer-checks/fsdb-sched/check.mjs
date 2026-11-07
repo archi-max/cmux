@@ -16,7 +16,7 @@ let fails = 0;
 const check = (ok, what) => { console.log((ok ? 'ok   ' : 'FAIL ') + what); if (!ok) { fails++; } };
 
 function helper(workers, env = {}) {
-  const p = spawn(process.execPath, [path.join(dir, 'helper.js'), '--workers', String(workers)], {
+  const p = spawn(process.execPath, [path.join(dir, 'helper.js'), '--workers', String(workers), ...(env.ARGS ? env.ARGS.split(' ') : [])], {
     stdio: ['pipe', 'ignore', 'ignore', 'pipe'],
     env: { ...process.env, FSDB_ADDON: path.join(here, 'stub-addon.cjs'), FSDB_STORE_CACHE: '0', FSDB_INDEX_DIR: path.join(tmp, 'idx'), TMPDIR: tmp, ...env },
   });
@@ -173,6 +173,36 @@ async function start(workers, costs, env = {}) {
   const e2 = b.result && b.result.signals[0].error;
   check(!b.error && /unsupported/.test(e2 || '') && b.at < 60, `asking again answers the same error without a reload: ${Math.round(b.at)} ms`);
   h.close();
+}
+
+// 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
+// 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
+// keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
+// can be stored (clk of a 1.7 GB dump is 130 MB).
+{
+  const pool = async (env) => {
+    const h = helper('auto', { STUB_COSTS: '{}', ...env });
+    const r = await h.ready;
+    await h.send('open', { file: dump }).reply;
+    await wait(200);
+    const st = (await h.send('stats').reply).result;
+    h.close();
+    return { ready: r.workers, n: st.workers.length, limits: st.workers.map((w) => w.limit) };
+  };
+  const big = await pool({ FSDB_HOST_CPUS: '12', FSDB_HOST_AVAIL_MB: '14000' });
+  check(big.n === 6 && big.ready === 6, `12 cores, 14 GB available: 6 workers: ${JSON.stringify(big.n)}`);
+  check(big.limits.every((l) => l >= 256e6), `... each with a store share of at least 256 MB: ${big.limits.map((l) => Math.round(l / 1e6))}`);
+  const many = await pool({ FSDB_HOST_CPUS: '64', FSDB_HOST_AVAIL_MB: '200000' });
+  check(many.n === 8, `64 cores: at most 8 workers: ${many.n}`);
+  const tight = await pool({ FSDB_HOST_CPUS: '12', FSDB_HOST_AVAIL_MB: '5500' });
+  check(tight.n === 2, `12 cores but 5.5 GB available: 2 workers: ${tight.n}`);
+  const small = await pool({ FSDB_HOST_CPUS: '2', FSDB_HOST_AVAIL_MB: '14000' });
+  check(small.n === 1, `2 cores: 1 worker: ${small.n}`);
+  const fixed = helper(4, { STUB_COSTS: '{}', FSDB_HOST_CPUS: '12', FSDB_HOST_AVAIL_MB: '14000' });
+  check((await fixed.ready).workers === 4, 'an explicit --workers 4 is kept');
+  const o = await fixed.send('open', { file: dump, workers: 6 }).reply;
+  check(!o.error && o.result.workers === 6, `open {workers: 6} gives 6 (the old cap was 4): ${o.error || o.result.workers}`);
+  fixed.close();
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
