@@ -15,6 +15,10 @@ public enum KDBDifference: Hashable, Sendable {
     /// A source of the chain's instances changed after the compile (slang reads the new text).
     case sourceNewer(file: String)
     case notChecked(KDBCheck)
+    /// slang lacks the compiled instance's name; its one child of that module under the matching
+    /// parent stands for it, the compiled parent having exactly one too (slang u_dut for dut):
+    /// matched by unique module type, not by name.
+    case matchedByModuleType(compiled: String, slang: String)
 
     /// The difference's kind, for counts (`KDBCoverage`).
     public var kind: String {
@@ -25,6 +29,7 @@ public enum KDBDifference: Hashable, Sendable {
         case .writes: "writes"
         case .sourceNewer: "sourceNewer"
         case .notChecked(let check): "notChecked." + check.rawValue
+        case .matchedByModuleType: "matchedByModuleType"
         }
     }
 }

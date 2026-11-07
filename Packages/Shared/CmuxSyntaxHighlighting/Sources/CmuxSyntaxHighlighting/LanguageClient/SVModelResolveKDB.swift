@@ -62,16 +62,44 @@ extension SVModelResolve {
         }
         func module(_ path: String) async -> String? { await slangModel(path)?["module"] as? String }
         func below(_ path: String, _ prefix: String) -> String { path == prefix ? "" : String(path.dropFirst(prefix.count + 1)) }
-        // Whether slang's instance chain for the row under a rule (dump prefix -> design prefix) has
-        // the KDB's modules from the prefix down: nil when it does, else .otherModule (an instance of
-        // another module) or .notInSlang (one missing).
-        func chainDiffers(from level: Int, prefix: String, at candidate: String) async -> CompiledOnlyReason? {
-            for path in chain[level...] {
-                let rest = below(path, prefix)
-                guard let theirs = await module(rest.isEmpty ? candidate : candidate + "." + rest) else { return .notInSlang }
-                if theirs != kdb.instance(path)?["module"] as? String { return .otherModule }
+        // slang's instance chain for the row from `candidate` (standing for chain[level]) down: each
+        // level under the same relative name as the KDB's, with the KDB's module. Where slang lacks
+        // that name, the one child of the KDB's module stands for it when the KDB's parent also has
+        // exactly one child of that module (slang u_dut for the KDB's dut: matched by unique module
+        // type, `renamed`). `reason`: nil when the chain is complete, else .otherModule (an
+        // instance of another module) or .notInSlang (one missing, or no unique stand-in).
+        func chainWalk(from level: Int, at candidate: String) async -> (paths: [String], reason: CompiledOnlyReason?, renamed: [KDBDifference]) {
+            var paths: [String] = []
+            var renamed: [KDBDifference] = []
+            for (i, path) in chain[level...].enumerated() {
+                let kdbModule = kdb.instance(path)?["module"] as? String
+                var here = candidate
+                if i > 0 { here = paths[i - 1] + "." + below(path, chain[level + i - 1]) }
+                guard let theirs = await module(here) else {
+                    guard i > 0, let kdbModule else { return (paths, .notInSlang, renamed) }
+                    let parent = chain[level + i - 1], slangParent = paths[i - 1]
+                    let kdbSame = kdb.instancePaths.filter { kdb.instance($0)?["parent"] as? String == parent && kdb.instance($0)?["module"] as? String == kdbModule }
+                    var slangSame: [String] = []
+                    for p in slang where p.hasPrefix(slangParent + ".") {
+                        // slang's child instances of the parent (none of the parent's instances in between).
+                        var segments = HierarchyPathMapping.segments(p)
+                        var up: String?
+                        while segments.count > 1 {
+                            segments.removeLast()
+                            let q = HierarchyPathMapping.join(segments)
+                            if known.contains(q) { up = q; break }
+                        }
+                        if up == slangParent, await module(p) == kdbModule { slangSame.append(p) }
+                    }
+                    guard kdbSame.count == 1, slangSame.count == 1 else { return (paths, .notInSlang, renamed) }
+                    renamed.append(.matchedByModuleType(compiled: path, slang: slangSame[0]))
+                    paths.append(slangSame[0])
+                    continue
+                }
+                if theirs != kdbModule { return (paths, .otherModule, renamed) }
+                paths.append(here)
             }
-            return nil
+            return (paths, nil, renamed)
         }
         // today()'s answer only where its instance chain, from its rule's prefixes down, has the
         // KDB's modules (the row's instance and each above it, up to the dump prefix); else the
@@ -137,17 +165,18 @@ extension SVModelResolve {
             // module. The shallowest start decides: a counterpart there whose chain differs is the
             // compiled design's row, never a stand-in found deeper (a sibling, another index or
             // another top of the same module).
-            var entries: [(level: Int, at: String, reason: CompiledOnlyReason?)] = []
+            var entries: [(level: Int, at: String, reason: CompiledOnlyReason?, paths: [String], renamed: [KDBDifference])] = []
             for candidate in candidates.sorted() {
                 guard await module(candidate) == kdbModule else {
                     let here = candidate == prefix || sameBelow.contains(candidate)
                     if here, suffix.isEmpty ? candidate == prefix : !topSet.contains(candidate) {
-                        entries.append((level, candidate, .otherModule))
+                        entries.append((level, candidate, .otherModule, [], []))
                     }
                     continue
                 }
                 let start = await anchored(level, candidate)
-                var reason = await chainDiffers(from: start.level, prefix: chain[start.level], at: start.at)
+                let walk = await chainWalk(from: start.level, at: start.at)
+                var reason = walk.reason
                 // Where slang's chain starts below a scope that is not the dump's (another testbench),
                 // it starts under the dump's own instance name (tb_soc.dut for tb.dut), else at a top
                 // (soc): a renamed instance (dut_r) is no stand-in either.
@@ -155,7 +184,7 @@ extension SVModelResolve {
                    HierarchyPathMapping.segments(start.at).last != HierarchyPathMapping.segments(chain[start.level]).last {
                     reason = .notInSlang
                 }
-                if !entries.contains(where: { $0.level == start.level && $0.at == start.at }) { entries.append((start.level, start.at, reason)) }
+                if !entries.contains(where: { $0.level == start.level && $0.at == start.at }) { entries.append((start.level, start.at, reason, walk.paths, walk.renamed)) }
             }
             guard let shallowest = entries.map(\.level).min() else { continue }
             let decisive = entries.filter { $0.level == shallowest }
@@ -168,19 +197,16 @@ extension SVModelResolve {
                 log("KDB mapping of \(row): \(matched.map(\.at).joined(separator: ", ")) are all \(chain[shallowest])'s modules; the inferred rule instead")
                 return try await checkedToday()
             }
-            let (level, prefix, designPrefix) = (shallowest, chain[shallowest], matched[0].at)
-            let rest = below(row, prefix)
-            let designPath = designPrefix + "." + rest
-            let designInstance = below(instance, prefix).isEmpty ? designPrefix : designPrefix + "." + below(instance, prefix)
+            let (level, paths, renamed) = (shallowest, matched[0].paths, matched[0].renamed)
+            guard let designInstance = paths.last else { continue }
+            let designPath = designInstance + "." + name
             if let found = await lookup(designPath), found.instance == designInstance,
                let instanceModel = await slangModel(found.instance), SVModelLoad.isSignal(found.name, inModel: instanceModel) {
                 let mapped = result(designPath: designPath, dumpPath: rowSegments)
                 var levels: [KDBAgreement.Level] = []
                 var paired: [(slangPath: String, level: KDBAgreement.Level)] = []
                 var lost = false
-                for path in chain[level...] {
-                    let rest = below(path, prefix)
-                    let slangPath = rest.isEmpty ? designPrefix : designPrefix + "." + rest
+                for (path, slangPath) in zip(chain[level...], paths) {
                     guard let compiled = kdb.instance(path), let slang = await slangModel(slangPath) else {
                         lost = true
                         continue
@@ -194,6 +220,8 @@ extension SVModelResolve {
                 var differences = KDBAgreement.differences(chain: levels, signal: name, compiledAt: kdb.compiledAt, sourceTimes: times,
                                                            overrides: kdb.overrides, sameFiles: kdbSameFiles)
                 if lost, !differences.contains(.notChecked(.chain)) { differences.append(.notChecked(.chain)) }
+                // Matched by unique module type: evaluated, never exact.
+                differences = renamed + differences
                 guard !differences.isEmpty, case .signal(let p, let dp, let up) = mapped else { return mapped }
                 log("KDB mapping of \(row): approximate (\(differences.map(\.kind).joined(separator: ", ")))")
                 return .approximate(designPath: p, designPrefix: dp, dumpPrefix: up, differences: differences)

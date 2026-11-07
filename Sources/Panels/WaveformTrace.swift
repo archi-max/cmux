@@ -419,6 +419,9 @@ enum WaveformTrace {
                 return String(localized: "waveformTrace.kdb.notCheckedChain", defaultValue: "an instance above the row, which one side lacks (not checked)")
             case .notChecked(.copy):
                 return String(localized: "waveformTrace.kdb.notCheckedCopy", defaultValue: "the source text: slang reads the editor’s copy on another host than the compile, matched by file name only (not checked)")
+            case .matchedByModuleType(let compiled, let slang):
+                return String(format: String(localized: "waveformTrace.kdb.matchedByModuleType", defaultValue: "%1$@ matched to slang’s %2$@ by unique module type (the names differ)"),
+                              compiled, slang)
             }
         }
         let shown = parts.prefix(6).joined(separator: "; ")

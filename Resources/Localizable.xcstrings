@@ -485286,6 +485286,65 @@
         }
       }
     },
+    "waveformTrace.kdb.matchedByModuleType": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ matched to slang’s %2$@ by unique module type (the names differ)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ をモジュール型が一意であることにより slang の %2$@ に対応付けました（名前は異なります）"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ über den eindeutigen Modultyp slangs %2$@ zugeordnet (die Namen unterscheiden sich)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ associé à %2$@ de slang par type de module unique (les noms diffèrent)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "طوبق %1$@ مع %2$@ في slang بنوع الوحدة الفريد (الأسماء مختلفة)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ emparejado con %2$@ de slang por tipo de módulo único (los nombres difieren)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 依唯一的模組類型對應到 slang 的 %2$@（名稱不同）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 按唯一的模块类型对应到 slang 的 %2$@（名称不同）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@을(를) 고유한 모듈 유형으로 slang의 %2$@에 대응시킴(이름이 다름)"
+          }
+        }
+      }
+    },
     "waveformTrace.kdb.more": {
       "extractionState": "manual",
       "localizations": {
