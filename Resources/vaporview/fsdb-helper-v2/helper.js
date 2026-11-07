@@ -463,6 +463,8 @@ function pump(w) {
   // worker's background work, then a piece of a background whole load.
   // Background pieces leave one worker free (of 3 or more), so a pan or a new signal never waits for one.
   if (!w.busy && w.ready && !w.queue.length && !w.recycle && !w.hold) { pullPiece(w, true) || (!w.bgQueue.length && bgRoom() && pullPiece(w, false)); }
+  // (with only prefetch queued: a piece of a load a visible request waits for goes first; review M3 A)
+  else if (!w.busy && w.ready && !w.recycle && !w.hold && w.queue.every((t) => t.prefetch)) { pullPiece(w, true, true); }
   if (w.busy || !w.ready || !(w.queue.length || w.bgQueue.length)) { return; }
   const task = w.queue.length ? w.queue.shift() : w.bgQueue.shift();
   w.busy = task;
@@ -950,7 +952,7 @@ function kickPool(interactive) {
     }
   }
 }
-function pickJob(interactive, w = null, limit = false) {
+function pickJob(interactive, w = null, limit = false, visible = false) {
   let best = null, bk = null;
   const over = shmBytes >= SHM_CAP;
   if (over) {  // (the started load with the least work left, interactive or not)
@@ -959,11 +961,12 @@ function pickJob(interactive, w = null, limit = false) {
       const rest = (j.doneMs / Math.max(1, j.doneLen)) * (j.end - j.next);
       if (!best || rest < bk) { best = j; bk = rest; }
     }
-    return best && (best.reqs.size > 0) === interactive ? best : null;
+    return best && (best.reqs.size > 0) === interactive && (!visible || [...best.reqs].some((r) => !r.prefetch)) ? best : null;
   }
   for (const j of jobs.values()) {
     if (j.failed || j.adopting || j.batching || j.epoch !== epoch || (j.reqs.size > 0) !== interactive) { continue; }
     if (!j.redo.length && j.next >= j.end) { continue; }  // every piece handed out
+    if (visible && ![...j.reqs].some((r) => !r.prefetch)) { continue; }  // (only prefetch waits for it)
     // (a secondary's pieces stay on few workers while other loads can use the rest)
     if (limit && w && rebuiltLike(j.kind) && !j.workers.has(w.i) && j.workers.size >= j.maxW) { continue; }
     const rest = j.doneLen > 0 ? (j.doneMs / j.doneLen) * (j.end - j.next) : 0;  // est. ms still to hand out
@@ -1012,9 +1015,18 @@ function nextPiece(j, target) {
 }
 const bgRoom = () => workers.length < 3 || workers.filter((x) => x.busy && x.busy.bgPiece).length < workers.length - 1;
 // pump(w): w has nothing of its own queued; give it the next piece of `interactive` jobs.
-function pullPiece(w, interactive) {
-  const j = pickJob(interactive, w, true) || pickJob(interactive, w, false);
+// front: ahead of the queued (prefetch) tasks, for a job a visible request waits for.
+function pullPiece(w, interactive, front = false) {
+  const j = pickJob(interactive, w, true, front) || pickJob(interactive, w, false, front);
   if (!j) { return false; }
+  if (front) {
+    const n = w.queue.length, ok = pullPiece0(w, j, interactive);
+    if (ok) { w.queue.unshift(...w.queue.splice(n)); }
+    return ok;
+  }
+  return pullPiece0(w, j, interactive);
+}
+function pullPiece0(w, j, interactive) {
   if (j.kind === 'p' && j.small && !j.pieces.length) { return pullBatch(w, j, interactive); }
   j.workers.add(w.i);
   const p = nextPiece(j, interactive ? PIECE_MS : BG_PIECE_MS);
@@ -1263,7 +1275,10 @@ function coldTask(req, op, ids, extra, spread = false) {
     const prim = ids.filter((id) => kindOf(id) === 'p'), rest = ids.filter((id) => kindOf(id) !== 'p');
     const pg = [];
     for (let k = 0; k < prim.length; k += COLD_PRIM_GROUP) { pg.push(prim.slice(k, k + COLD_PRIM_GROUP)); }
-    const pool = free.length ? free.slice(0, pg.length + rest.length) : [leastBusy()];
+    // (none free: a visible request goes ahead of queued prefetch, so the workers running or holding
+    // only prefetch are next free, and it spreads over them; review M3 C)
+    const soon = req.prefetch ? [] : workers.filter((w) => w.ready && !w.recycle && (!w.busy || w.busy.prefetch) && w.queue.every((t) => t.prefetch));
+    const pool = free.length ? free.slice(0, pg.length + rest.length) : soon.length ? soon.slice(0, pg.length + rest.length) : [leastBusy()];
     pg.forEach((g, k) => { for (const id of g) { add(pool[k % pool.length], id); } });
     const others = pool.length > pg.length ? pool.slice(pg.length) : pool;
     // (a prefetch's rebuilt rows go one task each: they cost by the range, so one row's task is
@@ -1582,9 +1597,9 @@ async function hotBuild(ids) {
 // for each row in its own request, all at once: requests that reach a reader together (within
 // HOT_GATHER_MS of each other, or while it is busy) go to it as one call per window.
 const HOT_GATHER_MS = 3;
-function hotWindowBatched(r, ids, range, op = 'hotWindow') {
+function hotWindowBatched(r, ids, range, op = 'hotWindow', prefetch = false) {
   return new Promise((resolve) => {
-    (r.queue || (r.queue = [])).push({ ids, range, op, key: op + JSON.stringify(range), resolve });
+    (r.queue || (r.queue = [])).push({ ids, range, op, key: op + JSON.stringify(range), resolve, prefetch });
     if (!r.busy && !r.pumpSoon) { r.pumpSoon = true; setTimeout(() => { r.pumpSoon = false; hotPump(r); }, HOT_GATHER_MS); }
   });
 }
@@ -1633,9 +1648,12 @@ function hotColdCost(id, range, ms, share = false) {
 async function hotPump(r) {
   if (r.busy || !r.queue || !r.queue.length) { return; }
   r.busy = true;
-  const groups = new Map();
-  for (const q of r.queue.splice(0)) { if (!groups.has(q.key)) { groups.set(q.key, []); } groups.get(q.key).push(q); }
-  for (const qs of groups.values()) {
+  // One call per window, visible windows before prefetch ones, the next picked after each call, so
+  // a visible window waits for at most the call running (review M3 E).
+  while (r.queue.length) {
+    const first = r.queue.find((q) => !q.prefetch) || r.queue[0];
+    const qs = r.queue.filter((q) => q.key === first.key);
+    r.queue = r.queue.filter((q) => q.key !== first.key);
     const ids = [...new Set(qs.flatMap((q) => q.ids))];
     const a = await hotCall(r, { op: qs[0].op, signalIds: ids, ...qs[0].range });
     if (!a.error && kinds.state === 'ready' && qs[0].op === 'hotWindow') { hotJudge(r, qs[0].range, a.ms || 0); }
@@ -1662,7 +1680,7 @@ async function warmOrCold(req, ids, extra, op, coldOp, useWarm = true) {
   const by = new Map();
   await Promise.all([
     ...parts.map(async ([r, mine]) => {
-      const a = await hotWindowBatched(r, mine, extra, op);
+      const a = await hotWindowBatched(r, mine, extra, op, !!req.prefetch);
       if (a.error) { (await coldTask(req, coldOp, mine, extra, true)).forEach((x, k) => by.set(mine[k], x)); return; }
       if (op === 'hotWindow') { req.workerMs = Math.max(req.workerMs || 0, a.ms || 0); }
       // (a row the warm reader refused, its memory bound say, is read cold)
