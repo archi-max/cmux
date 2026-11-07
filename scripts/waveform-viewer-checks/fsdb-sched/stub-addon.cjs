@@ -16,6 +16,12 @@ const SLICE_MS = Number(process.env.STUB_SLICE_MS || 0);
 // STUB_FIRST_MS: a signal's first load in a worker process costs that much more (the reader
 // reads the signal's block index once per process: ~120-200 ms for a clock on a 1.7 GB dump).
 const FIRST_MS = Number(process.env.STUB_FIRST_MS || 0);
+// STUB_PRIMARY + STUB_FLOOR_MS: a reader call that loads a stored (primary) signal costs a floor
+// once per call whatever it loads (the reader re-reads its navigation data: ~110 ms on 1.7 GB,
+// ~650 ms on 10 GB), so batching primaries in one call pays it once.
+const PRIMARY = new Set(JSON.parse(process.env.STUB_PRIMARY || '[]'));
+const FLOOR_MS = Number(process.env.STUB_FLOOR_MS || 0);
+const floorOf = (ids) => (FLOOR_MS && ids.some((id) => PRIMARY.has(id)) ? FLOOR_MS : 0);
 const seen = new Set();
 const first = (id) => (seen.has(id) ? 0 : (seen.add(id), FIRST_MS));
 const share = (id, s, e) => SLICE_MS + first(id) + cost(id) * Math.max(0, Math.min(Number(e), TIME_END) - Number(s)) / TIME_END;
@@ -35,6 +41,7 @@ module.exports = {
   cacheSetLimit(n) { limit = n; }, cacheSetBounds() {},
   cacheStats: () => ({ bytes: 16 * store.size, limit, signals: [...store.keys()].map(entry) }),
   cacheLoad(ids) {
+    sleep(floorOf(ids.filter((id) => !store.has(id))));
     return ids.map((id) => {
       if (store.has(id)) { return { ...entry(id), cached: true, loadMs: 0, walkMs: 0 }; }
       sleep(cost(id));
@@ -51,9 +58,9 @@ module.exports = {
     const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30;  // the value at t0: '0'
     return { exact: true, count: 1, records: rec, counts: null, total: 2 };
   },
-  cacheWindowCold(ids, t0, t1) { return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
+  cacheWindowCold(ids, t0, t1) { sleep(floorOf(ids)); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
   cacheWalkSlice(id, s, e, path) {
-    const ms = share(id, s, e);
+    const ms = share(id, s, e) + floorOf([id]);
     sleep(ms);
     if (BAD.has(id)) { throw new Error('unsupported encoding'); }
     // STUB_COUNTS: a signal's whole change count, spread evenly over the dump (default 1 per slice);

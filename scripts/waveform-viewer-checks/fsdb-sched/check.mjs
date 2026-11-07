@@ -321,6 +321,74 @@ async function start(workers, costs, env = {}) {
   fs.writeFileSync(dump, 'stub');
 }
 
+// 20. Stored (primary) and rebuilt (secondary) signals are told apart once per file with
+// fsdbdebug -top_n_var 0 (it lists only stored vars, by idcode), cached next to the index;
+// without the tool every signal is loaded as before.
+const DEBUG = path.join(here, 'fsdbdebug-stub.cjs');
+const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await h.send('stats').reply).result.kinds; if (k && k.state !== 'pending') { return k; } await wait(20); } return null; };
+{
+  const log = path.join(tmp, 'debug.log');
+  const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3]', STUB_DEBUG_LOG: log };
+  const h = await start(2, {}, env);
+  const k = await kindsOf(h);
+  check(k && k.state === 'ready' && k.primaries === 3 && k.source === 'fsdbdebug', `the stored signals are listed by fsdbdebug: ${JSON.stringify(k)}`);
+  h.close();
+  const h2 = await start(2, {}, env);
+  const k2 = await kindsOf(h2);
+  const runs = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').length : 0;
+  check(k2 && k2.primaries === 3 && k2.source === 'cache' && runs === 1, `... and read from the index dir on the next open (fsdbdebug ran ${runs}x): ${JSON.stringify(k2)}`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h3 = await start(2, { 1: 50 }, { FSDB_FSDBDEBUG: path.join(tmp, 'no-such-tool') });
+  const k3 = await kindsOf(h3);
+  const r3 = await h3.send('window', win([1])).reply;
+  check(k3 && k3.state === 'none' && !r3.error, `without the tool, no kinds and loads as before: ${JSON.stringify(k3)} ${r3.error || 'ok'}`);
+  h3.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 21. Primaries cost a reader floor per load call (its navigation data, ~110 ms on 1.7 GB,
+// ~650 ms on 10 GB, whatever the range): cheap ones are loaded several in one call, and none
+// is cut in pieces shorter than a few floors. Eight 100 ms primaries with a 300 ms floor,
+// one request each, four workers: each in its own pieces paid the floor per piece.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 100])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ids), STUB_FLOOR_MS: '300' });
+  await kindsOf(h);
+  const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  const last = Math.max(...rs.map((r) => r.at));
+  check(rs.every((r) => !r.error) && last < 800, `8 cheap primaries with a 300 ms floor: last at ${Math.round(last)} ms (two per call on four workers: ~500)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h2 = await start(4, { 1: 4000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_FLOOR_MS: '300' });
+  await kindsOf(h2);
+  const r = await h2.send('window', win([1])).reply;
+  const sp = r.result && r.result.signals[0].split;
+  check(!r.error && sp <= 6 && r.at < 1900, `a 4 s primary with a 300 ms floor: ${sp} pieces, ${Math.round(r.at)} ms (pieces of >= 4 floors: ~4, ~1.5 s)`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 22. A secondary costs its worker a setup the first time (~190 ms: the reader builds the
+// signal's network), so with other loads waiting a secondary's pieces stay on few workers
+// (setup <= 1/4 of its work); on an idle pool a lone one still spreads.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 600])), { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', STUB_FIRST_MS: '200' });
+  await kindsOf(h);
+  const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
+  const last = Math.max(...rs.map((r) => r.at));
+  check(rs.every((r) => !r.error) && last < 2200, `8 secondaries of 600 ms with a 200 ms setup per worker: last at ${Math.round(last)} ms (each on one worker: ~1600; on all four: ~2800)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h2 = await start(4, { 1: 1200 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[]', STUB_FIRST_MS: '200' });
+  await kindsOf(h2);
+  const r2 = await h2.send('window', win([1])).reply;
+  check(!r2.error && r2.at < 1000, `... a lone 1.2 s secondary on an idle pool still spreads: ${Math.round(r2.at)} ms (one worker: ~1400)`);
+  h2.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
