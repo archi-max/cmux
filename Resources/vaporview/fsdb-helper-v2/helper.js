@@ -39,6 +39,13 @@
 //     floor((t - t0) * buckets / (t1 - t0)); changes exactly at t0 are counted (in
 //     count and bucket 0) but folded into the t0 record, not sent. exact when
 //     count <= 2 * buckets; otherwise per bucket its first and last sent change.
+//   aliasHints {pairs: [[rebuiltId, storedId], ...]} -> {accepted, refused: [{pair, why}]}: candidate
+//     aliases from the app's design model (single-net port bindings). A pair is used once the
+//     stored signal is loaded and 16 short windows of both match: window, valueAt, count, edge
+//     and search of the rebuilt id are then answered from the stored one (window and count
+//     entries say alias: storedId). The whole streams are compared in the background; a pair
+//     that differs is dropped and the next window/valueAt/count reply carries
+//     aliasDropped: [rebuiltIds] (ask for those rows again). Verified pairs are kept per file.
 //   valueAt {signalIds, t}         -> {values: [string | null], cold} (all 'x' before the first
 //     change; null = unreadable). Signals that aren't stored are read cold: a [t, t] view
 //     window, one value, ~2-16 ms each, nothing walked or kept (`cold` = how many).
@@ -669,6 +676,116 @@ const primWalkMs = (id) => ((kinds.primaries && kinds.primaries.get(id)) || 0) *
 function learnFloor(ms, walkMs) {
   const f = Math.max(0, ms - walkMs);
   primFloorMs = primFloorMs === null ? f : 0.7 * primFloorMs + 0.3 * f;
+}
+
+// ---- aliases: rebuilt signals that are copies of stored ones ----
+// A port bound to a single net is rebuilt by the reader on every load (u_cluster.clk: 6.8 s
+// against 0.43 s for the stored clk it equals). The app names candidate pairs from its design
+// model (aliasHints: port bindings only; the dump has no alias map for them). A pair is used
+// once the stored signal is loaded and ALIAS_SAMPLES short windows (1/1024 of the dump each)
+// of the rebuilt one equal its own; requests for the rebuilt one are then answered from the
+// stored one (alias: its id on each answer). Meanwhile the rebuilt one loads whole in the
+// background, and the two whole streams are compared: equal -> verified (kept in the index dir,
+// used at once next time, the rebuilt copy freed); different -> dropped and logged, and the
+// next replies carry aliasDropped: [ids] so the page asks for those rows again.
+const ALIASES_FILE = 'aliases.v1.json';
+const ALIAS_SAMPLES = 16;
+const aliases = new Map();  // rebuilt id -> {p, state: 'checking' | 'on' | 'verified' | 'bad', why?}
+const aliasLog = [];        // the last few drops and refusals, for stats
+let aliasDropped = [];      // ids to report on the next replies
+let aliasKnown = new Map(); // verified pairs from the index dir: rebuilt id -> stored id
+const aliasFor = (id) => { const a = aliases.get(id); return a && (a.state === 'on' || a.state === 'verified') ? a.p : null; };
+function aliasNote(s, p, why) {
+  aliasLog.push({ s, p, why }); if (aliasLog.length > 16) { aliasLog.shift(); }
+  if (DEBUG) { process.stderr.write(`[helper] alias ${s} -> ${p}: ${why}\n`); }
+}
+function loadAliases() {
+  aliases.clear(); aliasDropped = []; aliasKnown = new Map();
+  if (!warm.dir) { return; }
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(warm.dir, ALIASES_FILE), 'utf8'));
+    if (j && Array.isArray(j.pairs)) { for (const [s, p] of j.pairs) { if (Number.isInteger(s) && Number.isInteger(p)) { aliasKnown.set(s, p); } } }
+  } catch (e) { /* none yet */ }
+}
+function saveAliases() {
+  if (!warm.dir) { return; }
+  const pairs = [...aliases].filter(([, a]) => a.state === 'verified').map(([s, a]) => [s, a.p]);
+  try {
+    const tmp = path.join(warm.dir, `${ALIASES_FILE}.${process.pid}.tmp`);
+    fs.writeFileSync(tmp, JSON.stringify({ v: 1, pairs }), { mode: 0o600 });
+    fs.renameSync(tmp, path.join(warm.dir, ALIASES_FILE));
+  } catch (e) { /* best effort */ }
+}
+function dropAlias(s, why) {
+  const a = aliases.get(s);
+  if (!a) { return; }
+  const was = a.state;
+  Object.assign(a, { state: 'bad', why });
+  aliasNote(s, a.p, why);
+  if (was === 'on' || was === 'verified') { aliasDropped.push(s); }
+  if (was === 'verified') { saveAliases(); }
+}
+const sameWin = (x, y) => !!x && !!y && !x.error && !y.error && x.count === y.count && x.exact === y.exact
+  && Buffer.compare(zlib.inflateRawSync(asBuf(x.records)), zlib.inflateRawSync(asBuf(y.records))) === 0;
+async function checkAlias(s, p) {
+  const ep = epoch, a = aliases.get(s);
+  const req = { id: `alias-${s}`, cmd: 'alias', internal: true };
+  const live = () => epoch === ep && aliases.get(s) === a && a.state !== 'bad';
+  try {
+    const sp = splitWalks(req, [p]);  // the stored one, whole (needed to answer for both)
+    if (sp) { await sp; }
+    if (!live()) { return; }
+    if (a.state !== 'verified') {
+      const T = Math.max(1, timeEnd), len = Math.max(1, Math.floor(T / 1024));
+      for (let k = 0; k < ALIAS_SAMPLES && live(); k++) {
+        const t0 = Math.floor((k + 0.5) * T / ALIAS_SAMPLES), range = { t0, t1: t0 + len, buckets: MAX_BUCKETS };
+        const [[x], [y]] = await Promise.all([coldTask(req, 'windowCold', [s], range, true), scatter(req, 'window', [p], range, (m) => m.result)]);
+        if (!sameWin(x, y)) { dropAlias(s, `differs in [${t0}, ${t0 + len})`); return; }
+      }
+      if (!live()) { return; }
+      a.state = 'on';
+    }
+    // The whole comparison, in the background: the rebuilt one loads as any background load.
+    const j = startJob(s, null);
+    await j.promise;
+    if (!live()) { return; }
+    const [ds, dp] = await Promise.all([single(req, 'digest', s, {}), single(req, 'digest', p, {})]);
+    if (!live()) { return; }
+    if (!ds || !dp || ds.error || dp.error || ds.hash !== dp.hash || ds.count !== dp.count) { dropAlias(s, `whole streams differ (${ds && ds.count} vs ${dp && dp.count} changes)`); return; }
+    if (a.state !== 'verified') { a.state = 'verified'; saveAliases(); }
+    if (!aliases.has(p)) { runTask(workerFor(s), { op: 'free', signalIds: [s] }).catch(() => {}); }
+  } catch (e) {
+    if (live() && !/reopened|closed|freed/.test(String(e && e.message))) { dropAlias(s, `check failed: ${(e && e.message) || e}`); }
+  } finally {
+    for (const sp of req.splits || []) { sp.reqs.delete(req); }
+  }
+}
+// Requests name rebuilt signals; with an alias in use they are read as the stored one. -> fix(r)
+function aliasRewrite(req) {
+  if (!aliases.size) { return null; }
+  const map = (id) => aliasFor(id) ?? id;
+  const tell = req.cmd === 'window' || req.cmd === 'valueAt' || req.cmd === 'count';  // (replies that carry rows)
+  const notice = (r) => { if (tell && aliasDropped.length && r) { const o = r.bin !== undefined ? r.result : r; if (o && typeof o === 'object') { o.aliasDropped = aliasDropped; aliasDropped = []; } } return r; };
+  if (req.cmd === 'window' && Array.isArray(req.signals)) {
+    const orig = req.signals.map((x) => x && x.signalId);
+    if (!orig.some((id) => aliasFor(id) !== null)) { return notice; }
+    req.signals = req.signals.map((x) => (x && aliasFor(x.signalId) !== null ? { ...x, signalId: aliasFor(x.signalId) } : x));
+    return (r) => {
+      const sg = r && r.result && r.result.signals;
+      if (sg) { sg.forEach((x, k) => { if (x && orig[k] !== x.signalId) { x.alias = x.signalId; x.signalId = orig[k]; } }); }
+      return notice(r);
+    };
+  }
+  if ((req.cmd === 'valueAt' || req.cmd === 'count') && Array.isArray(req.signalIds)) {
+    const orig = req.signalIds;
+    req.signalIds = orig.map(map);
+    return (r) => {
+      if (r && Array.isArray(r.counts)) { r.counts.forEach((x, k) => { if (x && orig[k] !== x.signalId) { x.alias = x.signalId; x.signalId = orig[k]; } }); }
+      return notice(r);
+    };
+  }
+  if ((req.cmd === 'edge' || req.cmd === 'search' || req.cmd === 'searchText') && req.signalId !== undefined) { req.signalId = map(req.signalId); }
+  return tell ? notice : null;
 }
 
 // ---- whole loads in pieces (jobs) ----
@@ -1447,7 +1564,7 @@ function openIndex(file) {
     const man = readManifest(warm.dir);
     for (const name of fs.readdirSync(warm.dir)) {
       const m = /^(\d+)\.vvz$/.exec(name), f = path.join(warm.dir, name);
-      if (name === MANIFEST || name === KINDS_FILE) { continue; }
+      if (name === MANIFEST || name === KINDS_FILE || name === ALIASES_FILE) { continue; }
       if (!m) {  // leftover temp files; another live helper's fresh ones (< 1 min) are left alone
         try { if (!/\.tmp$/.test(name) || fs.lstatSync(f).mtimeMs < Date.now() - 60e3) { fs.rmSync(f, { force: true }); } } catch (e) { /* gone */ }
         continue;
@@ -1519,7 +1636,7 @@ function pumpWarm() {
 // the file instead of walking: spike_rvfi 71 ms instead of 1,589 ms, clk 10 ms
 // instead of 256 ms. FSDB_STORE_CACHE=0 turns it off; FSDB_INDEX_MB caps it.
 const STORE_CACHE = process.env.FSDB_STORE_CACHE !== '0';
-const CACHE_FILE_OPS = new Set(['window', 'valueAt', 'lastChange', 'edge', 'search', 'load', 'bgLoad', 'export', 'derive', 'searchExpr']);
+const CACHE_FILE_OPS = new Set(['window', 'valueAt', 'lastChange', 'digest', 'edge', 'search', 'load', 'bgLoad', 'export', 'derive', 'searchExpr']);
 const persisting = new Set();
 function persistLater(w, ids) {
   if (!STORE_CACHE || !warm.dir || warm.epoch !== epoch) { return; }
@@ -1956,6 +2073,7 @@ const handlers = {
     warm.inflight = 0;
     openIndex(file);
     startKinds(file);
+    loadAliases();
     if (wantWarm) { startWarm(); }
     const result = { metadata, top, workers: want };
     if (ident) { lastOpen = { ident, result }; }
@@ -2181,6 +2299,29 @@ const handlers = {
     return { counts: ids.map((id) => countOf(id) || (errors.has(id) ? { signalId: id, error: errors.get(id) } : { signalId: id, unknown: true })) };
   },
 
+  // aliasHints {pairs: [[rebuiltId, storedId], ...]} -> {accepted, refused: [{pair, why}]}: candidate
+  // aliases from the app's design model (port bindings); see "aliases" above.
+  async aliasHints(req) {
+    if (!Array.isArray(req.pairs)) { throw new Error('aliasHints needs pairs'); }
+    const width = (id) => widthOf.get(id) ?? (getIndex().byId.get(id) || {}).width;
+    let accepted = 0;
+    const refused = [];
+    for (const pr of req.pairs) {
+      const [s, p] = Array.isArray(pr) ? pr : [];
+      const no = (why) => { refused.push({ pair: pr, why }); };
+      if (!Number.isInteger(s) || !Number.isInteger(p) || s === p) { no('not a pair of signal ids'); continue; }
+      if (aliases.has(s)) { if (aliases.get(s).p !== p) { no('has another candidate'); } continue; }
+      if (!width(s) || width(s) !== width(p)) { no('widths differ'); continue; }
+      if (derived.has(s) || derived.has(p)) { no('derived'); continue; }
+      if (kindOf(p) !== 'p' || kindOf(s) !== 's') { no(kinds.state === 'ready' ? 'not a rebuilt and a stored signal' : 'stored signals not known yet'); continue; }
+      accepted++;
+      if (aliasKnown.get(s) === p) { aliases.set(s, { p, state: 'verified' }); continue; }
+      aliases.set(s, { p, state: 'checking' });
+      checkAlias(s, p);
+    }
+    return { accepted, refused };
+  },
+
   async free(req) {
     // (a load of a freed signal that nobody waits for is dropped, not stored again later)
     for (const j of [...jobs.values()]) { if (!req.signalIds || req.signalIds.includes(j.id)) { dropJob(j); } }
@@ -2204,6 +2345,8 @@ const handlers = {
       firstLoads: floatQueue.length,  // first loads waiting for a free worker (floatQueue)
       coldWalks: { pending: [...jobs.values()].filter((j) => !j.reqs.size).map((j) => j.id), failed: [...bgFailed.keys()] },
       pieceFiles: { bytes: shmBytes, peak: shmPeak, cap: SHM_CAP },
+      aliases: { checking: [...aliases.values()].filter((a) => a.state === 'checking').length, on: [...aliases].filter(([, a]) => a.state === 'on').map(([x, a]) => [x, a.p]),
+        verified: [...aliases].filter(([, a]) => a.state === 'verified').map(([x, a]) => [x, a.p]), bad: [...aliases].filter(([, a]) => a.state === 'bad').map(([x, a]) => [x, a.p]), log: aliasLog },
       kinds: { state: kinds.state, source: kinds.source, primaries: kinds.primaries ? kinds.primaries.size : 0, ms: kinds.ms, error: kinds.error, floorMs: Math.round(primFloor()) },
       loads: [...jobs.values()].map((j) => ({ signalId: j.id, waiting: j.reqs.size, pieces: j.pieces.length, running: j.running, done: +(j.doneLen / j.end).toFixed(3) })),
       derived: [...derived.values()].map((d) => ({ signalId: d.id, expr: d.expr, name: d.name, width: d.width, count: d.count })),
@@ -2264,6 +2407,7 @@ const handlers = {
 
   async close() {
     stopKinds();
+    aliases.clear(); aliasDropped = [];
     flushManifest();
     lastOpen = null;
     clearJobs();
@@ -2333,6 +2477,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
     if (!fn) { throw new Error('unknown command ' + req.cmd); }
     if (!openFile && !NO_FILE_OK.has(req.cmd)) { throw new Error('no file open'); }
     let r;
+    const fix = aliasRewrite(req);
     for (let attempt = 0; ; attempt++) {
       try {
         r = await fn(req);
@@ -2345,6 +2490,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
       }
     }
     if (req.cancelled) { return; }
+    if (fix) { r = fix(r); }
     const ms = +(Number(process.hrtime.bigint() - t0) / 1e6).toFixed(3);
     const workerMs = req.workerMs !== undefined ? +req.workerMs.toFixed(3) : undefined;
     const fin = req.cmd === 'searchAll' ? { final: true } : {};
