@@ -1,4 +1,4 @@
-Real simv.daidir/vcs_rebuild files from four small VCS W-2024.09 compiles of one design (module tb with
+Real simv.daidir/vcs_rebuild files from five small VCS W-2024.09 compiles of one design (module tb with
 an instance u_fifo of a module with parameter DEPTH), each run in its own folder with ../t.sv:
   none     no override
   ffile    -f ../opts.f, which holds -pvalue+tb.u_fifo.DEPTH=32

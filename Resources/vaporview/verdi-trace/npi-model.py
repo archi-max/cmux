@@ -129,8 +129,9 @@ def overrides(daidir):
     recorded) and the -f files it names (relative to where VCS ran: the daidir's folder, or the
     folder above it that -o's directory part names). Fails closed: None (unknown) when the command
     or one of its files can't be read, when it holds an expansion the scan can't resolve, when no
-    line's command is vcs (after env and VAR= assignments), or when a relative file list's folder
-    is unknown (an absolute -o, or a daidir that is not where -o put it)."""
+    line's command is vcs (after env and VAR= assignments) or more than one is, when a file list
+    sets -o, or when a relative file list's folder is unknown (an absolute -o, or a daidir that is
+    not where -o put it)."""
     try:
         with open(os.path.join(daidir, "vcs_rebuild")) as f:
             lines = [line for line in f.read().splitlines() if line.strip() and not line.lstrip().startswith("#")]
@@ -139,24 +140,24 @@ def overrides(daidir):
         commands = [shlex.split(line) for line in lines]
     except (OSError, ValueError):
         return None
-    args = None
+    found_args = []
     for words in commands:
         i = 0
         while i < len(words) and (words[i] == "env" or ("=" in words[i] and not words[i].startswith(("-", "+")))):
             i += 1
         if i < len(words) and os.path.basename(words[i]) == "vcs":
-            args = words[i + 1:]
-            break
-    if args is None:
-        return None
+            found_args.append(words[i + 1:])
+    if len(found_args) != 1:
+        return None  # no vcs command, or more than one: which compile made this KDB is unknown
+    args = found_args[0]
     folder = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
     base = folder
     out = [args[i + 1] for i in range(len(args) - 1) if args[i] == "-o"]
-    if out and os.path.dirname(out[-1]):
+    if out and os.path.dirname(os.path.normpath(out[-1])):
         if os.path.isabs(out[-1]):
             base = None
         else:
-            sub = os.path.normpath(os.path.dirname(out[-1]))
+            sub = os.path.dirname(os.path.normpath(out[-1]))
             # VCS ran in the folder that, joined with -o's directory part, is the daidir's folder.
             ran = os.path.normpath(os.path.join(folder, *([os.pardir] * len(sub.split(os.sep)))))
             base = ran if os.path.normpath(os.path.join(ran, sub)) == folder and os.pardir not in sub.split(os.sep) else None
@@ -191,6 +192,9 @@ def scan(args, base, found, depth):
                     return False
                 inner = shlex.split(text, comments=True)
             except (OSError, ValueError):
+                return False
+            # An -o in a file list moves the daidir, after `base` was worked out: unknown.
+            if "-o" in inner:
                 return False
             # Paths in a -F file are relative to it; in a -f file, to where VCS ran.
             if not scan(inner, os.path.dirname(path) if arg == "-F" else base, found, depth + 1):
