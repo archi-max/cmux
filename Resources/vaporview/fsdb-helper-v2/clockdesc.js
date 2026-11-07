@@ -153,6 +153,86 @@ function changes(d, a, b, f) {
   }
 }
 
+// The number of changes at times in [x, y): the records there, plus the grid edges there
+// (at or before verifiedEnd) less those inside intervals. Per descriptor, an index: every record
+// time, and the grid edges inside intervals 0..i-1 (prefix sums).
+function gridCount(d, x, y) {  // grid edges in [x, y), x >= firstRise
+  const P = d.period, R0 = d.firstRise;
+  const n = (off) => { const b = R0 + off; const lo = x <= b ? 0 : Math.ceil((x - b) / P), hi = y <= b ? 0 : Math.ceil((y - b) / P); return Math.max(0, hi - lo); };
+  return n(0) + n(d.high);
+}
+function index(d) {
+  if (d._ix && d._ix.n === d.intervals.length) { return d._ix; }
+  const recT = [], pre = [0], V1 = d.verifiedEnd + 1;
+  const inIv = (iv) => { const s = Math.max(iv[0], d.firstRise), e = Math.min(end(d, iv), V1); return e > s ? gridCount(d, s, e) : 0; };
+  for (const iv of d.intervals) { for (const r of iv[2]) { recT.push(r[0]); } pre.push(pre[pre.length - 1] + inIv(iv)); }
+  d._ix = { n: d.intervals.length, recT: Float64Array.from(recT), pre, inIv };
+  return d._ix;
+}
+function countIn(d, x, y) {
+  if (y <= x) { return 0; }
+  const ix = index(d), ivs = d.intervals, V1 = d.verifiedEnd + 1;
+  const lb = (arr, v) => { let a = 0, b = arr.length; while (a < b) { const m = (a + b) >> 1; if (arr[m] < v) { a = m + 1; } else { b = m; } } return a; };
+  let n = lb(ix.recT, y) - lb(ix.recT, x);
+  const gx = Math.max(x, d.firstRise), gy = Math.min(y, V1);
+  if (gy <= gx) { return n; }
+  n += gridCount(d, gx, gy);
+  // intervals overlapping [gx, gy): i0 the first with e > gx, i1 the last with s < gy
+  let a = 0, b = ivs.length;
+  while (a < b) { const m = (a + b) >> 1; if (end(d, ivs[m]) > gx) { b = m; } else { a = m + 1; } }
+  const i0 = a;
+  a = i0; b = ivs.length;
+  while (a < b) { const m = (a + b) >> 1; if (ivs[m][0] < gy) { a = m + 1; } else { b = m; } }
+  const i1 = a - 1;
+  if (i1 < i0) { return n; }
+  const clip = (iv) => { const s = Math.max(iv[0], gx), e = Math.min(end(d, iv), gy); return e > s ? gridCount(d, s, e) : 0; };
+  n -= clip(ivs[i0]);
+  if (i1 > i0) { n -= clip(ivs[i1]); n -= ix.pre[i1] - ix.pre[i0 + 1]; }
+  return n;
+}
+// window(t0, t1, buckets): the addon's windowOf (window.cpp.inc) for this row, byte for byte:
+// {exact, count, records: Buffer, counts?: Buffer}. A record is an 8-byte little-endian delta from
+// the previous record's time (the first from 0) and the value's character. The first record is the
+// value in effect at t0 (at t0 itself); then, when the changes in [t0, t1) number at most
+// 2 * buckets, every change in (t0, t1); else per bucket k (from t0 + ceil(span * k / B), the last
+// ending at t1) its change count (uint32) and its first and last change after t0.
+function window(d, t0, t1, B) {
+  B = Math.max(1, B | 0);
+  const recs = [];
+  let prev = 0;
+  const put = (t, v) => { recs.push([t - prev, v]); prev = t; };
+  put(t0, valueAt(d, t0));
+  const count = t1 > t0 ? countIn(d, t0, t1) : 0;
+  const exact = count <= 2 * B;
+  let counts = null;
+  if (exact) {
+    if (count) { changes(d, t0 + 1, t1 - 1, put); }
+  } else {
+    counts = Buffer.alloc(4 * B);
+    const span = t1 - t0, big = span * B > Number.MAX_SAFE_INTEGER;
+    const ceilDiv = (x) => { let q = Math.floor(x / B); while (q * B > x) { q--; } while ((q + 1) * B <= x) { q++; } return q * B === x ? q : q + 1; };  // (exact: x < 2^53)
+    const edgeAt = (k) => (k === B ? t1 : big ? t0 + Number((BigInt(span) * BigInt(k) + BigInt(B) - 1n) / BigInt(B)) : t0 + ceilDiv(span * k));
+    let L = t0;
+    for (let k = 0; k < B; k++) {
+      const R = edgeAt(k + 1);
+      counts.writeUInt32LE(countIn(d, L, R), 4 * k);
+      const from = Math.max(L, t0 + 1);
+      if (R > from) {
+        const f = find(d, from - 1, 1, 'any', () => true);
+        if (f !== null && f < R) {
+          put(f, valueAt(d, f));
+          const l = find(d, R, -1, 'any', () => true);
+          if (l !== null && l > f) { put(l, valueAt(d, l)); }
+        }
+      }
+      L = R;
+    }
+  }
+  const out = Buffer.alloc(recs.length * 9);
+  for (let k = 0; k < recs.length; k++) { out.writeBigUInt64LE(BigInt(recs[k][0]), 9 * k); out[9 * k + 8] = recs[k][1].charCodeAt(0); }
+  return { exact, count, records: out, ...(counts ? { counts } : {}) };
+}
+
 // The verify's merge: one range's scan (clockseg's line) into the descriptor being built (ranges
 // in order, contiguous).
 function merge(d, r, a) {
@@ -167,4 +247,4 @@ function merge(d, r, a) {
   d.records = d.intervals.reduce((x, iv) => x + iv[2].length, 0);
 }
 
-module.exports = { gridAt, valueAt, edge, search, changes, find, firstChange, merge };
+module.exports = { gridAt, valueAt, edge, search, changes, find, firstChange, countIn, window, merge };

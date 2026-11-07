@@ -2745,13 +2745,14 @@ async function clockSegment(j, calls) {
   }
 }
 // Answers from a ready descriptor (clockdesc.js), exact against the reader's store: edge and
-// search of a verified row, for t within [lo, verifiedEnd + 1]. A hit past verifiedEnd, or none
-// while verifiedEnd is short of the dump's end, goes to the reader.
+// search of a verified row, for t within [lo, verifiedEnd + 1] (or past it once verifiedEnd is the
+// dump's end: nothing changes after it). A hit past verifiedEnd, or none while verifiedEnd is short
+// of the dump's end, goes to the reader.
 const clockdesc = CLOCK ? require('./clockdesc.js') : null;
 function clockFor(id, t) {
   if (!CLOCK || !openFile) { return null; }
   const d = clock.desc.get(id);
-  if (!d || d.state !== 'ready' || !(t >= d.lo && t <= d.verifiedEnd + 1)) { return null; }
+  if (!d || d.state !== 'ready' || !(t >= d.lo && (t <= d.verifiedEnd + 1 || d.verifiedEnd >= (timeEnd || 0)))) { return null; }
   try { if (d.key !== clockKey(openFile)) { return null; } } catch (e) { return null; }
   return d;
 }
@@ -2959,12 +2960,25 @@ const handlers = {
     const buckets = Math.max(1, Math.min(MAX_BUCKETS, Math.floor(Number(req.buckets)) || 1));
     for (const s of signals) { if (s.width) { widthOf.set(s.signalId, s.width); } }
     const ranged = t1 > t0 && timeEnd > 0 && (t1 - t0) <= timeEnd * COLD_RANGE;
+    // Rows with a ready clock descriptor covering [t0, t1) answer from it (clockdesc.js), as the
+    // addon's windowOf would, byte for byte.
+    const fromClock = new Map();
+    if (CLOCK) {
+      for (const id of new Set(ids)) {
+        const d = clockFor(id, t0);
+        if (d && (t1 <= d.verifiedEnd + 1 || d.verifiedEnd >= (timeEnd || 0))) {  // (changes at times < t1)
+          const w = clockdesc.window(d, t0, t1, buckets);  // (records deflated as the workers' are)
+          fromClock.set(id, { signalId: id, ...w, records: zlib.deflateRawSync(w.records, { level: 1 }), loadMs: 0, walkMs: 0, ranged: true, clock: true });
+          clock.served++;
+        }
+      }
+    }
     // A signal whose load failed for good (unreadable, over the store cap) answers that error,
     // without loading it again; over the cap, ranged windows still read it cold.
-    const failed = new Map(ids.filter((id) => bgFailed.has(id) && !derived.has(id) && !(ranged && /larger than/.test(bgFailed.get(id)))).map((id) => [id, { signalId: id, error: bgFailed.get(id) }]));
+    const failed = new Map(ids.filter((id) => !fromClock.has(id) && bgFailed.has(id) && !derived.has(id) && !(ranged && /larger than/.test(bgFailed.get(id)))).map((id) => [id, { signalId: id, error: bgFailed.get(id) }]));
     // (a signal in the persistent store cache is read from its file instead: <= ~70 ms, and it stays)
-    const cold = new Set(ranged ? ids.filter((id) => !failed.has(id) && isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
-    const warmIds = [...new Set(ids.filter((id) => !cold.has(id) && !failed.has(id)))];
+    const cold = new Set(ranged ? ids.filter((id) => !fromClock.has(id) && !failed.has(id) && isCold(id) && !(STORE_CACHE && warm.epoch === epoch && warm.files.has(id))) : []);
+    const warmIds = [...new Set(ids.filter((id) => !cold.has(id) && !failed.has(id) && !fromClock.has(id)))];
     const sp = prep(req, warmIds);
     // Signals that wait for nothing (no split walk, no derived rebuild) are asked for now,
     // not after the split walks: a 20-signal add waited for its wide signals' splits first.
@@ -2985,7 +2999,7 @@ const handlers = {
       cold.size ? rangedRead(req, [...cold], { t0, t1, buckets }) : []]);
     if (req.cancelled) { return {}; }
     const warmRes = [...r1, ...r2];
-    const byId = new Map([...warmRes, ...coldRes, ...failed.values()].map((r) => [r.signalId, r]));
+    const byId = new Map([...warmRes, ...coldRes, ...failed.values(), ...fromClock.values()].map((r) => [r.signalId, r]));
     for (const r of coldRes) { if (!r.error) { scheduleBgLoad(r.signalId); } }
     const res = ids.map((id) => byId.get(id));
     const head = [], bins = [];
@@ -2997,7 +3011,7 @@ const handlers = {
       const sp = req.split && req.split.get(r.signalId);
       head.push({ signalId: r.signalId, exact: r.exact, count: r.count, bytes: rec.length, bucketBytes: cnt ? cnt.length : 0,
         cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
-        ...(r.ranged ? { ranged: true } : {}), ...(r.warm ? { warm: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
+        ...(r.ranged ? { ranged: true } : {}), ...(r.clock ? { clock: true } : {}), ...(r.warm ? { warm: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
       bins.push(rec);
       if (cnt) { bins.push(cnt); }
     }
