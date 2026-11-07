@@ -63,21 +63,7 @@ public struct KDBDesignModel: @unchecked Sendable {
     /// width, [port, net] and [net, port] (full paths; the helper keeps what it can use), at most
     /// `limit` pairs.
     public func aliasPairs(limit: Int = .max) -> [[String]] {
-        var pairs: [[String]] = []
-        for path in instancePaths {
-            guard let model = instances[path], let parent = model["parent"] as? String, !parent.isEmpty else { continue }
-            for port in model["ports"] as? [[String: Any]] ?? [] {
-                guard let name = port["name"] as? String, let conn = port["conn"] as? [String: Any],
-                      let leaves = conn["leaves"] as? [String], leaves.count == 1, conn["src"] as? String == leaves[0],
-                      let width = port["width"] as? Int, width > 0, conn["width"] as? Int == width else { continue }
-                let inner = path + "." + name, outer = parent + "." + leaves[0]
-                for pair in [[inner, outer], [outer, inner]] {
-                    guard pairs.count < limit else { return pairs }
-                    pairs.append(pair)
-                }
-            }
-        }
-        return pairs
+        DesignAliasPairs.pairs(models: instances, designPrefix: "", dumpPrefix: "", limit: limit)
     }
 
     private func signal(_ path: String) -> [String: Any]? {
@@ -171,9 +157,33 @@ public enum KDBModelLaunch {
     }
 }
 
-/// A design's port aliases from its instance models (the KDB's or slang's: the same shape).
+/// A design's port aliases from its instance models (the KDB's or slang's: the same shape): for each
+/// port bound to one whole net of its parent with the same width, [port, net] and [net, port] (the
+/// port's signal: slang's `internal`, else its name), as
+/// dump paths: the design's paths below `designPrefix` with it replaced by `dumpPrefix` (pairs with
+/// an end outside it are left out), at most `limit` pairs, in instance order.
 public enum DesignAliasPairs {
     public static func pairs(models: [String: [String: Any]], designPrefix: String, dumpPrefix: String, limit: Int = .max) -> [[String]] {
-        []
+        func dump(_ path: String) -> String? {
+            if designPrefix.isEmpty { return dumpPrefix.isEmpty ? path : dumpPrefix + "." + path }
+            guard path.hasPrefix(designPrefix + ".") else { return nil }
+            let rest = path.dropFirst(designPrefix.count + 1)
+            return dumpPrefix.isEmpty ? String(rest) : dumpPrefix + "." + rest
+        }
+        var pairs: [[String]] = []
+        for path in models.keys.sorted() {
+            guard let model = models[path], let parent = model["parent"] as? String, !parent.isEmpty else { continue }
+            for port in model["ports"] as? [[String: Any]] ?? [] {
+                guard let name = port["name"] as? String, let conn = port["conn"] as? [String: Any],
+                      let leaves = conn["leaves"] as? [String], leaves.count == 1, conn["src"] as? String == leaves[0],
+                      let width = port["width"] as? Int, width > 0, conn["width"] as? Int == width,
+                      let inner = dump(path + "." + (port["internal"] as? String ?? name)), let outer = dump(parent + "." + leaves[0]) else { continue }
+                for pair in [[inner, outer], [outer, inner]] {
+                    guard pairs.count < limit else { return pairs }
+                    pairs.append(pair)
+                }
+            }
+        }
+        return pairs
     }
 }
