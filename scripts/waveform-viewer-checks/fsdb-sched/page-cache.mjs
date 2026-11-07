@@ -116,10 +116,18 @@ function page(rows, L, R, stop) {
   check(pre.length > 0 && asked() === vis.filter((t) => !s1.windows.has(t.key)).length,
     `after a pan onto prefetched tiles, every visible tile not drawn is asked for as visible: ${asked()} of ${vis.filter((t) => !s1.windows.has(t.key)).length} (${g.sent.filter((m) => m.cmd === 'window' && !m.prefetch).length} visible requests)`);
   // Nothing answers, so every request expires. A visible one marks the row slow, which is the
-  // existing backoff; the row then waits and an ensure is scheduled. Sampled over 2.5 s, a visible
-  // tile must always be drawn, in flight, or on a row that is backing off.
-  let worst = vis.length;
-  for (let k = 0; k < 25; k++) { await wait(100); const ok = s1.slowUntil > performance.now() ? vis.length : drawnOrAsked(); worst = Math.min(worst, ok); }
+  // existing backoff; the row then waits and an ensure is scheduled. Sampled every 10 ms over 2.5 s,
+  // a visible tile must never stay un-asked for more than 50 ms outside a backoff (the scheduled
+  // ensure after a backoff takes a few ms, so a single sample there is not a miss).
+  let worst = vis.length, since = null;
+  for (let k = 0; k < 250; k++) {
+    await wait(10);
+    const now = performance.now();
+    const ok = s1.slowUntil > now ? vis.length : drawnOrAsked();
+    if (ok === vis.length) { since = null; continue; }
+    if (since === null) { since = now; }
+    if (now - since > 50) { worst = Math.min(worst, ok); }
+  }
   check(worst === vis.length, `... and with requests expiring and no user action, no visible tile is left un-asked: at worst ${worst} of ${vis.length}`);
   wc.reset && wc.reset();
 }
