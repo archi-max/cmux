@@ -361,8 +361,9 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   // (counted in reader calls, each one floor, not in wall-clock time: a busy machine made the
   // timed version flaky)
   const calls = fs.readFileSync(loadLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.ids.length);
-  check(rs.every((r) => !r.error) && calls.length <= 4 && calls.every((c) => c.op === 'load'),
-    `8 cheap primaries with a 300 ms floor: ${calls.length} reader calls of ${JSON.stringify(calls.map((c) => c.ids.length))} (two per call on four workers: 4; one each or in pieces: 8+)`);
+  // (how many share a call depends on which workers are idle when each is picked: 4-5 calls)
+  check(rs.every((r) => !r.error) && calls.length <= 5 && calls.every((c) => c.op === 'load'),
+    `8 cheap primaries with a 300 ms floor: ${calls.length} reader calls of ${JSON.stringify(calls.map((c) => c.ids.length))} (batched: 4-5; one each or in pieces: 8+)`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
   // (its change count says what it costs: 20.8M changes of 1 bit ~ 3 s)
@@ -717,9 +718,27 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   }
   lat.sort((a, b) => a - b);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'window');
-  const last = calls.slice(-4);
-  check(lat[2] < 200, `8 one-row requests for one window over a warm set: ${Math.round(lat[2])} ms (one call: ~60; one each: ~480)`);
-  check(last.length === 4 && last.every((c) => c.ids.length === 8), `... sent as one warm call per window: ${JSON.stringify(last.map((c) => c.ids.length))}`);
+  const R = st.readers || 1, last = calls.slice(-4 * R);
+  check(lat[2] < 200, `8 one-row requests for one window over a warm set: ${Math.round(lat[2])} ms (one call per reader: ~60; one each: ~480)`);
+  check(last.length === 4 * R && last.reduce((a, c) => a + c.ids.length, 0) === 32, `... sent as one warm call per window and reader (${R}): ${JSON.stringify(last.map((c) => c.ids.length))}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 36. A warm call's cost is its walk, per signal: a set split over two warm readers is read in
+// parallel, about half the time of one reader walking all of it.
+{
+  const ids = [1, 2, 3, 4, 5, 6, 7, 8];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '5', STUB_WARM_SIG_MS: '40', FSDB_WARM: '1' });
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && ids.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
+  const lat = [];
+  for (let k = 1; k <= 5; k++) { const r = await h.send('window', near(ids, k * 10000)).reply; lat.push(r.error ? 1e9 : r.at); }
+  lat.sort((a, b) => a - b);
+  check(lat[2] < 240, `8 warm rows of 40 ms walk each: pan p50 ${Math.round(lat[2])} ms over ${st && st.readers} warm reader(s) (one: ~325; two: ~165)`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
