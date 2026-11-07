@@ -1168,8 +1168,8 @@
         const since = st.since === null || st.since === undefined ? Infinity : Number(st.since);
         probed.push({ f, st, since });
       }
-      // Earliest x first (a stable sort keeps the fan-in's order on a tie).
-      probed.sort((p, q) => p.since - q.since);
+      // Earliest x first; on a tie a signal not yet on the chain first, then the fan-in's order (a stable sort).
+      probed.sort((p, q) => (p.since - q.since) || (seen.has(p.f.path) - seen.has(q.f.path)));
       if (!probed.length) { return finish('failed'); }
       let best = null, next = null;
       for (const cand of probed) {
