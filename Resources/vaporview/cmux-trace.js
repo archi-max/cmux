@@ -256,7 +256,7 @@
     // ---- statements ----
     function newCtx(m, vals, mode) {
       return { m, vals, mode: mode || 'optimistic', locals: new Map(), blocking: new Map(), writes: new Map(), decisions: [],
-        reasons: [], missing: new Set(), needElems: new Set(), elemsRead: new Set(), statements: 0, path: [], opaque: [] };
+        reasons: [], missing: new Set(), needElems: new Set(), elemsRead: new Set(), statements: 0, path: [], opaque: [], ran: new Set() };
     }
     function fork(ctx) {
       return Object.assign({}, ctx, { locals: new Map(ctx.locals), blocking: new Map(ctx.blocking), writes: new Map([...ctx.writes].map(([k, v]) => [k, v.slice()])), decisions: ctx.decisions.slice(), path: ctx.path.slice() });
@@ -328,6 +328,7 @@
     function exec(s, ctx) {
       if (!s) { return; }
       if (++ctx.statements > MAX_STATEMENTS) { if (ctx.statements === MAX_STATEMENTS + 1) { ctx.reasons.push({ code: 'budget' }); } return; }
+      ctx.ran.add(s);
       switch (s.k) {
         case 'seq': for (const x of s.s) { exec(x, ctx); } return;
         case 'decl': {
@@ -1218,22 +1219,30 @@
     // The readers of `sig` inside instance m: assigns, declaration initializers, statements (data,
     // condition, index), procedures' sensitivity, and the child input ports it connects. `opaque`
     // counts the statements slang could not elaborate (their reads unknown).
+    // Each entry's place in the model, for loadsAt: { m, p (procedure), st (statement), e (the
+    // expression read), a (assign) }.
+    const loadRefs = new WeakMap();
     function loadsIn(m, sig, out, limits) {
       const entry = (o, l) => Object.assign({ instance: m.path, loc: locOf(m, l) }, o);
-      const push = (o, l, how) => { const e = entry(o, l); if (how === 'maybe') { e.maybe = true; } out.push(e); };
+      let ref = {};
+      const push = (o, l, how) => { const e = entry(o, l); if (how === 'maybe') { e.maybe = true; } loadRefs.set(e, Object.assign({ m }, ref)); out.push(e); };
       for (const a of m.assigns) {
+        ref = { a, e: a.rhs };
         const r = readsSig(m, a.rhs, sig);
         if (r) { push({ kind: 'assign', role: 'data', src: a.src, targets: lvalNames(m, a.lhs, []) }, a.loc, r); }
         const ir = lvalIndexReads(m, a.lhs, sig);
+        ref = { a, e: null };
         if (ir) { push({ kind: 'assign', role: 'index', src: a.src, targets: lvalNames(m, a.lhs, []) }, a.loc, ir); }
       }
       for (const [name, info] of Object.entries(m.signals)) {
         const r = info.init ? readsSig(m, info.init, sig) : '';
+        ref = { init: name, e: info.init };
         if (r) { push({ kind: info.kind === 'net' ? 'assign' : 'initializer', role: 'data', src: `${name} = ${exprText(info.init)}`, targets: [absOf(m.path, name)] }, info.init.loc || info.loc, r); }
       }
       for (const p of m.procs) {
         const proc = { procKind: p.kind, procLoc: locOf(m, p.loc) };
         for (const ev of p.events || []) {
+          ref = { p, ev, e: ev.expr };
           const r = ev.expr ? readsSig(m, ev.expr, sig) : '';
           if (r) { push(Object.assign({ kind: 'event', role: 'sensitivity', src: (EDGE_WORD[ev.edge] || '') + exprText(ev.expr), targets: [...writtenBy(m, p.body, new Set())] }, proc), p.loc, r); }
         }
@@ -1243,11 +1252,13 @@
             case 'seq': st.s.forEach(visit); return;
             case 'timed': visit(st.stmt); return;
             case 'decl': {
+              ref = { p, st, e: st.init };
               const r = readsSig(m, st.init, sig);
               if (r) { push(Object.assign({ kind: 'stmt', role: 'data', src: `${st.name.replace(/^\$local:/, '')} = ${exprText(st.init)}`, targets: [st.name] }, proc), st.loc, r); }
               return;
             }
             case 'asgn': {
+              ref = { p, st, e: st.rhs };
               const r = readsSig(m, st.rhs, sig);
               if (r) { push(Object.assign({ kind: 'stmt', role: 'data', src: st.src, targets: lvalNames(m, st.lhs, []) }, proc), st.loc, r); }
               const ir = lvalIndexReads(m, st.lhs, sig);
@@ -1255,6 +1266,7 @@
               return;
             }
             case 'if': {
+              ref = { p, st, e: st.c };
               const r = readsSig(m, st.c, sig);
               if (r) {
                 const t = new Set(); writtenBy(m, st.t, t); writtenBy(m, st.f, t);
@@ -1267,6 +1279,7 @@
               const t = writtenBy(m, st, new Set());
               const conds = [st.e].concat(...st.items.map((it) => it.m));
               for (const e of conds) {
+                ref = { p, st, e };
                 const r = readsSig(m, e, sig);
                 if (r) { push(Object.assign({ kind: 'stmt', role: 'condition', src: e === st.e ? `case (${exprText(e)})` : exprText(e), targets: [...t] }, proc), e.loc, r); }
               }
@@ -1283,6 +1296,7 @@
         for (const port of child.ports) {
           if (port.dir !== 'In' && port.dir !== 'InOut') { continue; }
           const r = readsSig(m, port.conn, sig);
+          ref = { child, port, e: port.conn };
           if (r) { push({ kind: 'portIn', role: 'connection', src: `.${port.name}(${connText(port.conn) || port.name})`, port: port.name, targets: [child.path + '.' + port.internal] }, port.loc, r); }
         }
       }
@@ -1303,7 +1317,18 @@
     // instances through hierarchical references (limits.hierarchical), and statements slang could
     // not elaborate (limits.opaque counts them).
     async function loads(path, opts) {
+      const all = await collectLoads(path);
+      if (all.error) { return all; }
+      const { entries, total, next } = pageOf(all.entries, opts);
+      return { signal: path, total, entries, next, limits: all.limits };
+    }
+    function pageOf(list, opts) {
       const o = opts || {};
+      const limit = Math.max(1, Math.min(512, Number(o.limit) || 64));
+      const offset = Math.max(0, Number(o.offset) || 0);
+      return { total: list.length, entries: list.slice(offset, offset + limit), next: offset + limit < list.length ? offset + limit : null };
+    }
+    async function collectLoads(path) {
       const where = await models.lookup(path);
       if (!where || !where.instance) { return { signal: path, error: 'notInDesign' }; }
       const m = await model(where.instance);
@@ -1324,18 +1349,134 @@
             const cp = me && me.ports.find((q) => q.name === pt.name);
             if (!cp) { continue; }
             const targets = cp.connLval ? lvalNames(pm, cp.connLval, []) : [...leafPaths(pm, cp.conn, new Set())];
-            out.push({ kind: 'portOut', role: 'connection', instance: pm.path, src: `.${cp.name}(${connText(cp.conn) || cp.name})`, port: cp.name, loc: locOf(pm, cp.loc), targets, maybe: s && s.element ? true : undefined });
+            const pe = { kind: 'portOut', role: 'connection', instance: pm.path, src: `.${cp.name}(${connText(cp.conn) || cp.name})`, port: cp.name, loc: locOf(pm, cp.loc), targets, maybe: s && s.element ? true : undefined };
+            loadRefs.set(pe, { m: pm, out: true });
+            out.push(pe);
           }
         }
       }
       out.sort(byPlace);
-      const limit = Math.max(1, Math.min(512, Number(o.limit) || 64));
-      const offset = Math.max(0, Number(o.offset) || 0);
-      const entries = out.slice(offset, offset + limit);
-      return { signal: path, total: out.length, entries, next: offset + limit < out.length ? offset + limit : null, limits };
+      return { entries: out, limits };
     }
 
-    return { active, model, loads, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
+    // Load trace at a time: loads' page, each entry with `active`, judged at the reader's last
+    // activation at or before t (the dump is searched backward, as driver tracing does): { status,
+    // time (the activation), trust, reasons, taken? (a condition's branch), follow? ({ path, time }:
+    // the change the read caused, where following the entry goes) }. Status: 'propagated' (the
+    // target changed with this read), 'noChange', 'notRun' (the statement was not on the path),
+    // 'read' (into a block local or an index: nothing dumped to follow), 'taken' / 'untaken' (a
+    // condition), 'triggered' / 'notTriggered' (a sensitivity), 'pending' (an edge procedure whose
+    // last edge came before the signal's change: it is sampled at a later one), 'stimulus' (a
+    // testbench process), 'start' (an initializer), 'notEvaluated' (budget, or a construct not
+    // re-executed). opts: as loads, plus budgetMs (per entry, 2000).
+    async function loadsAt(path, time, opts) {
+      const all = await collectLoads(path);
+      if (all.error) { return all; }
+      const t = Number(time);
+      const page = pageOf(all.entries, opts);
+      const since = await dump.lastChange(path, t);
+      const budget = Math.max(1, Number((opts || {}).budgetMs) || 2000);
+      const entries = [];
+      for (const e of page.entries) {
+        const out = Object.assign({}, e);
+        // The budget needs a timer (a page has one; a bare JS context may not: no budget there).
+        let h = null;
+        const timer = typeof setTimeout === 'function'
+          ? new Promise((resolve) => { h = setTimeout(() => resolve({ status: 'notEvaluated', reasons: [{ code: 'budget' }] }), budget); })
+          : null;
+        try {
+          out.active = await (timer ? Promise.race([activeLoad(e, path, t, since), timer]) : activeLoad(e, path, t, since));
+          if (h !== null && typeof clearTimeout === 'function') { clearTimeout(h); }
+        } catch (error) {
+          out.active = { status: 'notEvaluated', reasons: [{ code: 'error', message: String(error && error.message || error) }] };
+        }
+        if (!out.active.trust) { out.active.trust = out.active.status === 'notEvaluated' ? 'approximate' : 'exact'; }
+        if (e.maybe && out.active.trust === 'exact') { out.active.trust = 'approximate'; out.active.reasons = (out.active.reasons || []).concat([{ code: 'maybe' }]); }
+        entries.push(out);
+      }
+      return { signal: path, time: t, since, total: page.total, entries, next: page.next, limits: all.limits };
+    }
+    // Whether target changed at exactly `at` (with the read), and the follow for it.
+    async function changedAt(target, at) {
+      if (!target || isLocal(target)) { return null; }
+      const tc = await dump.lastChange(target, at);
+      return tc === at ? { path: target, time: at } : false;
+    }
+    async function activeLoad(e, sigPath, t, since) {
+      const ref = loadRefs.get(e) || {};
+      const m = ref.m;
+      const reasons = [];
+      const target = (e.targets || [])[0];
+      // Continuous: assigns, net declarations, port connections. The target changes with the signal.
+      if (e.kind === 'assign' || e.kind === 'portIn' || e.kind === 'portOut') {
+        if (since === null || since === undefined) { return { status: 'notEvaluated', reasons: [{ code: 'notDumped' }] }; }
+        if (e.role === 'index') { return { status: 'read', time: since, reasons }; }
+        const f = await changedAt(target, since);
+        if (f === null) { return { status: 'read', time: since, reasons }; }
+        return f ? { status: 'propagated', time: since, follow: f, reasons } : { status: 'noChange', time: since, reasons };
+      }
+      if (e.kind === 'initializer') { return { status: 'start', time: 0, reasons }; }
+      const p = ref.p;
+      if (!p) { return { status: 'notEvaluated', reasons: [{ code: 'unknown' }] }; }
+      if (isStimulus(p)) { return { status: 'stimulus', reasons }; }
+      const edge = isEdgeProc(p);
+      if (e.kind === 'event') {
+        if (!edge || !ref.ev || !ref.ev.edge) { return { status: 'notEvaluated', reasons: [{ code: 'evaluator' }] }; }
+        const te = await dump.prevEdge(sigPath, t, ref.ev.edge);
+        return te !== null && te === since ? { status: 'triggered', time: te, reasons } : { status: 'notTriggered', time: te, reasons };
+      }
+      // A statement in a procedure: the run that sampled the signal's value in effect.
+      let sample = t, extra = new Map(), at = t;
+      if (edge) {
+        const ck = clocking(m, p);
+        if (!ck.clock) { return { status: 'notEvaluated', reasons: [{ code: 'noClock' }] }; }
+        const te = await dump.prevEdge(ck.clock.path, t, ck.clock.edge);
+        if (te === null) { return { status: 'pending', reasons: [{ code: 'noEdge' }] }; }
+        sample = te > 0 ? te - 1 : 0;
+        at = te;
+        if (since !== null && since !== undefined && since > sample) { return { status: 'pending', time: te, reasons }; }
+        const tv = await fetch([ck.clock.path], te);
+        extra.set(ck.clock.path, tv.get(ck.clock.path));
+      } else if (since !== null && since !== undefined) {
+        at = since;
+      }
+      const ctx = await runProc(m, p, sample, extra, options.xprop === 'on' ? 'xprop' : 'optimistic');
+      ctx.reasons.forEach((x) => reasons.push(x));
+      const approx = reasons.some((r) => ['budget', 'statement', 'delay', 'opaque'].includes(r.code));
+      const trust = approx ? 'approximate' : undefined;
+      const st = ref.st;
+      if (!ctx.ran.has(st)) { return { status: 'notRun', time: at, reasons, trust }; }
+      if (e.role === 'condition') {
+        const d = ctx.decisions.find((x) => x.stmt === st);
+        if (!d) { return { status: 'notEvaluated', time: at, reasons, trust: 'approximate' }; }
+        const out = { time: at, reasons, trust, taken: d.taken };
+        if (st.k === 'if') { out.status = d.taken === 'then' ? 'taken' : d.taken === 'else' ? 'untaken' : 'merged'; }
+        else {
+          // A case item reading the signal: taken when its item matched; the selector: taken.
+          const item = st.items.findIndex((it) => it.m.includes(ref.e));
+          out.status = item < 0 ? 'taken' : d.taken === item ? 'taken' : d.taken === 'merge' ? 'merged' : 'untaken';
+        }
+        if (out.status === 'merged') { out.trust = 'approximate'; }
+        return out;
+      }
+      if (e.role === 'index') { return { status: 'read', time: at, reasons, trust }; }
+      const f = await changedAt(target, at);
+      if (f === null) { return { status: 'read', time: at, reasons, trust }; }
+      if (!f) { return { status: 'noChange', time: at, reasons, trust }; }
+      // The run's write explains the target's new value: exact.
+      const w = await models.lookup(target);
+      const tm = w && w.instance === m.path ? m : null;
+      const tsig = tm ? signalOf(tm, w.name) : null;
+      let consistent;
+      if (tsig) {
+        const now = (await fetch([target], at)).get(target);
+        const pick = pickWrite(ctx, target, tsig, now);
+        consistent = pick ? consistentWith(pick, now, tsig) : undefined;
+      }
+      return { status: 'propagated', time: at, follow: f, reasons, trust: consistent === false ? 'inconsistent' : consistent === true && !approx ? 'exact' : 'approximate' };
+    }
+
+    return { active, model, loads, loadsAt, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
   }
 
   // ---- Trace X to Root ----
