@@ -111,31 +111,48 @@ def compiled_at(daidir):
 
 
 # VCS options that set a parameter's value from outside the source (with the file they take, if any).
-OVERRIDE_PREFIXES = ("-pvalue",)
+# Any other token naming pvalue/parameters/gfile counts too: the scan fails toward "overridden".
+# defparam and #(.P(v)) are not compile options: they are in the source, which slang elaborates too.
 OVERRIDE_WITH_FILE = ("-parameters", "-gfile")
 OVERRIDE_EXACT = ("-gv",)
+OVERRIDE_WORDS = ("pvalue", "parameters", "gfile")
 FILE_LISTS = ("-f", "-F", "-file")
+
+
+def unresolved(text):
+    """True when shell text has an expansion the scan can't resolve ($VAR, ${...}, $(...), `...`)."""
+    return "$" in text or "`" in text
 
 
 def overrides(daidir):
     """The compile's parameter override options, from the daidir's vcs_rebuild (the vcs command VCS
-    recorded) and the -f files it names (relative to the daidir's folder, where VCS ran by default);
-    None when the command or one of its files can't be read."""
+    recorded) and the -f files it names (relative to the daidir's folder, where VCS ran by default).
+    Fails closed: None (unknown) when the command or one of its files can't be read, when it holds
+    an expansion the scan can't resolve, or when no vcs command is found in it."""
     try:
         with open(os.path.join(daidir, "vcs_rebuild")) as f:
             lines = [line for line in f.read().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        if unresolved("\n".join(lines)):
+            return None
         args = shlex.split(" ".join(lines))
     except (OSError, ValueError):
         return None
-    if not args:
+    at = next((i for i, a in enumerate(args) if os.path.basename(a) == "vcs"), None)
+    if at is None:
         return None
     base = os.path.dirname(os.path.abspath(daidir.rstrip("/")))
     found = []
-    return found if scan(args[1:], base, found, 0) else None
+    return found if scan(args[at + 1:], base, found, 0) else None
+
+
+def is_override(arg):
+    return arg in OVERRIDE_EXACT or arg.startswith(tuple(o + "+" for o in OVERRIDE_EXACT)) \
+        or any(w in arg.lower() for w in OVERRIDE_WORDS)
 
 
 def scan(args, base, found, depth):
-    """Adds the override options in `args` to `found`; False when a file list can't be read."""
+    """Adds the override options in `args` to `found`; False when a file list can't be read or holds
+    an expansion the scan can't resolve."""
     i = 0
     while i < len(args):
         arg = args[i]
@@ -146,6 +163,8 @@ def scan(args, base, found, depth):
             try:
                 with open(path) as f:
                     text = "\n".join(line.split("//")[0] for line in f.read().splitlines())
+                if unresolved(text):
+                    return False
                 inner = shlex.split(text, comments=True)
             except (OSError, ValueError):
                 return False
@@ -158,7 +177,7 @@ def scan(args, base, found, depth):
             found.append(arg + (" " + args[i + 1] if i + 1 < len(args) else ""))
             i += 2
             continue
-        if arg.startswith(OVERRIDE_PREFIXES) or arg in OVERRIDE_EXACT or arg.startswith(tuple(o + "+" for o in OVERRIDE_EXACT)):
+        if is_override(arg):
             found.append(arg)
         i += 1
     return True

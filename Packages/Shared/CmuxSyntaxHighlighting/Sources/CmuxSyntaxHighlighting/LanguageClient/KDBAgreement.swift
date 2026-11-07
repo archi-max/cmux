@@ -53,7 +53,9 @@ public enum KDBCheck: String, Hashable, Sendable {
 /// load read (sources, includes, packages) is newer than the compile. What one side lacks is
 /// `notChecked`, never taken as agreeing. Not checked: a right-hand side that differs without a
 /// parameter, width, port or line to show it (a define expanding to another literal, in a file
-/// older than the compile).
+/// older than the compile). `defparam` and instance overrides (`#(.P(v))`) are not compile options,
+/// so they are not in `overrides`: they are in the source, which slang elaborates too, and are
+/// compared through the parameter values both sides report.
 public enum KDBAgreement {
     /// One level of the row's chain: the KDB's instance (its dump path and model) and slang's model there.
     public struct Level {
