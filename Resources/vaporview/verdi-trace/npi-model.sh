@@ -87,12 +87,18 @@ fi
 
 # CMUX_VERDI_SETUP runs in a subshell under a time cap (CMUX_VERDI_SETUP_SECONDS, default 30 s), so a
 # setup that hangs (a module system's lock) ends there, with all it started; what it exported (PATH,
-# licence variables) is read back into this shell. 0 when it finished, 1 when it was ended at the cap.
+# licence variables) is read back into this shell, through a file of this run's own ($SETUP_ENV,
+# made by mktemp in $W, so runs that share $W never read each other's). The setup runs under umask
+# 077: what it writes is the user's only. 0 when it finished, 1 when it was ended at the cap, 2 when
+# the file could not be made. The tree is what pgrep finds under the subshell when the cap is
+# reached: a setup that double-forks (`(cmd &)`) leaves children already reparented to init, which
+# outlive the cap.
 verdi_setup() {
   local pid waited=0 cap=$1 tree more c
-  rm -f "$W/verdi-setup.env"
-  ( eval "$CMUX_VERDI_SETUP" < /dev/null > /dev/null 2>&1
-    export -p > "$W/verdi-setup.env.part" && mv "$W/verdi-setup.env.part" "$W/verdi-setup.env" ) &
+  SETUP_ENV=$(mktemp "$W/verdi-setup.XXXXXX") || return 2
+  ( umask 077
+    eval "$CMUX_VERDI_SETUP" < /dev/null > /dev/null 2>&1
+    export -p > "$SETUP_ENV" ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$waited" -ge $((cap * 10)) ]; then
@@ -105,7 +111,7 @@ verdi_setup() {
       done
       kill -9 $tree 2>/dev/null
       wait "$pid" 2>/dev/null
-      rm -f "$W/verdi-setup.env" "$W/verdi-setup.env.part"
+      rm -f "$SETUP_ENV"
       return 1
     fi
     sleep 0.1
@@ -121,10 +127,14 @@ if ! command -v verdi >/dev/null 2>&1 && [ -n "${VERDI_HOME:-}" ] && [ -x "$VERD
 fi
 if ! command -v verdi >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
   SETUP_CAP=$(num "${CMUX_VERDI_SETUP_SECONDS:-}" 30)
-  verdi_setup "$SETUP_CAP" || say noVerdi "CMUX_VERDI_SETUP did not finish in $SETUP_CAP s (CMUX_VERDI_SETUP_SECONDS sets the limit)"
+  verdi_setup "$SETUP_CAP"
+  case $? in
+    1) say noVerdi "CMUX_VERDI_SETUP did not finish in $SETUP_CAP s (CMUX_VERDI_SETUP_SECONDS sets the limit)" ;;
+    2) say start "cannot make a file in the scratch folder for CMUX_VERDI_SETUP" ;;
+  esac
   # At the top level, so its declare -x lines stay global (read-only ones are refused, harmlessly).
-  [ -s "$W/verdi-setup.env" ] && . "$W/verdi-setup.env" 2>/dev/null
-  rm -f "$W/verdi-setup.env"
+  [ -s "$SETUP_ENV" ] && . "$SETUP_ENV" 2>/dev/null
+  rm -f "$SETUP_ENV"
 fi
 command -v verdi >/dev/null 2>&1 || say noVerdi "verdi is not on PATH, in VERDI_HOME/bin or after CMUX_VERDI_SETUP"
 VERDI_HOME=${VERDI_HOME:-$(cd "$(dirname "$(command -v verdi)")/.." && pwd)}
