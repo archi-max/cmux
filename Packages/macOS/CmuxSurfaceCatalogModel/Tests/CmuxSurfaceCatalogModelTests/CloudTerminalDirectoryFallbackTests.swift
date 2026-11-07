@@ -77,6 +77,41 @@ import Testing
         #expect(reporting.fallback.terminalTitleChanged("c", terminalID: "t1", now: reporting.now) == nil)
     }
 
+    /// tmux with `set-titles on` and a clock retitles every second and is always skipped.
+    @Test func answersThatChangeNothingBackOff() throws {
+        var fallback = Fallback()
+        var starts: [TimeInterval] = []
+        var running: Fallback.Probe?
+        var startedAt: TimeInterval = 0
+        func begin(_ probe: Fallback.Probe?, at now: TimeInterval) {
+            guard let probe else { return }
+            running = probe
+            startedAt = now + probe.delay
+            starts.append(startedAt)
+        }
+        for probe in fallback.observe([terminal("t1", title: "tmux 0")], projected: ["t1"], now: 0) { begin(probe, at: 0) }
+        for step in 1...600 {
+            let now = Double(step) / 10
+            if let probe = running, now >= startedAt + 0.1 {
+                running = nil
+                begin(fallback.finish(probe, answer: .skipped, now: now).next, at: now)
+            }
+            if step % 10 == 0 {
+                begin(fallback.terminalTitleChanged("tmux \(step)", terminalID: "t1", now: now), at: now)
+            }
+        }
+        // 1 Hz without back-off would be about 60 starts in this minute.
+        #expect(starts.count <= 12, "\(starts)")
+        let gaps = zip(starts.dropFirst(), starts).map { $0 - $1 }
+        #expect(gaps.allSatisfy { $0 <= Fallback.maximumProbeSpacing + 0.5 }, "\(gaps)")
+        // A directory that changes resets the spacing.
+        if let probe = running { _ = fallback.finish(probe, answer: .skipped, now: 100) }
+        let a = try #require(fallback.terminalTitleChanged("a", terminalID: "t1", now: 200))
+        _ = fallback.finish(a, answer: .directory("/x"), now: 200.1)
+        let b = try #require(fallback.terminalTitleChanged("b", terminalID: "t1", now: 200.2))
+        #expect(b.delay <= Fallback.minimumProbeSpacing, "\(b.delay)")
+    }
+
     @Test func titleChangesDuringAQueryQueueOneRerun() throws {
         let driver = Driver()
         let probe = try #require(driver.title("a"))

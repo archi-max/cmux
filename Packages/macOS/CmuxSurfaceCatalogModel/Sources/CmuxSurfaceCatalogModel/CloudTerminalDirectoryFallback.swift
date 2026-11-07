@@ -48,6 +48,8 @@ public struct CloudTerminalDirectoryFallback: Sendable {
 
     /// A terminal whose queries keep failing is not asked again.
     public static let maximumFailedProbes = 3
+    /// Answers that change nothing double the spacing up to this, in seconds.
+    public static let maximumProbeSpacing: TimeInterval = 10
     /// Query starts for one terminal are at least this far apart, in seconds.
     public static let minimumProbeSpacing: TimeInterval = 1
 
