@@ -2,7 +2,8 @@
 // Verdi; not part of run.sh):
 //   node edge-kinds.mjs <install>/cmux-helper-v2.sh [scratch dir]
 // Writes a small VCD and converts it with Verdi's vcd2fsdb ($VERDI_HOME/bin, or FSDB_VCD2FSDB).
-// One 1-bit signal steps through every 0/1/x/z transition; a 4-bit one checks the width rule.
+// One 1-bit signal steps through every 0/1/x/z transition from an initial 'x', another starts at
+// a known '0' (the dump's first value: no edge); a 4-bit one checks the width rule.
 // Every answer is compared with a reference computed here from the same list of changes:
 //   posedge  0->1, 0->x, 0->z, x->1, z->1
 //   negedge  1->0, 1->x, 1->z, x->0, z->0
@@ -23,13 +24,15 @@ fs.mkdirSync(dir, { recursive: true });
 // e: one value per 10 ns; v: a 4-bit row
 const E = [[0, 'x'], [10, '0'], [20, '1'], [30, 'x'], [40, 'z'], [50, '1'], [60, '0'], [70, 'z'], [80, '0'], [90, 'x'], [100, '1'], [110, 'z'], [120, 'x'], [130, '0'], [140, '1']];
 const V = [[0, '0000'], [10, '0001'], [20, '0000'], [30, 'xxxx']];
+const F = [[0, '0'], [10, '1'], [20, '0'], [30, '1']];  // (a known first value at the dump's start: no edge)
 const END = 200;
-const vcd = ['$timescale 1ns $end', '$scope module top $end', '$var wire 1 ! e $end', '$var wire 4 " v [3:0] $end', '$upscope $end', '$enddefinitions $end'];
-const times = [...new Set([...E.map((x) => x[0]), ...V.map((x) => x[0]), END])].sort((a, b) => a - b);
+const vcd = ['$timescale 1ns $end', '$scope module top $end', '$var wire 1 ! e $end', '$var wire 4 " v [3:0] $end', '$var wire 1 # f $end', '$upscope $end', '$enddefinitions $end'];
+const times = [...new Set([...E.map((x) => x[0]), ...V.map((x) => x[0]), ...F.map((x) => x[0]), END])].sort((a, b) => a - b);
 for (const t of times) {
   vcd.push('#' + t);
-  const e = E.find((x) => x[0] === t), v = V.find((x) => x[0] === t);
+  const e = E.find((x) => x[0] === t), v = V.find((x) => x[0] === t), f = F.find((x) => x[0] === t);
   if (e) { vcd.push(e[1] + '!'); }
+  if (f) { vcd.push(f[1] + '#'); }
   if (v) { vcd.push('b' + v[1] + ' "'); }
 }
 fs.writeFileSync(path.join(dir, 'e.vcd'), vcd.join('\n') + '\n');
@@ -40,7 +43,7 @@ execFileSync(tool, [path.join(dir, 'e.vcd'), '-o', file], { cwd: dir, stdio: 'ig
 
 const POS = new Set(['01', '0x', '0z', 'x1', 'z1']), NEG = new Set(['10', '1x', '1z', 'x0', 'z0']);
 // (a change is a new value; before the first one every row is 'x', so an initial 'x' is none)
-const is = (kind, k) => {
+const is = (E, kind, k) => {
   const nv = E[k][1], pv = k ? E[k - 1][1] : 'x';
   if (nv === pv) { return false; }
   if (kind === 'any') { return true; }
@@ -50,9 +53,9 @@ const is = (kind, k) => {
   const tr = pv + nv;
   return kind === 'posedge' ? POS.has(tr) : kind === 'negedge' ? NEG.has(tr) : POS.has(tr) || NEG.has(tr);
 };
-const want = (kind, t, dir) => {
-  if (dir > 0) { for (let k = 0; k < E.length; k++) { if (E[k][0] > t && is(kind, k)) { return E[k][0]; } } return null; }
-  for (let k = E.length - 1; k >= 0; k--) { if (E[k][0] < t && is(kind, k)) { return E[k][0]; } }
+const want = (E, kind, t, dir) => {
+  if (dir > 0) { for (let k = 0; k < E.length; k++) { if (E[k][0] > t && is(E, kind, k)) { return E[k][0]; } } return null; }
+  for (let k = E.length - 1; k >= 0; k--) { if (E[k][0] < t && is(E, kind, k)) { return E[k][0]; } }
   return null;
 };
 
@@ -77,16 +80,18 @@ if (o.error) { console.error('open:', o.error); process.exit(2); }
 const top = o.result.top.find((s) => s.name === 'top');
 const c = await send('children', { scopeOffsetIdx: top.scopeOffsetIdx, scopePath: 'top' });
 const id = (nm) => c.result.vars.find((v) => v.name === nm || v.name.startsWith(nm + '[')).signalId;
-const e = id('e'), v = id('v');
+const e = id('e'), v = id('v'), f = id('f');
 
 let fails = 0, n = 0;
 const check = (ok, what) => { n++; if (!ok) { fails++; console.log('FAIL ' + what); } else if (process.env.VERBOSE) { console.log('ok   ' + what); } };
-for (const kind of ['posedge', 'negedge', 'edge', 'any', 'rise', 'fall']) {
-  for (const dir of [1, -1]) {
-    for (const t of [0, 5, 10, 15, 20, 35, 40, 45, 50, 75, 115, 120, 125, 135, 140, 145, END]) {
-      const r = await send('edge', { signalId: e, t, dir, kind });
-      const w = want(kind, t, dir);
-      check(!r.error && r.result.t === w, `${kind} dir ${dir} from ${t}: ${r.error || JSON.stringify(r.result.t)}, want ${w}`);
+for (const [nm, sig, list] of [['e', e, E], ['f', f, F]]) {
+  for (const kind of ['posedge', 'negedge', 'edge', 'any', 'rise', 'fall']) {
+    for (const dir of [1, -1]) {
+      for (const t of [0, 5, 10, 15, 20, 35, 40, 45, 50, 75, 115, 120, 125, 135, 140, 145, END]) {
+        const r = await send('edge', { signalId: sig, t, dir, kind });
+        const w = want(list, kind, t, dir);
+        check(!r.error && r.result.t === w, `${nm} ${kind} dir ${dir} from ${t}: ${r.error || JSON.stringify(r.result.t)}, want ${w}`);
+      }
     }
   }
 }
