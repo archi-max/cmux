@@ -1714,12 +1714,18 @@ async function coldNear(req, ids, t) {
 // Edge and value search of a signal the store can't hold (a 10 GB dump's clock: 75 M changes,
 // 755 MB against a 244 MB store): the reader's changes from t over spans that grow x8 (as
 // coldNear), up to the first hit or the dump's end. Too big: its whole load failed so, or
-// fsdbdebug's change count says it would (no load started to find out).
+// fsdbdebug's change count says it would (no load started to find out; counted at the 2-state
+// size, a lower bound, so a row that would fit is never kept out of the store).
+// A round is a reader load of its span, so its memory is bounded (review M5): spans stop growing
+// once one would hold more than RANGED_CHANGES changes (by fsdbdebug's count, or the densest round
+// so far), and each round resumes at the last one's bound, so a search with no hit reads the
+// dump once, in steps.
+const RANGED_CHANGES = Number(process.env.FSDB_RANGED_CHANGES || 8e6);
 function tooBig(id) {
   if (derived.has(id)) { return false; }
   if (bgFailed.has(id) && /larger than/.test(bgFailed.get(id))) { return true; }
   const n = kinds.primaries && kinds.primaries.get(id), bits = widthOf.get(id) || 1;
-  return !!n && n * (8 + 2 * Math.ceil(bits / 8)) > storeCap();
+  return !!n && n * (8 + Math.ceil(bits / 8)) > storeCap();
 }
 function taskOn(req, w, task) {
   return new Promise((resolve, reject) => {
@@ -1730,16 +1736,22 @@ function taskOn(req, w, task) {
 }
 async function rangedFind(req, id, t, dir, extra) {
   const T = Math.max(1, timeEnd || 1), lo = timeStart || 0;
-  let span = Math.max(1, Math.ceil(T / (kindOf(id) === 'p' ? 256 : 4096)));
+  let span = Math.max(1, Math.ceil(T / (kindOf(id) === 'p' ? 256 : 4096))), from = t;
+  const n = kinds.primaries && kinds.primaries.get(id);
+  let density = n ? n / Math.max(1, T - lo) : 0;  // changes per time unit
   req.ranged = 0;
   for (;;) {
     if (req.cancelled) { throw new Error('cancelled'); }
-    const bound = dir > 0 ? Math.min(T, t + span) : Math.max(lo, t - span);
-    const r = await taskOn(req, leastBusy(), { op: 'rangedFind', signalId: id, t, dir, bound, start: timeStart, ...extra });
+    if (density > 0) { span = Math.min(span, Math.max(1, Math.floor(RANGED_CHANGES / density))); }
+    const bound = dir > 0 ? Math.min(T, from + span) : Math.max(lo, from - span);
+    // (the scan counts changes after `from` forward, before it backward: rounds don't overlap)
+    const r = await taskOn(req, leastBusy(), { op: 'rangedFind', signalId: id, t: from, dir, bound, start: timeStart, ...extra });
     req.ranged++;
     if (r.t !== null && r.t !== undefined) { return { t: r.t, ranged: req.ranged }; }
     if (dir > 0 ? bound >= T : bound <= lo) { return { t: null, ranged: req.ranged }; }
-    span *= 8;
+    const len = Math.abs(bound - from);
+    if (r.scanned > 0 && len > 0) { density = Math.max(density, r.scanned / len); }
+    from = bound; span *= 8;
   }
 }
 // The store's answer (op), or growing ranged reads for a signal too big for the store.
