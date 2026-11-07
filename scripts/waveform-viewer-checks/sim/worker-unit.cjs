@@ -149,10 +149,27 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     expect(st && st.result && Array.isArray(st.result.skippedLinks) && st.result.skippedLinks.includes('shared'), `and it is named as skipped: ${JSON.stringify(st && st.result && st.result.skippedLinks)}`);
     await w.quit();
   }
+  // Fork-save needs a worker without the simulator's command line (--no-ucli): with it the save child is stopped and
+  // the simulation ended, so it is refused there; and with --no-ucli the command-line requests are refused.
+  {
+    const w = start(['--period', '10']); await w.ready;
+    const f = await w.reply(w.send({ cmd: 'forksave', file: 'u.save' }).id);
+    const libLog = fs.existsSync(w.log) ? fs.readFileSync(w.log, 'utf8') : '';
+    expect(!!f && !!f.error && /--no-ucli/.test(f.error) && !/^V /m.test(libLog), `forksave with the command line is refused, nothing sent: ${f && (f.error || JSON.stringify(f.result))}`);
+    await w.quit();
+  }
+  {
+    const w = start(['--period', '10', '--no-ucli']); await w.ready;
+    const c = await w.reply(w.send({ cmd: 'checkpoint' }).id);
+    const rd = await w.reply(w.send({ cmd: 'read', signals: ['tb.cnt'] }).id);
+    expect(!!c && !!c.error && /--no-ucli/.test(c.error), `checkpoint with --no-ucli is refused: ${c && (c.error || JSON.stringify(c.result))}`);
+    expect(!!rd && !!rd.result, `and the library is served without a command line: ${JSON.stringify(rd)}`);
+    await w.quit();
+  }
   // Fork-save: `forksave {file}` is answered at once (the fork), also during a run, and the save's end comes as a
   // `saved` event naming the file; a file outside the scratch is refused before anything reaches the library.
   {
-    const w = start(['--period', '10'], { FAKE_RUN_MS: '1500' }); await w.ready;
+    const w = start(['--period', '10', '--no-ucli'], { FAKE_RUN_MS: '1500' }); await w.ready;
     const a = w.send({ cmd: 'run', cycles: 100 }); await sleep(100);
     const f = w.send({ cmd: 'forksave', file: 'fs1.save' });
     const rf = await w.reply(f.id), ra = await w.reply(a.id);
