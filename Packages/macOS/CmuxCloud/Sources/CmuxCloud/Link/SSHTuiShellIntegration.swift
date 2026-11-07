@@ -146,21 +146,36 @@ public enum SSHTuiShellIntegration {
         #"""
         cmux_ssh_dir="\#(installDirectory)"
         cmux_ssh_shell=${SHELL:-/bin/sh}
-        # The shell sources these files, so nobody else may be able to rewrite
-        # or swap any of them: every entry, and each parent up to HOME, is the
-        # user's, not a symlink, with no group or other write.
+        # The shell sources the file, so nobody else may be able to rewrite or
+        # swap it: the file and each parent up to HOME is the user's, not a
+        # symlink, with no other write, and no group write unless the group is
+        # the user's private one (only member: the user; Debian and Ubuntu
+        # create one per user and log in with umask 002). Only that chain is
+        # looked at: another terminal installing at the same moment adds and
+        # renames temporary files beside it, and a walk that lists one before
+        # it is renamed fails.
         cmux_ssh_unsafe() {
-          find "$@" \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
+          if [ -n "$cmux_ssh_gid" ]; then
+            find "$1" -prune \( -type l -o -perm -002 -o ! -user "$cmux_ssh_uid" -o \( -perm -020 ! -group "$cmux_ssh_gid" \) \) -print 2>/dev/null || echo error
+          else
+            find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
+          fi
         }
         cmux_ssh_private() {
-          [ -r "$1" ] && cmux_ssh_uid=$(id -u) && [ -z "$(cmux_ssh_unsafe "$cmux_ssh_dir")" ] || return 1
-          cmux_ssh_parent=$cmux_ssh_dir
+          [ -r "$1" ] && cmux_ssh_uid=$(id -u) && cmux_ssh_user=$(id -un) || return 1
+          cmux_ssh_gid=$(id -g) && cmux_ssh_group=$(getent group "$cmux_ssh_gid" 2>/dev/null) || cmux_ssh_group=
+          case $cmux_ssh_group in
+            "$cmux_ssh_user:"*":$cmux_ssh_gid:"|"$cmux_ssh_user:"*":$cmux_ssh_gid:$cmux_ssh_user") ;;
+            *) cmux_ssh_gid= ;;
+          esac
+          [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
+          cmux_ssh_parent=$1
           while [ "$cmux_ssh_parent" != "$HOME" ]; do
             case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
             cmux_ssh_parent=${cmux_ssh_parent%/*}
             # HOME itself may be a symlink; check what it points to.
             if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
-            [ -z "$(cmux_ssh_unsafe "$1" -prune)" ] || return 1
+            [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
           done
         }
         case ${cmux_ssh_shell##*/} in
@@ -189,7 +204,7 @@ public enum SSHTuiShellIntegration {
               exec "$cmux_ssh_shell" -l
             fi ;;
         esac
-        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_parent
+        unset cmux_ssh_dir cmux_ssh_shell cmux_ssh_uid cmux_ssh_user cmux_ssh_gid cmux_ssh_group cmux_ssh_parent
         unset -f cmux_ssh_private cmux_ssh_unsafe
 
         """#

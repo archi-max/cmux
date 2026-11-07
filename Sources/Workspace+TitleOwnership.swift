@@ -145,6 +145,11 @@ extension Workspace {
     @discardableResult
     func updatePanelTitle(panelId: UUID, title: String, stableTitle: String? = nil) -> Bool {
         let remote = cloudProjectedResource(forPanel: panelId).flatMap { $0.kind == .terminal ? $0 : nil }
+        // Only the terminal's own title (the surface path passes stableTitle): a
+        // cd under a `user@host: dir` prompt title is the Files fallback's cue.
+        if let remote, let stableTitle {
+            SurfaceCatalog.shared.cloudTerminalTitleDidChange(remote.id, title: stableTitle)
+        }
         let candidate = remote?.cloudProcessDisplayTitle ?? title
         let admitted = panels[panelId]?.panelType == .terminal
             ? AutomaticTerminalTitle(candidate)?.value : candidate
