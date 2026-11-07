@@ -12,6 +12,8 @@ mkdir -p "$T/bin" "$T/run/simv.daidir/kdb.elab++" "$T/w1" "$T/w2" "$T/w3"
 : > "$T/run/d.fsdb"
 cat > "$T/bin/verdi" <<'FAKE'
 #!/bin/bash
+# (checks 6-7: what this run's setup exported, and the run's own compile folder)
+[ -n "${CMUX_TEST_MARKS:-}" ] && echo "${CMUX_TEST_MARK:-none}|${CMUX_VERDI_COMPILE_DIR:-}" >> "$CMUX_TEST_MARKS"
 if [ "${FAKE_MODE:-}" = licence ]; then echo "Error: could not checkout license for Verdi"; exit 1; fi
 printf '\n{"id":0,"ready":true,"engine":"verdi"}\n'
 while IFS= read -r line; do printf '\n{"id":1,"ok":true,"echo":"%s"}\n' "${#line}"; done
@@ -71,4 +73,31 @@ grep -q '"error":"noVerdi","message":"CMUX_VERDI_SETUP .*2 s.*CMUX_VERDI_SETUP_S
   && ! pgrep -u "$(id -u)" -f '^sleep 27$' >/dev/null
 expect $? "a hung CMUX_VERDI_SETUP ends at its cap (after $E5 s: $(tr -d '\n' < "$T/out5" | cut -c1-160))"
 pkill -u "$(id -u)" -f '^sleep 27$' 2>/dev/null
+# 6. The setup runs under umask 077: what it writes (and the environment it leaves) is the user's only.
+mkdir -p "$T/w6" "$T/probe6"
+env -u VERDI_HOME -u BASH_ENV PATH=$NOPATH CMUX_VERDI_SETUP="touch '$T/probe6/made'; export PATH='$T/bin':\$PATH" \
+  FAKE_MARK="$T/mark6" bash "$LAUNCHER" "$T/w6" "$T/run/d.fsdb" < /dev/null > "$T/out6" 2>/dev/null
+MODE6=$(ls -l "$T/probe6/made" 2>/dev/null | cut -c1-10)
+grep -q '"ready":true' "$T/out6" && [ "$MODE6" = "-rw-------" ]
+expect $? "the setup runs under umask 077 (a file it made: ${MODE6:-none})"
+
+# 7. Two or more runs that share a scratch folder: each reads back what its own setup exported (the
+# setup marks it with the run's daidir, a variable of the launcher's own that isn't exported), never
+# another's, and none is left without Verdi. All the setups finish at the same moment.
+mkdir -p "$T/w7"
+: > "$T/marks7"
+for k in 1 2 3 4 5 6; do
+  mkdir -p "$T/run$k/simv.daidir/kdb.elab++"; : > "$T/run$k/d.fsdb"
+  sleep 4 | env -u VERDI_HOME -u BASH_ENV PATH=$NOPATH CMUX_TEST_MARKS="$T/marks7" FAKE_MARK="$T/mark7.$k" \
+    CMUX_VERDI_SETUP="sleep 1; export PATH='$T/bin':\$PATH CMUX_TEST_MARK=\$DAIDIR" \
+    bash "$LAUNCHER" "$T/w7" "$T/run$k/d.fsdb" "$T/run$k/simv.daidir" > "$T/out7.$k" 2>/dev/null &
+done
+wait
+ok7=0; bad7=
+for k in 1 2 3 4 5 6; do
+  if grep -qx "$T/run$k/simv.daidir|$T/run$k" "$T/marks7"; then ok7=$((ok7 + 1)); else bad7="$bad7 $k"; fi
+done
+[ "$ok7" = 6 ] && [ "$(wc -l < "$T/marks7" | tr -d ' ')" = 6 ]
+expect $? "six runs sharing a scratch folder each read back their own setup ($ok7 of 6; wrong or none:${bad7:- none}; $(cut -d'|' -f1 "$T/marks7" | sed 's|.*/run\([0-9]\)/.*|\1|' | tr '\n' ' '))"
+
 [ $failures = 0 ] && echo "VERDI LAUNCH CHECKS PASSED" || { echo "VERDI LAUNCH CHECKS FAILED: $failures"; exit 1; }
