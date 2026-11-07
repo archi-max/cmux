@@ -12,7 +12,9 @@
 //                                 answer { compiledOnly, dumpPath, reason, writes: [{ file, line,
 //                                 kind }] } instead: a row only the compiled design (the dump's
 //                                 KDB) has, shown as one approximate step, not evaluated.
-//   driverOfDesign({ designPath, designPrefix, dumpPrefix, time })   from the editor (cmux mapped it)
+//   driverOfDesign({ designPath, designPrefix, dumpPrefix, time, designId })   from the editor (cmux mapped it)
+//                                 designId (also in a resolve's answer): the design cmux traced in,
+//                                 sent back with every model request; another one starts a new session
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
 //   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log?, focus?, entry? })
@@ -72,8 +74,10 @@
   // ---- the dump, by design path ----
   // A trace session: the prefixes cmux mapped the design onto the dump with, its caches.
   let session = null;
-  function newSession(designPrefix, dumpPrefix) {
-    return { designPrefix: designPrefix || '', dumpPrefix: dumpPrefix || '', backend: host.currentBackend, vars: new Map(), changes: new Map(), edges: new Map(), kind: dumpKind(), engine: null };
+  // `designId`: the design cmux resolved the trace in (its key and load generation); the session's
+  // model answers are that design's only.
+  function newSession(designPrefix, dumpPrefix, designId) {
+    return { designPrefix: designPrefix || '', dumpPrefix: dumpPrefix || '', designId: designId || '', backend: host.currentBackend, vars: new Map(), changes: new Map(), edges: new Map(), kind: dumpKind(), engine: null };
   }
   const segs = (p) => (p ? String(p).split('.') : []);
   // The prefixes are whole segments; either may be empty (the dump adds or drops a wrapper scope).
@@ -508,17 +512,20 @@
   };
   }
   const dump = makeDump(false);
-  const models = {
-    instance: (path) => request('model', { cmd: 'instance', path }),
-    lookup: (path) => request('model', { cmd: 'lookup', path }),
-    writers: (path) => request('model', { cmd: 'writers', path }),
-  };
-  // The session's answers kept, so the engines of its Verdi checks do not ask cmux again.
+  // The session's answers kept, so the engines of its Verdi checks do not ask cmux again. Each
+  // request names the session's design: cmux refuses one for a design it no longer has loaded (an
+  // edit of the sources, a restart), and the session ends, so the next trace resolves anew.
   function sessionModels(s) {
     const kept = new Map();
     const keep = (cmd) => (path) => {
       const key = cmd + ':' + path;
-      if (!kept.has(key)) { kept.set(key, models[cmd](path).catch((error) => { kept.delete(key); throw error; })); }
+      if (!kept.has(key)) {
+        kept.set(key, request('model', { cmd, path, design: s.designId }).catch((error) => {
+          kept.delete(key);
+          if (error && error.code === 'designChanged' && session === s) { session = null; }
+          throw error;
+        }));
+      }
       return kept.get(key);
     };
     s.models = { instance: keep('instance'), lookup: keep('lookup'), writers: keep('writers') };
@@ -592,8 +599,9 @@
     const time = q.time !== undefined && q.time !== null ? Number(q.time) : markerTime();
     if (!q.designPath) { showError(S().traceNoSignal); return null; }
     if (time === null || !Number.isFinite(time)) { showError(S().traceNoMarker); return null; }
-    if (!session || session.backend !== host.currentBackend || session.kind !== dumpKind() || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')) {
-      session = newSession(q.designPrefix, q.dumpPrefix);
+    if (!session || session.backend !== host.currentBackend || session.kind !== dumpKind() || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')
+        || session.designId !== String(q.designId || '')) {
+      session = newSession(q.designPrefix, q.dumpPrefix, String(q.designId || ''));
       session.options = { xprop: q.xprop || 'auto' };
       session.engine = window.cmuxTrace.createEngine({ models: sessionModels(session), dump, options: session.options });
     }

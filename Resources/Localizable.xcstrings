@@ -485168,6 +485168,124 @@
         }
       }
     },
+    "waveformTrace.designChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design changed since this trace began (a source was edited, or the design model restarted). Trace again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このトレースの開始後にデザインが変わりました(ソースが編集されたか、デザインモデルが再起動しました)。もう一度トレースしてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Design hat sich seit Beginn dieser Verfolgung geändert (eine Quelle wurde bearbeitet oder das Designmodell neu gestartet). Bitte erneut verfolgen."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le design a changé depuis le début de ce traçage (une source a été modifiée, ou le modèle du design a redémarré). Tracez à nouveau."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تغيّر التصميم منذ بدء هذا التتبع (عُدّل مصدر، أو أُعيد تشغيل نموذج التصميم). تتبّع مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño cambió desde que empezó este rastreo (se editó una fuente o se reinició el modelo del diseño). Vuelve a rastrear."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此追蹤開始後設計已變更(來源被編輯,或設計模型已重新啟動)。請再追蹤一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此追踪开始后设计已更改(源文件被编辑,或设计模型已重新启动)。请再追踪一次。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 추적을 시작한 뒤 설계가 바뀌었습니다(소스가 편집되었거나 설계 모델이 다시 시작됨). 다시 추적하세요."
+          }
+        }
+      }
+    },
+    "waveformTrace.noProvenance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design model on %@ did not say which source files it read, so driver tracing does not use it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ のデザインモデルが読み込んだソースファイルを示さなかったため、ドライバートレースでは使用しません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell auf %@ hat nicht angegeben, welche Quelldateien es gelesen hat, daher verwendet die Treiberverfolgung es nicht."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle du design sur %@ n’a pas indiqué quels fichiers sources il a lus ; le traçage des pilotes ne l’utilise donc pas."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يذكر نموذج التصميم على %@ ملفات المصدر التي قرأها، لذا لا يستخدمه تتبع المشغّل."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo del diseño en %@ no indicó qué archivos fuente leyó, así que el rastreo de controladores no lo usa."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的設計模型未說明它讀取了哪些來源檔案,因此驅動追蹤不會使用它。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的设计模型未说明它读取了哪些源文件,因此驱动追踪不会使用它。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 설계 모델이 읽은 소스 파일을 알려 주지 않아 드라이버 추적에 사용하지 않습니다."
+          }
+        }
+      }
+    },
     "waveformTrace.page.build.elapsed": {
       "extractionState": "manual",
       "localizations": {

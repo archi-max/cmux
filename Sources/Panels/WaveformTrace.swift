@@ -20,28 +20,38 @@ nonisolated private let waveformTraceLogger = Logger(subsystem: "com.cmuxterm.ap
 enum WaveformTrace {
     // MARK: Design models
 
-    /// One sidecar with one design loaded: per host, server root and slang arguments.
+    /// One sidecar with one design loaded: per host, server root and slang arguments. Its answers
+    /// (kept by `session`) belong to the sources the load read: each trace first asks the sidecar
+    /// whether one changed and loads it again if so, and a trace works in one design generation
+    /// throughout (SVDesignSession), which the page's session is bound to (`id(_:)`).
     @MainActor
     final class Design {
         let key: String
         let sidecar: SVModelSidecar
+        let session: SVDesignSession
         let args: [String]
         let root: String
         let hostIdentity: String
-        var load: Task<SVModelSidecar.Reply, any Error>?
-        var hierarchy: (tops: [String], instances: [String])?
+        var load: Task<SVDesignSession.Loaded, any Error>?
         /// slang's messages from loading the design (its errors first), for a row below a module it left out.
-        var loadMessages: [String] = []
-        /// Instance models resolve asked for (the sidecar builds each anew), at most `maxModels`.
-        var models: [String: [String: Any]] = [:]
-        static let maxModels = 16
+        var loadMessages: [String] { session.loadMessages }
 
         init(key: String, sidecar: SVModelSidecar, args: [String], root: String, hostIdentity: String) {
             self.key = key
             self.sidecar = sidecar
+            self.session = SVDesignSession(sidecar: sidecar, args: args, cwd: root)
             self.args = args
             self.root = root
             self.hostIdentity = hostIdentity
+        }
+
+        /// The page's name for this design in `generation` (resolve's and the editor's `designId`).
+        func id(_ generation: Int) -> String { key + "#" + String(generation) }
+
+        /// The generation a page's `designId` names, when it is this design's.
+        func generation(ofId id: String) -> Int? {
+            guard let hash = id.lastIndex(of: "#"), id[..<hash] == key else { return nil }
+            return Int(id[id.index(after: hash)...])
         }
     }
 
@@ -166,8 +176,9 @@ enum WaveformTrace {
                 buildProgress(report.stage.rawValue, key: key, host: host, extra)
             }
         }
+        let loadedBefore = design.load != nil
         let load = design.load ?? Task { @MainActor in
-            try await design.sidecar.request(["cmd": "load", "args": design.args, "cwd": design.root])
+            try await design.session.load()
         }
         design.load = load
         defer {
@@ -178,12 +189,17 @@ enum WaveformTrace {
             }
         }
         do {
-            let reply = try await load.value
+            let loaded = try await load.value
             if buildStarts[key] != nil { endBuild("done", key: key, host: host) }
-            guard let tops = reply["tops"] as? [String], !tops.isEmpty else {
-                throw Failure(message: loadFailedMessage(reply))
+            guard !loaded.tops.isEmpty else {
+                throw Failure(message: loadFailedMessage(loaded.messages))
             }
-            design.loadMessages = reply["messages"] as? [String] ?? []
+            // A source, include or file list edited since: loaded again (the same text keeps the
+            // design and its answers).
+            if loadedBefore, try await design.session.refresh() {
+                let tops = (design.sidecar.lastLoadReply?["tops"] as? [String]) ?? []
+                guard !tops.isEmpty else { throw Failure(message: loadFailedMessage(design.loadMessages)) }
+            }
         } catch let error as Failure {
             design.load = nil
             throw error
@@ -288,28 +304,27 @@ enum WaveformTrace {
         let design = try await design(for: editor, waveform: waveform)
         let key = await WaveformSourceLink.mappingKey(rootKey: editor.linkRootKey, waveform: waveform)
         let mapping = key.map(WaveformSourceLink.mapping(forKey:)) ?? HierarchyPathMapping()
-        // The dump's KDB model when its export has come (never waited for): it decides what exists
-        // and how the row maps to slang's design.
-        let outcome = try await SVModelResolve.resolve(
-            dumpPath: dumpPath,
-            mapping: mapping,
-            loadMessages: design.loadMessages,
-            lookup: { path in await lookup(path, in: design) },
-            model: { path in await instanceModel(path, in: design) },
-            designRoots: { try await designRoots(of: design) },
-            dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) },
-            kdb: WaveformTraceKDB.model(for: waveform),
-            instances: { try await hierarchy(of: design).instances },
-            log: { line in waveformTraceLogger.info("\(line, privacy: .public)") }
-        )
+        // In one design generation throughout: a sidecar that restarts onto changed sources under
+        // way makes another, and the resolve runs again in it (once), never on answers of both.
+        var outcome: SVModelResolve.Outcome?
+        var generation = design.session.generation
+        for _ in 0..<2 {
+            generation = design.session.generation
+            let resolved = try await resolve(dumpPath: dumpPath, mapping: mapping, design: design, generation: generation, waveform: waveform)
+            if design.session.generation == generation {
+                outcome = resolved
+                break
+            }
+        }
+        guard let outcome else { throw Failure(message: designChangedMessage) }
         switch outcome {
         case .signal(let designPath, let designPrefix, let dumpPrefix):
-            sendSlangAliases(design: design, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
-            return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix]
+            sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
+            return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation)]
         case .notElaborated(let instance):
             throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
         case .compiledOnly(let row, let reason, let writes):
-            return ["compiledOnly": true, "dumpPath": row, "reason": reason.rawValue,
+            return ["compiledOnly": true, "dumpPath": row, "reason": reason.rawValue, "designId": design.id(generation),
                     "writes": writes.map { ["file": $0.file, "line": $0.line, "kind": $0.kind] as [String: Any] }]
         case .notInDesign:
             throw Failure(message: String(
@@ -322,7 +337,39 @@ enum WaveformTrace {
         }
     }
 
-    /// The rules each viewer's slang aliases were sent for (`design key|design prefix|dump prefix`).
+    /// One resolve against the design of `generation` (an answer of another one is none).
+    private static func resolve(dumpPath: [String], mapping: HierarchyPathMapping, design: Design, generation: Int,
+                                waveform: FilePreviewPanel) async throws -> SVModelResolve.Outcome {
+        let session = design.session
+        // The dump's KDB model when its export has come (never waited for): it decides what exists
+        // and how the row maps to slang's design.
+        return try await SVModelResolve.resolve(
+            dumpPath: dumpPath,
+            mapping: mapping,
+            loadMessages: design.loadMessages,
+            lookup: { path in (try? await session.lookup(path, generation: generation)) ?? nil },
+            model: { path in (try? await session.model(path, generation: generation)) ?? nil },
+            designRoots: { try await designRoots(of: session, generation: generation) },
+            dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) },
+            kdb: WaveformTraceKDB.model(for: waveform),
+            instances: { try await session.hierarchy(generation: generation).instances },
+            log: { line in waveformTraceLogger.info("\(line, privacy: .public)") }
+        )
+    }
+
+    static var designChangedMessage: String {
+        String(
+            localized: "waveformTrace.designChanged",
+            defaultValue: "The design changed since this trace began (a source was edited, or the design model restarted). Trace again."
+        )
+    }
+
+    /// The viewer loads its dump again: its helper is new, so slang's aliases go to it again.
+    static func waveformReloading(_ waveform: FilePreviewPanel) {
+        aliasRules.removeObject(forKey: waveform)
+    }
+
+    /// The rules each viewer's slang aliases were sent for (`design id|design prefix|dump prefix`).
     private static let aliasRules = NSMapTable<FilePreviewPanel, NSString>.weakToStrongObjects()
     /// Instances below the prefix whose models are asked for the aliases at most: each is built anew
     /// by the sidecar, which answers the viewer's trace requests one at a time too.
@@ -333,23 +380,28 @@ enum WaveformTrace {
     /// FSDB helper as the KDB's would be, which uses a pair only once sampled windows of both match
     /// and drops it on any difference. In the background, after the trace's own requests; a design
     /// with more instances below the prefix than `maxAliasInstances` is left out.
-    private static func sendSlangAliases(design: Design, designPrefix: String, dumpPrefix: String, waveform: FilePreviewPanel) {
+    private static func sendSlangAliases(design: Design, generation: Int, designPrefix: String, dumpPrefix: String, waveform: FilePreviewPanel) {
         guard KDBExportSchedule.sendsSlangAliases(enabled: WaveformTraceKDB.slangAliasesEnabled, model: WaveformTraceKDB.model(for: waveform)) else { return }
-        let rule = design.key + "|" + designPrefix + "|" + dumpPrefix
+        let rule = design.id(generation) + "|" + designPrefix + "|" + dumpPrefix
         guard aliasRules.object(forKey: waveform) as String? != rule else { return }
         aliasRules.setObject(rule as NSString, forKey: waveform)
         Task { @MainActor [weak waveform] in
             guard let waveform, WaveformTraceKDB.model(for: waveform) == nil,
-                  let hierarchy = try? await hierarchy(of: design) else { return }
+                  let hierarchy = try? await design.session.hierarchy(generation: generation) else { return }
             // The instances below the prefix (the prefix's own ports bind to nets outside it: no pair).
             let below = hierarchy.instances.filter { designPrefix.isEmpty || $0.hasPrefix(designPrefix + ".") }
             guard !below.isEmpty, below.count <= maxAliasInstances else { return }
             var models: [String: [String: Any]] = [:]
             for path in below {
                 guard aliasRules.object(forKey: waveform) as String? == rule else { return }
-                if let model = try? await design.sidecar.request(["cmd": "instance", "path": path])["model"] as? [String: Any] {
-                    models[path] = model
-                }
+                // Each built anew (not kept: the session keeps few); another design ends it.
+                do {
+                    if let model = try await design.session.request(["cmd": "instance", "path": path], generation: generation)["model"] as? [String: Any] {
+                        models[path] = model
+                    }
+                } catch SVDesignSession.Failure.designChanged {
+                    return
+                } catch {}
             }
             let pairs = DesignAliasPairs.pairs(models: models, designPrefix: designPrefix, dumpPrefix: dumpPrefix,
                                                limit: WaveformTraceKDB.maxAliasPairs)
@@ -361,36 +413,11 @@ enum WaveformTrace {
         }
     }
 
-    /// The design's instance paths and tops (the sidecar's `instances`, asked once).
-    private static func hierarchy(of design: Design) async throws -> (tops: [String], instances: [String]) {
-        if let known = design.hierarchy { return known }
-        let reply = try await design.sidecar.request(["cmd": "instances"])
-        let hierarchy = (tops: reply["tops"] as? [String] ?? [], instances: reply["instances"] as? [String] ?? [])
-        design.hierarchy = hierarchy
-        return hierarchy
-    }
-
     /// The page's design query for a design path traced from a dump path: the path and the
     /// prefixes it maps fan-in paths back with.
     private static func result(designPath: String, dumpPath: [String]) -> [String: Any] {
         let prefixes = SVModelLoad.prefixes(dumpPath: dumpPath, designPath: HierarchyPathMapping.segments(designPath))
         return ["designPath": designPath, "designPrefix": prefixes.designPrefix, "dumpPrefix": prefixes.dumpPrefix]
-    }
-
-    /// The sidecar's `lookup`: the deepest instance of the design on `path` and the rest below it.
-    private static func lookup(_ path: String, in design: Design) async -> (instance: String, name: String)? {
-        guard let found = try? await design.sidecar.request(["cmd": "lookup", "path": path]),
-              let instance = found["instance"] as? String, let name = found["name"] as? String else { return nil }
-        return (instance, name)
-    }
-
-    /// An instance's model, kept per design (a top's is large; resolve asks for it on every click).
-    private static func instanceModel(_ path: String, in design: Design) async -> [String: Any]? {
-        if let known = design.models[path] { return known }
-        guard let model = try? await design.sidecar.request(["cmd": "instance", "path": path])["model"] as? [String: Any] else { return nil }
-        if design.models.count >= Design.maxModels { design.models.removeAll() }
-        design.models[path] = model
-        return model
     }
 
     /// The row's instance is missing from the design model: which one, slang's first error, and
@@ -408,17 +435,10 @@ enum WaveformTrace {
     }
 
     /// Each design top and its children, for inference (SVModelResolve.designRoots).
-    private static func designRoots(of design: Design) async throws -> [String: [HierarchyNode]] {
-        let hierarchy: (tops: [String], instances: [String])
-        if let known = design.hierarchy {
-            hierarchy = known
-        } else {
-            let reply = try await design.sidecar.request(["cmd": "instances"])
-            hierarchy = (reply["tops"] as? [String] ?? [], reply["instances"] as? [String] ?? [])
-            design.hierarchy = hierarchy
-        }
+    private static func designRoots(of session: SVDesignSession, generation: Int) async throws -> [String: [HierarchyNode]] {
+        let hierarchy = try await session.hierarchy(generation: generation)
         return await SVModelResolve.designRoots(tops: hierarchy.tops, instances: hierarchy.instances) { path in
-            await instanceModel(path, in: design)
+            (try? await session.model(path, generation: generation)) ?? nil
         }
     }
 
@@ -521,6 +541,7 @@ enum WaveformTrace {
         var argument = result(designPath: designPath, dumpPath: dumpPath)
         argument["time"] = NSNull()
         argument["design"] = built.key
+        argument["designId"] = built.id(built.session.generation)
         editor.closeLinkProgress()
         // The build's done (queued behind its progress calls) before the trace, as the page expects.
         await buildSends[built.key]?.value
@@ -577,8 +598,13 @@ enum WaveformTrace {
                     reply(page, id: id, error: "noDesign", message: noEditorMessage)
                     return
                 }
+                // Answered in the design the page's session traces in, never another one's.
+                guard let generation = (body["design"] as? String).flatMap(design.generation(ofId:)) else {
+                    reply(page, id: id, error: "designChanged", message: designChangedMessage)
+                    return
+                }
                 do {
-                    let answer = try await design.sidecar.request(["cmd": cmd ?? "", "path": path])
+                    let answer = try await design.session.request(["cmd": cmd ?? "", "path": path], generation: generation)
                     if cmd == "instance" {
                         reply(page, id: id, result: answer["model"] ?? NSNull())
                     } else if cmd == "writers" {
@@ -588,6 +614,8 @@ enum WaveformTrace {
                     }
                 } catch SVModelSidecar.Failure.request(code: "noInstance", message: _) {
                     reply(page, id: id, result: NSNull())
+                } catch SVDesignSession.Failure.designChanged {
+                    reply(page, id: id, error: "designChanged", message: designChangedMessage)
                 } catch {
                     reply(page, id: id, error: "model", message: sidecarMessage(error, host: nil))
                 }
@@ -675,8 +703,8 @@ enum WaveformTrace {
         )
     }
 
-    private static func loadFailedMessage(_ reply: SVModelSidecar.Reply) -> String {
-        let messages = (reply["messages"] as? [String] ?? []).prefix(5).joined(separator: "\n")
+    private static func loadFailedMessage(_ messages: [String]) -> String {
+        let messages = messages.prefix(5).joined(separator: "\n")
         let text = String(
             localized: "waveformTrace.loadFailed",
             defaultValue: "slang could not elaborate the design for driver tracing (no top instance)."
@@ -687,6 +715,17 @@ enum WaveformTrace {
     /// A sidecar failure for the user; build.sh's exit codes name what is missing.
     static func sidecarMessage(_ error: any Error, host: String?) -> String {
         let place = host ?? String(localized: "waveformTrace.thisMac", defaultValue: "this Mac")
+        switch error as? SVDesignSession.Failure {
+        case .designChanged?:
+            return designChangedMessage
+        case .noProvenance?:
+            return String(format: String(
+                localized: "waveformTrace.noProvenance",
+                defaultValue: "The design model on %@ did not say which source files it read, so driver tracing does not use it."
+            ), place)
+        case nil:
+            break
+        }
         switch error as? SVModelSidecar.Failure {
         case .setupFailed(let code, let detail)?:
             let summary: String

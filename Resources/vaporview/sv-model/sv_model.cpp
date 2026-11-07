@@ -12,14 +12,19 @@
 // Protocol: one JSON object per line on stdin, one JSON reply per line on stdout, matched by id.
 // The first line out is {"id":0,"ready":true,...}.
 //   {"id":1,"cmd":"load","args":["-f","files.f","--top","tb"],"cwd":"/dir"}
-//       -> {"id":1,"ok":true,"tops":["tb"],"errors":n,"messages":[...],"ms":n}
+//       -> {"id":1,"ok":true,"tops":["tb"],"errors":n,"messages":[...],"fingerprint":"<16 hex>","files":n,"ms":n}
 //   {"id":2,"cmd":"instance","path":"tb.dut"}   -> {"id":2,"ok":true,"model":{...}}
 //   {"id":3,"cmd":"lookup","path":"tb.dut.g[0].x"} -> {"id":3,"ok":true,"instance":"tb.dut","name":"g[0].x"}
 //   {"id":4,"cmd":"instances"} -> {"id":4,"ok":true,"tops":["tb"],"instances":["tb","tb.dut",...]} (sorted)
 //   {"id":5,"cmd":"writers","path":"tb.bus"} -> {"id":5,"ok":true,"writers":["tb.dut","tb.mem"]} (sorted):
 //       the other instances whose statements write into it ($abs: lvalues; an interface instance
 //       written through modport ports), from an index built over every instance on first use
+//   {"id":6,"cmd":"stale"} -> {"id":6,"ok":true,"changed":false,"fingerprint":"..."}: whether a file the
+//       load read (sources, includes, library and command files) has another size or time now,
+//       or was written while the load read it; cmux then loads the design again
 //   {"id":4,"cmd":"version"}
+// A load's reply also has "fingerprint": a hash of its command line, folder and the text of every
+// file it read, so a load of unchanged text is known to be the same design.
 // Errors: {"id":n,"ok":false,"error":"<code>","message":"..."}.
 //
 // slang's license:
@@ -46,7 +51,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -1724,13 +1732,107 @@ private:
 
 // ---------------------------------------------------------------------------------------------
 // The session: one design loaded at a time.
+// A file a load read, as it was on disk after the load read it (size -1: missing; -2: written
+// while the load read it, so never taken as unchanged).
+struct SourceStamp {
+    std::string path;
+    int64_t size = -1;
+    int64_t mtime = 0;
+    bool operator==(const SourceStamp&) const = default;
+};
+
+SourceStamp stampOf(const std::string& path) {
+    SourceStamp st{path};
+    std::error_code ec;
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec)
+        return st;
+    auto t = std::filesystem::last_write_time(path, ec);
+    if (ec)
+        return st;
+    st.size = int64_t(size);
+    st.mtime = int64_t(t.time_since_epoch().count());
+    return st;
+}
+
+// FNV-1a (64 bits) over length-delimited parts: tells designs apart, not a security hash.
+struct Fingerprint {
+    uint64_t h = 1469598103934665603ull;
+    void add(std::string_view text) {
+        auto mix = [this](unsigned char c) {
+            h ^= c;
+            h *= 1099511628211ull;
+        };
+        for (unsigned char c : text)
+            mix(c);
+        for (int i = 0; i < 8; i++)
+            mix((unsigned char)(text.size() >> (8 * i)));
+    }
+    std::string hex() const {
+        char out[17];
+        std::snprintf(out, sizeof out, "%016llx", (unsigned long long)h);
+        return out;
+    }
+};
+
 struct Session {
     std::unique_ptr<driver::Driver> drv;
     std::unique_ptr<Compilation> comp;
     std::unique_ptr<Model> model;
     // writers: instance path -> the other instances that write into it (built on first use).
     std::optional<std::map<std::string, std::vector<std::string>>> writers;
+    // The files the last load read, and its fingerprint (empty: nothing loaded).
+    std::vector<SourceStamp> stamps;
+    std::string fingerprint;
 };
+
+// The files the load read (every file buffer, and every command file) stamped, and the
+// fingerprint over the command line, the folder and their text. A file whose size is not the
+// text's, or whose time is from while the load read it (between `start` and now: a host clock
+// behind a file server's makes times later than now, which say nothing), is stamped as never
+// matching. Not seen: a file a load could not find that is made later, and on a file server
+// whose clock is behind, an edit of the same size while the load read it.
+void stampSources(Session& s, const std::vector<std::string>& args, const std::string& cwd,
+                  std::filesystem::file_time_type start) {
+    auto end = std::filesystem::file_time_type::clock::now();
+    auto& sm = s.drv->sourceManager;
+    std::map<std::string, std::string> files;
+    for (auto buffer : sm.getAllBuffers()) {
+        auto& path = sm.getFullPath(buffer);
+        if (!path.empty())
+            files.emplace(path.string(), std::string(sm.getSourceText(buffer)));
+    }
+    std::map<std::string, std::string> commandFiles;
+    for (auto& [path, _] : s.drv->getCommandFileMetadata()) {
+        std::ifstream in(path, std::ios::binary);
+        std::ostringstream text;
+        text << in.rdbuf();
+        commandFiles.emplace(path.string(), text.str());
+    }
+    Fingerprint fp;
+    fp.add("args");
+    for (size_t i = 1; i < args.size(); i++)
+        fp.add(args[i]);
+    fp.add("cwd");
+    fp.add(cwd);
+    for (auto* group : {&files, &commandFiles}) {
+        fp.add(group == &files ? "files" : "commandFiles");
+        for (auto& [path, text] : *group) {
+            fp.add(path);
+            fp.add(text);
+            auto st = stampOf(path);
+            size_t length = text.size();
+            if (length > 0 && text.back() == '\0')
+                length--;
+            bool during = st.mtime >= int64_t(start.time_since_epoch().count()) &&
+                          st.mtime <= int64_t(end.time_since_epoch().count());
+            if (st.size >= 0 && (size_t(st.size) != length || during))
+                st.size = -2;
+            s.stamps.push_back(st);
+        }
+    }
+    s.fingerprint = fp.hex();
+}
 
 // The written ($abs: lvalue) paths in each instance's model, mapped to the instance they are in.
 std::map<std::string, std::vector<std::string>> buildWriters(Model& model) {
@@ -1785,6 +1887,9 @@ void load(Session& s, int64_t id, const JValue& req) {
     s.model.reset();
     s.writers.reset();
     s.comp.reset();
+    s.stamps.clear();
+    s.fingerprint.clear();
+    auto start = std::filesystem::file_time_type::clock::now();
     s.drv = std::make_unique<driver::Driver>();
     auto& d = *s.drv;
     d.addStandardArgs();
@@ -1848,6 +1953,7 @@ void load(Session& s, int64_t id, const JValue& req) {
     }
     s.model = std::make_unique<Model>(*s.comp, s.drv->sourceManager);
     s.writers.reset();
+    stampSources(s, args, cwd, start);
     std::filesystem::current_path(oldCwd, ec);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     JsonWriter w;
@@ -1868,8 +1974,40 @@ void load(Session& s, int64_t id, const JValue& req) {
     for (auto& m : messages)
         w.writeValue(m);
     w.endArray();
+    w.writeProperty("fingerprint");
+    w.writeValue(s.fingerprint);
+    w.writeProperty("files");
+    w.writeValue(int64_t(s.stamps.size()));
     w.writeProperty("ms");
     w.writeValue(int64_t(ms));
+    w.endObject();
+    reply(w);
+}
+
+// Whether a file the last load read changed on disk since (another size or time, gone, or
+// written while the load read it).
+void stale(Session& s, int64_t id) {
+    if (s.fingerprint.empty()) {
+        fail(id, "notLoaded", "no design is loaded");
+        return;
+    }
+    bool changed = false;
+    for (auto& st : s.stamps) {
+        if (st.size == -2 || !(stampOf(st.path) == st)) {
+            changed = true;
+            break;
+        }
+    }
+    JsonWriter w;
+    w.startObject();
+    w.writeProperty("id");
+    w.writeValue(id);
+    w.writeProperty("ok");
+    w.writeValue(true);
+    w.writeProperty("changed");
+    w.writeValue(changed);
+    w.writeProperty("fingerprint");
+    w.writeValue(s.fingerprint);
     w.endObject();
     reply(w);
 }
@@ -1896,6 +2034,10 @@ void handle(Session& s, const JValue& req) {
     }
     if (cmd == "load") {
         load(s, id, req);
+        return;
+    }
+    if (cmd == "stale") {
+        stale(s, id);
         return;
     }
     if (!s.model) {

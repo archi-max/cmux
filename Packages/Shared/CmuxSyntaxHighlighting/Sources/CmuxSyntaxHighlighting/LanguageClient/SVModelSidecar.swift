@@ -98,7 +98,10 @@ public enum SVModelLoad {
 /// The launch command exits 87 when the build for this version is not installed; the install
 /// command then runs (with the sidecar sources as a tar on its stdin) and the launch is retried.
 /// A sidecar that exits is started again by the next request, and the last `load` is replayed
-/// into it first.
+/// into it first. Each load's reply (asked for or replayed) makes the loaded design: one with
+/// another `fingerprint` than the design before it, or none, is a new `designGeneration`, and
+/// every reply says the generation it was answered in (`Reply.design`), so answers of two
+/// designs are never taken for one (SVDesignSession).
 public final class SVModelSidecar: @unchecked Sendable {
     public struct Command: Sendable {
         public let executable: String
@@ -116,10 +119,15 @@ public final class SVModelSidecar: @unchecked Sendable {
     /// A reply object (a JSON object from the sidecar, read-only once made).
     public struct Reply: @unchecked Sendable {
         public let object: [String: Any]
+        /// The design generation the sidecar answered in (0: before any load).
+        public let design: Int
 
         public subscript(key: String) -> Any? { object[key] }
 
-        public init(object: [String: Any]) { self.object = object }
+        public init(object: [String: Any], design: Int = 0) {
+            self.object = object
+            self.design = design
+        }
     }
 
     public enum Status: Sendable, Equatable {
@@ -186,6 +194,11 @@ public final class SVModelSidecar: @unchecked Sendable {
     private var readyLine: Reply?
     private var lastLoad: [String: any Sendable]?
     private var loadGeneration = 0
+    /// The ids of the load requests under way (asked for or replayed).
+    private var loadIds: Set<Int> = []
+    private var designGenerationValue = 0
+    private var designFingerprintValue: String?
+    private var lastLoadReplyValue: Reply?
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.sv-model.write")
 
     /// `installSource`: the folder sent as a tar on the install command's stdin.
@@ -198,6 +211,14 @@ public final class SVModelSidecar: @unchecked Sendable {
 
     /// The running process's ready line (what it said about itself), once it has started.
     public var lastReady: Reply? { lock.withLock { readyLine } }
+
+    /// The generation of the design loaded now: bumped by a load (asked for or replayed after a
+    /// restart) whose fingerprint differs from the design's before it or is missing, and by a
+    /// load that fails (the sidecar then holds none). 0: nothing loaded yet.
+    public var designGeneration: Int { lock.withLock { designGenerationValue } }
+
+    /// The last load's reply (asked for or replayed), with its generation.
+    public var lastLoadReply: Reply? { lock.withLock { lastLoadReplyValue } }
 
     public var onStatus: (@Sendable (Status) -> Void)? {
         get { lock.withLock { statusHandler } }
@@ -296,6 +317,7 @@ public final class SVModelSidecar: @unchecked Sendable {
                 return
             }
             pending[id] = continuation
+            if request["cmd"] as? String == "load" { loadIds.insert(id) }
             lock.unlock()
             line.append(0x0A)
             let message = line
@@ -477,11 +499,21 @@ public final class SVModelSidecar: @unchecked Sendable {
             }
             return
         }
-        let continuation = lock.withLock { pending.removeValue(forKey: id) }
-        if object["ok"] as? Bool == false {
+        // Stamped here, in the order the sidecar answered: a reply after a load's is that design's.
+        let ok = object["ok"] as? Bool != false
+        let (continuation, design): (CheckedContinuation<Reply, any Error>?, Int) = lock.withLock {
+            if loadIds.remove(id) != nil {
+                let fingerprint = ok ? object["fingerprint"] as? String : nil
+                if fingerprint == nil || fingerprint != designFingerprintValue { designGenerationValue += 1 }
+                designFingerprintValue = fingerprint
+                lastLoadReplyValue = Reply(object: object, design: designGenerationValue)
+            }
+            return (pending.removeValue(forKey: id), designGenerationValue)
+        }
+        if !ok {
             continuation?.resume(throwing: Failure.request(code: object["error"] as? String ?? "", message: object["message"] as? String ?? ""))
         } else {
-            continuation?.resume(returning: Reply(object: object))
+            continuation?.resume(returning: Reply(object: object, design: design))
         }
     }
 
