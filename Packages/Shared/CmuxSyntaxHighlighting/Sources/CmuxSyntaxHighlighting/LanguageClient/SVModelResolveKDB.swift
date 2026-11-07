@@ -141,6 +141,15 @@ extension SVModelResolve {
             return (k, at)
         }
         let topSet = Set(tops)
+        // A start below a scope that is not the dump's keeps the KDB instance's whole name under its
+        // parent (g[1].dut is no stand-in for g[0].dut); a top always does.
+        func nameKept(_ start: (level: Int, at: String)) -> Bool {
+            guard !topSet.contains(start.at) else { return true }
+            let kdbParent = kdb.instance(chain[start.level])?["parent"] as? String
+            let theirs = slangParent(start.at).map { below(start.at, $0) } ?? start.at
+            let ours = kdbParent.map { below(chain[start.level], $0) } ?? chain[start.level]
+            return theirs == ours
+        }
         for (level, prefix) in chain.enumerated() {
             let suffix = below(instance, prefix)
             let kdbModule = kdb.instance(prefix)?["module"] as? String
@@ -166,6 +175,9 @@ extension SVModelResolve {
             // compiled design's row, never a stand-in found deeper (a sibling, another index or
             // another top of the same module).
             var entries: [(level: Int, at: String, reason: CompiledOnlyReason?, paths: [String], renamed: [KDBDifference])] = []
+            // Starts whose chain is the KDB's as far as slang has it, then lacks an instance (not a
+            // stand-in under another name, not another module).
+            var partial: Set<String> = []
             for candidate in candidates.sorted() {
                 guard await module(candidate) == kdbModule else {
                     let here = candidate == prefix || sameBelow.contains(candidate)
@@ -180,14 +192,11 @@ extension SVModelResolve {
                 // Where slang's chain starts below a scope that is not the dump's (another testbench),
                 // it starts under the dump's own instance name relative to the parent (tb_soc.dut for
                 // tb.dut), else at a top (soc): a renamed instance (dut_r) is no stand-in either.
-                // The whole name below the parent is compared (g[1].dut is no stand-in for g[0].dut).
-                if reason == nil, !topSet.contains(start.at) {
-                    let kdbParent = kdb.instance(chain[start.level])?["parent"] as? String
-                    let theirs = slangParent(start.at).map { below(start.at, $0) } ?? start.at
-                    let ours = kdbParent.map { below(chain[start.level], $0) } ?? chain[start.level]
-                    if theirs != ours { reason = .notInSlang }
+                if reason == nil, !nameKept(start) { reason = .notInSlang }
+                if !entries.contains(where: { $0.level == start.level && $0.at == start.at }) {
+                    entries.append((start.level, start.at, reason, walk.paths, walk.renamed))
+                    if walk.reason == .notInSlang, reason == .notInSlang, nameKept(start) { partial.insert("\(start.level) \(start.at)") }
                 }
-                if !entries.contains(where: { $0.level == start.level && $0.at == start.at }) { entries.append((start.level, start.at, reason, walk.paths, walk.renamed)) }
             }
             guard let shallowest = entries.map(\.level).min() else { continue }
             let decisive = entries.filter { $0.level == shallowest }
@@ -196,7 +205,11 @@ extension SVModelResolve {
                 return .compiledOnly(dumpPath: row, reason: decisive.contains { $0.reason == .otherModule } ? .otherModule : .notInSlang,
                                      writes: kdb.writes(of: row))
             }
-            if matched.count > 1 {
+            // Another counterpart of the scope's module at the deciding level that only lacks part of
+            // the chain (a second top of it: `--top` twice) could stand for the dump's scope as well: which
+            // one does is not known, as for the scope's other rows (one instance, one answer).
+            let incomplete = decisive.contains { partial.contains("\($0.level) \($0.at)") }
+            if matched.count > 1 || (matched.count == 1 && incomplete) {
                 log("KDB mapping of \(row): \(matched.map(\.at).joined(separator: ", ")) are all \(chain[shallowest])'s modules; the inferred rule instead")
                 return try await checkedToday()
             }
