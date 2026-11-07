@@ -201,7 +201,7 @@ const startIn = (cwd, extra, env = {}) => start(extra, env, cwd);
     await Promise.race([w.exitP, sleep(5000)]);
     await sleep(300);
     const evs = w.events.filter((e) => e.event === 'saved' && xs && xs.result && e.pid === xs.result.pid);
-    expect(evs.length === 1 && evs[0].ok === false && evs[0].simExited === true, `M-a the simulation ended during a save: exactly one saved event, simExited: ${JSON.stringify(evs)}`);
+    expect(evs.length === 1 && evs[0].ok === false && evs[0].simExited === true, `M-a the simulation ended during a save: exactly one saved event, simExited: ${JSON.stringify(evs)} (reply ${JSON.stringify(xs)}, events ${JSON.stringify(w.events.slice(-4))})`);
     await w.quit().catch(() => {});
   }
   // VPI low: a command line that never gives its prompt back (a UCLI error with no prompt) does not wedge the

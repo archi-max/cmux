@@ -39,7 +39,7 @@ function quick(op, id, a) {
     case 'V': { const pid = 90000 + id; send({ id, t, pid, forkMs: 1.5, file: a[0] });
       // a name with "nofile" in it: the child says 0 but writes nothing (the worker must not trust the status)
       // "exitsoon": the simulation ends (as on $finish) before the save's end is reported
-      if (/exitsoon/.test(a[0])) { setTimeout(() => process.exit(0), 50); return true; }
+      if (/exitsoon/.test(a[0])) { setTimeout(() => process.kill(process.pid, "SIGTERM"), 50); return true; }   // (process.exit waits on the fd 3 read here)
       // "latetimeout": the image is there and the status 0, but the deadline also fired (one outcome must win)
       if (/latetimeout/.test(a[0])) { setTimeout(() => { fs.writeFileSync(a[0], 'fake save'); send({ ev: 'saved', pid, file: a[0], t, status: 0, timeout: true }); }, 200); return true; }
       setTimeout(() => { try { if (!/nofile/.test(a[0])) fs.writeFileSync(a[0], 'fake save'); } catch { /* bad path */ } send({ ev: 'saved', pid, file: a[0], t, status: 0 }); }, 200); return true; }
