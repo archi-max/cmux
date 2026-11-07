@@ -680,13 +680,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const sent = m.sent.filter((r) => r.cmd !== 'cancel');
           return { plain, v2, plainChain, v2Chain, downloads: m.downloads,
             anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any').length,
-            prevReads: sent.filter((r) => r.cmd === 'valueAt' && r.prev).length, requests: sent.length };
+            prevReads: sent.filter((r) => r.cmd === 'valueAt' && r.prev).length, requests: sent.length,
+            byCmd: Object.entries(sent.reduce((a, r) => { const k = r.cmd + (r.prev ? '+prev' : '') + (r.kind ? ':' + r.kind : '') + (r.ids > 1 ? ' batch' : ''); a[k] = (a[k] || 0) + 1; return a; }, {})).sort().map(([k, n]) => k + ' ' + n).join(', ') };
         } finally { m.remove(); t.backendChanged(); }
         """) as? [String: Any]
     }
     for prev in [true, false] {
       let r = await pointReads(prev: prev)
-      print("[v2 point reads] prev \(prev): \(String(describing: r?["requests"])) requests, \(String(describing: r?["anyEdges"])) last-change searches, \(String(describing: r?["prevReads"])) prev reads")
+      print("[v2 point reads] prev \(prev): \(String(describing: r?["requests"])) requests, \(String(describing: r?["anyEdges"])) last-change searches, \(String(describing: r?["prevReads"])) prev reads; \(r?["byCmd"] as? String ?? "")")
       expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
              "v2 helper, valueAt prev \(prev): the same step and chain: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
       expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(prev): no history downloaded (\(String(describing: r?["downloads"])))")

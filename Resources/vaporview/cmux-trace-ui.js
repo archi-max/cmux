@@ -151,6 +151,52 @@
     s.edges.set(key, at);
     return at;
   }
+  // helper-v2's point read for trace-X (valueAt with prev): the values at `time` of `list` (a Map by
+  // netlistId) and each one's last change at or before `time`, kept for lastChange, in one request (the
+  // helper batches the reads). Null when the helper fails it, or answers without prev (an older helper:
+  // not asked again this session; the caller reads values and edges as before).
+  // Values read so (by netlistId and time) are kept too: a step asks for a leaf at a time again and again.
+  async function v2PointRead(list, time, bg) {
+    const s = session;
+    if (s.kind !== 'v2' || s.prevReads === false || !list.length) { return null; }
+    if (!s.pointValues) { s.pointValues = new Map(); }
+    const key = (v) => v.netlistId + '@' + time;
+    const ask = list.filter((v) => !s.pointValues.has(key(v)));
+    if (ask.length) {
+      const r = await v2({ cmd: 'valueAt', signalIds: ask.map((v) => v.signalId), t: time, prev: true }, bg);
+      if (!r || !Array.isArray(r.values) || r.values.length !== ask.length) { return null; }
+      if (!Array.isArray(r.prev) || r.prev.length !== ask.length) { s.prevReads = false; return null; }
+      s.prevReads = true;
+      if (s.pointValues.size + ask.length > POINT_VALUES) { s.pointValues.clear(); }
+      ask.forEach((v, i) => {
+        const p = r.prev[i];
+        // null: no change at or before `time` (the value is the start's).
+        const at = p === null ? 0 : p && Number.isFinite(Number(p.t)) ? Number(p.t) : undefined;
+        if (at !== undefined && at <= time) { keepSince(s, v, at, time); }
+        s.pointValues.set(key(v), typeof r.values[i] === 'string' ? r.values[i] : null);
+      });
+    }
+    const out = new Map();
+    for (const v of list) {
+      const value = s.pointValues.get(key(v));
+      if (typeof value === 'string') { out.set(v.netlistId, value); }
+    }
+    return out;
+  }
+  const POINT_VALUES = 8192;
+  // The last change of `v` at or before a time in [at, time] is `at`: kept per signal (a few spans).
+  function keepSince(s, v, at, time) {
+    if (!s.since) { s.since = new Map(); }
+    const spans = s.since.get(v.netlistId) || [];
+    spans.push([at, time]);
+    if (spans.length > 8) { spans.shift(); }
+    s.since.set(v.netlistId, spans);
+  }
+  function knownSince(s, v, time) {
+    const spans = s.since && s.since.get(v.netlistId);
+    const span = spans && spans.find(([at, upTo]) => at <= time && time <= upTo);
+    return span ? span[0] : undefined;
+  }
   // The last `edge` of a wide signal's last bit at or before `time`, from the helper: from the
   // run of the last bit in effect at `time`, back over the runs (the last change before a run
   // whose last bit differs, by search; the run starts at the next change) until one starts with
@@ -314,7 +360,11 @@
       const vars = new Map(await Promise.all(unique.map(async (p) => [p, await varOf(p)])));
       const list = [...new Set([...vars.values()].filter(Boolean))];
       let raw = new Map();
-      if (session.kind !== 'whole') {
+      // On helper v2 the values come with their last changes (one read; lastChange then asks nothing).
+      const point = session.kind === 'v2' ? await v2PointRead(list, time, background) : null;
+      if (point) {
+        raw = point;
+      } else if (session.kind !== 'whole') {
         try { raw = (await host.rawValuesAt(time, list)) || new Map(); } catch (error) { host.log(error); }
       }
       const read = await Promise.all([...vars].map(async ([p, v]) => {
@@ -341,6 +391,9 @@
       if (!v) { return null; }
       if (session.kind === 'v2') {
         if (refusedByHelper(v)) { return null; }
+        let known = knownSince(session, v, time);
+        if (known === undefined && session.prevReads !== false && await v2PointRead([v], time, background)) { known = knownSince(session, v, time); }
+        if (known !== undefined) { return known; }
         // Integer times: the last change at or before `time` is the last one before time + 1.
         const at = await v2Edge(v, Math.floor(time) + 1, 'any', background);
         if (at !== undefined) { return at === null ? 0 : at; }
