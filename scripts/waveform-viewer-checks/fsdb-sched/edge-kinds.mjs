@@ -10,7 +10,10 @@
 //   edge     either (x<->z is not an edge)
 // The dump's first value is never an edge. any / rise / fall keep their meaning (any change;
 // new value '1' / '0'). Unknown kinds, and the SV kinds on a signal wider than 1 bit, are
-// errors (the page then walks its own data). Exit 1 on any mismatch.
+// errors (the page then walks its own data). Value search (search '1' / '0' / 'z') is checked
+// the same way. EDGE_RANGED=1: a worker store of 30 bytes, so no row fits and every answer comes
+// from the helper's growing ranged reads (addon searchScan with an edge kind), not the store.
+// Exit 1 on any mismatch.
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -59,7 +62,8 @@ const want = (E, kind, t, dir) => {
   return null;
 };
 
-const p = spawn('bash', [launcher, '--workers', '1'], { stdio: ['pipe', 'pipe', 'ignore'] });
+const RANGED = process.env.EDGE_RANGED === '1';
+const p = spawn('bash', [launcher, '--workers', '1'], { stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, ...(RANGED ? { FSDB_CACHE_MB: '0.00003' } : {}) } });
 let buf = '', nid = 1, ready;
 const pend = new Map(), readyP = new Promise((r) => { ready = r; });
 p.stdout.on('data', (d) => {
@@ -90,7 +94,19 @@ for (const [nm, sig, list] of [['e', e, E], ['f', f, F]]) {
       for (const t of [0, 5, 10, 15, 20, 35, 40, 45, 50, 75, 115, 120, 125, 135, 140, 145, END]) {
         const r = await send('edge', { signalId: sig, t, dir, kind });
         const w = want(list, kind, t, dir);
-        check(!r.error && r.result.t === w, `${nm} ${kind} dir ${dir} from ${t}: ${r.error || JSON.stringify(r.result.t)}, want ${w}`);
+        check(!r.error && r.result.t === w && (!RANGED || r.result.ranged > 0), `${nm} ${kind} dir ${dir} from ${t}: ${r.error || JSON.stringify(r.result)}, want ${w}`);
+      }
+    }
+  }
+  for (const value of ['1', '0', 'z']) {
+    for (const dir of [1, -1]) {
+      for (const t of [0, 5, 10, 35, 40, 75, 120, 140, END]) {
+        const r = await send('search', { signalId: sig, t, dir, value });
+        let w = null;
+        const hit = (k) => is(list, 'any', k) && list[k][1] === value;
+        if (dir > 0) { for (let k = 0; k < list.length; k++) { if (list[k][0] > t && hit(k)) { w = list[k][0]; break; } } }
+        else { for (let k = list.length - 1; k >= 0; k--) { if (list[k][0] < t && hit(k)) { w = list[k][0]; break; } } }
+        check(!r.error && r.result.t === w && (!RANGED || r.result.ranged > 0), `${nm} search ${value} dir ${dir} from ${t}: ${r.error || JSON.stringify(r.result)}, want ${w}`);
       }
     }
   }
@@ -106,5 +122,5 @@ for (const kind of ['bothedges', 'Posedge']) {
 const r0 = await send('edge', { signalId: e, t: 15, dir: 1 });
 check(!r0.error && r0.result.t === 20, `no kind is any: ${r0.error || r0.result.t}`);
 p.stdin.end();
-console.log(fails ? `EDGE KINDS FAILED: ${fails} of ${n}` : `EDGE KINDS PASSED: ${n}`);
+console.log((fails ? `EDGE KINDS FAILED: ${fails} of ${n}` : `EDGE KINDS PASSED: ${n}`) + (RANGED ? ' (ranged reads)' : ''));
 setTimeout(() => process.exit(fails ? 1 : 0), 300);

@@ -43,7 +43,7 @@ const HOT_OPS = new Set(['hotLoad', 'hotWindow', 'hotNear']);
 let hotMode = false, warmCap = 0;
 // edge kinds (addon cacheEdge): VaporView's any / rise / fall, and SystemVerilog's posedge / negedge / edge
 const EDGE_KINDS = { any: 0, rise: 1, fall: 2, posedge: 3, negedge: 4, edge: 5 };
-const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'searchExpr', 'warm', 'persist']);
+const LOADS = new Set(['window', 'windowCold', 'valueAt', 'coldValueAt', 'lastChange', 'coldNear', 'digest', 'edge', 'search', 'searchText', 'signals', 'walkSlice', 'load', 'bgLoad', 'export', 'derive', 'searchScan', 'rangedFind', 'searchExpr', 'warm', 'persist']);
 // Hard bounds in the addon (review M2): one signal's store may not exceed this
 // worker's store share, and a reader load that leaves the process over twice
 // the RSS cap is undone before it is walked (the soft guard above recycles first).
@@ -258,6 +258,17 @@ const ops = {
     const l = ensure([signalId]).get(signalId);
     if (l.error) { throw new Error(l.error); }
     return { t: addon.cacheEdge(signalId, t, dir, k, start || 0) };
+  },
+
+  // rangedFind: edge (kind) or value search (pattern) of a signal that isn't stored, over the
+  // reader's changes from t up to bound only (the coordinator grows bound: a signal too big for
+  // the store). -> {t | null}
+  rangedFind({ signalId, t, dir, bound, kind, pattern, start }) {
+    const k = kind === undefined ? -1 : EDGE_KINDS[kind ?? 'any'];
+    if (k === undefined) { throw new Error(`edge: unknown kind ${JSON.stringify(kind)}`); }
+    const r = addon.searchScan([signalId], t, dir, k >= 0 ? '' : String(pattern), bound, k, start || 0)[0];
+    if (r.error) { throw new Error(r.error); }
+    return { t: r.t };
   },
 
   search({ signalId, t, dir, value }) {
