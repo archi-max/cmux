@@ -591,6 +591,124 @@
         }
       }
     },
+    "menu.view.waveformTraceKDB": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trace with the Compiled Design (KDB)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル済みデザイン (KDB) でトレース"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mit dem kompilierten Design (KDB) verfolgen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tracer avec la conception compilée (KDB)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التتبع باستخدام التصميم المُترجَم (KDB)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rastrear con el diseño compilado (KDB)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以已編譯的設計 (KDB) 追蹤"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用已编译的设计 (KDB) 追踪"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일된 설계(KDB)로 추적"
+          }
+        }
+      }
+    },
+    "menu.view.waveformTraceKDBRetry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry KDB Export"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KDB のエクスポートを再試行"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KDB-Export erneut versuchen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réessayer l’export du KDB"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إعادة محاولة تصدير KDB"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reintentar la exportación del KDB"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重試 KDB 匯出"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试 KDB 导出"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "KDB 내보내기 다시 시도"
+          }
+        }
+      }
+    },
     "projectPanel.reload": {
       "extractionState": "manual",
       "localizations": {
@@ -485109,61 +485227,2539 @@
         }
       }
     },
-    "waveformTrace.notElaborated": {
+    "waveformTrace.designChanged": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ is not in the design model: slang could not elaborate it. Check the editor’s slang profile (.f build file) or top level, which driver tracing loads."
-          }
-        },
-        "ar": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "‏%@ غير موجود في نموذج التصميم: تعذّر على slang تفصيله. تحقّق من ملف تعريف slang في المحرر (ملف البناء ‎.f) أو المستوى الأعلى، الذي يحمّله تتبّع المشغّل."
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ ist nicht im Designmodell: slang konnte es nicht elaborieren. Prüfe das slang-Profil des Editors (.f-Builddatei) oder die oberste Ebene, die die Treiberverfolgung lädt."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ no está en el modelo del diseño: slang no pudo elaborarlo. Revisa el perfil de slang del editor (archivo de compilación .f) o el nivel superior, que es lo que carga el rastreo de drivers."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ n’est pas dans le modèle de conception : slang n’a pas pu l’élaborer. Vérifiez le profil slang de l’éditeur (fichier de build .f) ou le niveau supérieur, que charge le traçage des pilotes."
+            "value": "The design changed since this trace began (a source was edited, or the design model restarted). Trace again."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ は設計モデルにありません: slang がエラボレートできませんでした。ドライバ追跡が読み込む、エディタの slang プロファイル (.f ビルドファイル) またはトップレベルを確認してください。"
+            "value": "このトレースの開始後にデザインが変わりました(ソースが編集されたか、デザインモデルが再起動しました)。もう一度トレースしてください。"
           }
         },
-        "ko": {
+        "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@이(가) 설계 모델에 없습니다: slang이 이를 엘라보레이션하지 못했습니다. 드라이버 추적이 불러오는 편집기의 slang 프로필(.f 빌드 파일) 또는 최상위를 확인하세요."
+            "value": "Das Design hat sich seit Beginn dieser Verfolgung geändert (eine Quelle wurde bearbeitet oder das Designmodell neu gestartet). Bitte erneut verfolgen."
           }
         },
-        "zh-Hans": {
+        "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 不在设计模型中：slang 无法展开它。请检查编辑器的 slang 配置（.f 构建文件）或顶层，驱动追踪加载的正是它。"
+            "value": "Le design a changé depuis le début de ce traçage (une source a été modifiée, ou le modèle du design a redémarré). Tracez à nouveau."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تغيّر التصميم منذ بدء هذا التتبع (عُدّل مصدر، أو أُعيد تشغيل نموذج التصميم). تتبّع مرة أخرى."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño cambió desde que empezó este rastreo (se editó una fuente o se reinició el modelo del diseño). Vuelve a rastrear."
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 不在設計模型中：slang 無法展開它。請檢查編輯器的 slang 設定檔（.f 建置檔）或頂層，驅動追蹤載入的正是它。"
+            "value": "此追蹤開始後設計已變更(來源被編輯,或設計模型已重新啟動)。請再追蹤一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此追踪开始后设计已更改(源文件被编辑,或设计模型已重新启动)。请再追踪一次。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 추적을 시작한 뒤 설계가 바뀌었습니다(소스가 편집되었거나 설계 모델이 다시 시작됨). 다시 추적하세요."
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.matchedByModuleType": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ matched to slang’s %2$@ by unique module type (the names differ)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ をモジュール型が一意であることにより slang の %2$@ に対応付けました（名前は異なります）"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ über den eindeutigen Modultyp slangs %2$@ zugeordnet (die Namen unterscheiden sich)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ associé à %2$@ de slang par type de module unique (les noms diffèrent)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "طوبق %1$@ مع %2$@ في slang بنوع الوحدة الفريد (الأسماء مختلفة)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ emparejado con %2$@ de slang por tipo de módulo único (los nombres difieren)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 依唯一的模組類型對應到 slang 的 %2$@（名稱不同）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 按唯一的模块类型对应到 slang 的 %2$@（名称不同）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@을(를) 고유한 모듈 유형으로 slang의 %2$@에 대응시킴(이름이 다름)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d more"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ほか %d 件"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d weitere"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d de plus"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d أخرى"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d más"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %d 項"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %d 项"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d개 더"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "none"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "なし"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "keiner"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "aucun"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا شيء"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ninguno"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "없음"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedChain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "an instance above the row, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "行より上のインスタンス(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "eine Instanz oberhalb der Zeile, die einer Seite fehlt (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "une instance au-dessus de la ligne, absente d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مثيل فوق الصف، يفتقده أحد الجانبين (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "una instancia por encima de la fila, que falta en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "該列上層的實例(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该行上层的实例(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "행 위의 인스턴스(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedCopy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the source text: slang reads the editor’s copy on another host than the compile, matched by file name only (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ソースの内容(slang はコンパイルとは別のホストにあるエディタのコピーを読んでおり、ファイル名でしか照合できないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der Quelltext: slang liest die Kopie des Editors auf einem anderen Host als dem der Kompilierung, nur über den Dateinamen zugeordnet (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le texte source : slang lit la copie de l’éditeur sur un autre hôte que celui de la compilation, associée par le seul nom de fichier (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "نص المصدر: يقرأ slang نسخة المحرر على مضيف غير مضيف الترجمة، ولا تُطابَق إلا باسم الملف (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el texto fuente: slang lee la copia del editor en otro host distinto del de la compilación, emparejada solo por el nombre de archivo (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始碼內容(slang 讀取的是編輯器在另一台主機上的副本，與編譯所在主機不同，只能以檔名比對;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "源代码内容(slang 读取的是编辑器在另一台主机上的副本，与编译所在主机不同，只能按文件名匹配;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "소스 내용(slang이 컴파일과 다른 호스트에 있는 편집기 사본을 읽으며, 파일 이름으로만 대조함, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedOverrides": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the parameters, which the compile overrode or whose command the export couldn’t read (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パラメータ(コンパイルで上書きされたか、エクスポートがコンパイルコマンドを読めなかったため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Parameter, die der Compile überschrieben hat oder deren Befehl der Export nicht lesen konnte (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les paramètres, que la compilation a surchargés ou dont l’export n’a pas pu lire la commande (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المعاملات، التي تجاوزتها عملية التصريف أو التي تعذّر على التصدير قراءة أمرها (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "los parámetros, que la compilación sobrescribió o cuyo comando la exportación no pudo leer (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "參數(編譯時已覆寫,或匯出無法讀取編譯命令;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参数(编译时已覆盖,或导出无法读取编译命令;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "매개변수(컴파일에서 재정의했거나 내보내기가 컴파일 명령을 읽지 못함, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedParameters": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the parameters, which this export lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パラメーター(このエクスポートにないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Parameter, die diesem Export fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les paramètres, absents de cet export (non vérifiés)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المعاملات، وهي غير موجودة في هذا التصدير (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "los parámetros, que esta exportación no incluye (sin comprobar)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "參數(此匯出中沒有,未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参数(此导出中没有,未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "매개변수(이 내보내기에 없어 확인하지 않음)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedPorts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the instance’s ports, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インスタンスのポート(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Ports der Instanz, die einer Seite fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les ports de l’instance, absents d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "منافذ المثيل، التي يفتقدها أحد الجانبين (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "los puertos de la instancia, que faltan en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "實例的埠(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实例的端口(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "인스턴스의 포트(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedShape": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the signal’s width or range, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号の幅または範囲(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Breite oder der Bereich des Signals, die einer Seite fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la largeur ou la plage du signal, absente d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عرض الإشارة أو نطاقها، الذي يفتقده أحد الجانبين (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el ancho o el rango de la señal, que falta en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "訊號的寬度或範圍(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号的宽度或范围(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "신호의 폭 또는 범위(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedSources": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "whether a source changed after the compile (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル後にソースが変更されたかどうか(未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ob sich eine Quelle nach dem Kompilieren geändert hat (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "si une source a changé après la compilation (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ما إذا تغيّر مصدر بعد التصريف (لم يُتحقَّق منه)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "si una fuente cambió después de la compilación (sin comprobar)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "編譯後來源是否變更(未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编译后源文件是否更改(未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일 후 소스가 바뀌었는지 여부(확인하지 않음)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.notCheckedWrites": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the lines that write the signal, which one side lacks (not checked)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "信号に書き込む行(片方にないため未確認)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Zeilen, die das Signal schreiben, die einer Seite fehlen (nicht geprüft)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les lignes qui écrivent le signal, absentes d’un côté (non vérifié)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الأسطر التي تكتب الإشارة، التي يفتقدها أحد الجانبين (لم يُتحقَّق منها)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "las líneas que escriben la señal, que faltan en un lado (no comprobado)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "寫入訊號的程式行(其中一方沒有;未檢查)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入信号的代码行(其中一方没有;未检查)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "신호를 쓰는 줄(한쪽에 없음, 확인 안 함)"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.parameter": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "parameter %1$@ of %2$@: %3$@ compiled, %4$@ in slang"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ のパラメーター %1$@: コンパイル時 %3$@、slang では %4$@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parameter %1$@ von %2$@: kompiliert %3$@, in slang %4$@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "paramètre %1$@ de %2$@ : %3$@ compilé, %4$@ dans slang"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المعامل %1$@ في %2$@: %3$@ عند التصريف، و%4$@ في slang"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "parámetro %1$@ de %2$@: %3$@ compilado, %4$@ en slang"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ 的參數 %1$@:編譯時為 %3$@,slang 中為 %4$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ 的参数 %1$@:编译时为 %3$@,slang 中为 %4$@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@의 매개변수 %1$@: 컴파일 시 %3$@, slang에서 %4$@"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.ports": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the ports of %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ のポート"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Ports von %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les ports de %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "منافذ %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "los puertos de %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的連接埠"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的端口"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 포트"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.shape": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the width or range of %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ の幅または範囲"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Breite oder der Bereich von %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la largeur ou la plage de %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عرض %@ أو نطاقه"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el ancho o el rango de %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的寬度或範圍"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的宽度或范围"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 폭 또는 범위"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.sourceNewer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ changed after the compile"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ はコンパイル後に変更されました"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ wurde nach dem Kompilieren geändert"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ a changé après la compilation"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تغيّر %@ بعد التصريف"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ cambió después de la compilación"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在編譯後已變更"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在编译后已更改"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@이(가) 컴파일 후 변경됨"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdb.writes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the lines that write %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ に書き込む行"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "die Zeilen, die %@ schreiben"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "les lignes qui écrivent %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الأسطر التي تكتب %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "las líneas que escriben %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "寫入 %@ 的行"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入 %@ 的行"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에 쓰는 줄"
+          }
+        }
+      }
+    },
+    "waveformTrace.kdbStillLoading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not in slang’s design, and the compiled design (KDB) is still loading; it may have it. Trace again in a few seconds."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は slang のデザインにありません。コンパイル済みデザイン(KDB)はまだ読み込み中で、そちらにはあるかもしれません。数秒後にもう一度トレースしてください。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht in slangs Design, und das kompilierte Design (KDB) wird noch geladen; es kann es enthalten. Verfolgen Sie es in einigen Sekunden erneut."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’est pas dans le design de slang, et le design compilé (KDB) est encore en cours de chargement ; il peut le contenir. Relancez le traçage dans quelques secondes."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ غير موجود في تصميم slang، ولا يزال التصميم المُصرَّف (KDB) قيد التحميل وقد يحتويه. أعد التتبع بعد بضع ثوانٍ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está en el diseño de slang, y el diseño compilado (KDB) aún se está cargando; puede que lo tenga. Vuelve a trazar en unos segundos."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在 slang 的設計中,而已編譯的設計(KDB)仍在載入,其中可能有它。請在幾秒後再追蹤一次。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在 slang 的设计中,而已编译的设计(KDB)仍在加载,其中可能有它。请在几秒后再追踪一次。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 은(는) slang의 설계에 없으며, 컴파일된 설계(KDB)를 아직 불러오는 중이라 그쪽에는 있을 수 있습니다. 몇 초 후 다시 추적하세요."
+          }
+        }
+      }
+    },
+    "waveformTrace.noProvenance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design model on %@ did not say which source files it read, so driver tracing does not use it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ のデザインモデルが読み込んだソースファイルを示さなかったため、ドライバートレースでは使用しません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell auf %@ hat nicht angegeben, welche Quelldateien es gelesen hat, daher verwendet die Treiberverfolgung es nicht."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle du design sur %@ n’a pas indiqué quels fichiers sources il a lus ; le traçage des pilotes ne l’utilise donc pas."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يذكر نموذج التصميم على %@ ملفات المصدر التي قرأها، لذا لا يستخدمه تتبع المشغّل."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo del diseño en %@ no indicó qué archivos fuente leyó, así que el rastreo de controladores no lo usa."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的設計模型未說明它讀取了哪些來源檔案,因此驅動追蹤不會使用它。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上的设计模型未说明它读取了哪些源文件,因此驱动追踪不会使用它。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 설계 모델이 읽은 소스 파일을 알려 주지 않아 드라이버 추적에 사용하지 않습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.elapsed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ so far"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ حتى الآن"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "bisher %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ hasta ahora"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ écoulées"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "経過 %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 경과"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已用 %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已用 %@"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.failedTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design model could not be built on %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر بناء نموذج التصميم على %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell konnte auf %@ nicht erstellt werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo compilar el modelo del diseño en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle de conception n’a pas pu être construit sur %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で設計モデルをビルドできませんでした"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 설계 모델을 빌드할 수 없습니다"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在 %@ 上构建设计模型"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法在 %@ 上建置設計模型"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.failedTitleLocal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The design model could not be built on this Mac"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تعذّر بناء نموذج التصميم على جهاز Mac هذا"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell konnte auf diesem Mac nicht erstellt werden"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo compilar el modelo del diseño en este Mac"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle de conception n’a pas pu être construit sur ce Mac"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この Mac で設計モデルをビルドできませんでした"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 Mac에서 설계 모델을 빌드할 수 없습니다"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法在此 Mac 上构建设计模型"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法在此 Mac 上建置設計模型"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.log": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last lines of the build log:"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "آخر أسطر سجل البناء:"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Letzte Zeilen des Build-Protokolls:"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Últimas líneas del registro de compilación:"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dernières lignes du journal de construction :"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ビルドログの最後の行:"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "빌드 로그의 마지막 줄:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "构建日志的最后几行："
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "建置記錄的最後幾行："
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.once": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built once per host and cmux version."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يُبنى مرة واحدة لكل مضيف وإصدار من cmux."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wird einmal pro Host und cmux-Version erstellt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se compila una vez por host y versión de cmux."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Construit une fois par hôte et par version de cmux."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ホストと cmux のバージョンごとに一度だけビルドされます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "호스트와 cmux 버전마다 한 번 빌드됩니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每台主机和每个 cmux 版本只构建一次。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每台主機和每個 cmux 版本只建置一次。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إعادة المحاولة"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Erneut versuchen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reintentar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réessayer"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再試行"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다시 시도"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重試"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.stage.compile": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compile"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "الترجمة"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kompilieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compilar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compilation"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编译"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "編譯"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.stage.configure": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure (CMake)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التهيئة (CMake)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konfigurieren (CMake)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configurar (CMake)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration (CMake)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "構成 (CMake)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "구성 (CMake)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置 (CMake)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設定 (CMake)"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.stage.fetch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download slang and its libraries"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تنزيل slang ومكتباته"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang und seine Bibliotheken herunterladen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descargar slang y sus bibliotecas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Téléchargement de slang et de ses bibliothèques"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang とそのライブラリをダウンロード"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 및 라이브러리 다운로드"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载 slang 及其库"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下載 slang 及其程式庫"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.stage.install": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "التثبيت"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installieren"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instalar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installation"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インストール"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설치"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安裝"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.stage.load": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading the design"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ تحميل التصميم"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Design wird geladen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando el diseño"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chargement de la conception"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計を読み込んでいます"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설계를 불러오는 중"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载设计"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在載入設計"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.stage.upload": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Upload the model’s sources (%@)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "رفع مصادر النموذج (%@)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quellen des Modells hochladen (%@)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subir las fuentes del modelo (%@)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Envoi des sources du modèle (%@)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "モデルのソースをアップロード (%@)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "모델 소스 업로드 (%@)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上传模型源代码 (%@)"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上傳模型原始碼 (%@)"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Building the design model on %@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ بناء نموذج التصميم على %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Designmodell wird auf %@ erstellt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compilando el modelo del diseño en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Construction du modèle de conception sur %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で設計モデルをビルドしています"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 설계 모델을 빌드하는 중"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在 %@ 上构建设计模型"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在 %@ 上建置設計模型"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.titleLocal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Building the design model on this Mac"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ بناء نموذج التصميم على جهاز Mac هذا"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Designmodell wird auf diesem Mac erstellt"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compilando el modelo del diseño en este Mac"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Construction du modèle de conception sur ce Mac"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この Mac で設計モデルをビルドしています"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 Mac에서 설계 모델을 빌드하는 중"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在此 Mac 上构建设计模型"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在此 Mac 上建置設計模型"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.build.what": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What is being built?"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ما الذي يُبنى؟"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Was wird erstellt?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué se está compilando?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qu’est-ce qui est construit ?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "何をビルドしているのですか？"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "무엇을 빌드하나요?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在构建什么？"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在建置什麼？"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drivers come from the compiled design (KDB); values aren't evaluated."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ドライバーはコンパイル済みデザイン (KDB) から取得しています。値は評価されません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Treiber stammen aus dem kompilierten Design (KDB); Werte werden nicht ausgewertet."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les pilotes viennent de la conception compilée (KDB) ; les valeurs ne sont pas évaluées."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تأتي المشغِّلات من التصميم المُترجَم (KDB)؛ ولا تُقيَّم القيم."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los controladores proceden del diseño compilado (KDB); los valores no se evalúan."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "驅動來自已編譯的設計 (KDB)；不評估數值。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "驱动来自已编译的设计 (KDB)；不求值。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "드라이버는 컴파일된 설계(KDB)에서 가져오며, 값은 평가하지 않습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.noWrites": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The compiled design has no statement writing it here (it is driven through a port, or is an input)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル済みデザインには、ここでこれに書き込むステートメントがありません (ポート経由で駆動されているか、入力です)。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Im kompilierten Design schreibt hier keine Anweisung darauf (es wird über einen Port getrieben oder ist ein Eingang)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La conception compilée n'a ici aucune instruction qui l'écrit (il est piloté par un port, ou c'est une entrée)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي التصميم المُترجَم هنا على عبارة تكتب فيه (يُشغَّل عبر منفذ، أو هو مدخل)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño compilado no tiene aquí ninguna sentencia que lo escriba (se controla a través de un puerto o es una entrada)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已編譯的設計在此沒有寫入它的陳述式（它經由連接埠驅動，或是輸入）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已编译的设计在此没有写入它的语句（它通过端口驱动，或是输入）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일된 설계에는 여기서 이것을 기록하는 문이 없습니다(포트를 통해 구동되거나 입력입니다)."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.notInSlang": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slang's design model doesn't have this instance (its module may be in a file it didn't read)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang のデザインモデルにはこのインスタンスがありません (モジュールが読み込まれなかったファイルにある可能性があります)。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell von slang enthält diese Instanz nicht (ihr Modul liegt eventuell in einer Datei, die es nicht gelesen hat)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle de conception de slang n'a pas cette instance (son module est peut-être dans un fichier qu'il n'a pas lu)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يحتوي نموذج تصميم slang على هذا المثيل (قد تكون وحدته في ملف لم يقرأه)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo de diseño de slang no tiene esta instancia (su módulo puede estar en un archivo que no leyó)."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的設計模型沒有此實例（其模組可能位於它未讀取的檔案中）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的设计模型中没有此实例（其模块可能位于它未读取的文件中）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang의 설계 모델에 이 인스턴스가 없습니다(모듈이 읽지 않은 파일에 있을 수 있습니다)."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.otherModule": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slang's design model has another module at this instance, so its statements aren't used."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang のデザインモデルではこのインスタンスが別のモジュールのため、そのステートメントは使用しません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das Designmodell von slang hat an dieser Instanz ein anderes Modul, daher werden seine Anweisungen nicht verwendet."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le modèle de conception de slang a un autre module à cette instance ; ses instructions ne sont donc pas utilisées."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يحتوي نموذج تصميم slang على وحدة أخرى في هذا المثيل، لذا لا تُستخدم عباراته."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo de diseño de slang tiene otro módulo en esta instancia, así que no se usan sus sentencias."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的設計模型在此實例處是另一個模組，因此不使用其陳述式。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang 的设计模型在此实例处是另一个模块，因此不使用其语句。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang의 설계 모델에서는 이 인스턴스가 다른 모듈이므로 해당 문을 사용하지 않습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.page.compiledOnly.writes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Written at:"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "書き込み箇所:"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geschrieben in:"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Écrit à :"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مكتوب في:"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escrito en:"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "寫入位置："
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入位置："
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "기록 위치:"
+          }
+        }
+      }
+    },
+    "waveformTrace.reason.kdbDiffers": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ここでは slang のデザインがコンパイル済みデザイン(KDB)と異なるため、そのステートメントが実際に実行されたものとは限りません: %@。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "slangs Design weicht hier vom kompilierten Design (KDB) ab, daher entsprechen seine Anweisungen möglicherweise nicht dem, was lief: %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le design de slang diffère ici du design compilé (KDB) ; ses instructions ne sont donc peut-être pas celles qui ont tourné : %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يختلف تصميم slang هنا عن التصميم المُصرَّف (KDB)، لذا قد لا تكون عباراته هي ما نُفِّذ: %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño de slang difiere aquí del diseño compilado (KDB), así que sus sentencias quizá no sean las que se ejecutaron: %@."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此處 slang 的設計與已編譯的設計(KDB)不同,因此其陳述式可能不是實際執行的內容:%@。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此处 slang 的设计与已编译的设计(KDB)不同,因此其语句可能不是实际运行的内容:%@。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "여기서는 slang의 설계가 컴파일된 설계(KDB)와 달라, 그 문장이 실제로 실행된 것과 다를 수 있습니다: %@."
+          }
+        }
+      }
+    },
+    "waveformTrace.reason.kdbNotChecked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This instance was not checked against the compiled design (KDB), so slang’s statements may not be what ran."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このインスタンスはコンパイル済みデザイン(KDB)と照合していないため、slang のステートメントが実際に実行されたものとは限りません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Instanz wurde nicht mit dem kompilierten Design (KDB) abgeglichen, daher entsprechen slangs Anweisungen möglicherweise nicht dem, was lief."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette instance n’a pas été vérifiée par rapport au design compilé (KDB) ; les instructions de slang ne sont donc peut-être pas celles qui ont tourné."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُتحقَّق من هذا المثيل مقابل التصميم المُصرَّف (KDB)، لذا قد لا تكون عبارات slang هي ما نُفِّذ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta instancia no se comprobó con el diseño compilado (KDB), así que las sentencias de slang quizá no sean las que se ejecutaron."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此實例未與已編譯的設計(KDB)核對,因此 slang 的陳述式可能不是實際執行的內容。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此实例未与已编译的设计(KDB)核对,因此 slang 的语句可能不是实际运行的内容。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 인스턴스는 컴파일된 설계(KDB)와 대조하지 않았으므로 slang의 문장이 실제로 실행된 것과 다를 수 있습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.reason.kdbPending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The compiled design (KDB) is still loading, so this was traced with slang’s design."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパイル済みデザイン(KDB)をまだ読み込み中のため、slang のデザインでトレースしました。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Das kompilierte Design (KDB) wird noch geladen, daher wurde mit slangs Design verfolgt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le design compilé (KDB) est encore en cours de chargement ; le traçage a donc utilisé le design de slang."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا يزال التصميم المُصرَّف (KDB) قيد التحميل، لذا تم التتبع بتصميم slang."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diseño compilado (KDB) aún se está cargando, así que se trazó con el diseño de slang."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已編譯的設計(KDB)仍在載入,因此以 slang 的設計追蹤。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已编译的设计(KDB)仍在加载,因此使用 slang 的设计追踪。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "컴파일된 설계(KDB)를 아직 불러오는 중이라 slang의 설계로 추적했습니다."
+          }
+        }
+      }
+    },
+    "waveformTrace.reason.writeNotFound": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No statement found in the design writes this signal, yet its value changed after the start or is not its initial value: a write the design model does not show made it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計内にこの信号に書き込む文が見つかりませんが、値が開始後に変化しているか初期値ではありません。設計モデルに現れない書き込みがこの値を作りました。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keine Anweisung im Design schreibt dieses Signal, doch sein Wert hat sich nach dem Start geändert oder ist nicht sein Anfangswert: Ein Schreibzugriff, den das Designmodell nicht zeigt, hat ihn erzeugt."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aucune instruction du design n’écrit ce signal, pourtant sa valeur a changé après le départ ou n’est pas sa valeur initiale : une écriture que le modèle du design ne montre pas l’a produite."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُعثر على أي عبارة في التصميم تكتب هذه الإشارة، ومع ذلك تغيّرت قيمتها بعد البداية أو ليست قيمتها الأولية: كتابةٌ لا يُظهرها نموذج التصميم هي التي أنتجتها."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguna sentencia del diseño escribe esta señal, pero su valor cambió después del inicio o no es su valor inicial: lo produjo una escritura que el modelo del diseño no muestra."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "設計中找不到寫入此訊號的陳述式，但其值在開始後有變化，或不是其初始值：是設計模型未顯示的寫入產生了它。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设计中找不到写入此信号的语句，但其值在开始后发生了变化，或不是其初始值：是设计模型未显示的写入产生了它。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설계에서 이 신호에 쓰는 문을 찾지 못했지만, 값이 시작 후에 바뀌었거나 초기값이 아닙니다. 설계 모델에 나타나지 않는 쓰기가 이 값을 만들었습니다."
           }
         }
       }
@@ -710068,6 +712664,65 @@
         }
       }
     },
+    "shortcut.traceWaveformXRoot.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trace X to Root"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تتبّع X حتى المصدر"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X bis zum Ursprung verfolgen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rastrear X hasta el origen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suivre le X jusqu’à l’origine"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X を発生元まで追跡"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X를 발생 지점까지 추적"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追踪 X 至根源"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追蹤 X 至根源"
+          }
+        }
+      }
+    },
     "filePreview.language.traceDriver": {
       "extractionState": "manual",
       "localizations": {
@@ -713667,6 +716322,65 @@
         }
       }
     },
+    "waveformTrace.reason.force": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another instance writes this signal too (a testbench force or $deposit, or a hierarchical write), and its own drivers can't explain the value: that write is shown. It is not re-executed."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "تكتب نسخة أخرى هذه الإشارة أيضًا (force أو $deposit من منصة الاختبار، أو كتابة هرمية)، ولا تستطيع مشغّلاتها الخاصة تفسير القيمة: تُعرض تلك الكتابة. لا يُعاد تنفيذها."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auch eine andere Instanz schreibt dieses Signal (ein force oder $deposit der Testbench oder ein hierarchischer Schreibzugriff), und seine eigenen Treiber erklären den Wert nicht: Dieser Schreibzugriff wird gezeigt. Er wird nicht erneut ausgeführt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otra instancia también escribe esta señal (un force o $deposit del banco de pruebas, o una escritura jerárquica) y sus propios controladores no explican el valor: se muestra esa escritura. No se vuelve a ejecutar."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Une autre instance écrit aussi ce signal (un force ou $deposit du banc de test, ou une écriture hiérarchique), et ses propres pilotes n’expliquent pas la valeur : cette écriture est affichée. Elle n’est pas réexécutée."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "別のインスタンスもこの信号に書き込んでおり（テストベンチの force や $deposit、または階層参照による書き込み）、信号自身のドライバでは値を説明できません。その書き込みを表示しています。再実行はされません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다른 인스턴스도 이 신호에 씁니다(테스트벤치의 force나 $deposit, 또는 계층 참조 쓰기). 신호 자신의 드라이버로는 값을 설명할 수 없어 그 쓰기를 표시합니다. 다시 실행되지 않습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一个实例也写入该信号（测试平台的 force 或 $deposit，或层次化写入），而信号自身的驱动无法解释该值：显示的是那次写入。它不会重新执行。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一個實例也寫入此訊號（測試平台的 force 或 $deposit，或階層式寫入），而訊號本身的驅動無法解釋該值：顯示的是那次寫入。它不會重新執行。"
+          }
+        }
+      }
+    },
     "waveformTrace.reason.held": {
       "extractionState": "manual",
       "localizations": {
@@ -713791,55 +716505,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "An expression is too large to evaluate."
+            "value": "A limit was reached (an expression too large to evaluate, or more than 16 blocking temporaries on the way to the fan-in): the result may be incomplete."
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "التعبير أكبر من أن يُقيَّم."
+            "value": "تم بلوغ حدّ (تعبير أكبر من أن يُقيَّم، أو أكثر من 16 متغيرًا مؤقتًا حاجبًا في الطريق إلى المدخلات): قد تكون النتيجة ناقصة."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ein Ausdruck ist zu groß zum Auswerten."
+            "value": "Ein Limit wurde erreicht (ein Ausdruck ist zu groß zum Auswerten, oder mehr als 16 blockierende Zwischenvariablen auf dem Weg zu den Eingängen): Das Ergebnis ist eventuell unvollständig."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Una expresión es demasiado grande para evaluarla."
+            "value": "Se alcanzó un límite (una expresión demasiado grande para evaluar, o más de 16 temporales bloqueantes en el camino hacia las entradas): el resultado puede estar incompleto."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Une expression est trop grande pour être évaluée."
+            "value": "Une limite a été atteinte (une expression trop grande pour être évaluée, ou plus de 16 temporaires bloquants jusqu’aux entrées) : le résultat peut être incomplet."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "式が大きすぎて評価できません。"
+            "value": "上限に達しました（評価するには大きすぎる式、または入力に至るまでに 16 を超えるブロッキング一時変数）。結果は不完全な可能性があります。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "식이 너무 커서 평가할 수 없습니다."
+            "value": "한도에 도달했습니다(평가하기에 너무 큰 식이거나, 입력까지 16개를 넘는 블로킹 임시 변수). 결과가 불완전할 수 있습니다."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "表达式太大，无法求值。"
+            "value": "已达到上限（表达式太大无法求值，或通往输入的阻塞临时变量超过 16 个）：结果可能不完整。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "運算式太大，無法求值。"
+            "value": "已達到上限（運算式太大無法求值，或通往輸入的阻塞暫存變數超過 16 個）：結果可能不完整。"
           }
         }
       }
@@ -714381,55 +717095,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "When the value last changed is unknown (the signal is too large for the waveform reader); the activation shown is the last clock edge."
+            "value": "When the value last changed is unknown (the signal is too large for the waveform reader): a clocked step uses the last clock edge, a combinational or latch step the values at the time asked."
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "وقت آخر تغيّر للقيمة غير معروف (الإشارة أكبر من أن يقرأها قارئ الموجات)؛ التنشيط المعروض هو آخر حافة ساعة."
+            "value": "وقت آخر تغيّر للقيمة غير معروف (الإشارة أكبر من أن يقرأها قارئ الموجات): الخطوة المتزامنة مع الساعة تستخدم آخر حافة ساعة، والخطوة التوافقية أو خطوة المزلاج تستخدم القيم في الوقت المطلوب."
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wann sich der Wert zuletzt geändert hat, ist unbekannt (das Signal ist für den Wellenform-Leser zu groß); die gezeigte Aktivierung ist die letzte Taktflanke."
+            "value": "Wann sich der Wert zuletzt geändert hat, ist unbekannt (das Signal ist für den Wellenform-Leser zu groß): Ein getakteter Schritt verwendet die letzte Taktflanke, ein kombinatorischer oder Latch-Schritt die Werte zum abgefragten Zeitpunkt."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "No se sabe cuándo cambió el valor por última vez (la señal es demasiado grande para el lector de ondas); la activación mostrada es el último flanco de reloj."
+            "value": "No se sabe cuándo cambió el valor por última vez (la señal es demasiado grande para el lector de ondas): un paso con reloj usa el último flanco de reloj; un paso combinacional o de latch, los valores en el instante consultado."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "On ne sait pas quand la valeur a changé pour la dernière fois (le signal est trop gros pour le lecteur de chronogrammes) ; l’activation affichée est le dernier front d’horloge."
+            "value": "On ne sait pas quand la valeur a changé pour la dernière fois (le signal est trop gros pour le lecteur de chronogrammes) : une étape cadencée utilise le dernier front d’horloge ; une étape combinatoire ou de verrou (latch), les valeurs à l’instant demandé."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "値が最後に変化した時刻は不明です（信号が波形リーダーには大きすぎます）。表示している起動は直前のクロックエッジです。"
+            "value": "値が最後に変化した時刻は不明です（信号が波形リーダーには大きすぎます）。クロック同期のステップは直前のクロックエッジを、組み合わせ回路やラッチのステップは指定した時刻の値を使います。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "값이 마지막으로 바뀐 시점을 알 수 없습니다(신호가 파형 리더가 읽기에 너무 큽니다). 표시된 활성화는 마지막 클록 에지입니다."
+            "value": "값이 마지막으로 바뀐 시점을 알 수 없습니다(신호가 파형 리더가 읽기에 너무 큽니다). 클록 단계는 마지막 클록 에지를, 조합 논리나 래치 단계는 요청한 시각의 값을 사용합니다."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "值最后一次变化的时间未知（该信号对波形读取器来说太大）；显示的触发是最近一次时钟沿。"
+            "value": "值最后一次变化的时间未知（该信号对波形读取器来说太大）：时钟驱动的步骤使用最近一次时钟沿；组合逻辑或锁存器的步骤使用所查询时刻的值。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "值最後一次變化的時間未知（此訊號對波形讀取器來說太大）；顯示的觸發是最近一次時脈邊緣。"
+            "value": "值最後一次變化的時間未知（此訊號對波形讀取器來說太大）：時脈驅動的步驟使用最近一次時脈邊緣；組合邏輯或鎖存器的步驟使用所查詢時刻的值。"
           }
         }
       }
@@ -715620,55 +718334,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi not used: it is not installed on the host"
+            "value": "Verdi not used: Verdi was not found on the host (%@). Set VERDI_HOME, or CMUX_VERDI_SETUP to a command that puts verdi on PATH, in your login shell profile on the host"
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "لم يُستخدم Verdi: غير مثبّت على المضيف"
+            "value": "لم يُستخدم Verdi: لم يُعثر على Verdi على المضيف (%@). عيّن VERDI_HOME، أو CMUX_VERDI_SETUP بأمر يضع verdi في PATH، في ملف تعريف صدفة تسجيل الدخول على المضيف"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi nicht verwendet: auf dem Host nicht installiert"
+            "value": "Verdi nicht verwendet: Verdi wurde auf dem Host nicht gefunden (%@). Setzen Sie VERDI_HOME oder CMUX_VERDI_SETUP (einen Befehl, der verdi in den PATH bringt) im Profil Ihrer Login-Shell auf dem Host"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi no se usa: no está instalado en el host"
+            "value": "Verdi no se usa: no se encontró Verdi en el host (%@). Defina VERDI_HOME, o CMUX_VERDI_SETUP con un comando que ponga verdi en el PATH, en el perfil de su shell de inicio de sesión en el host"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi non utilisé : il n’est pas installé sur l’hôte"
+            "value": "Verdi non utilisé : Verdi est introuvable sur l’hôte (%@). Définissez VERDI_HOME, ou CMUX_VERDI_SETUP avec une commande qui met verdi dans le PATH, dans le profil de votre shell de connexion sur l’hôte"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi は使っていません: ホストにインストールされていません"
+            "value": "Verdi は使っていません: ホストで Verdi が見つかりません（%@）。ホストのログインシェルのプロファイルで VERDI_HOME、または CMUX_VERDI_SETUP（verdi を PATH に入れるコマンド）を設定してください"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi를 사용하지 않음: 호스트에 설치되어 있지 않음"
+            "value": "Verdi를 사용하지 않음: 호스트에서 Verdi를 찾을 수 없음(%@). 호스트의 로그인 셸 프로필에서 VERDI_HOME 또는 CMUX_VERDI_SETUP(verdi를 PATH에 넣는 명령)을 설정하세요"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未使用 Verdi：主机上未安装"
+            "value": "未使用 Verdi：在主机上找不到 Verdi（%@）。请在主机的登录 shell 配置文件中设置 VERDI_HOME，或将 CMUX_VERDI_SETUP 设为把 verdi 加入 PATH 的命令"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "未使用 Verdi：主機上未安裝"
+            "value": "未使用 Verdi：在主機上找不到 Verdi（%@）。請在主機的登入 shell 設定檔中設定 VERDI_HOME，或將 CMUX_VERDI_SETUP 設為把 verdi 加入 PATH 的命令"
           }
         }
       }
@@ -716023,6 +718737,1068 @@
           "stringUnit": {
             "state": "translated",
             "value": "在 %@ 中，經由其介面埠"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X chain from %1$@ at %2$@"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "سلسلة X من %1$@ عند %2$@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "X-Kette ab %1$@ bei %2$@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cadena de X desde %1$@ en %2$@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chaîne du X depuis %1$@ à %2$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@（%2$@）からの X の経路"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@(%2$@)에서 시작하는 X 경로"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从 %1$@（%2$@）开始的 X 链"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "從 %1$@（%2$@）開始的 X 鏈"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Following the x back… (%@ steps)"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جارٍ تتبّع x إلى الوراء… (%@ خطوات)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "x wird zurückverfolgt … (%@ Schritte)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Siguiendo la x hacia atrás… (%@ pasos)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remontée du x… (%@ étapes)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "x をさかのぼっています…（%@ ステップ）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "x를 거슬러 추적하는 중…(%@단계)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在回溯 x…（%@ 步）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在回溯 x…（%@ 步）"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إلغاء"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abbrechen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annuler"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャンセル"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "취소"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Chain Signals to Waveform"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إضافة إشارات السلسلة إلى الشكل الموجي"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signale der Kette zur Wellenform hinzufügen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir las señales de la cadena a la forma de onda"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter les signaux de la chaîne au chronogramme"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "経路の信号を波形に追加"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "경로의 신호를 파형에 추가"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将链上的信号添加到波形"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將鏈上的訊號加入波形"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.rootBadge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "root"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصدر"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ursprung"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "origen"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "origine"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "発生元"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발생 지점"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.why.start": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the value traced"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "القيمة المتتبَّعة"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der verfolgte Wert"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el valor rastreado"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la valeur suivie"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追跡した値"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "추적한 값"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所追踪的值"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所追蹤的值"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.why.only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the only input with x or z"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المدخل الوحيد الذي يحوي x أو z"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "der einzige Eingang mit x oder z"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la única entrada con x o z"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la seule entrée avec x ou z"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "x または z を持つ唯一の入力"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "x 또는 z가 있는 유일한 입력"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "唯一含 x 或 z 的输入"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "唯一含 x 或 z 的輸入"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.why.earliest": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the earliest x or z of %@ inputs"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أقدم x أو z بين %@ مدخلات"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "das früheste x oder z von %@ Eingängen"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la x o z más temprana de %@ entradas"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "le x ou z le plus ancien parmi %@ entrées"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 個の入力のうち最も早い x または z"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "입력 %@개 중 가장 이른 x 또는 z"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个输入中最早出现的 x 或 z"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 個輸入中最早出現的 x 或 z"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.noXInput": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Root: this statement makes the x (no input has x or z)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصدر: هذه العبارة تُنتج x (لا يحوي أي مدخل x أو z)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ursprung: Diese Anweisung erzeugt das x (kein Eingang hat x oder z)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origen: esta sentencia produce la x (ninguna entrada tiene x o z)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origine : cette instruction produit le x (aucune entrée n’a de x ou de z)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "発生元: この文が x を生成しています（x や z を持つ入力はありません）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발생 지점: 이 문이 x를 만듭니다(x나 z가 있는 입력이 없음)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：此语句产生了 x（没有输入含 x 或 z）。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：此敘述產生了 x（沒有輸入含 x 或 z）。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.uninit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Root: never written since the start (uninitialised storage or a declaration)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصدر: لم تُكتب منذ البداية (تخزين غير مُهيّأ أو تصريح)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ursprung: seit dem Start nie geschrieben (nicht initialisierter Speicher oder eine Deklaration)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origen: nunca se escribió desde el inicio (almacenamiento sin inicializar o una declaración)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origine : jamais écrit depuis le début (stockage non initialisé ou déclaration)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "発生元: 開始以来一度も書き込まれていません（未初期化の記憶域または宣言）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발생 지점: 시작 후 한 번도 쓰이지 않았습니다(초기화되지 않은 저장소 또는 선언)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：自开始以来从未写入（未初始化的存储或声明）。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：自開始以來從未寫入（未初始化的儲存或宣告）。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.testbench": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Root: the testbench sets the value."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصدر: منصة الاختبار تضبط القيمة."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ursprung: Die Testbench setzt den Wert."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origen: el banco de pruebas fija el valor."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origine : le banc de test fixe la valeur."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "発生元: テストベンチが値を設定しています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발생 지점: 테스트벤치가 값을 설정합니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：测试平台设置了该值。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：測試平台設定了該值。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.input": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Root: an input of the top level."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصدر: مدخل في المستوى الأعلى."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ursprung: ein Eingang der obersten Ebene."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origen: una entrada del nivel superior."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origine : une entrée du niveau supérieur."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "発生元: 最上位の入力です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발생 지점: 최상위 입력입니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：顶层的输入。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：頂層的輸入。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.force": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Root: a force or deposit from outside the instance."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصدر: force أو deposit من خارج النسخة."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ursprung: ein force oder deposit von außerhalb der Instanz."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origen: un force o deposit desde fuera de la instancia."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origine : un force ou un deposit venu de l’extérieur de l’instance."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "発生元: インスタンス外からの force または deposit です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "발생 지점: 인스턴스 외부의 force 또는 deposit입니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：来自实例外部的 force 或 deposit。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "根源：來自實例外部的 force 或 deposit。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.loop": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped: the x goes round a loop through %@."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توقّف: يدور x في حلقة عبر %@."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angehalten: Das x läuft in einer Schleife über %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detenido: la x da vueltas en un bucle a través de %@."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêté : le x tourne en boucle via %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止: x は %@ を通るループを回っています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중지됨: x가 %@를 거치는 루프를 돕니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止：x 在经过 %@ 的环路中循环。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止：x 在經過 %@ 的迴路中循環。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.budget": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped after %@ steps (the step limit)."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توقّف بعد %@ خطوات (حدّ الخطوات)."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nach %@ Schritten angehalten (das Schrittlimit)."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detenido tras %@ pasos (el límite de pasos)."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêté après %@ étapes (la limite d’étapes)."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ステップで停止しました（ステップ数の上限）。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@단계 후 중지됨(단계 한도)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 步后停止（步数上限）。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 步後停止（步數上限）。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped: a step could not be traced."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توقّف: تعذّر تتبّع خطوة."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angehalten: Ein Schritt konnte nicht verfolgt werden."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detenido: no se pudo rastrear un paso."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêté : une étape n’a pas pu être suivie."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止: ステップを追跡できませんでした。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중지됨: 한 단계를 추적할 수 없었습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止：有一步无法追踪。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已停止：有一步無法追蹤。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelled."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "أُلغي."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abgebrochen."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelado."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annulé."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャンセルしました。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "취소됨."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已取消。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已取消。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.x.end.noX": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ has no x or z bits at this time."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لا تحوي %@ بتات x أو z في هذا الوقت."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ hat zu diesem Zeitpunkt keine x- oder z-Bits."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no tiene bits x ni z en este momento."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’a aucun bit x ou z à cet instant."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ にはこの時刻に x や z のビットがありません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에는 이 시점에 x 또는 z 비트가 없습니다."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在此时没有 x 或 z 位。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 在此時沒有 x 或 z 位元。"
           }
         }
       }
@@ -717557,6 +721333,65 @@
           "stringUnit": {
             "state": "translated",
             "value": "cmux 未收到語言伺服器關於此訊號維度的回覆。請在設計載入完成後再試一次，或依寬度拆分。"
+          }
+        }
+      }
+    },
+    "waveformTrace.notElaborated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not in the design model: slang could not elaborate it. Check the editor’s slang profile (.f build file) or top level, which driver tracing loads."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‏%@ غير موجود في نموذج التصميم: تعذّر على slang تفصيله. تحقّق من ملف تعريف slang في المحرر (ملف البناء ‎.f) أو المستوى الأعلى، الذي يحمّله تتبّع المشغّل."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht im Designmodell: slang konnte es nicht elaborieren. Prüfe das slang-Profil des Editors (.f-Builddatei) oder die oberste Ebene, die die Treiberverfolgung lädt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está en el modelo del diseño: slang no pudo elaborarlo. Revisa el perfil de slang del editor (archivo de compilación .f) o el nivel superior, que es lo que carga el rastreo de drivers."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’est pas dans le modèle de conception : slang n’a pas pu l’élaborer. Vérifiez le profil slang de l’éditeur (fichier de build .f) ou le niveau supérieur, que charge le traçage des pilotes."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は設計モデルにありません: slang がエラボレートできませんでした。ドライバ追跡が読み込む、エディタの slang プロファイル (.f ビルドファイル) またはトップレベルを確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@이(가) 설계 모델에 없습니다: slang이 이를 엘라보레이션하지 못했습니다. 드라이버 추적이 불러오는 편집기의 slang 프로필(.f 빌드 파일) 또는 최상위를 확인하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在设计模型中：slang 无法展开它。请检查编辑器的 slang 配置（.f 构建文件）或顶层，驱动追踪加载的正是它。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在設計模型中：slang 無法展開它。請檢查編輯器的 slang 設定檔（.f 建置檔）或頂層，驅動追蹤載入的正是它。"
           }
         }
       }

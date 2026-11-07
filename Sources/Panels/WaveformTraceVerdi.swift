@@ -57,8 +57,8 @@ enum WaveformTraceVerdi {
     private static let viewerSessions = NSMapTable<FilePreviewPanel, Session>.weakToStrongObjects()
     /// Verdi sessions kept at most: each holds a licence seat and the design.
     private static let maxSessions = 2
-    /// One active trace: about 0.1–2 s on a course CPU, more on the first of a large design.
-    private static let requestTimeout: TimeInterval = 120
+    /// Starting a session: `info` once Verdi has loaded the design.
+    private static let requestTimeout = VerdiTraceLaunch.requestTimeout(background: false)
 
     static func bundledScripts(bundle: Bundle = .main) -> (launcher: Data, serve: Data)? {
         guard let dir = bundle.resourceURL?.appendingPathComponent("vaporview/verdi-trace", isDirectory: true) else { return nil }
@@ -153,9 +153,10 @@ enum WaveformTraceVerdi {
         session.stop()
     }
 
-    /// `{type: 'trace', event: 'engine', id, cmd: 'active', signal (dump path), time}` from the page.
-    /// Answers `{state: 'none' | 'starting' | 'unavailable' | 'ready', ...}`; when ready, Verdi's
-    /// `{scope, file, line}` or `{notFound: true}`.
+    /// `{type: 'trace', event: 'engine', id, cmd: 'active', signal (dump path), time, background?}`
+    /// from the page (background: a prefetch). Answers `{state: 'none' | 'starting' | 'unavailable'
+    /// | 'ready', pool, ...}`; when ready, Verdi's `{scope, file, line}` or `{notFound: true}`.
+    /// `pool` is how many requests the page may run at once.
     static func answer(_ body: [String: Any], id: Int, waveform: FilePreviewPanel, reply: @escaping @MainActor (Any) -> Void) {
         guard body["cmd"] as? String == "active", let signal = body["signal"] as? String, !signal.isEmpty, signal.utf16.count <= 4096,
               let time = (body["time"] as? NSNumber)?.int64Value, time >= 0 else {
@@ -166,30 +167,34 @@ enum WaveformTraceVerdi {
             reply(["state": "none"])
             return
         }
+        let background = body["background"] as? Bool == true
+        let pool = VerdiTraceLaunch.poolSize
         switch session.state {
         case .starting:
-            reply(["state": "starting"])
+            reply(["state": "starting", "pool": pool])
         case .unavailable(let code, let message):
-            reply(["state": "unavailable", "reason": code, "message": message])
+            reply(["state": "unavailable", "reason": code, "message": message, "pool": pool])
         case .ready:
             Task { @MainActor in
                 do {
-                    let r = try await session.sidecar.request(["cmd": "active", "signal": signal, "time": time], timeout: requestTimeout)
+                    let r = try await session.sidecar.request(["cmd": "active", "signal": signal, "time": time],
+                                                              timeout: VerdiTraceLaunch.requestTimeout(background: background))
                     session.failures = 0
-                    reply(["state": "ready", "scope": r["scope"] ?? "", "file": r["file"] ?? "", "line": r["line"] ?? 0])
+                    reply(["state": "ready", "scope": r["scope"] ?? "", "file": r["file"] ?? "", "line": r["line"] ?? 0, "pool": pool])
                 } catch SVModelSidecar.Failure.request(code: "notFound", message: let message) {
-                    reply(["state": "ready", "notFound": true, "message": message])
+                    reply(["state": "ready", "notFound": true, "message": message, "pool": pool])
                 } catch SVModelSidecar.Failure.stopped {
                     reply(["state": "none"])
                 } catch {
-                    // This request goes without Verdi; the session is asked again after a backoff
-                    // (`session(for:)` probes it once `retryAt` has passed).
+                    // This request goes without Verdi. A click's failure marks the session, which
+                    // is asked again after a backoff (`session(for:)` probes it once `retryAt` has
+                    // passed); a background prefetch's leaves it as it is.
                     let message = WaveformTrace.sidecarMessage(error, host: nil)
-                    if session.state == .ready {
+                    if VerdiTraceLaunch.failureMarksSession(background: background), session.state == .ready {
                         session.state = .unavailable(code: "failed", message: message)
                         failed(session)
                     }
-                    reply(["state": "unavailable", "reason": "failed", "message": message])
+                    reply(["state": "unavailable", "reason": "failed", "message": message, "pool": pool])
                 }
             }
         }

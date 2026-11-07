@@ -12,14 +12,20 @@
 // Protocol: one JSON object per line on stdin, one JSON reply per line on stdout, matched by id.
 // The first line out is {"id":0,"ready":true,...}.
 //   {"id":1,"cmd":"load","args":["-f","files.f","--top","tb"],"cwd":"/dir"}
-//       -> {"id":1,"ok":true,"tops":["tb"],"errors":n,"messages":[...],"ms":n}
+//       -> {"id":1,"ok":true,"tops":["tb"],"errors":n,"messages":[...],"fingerprint":"<16 hex>","files":n,"ms":n}
 //   {"id":2,"cmd":"instance","path":"tb.dut"}   -> {"id":2,"ok":true,"model":{...}}
 //   {"id":3,"cmd":"lookup","path":"tb.dut.g[0].x"} -> {"id":3,"ok":true,"instance":"tb.dut","name":"g[0].x"}
 //   {"id":4,"cmd":"instances"} -> {"id":4,"ok":true,"tops":["tb"],"instances":["tb","tb.dut",...]} (sorted)
 //   {"id":5,"cmd":"writers","path":"tb.bus"} -> {"id":5,"ok":true,"writers":["tb.dut","tb.mem"]} (sorted):
 //       the other instances whose statements write into it ($abs: lvalues; an interface instance
 //       written through modport ports), from an index built over every instance on first use
+//   {"id":6,"cmd":"stale"} -> {"id":6,"ok":true,"changed":false,"fingerprint":"..."}: whether a file the
+//       load read (sources, includes, library and command files) has another size or time now,
+//       or was written while the load read it; cmux then loads the design again
+//   {"id":7,"cmd":"sources"} -> {"id":7,"ok":true,"sources":[{"path":"/abs/a.sv","mtime":<ms since 1970>},...]}
 //   {"id":4,"cmd":"version"}
+// A load's reply also has "fingerprint": a hash of its command line, folder and the text of every
+// file it read, so a load of unchanged text is known to be the same design.
 // Errors: {"id":n,"ok":false,"error":"<code>","message":"..."}.
 //
 // slang's license:
@@ -46,12 +52,18 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <sys/stat.h>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <filesystem>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +73,7 @@
 #include "slang/ast/EvalContext.h"
 #include "slang/ast/Expression.h"
 #include "slang/ast/Statement.h"
+#include "slang/ast/SystemSubroutine.h"
 #include "slang/ast/TimingControl.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
 #include "slang/ast/expressions/CallExpression.h"
@@ -77,11 +90,13 @@
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/AllTypes.h"
 #include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/driver/Driver.h"
 #include "slang/syntax/AllSyntax.h"
+#include "slang/syntax/SyntaxTree.h"
 #include "slang/text/Json.h"
 #include "slang/text/SourceManager.h"
 #include "slang/util/VersionInfo.h"
@@ -340,6 +355,165 @@ std::string sizedBits(const SVInt& v) {
     return std::to_string(w) + (v.isSigned() ? "'sb" : "'b") + bits;
 }
 
+// A system task or function slang doesn't know (a simulator's own, such as $fsdbDumpvars): taken as
+// a function of any arguments returning int, so the procedure that calls it is still modelled
+// rather than dropped as an invalid statement.
+class UnknownSystemCall : public SystemSubroutine {
+public:
+    explicit UnknownSystemCall(std::string name) : SystemSubroutine(std::move(name), SubroutineKind::Function) {}
+    bool allowEmptyArgument(size_t) const final { return true; }
+    const Expression& bindArgument(size_t index, const ASTContext& context, const syntax::ExpressionSyntax& syntax,
+                                   const Args& previous) const final {
+        // A scope or variable name (a dump task's "what to dump"): any symbol, not a value.
+        if (syntax::NameSyntax::isKind(syntax.kind))
+            return ArbitrarySymbolExpression::fromSyntax(context.getCompilation(), syntax.as<syntax::NameSyntax>(), context);
+        return SystemSubroutine::bindArgument(index, context, syntax, previous);
+    }
+    const Type& checkArguments(const ASTContext& context, const Args&, SourceRange, const Expression*) const final {
+        return context.getCompilation().getIntType();
+    }
+    ConstantValue eval(EvalContext& context, const Args&, SourceRange range,
+                       const CallExpression::SystemCallInfo&) const final {
+        notConst(context, range);
+        return nullptr;
+    }
+};
+
+// The system names ($...) a syntax tree calls.
+void systemNames(const syntax::SyntaxNode& n, std::set<std::string>& out) {
+    for (size_t i = 0, count = n.getChildCount(); i < count; i++) {
+        if (auto child = n.childNode(i))
+            systemNames(*child, out);
+        else if (auto t = n.childToken(i); t && t.kind == parsing::TokenKind::SystemIdentifier)
+            out.emplace(t.valueText());
+    }
+}
+
+// A simulator's own task that only reads what it is given by name (a dump task's "what to dump").
+bool readsOnlyByName(std::string_view n) {
+    for (std::string_view p : {"$fsdb", "$vcdplus", "$vcd", "$dump", "$shm_", "$record", "$sdf", "$vpd", "$wlf", "$assert"})
+        if (n.substr(0, p.size()) == p)
+            return true;
+    return false;
+}
+
+// The variables an expression or statement writes: assignment targets (output arguments of calls
+// are assignments too), x++ / x-- operands; the symbol under selects and member accesses. Also what
+// it may write that isn't re-executed: a variable given by name to a simulator's own task (one
+// slang doesn't know, such as a vendor $deposit-style task), and the module variables a called
+// task's or function's body writes (followed a few calls deep, without recursion). Into what slang
+// could not bind too (a block with a call to a task it wasn't given is Invalid as a whole; its
+// child still holds the statements). `sites`: for each of `out`, where it is written (the
+// assignment, the ++/--, or the call), at most 8.
+struct WriteFinder : public ASTVisitor<WriteFinder, VisitFlags::Statements | VisitFlags::Expressions | VisitFlags::Bad> {
+    std::vector<const Symbol*> out;
+    std::vector<std::vector<const Expression*>> sites;
+    std::vector<const SubroutineSymbol*> calling;
+    const Expression* site = nullptr;
+    static bool within(const Symbol& s, const Symbol& outer) {
+        for (auto scope = s.getParentScope(); scope; scope = scope->asSymbol().getParentScope())
+            if (&scope->asSymbol() == &outer)
+                return true;
+        return false;
+    }
+    // An input port's variable: a task given it by name reads it (writing an input is illegal).
+    static bool inputPort(const Symbol& sym) {
+        auto scope = sym.getParentScope();
+        if (!scope || scope->asSymbol().kind != SymbolKind::InstanceBody)
+            return false;
+        for (auto p : scope->asSymbol().as<InstanceBodySymbol>().getPortList())
+            if (p->kind == SymbolKind::Port && p->as<PortSymbol>().internalSymbol == &sym)
+                return p->as<PortSymbol>().direction == ArgumentDirection::In;
+        return false;
+    }
+    void addSymbol(const Symbol* sym, const Expression* at) {
+        if (!sym)
+            return;
+        auto it = std::find(out.begin(), out.end(), sym);
+        if (it == out.end()) {
+            out.push_back(sym);
+            sites.emplace_back();
+            it = out.end() - 1;
+        }
+        auto& here = sites[size_t(it - out.begin())];
+        if (at && here.size() < 8 && std::find(here.begin(), here.end(), at) == here.end())
+            here.push_back(at);
+    }
+    void handle(const InvalidStatement& s) {
+        if (s.child)
+            s.child->visit(*this);
+    }
+    void handle(const InvalidExpression& e) {
+        if (e.child)
+            e.child->visit(*this);
+    }
+    void handle(const CallExpression& c) {
+        if (c.isSystemCall()) {
+            auto& info = std::get<CallExpression::SystemCallInfo>(c.subroutine);
+            if (dynamic_cast<const UnknownSystemCall*>(info.subroutine.get()) && !readsOnlyByName(c.getSubroutineName())) {
+                for (auto arg : c.arguments()) {
+                    if (arg->kind != ExpressionKind::ArbitrarySymbol)
+                        continue;
+                    auto sym = arg->as<ArbitrarySymbolExpression>().symbol;
+                    if (sym && (sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Net) && !inputPort(*sym))
+                        addSymbol(sym, &c);
+                }
+            }
+        }
+        else if (auto sub = std::get<const SubroutineSymbol*>(c.subroutine);
+                 sub && calling.size() < 4 && std::find(calling.begin(), calling.end(), sub) == calling.end()) {
+            WriteFinder inner;
+            inner.calling = calling;
+            inner.calling.push_back(sub);
+            sub->getBody().visit(inner);
+            // Its own locals and arguments aren't the caller's variables.
+            for (auto sym : inner.out)
+                if (!within(*sym, *sub))
+                    addSymbol(sym, &c);
+        }
+        visitDefault(c);
+    }
+    static const Symbol* base(const Expression* e) {
+        while (e) {
+            switch (e->kind) {
+                case ExpressionKind::NamedValue:
+                case ExpressionKind::HierarchicalValue: return &e->as<ValueExpressionBase>().symbol;
+                case ExpressionKind::ElementSelect: e = &e->as<ElementSelectExpression>().value(); break;
+                case ExpressionKind::RangeSelect: e = &e->as<RangeSelectExpression>().value(); break;
+                case ExpressionKind::MemberAccess: e = &e->as<MemberAccessExpression>().value(); break;
+                case ExpressionKind::Conversion: e = &e->as<ConversionExpression>().operand(); break;
+                default: return nullptr;
+            }
+        }
+        return nullptr;
+    }
+    void add(const Expression& lv) {
+        if (lv.kind == ExpressionKind::Concatenation) {
+            for (auto op : lv.as<ConcatenationExpression>().operands())
+                add(*op);
+            return;
+        }
+        addSymbol(base(&lv), site);
+    }
+    void handle(const AssignmentExpression& a) {
+        auto outer = site;
+        site = &a;
+        add(a.left());
+        site = outer;
+        visitDefault(a);
+    }
+    void handle(const UnaryExpression& u) {
+        if (u.op == UnaryOperator::Preincrement || u.op == UnaryOperator::Predecrement ||
+            u.op == UnaryOperator::Postincrement || u.op == UnaryOperator::Postdecrement) {
+            auto outer = site;
+            site = &u;
+            add(u.operand());
+            site = outer;
+        }
+        visitDefault(u);
+    }
+};
+
 class Model {
 public:
     Model(Compilation& comp, SourceManager& sm) : comp(comp), sm(sm) { index(); }
@@ -399,6 +573,25 @@ public:
         writeLocProp(w, "loc", inst.location, inst.name.size());
         w.writeProperty("ports");
         writePorts(w, inst, parent);
+        // Value parameters and localparams of the body (not its generate blocks'): integers without
+        // x/z as numbers, others as slang prints them; cmux compares them with the KDB's.
+        w.writeProperty("params");
+        w.startObject();
+        for (auto& member : inst.body.members()) {
+            if (member.kind != SymbolKind::Parameter)
+                continue;
+            auto& param = member.as<ParameterSymbol>();
+            auto& value = param.getValue();
+            w.writeProperty(param.name);
+            std::optional<int64_t> number;
+            if (value.isInteger() && !value.integer().hasUnknown())
+                number = value.integer().as<int64_t>();
+            if (number)
+                w.writeValue(*number);
+            else
+                w.writeValue(value.toString());
+        }
+        w.endObject();
         // Members (signals, assigns, procedures, children) in this body, with generate blocks.
         std::vector<const Symbol*> signals, assigns, procs, children;
         collect(inst.body, signals, assigns, procs, children);
@@ -544,6 +737,21 @@ private:
             return "$local:" + std::string(sym.name);
         return rel(sym.getHierarchicalPath());
     }
+    // A written variable's name: one declared in another instance (a testbench's force, $deposit
+    // or hierarchical write into dut) by its $abs: path, so that instance's drivers can find it.
+    std::string writtenName(const Symbol& sym) const {
+        auto scope = sym.getParentScope();
+        if (scope && scope->isProceduralContext())
+            return "$local:" + std::string(sym.name);
+        for (auto sc = scope; sc; sc = sc->asSymbol().getParentScope()) {
+            if (sc->asSymbol().kind == SymbolKind::InstanceBody) {
+                if (cur && &sc->asSymbol() != &cur->body)
+                    return "$abs:" + sym.getHierarchicalPath();
+                break;
+            }
+        }
+        return relName(sym);
+    }
     static const Symbol& throughModport(const Symbol& sym) {
         const Symbol* s = &sym;
         while (s->kind == SymbolKind::ModportPort) {
@@ -611,6 +819,16 @@ private:
     }
     std::string text(const Expression& e) const { return e.syntax ? trim(e.syntax->toString()) : ""; }
     std::string text(const Statement& s) const { return s.syntax ? trim(s.syntax->toString()) : ""; }
+    // An expression's own text, without the comments and line breaks before it.
+    std::string ownText(const Expression& e) const {
+        if (!e.syntax)
+            return "";
+        auto all = e.syntax->toString();
+        size_t lead = 0;
+        for (auto& t : e.syntax->getFirstToken().trivia())
+            lead += t.getRawText().size();
+        return trim(lead <= all.size() ? all.substr(lead) : all);
+    }
     static std::string trim(std::string s) {
         // Comments and line breaks inside a statement: one line, spaces collapsed.
         std::string out;
@@ -1111,6 +1329,14 @@ private:
         if (!win.ok || scratch.opaque.size()) {
             w.writeProperty("opaque");
             w.writeValue(text(e));
+            // The variable under it, so the write is still found as one to that variable.
+            if (auto sym = WriteFinder::base(&e)) {
+                auto n = relName(throughModport(*sym));
+                if (n.rfind("$local:", 0) != 0) {
+                    w.writeProperty("name");
+                    w.writeValue(n);
+                }
+            }
             w.writeProperty("width");
             w.writeValue(int64_t(e.type ? e.type->getBitWidth() : 0));
             w.endObject();
@@ -1185,6 +1411,11 @@ private:
         w.writeValue(v.kind == SymbolKind::Net ? std::string_view("net") : std::string_view("var"));
         if (t.isSigned()) {
             w.writeProperty("signed");
+            w.writeValue(true);
+        }
+        // A 2-state type (bit, int, byte...) starts at 0; a 4-state one at x (cmux-trace.js startValue).
+        if (!t.isFourState()) {
+            w.writeProperty("twoState");
             w.writeValue(true);
         }
         auto& ct = t.getCanonicalType();
@@ -1300,14 +1531,74 @@ private:
         w.endObject();
     }
 
+    // "writes": [{name, at?: [{src, loc}...]}...], the variables `f` finds written (procedural locals
+    // left out), if any, with where each is written (an opaque statement's own lines).
+    void writeWrites(JsonWriter& w, const WriteFinder& f) {
+        std::vector<std::string> names;
+        std::vector<std::vector<const Expression*>> at;
+        for (size_t i = 0; i < f.out.size(); i++) {
+            auto n = writtenName(throughModport(*f.out[i]));
+            if (n.rfind("$local:", 0) == 0)
+                continue;
+            auto k = std::find(names.begin(), names.end(), n);
+            if (k == names.end()) {
+                names.push_back(n);
+                at.emplace_back();
+                k = names.end() - 1;
+            }
+            auto& here = at[size_t(k - names.begin())];
+            for (auto e : f.sites[i])
+                if (here.size() < 8)
+                    here.push_back(e);
+        }
+        if (names.empty())
+            return;
+        w.writeProperty("writes");
+        w.startArray();
+        for (size_t i = 0; i < names.size(); i++) {
+            w.startObject();
+            w.writeProperty("name");
+            w.writeValue(names[i]);
+            bool any = false;
+            for (auto e : at[i]) {
+                if (!loc(e->sourceRange).valid)
+                    continue;
+                if (!any) {
+                    w.writeProperty("at");
+                    w.startArray();
+                    any = true;
+                }
+                w.startObject();
+                auto src = ownText(*e);
+                if (src.size() > 160)
+                    src = src.substr(0, 157) + "...";
+                // (none for a write slang made up, such as a $value$plusargs output argument)
+                if (!src.empty()) {
+                    w.writeProperty("src");
+                    w.writeValue(src);
+                }
+                writeLocProp(w, "loc", e->sourceRange);
+                w.endObject();
+            }
+            if (any)
+                w.endArray();
+            w.endObject();
+        }
+        w.endArray();
+    }
+
     void writeStmt(JsonWriter& w, const Statement& s) {
         w.startObject();
+        // Opaque statements (not re-executed) and conditions with side effects say what they
+        // write, so the driver search still finds them.
+        bool opq = false;
         switch (s.kind) {
             case StatementKind::Block: {
                 auto& b = s.as<BlockStatement>();
                 if (b.blockKind != StatementBlockKind::Sequential) {
                     w.writeProperty("k");
                     w.writeValue(std::string_view("opaque"));
+                    opq = true;
                     w.writeProperty("why");
                     w.writeValue(std::string_view("fork"));
                     break;
@@ -1366,6 +1657,7 @@ private:
                     if (a.isCompound() || a.timingControl) {
                         w.writeProperty("k");
                         w.writeValue(std::string_view("opaque"));
+                        opq = true;
                         w.writeProperty("why");
                         w.writeValue(a.timingControl ? std::string_view("intraDelay") : std::string_view("compound"));
                         break;
@@ -1382,6 +1674,7 @@ private:
                 else {
                     w.writeProperty("k");
                     w.writeValue(std::string_view("opaque"));
+                    opq = true;
                     w.writeProperty("why");
                     w.writeValue(e.kind == ExpressionKind::Call ? std::string_view("call") : std::string_view("expression"));
                 }
@@ -1392,6 +1685,7 @@ private:
                 if (c.conditions.size() != 1 || c.conditions[0].pattern) {
                     w.writeProperty("k");
                     w.writeValue(std::string_view("opaque"));
+                    opq = true;
                     w.writeProperty("why");
                     w.writeValue(std::string_view("pattern"));
                     break;
@@ -1443,9 +1737,32 @@ private:
             default:
                 w.writeProperty("k");
                 w.writeValue(std::string_view("opaque"));
+                opq = true;
                 w.writeProperty("why");
                 w.writeValue(toString(s.kind));
                 break;
+        }
+        {
+            WriteFinder f;
+            if (opq)
+                s.visit(f);
+            else if (s.kind == StatementKind::Conditional) {
+                for (auto& c : s.as<ConditionalStatement>().conditions)
+                    c.expr->visit(f);
+            }
+            else if (s.kind == StatementKind::Case) {
+                auto& c = s.as<CaseStatement>();
+                c.expr.visit(f);
+                for (auto& it : c.items)
+                    for (auto m : it.expressions)
+                        m->visit(f);
+            }
+            else if (s.kind == StatementKind::ExpressionStatement &&
+                     s.as<ExpressionStatement>().expr.kind == ExpressionKind::Assignment) {
+                // An assignment's right side: what the functions it calls write.
+                s.as<ExpressionStatement>().expr.as<AssignmentExpression>().right().visit(f);
+            }
+            writeWrites(w, f);
         }
         w.writeProperty("src");
         auto src = text(s);
@@ -1515,13 +1832,107 @@ private:
 
 // ---------------------------------------------------------------------------------------------
 // The session: one design loaded at a time.
+// A file a load read, as it was on disk after the load read it (size -1: missing; -2: written
+// while the load read it, so never taken as unchanged).
+struct SourceStamp {
+    std::string path;
+    int64_t size = -1;
+    int64_t mtime = 0;
+    bool operator==(const SourceStamp&) const = default;
+};
+
+SourceStamp stampOf(const std::string& path) {
+    SourceStamp st{path};
+    std::error_code ec;
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec)
+        return st;
+    auto t = std::filesystem::last_write_time(path, ec);
+    if (ec)
+        return st;
+    st.size = int64_t(size);
+    st.mtime = int64_t(t.time_since_epoch().count());
+    return st;
+}
+
+// FNV-1a (64 bits) over length-delimited parts: tells designs apart, not a security hash.
+struct Fingerprint {
+    uint64_t h = 1469598103934665603ull;
+    void add(std::string_view text) {
+        auto mix = [this](unsigned char c) {
+            h ^= c;
+            h *= 1099511628211ull;
+        };
+        for (unsigned char c : text)
+            mix(c);
+        for (int i = 0; i < 8; i++)
+            mix((unsigned char)(text.size() >> (8 * i)));
+    }
+    std::string hex() const {
+        char out[17];
+        std::snprintf(out, sizeof out, "%016llx", (unsigned long long)h);
+        return out;
+    }
+};
+
 struct Session {
     std::unique_ptr<driver::Driver> drv;
     std::unique_ptr<Compilation> comp;
     std::unique_ptr<Model> model;
     // writers: instance path -> the other instances that write into it (built on first use).
     std::optional<std::map<std::string, std::vector<std::string>>> writers;
+    // The files the last load read, and its fingerprint (empty: nothing loaded).
+    std::vector<SourceStamp> stamps;
+    std::string fingerprint;
 };
+
+// The files the load read (every file buffer, and every command file) stamped, and the
+// fingerprint over the command line, the folder and their text. A file whose size is not the
+// text's, or whose time is from while the load read it (between `start` and now: a host clock
+// behind a file server's makes times later than now, which say nothing), is stamped as never
+// matching. Not seen: a file a load could not find that is made later, and on a file server
+// whose clock is behind, an edit of the same size while the load read it.
+void stampSources(Session& s, const std::vector<std::string>& args, const std::string& cwd,
+                  std::filesystem::file_time_type start) {
+    auto end = std::filesystem::file_time_type::clock::now();
+    auto& sm = s.drv->sourceManager;
+    std::map<std::string, std::string> files;
+    for (auto buffer : sm.getAllBuffers()) {
+        auto& path = sm.getFullPath(buffer);
+        if (!path.empty())
+            files.emplace(path.string(), std::string(sm.getSourceText(buffer)));
+    }
+    std::map<std::string, std::string> commandFiles;
+    for (auto& [path, _] : s.drv->getCommandFileMetadata()) {
+        std::ifstream in(path, std::ios::binary);
+        std::ostringstream text;
+        text << in.rdbuf();
+        commandFiles.emplace(path.string(), text.str());
+    }
+    Fingerprint fp;
+    fp.add("args");
+    for (size_t i = 1; i < args.size(); i++)
+        fp.add(args[i]);
+    fp.add("cwd");
+    fp.add(cwd);
+    for (auto* group : {&files, &commandFiles}) {
+        fp.add(group == &files ? "files" : "commandFiles");
+        for (auto& [path, text] : *group) {
+            fp.add(path);
+            fp.add(text);
+            auto st = stampOf(path);
+            size_t length = text.size();
+            if (length > 0 && text.back() == '\0')
+                length--;
+            bool during = st.mtime >= int64_t(start.time_since_epoch().count()) &&
+                          st.mtime <= int64_t(end.time_since_epoch().count());
+            if (st.size >= 0 && (size_t(st.size) != length || during))
+                st.size = -2;
+            s.stamps.push_back(st);
+        }
+    }
+    s.fingerprint = fp.hex();
+}
 
 // The written ($abs: lvalue) paths in each instance's model, mapped to the instance they are in.
 std::map<std::string, std::vector<std::string>> buildWriters(Model& model) {
@@ -1576,6 +1987,9 @@ void load(Session& s, int64_t id, const JValue& req) {
     s.model.reset();
     s.writers.reset();
     s.comp.reset();
+    s.stamps.clear();
+    s.fingerprint.clear();
+    auto start = std::filesystem::file_time_type::clock::now();
     s.drv = std::make_unique<driver::Driver>();
     auto& d = *s.drv;
     d.addStandardArgs();
@@ -1611,6 +2025,14 @@ void load(Session& s, int64_t id, const JValue& req) {
         return;
     }
     s.comp = d.createCompilation();
+    {
+        std::set<std::string> names;
+        for (auto& tree : d.syntaxTrees)
+            systemNames(tree->root(), names);
+        for (auto& n : names)
+            if (!s.comp->getSystemSubroutine(n))
+                s.comp->addSystemSubroutine(std::make_shared<UnknownSystemCall>(n));
+    }
     auto& diags = s.comp->getAllDiagnostics();
     std::vector<std::string> messages;
     int64_t errors = 0;
@@ -1631,6 +2053,7 @@ void load(Session& s, int64_t id, const JValue& req) {
     }
     s.model = std::make_unique<Model>(*s.comp, s.drv->sourceManager);
     s.writers.reset();
+    stampSources(s, args, cwd, start);
     std::filesystem::current_path(oldCwd, ec);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     JsonWriter w;
@@ -1651,8 +2074,76 @@ void load(Session& s, int64_t id, const JValue& req) {
     for (auto& m : messages)
         w.writeValue(m);
     w.endArray();
+    w.writeProperty("fingerprint");
+    w.writeValue(s.fingerprint);
+    w.writeProperty("files");
+    w.writeValue(int64_t(s.stamps.size()));
     w.writeProperty("ms");
     w.writeValue(int64_t(ms));
+    w.endObject();
+    reply(w);
+}
+
+// The files the last load read and their modification times (ms since 1970), for cmux's check
+// that none is newer than the compile a KDB came from.
+void sources(Session& s, int64_t id) {
+    if (s.fingerprint.empty()) {
+        fail(id, "notLoaded", "no design is loaded");
+        return;
+    }
+    JsonWriter w;
+    w.startObject();
+    w.writeProperty("id");
+    w.writeValue(id);
+    w.writeProperty("ok");
+    w.writeValue(true);
+    w.writeProperty("sources");
+    w.startArray();
+    for (auto& st : s.stamps) {
+        struct stat info;
+        if (::stat(st.path.c_str(), &info) != 0)
+            continue;
+#ifdef __APPLE__
+        auto ms = int64_t(info.st_mtimespec.tv_sec) * 1000 + info.st_mtimespec.tv_nsec / 1000000;
+#else
+        auto ms = int64_t(info.st_mtim.tv_sec) * 1000 + info.st_mtim.tv_nsec / 1000000;
+#endif
+        w.startObject();
+        w.writeProperty("path");
+        w.writeValue(st.path);
+        w.writeProperty("mtime");
+        w.writeValue(ms);
+        w.endObject();
+    }
+    w.endArray();
+    w.endObject();
+    reply(w);
+}
+
+// Whether a file the last load read changed on disk since (another size or time, gone, or
+// written while the load read it).
+void stale(Session& s, int64_t id) {
+    if (s.fingerprint.empty()) {
+        fail(id, "notLoaded", "no design is loaded");
+        return;
+    }
+    bool changed = false;
+    for (auto& st : s.stamps) {
+        if (st.size == -2 || !(stampOf(st.path) == st)) {
+            changed = true;
+            break;
+        }
+    }
+    JsonWriter w;
+    w.startObject();
+    w.writeProperty("id");
+    w.writeValue(id);
+    w.writeProperty("ok");
+    w.writeValue(true);
+    w.writeProperty("changed");
+    w.writeValue(changed);
+    w.writeProperty("fingerprint");
+    w.writeValue(s.fingerprint);
     w.endObject();
     reply(w);
 }
@@ -1679,6 +2170,14 @@ void handle(Session& s, const JValue& req) {
     }
     if (cmd == "load") {
         load(s, id, req);
+        return;
+    }
+    if (cmd == "stale") {
+        stale(s, id);
+        return;
+    }
+    if (cmd == "sources") {
+        sources(s, id);
         return;
     }
     if (!s.model) {
@@ -1830,6 +2329,11 @@ int main(int argc, char** argv) {
         w.writeValue(true);
         w.writeProperty("model");
         w.writeValue(int64_t(kModelVersion));
+        // The install's build (sv-model.sh: its folder, named by the sources' hash), when started by it.
+        if (const char* build = std::getenv("CMUX_SV_MODEL_BUILD"); build && *build) {
+            w.writeProperty("build");
+            w.writeValue(std::string_view(build));
+        }
         w.endObject();
         reply(w);
     }

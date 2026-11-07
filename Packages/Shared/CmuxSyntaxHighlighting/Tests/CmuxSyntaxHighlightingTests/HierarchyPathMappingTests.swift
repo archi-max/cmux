@@ -199,6 +199,45 @@ import Testing
         #expect(rule == nil)
     }
 
+    /// Roots listed by their scopes alone (signalsListed: false) are compared by the scopes they
+    /// share with the dump, two points each: a root listing many signals the dump also has (a
+    /// testbench's clk, rst and data) does not outscore the root with both of the dump's instances.
+    @Test func scopeOnlyRootsCompareByTheirSharedScopes() async {
+        let dump: [String: [HierarchyNode]] = [
+            "tb": [.init(name: "u_a", isScope: true), .init(name: "u_b", isScope: true)]
+                + ["clk", "rst", "d0", "d1", "d2"].map { HierarchyNode(name: $0, isScope: false) },
+            "tb.u_a": [.init(name: "q", isScope: false)],
+        ]
+        let roots: [String: [HierarchyNode]] = [
+            "both": [.init(name: "u_a", isScope: true), .init(name: "u_b", isScope: true)],
+            "signals": [.init(name: "u_a", isScope: true)] + ["clk", "rst", "d0", "d1", "d2"].map { HierarchyNode(name: $0, isScope: false) },
+        ]
+        let rule = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_a.q", designRoots: roots, dumpChildren: Self.children(of: dump), signalsListed: false
+        )
+        #expect(rule == .init(designPrefix: "both", dumpPrefix: "tb", isInferred: true), "\(String(describing: rule))")
+    }
+
+    @Test func aMemoryWordInfersItsDesignRoot() async {
+        // An FSDB lists a memory's words by index (`mem[3]`); the design has the memory `mem`.
+        // Traced from the waveform under another top name, the word still finds its root.
+        var hierarchy = Self.dump
+        hierarchy["top_tb.dut"]! += [.init(name: "mem[0]", isScope: false, width: 32), .init(name: "mem[3]", isScope: false, width: 32)]
+        let rule = await HierarchyPrefixInference.designRule(
+            forDumpPath: "top_tb.dut.mem[3]",
+            designRoots: ["cpu": Self.cpuChildren + [.init(name: "mem", isScope: false)]],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(rule == .init(designPrefix: "cpu", dumpPrefix: "top_tb.dut", isInferred: true))
+        // A word of a memory the design root doesn't have is no reason to map onto it.
+        let other = await HierarchyPrefixInference.designRule(
+            forDumpPath: "top_tb.dut.mem[3]",
+            designRoots: ["cpu": Self.cpuChildren],
+            dumpChildren: Self.children(of: hierarchy)
+        )
+        #expect(other == nil)
+    }
+
     @Test func aRangeNamedDumpSignalNextToTheExactNameIsNotIt() async {
         // pc and pc[0:0] in one scope: the design's pc is the exact pc (as host.js finds it), so
         // pc[0:0] is not mapped back onto it.
@@ -331,6 +370,34 @@ import Testing
             dumpChildren: Self.children
         )
         #expect(monitor == nil)
+    }
+
+    @Test func rootsTyingWithDifferentDesignPathsAreAmbiguousOrFirst() async {
+        let core = ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) }
+        let dump: HierarchyPrefixInference.Children = { path in
+            switch HierarchyPathMapping.join(path) {
+            case "tb": return [.init(name: "u_core1", isScope: true)]
+            case "tb.u_core1": return core
+            case "tb.u_core1.u_a": return [.init(name: "x", isScope: false, width: 1)]
+            default: return nil
+            }
+        }
+        // Two copies of one module match alike: neither is the dump's (ambiguous), or the first by name.
+        let tie = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_core1.u_a.x", designRoots: ["soc.u_core0": core, "soc.u_core1": core], dumpChildren: dump, ties: .ambiguous)
+        #expect(tie == nil)
+        let first = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_core1.u_a.x", designRoots: ["soc.u_core0": core, "soc.u_core1": core], dumpChildren: dump)
+        #expect(first == .init(designPrefix: "soc.u_core0", dumpPrefix: "tb.u_core1", isInferred: true))
+        // A weaker match that is alone wins over a tie.
+        let wider = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_core1.u_a.x",
+            designRoots: ["soc.u_core0": core, "soc.u_core1": core, "soc": [.init(name: "u_core0", isScope: true), .init(name: "u_core1", isScope: true)]],
+            dumpChildren: { path in
+                HierarchyPathMapping.join(path) == "tb" ? [.init(name: "u_core0", isScope: true), .init(name: "u_core1", isScope: true)] : await dump(path)
+            },
+            ties: .ambiguous)
+        #expect(wider == .init(designPrefix: "soc", dumpPrefix: "tb", isInferred: true))
     }
 
     @Test func assignmentTargets() {

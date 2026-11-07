@@ -72,7 +72,7 @@ extension KeyboardShortcutSettings.Action {
              .fileExplorerOpenSelectionFinderAlias,
              .saveFilePreview,
              .toggleFileEditorWordWrap,
-             .addSignalToWaveform, .revealWaveformSignalInSource, .traceWaveformDriver,
+             .addSignalToWaveform, .revealWaveformSignalInSource, .traceWaveformDriver, .traceWaveformXRoot,
              .navigateSourceBack, .navigateSourceForward,
              .stepWaveformCycleForward, .stepWaveformCycleBack, .toggleWaveformPlayback, .reverseContinueWaveform, .toggleWaveformBreakpoint,
              .browserBack, .browserForward,

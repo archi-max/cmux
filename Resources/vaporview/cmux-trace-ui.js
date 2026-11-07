@@ -8,13 +8,34 @@
 //
 // cmux calls window.cmuxWaveform.trace through callAsyncJavaScript:
 //   driver({ path, time })        path: dump segments (null: the selected row); time: null for the
-//                                 marker. Asks cmux for the design path, then traces.
-//   driverOfDesign({ designPath, designPrefix, dumpPrefix, time })   from the editor (cmux mapped it)
+//                                 marker. Asks cmux for the design path, then traces. cmux may
+//                                 answer { compiledOnly, dumpPath, reason, writes: [{ file, line,
+//                                 kind }] } instead: a row only the compiled design (the dump's
+//                                 KDB) has, shown as one approximate step, not evaluated.
+//   driverOfDesign({ designPath, designPrefix, dumpPrefix, time, designId })   from the editor (cmux mapped it)
+//                                 designId (also in a resolve's answer): the design cmux traced in,
+//                                 sent back with every model request; another one starts a new session.
+//                                 A resolve's kdbDiffers (text): the KDB mapped the row, and the compiled
+//                                 design and slang's differ there; the steps are approximate and say so.
+//                                 A resolve's kdbPending (true): the dump's KDB export still runs, so
+//                                 slang's design was used; each step says so. A resolve's kdbChecked
+//                                 (with a KDB model: instance paths whose parameters and ports agreed,
+//                                 and instance.signal paths whose shape and writes did): a step whose
+//                                 instance or signal is outside it is approximate
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
+//   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log?, focus?, entry? })
+//                                 the first-time design model build: stage upload | fetch |
+//                                 configure | compile | install | load | done | failed. While it
+//                                 builds the panel shows it, and another trace asks nothing new (it
+//                                 points at the panel; focus: cmux says a trace from the editor
+//                                 waits). entry { dumpPath, time? }: that trace, for Retry.
 //   back() | forward() | close() | state()
 //   settled()                     resolves (to state()) once the Verdi checks under way are done
-// and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'update' | 'open' | 'closed', id?, ... }
+//   xRoot({ path, time } | { designPath, designPrefix, dumpPrefix, time })   Trace X to Root: the
+//                                 chain of steps the x came along (cmuxTrace.xChain), listed as
+//                                 they are found; resolves to { steps, end, root, approximate }
+// and posts { type: 'trace', event: 'resolve' | 'model' | 'step' | 'update' | 'open' | 'closed' | 'buildInfo', id?, ... }
 // ('update': a shown step filled in with Verdi's answer; cmux does not move the editor for it).
 (function () {
   const waveform = window.cmuxWaveform;
@@ -26,8 +47,11 @@
   };
   // Changes read per signal for edges and "since" (larger: the signal's step says so).
   const MAX_CHANGES = 2000000;
-  // Changes kept per trace session, all signals together (a whole-signal FSDB helper reads long ones).
-  const CACHED_CHANGES = 8000000;
+  // Changes kept per trace session, all signals together (a whole-signal FSDB helper reads long
+  // ones), bounded by their bits: each change costs its value's width plus 32 for its time and
+  // entry. About what 8M changes of a 32-bit signal took; a 512-bit signal keeps ~470k changes.
+  const CACHED_BITS = 256e6;
+  const cachedBits = () => (Number(waveform.traceCacheBits) > 0 ? Number(waveform.traceCacheBits) : CACHED_BITS);
   // Native requests that get no answer in this long fail (the sidecar may be building: minutes).
   const REQUEST_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -38,7 +62,7 @@
     const id = nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(Object.assign(new Error('timeout'), { code: 'timeout' })); }, REQUEST_TIMEOUT_MS);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { resolve, reject, timer, event });
       host.toNative(Object.assign({ type: 'trace', event, id }, body));
     });
   }
@@ -48,6 +72,8 @@
     if (!p) { return false; }
     pending.delete(Number(a.id));
     clearTimeout(p.timer);
+    // A design answer means the design model is up: a build under way is over (its done may come later).
+    if (a.ok && (p.event === 'resolve' || p.event === 'model') && building()) { endBuild(); }
     if (a.ok) { p.resolve(a.result); } else { p.reject(Object.assign(new Error(a.message || a.error || 'failed'), { code: a.error, message: a.message })); }
     return true;
   }
@@ -55,8 +81,10 @@
   // ---- the dump, by design path ----
   // A trace session: the prefixes cmux mapped the design onto the dump with, its caches.
   let session = null;
-  function newSession(designPrefix, dumpPrefix) {
-    return { designPrefix: designPrefix || '', dumpPrefix: dumpPrefix || '', backend: host.currentBackend, vars: new Map(), changes: new Map(), edges: new Map(), kind: dumpKind(), engine: null };
+  // `designId`: the design cmux resolved the trace in (its key and load generation); the session's
+  // model answers are that design's only.
+  function newSession(designPrefix, dumpPrefix, designId) {
+    return { designPrefix: designPrefix || '', dumpPrefix: dumpPrefix || '', designId: designId || '', backend: host.currentBackend, vars: new Map(), changes: new Map(), edges: new Map(), kind: dumpKind(), engine: null };
   }
   const segs = (p) => (p ? String(p).split('.') : []);
   // The prefixes are whole segments; either may be empty (the dump adds or drops a wrapper scope).
@@ -95,7 +123,9 @@
   // One v2 query through the viewer's relay: its result, or undefined when the helper failed it
   // (or it was cancelled). A Verdi check's (`bg`) queries are kept in bg.pending while the helper
   // has them, so the check can cancel what is left when it ends.
-  async function v2(req, bg) {
+  // `within` ({ms}): a query not answered in ms is cancelled and undefined, with within.timedOut set;
+  // within.failed is set when the helper failed it (an error reply, or no reply at all).
+  async function v2(req, bg, within) {
     // A stopped check asks nothing more (its caller falls back to changesOf, which is stale then).
     if (bg && bg.stop && bg.stop()) { return undefined; }
     const b = session.backend;
@@ -103,9 +133,25 @@
     const pending = bg && bg.pending;
     if (pending) { pending.add(id); }
     let answer;
-    try { answer = await b.v2(Object.assign({ id }, req)); } finally { if (pending) { pending.delete(id); } }
+    try {
+      const asked = b.v2(Object.assign({ id }, req));
+      if (within && within.ms > 0) {
+        let timer;
+        const late = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), within.ms); });
+        try { answer = await Promise.race([asked, late]); } finally { clearTimeout(timer); }
+        if (answer === TIMED_OUT) {
+          within.timedOut = true;
+          Promise.resolve(asked).catch(() => {});
+          Promise.resolve(b.v2({ cmd: 'cancel', id: v2Id(), target: id })).catch(() => {});
+          return undefined;
+        }
+      } else {
+        answer = await asked;
+      }
+    } finally { if (pending) { pending.delete(id); } }
     const r = answer && answer.reply;
     if (r && r.cancelled) { return undefined; }
+    if (within && (!r || r.error)) { within.failed = true; within.error = r && r.error ? String(r.error) : ''; }
     if (r && r.error && /larger than|store limit/i.test(String(r.error)) && req.signalId !== undefined) {
       // Over the helper's store limit (about 244 MB of history): a whole read, capped only by its
       // change count, would be about a GB of values in the page, so the signal stays unknown.
@@ -115,6 +161,7 @@
     if (!r || r.error) { if (r && r.error) { host.log(new Error('trace ' + req.cmd + ': ' + r.error)); } return undefined; }
     return r.result;
   }
+  const TIMED_OUT = Symbol('timedOut');
   // A signal helper v2 refused to index (over its store limit): unknown rather than read whole.
   const refusedByHelper = (v) => !!(session.refused && session.refused.has(v.signalId));
   // Cancels a Verdi check's queries the helper still has (it would keep a worker busy for nothing).
@@ -127,16 +174,133 @@
   }
   // The last time before `t` that `v` changed (edge 'any'), or rose/fell (1-bit), from the helper;
   // cached (a failed or cancelled query is not).
-  async function v2Edge(v, t, kind, bg) {
+  // (`walk`: a clock walk's question for the change before one; the checks count those apart)
+  async function v2Edge(v, t, kind, bg, walk) {
     const s = session;
     const key = v.netlistId + ':' + kind + ':' + t;
     if (s.edges.has(key)) { return s.edges.get(key); }
+    if (walk && window.cmuxTraceChecks) { window.cmuxTraceChecks.walkQueries = (window.cmuxTraceChecks.walkQueries || 0) + 1; }
     const r = await v2({ cmd: 'edge', signalId: v.signalId, t, dir: -1, kind }, bg);
     if (r === undefined) { return undefined; }
     const at = r.t === null || r.t === undefined ? null : Number(r.t);
     s.edges.set(key, at);
     return at;
   }
+  // helper-v2's point read for trace-X (valueAt with prev): the values at `time` of `list` (a Map by
+  // netlistId) and each one's last change at or before `time`, kept for lastChange, in one request (the
+  // helper batches the reads). Null when the helper fails it, or answers without prev (an older helper:
+  // not asked again this session; the caller reads values and edges as before). Until a helper has
+  // answered prev once, an error reply or no answer within twice the step's budget counts as no prev
+  // too (the page never waits on a helper that doesn't know it); after that, it fails this read only.
+  // A store-limit error (one signal of the batch over it) fails this read only, always.
+  // A signal it can't read (values[i] null) has no last change from it: read as before.
+  // Values read so (by netlistId and time) are kept too: a step asks for a leaf at a time again and again.
+  async function v2PointRead(list, time, bg) {
+    const s = session;
+    if (s.kind !== 'v2' || s.prevReads === false || !list.length) { return null; }
+    if (!s.pointValues) { s.pointValues = new Map(); }
+    const key = (v) => v.netlistId + '@' + time;
+    const ask = list.filter((v) => !s.pointValues.has(key(v)));
+    if (ask.length) {
+      const within = { ms: 2 * verdiBudget() };
+      const r = await v2({ cmd: 'valueAt', signalIds: ask.map((v) => v.signalId), t: time, prev: true }, bg, within);
+      // (one signal over the helper's store limit fails the batch: the helper knows prev all the same)
+      const overLimit = within.failed && /larger than|store limit/i.test(within.error || '');
+      if ((within.timedOut || within.failed && !overLimit) && s.prevReads !== true) { s.prevReads = false; }
+      if (!r || !Array.isArray(r.values) || r.values.length !== ask.length) { return null; }
+      if (!Array.isArray(r.prev) || r.prev.length !== ask.length) { s.prevReads = false; return null; }
+      s.prevReads = true;
+      if (s.pointValues.size + ask.length > POINT_VALUES) { s.pointValues.clear(); }
+      ask.forEach((v, i) => {
+        const p = r.prev[i], read = typeof r.values[i] === 'string';
+        // null: no change at or before `time` (the value is the start's); unless the value is unknown too.
+        const at = !read ? undefined : p === null ? 0 : p && Number.isFinite(Number(p.t)) ? Number(p.t) : undefined;
+        if (at !== undefined && at <= time) { keepSince(s, v, at, time); }
+        s.pointValues.set(key(v), read ? r.values[i] : null);
+      });
+    }
+    const out = new Map();
+    for (const v of list) {
+      const value = s.pointValues.get(key(v));
+      if (typeof value === 'string') { out.set(v.netlistId, value); }
+    }
+    return out;
+  }
+  const POINT_VALUES = 8192;
+  // The last change of `v` at or before a time in [at, time] is `at`: kept per signal (a few spans).
+  function keepSince(s, v, at, time) {
+    if (!s.since) { s.since = new Map(); }
+    const spans = s.since.get(v.netlistId) || [];
+    spans.push([at, time]);
+    if (spans.length > 8) { spans.shift(); }
+    s.since.set(v.netlistId, spans);
+  }
+  function knownSince(s, v, time) {
+    const spans = s.since && s.since.get(v.netlistId);
+    const span = spans && spans.find(([at, upTo]) => at <= time && time <= upTo);
+    return span ? span[0] : undefined;
+  }
+  // The last SystemVerilog `edge` of a 1-bit signal at or before `time`, from the helper's edges
+  // (rise, fall: a change to 1, to 0; any). A change to 1 is a posedge and one to 0 a negedge
+  // whatever the value before (x->1, z->0 too); one to x or z is an edge only from 0 (posedge) or
+  // 1 (negedge). So: the last rise (fall; both for BothEdges), then the changes after it, newest
+  // first, each a change to x/z (neither the last rise nor a fall at its time) checked against the
+  // change before it. The helper's stream starts from all x (a leading x is not stored), so a first
+  // change is from x, unless it is at the dump's start (its first value: no edge). A clean clock
+  // takes one round trip (rise, fall, the last change: in parallel), or two when the last change is
+  // after the edge asked for. Undefined when the helper fails or past V2_EDGE_STEPS changes (the
+  // caller reads the changes instead).
+  async function v2NarrowEdge(v, time, edge, bg) {
+    const start = dumpStart();
+    const before = Math.floor(time) + 1;
+    // What the change at `at` went to: '1', '0', or 'xz'.
+    const to = async (at) => {
+      const [r, f] = await Promise.all([v2Edge(v, at + 1, 'rise', bg), v2Edge(v, at + 1, 'fall', bg)]);
+      if (r === undefined || f === undefined) { return undefined; }
+      return r === at ? '1' : f === at ? '0' : 'xz';
+    };
+    // The change before `at` (the walk's own question, counted apart from last-change searches).
+    const earlierThan = (at) => v2Edge(v, at, 'any', bg, true);
+    // The last change: known from a point read's prev when there was one, else one (a point read
+    // with prev, on a helper that has it: no edge search), else the helper's edge search.
+    const known = knownSince(session, v, time);
+    const lastChange = known !== undefined ? known
+      : session.prevReads !== false ? v2PointRead([v], time, bg).then(() => {
+        const read = knownSince(session, v, time);
+        return read !== undefined ? read : v2Edge(v, before, 'any', bg);
+      })
+        : v2Edge(v, before, 'any', bg);
+    const [rise, fall, last] = await Promise.all([v2Edge(v, before, 'rise', bg), v2Edge(v, before, 'fall', bg), lastChange]);
+    if (rise === undefined || fall === undefined || last === undefined) { return undefined; }
+    const later = (a, b) => (a === null ? b : b === null ? a : Math.max(a, b));
+    const base = edge === 'PosEdge' ? rise : edge === 'NegEdge' ? fall : later(rise, fall);
+    const from = edge === 'PosEdge' ? '0' : edge === 'NegEdge' ? '1' : '01';
+    let at = last, steps = 0;
+    while (at !== null && (base === null || at > base)) {
+      if (++steps > V2_EDGE_STEPS) { return undefined; }
+      const went = at === last ? (fall === at ? '0' : rise === at ? '1' : 'xz') : await to(at);
+      if (went === undefined) { return undefined; }
+      const earlier = await earlierThan(at);
+      if (earlier === undefined) { return undefined; }
+      if (went === 'xz') {
+        // (nothing before: from the stream's all x, or the dump's first value; neither is an edge to x/z)
+        if (earlier === null) { return null; }
+        const was = await to(earlier);
+        if (was === undefined) { return undefined; }
+        if (from.includes(was)) { return at; }
+      } else if (earlier === null) {
+        // A change to 0/1 other than the edge's own kind, with nothing before it: no edge before it.
+        return null;
+      }
+      at = earlier;
+    }
+    // A change to 1 (0) is an edge from anything (x too), unless it is the dump's first value.
+    return base === null || base <= start ? null : base;
+  }
+  const V2_EDGE_STEPS = 32;
+  // The dump's start time (the host's metadata when its backend says, else 0).
+  const dumpStart = () => (typeof host.dumpStart === 'function' ? host.dumpStart() : 0);
+
   // The last `edge` of a wide signal's last bit at or before `time`, from the helper: from the
   // run of the last bit in effect at `time`, back over the runs (the last change before a run
   // whose last bit differs, by search; the run starts at the next change) until one starts with
@@ -159,7 +323,23 @@
         if (r === undefined) { return undefined; }
         if (r.t !== null && r.t !== undefined && (at === null || Number(r.t) > at)) { at = Number(r.t); was = c; }
       }
-      if (at === null) { return null; }
+      if (at === null) {
+        // The run is the stream's first. With this last bit at the dump's start it is the dump's
+        // first value (no edge); else it starts from all x (a leading x is not stored) at the
+        // first change after the start. (No time before the start is asked: from 0 that is -1,
+        // which the helper rejects.)
+        const s0 = dumpStart();
+        const there = await v2({ cmd: 'valueAt', signalIds: [id], t: s0 }, bg);
+        const v0 = there && Array.isArray(there.values) ? there.values[0] : undefined;
+        if (typeof v0 !== 'string' || v0.length !== width) { return undefined; }
+        const b0 = v0.slice(-1).toLowerCase();
+        if (b0 === bit) { return null; }
+        if (b0 !== 'x') { return undefined; }
+        const first = await v2({ cmd: 'edge', signalId: id, t: s0, dir: 1, kind: 'any' }, bg);
+        if (first === undefined) { return undefined; }
+        const t0 = first.t === null || first.t === undefined ? null : Number(first.t);
+        return t0 !== null && t0 > s0 && isEdge('x', bit, edge) ? t0 : null;
+      }
       const start = await v2({ cmd: 'edge', signalId: id, t: at, dir: 1, kind: 'any' }, bg);
       if (start === undefined || start.t === null || start.t === undefined) { return undefined; }
       if (isEdge(was, bit, edge)) { return Number(start.t); }
@@ -218,14 +398,21 @@
     return entry.promise;
   }
   // Whether a check's whole read of `v` on v2 would be over the memory ceiling (width x changes):
-  // asked of the helper only when the width alone could get there.
+  // asked of the helper only when the width alone could get there. A count the helper doesn't
+  // know without a walk (not stored yet) is asked for exactly; one it can't give is taken as over.
   async function overV2Ceiling(v, bg) {
     const max = Number(waveform.traceVerdiV2MaxBits) > 0 ? Number(waveform.traceVerdiV2MaxBits) : V2_MAX_BITS;
     const width = Number(v.width) || 1;
     if (width * MAX_CHANGES <= max) { return false; }
-    const r = await v2({ cmd: 'count', signalIds: [v.signalId] }, bg);
-    const c = r && Array.isArray(r.counts) ? r.counts[0] : null;
-    if (!c || !Number.isFinite(Number(c.count))) { return false; }
+    const countOf = async (exact) => {
+      const r = await v2(exact ? { cmd: 'count', signalIds: [v.signalId], exact: true } : { cmd: 'count', signalIds: [v.signalId] }, bg);
+      const c = r && Array.isArray(r.counts) ? r.counts[0] : null;
+      return c && c.count !== null && c.count !== undefined && Number.isFinite(Number(c.count)) ? c : null;
+    };
+    // A stopped check isn't refused as large: its caller says it is stale.
+    const stopped = () => !!(bg && bg.stop && bg.stop());
+    const c = (await countOf(false)) || (stopped() ? null : await countOf(true));
+    if (!c) { return !stopped(); }
     // Over MAX_CHANGES the helper sends a count, no values: nothing to hold.
     const count = Number(c.count);
     return count <= MAX_CHANGES && count * (Number(c.bits) || width) > max;
@@ -246,24 +433,29 @@
     const changes = await host.signalChanges(v, MAX_CHANGES);
     const out = Array.isArray(changes) ? changes : null;
     s.changes.set(v.netlistId, out);
-    // Keep at most CACHED_CHANGES changes across signals: Verdi checks' first, then the oldest read.
-    s.cached = (s.cached || 0) + (out ? out.length : 0);
+    // Keep at most CACHED_BITS across signals: Verdi checks' reads go first, then the oldest; the
+    // one just read stays.
+    if (!s.bitsOf) { s.bitsOf = new Map(); }
+    const bits = out ? out.length * ((Number(v.width) || 1) + 32) : 0;
+    s.bitsOf.set(v.netlistId, bits);
+    s.cached = (s.cached || 0) + bits;
+    const max = cachedBits();
     const drop = (id) => dropChanges(s, id);
     for (const id of [...s.background]) {
-      if (s.cached <= CACHED_CHANGES) { break; }
+      if (s.cached <= max) { break; }
       if (id !== v.netlistId && s.changes.has(id)) { drop(id); }
     }
     for (const id of [...s.changes.keys()]) {
-      if (s.cached <= CACHED_CHANGES || id === v.netlistId) { break; }
-      drop(id);
+      if (s.cached <= max) { break; }
+      if (id !== v.netlistId) { drop(id); }
     }
     return out;
   }
   function dropChanges(s, id) {
-    const list = s.changes.get(id);
     s.changes.delete(id);
     s.background.delete(id);
-    s.cached = (s.cached || 0) - (list ? list.length : 0);
+    s.cached = (s.cached || 0) - ((s.bitsOf && s.bitsOf.get(id)) || 0);
+    if (s.bitsOf) { s.bitsOf.delete(id); }
   }
   const bitsOf = (value, width) => {
     const t = String(value);
@@ -288,7 +480,11 @@
       const vars = new Map(await Promise.all(unique.map(async (p) => [p, await varOf(p)])));
       const list = [...new Set([...vars.values()].filter(Boolean))];
       let raw = new Map();
-      if (session.kind !== 'whole') {
+      // On helper v2 the values come with their last changes (one read; lastChange then asks nothing).
+      const point = session.kind === 'v2' ? await v2PointRead(list, time, background) : null;
+      if (point) {
+        raw = point;
+      } else if (session.kind !== 'whole') {
         try { raw = (await host.rawValuesAt(time, list)) || new Map(); } catch (error) { host.log(error); }
       }
       const read = await Promise.all([...vars].map(async ([p, v]) => {
@@ -315,6 +511,9 @@
       if (!v) { return null; }
       if (session.kind === 'v2') {
         if (refusedByHelper(v)) { return null; }
+        let known = knownSince(session, v, time);
+        if (known === undefined && session.prevReads !== false && await v2PointRead([v], time, background)) { known = knownSince(session, v, time); }
+        if (known !== undefined) { return known; }
         // Integer times: the last change at or before `time` is the last one before time + 1.
         const at = await v2Edge(v, Math.floor(time) + 1, 'any', background);
         if (at !== undefined) { return at === null ? 0 : at; }
@@ -328,42 +527,55 @@
     async prevEdge(p, time, edge) {
       const v = await varOf(p);
       if (!v) { return null; }
-      const width = Number(v.width) || 1;
-      // The helper's rise/fall is a change to 1/0 (x to 1 counts, 0 to x does not); a wide
-      // clock's edge (its last bit) is searched for.
+      // (no netlist width: not taken for 1-bit, whose helper store may be wider; the history says)
+      const known = Number(v.width) > 0;
+      const width = known ? Number(v.width) : 1;
+      // SystemVerilog's edges (isEdge), from both values of each change: the helper's rise/fall
+      // test the new bit only (a change to 1/0: 0 to x is none there), so a 1-bit clock's changes
+      // are walked back with their values; a wide clock's edge (its last bit) is searched for.
       if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
-      if (session.kind === 'v2' && width === 1) {
-        const at = await v2Edge(v, Math.floor(time) + 1, edge === 'PosEdge' ? 'rise' : edge === 'NegEdge' ? 'fall' : 'any', background);
+      if (session.kind === 'v2' && known && width === 1) {
+        const at = await v2NarrowEdge(v, time, edge, background);
         if (at !== undefined) { return at; }
       }
-      if (session.kind === 'v2' && width > 1) {
+      if (session.kind === 'v2' && known && width > 1) {
         const at = await v2WideEdge(v, width, time, edge, background);
         if (at !== undefined) { return at; }
       }
       if (session.kind === 'v2' && refusedByHelper(v)) { return null; }
       const changes = await changesOf(v, background);
       if (!changes) { return null; }
-      for (let i = indexAt(changes, time); i > 0; i--) {
+      const last = indexAt(changes, time);
+      for (let i = last; i > 0; i--) {
         const prev = bitsOf(changes[i - 1][1], width).slice(-1).toLowerCase();
         const now = bitsOf(changes[i][1], width).slice(-1).toLowerCase();
         if (isEdge(prev, now, edge)) { return Number(changes[i][0]); }
       }
+      // The first change: the dump's first value (no edge), except in helper v2's stream, which
+      // starts from all x (a leading x is not stored): there one after the dump's start is from x.
+      if (last >= 0 && session.kind === 'v2' && Number(changes[0][0]) > dumpStart()
+          && isEdge('x', bitsOf(changes[0][1], width).slice(-1).toLowerCase(), edge)) { return Number(changes[0][0]); }
       return null;
     },
   };
   }
   const dump = makeDump(false);
-  const models = {
-    instance: (path) => request('model', { cmd: 'instance', path }),
-    lookup: (path) => request('model', { cmd: 'lookup', path }),
-    writers: (path) => request('model', { cmd: 'writers', path }),
-  };
-  // The session's answers kept, so the engines of its Verdi checks do not ask cmux again.
+  // The session's answers kept, so the engines of its Verdi checks do not ask cmux again. Each
+  // request names the session's design: cmux refuses one for a design it no longer has loaded (an
+  // edit of the sources, a restart), and the session ends, so the next trace resolves anew.
   function sessionModels(s) {
     const kept = new Map();
     const keep = (cmd) => (path) => {
       const key = cmd + ':' + path;
-      if (!kept.has(key)) { kept.set(key, models[cmd](path).catch((error) => { kept.delete(key); throw error; })); }
+      if (!kept.has(key)) {
+        kept.set(key, request('model', { cmd, path, design: s.designId }).catch((error) => {
+          kept.delete(key);
+          // cmux no longer has the design (another load, or none: evicted, its build failed):
+          // the session ends, so the next trace resolves anew and never takes these answers.
+          if (error && (error.code === 'designChanged' || error.code === 'noDesign') && session === s) { session = null; }
+          throw error;
+        }));
+      }
       return kept.get(key);
     };
     s.models = { instance: keep('instance'), lookup: keep('lookup'), writers: keep('writers') };
@@ -389,7 +601,9 @@
     return w && w.markerTime !== undefined && w.markerTime !== null ? Number(w.markerTime) : null;
   };
 
-  async function driver(query) {
+  // A waveform path (dump segments, null: the selected row) at a time (null: the marker), as a
+  // design query: cmux resolves it. Null (the panel says why) when it can't.
+  async function resolved(query) {
     const q = query || {};
     const path = Array.isArray(q.path) ? q.path.map(String) : waveform.link.selectedSignal();
     const time = q.time !== undefined && q.time !== null ? Number(q.time) : markerTime();
@@ -401,24 +615,198 @@
     try {
       mapped = await request('resolve', { dumpPath: path });
     } catch (error) {
-      showError(error.message || s.traceFailed);
+      // A failed build shows itself. A build still shown is over all the same: its done or failed
+      // may have gone to another viewer of the design.
+      if (build && build.failed) { renderBuild(); } else { if (building()) { endBuild(); } showError(error.message || s.traceFailed); }
       return null;
     }
-    return driverOfDesign(Object.assign({ time }, mapped));
+    return Object.assign({ time }, mapped);
   }
 
-  async function driverOfDesign(query) {
+  async function driver(query) {
+    if (heldByBuild()) { return null; }
+    lastEntry = () => driver(query);
+    stopChain();
+    const q = await resolved(query);
+    return q ? (q.compiledOnly ? compiledOnly(q) : driverOfDesign(q)) : null;
+  }
+  // From the editor (cmux mapped the path); a click while the design model builds points at it.
+  // cmux traces from the editor only once the design is built: a build of it still shown is over
+  // (its done is queued behind the design's progress calls), and a failed one is gone. Another
+  // design's build (`design`: cmux's key for it) holds the trace as a page trace is held.
+  function fromEditor(query) {
+    if (build && build.failed) { build = null; }
+    const design = query && query.design !== undefined && query.design !== null ? String(query.design) : null;
+    if (building() && (build.design === null || design === null || build.design === design)) { endBuild(); }
+    if (heldByBuild()) { return null; }
+    lastEntry = () => fromEditor(query);
+    return driverOfDesign(query);
+  }
+
+  // The design query's time (null: the panel says why not), with the session for its dump.
+  function designQuery(query) {
     const q = query || {};
     const time = q.time !== undefined && q.time !== null ? Number(q.time) : markerTime();
     if (!q.designPath) { showError(S().traceNoSignal); return null; }
     if (time === null || !Number.isFinite(time)) { showError(S().traceNoMarker); return null; }
-    if (!session || session.backend !== host.currentBackend || session.kind !== dumpKind() || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')) {
-      session = newSession(q.designPrefix, q.dumpPrefix);
+    if (!session || session.backend !== host.currentBackend || session.kind !== dumpKind() || session.designPrefix !== (q.designPrefix || '') || session.dumpPrefix !== (q.dumpPrefix || '')
+        || session.designId !== String(q.designId || '')) {
+      session = newSession(q.designPrefix, q.dumpPrefix, String(q.designId || ''));
       session.options = { xprop: q.xprop || 'auto' };
       session.engine = window.cmuxTrace.createEngine({ models: sessionModels(session), dump, options: session.options });
     }
+    // This row's (each trace resolves anew): what differs from the compiled design, if anything,
+    // and whether the dump's KDB export still runs (slang's design is used until it answers).
+    session.kdbDiffers = q.kdbDiffers ? String(q.kdbDiffers) : '';
+    session.kdbPending = q.kdbPending === true;
+    // With a KDB model, the instances cmux compared against it for this row (null: no model).
+    session.kdbChecked = Array.isArray(q.kdbChecked) ? new Set(q.kdbChecked.map(String)) : null;
+    return time;
+  }
+
+  // A step in a design whose row cmux mapped with the KDB where the compiled design and slang's
+  // differ (resolve's kdbDiffers says what): slang's statements may not be what ran, so the step
+  // is approximate and says why.
+  // While the dump's KDB export runs, the step says it was traced with slang's design (its trust
+  // is slang's own: the design a dump without a KDB is traced with).
+  function kdbMark(s, step) {
+    if (!s || !step || step.error) { return step; }
+    if (s.kdbPending && !(step.reasons || []).some((r) => r.code === 'kdbPending')) {
+      step.reasons = (step.reasons || []).concat([{ code: 'kdbPending' }]);
+    }
+    // kdbChecked: the instances whose parameters and ports agreed, and `instance.signal` for the
+    // signals whose shape and writes did. A step needs its instance and its signal in it, and so
+    // do its driver's instance (an output port's child), the parent an input port's connection is
+    // evaluated in (`from`) and any other instance writing it; a step with no instance was not
+    // checked. (A connection's expression is not compared: the KDB's writes are statements.)
+    const outside = (path) => typeof path === 'string' && !s.kdbChecked.has(path);
+    const touched = [step.instance, step.instance && step.name ? step.instance + '.' + String(step.name).replace(/\[.*$/, '') : null,
+      step.driver && step.driver.instance, step.driver && step.driver.from]
+      .concat((step.drivers || []).map((d) => d && d.writer));
+    if (s.kdbChecked && (!step.instance || touched.some(outside))
+        && !(step.reasons || []).some((r) => r.code === 'kdbNotChecked')) {
+      step.reasons = (step.reasons || []).concat([{ code: 'kdbNotChecked' }]);
+      if (step.trust === 'exact' || step.trust === 'computed') { step.trust = 'approximate'; }
+    }
+    if (!s.kdbDiffers) { return step; }
+    step.reasons = (step.reasons || []).concat([{ code: 'kdbDiffers', why: s.kdbDiffers }]);
+    if (step.trust === 'exact' || step.trust === 'computed') { step.trust = 'approximate'; }
+    return step;
+  }
+
+  async function driverOfDesign(query) {
+    const time = designQuery(query);
+    if (time === null) { return null; }
+    stopChain();
     history.steps = history.steps.slice(0, history.at + 1);
-    return traceStep(q.designPath, time, true);
+    return traceStep(query.designPath, time, true);
+  }
+
+  // A row only the compiled design has (cmux resolved it with the dump's KDB model: slang's design
+  // lacks its instance, or has another module there): one approximate step with the KDB's write
+  // lines and the dumped value; slang's statements are not evaluated for it.
+  async function compiledOnly(q) {
+    const dumpPath = String(q.dumpPath || '');
+    const time = designQuery({ designPath: dumpPath, designPrefix: '', dumpPrefix: '', time: q.time });
+    if (time === null) { return null; }
+    stopChain();
+    history.steps = history.steps.slice(0, history.at + 1);
+    const run = ++running;
+    showBusy(format(S().traceRunning, dumpPath, number(time)));
+    let value = null, since = null;
+    const ours = session;
+    stepStarted(ours);
+    try {
+      const got = (await dump.values([dumpPath], time)).get(dumpPath);
+      value = got === undefined ? null : got;
+      since = await dump.lastChange(dumpPath, time);
+    } catch (error) { host.log(error); } finally { stepEnded(ours); }
+    if (run !== running) { return null; }
+    const writes = (Array.isArray(q.writes) ? q.writes : []).filter((w) => w && w.file && Number.isFinite(Number(w.line)))
+      .map((w) => ({ file: String(w.file), line: Number(w.line), kind: String(w.kind || '') }));
+    const step = { signal: dumpPath, dumpPath, time, value, since, trust: 'approximate', engine: { name: 'kdb' },
+      compiledOnly: { reason: String(q.reason || 'notInSlang'), writes } };
+    history.steps.push(step);
+    history.at = history.steps.length - 1;
+    render();
+    host.toNative({ type: 'trace', event: 'step', step: plain(step) });
+    return plain(step);
+  }
+
+  // ---- Trace X to Root ----
+  // The chain shown (null: the panel shows the history's step). Its steps come as they are found;
+  // a new trace, Close or Cancel stops it.
+  let chain = null;
+  function stopChain() { if (chain) { chain.cancelled = true; chain = null; } }
+  async function xRoot(query) {
+    if (heldByBuild()) { return null; }
+    lastEntry = () => xRoot(query);
+    stopChain();
+    const q = query && query.designPath ? query : await resolved(query);
+    if (!q) { return null; }
+    if (q.compiledOnly) { return compiledOnly(q); }
+    const time = designQuery(q);
+    if (time === null) { return null; }
+    stopChain();
+    running++;
+    const s = session;
+    const c = { designPath: q.designPath, time, steps: [], end: null, root: -1, approximate: false, running: true, cancelled: false };
+    chain = c;
+    renderChain();
+    const live = () => !c.cancelled && chain === c && session === s;
+    // A candidate: our engine only. A step of the chain: confirmed by Verdi when the dump has it,
+    // within the step's Verdi budget (past it the step stays ours, "not checked").
+    const probe = async (path, at) => {
+      stepStarted(s);
+      try { return await s.engine.active(path, at); } finally { stepEnded(s); }
+    };
+    const step = async (path, at) => {
+      const dumpPath = toDump(path);
+      const verdi = s.kind === 'local' ? null : askVerdi(dumpPath, at);
+      let st = await probe(path, at);
+      st.dumpPath = dumpPath;
+      st.engine = { name: 'cmux' };
+      if (verdi && !st.error && live()) { st = await chainVerdi(s, st, at, verdi, live); }
+      return kdbMark(s, st);
+    };
+    // Each step says when it was found (ms after the start) and how long it took (with its candidates).
+    const t0 = Date.now();
+    let prev = t0;
+    const out = await window.cmuxTrace.xChain({ path: q.designPath, time }, {
+      step, probe, cancelled: () => !live(), maxSteps: waveform.traceXChainSteps,
+      onStep: (e) => {
+        const now = Date.now();
+        Object.assign(e, { dumpPath: e.step.dumpPath || toDump(e.signal), at: now - t0, ms: now - prev });
+        prev = now;
+        c.steps.push(e);
+        if (chain === c) { renderChain(); }
+      },
+    });
+    Object.assign(c, { end: out.end, root: out.root, approximate: out.approximate, running: false });
+    if (chain === c) { renderChain(); }
+    return plain({ steps: c.steps, end: c.end, root: c.root, approximate: c.approximate });
+  }
+  // A chain step with Verdi's answer merged in (withVerdi), or as it was, marked not checked.
+  async function chainVerdi(s, st, time, asked, live) {
+    const deadline = Date.now() + verdiBudget();
+    let timer;
+    const stop = () => !live() || Date.now() >= deadline;
+    const v = s.vars.get(st.signal);
+    const known = v && s.changes.get(v.netlistId);
+    const checkDump = guardedDump(stop, Array.isArray(known) ? known.length : undefined);
+    const engine = window.cmuxTrace.createEngine({ models: s.models, dump: checkDump, options: s.options });
+    const late = { timedOut: true };
+    const limit = new Promise((resolve) => { timer = setTimeout(() => resolve(late), verdiBudget()); });
+    try {
+      const out = await Promise.race([withVerdi(st, time, asked, stop, engine), limit]);
+      if (out && !out.large && out !== late) { return out; }
+      st.engine.verdi = out && out.large ? 'large' : 'timedOut';
+      return st;
+    } catch (error) {
+      host.log(error);
+      st.engine.verdi = 'timedOut';
+      return st;
+    } finally { clearTimeout(timer); cancelPending(s, checkDump.background); }
   }
 
   async function traceStep(designPath, time, push) {
@@ -441,6 +829,7 @@
     if (run !== running) { return null; }
     step.dumpPath = dumpPath;
     step.engine = { name: 'cmux' };
+    kdbMark(session, step);
     // Ours is shown now; Verdi's answer fills the step in later (verdiCheck), never before.
     if (verdi && !step.error) { step.engine.verdi = 'checking'; verdiCheck(step, time, verdi); }
     if (push) { history.steps.push(step); history.at = history.steps.length - 1; }
@@ -478,9 +867,9 @@
     const hint = Array.isArray(known) ? known.length : undefined;
     const checkDump = guardedDump(stop, hint), checkSession = session;
     const engine = window.cmuxTrace.createEngine({ models: session.models, dump: checkDump, options: session.options });
+    let shown = step;
     const check = Promise.race([withVerdi(step, time, asked, stop, engine), limit]).then((out) => {
       if (gone()) { step.engine.verdi = 'dropped'; return; }
-      let shown = step;
       if (out === late || !out) {
         step.engine.verdi = 'timedOut';
       } else if (out.large) {
@@ -493,7 +882,11 @@
       if (history.steps[history.at] === shown) { render(); }
       host.toNative({ type: 'trace', event: 'update', step: plain(shown) });
     }).catch((error) => { host.log(error); step.engine.verdi = 'timedOut'; })
-      .finally(() => { done = true; clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check); });
+      .finally(() => {
+        done = true; clearTimeout(timer); cancelPending(checkSession, checkDump.background); checks.delete(check);
+        // (A filled-in step replaced `step` in the history: `shown` is the one still there.)
+        if (history.steps.includes(shown)) { prefetchLeaves(checkSession, shown); }
+      });
     checks.add(check);
   }
   // Resolves when every Verdi check under way has finished (cmux and the checks wait on this).
@@ -503,9 +896,88 @@
   }
   const sameFile = (a, b) => !!a && !!b && (a === b || String(a).split('/').pop() === String(b).split('/').pop());
   const isPort = (st) => !!st.driver && (st.driver.kind === 'portIn' || st.driver.kind === 'portOut');
-  // Verdi's answer (null when the request failed); the step's budget bounds the wait.
+  // Verdi's answer (null when the request failed); the step's budget bounds the wait. A prefetched
+  // answer for the same signal and time is used (status/tracex-verdi-pool.md, phase A).
   function askVerdi(signal, time) {
-    return request('engine', { cmd: 'active', signal, time }).catch((error) => { host.log(error); return null; });
+    const s = session;
+    const key = signal + '@' + time;
+    const known = s.verdiAnswers && s.verdiAnswers.get(key);
+    if (known) {
+      s.verdiAnswers.delete(key);
+      s.prefetchHits = (s.prefetchHits || 0) + 1;
+      return known.then((r) => r || engineRequest(s, signal, time));
+    }
+    // Asked now: not prefetched as well later.
+    if (s.prefetch) { s.prefetch = s.prefetch.filter((q) => q.key !== key); }
+    return engineRequest(s, signal, time);
+  }
+  // A background request (a prefetch) gets a shorter timeout natively, and its failure doesn't
+  // make the next clicks go without Verdi. Each answer says how many requests cmux's pool runs at
+  // once for this dump (`pool`).
+  function engineRequest(s, signal, time, background) {
+    s.verdiInFlight = (s.verdiInFlight || 0) + 1;
+    const body = background ? { cmd: 'active', signal, time, background: true } : { cmd: 'active', signal, time };
+    return request('engine', body)
+      .then((r) => { const n = r && Math.floor(Number(r.pool)); if (n >= 1) { s.verdiPool = n; } return r; })
+      .catch((error) => { host.log(error); return null; })
+      .finally(() => { s.verdiInFlight--; pumpPrefetch(s); });
+  }
+
+  // ---- Verdi prefetch (status/tracex-verdi-pool.md) ----
+  // Once a step's check has settled, Verdi is asked about the step's fan-in leaves (the next click's
+  // candidates) while it would sit idle: on one session only when no step or check of ours is
+  // asking, with N sessions (traceVerdiSessions, clamped to cmux's pool) up to N requests at once. Answers are kept per
+  // trace session (a reload or another dump starts a new one), only when Verdi was ready.
+  // Off by default until the pool A/B (one session: a click can wait behind one prefetch call).
+  const VERDI_PREFETCH = 0;
+  const prefetchCount = () => {
+    const n = Number(waveform.traceVerdiPrefetch);
+    return waveform.traceVerdiPrefetch !== undefined && Number.isFinite(n) && n >= 0 ? Math.floor(n) : VERDI_PREFETCH;
+  };
+  // traceVerdiSessions, at most the pool cmux reported for this dump (one until it says more).
+  // Prefetched answers kept per trace session, the oldest going first (traceVerdiAnswers for tests).
+  const VERDI_ANSWERS = 64;
+  const answersKept = () => (Number(waveform.traceVerdiAnswers) >= 1 ? Math.floor(Number(waveform.traceVerdiAnswers)) : VERDI_ANSWERS);
+  const verdiSessions = (s) => {
+    const n = Math.floor(Number(waveform.traceVerdiSessions));
+    return Math.min(n >= 1 ? Math.min(n, 8) : 1, (s && s.verdiPool) || 1);
+  };
+  const ROLE_ORDER = { data: 0, index: 1, control: 2, clock: 3 };
+  function prefetchLeaves(s, step) {
+    if (s !== session || s.kind === 'local' || !step || !Array.isArray(step.fanin)) { return; }
+    const max = prefetchCount();
+    if (!max) { return; }
+    if (!s.verdiAnswers) { s.verdiAnswers = new Map(); }
+    const leaves = step.fanin.filter((f) => f.path && f.dumped !== false && Number.isFinite(Number(f.time)))
+      .sort((a, b) => (ROLE_ORDER[a.role] ?? 4) - (ROLE_ORDER[b.role] ?? 4));
+    const queue = [];
+    for (const f of leaves) {
+      const key = toDump(f.path) + '@' + f.time;
+      if (s.verdiAnswers.has(key) || queue.some((q) => q.key === key)) { continue; }
+      queue.push({ key, signal: toDump(f.path), time: f.time });
+      if (queue.length >= max) { break; }
+    }
+    // The newest step's leaves replace the ones still waiting.
+    s.prefetch = queue;
+    pumpPrefetch(s);
+  }
+  function pumpPrefetch(s) {
+    if (s !== session || !s.prefetch || !s.prefetch.length) { return; }
+    const n = verdiSessions(s);
+    while (s.prefetch.length && (s.verdiInFlight || 0) < n && (n > 1 || (!checks.size && !s.steps))) {
+      const { key, signal, time } = s.prefetch.shift();
+      if (s.verdiAnswers.has(key)) { continue; }
+      s.prefetched = (s.prefetched || 0) + 1;
+      const p = engineRequest(s, signal, time, true).then((r) => {
+        if (!r || r.state !== 'ready') { if (s.verdiAnswers.get(key) === p) { s.verdiAnswers.delete(key); } return null; }
+        return r;
+      });
+      s.verdiAnswers.set(key, p);
+      for (const k of s.verdiAnswers.keys()) {
+        if (s.verdiAnswers.size <= answersKept()) { break; }
+        s.verdiAnswers.delete(k);
+      }
+    }
   }
   // `shown` with Verdi's answer merged in, as a new step (the shown one is left as it is); null
   // when `stop()` says the check is late or stale before the port hops are followed.
@@ -555,19 +1027,27 @@
     return step;
   }
 
-  function back() { if (history.at > 0) { history.at--; render(); post(); } return state(); }
-  function forward() { if (history.at < history.steps.length - 1) { history.at++; render(); post(); } return state(); }
+  function back() { stopChain(); if (history.at > 0) { history.at--; render(); post(); } return state(); }
+  function forward() { stopChain(); if (history.at < history.steps.length - 1) { history.at++; render(); post(); } return state(); }
   function post() { const st = history.steps[history.at]; if (st) { host.toNative({ type: 'trace', event: 'step', step: plain(st) }); } }
   function close() {
     running++;
+    stopChain();
     history.steps = []; history.at = -1;
+    // No more prefetching for a closed panel; its answers go too.
+    if (session) { session.prefetch = []; if (session.verdiAnswers) { session.verdiAnswers.clear(); } }
     if (panel) { panel.hidden = true; }
     host.toNative({ type: 'trace', event: 'closed' });
     return state();
   }
   function state() {
     const st = history.steps[history.at];
-    return { open: !!(panel && !panel.hidden), steps: history.steps.length, at: history.at, step: st ? plain(st) : null };
+    return { open: !!(panel && !panel.hidden), steps: history.steps.length, at: history.at, step: st ? plain(st) : null,
+      prefetch: { asked: (session && session.prefetched) || 0, used: (session && session.prefetchHits) || 0,
+        kept: (session && session.verdiAnswers && session.verdiAnswers.size) || 0,
+        queued: ((session && session.prefetch) || []).map((q) => q.signal) },
+      cache: { signals: session && session.changes ? session.changes.size : 0, bits: (session && session.cached) || 0 },
+      chain: chain ? { running: chain.running, steps: chain.steps.length, end: chain.end ? chain.end.code : null } : null };
   }
   const plain = (x) => JSON.parse(JSON.stringify(x, (k, v) => (typeof v === 'bigint' ? v.toString() : v)));
   const number = (n) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString() : String(n));
@@ -598,7 +1078,23 @@
       #cmux-trace tr.fanin { cursor: pointer; }
       #cmux-trace tr.fanin:hover, #cmux-trace tr.fanin:focus { background: var(--vscode-list-hoverBackground); outline: none; }
       #cmux-trace .x { color: var(--vscode-editorError-foreground, #f14c4c); }
-      #cmux-trace ul { margin: 2px 0; padding-left: 16px; }`;
+      #cmux-trace ul { margin: 2px 0; padding-left: 16px; }
+      #cmux-trace tr.xstep { cursor: pointer; }
+      #cmux-trace tr.xstep:hover, #cmux-trace tr.xstep:focus { background: var(--vscode-list-hoverBackground); outline: none; }
+      #cmux-trace tr.xstep.root td { font-weight: 600; }
+      #cmux-trace tr.xstep.root { background: var(--vscode-list-inactiveSelectionBackground); }
+      #cmux-trace ul.stages { list-style: none; padding-left: 2px; }
+      #cmux-trace li.stage .mark { display: inline-block; width: 14px; }
+      #cmux-trace li.stage.pending { color: var(--vscode-descriptionForeground); }
+      #cmux-trace li.stage.current { font-weight: 600; }
+      #cmux-trace li.stage.done .mark { color: var(--vscode-testing-iconPassed, #73c991); }
+      #cmux-trace .bar { display: inline-block; width: 120px; height: 4px; margin-left: 8px; vertical-align: middle; border-radius: 2px;
+        background: var(--vscode-widget-border); overflow: hidden; }
+      #cmux-trace .bar .fill { display: block; height: 100%; background: var(--vscode-progressBar-background, #0e70c0); }
+      #cmux-trace pre.build-log { margin: 2px 0 6px; max-height: 12em; overflow: auto; }
+      #cmux-trace .build-actions { display: flex; align-items: center; gap: 10px; }
+      #cmux-trace.pulse { animation: cmux-trace-pulse 0.6s ease-in-out 2; }
+      @keyframes cmux-trace-pulse { 50% { box-shadow: 0 0 0 3px var(--vscode-focusBorder, #007fd4); } }`;
     document.head.appendChild(style);
     panel = document.createElement('div');
     panel.id = 'cmux-trace';
@@ -691,7 +1187,12 @@
     if (e.verdi === 'checking') { text += ' · ' + s.traceVerdiChecking; }
     if (e.verdi === 'timedOut') { text += ' · ' + s.traceVerdiTimedOut; }
     if (e.verdi === 'large') { text += ' · ' + s.traceVerdiLarge; }
-    if (e.verdi === 'unavailable') { text += ' · ' + format(s['traceVerdiUnavailable_' + e.reason] || s.traceVerdiUnavailable, e.message || ''); }
+    if (e.verdi === 'unavailable') {
+      // The host's message fills a reason's (%@); with none, that bracket goes.
+      const own = s['traceVerdiUnavailable_' + e.reason];
+      const why = own && !e.message ? String(own).replace(/\s*[(（]%@[)）]/, '') : (own || s.traceVerdiUnavailable);
+      text += ' · ' + format(why, e.message || '');
+    }
     if (e.verdiNotFound) { text += ' · ' + s.traceVerdiNotFound; }
     div.append(el('span', '', text));
     if (st.via && st.via.length) { div.append(el('span', '', ' · ' + format(s.traceThroughPorts, st.via.map((h) => h.signal).join(' → ')))); }
@@ -712,7 +1213,32 @@
     return format(text, r.path || r.src || (r.time !== undefined ? number(r.time) : '') || r.count || r.why || r.error || '', r.predicted ? valueText(r.predicted) : '');
   }
 
+  function renderCompiledOnly(st, p, body) {
+    const s = S();
+    const badge = p.querySelector('.head .badge');
+    if (badge) { badge.title = s.traceCompiledOnly || ''; }
+    body.append(el('div', '', s.traceCompiledOnly));
+    body.append(el('div', 'muted', s['traceCompiledOnly_' + st.compiledOnly.reason] || st.compiledOnly.reason));
+    const line = el('div');
+    if (st.compiledOnly.writes.length) {
+      line.append(el('span', '', s.traceCompiledWrites + ' '));
+      st.compiledOnly.writes.forEach((w, i) => {
+        if (i) { line.append(el('span', '', ', ')); }
+        const a = el('a', '', where(w));
+        a.title = s.traceOpen || '';
+        a.addEventListener('click', () => open({ file: w.file, line: w.line }));
+        line.append(a);
+      });
+    } else {
+      line.append(el('span', '', s.traceCompiledNoWrites));
+    }
+    if (st.since !== null && st.since !== undefined) { line.append(el('span', 'muted', ' · ' + format(s.traceSince, number(st.since)))); }
+    body.append(line);
+    p.append(body);
+  }
+
   function render() {
+    if (chain) { renderChain(); return; }
     const st = history.steps[history.at];
     busy = false;
     if (!st) { if (panel) { panel.hidden = true; } return; }
@@ -724,6 +1250,7 @@
       p.append(body);
       return;
     }
+    if (st.compiledOnly) { renderCompiledOnly(st, p, body); return; }
     // Driver kind, where, when.
     const line = el('div');
     line.append(el('span', '', driverText(st) + ' '));
@@ -787,6 +1314,73 @@
     p.append(body);
   }
 
+  // The chain: a row per step (signal = value at its time, its statement, why it follows the one
+  // before, trust), the root highlighted; a row opens its statement and shows the signal at its
+  // time in the waveform. Then why it ended, or how far it has got.
+  function renderChain() {
+    const c = chain;
+    if (!c) { return; }
+    busy = false;
+    const s = S();
+    const p = ensurePanel();
+    p.textContent = '';
+    const h = el('div', 'head');
+    h.append(el('span', 'title', format(s.traceXTitle, c.designPath, number(c.time))));
+    if (!c.running && c.steps.length) {
+      const trust = c.approximate ? 'approximate' : 'exact';
+      const b = el('span', 'badge ' + trust, s['traceTrust_' + trust] || trust);
+      b.title = s['traceTrustHelp_' + trust] || '';
+      h.append(b);
+    }
+    if (c.running) { const b = button(s.traceXCancel || '', s.traceXCancel, () => { c.cancelled = true; }); b.classList.add('xcancel'); h.append(b); }
+    if (c.steps.length) { const b = button(s.traceXAdd || '', s.traceXAdd, () => addChainSignals(c)); b.classList.add('xadd'); h.append(b); }
+    h.append(button('×', s.traceClose, close));
+    p.append(h);
+    const body = el('div', 'body');
+    const table = el('table');
+    c.steps.forEach((e, i) => {
+      const st = e.step || {};
+      const tr = el('tr', 'xstep' + (i === c.root ? ' root' : ''));
+      tr.tabIndex = 0;
+      tr.dataset.path = e.signal || '';
+      const loc = st.stmt && st.stmt.loc;
+      const whyText = e.why.code === 'earliest' ? format(s.traceXWhy_earliest, e.why.count) : s['traceXWhy_' + e.why.code] || e.why.code;
+      const role = e.why.role && e.why.code !== 'start' ? ' · ' + (s['traceRole_' + e.why.role] || e.why.role) : '';
+      tr.append(el('td', 'muted', String(i + 1)), el('td', 'code', e.signal), el('td', 'code' + (/[xz]/.test(String(e.value)) ? ' x' : ''), valueText(e.value)),
+        el('td', 'muted', '@' + number(e.time)), el('td', '', where(loc)), el('td', 'muted', whyText + role),
+        el('td', 'badge ' + (e.trust || ''), s['traceTrust_' + e.trust] || e.trust || ''));
+      if (i === c.root) { tr.append(el('td', 'badge', s.traceXRootBadge || '')); }
+      if (st.stmt && st.stmt.src) { tr.title = st.stmt.src; }
+      const go = () => { open(loc); showInWaveform(e); };
+      tr.addEventListener('click', go);
+      tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); go(); } });
+      table.append(tr);
+    });
+    body.append(table);
+    const endCode = c.end && c.end.code;
+    const last = c.steps[c.steps.length - 1];
+    const endText = c.running ? format(s.traceXRunning, c.steps.length)
+      : format(s['traceXEnd_' + endCode] || endCode || '', endCode === 'budget' ? String(c.steps.length) : endCode === 'noX' ? c.designPath : (c.end && c.end.signal) || '');
+    body.append(el('div', 'muted', endText));
+    if (last && !c.running && c.root >= 0) {
+      const reasons = ((last.step && last.step.reasons) || []).filter((r) => r.code !== 'multiDriven');
+      if (reasons.length) { const ul = el('ul', 'muted'); for (const r of reasons) { ul.append(el('li', '', reasonText(r))); } body.append(ul); }
+    }
+    p.append(body);
+    p.hidden = false;
+  }
+  // The step's signal in the waveform (added unless shown, selected) with the marker at its time.
+  async function showInWaveform(e) {
+    const path = dumpSegments(e.dumpPath || toDump(e.signal));
+    try { await waveform.link.addSignal(path); } catch (error) { host.log(error); }
+    waveform.link.setMarker(e.time);
+  }
+  async function addChainSignals(c) {
+    for (const e of c.steps) {
+      try { await waveform.link.addSignal(dumpSegments(e.dumpPath || toDump(e.signal))); } catch (error) { host.log(error); }
+    }
+  }
+
   // ---- the waveform row's menu ----
   function rowMenuItems(context) {
     const c = context || {};
@@ -794,16 +1388,191 @@
     const v = host.netlistItem(c.netlistId);
     if (!v) { return []; }
     const path = host.pathOf(v);
-    return [{ label: S().traceDriverMenu || '', keybinding: S().traceDriverKey || '', run: () => driver({ path }) }];
+    return [{ label: S().traceDriverMenu || '', keybinding: S().traceDriverKey || '', run: () => driver({ path }) },
+      { label: S().traceXRootMenu || '', keybinding: S().traceXRootKey || '', run: () => xRoot({ path }) }];
   }
 
   // A reload drops the session (its variables and changes are the old file's).
   function backendChanged() { session = null; }
+  // cmux's aliasHints({pairs}): the dump's port aliases, pairs of full dump paths ([port, net] and the
+  // other way round), for helper v2, which keeps the pairs whose first is rebuilt and second stored
+  // and then reads the stored one for both. Sent in chunks of ALIAS_CHUNK on the page's own helper
+  // connection; an older helper (an error reply) is not asked for the rest. The pairs sent.
+  const ALIAS_CHUNK = 4096;
+  async function aliasHints(arg) {
+    const pairs = (arg && Array.isArray(arg.pairs) ? arg.pairs : [])
+      .filter((p) => Array.isArray(p) && p.length === 2 && p.every((x) => typeof x === 'string' && x.length > 0));
+    if (dumpKind() !== 'v2' || !pairs.length) { return 0; }
+    const b = host.currentBackend;
+    let sent = 0;
+    for (let i = 0; i < pairs.length; i += ALIAS_CHUNK) {
+      const chunk = pairs.slice(i, i + ALIAS_CHUNK);
+      let answer;
+      try { answer = await b.v2({ id: v2Id(), cmd: 'aliasHints', pairs: chunk }); } catch (error) { host.log(error); return sent; }
+      const r = answer && answer.reply;
+      if (!r || r.error || r.cancelled) { if (r && r.error) { host.log(new Error('aliasHints: ' + r.error)); } return sent; }
+      sent += chunk.length;
+    }
+    return sent;
+  }
 
   // Shown only while a trace is waiting (not over a step already shown).
-  function status(text) { if (panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
+  function status(text) { if (!build && panel && !panel.hidden && busy) { showBusy(String(text || '')); } return true; }
 
-  const api = Object.freeze({ driver, driverOfDesign, reply, status, back, forward, close, state, settled, backendChanged });
+  // ---- the first-time design model build ----
+  // cmux builds cmux-sv-model once per host and cmux version; its progress calls come while the
+  // trace's resolve (or model request) waits. The build is the page's own state so that another
+  // click while it builds shows it again rather than "Finding…".
+  const STAGES = ['upload', 'fetch', 'configure', 'compile', 'install', 'load'];
+  let build = null;
+  let buildDone = null;
+  let lastEntry = null;
+  const building = () => !!build && !build.failed;
+  // A new trace while the design model builds asks nothing new and points at the build; after a
+  // failed build it starts over (the failure is shown again if it fails again).
+  function heldByBuild() {
+    if (build && build.failed) { build = null; }
+    if (!building()) { return false; }
+    focusBuild();
+    return true;
+  }
+  const sizeText = (n) => {
+    const b = Number(n) || 0;
+    if (b < 1024) { return `${b} B`; }
+    if (b < 1024 * 1024) { return `${Math.round(b / 1024)} KB`; }
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  };
+  const elapsedText = (startedAt) => {
+    const sec = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  };
+  function endBuild() {
+    stopTicking();
+    if (build) { buildDone = build.startedAt; }
+    build = null;
+  }
+  function stopTicking() { if (build && build.timer) { clearInterval(build.timer); build.timer = null; } }
+  function progress(p) {
+    const q = p || {};
+    const stage = String(q.stage || '');
+    const startedAt = Number.isFinite(Number(q.startedAt)) ? Number(q.startedAt) : null;
+    if (stage === 'done') {
+      if (startedAt !== null && build && build.startedAt !== startedAt) { return true; }
+      buildDone = startedAt !== null ? startedAt : build && build.startedAt;
+      endBuild();
+      return true;
+    }
+    if (stage !== 'failed' && startedAt !== null && startedAt === buildDone) { return true; }
+    if (!build || (startedAt !== null && build.startedAt !== startedAt)) {
+      stopTicking();
+      build = { startedAt: startedAt !== null ? startedAt : Date.now(), stage: 'upload', percent: null, sourceBytes: null };
+    }
+    build.host = q.host === undefined ? build.host : q.host;
+    if (q.design !== undefined) { build.design = q.design === null ? null : String(q.design); }
+    if (build.design === undefined) { build.design = null; }
+    // A trace from the editor that waits for this build: Retry traces its signal.
+    if (q.entry && Array.isArray(q.entry.dumpPath) && q.entry.dumpPath.length) {
+      const entry = { path: q.entry.dumpPath.map(String), time: Number.isFinite(Number(q.entry.time)) && q.entry.time !== null ? Number(q.entry.time) : null };
+      lastEntry = () => driver(entry);
+    }
+    if (stage === 'failed') {
+      stopTicking();
+      build.failed = { message: String(q.message || ''), log: String(q.log || '') };
+    } else if (STAGES.includes(stage)) {
+      build.failed = null;
+      build.stage = stage;
+      build.percent = Number.isFinite(Number(q.percent)) && q.percent !== null ? Math.max(0, Math.min(100, Math.round(Number(q.percent)))) : (stage === 'compile' ? build.percent : null);
+      if (q.sourceBytes !== undefined) { build.sourceBytes = Number(q.sourceBytes); }
+      if (!build.timer) {
+        build.timer = setInterval(() => {
+          const e = panel && panel.querySelector('.build-elapsed');
+          if (e && build) { e.textContent = format(S().traceBuildElapsed || '%@', elapsedText(build.startedAt)); }
+        }, 1000);
+      }
+    } else {
+      return false;
+    }
+    // focus: a new trace waits for this build (from the editor, where the page is not asked).
+    if (q.focus) { focusBuild(); } else { renderBuild(); }
+    return true;
+  }
+  function focusBuild() {
+    renderBuild();
+    const p = ensurePanel();
+    p.classList.remove('pulse');
+    void p.offsetWidth;
+    p.classList.add('pulse');
+    setTimeout(() => p.classList.remove('pulse'), 1200);
+    if (!p.hasAttribute('tabindex')) { p.tabIndex = -1; }
+    p.focus({ preventScroll: true });
+  }
+  function buildInfoLink() {
+    const a = el('a', 'buildinfo', S().traceBuildWhat || '');
+    a.href = '#';
+    a.addEventListener('click', (e) => { e.preventDefault(); host.toNative({ type: 'trace', event: 'buildInfo' }); });
+    return a;
+  }
+  function renderBuild() {
+    if (!build) { return; }
+    const s = S();
+    const local = !build.host;
+    busy = false;
+    if (build.failed) {
+      const p = head(local ? s.traceBuildFailedTitleLocal : format(s.traceBuildFailedTitle, build.host));
+      const body = el('div', 'body');
+      if (build.failed.message) { body.append(el('div', '', build.failed.message)); }
+      const lines = build.failed.log.split('\n').filter((l) => l.trim()).slice(-20);
+      if (lines.length) {
+        body.append(el('div', 'muted', s.traceBuildLog || ''));
+        body.append(el('pre', 'code build-log', lines.join('\n')));
+      }
+      const row = el('div', 'build-actions');
+      const retry = button(s.traceBuildRetry || '', '', () => {
+        const again = lastEntry;
+        build = null;
+        if (again) { again(); }
+      });
+      retry.classList.add('retry');
+      row.append(retry, buildInfoLink());
+      body.append(row);
+      p.append(body);
+      return;
+    }
+    const p = head(local ? s.traceBuildTitleLocal : format(s.traceBuildTitle, build.host));
+    const body = el('div', 'body');
+    const list = el('ul', 'stages');
+    const at = STAGES.indexOf(build.stage);
+    STAGES.forEach((name, i) => {
+      const state = i < at ? 'done' : i === at ? 'current' : 'pending';
+      const label = name === 'upload' ? format(s.traceBuildStage_upload, sizeText(build.sourceBytes || 0)) : (s['traceBuildStage_' + name] || name);
+      const li = el('li', 'stage ' + state);
+      li.dataset.stage = name;
+      li.dataset.state = state;
+      li.append(el('span', 'mark', state === 'done' ? '✓' : state === 'current' ? '›' : '·'), el('span', '', label));
+      if (name === 'compile' && state === 'current' && build.percent !== null) {
+        li.append(el('span', 'muted', ` ${build.percent}%`));
+        const bar = el('span', 'bar');
+        const fill = el('span', 'fill');
+        fill.style.width = `${build.percent}%`;
+        bar.append(fill);
+        li.append(bar);
+      }
+      list.append(li);
+    });
+    body.append(list);
+    body.append(el('div', 'muted build-elapsed', format(s.traceBuildElapsed || '%@', elapsedText(build.startedAt))));
+    const foot = el('div', 'muted');
+    foot.append(el('span', '', (s.traceBuildOnce || '') + ' '), buildInfoLink());
+    body.append(foot);
+    p.append(body);
+  }
+
+  const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged, aliasHints });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
+  // prevEdge: the dump provider's, for the checks (the session of the last trace; null without one).
   window.cmuxTraceUI = { rowMenuItems };
+  // The checks' hook (window.cmuxTraceChecks, which only the checks define): the page's edge lookup.
+  if (window.cmuxTraceChecks && typeof window.cmuxTraceChecks === 'object') {
+    window.cmuxTraceChecks.prevEdge = (path, time, edge) => (session ? dump.prevEdge(String(path), Number(time), String(edge)) : null);
+  }
 })();

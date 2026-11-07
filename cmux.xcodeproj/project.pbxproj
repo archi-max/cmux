@@ -4499,6 +4499,7 @@
 		5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000A1B2 /* WaveformSourceLink.swift */; };
 		5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */; };
 		5A7EF0000000000000D0E0A0 /* WaveformTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0E0A1 /* WaveformTrace.swift */; };
+		5A7EF0000000000000D0E0C0 /* WaveformTraceKDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0E0C1 /* WaveformTraceKDB.swift */; };
 		5A7EF0000000000000D0E0B0 /* WaveformTraceVerdi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000D0E0B1 /* WaveformTraceVerdi.swift */; };
 		5A7EF0000000000000A1A501 /* WaveformValueAliasFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF0000000000000A1A502 /* WaveformValueAliasFiles.swift */; };
 		5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */; };
@@ -9219,6 +9220,7 @@
 		5A7EF000000000000000A1B2 /* WaveformSourceLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformSourceLink.swift; sourceTree = "<group>"; };
 		5A7EF000000000000000B004 /* WaveformTerminalLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTerminalLinks.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0E0A1 /* WaveformTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTrace.swift; sourceTree = "<group>"; };
+		5A7EF0000000000000D0E0C1 /* WaveformTraceKDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTraceKDB.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000D0E0B1 /* WaveformTraceVerdi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformTraceVerdi.swift; sourceTree = "<group>"; };
 		5A7EF0000000000000A1A502 /* WaveformValueAliasFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformValueAliasFiles.swift; sourceTree = "<group>"; };
 		5A7EF00000000000000000A4 /* WaveformViewerSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WaveformViewerSchemeHandler.swift; sourceTree = "<group>"; };
@@ -12104,6 +12106,7 @@
 				5A7EF0000000000000A5B0A5 /* WaveformDebuggerCommitBreakpoints.swift */,
 				5A7EF0000000000000D0E0A1 /* WaveformTrace.swift */,
 				5A7EF0000000000000D0E0B1 /* WaveformTraceVerdi.swift */,
+				5A7EF0000000000000D0E0C1 /* WaveformTraceKDB.swift */,
 				5A7EF0000000000000D0B004 /* WaveformDebuggerEditorHighlights.swift */,
 				5A7EF000000000000F5E0002 /* WaveformEnumLink.swift */,
 				5A7EF000000000000F5F0002 /* WaveformFSMEngines.swift */,
@@ -17921,6 +17924,7 @@
 				5A7EF000000000000000A1B1 /* WaveformSourceLink.swift in Sources */,
 				5A7EF000000000000000B003 /* WaveformTerminalLinks.swift in Sources */,
 				5A7EF0000000000000D0E0A0 /* WaveformTrace.swift in Sources */,
+				5A7EF0000000000000D0E0C0 /* WaveformTraceKDB.swift in Sources */,
 				5A7EF0000000000000D0E0B0 /* WaveformTraceVerdi.swift in Sources */,
 				5A7EF0000000000000A1A501 /* WaveformValueAliasFiles.swift in Sources */,
 				5A7EF00000000000000000A3 /* WaveformViewerSchemeHandler.swift in Sources */,

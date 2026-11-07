@@ -1244,6 +1244,11 @@ struct cmuxApp: App {
                     NSSound.beep()
                 }
             }
+            Button(String(localized: "shortcut.traceWaveformXRoot.label", defaultValue: "Trace X to Root")) {
+                if !WaveformTrace.performXRootFromShortcut(window: NSApp.keyWindow ?? NSApp.mainWindow) {
+                    NSSound.beep()
+                }
+            }
             Button(String(localized: "shortcut.navigateSourceBack.label", defaultValue: "Go Back in Editor")) {
                 if appDelegate.shortcutFocusedSavingTextView(in: NSApp.keyWindow ?? NSApp.mainWindow)?
                     .languageFeatures?.navigateBack() != true {
@@ -1265,6 +1270,8 @@ struct cmuxApp: App {
             Button(String(localized: "menu.view.resetLanguageServerTopLevel", defaultValue: "Reset Language Server Top Level")) {
                 WaveformSourceLink.resetTopLevel()
             }
+            WaveformTraceKDBToggle()
+            WaveformTraceKDBRetryButton()
             WaveformInlineValuesMenu()
             WaveformDebuggerMenu()
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {

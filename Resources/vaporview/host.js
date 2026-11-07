@@ -939,6 +939,8 @@
     // Null when the backend has no faster way than signalChanges.
     signalPosedges: (v, maxEdges) => (dataReady() && backend.signalPosedges ? backend.signalPosedges(v, maxEdges) : null),
     get currentBackend() { return backend; },
+    // The dump's start time: its metadata's timeStart when the backend gives one, else 0.
+    dumpStart: () => (doc.metadata && Number.isFinite(Number(doc.metadata.timeStart)) ? Number(doc.metadata.timeStart) : 0),
     // The open dump's identity for caches keyed by it, or null (VCD/FST in the page: not needed, fast).
     dumpIdentity: () => (dataReady() && backend.identity) || null,
     dataReady: () => dataReady(),

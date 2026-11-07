@@ -27,7 +27,14 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var models: [String: Any] = [:]
   /// What the next resolve answers (nil: the dump path as the design path).
   var resolveError: String?
+  /// What the resolves answer instead (a row only the compiled design has: cmux's compiledOnly).
+  var resolveAnswer: [String: Any]?
   var modelRequests = 0
+  /// The design cmux has loaded now (resolve's designId); a model request for another one is
+  /// refused as cmux refuses it (nil: any).
+  var currentDesign: String?
+  /// Model requests are answered `noDesign` (cmux has no design for the viewer: evicted, or its build failed).
+  var noDesign = false
   /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
   var engineAnswer: [String: Any]?
   /// Per traced signal (the request's dump path), ahead of `engineAnswer`.
@@ -37,6 +44,21 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var engineDelay: TimeInterval = 0
   /// cmux never answers engine requests (a hung Verdi session).
   var engineHang = false
+  /// Resolve requests held unanswered (a first-time design model build under way), by id.
+  var holdResolves = false
+  var heldResolves: [(id: Int, path: String)] = []
+  /// Model lookups answered after this long (a slow step).
+  var lookupDelay: TimeInterval = 0
+  /// The signals of the engine requests the page marked as background (a prefetch).
+  var engineBackground: [String] = []
+  /// Each engine request's signal and when it was asked and answered (seconds since start); how
+  /// many were under way at once at most (a pool of Verdi sessions answers in parallel).
+  var engineLog: [(signal: String, asked: Double, answered: Double?, background: Bool)] = []
+  var engineInFlight = 0
+  var engineMostInFlight = 0
+  /// Bumped when the log is emptied: an answer to a request from before it isn't logged.
+  var engineLogGen = 0
+  let engineEpoch = Date()
   /// The page's 'update' posts (a step filled in after it was shown).
   var updates = 0
   var checksStarted = false
@@ -79,7 +101,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   func run() async {
     let api = await call("return Object.keys(cmuxWaveform.trace).sort()") as? [String]
-    expect(api == ["back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "reply", "settled", "state", "status"], "trace API: \(String(describing: api))")
+    expect(api == ["aliasHints", "back", "backendChanged", "close", "driver", "driverOfDesign", "forward", "progress", "reply", "settled", "state", "status", "xRoot"], "trace API: \(String(describing: api))")
 
     // From a waveform path at a time: cmux resolves, the page traces with the fixture's models.
     let first = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
@@ -139,10 +161,12 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       const v = await cmuxWaveform.host.findLinkItem(['tb_c', 'dut', 'q'], true);
       const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
       const none = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'scope' });
-      return { label: items[0] && items[0].label, key: items[0] && items[0].keybinding, count: items.length, none: none.length };
+      return { label: items[0] && items[0].label, key: items[0] && items[0].keybinding, count: items.length, none: none.length,
+        xLabel: items[1] && items[1].label, xKey: items[1] && items[1].keybinding };
     """) as? [String: Any]
-    expect(item?["count"] as? Int == 1 && item?["label"] as? String == "Trace Driver at Marker" && item?["key"] as? String == "⌃T" && item?["none"] as? Int == 0,
-           "row menu item on signal rows only: \(String(describing: item))")
+    expect(item?["count"] as? Int == 2 && item?["label"] as? String == "Trace Driver at Marker" && item?["key"] as? String == "⌃T" && item?["none"] as? Int == 0,
+           "row menu items on signal rows only: \(String(describing: item))")
+    expect(item?["xLabel"] as? String == "Trace X to Root" && item?["xKey"] as? String == "⌃⇧T", "the row menu has Trace X to Root, with its shortcut")
     // The selected row at the marker: what Ctrl+T in the viewer does.
     _ = await call("cmuxWaveform.link.setMarker(60); return null")
     await sleep(300)
@@ -246,6 +270,38 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     engineAnswer = ["state": "unavailable", "reason": "noKDB", "message": ""]
     _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
     expect(await panelText().contains("no KDB next to the FSDB"), "the panel says why Verdi is not used")
+    // No Verdi on the host: cmux's own noVerdi string (WaveformTrace.swift, 9 locales) names the
+    // variables that find it, and the launcher's hint reaches the page; without a hint, no empty
+    // brackets.
+    do {
+      let resources = assetRoot.deletingLastPathComponent()
+      let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+      let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+        .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+      var appText = ""
+      if let r = traceSwift.range(of: "\"traceVerdiUnavailable_noVerdi\": String(localized: \"waveformTrace.page.verdi.noVerdi\", defaultValue: \""),
+         let end = traceSwift[r.upperBound...].range(of: "\"),") {
+        appText = String(traceSwift[r.upperBound..<end.lowerBound])
+      }
+      let locales = ((catalog["waveformTrace.page.verdi.noVerdi"] as? [String: Any])?["localizations"] as? [String: Any] ?? [:])
+        .compactMapValues { (($0 as? [String: Any])?["stringUnit"] as? [String: Any])?["value"] as? String }
+      let named = { (t: String) in t.contains("VERDI_HOME") && t.contains("CMUX_VERDI_SETUP") && t.contains("%@") && !t.lowercased().contains("module") }
+      expect(named(appText) && locales.count == 9 && locales.values.allSatisfy(named),
+             "noVerdi names VERDI_HOME and CMUX_VERDI_SETUP and shows the launcher's hint, in 9 locales: \(appText) \(locales.filter { !named($0.value) }.keys.sorted())")
+      let hint = "verdi is not on PATH, in VERDI_HOME/bin or after CMUX_VERDI_SETUP"
+      let json = String(data: try! JSONSerialization.data(withJSONObject: [appText]), encoding: .utf8)!
+      _ = await call("cmuxWaveform.strings.traceVerdiUnavailable_noVerdi = \(json)[0]; return null")
+      engineAnswer = ["state": "unavailable", "reason": "noVerdi", "message": hint]
+      _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+      let shown = await panelText()
+      engineAnswer = ["state": "unavailable", "reason": "noVerdi", "message": ""]
+      _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+      let bare = await call("return [...document.querySelectorAll('#cmux-trace .engine')].map((e) => e.textContent).join(' | ')") as? String ?? ""
+      expect(!appText.isEmpty && shown.contains(hint) && shown.contains("CMUX_VERDI_SETUP") && !shown.contains("not installed"),
+             "no Verdi on the host: the launcher's hint reaches the page: \(shown.prefix(300))")
+      expect(bare.contains("VERDI_HOME") && !bare.contains("()") && !bare.contains("undefined"),
+             "no Verdi, no hint: the string alone, without empty brackets: \(bare)")
+    }
     engineAnswer = nil
 
     // Timing on a whole-signal (v1) FSDB helper where each signal read takes 150 ms and Verdi
@@ -497,14 +553,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
     // Helper v2 (windowed): nothing of a signal's history is downloaded, even where the page used to
     // fall back to a whole read. A mock v2 helper answers edge, search, valueAt and cancel from this
-    // VCD's changes (normalized as the helper does: one value per time, no repeats), at a width the
+    // VCD's changes (normalized as the helper does: one value per time, no repeats, no leading all-x
+    // value: the helper's stream starts from all x), at a width the
     // test may set (a 2-bit "clock" whose last bit is the edge), and can leave a signal's requests
     // unanswered until cancelled.
     _ = await call("""
       const h = cmuxWaveform.host, b = h.currentBackend;
       const own = b.signalChanges.bind(b);
       const m = window.__v2mock = { own, downloads: 0, asked: [], cancels: [], widths: new Map(), hang: new Set(), fail: new Set(), refuse: new Set(), pending: new Map(), inFake: false,
-        custom: new Map(), sent: [], delay: 0, readDelay: 0 };
+        custom: new Map(), sent: [], delay: 0, readDelay: 0, hungIds: [] };
       // A signal's history as the test sets it (m.custom), else the VCD's.
       m.read = async (v, max) => {
         if (m.readDelay && !m.inFake) { await new Promise((r) => setTimeout(r, m.readDelay)); }
@@ -520,6 +577,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const t = Number(at), v = pad(val, w);
           if (out.length && out[out.length - 1][0] === t) { out.pop(); }
           if (out.length && out[out.length - 1][1] === v) { continue; }
+          if (!out.length && /^x+$/.test(v)) { continue; }
           out.push([t, v]);
         }
         return out;
@@ -530,7 +588,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       m.answer = async (req) => {
         if (req.cmd === 'edge') {
           const ch = await m.changes(req.signalId);
-          const ok = (v) => req.kind === 'any' || v.slice(-1) === (req.kind === 'rise' ? '1' : '0');
+          // (rise/fall on a store wider than 1 bit are any change, as the helper's cacheEdge has them)
+          const wideStore = (m.widths.get(req.signalId) || 1) !== 1;
+          const ok = (v) => req.kind === 'any' || wideStore || v.slice(-1) === (req.kind === 'rise' ? '1' : '0');
           return { t: req.dir < 0 ? lastBefore(ch, req.t, ok) : firstAfter(ch, req.t, ok) };
         }
         if (req.cmd === 'search' && req.wildcard === '?') {
@@ -546,21 +606,47 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             for (const [at, val] of ch) { if (at <= req.t) { v = val; } }
             values.push(v);
           }
+          // helper-v2's `prev: true` (m.prev on): also the last change at or before t per signal, null with none.
+          if (req.prev === true && m.prev) {
+            const prev = [];
+            for (const id of req.signalIds) {
+              const ch = await m.changes(id);
+              let at = null;
+              for (const c of ch) { if (c[0] <= req.t) { at = { t: c[0], value: c[1] }; } }
+              prev.push(at);
+            }
+            return { values, prev };
+          }
           return { values };
         }
         if (req.cmd === 'count') {
           const counts = [];
-          for (const id of req.signalIds) { const ch = await m.changes(id); counts.push({ signalId: id, count: ch.length, bits: m.widths.get(id) || 1 }); }
+          for (const id of req.signalIds) {
+            // Not stored yet (the helper's "unknown" without a walk); an exact count walks it, or fails.
+            if (m.uncounted && m.uncounted.has(id) && req.exact !== true) { counts.push({ signalId: id, unknown: true }); continue; }
+            if (m.uncounted && m.uncounted.has(id) && m.exactFails) { counts.push({ signalId: id, error: 'signal larger than 244 MB (worker store limit)' }); continue; }
+            const ch = await m.changes(id); counts.push({ signalId: id, count: ch.length, bits: m.widths.get(id) || 1 });
+          }
           return { counts };
+        }
+        if (req.cmd === 'aliasHints') {
+          // helper v2's aliasHints (m.noAliasHints: an older helper, which doesn't know it).
+          if (m.noAliasHints) { throw new Error('unknown cmd aliasHints'); }
+          m.aliasHints.push(req.pairs.length);
+          return { accepted: req.pairs.length, refused: [] };
         }
         throw new Error('not here: ' + req.cmd);
       };
       m.install = () => {
-        b.signalChanges = (v, max) => { if (!m.inFake) { m.downloads++; } return m.read(v, max); };
+        b.signalChanges = (v, max) => {
+          if (!m.inFake) { m.downloads++; }
+          // (m.normalizedDownloads: the history as the helper streams it, leading all-x dropped)
+          return m.normalizedDownloads ? m.changes(v.signalId) : m.read(v, max);
+        };
         b.windowed = () => true;
         b.v2 = async (req) => {
           m.asked.push(req.cmd);
-          m.sent.push({ cmd: req.cmd, signalId: req.signalId, at: performance.now() });
+          m.sent.push({ cmd: req.cmd, signalId: req.signalId, kind: req.kind, prev: req.prev === true, ids: (req.signalIds || []).length, at: performance.now() });
           if (m.delay && req.cmd !== 'cancel') { await new Promise((r) => setTimeout(r, m.delay)); }
           if (req.cmd === 'cancel') {
             m.cancels.push(req.target);
@@ -570,6 +656,26 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           }
           const ids = req.signalIds || [req.signalId];
           if (ids.some((id) => m.hang.has(id))) { m.hung = (m.hung || 0) + 1; return new Promise((resolve) => m.pending.set(req.id, resolve)); }
+          // m.prevMode: how a helper answers valueAt with prev ('hang': never; 'error': an error reply;
+          // 'unread': its first signal unreadable, values[0] and prev[0] null; 'hangLater': answered the
+          // first time, never the second, then again; 'limit': the first batch fails as one over the store limit does).
+          if (req.cmd === 'valueAt' && req.prev === true && (m.prevMode === 'hang' || m.prevMode === 'hangLater' && m.prevAnswered && !m.hungIds.length)) {
+            m.hungIds.push(req.id);
+            return new Promise((resolve) => m.pending.set(req.id, resolve));
+          }
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'limit' && !m.prevAnswered) {
+            m.prevAnswered = true;
+            return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } };
+          }
+          if (req.cmd === 'valueAt' && req.prev === true) { m.prevAnswered = true; }
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'error') { return { reply: { id: req.id, error: 'unknown field prev' } }; }
+          if (req.cmd === 'valueAt' && req.prev === true && m.prevMode === 'unread') {
+            const r = await m.answer(req);
+            if (r.prev && r.values.length) { r.values[0] = null; r.prev[0] = null; }
+            return { reply: { id: req.id, result: r } };
+          }
+          // The helper's checkTime: a time before 0 is an error (counted: the page must not ask one).
+          if (typeof req.t === 'number' && req.t < 0) { m.negative = (m.negative || 0) + 1; return { reply: { id: req.id, error: 't: out of range' } }; }
           if (req.cmd !== 'count' && ids.some((id) => m.fail.has(id))) { return { reply: { id: req.id, error: 'not answered' } }; }
           if (req.cmd !== 'valueAt' && ids.some((id) => m.refuse.has(id))) { return { reply: { id: req.id, error: 'signal larger than 244 MB (worker store limit)' } }; }
           try { return { reply: { id: req.id, result: await m.answer(req) } }; }
@@ -578,7 +684,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       };
       // The plain (whole-signal) page on the same histories, to compare with.
       m.plain = () => { b.signalChanges = (v, max) => m.read(v, max); };
-      m.remove = () => { m.custom.clear(); m.sent = []; m.delay = 0; m.readDelay = 0; b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
+      m.remove = () => { m.custom.clear(); m.sent = []; m.aliasHints = []; m.noAliasHints = false; m.delay = 0; m.readDelay = 0; m.prev = false; m.prevMode = undefined; m.normalizedDownloads = false; m.fail.clear(); b.signalChanges = own; delete b.windowed; delete b.v2; delete b.valuesAt; delete b.changes; };
       m.pick = (s) => s && JSON.stringify([s.signal, s.value, s.since, s.trust, s.driver && s.driver.kind, s.activation, (s.fanin || []).map((f) => [f.path, f.value, f.time])]);
       return null
       """)
@@ -595,16 +701,18 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       try {
         t.backendChanged();
         const plain = m.pick(await q());
-        m.install(); m.downloads = 0; m.asked = [];
+        m.install(); m.downloads = 0; m.asked = []; m.negative = 0;
         t.backendChanged();
         const v2 = m.pick(await q());
-        return { plain, v2, downloads: m.downloads, asked: [...new Set(m.asked)].sort() };
+        return { plain, v2, downloads: m.downloads, asked: [...new Set(m.asked)].sort(), negative: m.negative };
       } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
       """) as? [String: Any]
     expect(wide?["plain"] as? String != nil && wide?["v2"] as? String == wide?["plain"] as? String,
            "v2 helper, a 2-bit clock: the same step: \(String(describing: wide?["v2"])) vs \(String(describing: wide?["plain"]))")
     expect(wide?["downloads"] as? Int == 0 && (wide?["asked"] as? [String])?.contains("search") == true,
            "v2 helper, a 2-bit clock: its edge is searched for, no history downloaded: \(String(describing: wide?["asked"])) downloads \(String(describing: wide?["downloads"]))")
+    expect(wide?["negative"] as? Int == 0,
+           "v2 helper, a 2-bit clock in a dump from 0: no request for a time before 0 (the helper rejects it): \(String(describing: wide?["negative"]))")
 
     // Values the helper's batch can't give (a signal it fails, which fails the batch): each is
     // asked again on its own, not downloaded.
@@ -626,6 +734,242 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
            "v2 helper, a failed value batch: the same step: \(String(describing: miss?["v2"])) vs \(String(describing: miss?["plain"]))")
     expect(miss?["downloads"] as? Int == 0 && (miss?["asked"] as? [String])?.contains("valueAt") == true,
            "v2 helper, a failed value batch: values asked again of the helper, none downloaded: \(String(describing: miss?["asked"])) downloads \(String(describing: miss?["downloads"]))")
+
+    // valueAt with prev (helper-v2's point read for trace-X): a step's values and each one's last change come
+    // from one batched read per time, with no edge search for a last change (a clock's edge walk is
+    // counted apart: SystemVerilog edges need rise, fall and the change before); a helper without prev is
+    // searched as before. Trace Driver and Trace X to Root give the same steps either way.
+    func pointReads(prev: Bool) async -> [String: Any]? {
+      await call("""
+        const h = cmuxWaveform.host, b = h.currentBackend, t = cmuxWaveform.trace, m = window.__v2mock;
+        const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const x = () => t.xRoot({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 });
+        const chain = (c) => JSON.stringify(((c && c.steps) || []).map((e) => [e.signal, e.time, e.value, e.since]).concat([c && c.end && c.end.code]));
+        try {
+          t.backendChanged();
+          const plain = m.pick(await q()), plainChain = chain(await x());
+          m.install(); m.prev = \(prev); m.downloads = 0; m.sent = []; window.cmuxTraceChecks.walkQueries = 0;
+          b.changes = async () => { throw new Error('not here'); };
+          b.valuesAt = async () => { throw new Error('not here'); };
+          t.backendChanged();
+          const v2 = m.pick(await q()), v2Chain = chain(await x());
+          const sent = m.sent.filter((r) => r.cmd !== 'cancel');
+          return { plain, v2, plainChain, v2Chain, downloads: m.downloads,
+            // (every last-change search, the clocks' too: a clock walk's own queries for the change
+            // before one are counted by the page, by purpose)
+            anyEdges: sent.filter((r) => r.cmd === 'edge' && r.kind === 'any').length - (window.cmuxTraceChecks.walkQueries || 0),
+            clockEdges: sent.filter((r) => r.cmd === 'edge' && r.kind !== 'any').length + (window.cmuxTraceChecks.walkQueries || 0),
+            prevReads: sent.filter((r) => r.cmd === 'valueAt' && r.prev).length, requests: sent.length,
+            byCmd: Object.entries(sent.reduce((a, r) => { const k = r.cmd + (r.prev ? '+prev' : '') + (r.kind ? ':' + r.kind : '') + (r.ids > 1 ? ' batch' : ''); a[k] = (a[k] || 0) + 1; return a; }, {})).sort().map(([k, n]) => k + ' ' + n).join(', ') };
+        } finally { m.remove(); t.backendChanged(); }
+        """) as? [String: Any]
+    }
+    for prev in [true, false] {
+      let r = await pointReads(prev: prev)
+      print("[v2 point reads] prev \(prev): \(String(describing: r?["requests"])) requests, \(String(describing: r?["anyEdges"])) last-change searches, \(String(describing: r?["clockEdges"])) clock edge queries, \(String(describing: r?["prevReads"])) prev reads; \(r?["byCmd"] as? String ?? "")")
+      expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
+             "v2 helper, valueAt prev \(prev): the same step and chain: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
+      expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(prev): no history downloaded (\(String(describing: r?["downloads"])))")
+      if prev {
+        expect(r?["anyEdges"] as? Int == 0 && (r?["prevReads"] as? Int ?? 0) > 0,
+               "v2 helper, valueAt prev: last changes come with the values, no edge search: \(String(describing: r?["anyEdges"])) searches, \(String(describing: r?["prevReads"])) prev reads")
+      }
+    }
+
+    // A helper whose valueAt with prev never answers, or answers with an error: the step does not wait
+    // past twice its budget, is the same as without the helper's prev, and prev is not asked again this
+    // session. A signal it can't read (values[i] null) is read as before, not taken as unchanged since 0.
+    // After prev answered once, a timeout fails that read only (prev is asked again); a first batch
+    // that fails as one over the store limit does (one signal's error) doesn't turn prev off either.
+    // A read that timed out is cancelled at the helper.
+    for mode in ["hang", "error", "unread", "hangLater", "limit"] {
+      let r = await call("""
+        const h = cmuxWaveform.host, b = h.currentBackend, t = cmuxWaveform.trace, m = window.__v2mock;
+        const q = () => t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        const x = () => t.xRoot({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 });
+        const chain = (c) => JSON.stringify(((c && c.steps) || []).map((e) => [e.signal, e.time, e.value, e.since]).concat([c && c.end && c.end.code]));
+        cmuxWaveform.traceVerdiBudgetMs = 800;
+        try {
+          t.backendChanged();
+          const plain = m.pick(await q()), plainChain = chain(await x());
+          m.install(); m.prev = true; m.prevMode = '\(mode)'; m.downloads = 0; m.sent = []; m.cancels = []; m.hungIds = []; m.prevAnswered = false;
+          b.changes = async () => { throw new Error('not here'); };
+          b.valuesAt = async () => { throw new Error('not here'); };
+          t.backendChanged();
+          const t0 = performance.now();
+          const v2 = await Promise.race([q().then(m.pick), new Promise((r) => setTimeout(() => r('hung'), 6000))]);
+          const ms = performance.now() - t0;
+          const v2Chain = v2 === 'hung' ? 'hung' : chain(await x());
+          const prevReads = m.sent.filter((r) => r.cmd === 'valueAt' && r.prev).length;
+          const hungIds = m.hungIds.slice();
+          const cancelled = hungIds.filter((id) => m.cancels.filter((c) => c === id).length === 1).length;
+          return { plain, v2, plainChain, v2Chain, ms, prevReads, downloads: m.downloads, hung: hungIds.length, cancelled };
+        } finally { for (const p of m.pending.values()) { p({ reply: { cancelled: true } }); } m.pending.clear(); m.remove(); cmuxWaveform.traceVerdiBudgetMs = 1500; t.backendChanged(); }
+        """) as? [String: Any]
+      print("[v2 point reads] \(mode): \(String(describing: r?["ms"])) ms, \(String(describing: r?["prevReads"])) prev reads")
+      expect(r?["plain"] as? String != nil && r?["v2"] as? String == r?["plain"] as? String && r?["v2Chain"] as? String == r?["plainChain"] as? String,
+             "v2 helper, valueAt prev \(mode): the same step and chain as without prev: \(String(describing: r?["v2"])) vs \(String(describing: r?["plain"])); \(String(describing: r?["v2Chain"])) vs \(String(describing: r?["plainChain"]))")
+      expect((r?["ms"] as? Double ?? 1e9) < 2 * 800 + 1500, "v2 helper, valueAt prev \(mode): the step waits at most twice its budget (\(String(describing: r?["ms"])) ms)")
+      if mode == "hang" || mode == "error" {
+        expect(r?["prevReads"] as? Int == 1, "v2 helper, valueAt prev \(mode): prev asked once, then not again (\(String(describing: r?["prevReads"])))")
+      }
+      if mode == "hangLater" || mode == "limit" {
+        expect(r?["prevReads"] as? Int ?? 0 >= 3, "v2 helper, valueAt prev \(mode): prev still asked after that read failed (\(String(describing: r?["prevReads"])) prev reads)")
+      }
+      if mode == "hang" || mode == "hangLater" {
+        expect(r?["hung"] as? Int ?? 0 >= 1 && r?["cancelled"] as? Int == r?["hung"] as? Int,
+               "v2 helper, valueAt prev \(mode): each read that timed out is cancelled once (\(String(describing: r?["cancelled"])) of \(String(describing: r?["hung"])))")
+      }
+      expect(r?["downloads"] as? Int == 0, "v2 helper, valueAt prev \(mode): no history downloaded (\(String(describing: r?["downloads"])))")
+    }
+
+    // The dump's port aliases (from the KDB model, cmux's aliasHints call): sent to helper v2 in
+    // chunks of 4096 pairs; nothing to a page without helper v2; an older helper that doesn't know
+    // aliasHints is not asked again for the rest.
+    let aliases = await call("""
+      const t = cmuxWaveform.trace, m = window.__v2mock;
+      const pairs = (n) => Array.from({ length: n }, (_, i) => ['tb.u.p' + i, 'tb.n' + i]);
+      try {
+        t.backendChanged();
+        const plain = await t.aliasHints({ pairs: pairs(10) });
+        m.install(); m.aliasHints = []; m.sent = [];
+        t.backendChanged();
+        const sent = await t.aliasHints({ pairs: pairs(5000) });
+        const chunks = m.aliasHints.slice();
+        m.aliasHints = []; m.noAliasHints = true; m.sent = [];
+        const old = await t.aliasHints({ pairs: pairs(9000) });
+        const oldAsked = m.sent.filter((r) => r.cmd === 'aliasHints').length;
+        return { plain, sent, chunks, old, oldAsked };
+      } finally { m.remove(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] aliasHints: \(String(describing: aliases))")
+    expect(aliases?["plain"] as? Int == 0, "aliasHints: nothing sent without helper v2 (\(String(describing: aliases?["plain"])))")
+    expect(aliases?["chunks"] as? [Int] == [4096, 904] && aliases?["sent"] as? Int == 5000,
+           "aliasHints: 5000 pairs go to helper v2 as 4096 + 904 (\(String(describing: aliases?["chunks"])), \(String(describing: aliases?["sent"])) sent)")
+    expect(aliases?["oldAsked"] as? Int == 1 && aliases?["old"] as? Int == 0,
+           "aliasHints: an older helper is asked once, not for every chunk (\(String(describing: aliases?["oldAsked"])) asked, \(String(describing: aliases?["old"])) sent)")
+
+    // A 1-bit clock's edges are SystemVerilog's, through helper v2 (whose rise/fall test the new
+    // bit only) as through the whole history (the VCD provider): posedge 0->1, 0->x, 0->z, x->1,
+    // z->1; negedge 1->0, 1->x, 1->z, x->0, z->0; x<->z is no edge. Every pair of 0/1/x/z, there
+    // and back, at the transition, just before and after it, and from the dump's start.
+    let svEdges = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock, ui = (window.cmuxTraceChecks || {}).prevEdge ? window.cmuxTraceChecks : window.cmuxTraceUI;
+      const clk = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'clk'], true);
+      const width = clk.width;
+      const pos = new Set(['01', '0x', '0z', 'x1', 'z1']), neg = new Set(['10', '1x', '1z', 'x0', 'z0']);
+      const sv = (a, b, edge) => edge === 'PosEdge' ? pos.has(a + b) : edge === 'NegEdge' ? neg.has(a + b) : pos.has(a + b) || neg.has(a + b);
+      const expected = (hist, time, edge) => {
+        let at = null;
+        for (let i = 1; i < hist.length; i++) { if (hist[i][0] <= time && hist[i][1] !== hist[i - 1][1] && sv(hist[i - 1][1], hist[i][1], edge)) { at = hist[i][0]; } }
+        return at;
+      };
+      const cases = [];
+      for (const a of '01xz') { for (const b of '01xz') {
+        for (const time of [9, 10, 11]) { cases.push({ name: a + '->' + b + ' @' + time, hist: [[0, a], [10, b]], time }); }
+        cases.push({ name: a + '->' + b + '->' + a + ' @25', hist: [[0, a], [10, b], [20, a]], time: 25 });
+        cases.push({ name: a + '->' + b + '->' + a + ' @19', hist: [[0, a], [10, b], [20, a]], time: 19 });
+      } cases.push({ name: 'start ' + a, hist: [[0, a]], time: 5 }); }
+      const wrong = [], ok = { v2: 0, plain: 0, v2history: 0, v2wide: 0 };
+      // The same matrix with the dump starting at 100 (every time +100): with the start known (the
+      // open's timeStart) it must give the same answers; with it unknown (dumpStart 0), the only
+      // misses allowed are an edge at the dump's first time where SystemVerilog has none (the
+      // stream's first change read as from x: the known limit until the helper reports timeStart).
+      const shifted = { known: {}, unknown: {} }, shiftWrong = [], phantom = [];
+      const dumpStart = h.dumpStart;
+      const run = async (kind, shift, start) => {
+        h.dumpStart = () => start;
+        const into = shift === 0 ? ok : shifted[start === shift ? 'known' : 'unknown'];
+        into[kind] = into[kind] || 0;
+        for (const c0 of cases) {
+          const c = { name: c0.name, hist: c0.hist.map(([at, v]) => [at + shift, v]), time: c0.time + shift };
+          m.custom.set(clk.signalId, c.hist);
+          t.backendChanged();
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 + shift });
+          for (const edge of ['PosEdge', 'NegEdge', 'BothEdges']) {
+            const got = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', c.time, edge);
+            const want = expected(c.hist, c.time, edge);
+            const g = got === undefined ? null : got;
+            if (g === want) { into[kind]++; continue; }
+            const line = kind + ' +' + shift + ' start ' + start + ' ' + edge + ' ' + c.name + ': ' + got + ', not ' + want;
+            if (shift && start !== shift && want === null && g === shift) { phantom.push(line); continue; }
+            const list = shift ? shiftWrong : wrong;
+            if (list.length < 12) { list.push(line); }
+          }
+        }
+      };
+      try {
+        for (const [shift, start] of [[0, 0], [100, 100], [100, 0]]) {
+          m.plain(); await run('plain', shift, start);
+          m.install(); await run('v2', shift, start);
+          // The helper's edge queries fail: the page reads the history as the helper streams it.
+          m.fail.add(clk.signalId); m.normalizedDownloads = true; await run('v2history', shift, start);
+          m.fail.clear(); m.normalizedDownloads = false;
+          // A 2-bit clock (its last bit the edge), through the helper's search.
+          clk.width = 2; m.widths.set(clk.signalId, 2); await run('v2wide', shift, start);
+          clk.width = width; m.widths.clear();
+        }
+        return { wrong, ok, cases: cases.length * 3, shifted, shiftWrong, phantom: phantom.length, phantomFirst: phantom.slice(0, 3) };
+      } finally { h.dumpStart = dumpStart; m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] SV clock edges: \(String(describing: svEdges?["ok"])) of \(String(describing: svEdges?["cases"])) each")
+    expect((svEdges?["wrong"] as? [String])?.isEmpty == true && (svEdges?["cases"] as? Int ?? 0) >= 240,
+           "a 1-bit clock's edges are SystemVerilog's on helper v2 (narrow, history, 2-bit) and the whole history, every 0/1/x/z pair: \(String(describing: svEdges?["wrong"]))")
+    print("[v2] SV clock edges, dump from 100: start known \(String(describing: svEdges?["shifted"])); \(String(describing: svEdges?["phantom"])) phantom first-time edges with the start unknown, e.g. \(String(describing: svEdges?["phantomFirst"]))")
+    let cases3 = svEdges?["cases"] as? Int ?? 0
+    let known = (svEdges?["shifted"] as? [String: Any])?["known"] as? [String: Int] ?? [:]
+    expect((svEdges?["shiftWrong"] as? [String])?.isEmpty == true && known.count == 4 && known.values.allSatisfy { $0 == cases3 },
+           "a dump from 100 with its start known gives the same edges as one from 0 (every path), and with it unknown misses only a phantom edge at 100: \(String(describing: svEdges?["shiftWrong"])); known \(known)")
+    // The phantom edges are pinned: 54 per path (an edge at 100 where SystemVerilog has none, for
+    // the histories whose first change is at the dump's start), so a growth fails.
+    let unknown = (svEdges?["shifted"] as? [String: Any])?["unknown"] as? [String: Int] ?? [:]
+    expect(svEdges?["phantom"] as? Int == 54 * 4 && unknown.count == 4 && unknown.values.allSatisfy { cases3 - $0 == 54 },
+           "with the start unknown, exactly 54 phantom edges per path: \(String(describing: svEdges?["phantom"])) in all; per path \(unknown.mapValues { cases3 - $0 })")
+
+    // The check hooks are not in the shipped page: only with the checks' window.cmuxTraceChecks.
+    let hooks = await call("return { shipped: 'prevEdge' in (window.cmuxTraceUI || {}), checks: typeof (window.cmuxTraceChecks || {}).prevEdge }") as? [String: Any]
+    expect(hooks?["shipped"] as? Bool == false && hooks?["checks"] as? String == "function",
+           "the prevEdge hook is the checks' only: \(String(describing: hooks))")
+
+    // A clean 0/1 clock's edge costs 1-2 round trips to helper v2 (each answer m.delay late), and a
+    // clock of unknown width (no netlist width; the helper stores 2 bits, whose rise/fall are any
+    // change) is not taken for a 1-bit one.
+    let cost = await call("""
+      const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock, ui = (window.cmuxTraceChecks || {}).prevEdge ? window.cmuxTraceChecks : window.cmuxTraceUI;
+      const clk = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'clk'], true);
+      const width = clk.width;
+      const out = {};
+      try {
+        m.install();
+        for (const [name, time, edge] of [['rise', 35, 'PosEdge'], ['fall', 25, 'PosEdge'], ['both', 25, 'BothEdges'], ['neg', 35, 'NegEdge']]) {
+          m.custom.set(clk.signalId, [[0, '0'], [10, '1'], [20, '0'], [30, '1']]);
+          t.backendChanged();
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          m.delay = 80; m.sent = [];
+          const t0 = performance.now();
+          const at = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', time, edge);
+          const ms = performance.now() - t0;
+          m.delay = 0;
+          // Every request counts, the valueAt+prev point read too.
+          out[name] = { at, requests: m.sent.filter((r) => r.cmd === 'edge' || r.cmd === 'search' || r.cmd === 'valueAt').length, others: m.sent.filter((r) => !['edge', 'search', 'valueAt', 'cancel'].includes(r.cmd)).map((r) => r.cmd), trips: Math.round(ms / 80) };
+        }
+        delete clk.width; m.widths.set(clk.signalId, 2);
+        m.custom.set(clk.signalId, [[0, '1'], [10, '0']]);
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        out.unknownWidth = await ui.prevEdge('tb_c.dut.u_mid.u_sink.clk', 11, 'PosEdge');
+        return out;
+      } finally { m.remove(); clk.width = width; m.widths.clear(); t.backendChanged(); }
+      """) as? [String: Any]
+    print("[v2] clean clock edge cost: \(String(describing: cost))")
+    let wants: [String: Int] = ["rise": 30, "fall": 10, "both": 20, "neg": 20]
+    for (name, want) in wants.sorted(by: { $0.key < $1.key }) {
+      let c = cost?[name] as? [String: Any]
+      expect(c?["at"] as? Int == want && (c?["trips"] as? Int ?? 9) <= 2 && (c?["requests"] as? Int ?? 9) <= 4 && (c?["others"] as? [String])?.isEmpty == true,
+             "v2 helper, a clean clock's \(name) edge: \(want) in at most 2 round trips and 4 requests: \(String(describing: c))")
+    }
+    expect(cost?.keys.contains("unknownWidth") == true && cost?["unknownWidth"] is NSNull,
+           "v2 helper, a clock of unknown width is not read as 1-bit: \(String(describing: cost?["unknownWidth"]))")
 
     // A signal the helper refuses to index (over its store limit) is not downloaded instead: the
     // whole read is capped too and only costs time; its last change is unknown.
@@ -796,6 +1140,55 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       """) as? [String: Any]
     expect(ceiling?["verdi"] as? String == "large" && ceiling?["downloads"] as? Int == 0 && ceiling?["counted"] as? Bool == true,
            "v2 helper: a check's read over the v2 memory ceiling is not made: \(String(describing: ceiling))")
+    // The changes kept across signals are bounded by their bits (a wide signal's changes cost its
+    // width each), not by their number: with a 1-bit bound only the newest read is kept.
+    var cacheRuns: [[String: Any]] = []
+    for limit in ["undefined", "1"] {
+      let r = await call("""
+        const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+        if (\(limit) !== undefined) { cmuxWaveform.traceCacheBits = \(limit); }
+        try {
+          m.install(); m.downloads = 0;
+          t.backendChanged();
+          for (const path of [['u_mid', 'u_sink', 'q'], ['u_mid', 'u_sink', 'qd'], ['u_mid', 'u_sink', 'in'], ['u_mid', 'u_sink', 'mix'], ['u_src', 'data_q'], ['u_src', 'd']]) {
+            const v = await h.findLinkItem(['tb_c', 'dut', ...path], true);
+            if (v) { m.fail.add(v.signalId); }
+          }
+          await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          if (t.settled) { await t.settled(); }
+          await t.driverOfDesign({ designPath: 'tb_c.dut.u_src.data_q', designPrefix: '', dumpPrefix: '', time: 74 });
+          if (t.settled) { await t.settled(); }
+          return { downloads: m.downloads, cache: t.state().cache || null };
+        } finally { m.fail.clear(); m.remove(); delete cmuxWaveform.traceCacheBits; t.backendChanged(); }
+        """) as? [String: Any] ?? [:]
+      cacheRuns.append(r)
+    }
+    let whole = cacheRuns[0]["cache"] as? [String: Any], tight = cacheRuns[1]["cache"] as? [String: Any]
+    expect((cacheRuns[0]["downloads"] as? Int ?? 0) >= 2 && whole?["signals"] as? Int == cacheRuns[0]["downloads"] as? Int
+             && (whole?["bits"] as? Int ?? 0) > 0 && tight?["signals"] as? Int == 1 && (tight?["bits"] as? Int ?? 0) > 1,
+           "the changes kept are bounded by bits: \(cacheRuns)")
+    // The helper doesn't know the count without a walk: an exact count is asked for, and a read
+    // whose exact count fails too isn't made either (unknown is not "under").
+    for exactFails in [false, true] {
+      let unknownCount = await call("""
+        const h = cmuxWaveform.host, t = cmuxWaveform.trace, m = window.__v2mock;
+        cmuxWaveform.traceVerdiV2MaxBits = 1;
+        try {
+          m.install(); m.downloads = 0; m.asked = []; m.uncounted = new Set(); m.exactFails = \(exactFails);
+          t.backendChanged();
+          for (const name of ['q', 'qd', 'in', 'mix']) {
+            const v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', name], true);
+            if (v) { m.fail.add(v.signalId); m.uncounted.add(v.signalId); }
+          }
+          await t.driverOfDesign({ designPath: 'tb_c.dut.q', designPrefix: '', dumpPrefix: '', time: 60 });
+          if (t.settled) { await t.settled(); }
+          const e = t.state().step && t.state().step.engine;
+          return { verdi: e && e.verdi, downloads: m.downloads, counts: m.asked.filter((c) => c === 'count').length };
+        } finally { m.fail.clear(); m.uncounted = null; m.exactFails = false; m.remove(); delete cmuxWaveform.traceVerdiV2MaxBits; t.backendChanged(); }
+        """) as? [String: Any]
+      expect(unknownCount?["verdi"] as? String == "large" && unknownCount?["downloads"] as? Int == 0 && (unknownCount?["counts"] as? Int ?? 0) >= 2,
+             "v2 helper: a check's read with an unknown count (exact count \(exactFails ? "fails" : "over")) is not made: \(String(describing: unknownCount))")
+    }
 
     // A dumped signal the helper refused (its last change unknown) is approximate, with a reason,
     // and isn't asked about again.
@@ -885,6 +1278,187 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     engineAnswer = nil
     _ = await call("delete cmuxWaveform.traceVerdiBudgetMs; return null")
 
+    // ---- Verdi prefetch (status/tracex-verdi-pool.md) ----
+    // Once a step's check has settled, Verdi is asked about the step's fan-in leaves; a click on
+    // one uses that answer (no new request). One session: nothing is prefetched while a check of
+    // ours asks; N sessions: up to N at once. No answer survives another dump, a closed panel, or
+    // a Verdi that wasn't ready.
+    func engineAsks(_ signal: String, since k: Int = 0) -> Int { engineLog[k...].filter { $0.signal == signal }.count }
+    func prefetchRun(sessions: Int, delay: TimeInterval) async -> (leaves: [[String: Any]], step: [String: Any]?) {
+      // A request still in flight from the run before (an old session's last prefetch) would count
+      // as one at once with this run's: wait for it first.
+      for _ in 0..<100 where engineInFlight > 0 { try? await Task.sleep(nanoseconds: 50_000_000) }
+      engineLog = []; engineLogGen += 1; engineMostInFlight = 0; engineDelay = delay
+      let r = await call("""
+        const t = cmuxWaveform.trace;
+        cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = \(sessions);
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        await t.settled();
+        await new Promise((r) => setTimeout(r, \(Int(delay * 1000) * 5 + 300)));
+        const st = t.state();
+        return { leaves: (st.step.fanin || []).filter((f) => f.path).map((f) => ({ path: f.path, time: f.time, role: f.role })), prefetch: st.prefetch };
+        """) as? [String: Any]
+      return (r?["leaves"] as? [[String: Any]] ?? [], r)
+    }
+    // A helper-backed dump (the page doesn't ask Verdi about a file it reads itself).
+    _ = await call("const b = cmuxWaveform.host.currentBackend; b.valuesAt = async () => null; b.changes = async () => { throw new Error('not here'); }; return null")
+    engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    engineBackground = []
+    let one = await prefetchRun(sessions: 1, delay: 0.25)
+    let firstSignal = engineLog.first?.signal ?? ""
+    expect(engineBackground.count == engineLog.count - 1 && !engineBackground.isEmpty,
+           "prefetch: the leaves are asked as background requests, the step's own check isn't: \(engineBackground.count) of \(engineLog.count) (first \(firstSignal))")
+    let firstAnswered = engineLog.first?.answered ?? 0
+    let prefetched = engineLog.dropFirst().map(\.signal)
+    let leafPaths = one.leaves.compactMap { $0["path"] as? String }
+    expect(!leafPaths.isEmpty && Set(prefetched) == Set(leafPaths.prefix(4)),
+           "prefetch: the shown step's fan-in leaves are asked of Verdi: \(prefetched) vs \(leafPaths)")
+    expect(engineLog.dropFirst().allSatisfy { $0.asked >= firstAnswered - 0.01 } && engineMostInFlight == 1,
+           "prefetch, one session: nothing is prefetched while our check asks, one at a time (at most \(engineMostInFlight))")
+    if let leaf = one.leaves.first, let path = leaf["path"] as? String, let time = leaf["time"] as? Int {
+      let k = engineLog.count
+      let used = await call("""
+        const t = cmuxWaveform.trace;
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        return t.state().prefetch
+        """) as? [String: Any]
+      expect(engineAsks(path, since: k) == 0 && used?["used"] as? Int == 1,
+             "prefetch: a click on a prefetched leaf uses Verdi's answer, no new request: \(engineAsks(path, since: k)) asked, \(String(describing: used))")
+      // Another dump (backendChanged): the answer isn't used.
+      _ = await prefetchRun(sessions: 1, delay: 0)
+      let k2 = engineLog.count
+      _ = await call("""
+        const t = cmuxWaveform.trace;
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        return null
+        """)
+      expect(engineAsks(path, since: k2) >= 1, "prefetch: after another dump, a leaf is asked again, not answered from before")
+      // A Verdi that wasn't ready (a seat refused): nothing kept.
+      engineAnswer = ["state": "unavailable", "reason": "licence", "message": "no seat"]
+      _ = await prefetchRun(sessions: 1, delay: 0)
+      let k3 = engineLog.count
+      _ = await call("""
+        const t = cmuxWaveform.trace;
+        await t.driverOfDesign({ designPath: '\(path)', designPrefix: '', dumpPrefix: '', time: \(time) });
+        await t.settled();
+        return null
+        """)
+      expect(engineAsks(path, since: k3) == 1, "prefetch: an answer from a Verdi that wasn't ready is not kept (\(engineAsks(path, since: k3)) asked again)")
+      engineAnswer = ["state": "ready", "scope": "tb_c.dut.u_mid.u_sink", "file": "/host/rtl/c_struct.sv", "line": 56]
+    } else {
+      expect(false, "prefetch: the step has fan-in leaves: \(one.leaves)")
+    }
+    // Two sessions asked for while cmux has one Verdi per dump (it says `pool: 1`, or nothing):
+    // one request at a time. Two only when cmux says it has two.
+    _ = await prefetchRun(sessions: 2, delay: 0.3)
+    expect(engineMostInFlight == 1, "prefetch, two sessions asked, one in cmux's pool: one request at a time (at most \(engineMostInFlight))")
+    engineAnswer?["pool"] = 1
+    _ = await prefetchRun(sessions: 2, delay: 0.3)
+    expect(engineMostInFlight == 1, "prefetch, two sessions asked, cmux says pool 1: one request at a time (at most \(engineMostInFlight))")
+    engineAnswer?["pool"] = 2
+    _ = await prefetchRun(sessions: 2, delay: 0.3)
+    expect(engineMostInFlight == 2, "prefetch, two sessions, cmux says pool 2: two requests at once (at most \(engineMostInFlight))")
+    engineAnswer?["pool"] = nil
+    // Prefetched answers kept are capped (traceVerdiAnswers for tests), oldest out.
+    engineDelay = 0
+    let capped = await call("""
+      const t = cmuxWaveform.trace;
+      cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = 1; cmuxWaveform.traceVerdiAnswers = 2;
+      try {
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        await t.settled();
+        await new Promise((r) => setTimeout(r, 400));
+        return t.state().prefetch;
+      } finally { delete cmuxWaveform.traceVerdiAnswers; }
+      """) as? [String: Any]
+    expect((capped?["asked"] as? Int ?? 0) >= 3 && capped?["kept"] as? Int == 2,
+           "prefetch: the answers kept are capped, oldest out: \(String(describing: capped))")
+    // Prefetches queued behind ones in flight, then a click on a leaf still waiting, whose step is
+    // slow (500 ms): with one session nothing is prefetched between the step and its check's
+    // Verdi request; with two (cmux says pool 2) the clicked leaf is asked once, by the click, not
+    // prefetched as well.
+    func queuedClick(sessions: Int) async -> (asks: [String], last: String?, ok: Bool, info: Any?, clickAt: Double) {
+      engineLog = []; engineLogGen += 1; engineDelay = 0.3
+      engineAnswer?["pool"] = sessions
+      defer { engineDelay = 0; engineAnswer?["pool"] = nil }
+      let r = await call("""
+        const t = cmuxWaveform.trace, h = cmuxWaveform.host, b = h.currentBackend;
+        cmuxWaveform.traceVerdiPrefetch = 6; cmuxWaveform.traceVerdiSessions = \(sessions);
+        t.backendChanged();
+        await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+        await t.settled();
+        const leaves = (t.state().step.fanin || []).filter((f) => f.path).map((f) => ({ path: f.path, time: f.time }));
+        await new Promise((r) => setTimeout(r, \(sessions == 1 ? 450 : 150)));
+        const queuedNow = t.state().prefetch.queued || [];
+        const lastPath = queuedNow.length ? queuedNow[queuedNow.length - 1] : null;
+        const last = leaves.find((l) => l.path === lastPath);
+        if (!last) { return { leaves: leaves.map((l) => l.path), queuedNow }; }
+        const slowChanges = b.signalChanges, slowRaw = h.rawValuesAt;
+        const pause = () => new Promise((r) => setTimeout(r, 500));
+        if (slowChanges) { b.signalChanges = async (...a) => { await pause(); return slowChanges.apply(b, a); }; }
+        h.rawValuesAt = async (...a) => { await pause(); return slowRaw.apply(h, a); };
+        const clickAt = Date.now();
+        try {
+          await t.driverOfDesign({ designPath: last.path, designPrefix: '', dumpPrefix: '', time: last.time });
+          await t.settled();
+        } finally { if (slowChanges) { b.signalChanges = slowChanges; } h.rawValuesAt = slowRaw; }
+        await new Promise((r) => setTimeout(r, 2500));
+        return { leaves: leaves.map((l) => l.path), queuedNow, last: last.path, clickAt };
+        """) as? [String: Any]
+      let last = r?["last"] as? String
+      // The page's wall clock (ms) on the log's clock (seconds since engineEpoch).
+      let clickAt = ((r?["clickAt"] as? Double) ?? 0) / 1000 - engineEpoch.timeIntervalSince1970
+      return (engineLog.map(\.signal), last, last != nil, r, clickAt)
+    }
+    let qOne = await queuedClick(sessions: 1)
+    if qOne.ok, let last = qOne.last {
+      // Asked first: the first step's check, then the prefetch in flight and the one after it
+      // (450 ms in at 300 ms each); the click's check is next, before any further prefetch.
+      let clickIndex = qOne.asks.firstIndex(of: last) ?? -1
+      expect(clickIndex >= 1 && clickIndex <= 3,
+             "prefetch, one session: no prefetch starts between a click's step and its check's request: \(qOne.asks) (clicked \(last))")
+      // Nor while the click's step is under way (its reads are slow here, so Verdi would sit idle
+      // in between): the click's step replaces the old step's queued leaves, so none of them is
+      // prefetched after the click.
+      let leftovers = Set((qOne.info as? [String: Any])?["queuedNow"] as? [String] ?? []).subtracting([last])
+      let late = engineLog.filter { $0.background && $0.asked >= qOne.clickAt - 0.005 && leftovers.contains($0.signal) }.map(\.signal)
+      let ms = { (t: Double) in Int(((t - qOne.clickAt) * 1000).rounded()) }
+      expect(!leftovers.isEmpty && late.isEmpty,
+             "prefetch, one session: none of the old step's queued leaves is prefetched after a click: \(late) of \(leftovers.sorted()) in \(engineLog.map { "\($0.signal.split(separator: ".").last ?? "") \($0.background ? "bg" : "fg") \(ms($0.asked))-\($0.answered.map(ms).map(String.init) ?? "?") ms" })")
+    } else {
+      expect(false, "prefetch: a leaf is still queued when clicked (one session): \(String(describing: qOne.info))")
+    }
+    let qTwo = await queuedClick(sessions: 2)
+    if qTwo.ok, let last = qTwo.last {
+      let lastAsks = qTwo.asks.filter { $0 == last }.count
+      expect(lastAsks == 1, "prefetch, two sessions: a clicked leaf still in the queue is asked once, not prefetched too: \(lastAsks) in \(qTwo.asks)")
+    } else {
+      expect(false, "prefetch: a leaf is still queued when clicked (two sessions): \(String(describing: qTwo.info))")
+    }
+    // Closing the panel stops prefetching.
+    engineLog = []; engineLogGen += 1; engineDelay = 0.3
+    _ = await call("""
+      const t = cmuxWaveform.trace;
+      cmuxWaveform.traceVerdiPrefetch = 4; cmuxWaveform.traceVerdiSessions = 1;
+      t.backendChanged();
+      await t.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60 });
+      await t.settled();
+      await new Promise((r) => setTimeout(r, 50));
+      t.close();
+      return null
+      """)
+    let closedAt = Date().timeIntervalSince(engineEpoch)
+    _ = await call("await new Promise((r) => setTimeout(r, 1500)); return null")
+    expect(engineLog.filter { $0.asked > closedAt + 0.05 }.isEmpty, "prefetch: nothing is asked after the panel closes: \(engineLog.map { ($0.signal, $0.asked) })")
+    engineDelay = 0
+    _ = await call("const b = cmuxWaveform.host.currentBackend; delete b.valuesAt; delete b.changes; delete cmuxWaveform.traceVerdiPrefetch; delete cmuxWaveform.traceVerdiSessions; cmuxWaveform.trace.backendChanged(); return null")
+    engineAnswer = nil
+
     // Status while cmux builds; close.
     _ = await call("cmuxWaveform.trace.status('Building…'); return null")
     expect(!(await panelText().contains("Building")), "status does not cover a shown step")
@@ -899,8 +1473,541 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       return cmuxWaveform.trace === before && Object.isFrozen(before);
     """) as? Bool
     expect(tamper == true, "trace API is frozen and non-writable")
+    // The "when it last changed is unknown" reason fits every step it is on: an edge procedure's
+    // (the last clock edge) and a combinational or latch one's (the values at the time asked), in
+    // English and as the app's default.
+    let resources = assetRoot.deletingLastPathComponent()
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    let sinceEntry = ((catalog?["strings"] as? [String: Any])?["waveformTrace.reason.sinceUnknown"] as? [String: Any])?["localizations"] as? [String: Any]
+    let sinceEn = ((sinceEntry?["en"] as? [String: Any])?["stringUnit"] as? [String: Any])?["value"] as? String ?? ""
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    expect(sinceEn.contains("clock edge") && sinceEn.contains("combinational") && sinceEn.contains("latch")
+             && traceSwift.contains("defaultValue: \"\(sinceEn)\"") && (sinceEntry?.count ?? 0) == 9,
+           "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
+    await compiledOnlyChecks()
+    await designChecks()
+    await kdbDiffersChecks()
+    await kdbPendingChecks()
+    await kdbCheckedChecks()
+    await xRootChecks()
+    await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
     snap()
+  }
+
+  /// The first-time design model build (cmux's progress calls while a trace's resolve waits): the
+  /// panel shows its stages, the compile's percent, the host and the time so far; another click
+  /// asks nothing new and points at the panel; "What is being built?" asks cmux for its doc; a
+  /// failure shows the log's last lines and Retry.
+  func buildChecks() async {
+    _ = await trace("close()")
+    await reopen("c")
+    let q = "{ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 }"
+    func resolves() -> Int { events.filter { $0["event"] as? String == "resolve" }.count }
+    func progress(_ p: String) async { _ = await call("cmuxWaveform.trace.progress(\(p)); return null") }
+    holdResolves = true
+    defer { holdResolves = false }
+    let before = resolves()
+    _ = await call("window.__drv = cmuxWaveform.trace.driver(\(q)); return null")
+    await waitFor("the resolve") { resolves() == before + 1 }
+    let started = Date().timeIntervalSince1970 * 1000 - 65_000
+    await progress("{ stage: 'upload', host: 'build-host', startedAt: \(started), sourceBytes: 92160 }")
+    await progress("{ stage: 'fetch', host: 'build-host', startedAt: \(started) }")
+    await progress("{ stage: 'configure', host: 'build-host', startedAt: \(started) }")
+    await progress("{ stage: 'compile', percent: 42, host: 'build-host', startedAt: \(started) }")
+    var text = await panelText()
+    expect(text.contains("Building the design model on build-host") && text.contains("42%") && !text.contains("Finding"),
+           "build: the panel shows the build on its host and the compile's percent, not Finding: \(text.prefix(400))")
+    expect(text.contains("Upload") && text.contains("90 KB") && text.contains("Configur") && text.contains("Install") && text.contains("Load"),
+           "build: the panel lists the stages (upload with its size, configure, compile, install, load): \(text.prefix(400))")
+    let marks = await call("""
+      return [...document.querySelectorAll('#cmux-trace li.stage')].map((li) => li.dataset.stage + ':' + li.dataset.state).join(' ')
+      """) as? String ?? ""
+    expect(marks.hasPrefix("upload:done fetch:done configure:done compile:current install:pending load:pending"),
+           "build: stages before the compile are done, the compile is current, the rest wait: \(marks)")
+    // The time so far (m:ss) in seconds; a slow run may be a few seconds on, so it is a range.
+    func elapsed() async -> Int? {
+      let t = await call("const e = document.querySelector('#cmux-trace .build-elapsed'); return e ? e.textContent : ''") as? String ?? ""
+      guard let m = t.range(of: #"\d+:\d\d"#, options: .regularExpression) else { return nil }
+      let parts = t[m].split(separator: ":").compactMap { Int($0) }
+      return parts.count == 2 ? parts[0] * 60 + parts[1] : nil
+    }
+    let shownAt = await elapsed()
+    expect(shownAt.map { (65...75).contains($0) } == true, "build: the elapsed time is shown as m:ss: \(String(describing: shownAt))")
+    await sleep(2100)
+    let laterAt = await elapsed()
+    expect(shownAt != nil && laterAt.map { $0 >= shownAt! + 1 } == true, "build: the elapsed time goes on while it builds: \(String(describing: shownAt)) then \(String(describing: laterAt))")
+    // The "Finding…" bug: another click while it builds starts nothing and keeps the build shown.
+    _ = await call("const r = cmuxWaveform.trace.driver(\(q)); window.__again = r; return null")
+    await sleep(200)
+    let pulsed = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    text = await panelText()
+    expect(resolves() == before + 1 && heldResolves.count == 1, "build: another Trace Driver while it builds asks nothing new (\(resolves() - before) resolves)")
+    expect(pulsed == true && text.contains("Building the design model") && !text.contains("Finding"),
+           "build: and points at the build's panel (highlighted), not Finding: \(String(describing: pulsed)) \(text.prefix(200))")
+    _ = await call("cmuxWaveform.trace.xRoot(\(q)); return null")
+    await sleep(100)
+    expect(resolves() == before + 1, "build: Trace X to Root while it builds asks nothing new either")
+    // A row menu's Trace Driver goes the same way.
+    let rowAsked = await call("""
+      const h = cmuxWaveform.host, v = await h.findLinkItem(['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], true);
+      const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
+      items[0].run(); return true
+      """) as? Bool
+    await sleep(100)
+    expect(rowAsked == true && resolves() == before + 1, "build: the row menu's Trace Driver while it builds asks nothing new")
+    // What is being built? asks cmux for the doc.
+    let infos = events.filter { $0["event"] as? String == "buildInfo" }.count
+    _ = await call("const a = document.querySelector('#cmux-trace .buildinfo'); if (a) a.click(); return null")
+    await sleep(100)
+    expect(events.filter { $0["event"] as? String == "buildInfo" }.count == infos + 1, "build: What is being built? asks cmux to open its doc")
+    // Install, load, then done: the trace goes on to its step.
+    await progress("{ stage: 'install', host: 'build-host', startedAt: \(started) }")
+    await progress("{ stage: 'load', host: 'build-host', startedAt: \(started) }")
+    text = await panelText()
+    expect(text.contains("Loading the design"), "build: loading the design is shown: \(text.prefix(300))")
+    await progress("{ stage: 'done', host: 'build-host', startedAt: \(started) }")
+    // A progress call that arrives after done (sent before it) doesn't bring the build back.
+    await progress("{ stage: 'compile', percent: 99, host: 'build-host', startedAt: \(started) }")
+    for held in heldResolves { answer(held.id, ok: true, result: ["designPath": held.path, "designPrefix": "", "dumpPrefix": ""]) }
+    heldResolves = []
+    _ = await call("await window.__drv; return null")
+    text = await panelText()
+    expect(text.contains("q <= mix") && !text.contains("Building"), "build: when it is done the step is shown: \(text.prefix(200))")
+    // A failed build: the message, the log's last lines and Retry, which asks again.
+    let before2 = resolves()
+    _ = await call("window.__drv = cmuxWaveform.trace.driver(\(q)); return null")
+    await waitFor("the second resolve") { resolves() == before2 + 1 }
+    await progress("{ stage: 'upload', host: 'build-host', startedAt: \(Date().timeIntervalSince1970 * 1000), sourceBytes: 92160 }")
+    await progress("{ stage: 'failed', host: 'build-host', message: 'The design model could not be compiled on build-host.', log: 'error: one\\nerror: two\\nmake: *** [all] Error 2' }")
+    for held in heldResolves { answer(held.id, ok: false, error: "resolve", message: "The design model could not be compiled on build-host.") }
+    heldResolves = []
+    _ = await call("await window.__drv; return null")
+    text = await panelText()
+    let retry = await call("return !!document.querySelector('#cmux-trace button.retry')") as? Bool
+    expect(text.contains("could not be compiled") && text.contains("error: two") && text.contains("Error 2") && retry == true,
+           "build: a failure shows the message, the log's last lines and Retry: \(text.prefix(400))")
+    holdResolves = false
+    _ = await call("document.querySelector('#cmux-trace button.retry').click(); return null")
+    await waitFor("Retry's resolve") { resolves() == before2 + 2 }
+    _ = await call("await cmuxWaveform.trace.settled(); return null")
+    await sleep(300)
+    text = await panelText()
+    expect(resolves() == before2 + 2 && text.contains("q <= mix"), "build: Retry traces again (asking cmux anew): \(resolves() - before2) \(text.prefix(200))")
+    // A second viewer of the same design (progress review M1): cmux's done or failed went to the
+    // other viewer, and this one's resolve fails. The panel shows why, and the next trace asks anew.
+    let before3 = resolves()
+    holdResolves = true
+    _ = await call("window.__drv = cmuxWaveform.trace.driver(\(q)); return null")
+    await waitFor("the third resolve") { resolves() == before3 + 1 }
+    await progress("{ stage: 'compile', percent: 10, host: 'build-host', startedAt: \(Date().timeIntervalSince1970 * 1000) }")
+    for held in heldResolves { answer(held.id, ok: false, error: "resolve", message: "The design model could not be compiled on build-host.") }
+    heldResolves = []
+    _ = await call("await window.__drv; return null")
+    text = await panelText()
+    expect(text.contains("could not be compiled") && !text.contains("Building"),
+           "build: a resolve failing while the page shows a build ends the build and shows the error: \(text.prefix(300))")
+    holdResolves = false
+    _ = await call("await cmuxWaveform.trace.driver(\(q)); return null")
+    expect(resolves() == before3 + 2, "build: and the next trace asks cmux anew (\(resolves() - before3) resolves)")
+    // A trace from the editor while the design model builds (progress review M2): cmux sends the
+    // build's state with focus, and the panel points at it; a failure's Retry traces the editor's
+    // signal (its dump path), not the page's last trace.
+    _ = await trace("close()")
+    await sleep(1300)
+    let calm = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    let now = Date().timeIntervalSince1970 * 1000
+    await progress("{ stage: 'configure', host: 'build-host', startedAt: \(now), focus: true, entry: { dumpPath: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 } }")
+    let focused = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    // The panel takes the focus without joining the tab order.
+    let focusable = await call("const p = document.getElementById('cmux-trace'); return p.tabIndex === -1 && document.activeElement === p") as? Bool
+    expect(focusable == true, "build: the build's panel takes the focus, out of the tab order: \(String(describing: focusable))")
+    text = await panelText()
+    expect(calm == false && focused == true && text.contains("Building the design model on build-host"),
+           "build: a trace from the editor while it builds shows the build and points at it: \(String(describing: calm)) \(String(describing: focused)) \(text.prefix(200))")
+    await progress("{ stage: 'failed', host: 'build-host', startedAt: \(now), message: 'The design model could not be compiled on build-host.', log: 'error: one' }")
+    let before4 = events.count
+    _ = await call("const b = document.querySelector('#cmux-trace button.retry'); if (b) b.click(); return !!b")
+    await waitFor("the editor entry's resolve") { events.dropFirst(before4).contains { $0["event"] as? String == "resolve" } }
+    let asked = events.dropFirst(before4).first { $0["event"] as? String == "resolve" }?["dumpPath"] as? [String]
+    expect(asked == ["tb_c", "dut", "u_mid", "u_sink", "d"], "build: Retry after an editor-started build traces the editor's signal: \(String(describing: asked))")
+    _ = await call("await cmuxWaveform.trace.settled(); return null")
+    // cmux traces from the editor once the design is built, and the build's done may come after
+    // the trace (it is queued behind the design's other progress calls): the trace is shown.
+    // Another design's build (one page, two designs) is not over for it: it stays shown.
+    let other = Date().timeIntervalSince1970 * 1000 + 1
+    await progress("{ stage: 'compile', percent: 30, host: 'build-host', startedAt: \(other), design: 'design-b' }")
+    let held = await call("""
+      const s = await cmuxWaveform.trace.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, design: 'design-a' });
+      return !!s
+      """) as? Bool
+    text = await panelText()
+    expect(held == false && text.contains("Building the design model on build-host"),
+           "build: an editor trace of another design keeps this build shown: \(String(describing: held)) \(text.prefix(200))")
+    await progress("{ stage: 'done', host: 'build-host', startedAt: \(other), design: 'design-b' }")
+    let built = Date().timeIntervalSince1970 * 1000 + 2
+    await progress("{ stage: 'compile', percent: 80, host: 'build-host', startedAt: \(built), design: 'design-a' }")
+    let traced = await call("""
+      const s = await cmuxWaveform.trace.driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, design: 'design-a' });
+      return !!s
+      """) as? Bool
+    await progress("{ stage: 'done', host: 'build-host', startedAt: \(built), design: 'design-a' }")
+    text = await panelText()
+    expect(traced == true && text.contains("q <= mix") && !text.contains("Building"),
+           "build: an editor trace that comes before its build's done is traced and shown: \(String(describing: traced)) \(text.prefix(200))")
+    // Every page string of the build panel is sent by cmux and localized.
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let keys = Harness.pageStrings.keys.filter { $0.hasPrefix("traceBuild") }.sorted()
+    let missing = keys.filter { key in
+      guard let r = traceSwift.range(of: "\"\(key)\": String(localized: \""),
+            let id = traceSwift[r.upperBound...].split(separator: "\"").first,
+            let entry = (catalog[String(id)] as? [String: Any])?["localizations"] as? [String: Any] else { return true }
+      return entry.count != 9
+    }
+    expect(keys.count >= 12 && missing.isEmpty, "build: the panel's \(keys.count) strings come from cmux in 9 locales (missing: \(missing))")
+  }
+
+  /// A row only the compiled design has (cmux resolved it with the dump's KDB model: slang's design
+  /// lacks its instance, or has another module there): one step, approximate, that says its drivers
+  /// come from the compiled design and its value isn't evaluated, with the KDB's write lines to
+  /// jump to and the dumped value; slang's models are not asked.
+  func compiledOnlyChecks() async {
+    _ = await trace("close()")
+    let row = "tb_c.dut.u_mid.u_sink.q"
+    resolveAnswer = ["compiledOnly": true, "dumpPath": row, "reason": "notInSlang",
+                     "writes": [["file": "/work/rtl/soc.sv", "line": 40, "kind": "nb"], ["file": "/work/rtl/soc.sv", "line": 52, "kind": "b"]]]
+    let models = modelRequests
+    let step = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let compiled = step?["compiledOnly"] as? [String: Any]
+    expect(step?["trust"] as? String == "approximate" && compiled?["reason"] as? String == "notInSlang"
+             && (compiled?["writes"] as? [Any])?.count == 2 && step?["signal"] as? String == row,
+           "compiled only: one approximate step with the KDB's writes: \(String(describing: step))")
+    expect(step?["value"] is String, "compiled only: the dumped value is read: \(String(describing: step?["value"]))")
+    expect(modelRequests == models, "compiled only: slang's models are not asked (\(modelRequests - models))")
+    var text = await panelText()
+    expect(text.contains("Drivers come from the compiled design (KDB)") && text.contains("values aren't evaluated")
+             && text.contains("doesn't have this instance") && text.contains("soc.sv:40") && text.contains("soc.sv:52") && text.contains("approximate"),
+           "compiled only: the panel says where the drivers come from, why, and the write lines: \(text.prefix(400))")
+    let clicked = await call("const a = [...document.querySelectorAll('#cmux-trace .body a')].find((x) => x.textContent === 'soc.sv:52'); if (!a) return false; a.click(); return true") as? Bool
+    await sleep(100)
+    let open = events.last { $0["event"] as? String == "open" }?["loc"] as? [String: Any]
+    expect(clicked == true && open?["file"] as? String == "/work/rtl/soc.sv" && open?["line"] as? Int == 52,
+           "compiled only: a write line opens it: \(String(describing: open))")
+    // Another module at the instance; Trace X to Root from such a row is the same one step.
+    resolveAnswer = ["compiledOnly": true, "dumpPath": row, "reason": "otherModule", "writes": [[String: Any]]()]
+    let x = await trace("xRoot({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    text = await panelText()
+    expect((x?["compiledOnly"] as? [String: Any])?["reason"] as? String == "otherModule" && text.contains("another module")
+             && text.contains("no statement writing it"),
+           "compiled only: Trace X to Root shows the step; another module, no writes: \(text.prefix(300))")
+    resolveAnswer = nil
+    _ = await trace("close()")
+    // Its strings come from cmux, in 9 locales.
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let keys = Harness.pageStrings.keys.filter { $0.hasPrefix("traceCompiled") }.sorted()
+    let missing = keys.filter { key in
+      guard let r = traceSwift.range(of: "\"\(key)\": String(localized: \""),
+            let id = traceSwift[r.upperBound...].split(separator: "\"").first,
+            let entry = (catalog[String(id)] as? [String: Any])?["localizations"] as? [String: Any] else { return true }
+      return entry.count != 9
+    }
+    expect(keys.count == 5 && missing.isEmpty, "compiled only: the panel's \(keys.count) strings come from cmux in 9 locales (missing: \(missing))")
+  }
+
+  /// Issue #8: the page's answers belong to the design cmux resolved them in (its designId): a
+  /// trace in another design starts a new session and asks its models anew, every model request
+  /// says which design it is for, and one cmux refuses (the design changed) is shown, not mixed.
+  func designChecks() async {
+    _ = await trace("close()")
+    let path = "['tb_c', 'dut', 'u_mid', 'u_sink', 'q']"
+    func answerIn(_ design: String, _ signal: String = "q") {
+      resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink." + signal, "designPrefix": "", "dumpPrefix": "", "designId": design]
+      currentDesign = design
+    }
+    func asked(since k: Int) -> [[String: Any]] { Array(events[k...]).filter { $0["event"] as? String == "model" } }
+    answerIn("d#1")
+    var k = events.count
+    let first = await trace("driver({ path: \(path), time: 60 })")
+    var models = asked(since: k)
+    expect(first?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#1" },
+           "design: the step's model requests say their design: \(models.map { $0["design"] ?? "none" })")
+    k = events.count
+    _ = await trace("driver({ path: \(path), time: 60 })")
+    let again = asked(since: k).count
+    expect(again == 0, "design: the same design's models are kept (\(again) asked again: \(asked(since: k).map { "\($0["cmd"] ?? ""):\($0["path"] ?? "")" }))")
+    answerIn("d#2")
+    k = events.count
+    let second = await trace("driver({ path: \(path), time: 60 })")
+    models = asked(since: k)
+    expect(second?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#2" },
+           "design: another design asks its models anew: \(models.count) \(models.map { $0["design"] ?? "none" })")
+    // cmux loaded the design again (an edit, a restart) while the page still traces in d#2.
+    answerIn("d#2", "d")
+    currentDesign = "d#3"
+    _ = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    let text = await panelText()
+    expect(text.contains("The design changed since this trace began"), "design: a refused model answer is shown: \(text.prefix(200))")
+    answerIn("d#3", "d")
+    let third = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    expect(third?["signal"] as? String == "tb_c.dut.u_mid.u_sink.d", "design: the next trace works in the new design: \(String(describing: third?["signal"]))")
+    // From the editor: cmux's query names the design too.
+    currentDesign = "d#4"
+    k = events.count
+    _ = await trace("driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, designId: 'd#4' })")
+    models = asked(since: k)
+    expect(!models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#4" }, "design: the editor's trace asks in its design: \(models.map { $0["design"] ?? "none" })")
+    // cmux dropped the viewer's design (evicted, Refs #8 F1): the page's session ends there too,
+    // so a design cmux makes again is asked anew, never answered from the old one's kept models.
+    currentDesign = nil
+    answerIn("e#1")
+    _ = await trace("driver({ path: \(path), time: 60 })")
+    noDesign = true
+    answerIn("e#1", "d")
+    k = events.count
+    _ = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    expect(!asked(since: k).isEmpty, "design: the noDesign trace asked a model (\(asked(since: k).count))")
+    noDesign = false
+    answerIn("e#1")
+    k = events.count
+    let anew = await trace("driver({ path: \(path), time: 60 })")
+    expect(anew?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !asked(since: k).isEmpty,
+           "design: after noDesign the session's kept models are dropped (\(asked(since: k).count) asked)")
+    resolveAnswer = nil
+    currentDesign = nil
+    _ = await trace("close()")
+  }
+
+  /// Issue #9: a row the KDB mapped where the compiled design and slang's differ (another
+  /// parameter, width, write line, or a source newer than the compile; cmux's kdbDiffers says what)
+  /// is evaluated with slang's statements all the same, so its steps are approximate and say why.
+  func kdbDiffersChecks() async {
+    _ = await trace("close()")
+    let differs = "parameter DEPTH of tb_c.dut.u_mid.u_sink: 16 compiled, 8 in slang"
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "k#1", "kdbDiffers": differs]
+    let step = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let codes = (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    let text = await panelText()
+    expect(step?["trust"] as? String == "approximate" && codes.contains("kdbDiffers"),
+           "kdb differs: the step is approximate and says why: \(String(describing: step?["trust"])) \(codes)")
+    expect(text.contains("differs from the compiled design (KDB)") && text.contains(differs), "kdb differs: the panel says what differs: \(text.prefix(400))")
+    // The same design, agreeing: no such reason.
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "k#2"]
+    let agreed = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let agreedCodes = (agreed?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    expect(agreed != nil && !agreedCodes.contains("kdbDiffers"), "kdb agrees: no kdbDiffers reason: \(agreedCodes)")
+    resolveAnswer = nil
+    // Its string comes from cmux, in 9 locales.
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let id = traceSwift.range(of: "\"traceReason_kdbDiffers\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
+    let locales = id.flatMap { (catalog[String($0)] as? [String: Any])?["localizations"] as? [String: Any] }?.count ?? 0
+    expect(locales == 9, "kdb differs: the reason's string comes from cmux in 9 locales (\(locales))")
+    _ = await trace("close()")
+  }
+
+  /// Issue #9 F3: with a KDB model, cmux compared only the traced row's instance chain (resolve's
+  /// kdbChecked: the levels whose parameters and ports agree, and `level.signal` for each signal
+  /// whose shape and writes agree); a step in another instance, or of a signal not in it, is
+  /// approximate and says it was not checked. No
+  /// kdbChecked (no KDB model): no such reason. An empty one (the editor's trace, not resolved
+  /// with the KDB): every step.
+  func kdbCheckedChecks() async {
+    _ = await trace("close()")
+    func codes(_ step: [String: Any]?) -> [String] { (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String } }
+    let row = "driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })"
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#1",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.q"]]
+    let inside = await trace(row)
+    expect(inside != nil && !codes(inside).contains("kdbNotChecked"), "kdb checked: the row's own instance and signal are checked: \(codes(inside))")
+    // The instance agreed, but not this signal (another signal's writes were compared, not q's).
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#1b",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.d"]]
+    let signalOutside = await trace(row)
+    expect(signalOutside?["trust"] as? String == "approximate" && codes(signalOutside).contains("kdbNotChecked"),
+           "kdb checked: a signal not compared is approximate though its instance agreed: \(String(describing: signalOutside?["trust"])) \(codes(signalOutside))")
+    // An input port's step (the engine's own portIn step: the driver's instance is the row's): its
+    // connection is evaluated in the parent, so the parent must be checked too.
+    let portRow = "driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'in'], time: 54 })"
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.in", "designPrefix": "", "dumpPrefix": "", "designId": "c#1c",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.in"]]
+    let parentOutside = await trace(portRow)
+    expect(((parentOutside?["driver"] as? [String: Any])?["kind"] as? String) == "portIn"
+           && parentOutside?["trust"] as? String == "approximate" && codes(parentOutside).contains("kdbNotChecked"),
+           "kdb checked: an input port whose parent was not checked is approximate: \(String(describing: parentOutside?["trust"])) \(codes(parentOutside))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.in", "designPrefix": "", "dumpPrefix": "", "designId": "c#1d",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.in"]]
+    let parentInside = await trace(portRow)
+    expect(parentInside != nil && !codes(parentInside).contains("kdbNotChecked"), "kdb checked: with its parent checked, the input port is: \(codes(parentInside))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#2", "kdbChecked": ["tb_c"]]
+    let outside = await trace(row)
+    let text = await panelText()
+    expect(outside?["trust"] as? String == "approximate" && codes(outside).contains("kdbNotChecked"),
+           "kdb checked: a step in an instance not checked is approximate: \(String(describing: outside?["trust"])) \(codes(outside))")
+    expect(text.contains("not checked against the compiled design (KDB)"), "kdb checked: the panel says so: \(text.prefix(300))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#3"]
+    let none = await trace(row)
+    expect(none != nil && !codes(none).contains("kdbNotChecked"), "kdb checked: without a KDB model no such reason: \(codes(none))")
+    resolveAnswer = nil
+    _ = await trace("driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, designId: 'c#4', kdbChecked: [] })")
+    let editorText = await panelText()
+    expect(editorText.contains("not checked against the compiled design (KDB)"), "kdb checked: the editor's trace with a KDB model is not checked: \(editorText.prefix(300))")
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let id = traceSwift.range(of: "\"traceReason_kdbNotChecked\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
+    let locales = id.flatMap { (catalog[String($0)] as? [String: Any])?["localizations"] as? [String: Any] }?.count ?? 0
+    expect(locales == 9, "kdb checked: the reason's string comes from cmux in 9 locales (\(locales))")
+    expect(traceSwift.contains("argument[\"kdbChecked\"]"), "kdb checked: the editor's trace says when a KDB model went unused")
+    _ = await trace("close()")
+  }
+
+  /// Issue #8 F3: while the dump's KDB export runs (a viewer just opened or reloaded it), cmux
+  /// traces with slang's design and says so: resolve's kdbPending marks each step (its trust is
+  /// slang's own), and a row slang lacks says the compiled design is still loading, not that the
+  /// row is not in the design. A reload's helper gets slang's aliases again (L1).
+  func kdbPendingChecks() async {
+    _ = await trace("close()")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "p#1", "kdbPending": true]
+    let step = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let codes = (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    let text = await panelText()
+    expect(step != nil && codes.contains("kdbPending"), "kdb pending: the step says slang's design was used: \(codes)")
+    expect(text.contains("still loading, so this was traced with slang"), "kdb pending: the panel says so: \(text.prefix(300))")
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "p#1"]
+    let later = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let laterCodes = (later?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String }
+    expect(later != nil && !laterCodes.contains("kdbPending"), "kdb pending: gone once the export answered: \(laterCodes)")
+    resolveAnswer = nil
+    // cmux's side: the reason's string in 9 locales; a row slang lacks while the export runs.
+    let resources = assetRoot.deletingLastPathComponent()
+    let sources = resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels")
+    let traceSwift = (try? String(contentsOf: sources.appendingPathComponent("WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let linkSwift = (try? String(contentsOf: sources.appendingPathComponent("WaveformSourceLink.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    func locales(_ key: String) -> Int { ((catalog[key] as? [String: Any])?["localizations"] as? [String: Any])?.count ?? 0 }
+    let id = traceSwift.range(of: "\"traceReason_kdbPending\": String(localized: \"").flatMap { traceSwift[$0.upperBound...].split(separator: "\"").first }
+    expect(id.map { locales(String($0)) } == 9, "kdb pending: the reason's string comes from cmux in 9 locales")
+    expect(traceSwift.contains("WaveformTraceKDB.pending(for: waveform)") && locales("waveformTrace.kdbStillLoading") == 9,
+           "kdb pending: a row slang lacks while the export runs says the compiled design is still loading (9 locales: \(locales("waveformTrace.kdbStillLoading")))")
+    func body(_ text: String, after marker: String) -> String {
+      guard let start = text.range(of: marker), let end = text[start.upperBound...].range(of: "\n    }\n") else { return "" }
+      return String(text[start.lowerBound..<end.upperBound])
+    }
+    expect(body(linkSwift, after: "static func waveformReloading(").contains("WaveformTrace.waveformReloading(")
+             && body(traceSwift, after: "static func waveformReloading(").contains("aliasRules.removeObject"),
+           "L1: a reload clears the viewer's alias rule, so its new helper gets slang's aliases again")
+    _ = await trace("close()")
+  }
+
+  /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
+  /// where it was made (designs J and K, the engine's own fixtures).
+  func xRootChecks() async {
+    _ = await trace("close()")
+    await reopen("j")
+    func chain(_ q: String) async -> [String: Any]? { await trace("xRoot(\(q))") }
+    func signals(_ c: [String: Any]?) -> [String] { (c?["steps"] as? [[String: Any]] ?? []).compactMap { $0["signal"] as? String } }
+    func end(_ c: [String: Any]?) -> String { (c?["end"] as? [String: Any])?["code"] as? String ?? "?" }
+    func why(_ c: [String: Any]?, _ i: Int) -> String {
+      let st = c?["steps"] as? [[String: Any]] ?? []
+      return i < st.count ? (st[i]["why"] as? [String: Any])?["code"] as? String ?? "?" : "-"
+    }
+    // q <= tmp, tmp = go ? a : b in the same block: the x came in on a (the blocking temp is gone
+    // through, go and b have none), through dut's input port, from the testbench.
+    let q = await chain("{ designPath: 'tb_j.dut.q', designPrefix: '', dumpPrefix: '', time: 20000 }")
+    expect(signals(q) == ["tb_j.dut.q", "tb_j.dut.a", "tb_j.a"] && end(q) == "testbench",
+           "J: q's x goes back through the temp to a, then the testbench: \(signals(q)) \(end(q))")
+    expect(why(q, 0) == "start" && why(q, 1) == "only" && why(q, 2) == "only" && q?["root"] as? Int == 2,
+           "J: each step says why it follows, the testbench step is the root: \(why(q, 1)) \(why(q, 2)) root \(String(describing: q?["root"]))")
+    expect(q?["approximate"] as? Bool == true, "J: a chain with an approximate step (the testbench's) is approximate")
+    let rows = await call("""
+      const rs = [...document.querySelectorAll('#cmux-trace tr.xstep')];
+      return { n: rs.length, root: rs.findIndex((r) => r.classList.contains('root')), text: document.getElementById('cmux-trace').innerText };
+    """) as? [String: Any]
+    let rowText = rows?["text"] as? String ?? ""
+    expect(rows?["n"] as? Int == 3 && rows?["root"] as? Int == 2, "J: the panel lists the 3 steps, the root highlighted: \(String(describing: rows?["n"])) root \(String(describing: rows?["root"]))")
+    expect(rowText.contains("X chain from tb_j.dut.q at 20,000") && rowText.contains("the only input with x or z") && rowText.contains("Root: the testbench sets the value.")
+             && rowText.contains("approximate") && rowText.contains("j_temps.sv:20"),
+           "J: the panel shows the title, why, the root's reason, trust and file:line: \(rowText.prefix(400))")
+    // A step's row opens its statement and shows its signal at its time in the waveform.
+    let opens = events.filter { $0["event"] as? String == "open" }.count
+    let stepTime = ((q?["steps"] as? [[String: Any]])?[1]["time"] as? NSNumber)?.intValue
+    _ = await call("const r = document.querySelectorAll('#cmux-trace tr.xstep')[1]; r.click(); return null")
+    await waitFor("the step's signal selected at its time") {
+      let sel = await self.call("return (cmuxWaveform.link.selectedSignal() || []).join('.')") as? String
+      let at = await self.call("return cmuxWaveform.link.markerTime()") as? NSNumber
+      return sel == "tb_j.dut.a" && at?.intValue == stepTime
+    }
+    let opened = events.filter { $0["event"] as? String == "open" }
+    let selected = await call("return (cmuxWaveform.link.selectedSignal() || []).join('.')") as? String
+    let marker = await call("return cmuxWaveform.link.markerTime()") as? NSNumber
+    expect(opened.count == opens + 1 && ((opened.last?["loc"] as? [String: Any])?["line"] as? Int) != nil, "J: a step's row opens its statement")
+    expect(selected == "tb_j.dut.a" && marker?.intValue == stepTime, "J: and selects its signal at its time in the waveform: \(String(describing: selected)) @\(String(describing: marker)) vs \(String(describing: stepTime))")
+    // Add Chain Signals to Waveform: every step's signal gets a row.
+    _ = await call("const b = document.querySelector('#cmux-trace button.xadd'); if (b) b.click(); return null")
+    await sleep(600)
+    let shown = await call("""
+      const v = await cmuxWaveform.link.valuesAt({ time: 20000, paths: [['tb_j', 'dut', 'q'], ['tb_j', 'dut', 'a'], ['tb_j', 'a']] });
+      return v.map((x) => x !== null && x !== undefined);
+    """) as? [Bool]
+    expect(shown == [true, true, true], "J: Add Chain Signals to Waveform shows each step's signal: \(String(describing: shown))")
+    // zq <= a2 with zsel 2: a2 was never written (its only write needs zsel 3): uninitialised.
+    let zq = await chain("{ designPath: 'tb_j.dut.zq', designPrefix: '', dumpPrefix: '', time: 40000 }")
+    expect(signals(zq) == ["tb_j.dut.zq", "tb_j.dut.a2"] && end(zq) == "uninit" && zq?["root"] as? Int == 1,
+           "J: zq's x comes from a2, never written: \(signals(zq)) \(end(zq))")
+    // A value without x or z: nothing to follow.
+    let go = await chain("{ designPath: 'tb_j.dut.go', designPrefix: '', dumpPrefix: '', time: 20000 }")
+    let noXText = await panelText()
+    expect(end(go) == "noX" && noXText.contains("has no x or z bits"), "J: a value without x: says so: \(end(go))")
+    // The step budget: the chain stops there, without a root.
+    _ = await call("cmuxWaveform.traceXChainSteps = 2; return null")
+    let short = await chain("{ designPath: 'tb_j.dut.q', designPrefix: '', dumpPrefix: '', time: 20000 }")
+    _ = await call("delete cmuxWaveform.traceXChainSteps; return null")
+    expect(signals(short) == ["tb_j.dut.q", "tb_j.dut.a"] && end(short) == "budget" && (short?["root"] as? Int ?? 0) < 0,
+           "J: a step budget of 2 stops after 2 steps, no root: \(signals(short)) \(end(short)) root \(String(describing: short?["root"]))")
+    expect(await panelText().contains("Stopped after 2 steps"), "J: the panel says the budget stopped it")
+
+    // K: steps show as they are found, and Cancel stops the chain.
+    _ = await trace("close()")
+    await reopen("k")
+    lookupDelay = 0.4
+    defer { lookupDelay = 0 }
+    _ = await call("window.__xr = cmuxWaveform.trace.xRoot({ designPath: 'tb_k.dut.fr', designPrefix: '', dumpPrefix: '', time: 40000 }); return null")
+    await waitFor("a first chain step", 15000) {
+      ((await self.call("return document.querySelectorAll('#cmux-trace tr.xstep').length") as? Int) ?? 0) >= 1
+    }
+    let mid = await trace("state()")
+    let midChain = mid?["chain"] as? [String: Any]
+    expect(midChain?["running"] as? Bool == true && (midChain?["steps"] as? Int ?? 0) >= 1, "K: steps are listed while the chain runs: \(String(describing: midChain))")
+    let cancelled = await call("""
+      const b = document.querySelector('#cmux-trace button.xcancel');
+      if (!b) return { button: false };
+      b.click();
+      const c = await window.__xr;
+      return { button: true, end: c && c.end && c.end.code, n: c && c.steps.length };
+    """) as? [String: Any]
+    expect(cancelled?["button"] as? Bool == true && cancelled?["end"] as? String == "cancelled" && (cancelled?["n"] as? Int ?? 9) < 3,
+           "K: Cancel stops the chain where it is: \(String(describing: cancelled))")
+    expect(await panelText().contains("Cancelled."), "K: the panel says it was cancelled")
+    lookupDelay = 0
+    // fr went x at 15 from xa (the force at 22 kept it x): the testbench's xa.
+    let fr = await chain("{ designPath: 'tb_k.dut.fr', designPrefix: '', dumpPrefix: '', time: 40000 }")
+    expect(signals(fr) == ["tb_k.dut.fr", "tb_k.dut.xa", "tb_k.xa"] && end(fr) == "testbench",
+           "K: fr's x comes from the testbench's xa: \(signals(fr)) \(end(fr))")
+    // The chain is the same code the trace-fsdb benchmark runs (its xchain mode calls xRoot).
+    let bench = (try? String(contentsOf: assetRoot.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("scripts/waveform-viewer-checks/trace-fsdb/main.swift"), encoding: .utf8)) ?? ""
+    expect(bench.contains("cmuxWaveform.trace.xRoot("), "trace-fsdb's X chain calls the page's xRoot")
+    _ = await trace("close()")
   }
 
   // MARK: cmux's side
@@ -923,9 +2030,19 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     case "resolve":
       if let resolveError { answer(id, ok: false, error: "resolve", message: resolveError); return }
       let path = (body["dumpPath"] as? [String] ?? []).joined(separator: ".")
+      if holdResolves { heldResolves.append((id, path)); return }
+      if let resolveAnswer { answer(id, ok: true, result: resolveAnswer); return }
       answer(id, ok: true, result: ["designPath": path, "designPrefix": "", "dumpPrefix": ""])
     case "model":
       modelRequests += 1
+      if noDesign {
+        answer(id, ok: false, error: "noDesign", message: "Open a design first.")
+        return
+      }
+      if let currentDesign, body["design"] as? String != currentDesign {
+        answer(id, ok: false, error: "designChanged", message: "The design changed since this trace began. Trace again.")
+        return
+      }
       let path = body["path"] as? String ?? ""
       let instances = models["instances"] as? [String: Any] ?? [:]
       if body["cmd"] as? String == "instance" {
@@ -934,16 +2051,31 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         answer(id, ok: true, result: [String]())
       } else {
         let best = instances.keys.filter { path == $0 || path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
-        answer(id, ok: true, result: best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull())
+        let result: Any = best.map { ["instance": $0, "name": String(path.dropFirst($0.count + 1))] } ?? NSNull()
+        if lookupDelay > 0 {
+          DispatchQueue.main.asyncAfter(deadline: .now() + lookupDelay) { [self] in answer(id, ok: true, result: result) }
+        } else {
+          answer(id, ok: true, result: result)
+        }
       }
     case "engine":
       engineRequests += 1
+      let k = engineLog.count, gen = engineLogGen
+      engineLog.append((body["signal"] as? String ?? "", Date().timeIntervalSince(engineEpoch), nil, body["background"] as? Bool == true))
+      if body["background"] as? Bool == true { engineBackground.append(body["signal"] as? String ?? "") }
       if engineHang { return }
+      engineInFlight += 1
+      engineMostInFlight = max(engineMostInFlight, engineInFlight)
       let result: [String: Any] = (body["signal"] as? String).flatMap { engineAnswers[$0] } ?? engineAnswer ?? ["state": "none"]
-      if engineDelay > 0 {
-        DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { self.answer(id, ok: true, result: result) }
-      } else {
+      let done = { [self] in
+        engineInFlight -= 1
+        if gen == engineLogGen, k < engineLog.count { engineLog[k].answered = Date().timeIntervalSince(engineEpoch) }
         answer(id, ok: true, result: result)
+      }
+      if engineDelay > 0 {
+        DispatchQueue.main.asyncAfter(deadline: .now() + engineDelay) { done() }
+      } else {
+        done()
       }
     default:
       break
@@ -956,6 +2088,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let cfg = WKWebViewConfiguration()
     cfg.setURLSchemeHandler(scheme, forURLScheme: WaveformViewerSchemeHandler.scheme)
     let hook = """
+    window.cmuxTraceChecks = {};
     (function(){ for (const k of ['warn','error']) { const o = console[k];
       console[k] = (...a) => { try { webkit.messageHandlers.console.postMessage(k + ': ' + a.map((x) => (x && x.stack ? String(x) + ' ' + x.stack : String(x))).join(' ')); } catch(e){}; o.apply(console, a); }; }
       window.addEventListener('error', e => webkit.messageHandlers.console.postMessage('onerror: ' + e.message + ' @' + e.filename + ':' + e.lineno + ':' + e.colno + ' ' + (e.error && e.error.stack)));
@@ -983,27 +2116,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     if type == "event" || type == "sessionState" || type == "log" || type == "keyState" || type == "debugger" { return }
     print("[\(m.name)]", type)
     if type == "ready" {
-      let waveURL = traceDir.appendingPathComponent("dumps/c.plain.vcd")
-      let fileURL = scheme.serve(fileURL: waveURL)
-      let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
-      let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
-      // The English page strings cmux sends (WaveformTrace.pageStrings), the ones the checks read.
-      let strings: [String: String] = [
-        "netlist": "Netlist", "loading": "Loading…", "openFailed": "Could not open", "addSignal": "Add",
-        "traceTitle": "Trace Driver", "traceDriverMenu": "Trace Driver at Marker", "traceDriverKey": "⌃T",
-        "traceNoSignal": "Select a signal in the waveform first.", "traceNoMarker": "Place the marker at the time to trace first.",
-        "traceFailed": "Driver tracing failed.", "traceResolving": "Finding %@ in the design…", "traceRunning": "Tracing %1$@ at %2$@…",
-        "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
-        "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
-        "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
-        "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiChecking": "Verdi is checking…",
-        "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLarge": "Verdi: not checked (large signal)", "traceVerdiLastChange": "Verdi (driver of the last change):",
-        "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
-        "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
-      ]
-      let json = String(data: try! JSONSerialization.data(withJSONObject: strings), encoding: .utf8)!
-      web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(json)})")
+      openDump("c.plain.vcd")
     } else if type == "opened" {
+      opened += 1
       guard !checksStarted else { return }
       checksStarted = true
       Task { @MainActor in
@@ -1014,6 +2129,67 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       print("ERROR", body["message"] ?? "")
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.snap() }
     }
+  }
+
+  /// The English page strings cmux sends (WaveformTrace.pageStrings), the ones the checks read.
+  static let pageStrings: [String: String] = [
+    "netlist": "Netlist", "loading": "Loading…", "openFailed": "Could not open", "addSignal": "Add",
+    "traceTitle": "Trace Driver", "traceDriverMenu": "Trace Driver at Marker", "traceDriverKey": "⌃T",
+    "traceNoSignal": "Select a signal in the waveform first.", "traceNoMarker": "Place the marker at the time to trace first.",
+    "traceFailed": "Driver tracing failed.", "traceResolving": "Finding %@ in the design…", "traceRunning": "Tracing %1$@ at %2$@…",
+    "traceStepTitle": "%1$@ = %2$@ at %3$@", "traceFanin": "Fan-in (click to trace)", "traceTrust_exact": "exact",
+    "traceKindProc": "%@ block", "traceKindAssign": "Continuous assignment", "traceActivation": "%1$@ at %2$@, inputs sampled at %3$@",
+    "traceEngineCmux": "Traced by cmux (slang design model)", "traceEngineVerdi": "Traced by Verdi, re-executed by cmux",
+    "traceVerdiStarting": "Verdi is starting on the host", "traceVerdiChecking": "Verdi is checking…",
+    "traceVerdiTimedOut": "Verdi: not checked (timed out)", "traceVerdiLarge": "Verdi: not checked (large signal)", "traceVerdiLastChange": "Verdi (driver of the last change):",
+    "traceThroughPorts": "through the ports of %@", "traceVerdiUnavailable": "Verdi not used: %@",
+    "traceVerdiUnavailable_noKDB": "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)",
+    "traceXRootMenu": "Trace X to Root", "traceXRootKey": "⌃⇧T", "traceXTitle": "X chain from %1$@ at %2$@",
+    "traceXRunning": "Following the x back… (%@ steps)", "traceXCancel": "Cancel", "traceXAdd": "Add Chain Signals to Waveform",
+    "traceXRootBadge": "root", "traceXWhy_start": "the value traced", "traceXWhy_only": "the only input with x or z",
+    "traceXWhy_earliest": "the earliest x or z of %@ inputs", "traceXEnd_noXInput": "Root: this statement makes the x (no input has x or z).",
+    "traceXEnd_uninit": "Root: never written since the start (uninitialised storage or a declaration).",
+    "traceXEnd_testbench": "Root: the testbench sets the value.", "traceXEnd_input": "Root: an input of the top level.",
+    "traceXEnd_force": "Root: a force or deposit from outside the instance.", "traceXEnd_loop": "Stopped: the x goes round a loop through %@.",
+    "traceXEnd_budget": "Stopped after %@ steps (the step limit).", "traceXEnd_failed": "Stopped: a step could not be traced.",
+    "traceXEnd_cancelled": "Cancelled.", "traceXEnd_noX": "%@ has no x or z bits at this time.",
+    "traceTrust_approximate": "approximate", "traceTrust_computed": "computed",
+    "traceBuildTitle": "Building the design model on %@", "traceBuildTitleLocal": "Building the design model on this Mac",
+    "traceBuildStage_upload": "Upload the model's sources (%@)", "traceBuildStage_fetch": "Download slang and its libraries",
+    "traceBuildStage_configure": "Configure (CMake)", "traceBuildStage_compile": "Compile", "traceBuildStage_install": "Install",
+    "traceBuildStage_load": "Loading the design", "traceBuildElapsed": "%@ so far", "traceBuildOnce": "Built once per host and cmux version.",
+    "traceBuildWhat": "What is being built?", "traceBuildFailedTitle": "The design model could not be built on %@",
+    "traceBuildFailedTitleLocal": "The design model could not be built on this Mac", "traceBuildLog": "Last lines of the build log:",
+    "traceBuildRetry": "Retry",
+    "traceCompiledOnly": "Drivers come from the compiled design (KDB); values aren't evaluated.",
+    "traceCompiledOnly_notInSlang": "Slang's design model doesn't have this instance (its module may be in a file it didn't read).",
+    "traceCompiledOnly_otherModule": "Slang's design model has another module at this instance, so its statements aren't used.",
+    "traceCompiledWrites": "Written at:",
+    "traceCompiledNoWrites": "The compiled design has no statement writing it here (it is driven through a port, or is an input).",
+    "traceReason_kdbDiffers": "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@.",
+    "traceReason_kdbPending": "The compiled design (KDB) is still loading, so this was traced with slang’s design.",
+    "traceReason_kdbNotChecked": "This instance was not checked against the compiled design (KDB), so slang’s statements may not be what ran.",
+  ]
+
+  /// How many times the page said a dump opened.
+  var opened = 0
+  /// Opens `dump` (in trace/dumps) as cmux does, with the page strings.
+  func openDump(_ dump: String) {
+    let waveURL = traceDir.appendingPathComponent("dumps/\(dump)")
+    let fileURL = scheme.serve(fileURL: waveURL)
+    let size = (try? FileManager.default.attributesOfItem(atPath: waveURL.path)[.size] as? NSNumber)?.intValue ?? 0
+    let theme = "{kind:'dark', background:'#1e1e2e', foreground:'#cdd6f4'}"
+    let json = String(data: try! JSONSerialization.data(withJSONObject: Harness.pageStrings), encoding: .utf8)!
+    web.evaluateJavaScript("cmuxWaveform.setTheme(\(theme)); cmuxWaveform.open({url:'\(fileURL.absoluteString)', size:\(size), format:'vcd', strings:\(json)})")
+  }
+  /// Another design: its models answer, its Icarus dump is opened (the checks wait for it).
+  func reopen(_ design: String) async {
+    let data = try! Data(contentsOf: traceDir.appendingPathComponent("models/\(design).json"))
+    models = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let before = opened
+    openDump("\(design).icarus.vcd")
+    await waitFor("\(design) opened", 10000) { self.opened > before }
+    await sleep(500)
   }
 
   func snap() {
@@ -1032,5 +2208,5 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let h = MainActor.assumeIsolated { Harness() }
 MainActor.assumeIsolated { h.start() }
-DispatchQueue.main.asyncAfter(deadline: .now() + 90) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 150) { print("timeout"); exit(1) }
 app.run()

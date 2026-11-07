@@ -5,9 +5,11 @@
 // the dump). Fields of a case, each checked when present:
 //   kind (driver.kind), proc (procKind), file + line + stmt (a substring of the statement),
 //   act (activation edge), sample, since, value (bits), dec [[condition substring, taken]...],
-//   fanin { path or local name: bits }, xIndex [fan-in names read through an x index],
-//   trust, root, reasons [codes that must be there], viol [each decision's case violation or null],
-//   noReasons [codes that must not], dumps [variants it runs on; default all of the design's].
+//   fanin { path or local name: bits, or '*' for any value }, noFanin [names that must not be fan-in], roles { fan-in name: 'data' | 'control' }, xIndex [fan-in names read through an x index],
+//   trust, noTrust (a trust it must not have), root, reasons [codes that must be there], viol [each decision's case violation or null],
+//   noReasons [codes that must not], dumps [variants it runs on; default all of the design's; 'stale' is
+//   the Icarus dump with staleModel's model, 'nowrites' with that model's write lists removed only;
+//   'missing' is design M's Icarus dump with models/m.missing.json, where slang could not bind the blocks].
 /* global cmuxTrace, traceVcd, traceFiles */
 /* exported runTraceChecks */
 
@@ -20,6 +22,14 @@ const TRACE_DUMPS = {
   f: ['plain', 'flowctrl', 'tmerge', 'course'],
   g: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
   h: ['plain', 'flowctrl', 'tmerge', 'course', 'icarus'],
+  i: ['icarus'],
+  j: ['icarus'],
+  // The vendor task is $deposit under Icarus (the model sees $cmux_poke).
+  k: ['icarus'],
+  // The classes a Verdi oracle run found exact but wrong on a larger SoC testbench, small.
+  l: ['icarus'],
+  // A testbench shaped like a large SoC run's: an FSDB dump started with the simulator's own tasks.
+  m: ['icarus'],
 };
 
 const XX = 'xxxxxxxx';
@@ -28,7 +38,7 @@ const TRACE_CASES = [
   { d: 'a', sig: 'tb_a.dut.dout', t: 60, kind: 'proc', proc: 'AlwaysFF', file: 'a_uninit.sv', line: 34, stmt: 'dout <= stage;',
     act: 55, sample: 54, since: 55, value: XX, dec: [['!rst_n', 'else']], fanin: { 'tb_a.dut.stage': XX, 'tb_a.dut.rst_n': '1', 'tb_a.dut.clk': '1' }, trust: 'exact' },
   { d: 'a', sig: 'tb_a.dut.stage', t: 54, kind: 'proc', proc: 'AlwaysComb', file: 'a_uninit.sv', line: 28, stmt: 'stage = tmp;',
-    since: 45, dec: [['valid_q', 'then']], fanin: { tmp: XX, 'tb_a.dut.valid_q': '1' }, trust: 'computed' },
+    since: 45, dec: [['valid_q', 'then']], fanin: { tmp: XX, 'tb_a.dut.valid_q': '1', 'tb_a.dut.sum': XX }, trust: 'computed' },
   { d: 'a', sig: 'tb_a.dut.sum', t: 54, kind: 'assign', file: 'a_uninit.sv', line: 23, stmt: 'sum = acc ^ {8{valid_q}}',
     since: 0, fanin: { 'tb_a.dut.acc': XX, 'tb_a.dut.valid_q': '1' }, trust: 'exact' },
   { d: 'a', sig: 'tb_a.dut.acc', t: 54, kind: 'proc', proc: 'AlwaysFF', file: 'a_uninit.sv', line: 21, stmt: 'acc <= acc + din;',
@@ -67,6 +77,8 @@ const TRACE_CASES = [
   { d: 'c', sig: 'tb_c.dut.u_mid.u_sink.mix', t: 54, kind: 'assign', line: 49, stmt: 'mix = in.data + {4\'b0, in.id}', since: 0 },
   { d: 'c', sig: 'tb_c.dut.u_mid.u_sink.in', t: 54, kind: 'portIn', line: 68, since: 45, fanin: { 'tb_c.dut.u_mid.pin': '1xxxx00010000' }, trust: 'exact' },
   { d: 'c', sig: 'tb_c.dut.u_mid.pin', t: 54, kind: 'portIn', line: 81, fanin: { 'tb_c.dut.p': '1xxxx00010000' } },
+  // A port's connection is evaluated in the parent: the driver says so (the page checks it against the KDB).
+  { d: 'c', sig: 'tb_c.dut.u_mid.u_sink.in', t: 54, kind: 'portIn', from: 'tb_c.dut.u_mid' },
   { d: 'c', sig: 'tb_c.dut.p', t: 54, kind: 'portOut', line: 80, fanin: { 'tb_c.dut.u_src.out': '1xxxx00010000' } },
   { d: 'c', sig: 'tb_c.dut.u_src.out', t: 54, kind: 'assign', line: 37, stmt: "out = '{valid: valid_q", fanin: { 'tb_c.dut.u_src.id_q': 'xxxx' }, trust: 'exact', dumps: ['plain', 'flowctrl', 'tmerge', 'course'] },
   { d: 'c', sig: 'tb_c.dut.u_src.out', t: 54, kind: 'assign', line: 35, stmt: 'out = {valid_q, id_q, data_q}', fanin: { 'tb_c.dut.u_src.id_q': 'xxxx' }, trust: 'exact', dumps: ['icarus'] },
@@ -92,7 +104,9 @@ const TRACE_CASES = [
   { d: 'e', sig: 'tb_e.dut.lane[1].r', t: 35, kind: 'proc', proc: 'AlwaysFF', line: 64, stmt: 'r <= r + a;', act: 35, sample: 34, trust: 'exact' },
   { d: 'e', sig: 'tb_e.dut.pk', t: 35, kind: 'assign', line: 71, value: '00110100', fanin: { 'tb_e.dut.op': '0110' }, trust: 'exact' },
   { d: 'e', sig: 'tb_e.dut.asc', t: 35, kind: 'assign', line: 74, value: '01001000', trust: 'exact' },
-  { d: 'e', sig: 'tb_e.dut.t2', t: 40, kind: 'proc', line: 84, stmt: "t2 <= tmp2 + 8'd1;", act: 25, value: '00100111', trust: 'computed' },
+  { d: 'e', sig: 'tb_e.dut.t2', t: 40, kind: 'proc', line: 84, stmt: "t2 <= tmp2 + 8'd1;", act: 25, value: '00100111', trust: 'computed',
+    // A blocking temp's fan-in carries what its write read (tmp2 = a ^ b), not just the temp.
+    fanin: { 'tb_e.dut.tmp2': '*', 'tb_e.dut.a': '*', 'tb_e.dut.b': '*' } },
   // An if on x in a flop and in comb logic: x-optimistic sims take the else branch...
   { d: 'e', sig: 'tb_e.dut.xc', t: 75, kind: 'proc', proc: 'AlwaysComb', line: 56, stmt: 'xc = b;', value: '01111000', dec: [['sel', 'else']], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
   { d: 'e', sig: 'tb_e.dut.xf', t: 80, kind: 'proc', proc: 'AlwaysFF', line: 52, stmt: 'xf <= b;', act: 75, value: '01111000', dec: [['!rst_n', 'else'], ['sel', 'else']], trust: 'exact', dumps: ['plain', 'flowctrl', 'icarus'] },
@@ -151,7 +165,159 @@ const TRACE_CASES = [
   { d: 'h', sig: 'tb_h.din', t: 80000, kind: 'initial', file: 'tb_h.sv', line: 24, stmt: "din = 8'h76;", root: 'testbench' },
   // Several delay scales fit (#5 at 1000 ps per ns, #50 at 100): the largest, so the #5 write.
   { d: 'h', sig: 'tb_h.ms', t: 30000, kind: 'initial', file: 'tb_h.sv', line: 30, stmt: "ms = 8'h99;", root: 'testbench' },
+
+  // ---- I: writes that are found though not re-executed (approximate, never "no driver") ----
+  // A loop-indexed comb write, per-lane counters in a loop, byte writes into memory words in a loop.
+  { d: 'i', sig: 'tb_i.dut.pop', t: 30000, kind: 'proc', proc: 'AlwaysComb', file: 'i_drivers.sv', line: 23, stmt: 'for (int t = 0; t < 4; t++)',
+    trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
+  { d: 'i', sig: 'tb_i.dut.lost[2]', t: 30000, kind: 'proc', proc: 'AlwaysFF', file: 'i_drivers.sv', line: 27, stmt: 'for (int c = 0; c < 4; c++) if (valid[c]',
+    trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
+  { d: 'i', sig: 'tb_i.dut.mem[0]', t: 30000, kind: 'proc', proc: 'Always', file: 'i_drivers.sv', line: 30, stmt: 'for (int b = 0; b < 4; b++)',
+    trust: 'approximate', reasons: ['statement'], noReasons: ['noWrite'] },
+  // The testbench: x++ in a clocked block; a $value$plusargs output and an initial block that also
+  // calls a dump task the elaborator doesn't know.
+  { d: 'i', sig: 'tb_i.settle', t: 30000, kind: 'proc', proc: 'Always', file: 'tb_i.sv', line: 14, stmt: 'settle++;', noReasons: ['noWrite'] },
+  { d: 'i', sig: 'tb_i.iters', t: 30000, kind: 'initial', root: 'testbench', file: 'tb_i.sv', line: 16 },
+  { d: 'i', sig: 'tb_i.epoch', t: 30000, kind: 'initial', root: 'testbench', file: 'tb_i.sv', line: 17, stmt: 'epoch = iters;' },
+
+  // ---- J: an x through a blocking temp the block ends with tmp = 'bx; a default 'bx no later case item replaced ----
+  // q <= tmp, tmp = go ? a : b earlier in the block: q's fan-in is a and go (what reached q), not just tmp.
+  { d: 'j', sig: 'tb_j.dut.q', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 20, stmt: 'q <= tmp;', act: 15000, value: 'xxxx0001',
+    fanin: { 'tb_j.dut.a': 'xxxx0001', 'tb_j.dut.go': '1', 'tb_j.dut.tmp': '*' } },
+  // y = 'bx, then case (1'b1) with x items: nothing matched, so the items are why y stayed x.
+  { d: 'j', sig: 'tb_j.dut.y', t: 10000, kind: 'proc', file: 'j_temps.sv', line: 29, stmt: "y = 'bx;",
+    fanin: { 'tb_j.dut.is_add': 'x', 'tb_j.dut.is_xor': 'x' } },
+  // wire is_add = op == 2'd1: a net's declaration assignment is a continuous assignment (its fan-in
+  // is op), not a declaration initializer.
+  { d: 'j', sig: 'tb_j.dut.is_add', t: 10000, kind: 'assign', file: 'j_temps.sv', line: 26, stmt: "is_add = op == 2'd1", fanin: { 'tb_j.dut.op': 'xx' } },
+  // zq went x at 15 (zq <= 8'bx) and was rewritten x from a2 at 25 and 35: the value in effect was
+  // written at the last edge, from a2, though its last change (since) is 15.
+  { d: 'j', sig: 'tb_j.dut.zq', t: 40000, kind: 'proc', file: 'j_temps.sv', line: 43, stmt: 'zq <= a2;', act: 35000, since: 15000,
+    fanin: { 'tb_j.dut.a2': XX, 'tb_j.dut.zsel': '10' }, roles: { 'tb_j.dut.a2': 'data', 'tb_j.dut.zsel': 'control' } },
+  // p1 <= p0 then p1[3:0] <= 4'h0: p1's x bits (the high nibble, from a) came from the whole write.
+  { d: 'j', sig: 'tb_j.dut.p1', t: 20000, kind: 'proc', file: 'j_temps.sv', line: 49, stmt: 'p1 <= p0;', value: 'xxxx000100100000',
+    fanin: { 'tb_j.dut.p0': 'xxxx000100100010' } },
+  // The x part-select write a later narrower write of known bits overlaid is the one shown, compared
+  // over its own bits with the later write laid over them; also inside a wider word.
+  { d: 'j', sig: 'tb_j.dut.st', t: 30000, kind: 'proc', line: 61, stmt: "st[7:2] = 6'bx;", value: 'xxxx0011', trust: 'exact' },
+  { d: 'j', sig: 'tb_j.dut.w16', t: 30000, kind: 'proc', line: 66, stmt: "w16[7:0] = 'bx;", value: '00000000xxxx0011', trust: 'exact' },
+  // A local declared with an initializer: the fan-in goes on through the initializer's reads.
+  // (Icarus 12 does not run a block local's initializer, so its dump keeps dq at x: fan-in only.)
+  { d: 'j', sig: 'tb_j.dut.dq', t: 20000, kind: 'proc', line: 72, stmt: 'dq <= t2;', fanin: { t2: '*', 'tb_j.dut.b': '00100010' } },
+  // A net declaration assignment whose initializer has no source text (a width extension).
+  { d: 'j', sig: 'tb_j.dut.wz', t: 20000, kind: 'assign', stmt: 'wz = go', rhs: 'go', value: '00000001', fanin: { 'tb_j.dut.go': '1' }, trust: 'exact' },
+
+  // ---- K: writes that aren't re-executed: a driver that may have written, never a confident "nothing" ----
+  // A simulator's own task given vq by name ($cmux_poke(vq, a)): it may write vq.
+  { d: 'k', sig: 'tb_k.dut.vq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 21, stmt: '$cmux_poke(vq, a);', trust: 'approximate', reasons: ['statement'] },
+  // A task call whose body writes tq.
+  { d: 'k', sig: 'tb_k.dut.tq', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 28, trust: 'approximate', reasons: ['statement'] },
+  // fq <= bump(a), and bump's body writes fcnt.
+  // ky = a, then if (go) kz = a: the later if doesn't write ky, so go isn't in its fan-in.
+  { d: 'k', sig: 'tb_k.dut.ky', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 39, stmt: 'ky = a;', fanin: { 'tb_k.dut.a': '00100010' }, noFanin: ['tb_k.dut.go'] },
+  // fr went x at 15 (xa x), then the testbench forced it at 22: the runs at 25 and 35 write 05, so
+  // the x in effect is still traced at 15, not moved to the last edge.
+  { d: 'k', sig: 'tb_k.dut.fr', t: 40000, kind: 'proc', file: 'k_writes.sv', line: 44, stmt: 'fr <= xa;', act: 15000, since: 15000, value: XX,
+    fanin: { 'tb_k.dut.xa': XX } },
+  // cnt is written only by its if's condition (cnt++ == 3), in a live procedure.
+  { d: 'k', sig: 'tb_k.dut.cnt', t: 20000, kind: 'proc', file: 'k_writes.sv', line: 47, trust: 'approximate', reasons: ['statement'] },
+  // gq <= a, but the testbench forced it to 77 at 27; dq's last own write was 11 at 15, then the
+  // testbench deposited 44 at 27: the testbench's statement, approximate ('force'), never exact.
+  { d: 'k', sig: 'tb_k.dut.gq', t: 30000, kind: 'initial', file: 'tb_k.sv', stmt: 'force dut.gq', since: 27000, value: '01110111', trust: 'approximate', reasons: ['force'] },
+  { d: 'k', sig: 'tb_k.dut.dq', t: 30000, kind: 'initial', file: 'tb_k.sv', stmt: '$deposit(dut.dq', since: 27000, value: '01000100', trust: 'approximate', reasons: ['force'] },
+  // lq <= c17 through 18 blocking temps: the fan-in stops at 16 of them, with a 'limits' reason.
+  { d: 'k', sig: 'tb_k.dut.lq', t: 20000, kind: 'proc', file: 'k_writes.sv', stmt: 'lq <= c17;', trust: 'approximate', reasons: ['limits'] },
+  { d: 'k', sig: 'tb_k.dut.fcnt', t: 30000, kind: 'proc', file: 'k_writes.sv', line: 35, stmt: 'fq <= bump(a);', trust: 'approximate', reasons: ['statement'] },
+  // ---- L: classes a Verdi oracle run found exact but wrong, as Verdi answers them ----
+  // A: a reset declared low and raised by the initial block after clock edges: the write that
+  // raised it (approximate, the testbench's), never the declaration; through the port too.
+  { d: 'l', sig: 'tb_l.rst_n', t: 40000, kind: 'initial', file: 'tb_l.sv', line: 27, stmt: "rst_n = 1'b1;", since: 26000, value: '1', trust: 'approximate', root: 'testbench' },
+  { d: 'l', sig: 'tb_l.dut.rst_n', t: 40000, kind: 'portIn', since: 26000, fanin: { 'tb_l.rst_n': '1' } },
+  // Values from the initial block's opening statements (a plusarg, then a copy): their writes.
+  { d: 'l', sig: 'tb_l.epoch_iters', t: 40000, kind: 'initial', file: 'tb_l.sv', line: 24, stmt: 'epoch_iters = iters;', trust: 'approximate' },
+  { d: 'l', sig: 'tb_l.iters', t: 40000, kind: 'initial', file: 'tb_l.sv', stmt: 'iters = 4;', trust: 'approximate' },
+  // A counter incremented in a clocked block of the testbench: that statement.
+  { d: 'l', sig: 'tb_l.settle', t: 40000, file: 'tb_l.sv', stmt: 'settle++;', trust: 'approximate' },
+  // A, as the oracle's model had it ('stale': no statement lists what it writes, and the initial
+  // block is one statement slang could not elaborate). The block may write anything: it is named,
+  // approximate; a value nothing explains is never exact, and the declaration did not make a
+  // value that changed at 26.
+  { d: 'l', sig: 'tb_l.rst_n', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, since: 26000, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.epoch_iters', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.iters', t: 40000, dumps: ['stale'], kind: 'initial', file: 'tb_l.sv', line: 18, trust: 'approximate', reasons: ['opaque'] },
+  // The initial block may write settle too: named, approximate. With only the write lists gone
+  // ('nowrites': settle++ is opaque and says nothing), nothing found writes it, yet it changed at 35.
+  { d: 'l', sig: 'tb_l.settle', t: 40000, dumps: ['stale'], kind: 'initial', line: 18, since: 35000, trust: 'approximate', reasons: ['opaque'] },
+  { d: 'l', sig: 'tb_l.settle', t: 40000, dumps: ['nowrites'], kind: 'none', since: 35000, trust: 'approximate', reasons: ['writeNotFound'] },
+  { d: 'l', sig: 'tb_l.iters', t: 40000, dumps: ['nowrites'], kind: 'initial', stmt: 'iters = 4;', trust: 'approximate', noReasons: ['writeNotFound'] },
+  // B: y unchanged since 35 (the override made it); at 40 and 50 the default gives the same value
+  // (sel fell at 45). The statement that made the value, run when it changed, as Verdi names it.
+  { d: 'l', sig: 'tb_l.dut.y', t: 50000, kind: 'proc', proc: 'Always', file: 'l_oracle.sv', line: 19, stmt: 'y = b;', since: 35000, sample: 35000, value: '00110011', trust: 'exact' },
+  { d: 'l', sig: 'tb_l.dut.y', t: 40000, kind: 'proc', line: 19, stmt: 'y = b;', since: 35000, value: '00110011', trust: 'exact' },
+  // c = 0 by the override while in reset (2), then by the default (26): the override, as Verdi
+  // names picorv32's clear_prefetched_high_word at t=0. (Both write 1'b0: the line tells them apart.)
+  { d: 'l', sig: 'tb_l.dut.c', t: 40000, kind: 'proc', file: 'l_oracle.sv', line: 24, since: 2000, value: '0', trust: 'exact' },
+  // A1: a value nothing in the model writes is the start value only as the type starts: x for a
+  // 4-state type, 0 for a 2-state one ('hidden': the initial block that wrote mode4 = 0 left out).
+  { d: 'l', sig: 'tb_l.mode4', t: 40000, kind: 'initial', stmt: "mode4 = 4'b0;", trust: 'approximate' },
+  { d: 'l', sig: 'tb_l.mode4', t: 40000, dumps: ['hidden'], value: '0000', trust: 'approximate', reasons: ['writeNotFound'] },
+  { d: 'l', sig: 'tb_l.mode2', t: 40000, dumps: ['hidden'], value: '00000000000000000000000000000000', trust: 'exact', noReasons: ['writeNotFound'] },
+  // B1: two writers that both explain the value: which one made it is not known.
+  { d: 'l', sig: 'tb_l.dut.y', t: 50000, dumps: ['two'], kind: 'proc', value: '00110011', trust: 'approximate', reasons: ['multiDriven'] },
+  // F: a flop that never took a value is its start value (x since 0), not its block.
+  { d: 'l', sig: 'tb_l.dut.k', t: 40000, kind: 'none', since: 0, value: 'xxxxxxxx', trust: 'exact' },
+
+  // M (R1): the testbench's initial block calls $fsdbDumpfile/$fsdbDumpvars, which slang doesn't
+  // know. Each is one opaque call; the rest of the block is modelled, so the reset is the
+  // assignment that raised it (a testbench's write: approximate, but not opaque), not the block.
+  { d: 'm', sig: 'tb_m.rst_n', t: 220000, kind: 'initial', file: 'tb_m.sv', line: 29, stmt: "rst_n = 1'b1;", since: 195000, value: '1', trust: 'approximate', root: 'testbench', noReasons: ['opaque'] },
+  { d: 'm', sig: 'tb_m.epoch_iters', t: 220000, kind: 'initial', file: 'tb_m.sv', line: 19, stmt: 'epoch_iters = iters;', trust: 'approximate', noReasons: ['opaque'] },
+  { d: 'm', sig: 'tb_m.dut.q', t: 220000, kind: 'proc', file: 'm_count.sv', line: 16, stmt: "q <= q + 8'd1;", trust: 'exact' },
+  // 'missing': the blocks also call a task the model wasn't given, so slang binds neither (each is
+  // one opaque statement). What the model says each writes, and where, still names the line.
+  { d: 'm', sig: 'tb_m.rst_n', t: 220000, dumps: ['missing'], kind: 'initial', file: 'tb_m.sv', line: 29, stmt: "rst_n = 1'b1", since: 195000, trust: 'approximate', root: 'testbench' },
+  { d: 'm', sig: 'tb_m.epoch_iters', t: 220000, dumps: ['missing'], kind: 'initial', file: 'tb_m.sv', line: 19, stmt: 'epoch_iters = iters', trust: 'approximate' },
+  // Two lines write q (the reset and the count): the block, approximate, with both as candidates.
+  { d: 'm', sig: 'tb_m.dut.q', t: 220000, dumps: ['missing'], kind: 'proc', file: 'm_count.sv', line: 10, trust: 'approximate', candidates: [11, 16] },
+
 ];
+
+// The model an older cmux-sv-model gave (the one the Verdi oracle ran on): no statement lists what
+// it writes, and an initial block slang could not elaborate is one opaque statement.
+// ('nowrites': the write lists only.)
+function staleModel(all, invalidInitial) {
+  const strip = (x) => {
+    if (Array.isArray(x)) { x.forEach(strip); return; }
+    if (!x || typeof x !== 'object') { return; }
+    delete x.writes;
+    Object.values(x).forEach(strip);
+  };
+  for (const m of Object.values(all.instances)) {
+    strip(m.procs);
+    for (const p of m.procs) { if (invalidInitial && p.kind === 'Initial') { p.body = { k: 'opaque', why: 'Invalid', src: p.body.src || '', loc: p.loc }; } }
+  }
+}
+
+// The bits a signal starts with, from the model alone: its initializer when that is a literal
+// (sized or a plain decimal), else all x for a 4-state type, all 0 for a 2-state one (twoState);
+// null when it can't be told (an initializer that reads other signals).
+function startBits(sig) {
+  if (!sig) { return null; }
+  const w = Math.max(1, Number(sig.width) || 1);
+  if (!sig.init) { return (sig.twoState === true ? '0' : 'x').repeat(w); }
+  if ((sig.init.leaves || []).length) { return null; }
+  const text = String(sig.init.text || '').replace(/_/g, '');
+  const fit = (bits) => (bits.length >= w ? bits.slice(bits.length - w) : (/^[xz]/.test(bits) ? bits[0] : '0').repeat(w - bits.length) + bits);
+  let m = /^\d*'s?([bho])([0-9a-fxz]+)$/i.exec(text);
+  if (m) {
+    const per = { b: 1, o: 3, h: 4 }[m[1].toLowerCase()];
+    const bits = [...m[2].toLowerCase()].map((c) => (c === 'x' || c === 'z' ? c.repeat(per) : parseInt(c, 16).toString(2).padStart(per, '0'))).join('');
+    return fit(bits);
+  }
+  m = /^(?:\d*'s?d)?(\d+)$/i.exec(text);
+  if (m) { return fit(BigInt(m[1]).toString(2)); }
+  return null;
+}
 
 function runTraceChecks() {
   const out = [];
@@ -168,9 +334,16 @@ function runTraceChecks() {
   function engineFor(d, variant) {
     const key = d + '.' + variant;
     if (engines[key]) { return engines[key]; }
-    const modelName = d === 'c' && variant === 'icarus' ? 'c.icarus' : d;
+    const modelName = d === 'c' && variant === 'icarus' ? 'c.icarus' : variant === 'missing' ? d + '.missing' : d;
     const all = JSON.parse(traceFiles.models[modelName]);
-    const vcd = traceVcd(traceFiles.dumps[`${d}.${variant}`]);
+    // 'stale': the Icarus dump with the model an older sidecar gave for that testbench.
+    if (variant === 'stale' || variant === 'nowrites') { staleModel(all, variant === 'stale'); }
+    // 'hidden': the testbench's initial blocks left out of the model (a write the model doesn't show).
+    if (variant === 'hidden') { for (const m of Object.values(all.instances)) { m.procs = m.procs.filter((p) => p.kind !== 'Initial'); } }
+    // 'two': the DUT's first always @* listed twice (two writers that both explain the value).
+    if (variant === 'two') { const m = all.instances['tb_l.dut']; m.procs.splice(1, 0, JSON.parse(JSON.stringify(m.procs[0]))); }
+    const onIcarus = ['stale', 'nowrites', 'hidden', 'two', 'missing'].includes(variant);
+    const vcd = traceVcd(traceFiles.dumps[`${d}.${onIcarus ? 'icarus' : variant}`]);
     const models = {
       instance: async (p) => all.instances[p],
       // What cmux-sv-model's `writers` answers: the instances that write into `p` from outside it.
@@ -193,20 +366,31 @@ function runTraceChecks() {
     const kind = step.driver && step.driver.kind;
     if (c.kind) { want('kind', kind, c.kind); }
     if (c.writer) { want('writer', step.driver && step.driver.writer, c.writer); }
+    if (c.from) { want('from', step.driver && step.driver.from, c.from); }
     if (c.proc) { want('proc', step.procKind || (step.driver && step.driver.procKind), c.proc); }
     if (c.file) { want('file', base(step.stmt && step.stmt.loc && step.stmt.loc.file), c.file); }
     if (c.line) { want('line', step.stmt && step.stmt.loc && step.stmt.loc.line, c.line); }
     const squeeze = (x) => String(x).replace(/\s+/g, ' ');
+    if (c.rhs && !(step.stmt && squeeze(step.stmt.rhs || '') === squeeze(c.rhs))) { bad.push(`rhs: ${JSON.stringify(step.stmt && step.stmt.rhs)} != ${JSON.stringify(c.rhs)}`); }
     if (c.stmt) { if (!(step.stmt && squeeze(step.stmt.src).includes(squeeze(c.stmt)))) { bad.push(`stmt: ${JSON.stringify(step.stmt && step.stmt.src)} lacks ${JSON.stringify(c.stmt)}`); } }
     if (c.act !== undefined) { want('activation', step.activation && step.activation.time, c.act); }
     if (c.sample !== undefined) { want('sample', step.sample, c.sample); }
     if (c.since !== undefined) { want('since', step.since, c.since); }
     if (c.value !== undefined) { want('value', step.value, c.value); }
     if (c.trust) { want('trust', step.trust, c.trust); }
+    if (c.noTrust && step.trust === c.noTrust) { bad.push(`trust is ${step.trust}, which it must not be`); }
     if (c.root) { want('root', step.root, c.root); }
+    if (c.candidates) { want('candidate lines', JSON.stringify((step.candidates || []).map((x) => x.loc && x.loc.line)), JSON.stringify(c.candidates)); }
     for (const [k, v] of Object.entries(c.fanin || {})) {
       const f = (step.fanin || []).find((x) => x.path === k || (x.local && x.name === k));
-      if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
+      if (!f) { bad.push(`fan-in lacks ${k} (has ${(step.fanin || []).map((x) => x.path || x.name).join(', ')})`); } else if (v !== '*' && f.value !== v) { bad.push(`fan-in ${k} = ${f.value} != ${v}`); }
+    }
+    for (const k of c.noFanin || []) {
+      if ((step.fanin || []).some((x) => x.path === k || (x.local && x.name === k))) { bad.push(`fan-in has ${k}, which isn't why it has its value`); }
+    }
+    for (const [k, v] of Object.entries(c.roles || {})) {
+      const f = (step.fanin || []).find((x) => (x.path === k || (x.local && x.name === k)) && x.role === v);
+      if (!f) { bad.push(`fan-in lacks ${k} as ${v} (roles ${(step.fanin || []).filter((x) => x.path === k || x.name === k).map((x) => x.role).join(', ') || 'none'})`); }
     }
     for (const k of c.xIndex || []) {
       if (!(step.fanin || []).some((x) => x.xIndex && (x.name === k || x.path === k))) { bad.push(`fan-in lacks an x-index read of ${k}`); }
@@ -262,7 +446,14 @@ function runTraceChecks() {
             for (const [t] of s.changes) {
               const step = await engine.active(p, t);
               tally.steps++;
-              if (step.driver && step.driver.kind === 'none') { tally.noDriver = (tally.noDriver || 0) + 1; if (tally.noDriver <= 3) { out.push(`ORACLE ${d}.${variant} ${p} @${t}: no driver`); } }
+              // Held since 0 at the value it started with, with no write missing: nothing drove it
+              // yet, which is no missing driver. The start value is worked out here, not taken from
+              // the engine: x for a 4-state type, 0 for a 2-state one, else the initializer's.
+              const start = startBits(m.signals[name]);
+              const held = Number(step.since) === 0 && !(step.reasons || []).some((r) => r.code === 'writeNotFound')
+                && start !== null && step.value === start;
+              if (step.driver && step.driver.kind === 'none' && held) { tally.startValue = (tally.startValue || 0) + 1; }
+              if (step.driver && step.driver.kind === 'none' && !held) { tally.noDriver = (tally.noDriver || 0) + 1; if (tally.noDriver <= 3) { out.push(`ORACLE ${d}.${variant} ${p} @${t}: no driver`); } }
               tally[step.trust] = (tally[step.trust] || 0) + 1;
               // Inconsistent with no reason the engine can name: a modelling bug.
               if (step.trust === 'inconsistent' && (step.reasons || []).some((r) => r.code === 'mismatch')) {
@@ -281,6 +472,43 @@ function runTraceChecks() {
         if (expectClean && tally.unexplained) { results.failures++; out.push('FAIL oracle ' + line); } else { out.push('oracle ' + line); }
       }
     }
+    // Trace X to Root over the engine (the page's step and probe are its active()).
+    const xc = (d, path, t, config) => {
+      const { engine } = engineFor(d, 'icarus');
+      return cmuxTrace.xChain({ path, time: t }, Object.assign({ step: (p, at) => engine.active(p, at) }, config || {}));
+    };
+    const chainWant = (what, got, exp) => {
+      results.cases++;
+      if (JSON.stringify(got) === JSON.stringify(exp)) { out.push(`ok   chain ${what}`); return; }
+      results.failures++;
+      out.push(`FAIL chain ${what}: ${JSON.stringify(got)} != ${JSON.stringify(exp)}`);
+    };
+    // An unreset counter (cnt <= cnt + 1, x since the start): uninitialised storage, not a loop.
+    const cnt = await xc('j', 'tb_j.dut.cnt', 30000);
+    chainWant('unreset counter', [cnt.end.code, cnt.root, cnt.steps.map((e) => e.signal)], ['uninit', 0, ['tb_j.dut.cnt']]);
+    // A step whose value has no x though its probe had (the two disagree): the next candidate.
+    const fake = {
+      q: { signal: 'q', time: 10, value: 'x', since: 8, driver: { kind: 'proc' }, fanin: [{ path: 'a', value: 'x', time: 9 }, { path: 'b', value: 'x', time: 9 }] },
+      a: { signal: 'a', time: 9, value: 'x', since: 2, driver: { kind: 'proc' }, fanin: [] },
+      b: { signal: 'b', time: 9, value: 'x', since: 5, driver: { kind: 'none' }, fanin: [] },
+    };
+    const mismatch = await cmuxTrace.xChain({ path: 'q', time: 10 }, {
+      probe: async (p) => fake[p],
+      step: async (p) => (p === 'a' ? Object.assign({}, fake.a, { value: '0' }) : fake[p]),
+    });
+    chainWant('a step with no x is not followed', [mismatch.end.code, mismatch.steps.map((e) => e.signal)], ['uninit', ['q', 'b']]);
+    const none = await cmuxTrace.xChain({ path: 'q', time: 10 }, {
+      probe: async (p) => fake[p],
+      step: async (p) => (p === 'q' ? fake.q : Object.assign({}, fake[p], { value: '0' })),
+    });
+    chainWant('no candidate with x left', [none.end.code, none.root, none.steps.map((e) => e.signal)], ['failed', -1, ['q']]);
+    // cnt <= cnt + in, both x since the start: the input it has not seen is where the x came from.
+    const ring = {
+      cnt: { signal: 'cnt', time: 10, value: 'x', since: 0, driver: { kind: 'proc' }, fanin: [{ path: 'cnt', value: 'x', time: 9 }, { path: 'in', value: 'x', time: 9 }] },
+      in: { signal: 'in', time: 9, value: 'x', since: 0, driver: { kind: 'none' }, fanin: [] },
+    };
+    const tied = await cmuxTrace.xChain({ path: 'cnt', time: 10 }, { step: async (p) => ring[p] });
+    chainWant('a tie in since goes to the candidate not seen', [tied.root, tied.steps.map((e) => e.signal)], [1, ['cnt', 'in']]);
     return out;
   }
   return run().then((lines) => { globalThis.__traceDone = { lines, results }; }, (error) => { globalThis.__traceDone = { lines: out.concat(['FAIL ' + (error && error.stack || error)]), results: { failures: 1 } }; });

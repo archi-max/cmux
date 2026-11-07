@@ -256,7 +256,7 @@
     // ---- statements ----
     function newCtx(m, vals, mode) {
       return { m, vals, mode: mode || 'optimistic', locals: new Map(), blocking: new Map(), writes: new Map(), decisions: [],
-        reasons: [], missing: new Set(), needElems: new Set(), elemsRead: new Set(), statements: 0, path: [] };
+        reasons: [], missing: new Set(), needElems: new Set(), elemsRead: new Set(), statements: 0, path: [], opaque: [] };
     }
     function fork(ctx) {
       return Object.assign({}, ctx, { locals: new Map(ctx.locals), blocking: new Map(ctx.blocking), writes: new Map([...ctx.writes].map(([k, v]) => [k, v.slice()])), decisions: ctx.decisions.slice(), path: ctx.path.slice() });
@@ -287,7 +287,12 @@
         }
         return;
       }
-      if (lhs.opaque !== undefined || !lhs.name) { ctx.reasons.push({ code: 'lvalue', src: lhs.opaque || s.src }); return; }
+      if (lhs.opaque !== undefined || !lhs.name) {
+        ctx.reasons.push({ code: 'lvalue', src: lhs.opaque || s.src });
+        // The variable it writes, when the model knows it: the write ran, its bits aren't modelled.
+        if (lhs.name) { ctx.opaque.push({ stmt: s, name: lhs.name }); }
+        return;
+      }
       const name = lhs.name;
       let target = name, lsb = lhs.lsb !== undefined ? lhs.lsb : 0;
       const full = lhs.full || widthOfTarget(ctx, name) || value.w;
@@ -335,10 +340,13 @@
           const w = lhs.concat ? lhs.width : (lhs.width || widthOfTarget(ctx, lhs.name) || s.rhs.width || 1);
           const v = evalExpr(s.rhs, ctx, w).value;
           write(ctx, s, lhs, v);
+          // What the functions its right side calls write (the model's "writes").
+          ranWrites(s, ctx);
           return;
         }
         case 'timed': ctx.reasons.push({ code: 'delay', src: s.src }); exec(s.stmt, ctx); return;
         case 'if': {
+          ranWrites(s, ctx);
           const c = evalExpr(s.c, ctx).value;
           const t = X.truthy(c);
           const unknown = !t && hasX(c);
@@ -356,6 +364,7 @@
           return;
         }
         case 'case': {
+          ranWrites(s, ctx);
           const sel = evalExpr(s.e, ctx).value;
           let hit = -1;
           // Items are compared as written (a width context would turn their z wildcards into x).
@@ -387,7 +396,14 @@
         }
         default:
           ctx.reasons.push({ code: 'statement', why: s.why, src: s.src });
+          ranWrites(s, ctx);
       }
+    }
+    // A statement that isn't re-executed (or a condition with side effects, such as a
+    // $value$plusargs output, or an assignment whose right side calls a function that writes a
+    // module variable) ran: what the model says it writes.
+    function ranWrites(s, ctx) {
+      if (Array.isArray(s.writes)) { s.writes.forEach((w) => ctx.opaque.push({ stmt: s, name: w.name, at: writeSites(s, w) })); }
     }
 
     // X-propagation: run each branch from the same state and merge what they write, per bit
@@ -453,8 +469,22 @@
       if (lhs.concat) { return lhs.concat.some((x) => writesTo(x, name)); }
       return lhs.name === name;
     }
+    // What an opaque statement or a condition with side effects writes (the model's "writes").
+    const opaqueWrites = (s, name) => Array.isArray(s.writes) && s.writes.some((w) => w.name === name);
+    // Where the model says a write is made inside such a statement ({src, loc}: the assignment, the
+    // ++ or the call): [] when it doesn't say. Used only for a block slang could not bind as a whole
+    // (opaque, Invalid: a call to a task it wasn't given), where the statement is the whole block;
+    // any other opaque statement is its own line already, and is shown as it is.
+    function writeSites(s, w) { return s && s.k === 'opaque' && s.why === 'Invalid' && w && Array.isArray(w.at) ? w.at.filter((a) => a && Array.isArray(a.loc)) : []; }
+    // An opaque statement's writes of `name`, as statements to show: for a block slang could not
+    // bind, the lines that write it; else the statement.
+    function opaqueSites(s, name) {
+      const at = writeSites(s, Array.isArray(s.writes) ? s.writes.find((w) => w.name === name) : null);
+      return at.length ? at.map((a) => ({ k: 'site', src: a.src || s.src, loc: a.loc, of: s })) : [s];
+    }
     function stmtWrites(s, name) {
       if (!s) { return false; }
+      if (opaqueWrites(s, name)) { return true; }
       switch (s.k) {
         case 'seq': return s.s.some((x) => stmtWrites(x, name));
         case 'asgn': return writesTo(s.lhs, name);
@@ -476,6 +506,10 @@
       const s = signalOf(m, name);
       const base = s && s.element ? s.element.array : name;
       m.assigns.forEach((a, i) => { if (writesTo(a.lhs, base)) { out.push({ type: 'assign', a, i }); } });
+      // A net's declaration assignment (wire w = e) is a continuous assignment, not an initializer.
+      if (s && s.kind === 'net' && s.init && !s.element) {
+        out.push({ type: 'assign', i: -1, a: { lhs: { name, width: s.width, full: s.width, loc: s.loc }, rhs: s.init, src: `${name} = ${s.init.src || leafText(s.init)}`, loc: s.init.loc } });
+      }
       m.procs.forEach((p) => { if (stmtWrites(p.body, base)) { out.push({ type: 'proc', p }); } });
       for (const port of m.ports) {
         if ((port.dir === 'In' || port.dir === 'InOut') && port.internal === base && port.conn && m.parent) { out.push({ type: 'portIn', port }); }
@@ -519,7 +553,10 @@
     // Values for display: a cmux value -> bits text.
     const shown = (v) => bitsOf(X, v);
 
-    function faninOf(m, e, reads, time, role, out) {
+    // A read of a temp written earlier in the same run (a local, or a variable written blocking) also
+    // lists what that write read: the temp's dumped value is not what was read (a block may end with
+    // tmp = 'bx), so following the temp alone would go astray. `through` names the temp.
+    function faninOf(m, e, reads, time, role, out, seen) {
       for (const r of reads) {
         if (r.src === 'opaque') { continue; }
         const entry = { role, time };
@@ -538,8 +575,19 @@
         else if (r.path) { entry.path = r.path; }
         entry.dumped = !(r.src === 'notDumped' || r.src === 'elemNotDumped' || r.src === 'notFetched');
         if (r.src === 'xIndex') { entry.xIndex = true; }
+        if (seen && seen.through) { entry.through = seen.through; }
         const key = (entry.path || entry.name) + '|' + role;
         if (!out.some((x) => (x.path || x.name) + '|' + x.role === key)) { out.push(entry); }
+        const w = (r.src === 'local' || r.src === 'blocking') && r.write;
+        const done = (seen && seen.writes) || new Set();
+        // What the temp's write read: its rhs, or a declaration's initializer (logic t = e;).
+        const rhs = w && w.stmt && (w.stmt.rhs || (w.decl && w.stmt.init));
+        if (rhs && w.ctx && !done.has(w)) {
+          // At most 16 temps' writes are followed; past that the fan-in is cut, and the step says so.
+          if (done.size >= 16) { out.limited = true; continue; }
+          done.add(w);
+          faninOf(m, rhs, readsOf(rhs, w.ctx, w.width || w.stmt.width), time, role, out, { writes: done, through: (seen && seen.through) || entry.path || entry.name });
+        }
       }
       return out;
     }
@@ -583,6 +631,30 @@
       || (p.kind === 'Always' && p.events.some((e) => e.edge === 'Other' && e.kind !== 'ImplicitEvent'));
     const isEdgeProc = (p) => p.events.some((e) => e.edge === 'PosEdge' || e.edge === 'NegEdge' || e.edge === 'BothEdges');
 
+    // The first statement slang could not elaborate (its writes unknown), or null.
+    function unknownWrites(s) {
+      if (!s || typeof s !== 'object') { return null; }
+      if (s.k === 'opaque' && s.why === 'Invalid') { return s; }
+      for (const k of ['s', 'stmt', 't', 'f', 'dflt']) {
+        const v = s[k];
+        const hit = Array.isArray(v) ? v.map(unknownWrites).find(Boolean) : unknownWrites(v);
+        if (hit) { return hit; }
+      }
+      return Array.isArray(s.items) ? s.items.map((it) => unknownWrites(it.s)).find(Boolean) || null : null;
+    }
+    // Whether `now`, unchanged since `since`, is what the signal started with: its declaration's
+    // initializer, else x, or 0 for a 2-state type (the model's `twoState`; without it, 4-state).
+    // False when it changed after the start.
+    async function startValue(m, sig, now, since) {
+      if (Number(since) !== 0) { return false; }
+      if (!sig.init) { return sig.twoState === true ? /^0+$/.test(shown(now)) : /^x+$/.test(shown(now)); }
+      const vals = await fetch(leafPaths(m, sig.init, new Set()), 0);
+      const ctx = newCtx(m, vals);
+      await fillElements(ctx, m, sig.init, 0);
+      const ev = evalExpr(sig.init, ctx, sig.width);
+      return !ctx.reasons.length && same(fit(ev.value, now.w), now);
+    }
+
     // ---- the step ----
     async function active(path, time, opts) {
       const o = opts || {};
@@ -611,43 +683,114 @@
       step.drivers = cands.map((c) => Object.assign(driverSummary(c.m, c.d), c.m === m ? {} : { writer: c.m.path }));
       const live = cands.filter((c) => c.d.type !== 'proc' || !isStimulus(c.d.p));
       if (!all.length) {
+        // A statement slang could not elaborate may write anything in its instance: its block is
+        // the candidate, approximate.
+        const unknown = m.procs.filter((p) => unknownWrites(p.body));
+        if (unknown.length) {
+          const uc = unknown.map((p) => ({ m, d: { type: 'proc', p }, name }));
+          step.drivers = uc.map((c) => driverSummary(m, c.d));
+          const op = unknownWrites(unknown[0].body);
+          const opaque = { code: 'opaque', src: op.src, why: op.why };
+          if (unknown.every(isStimulus)) { const r = stimulusStep(step, uc, m, name, sig, t); r.reasons.push(opaque); r.trust = trustOf(r); return r; }
+          const p = unknown.find((x) => !isStimulus(x));
+          step.driver = driverSummary(m, { type: 'proc', p });
+          step.procKind = p.kind;
+          step.stmt = { src: op.src, loc: locOf(m, op.loc || p.loc) };
+          step.reasons.push(opaque);
+          step.trust = trustOf(step);
+          return step;
+        }
         step.driver = { kind: sig.kind === 'net' ? 'undriven' : 'none' };
-        if (!m.parent && m.ports.some((p) => p.internal === name && p.dir === 'In')) { step.driver.kind = 'topInput'; }
+        const topInput = !m.parent && m.ports.some((p) => p.internal === name && p.dir === 'In');
+        if (topInput) { step.driver.kind = 'topInput'; }
         if (sig.init) { step.driver.kind = 'initializer'; step.stmt = { src: sig.init.src, loc: locOf(m, sig.init.loc) }; }
-        step.trust = 'exact';
+        // Nothing found writes it, so its value is the one it started with: unless it changed after
+        // the start or isn't that value, a write the model doesn't show made it (never exact).
+        if (!topInput && now !== undefined && step.since !== null && !(await startValue(m, sig, now, step.since))) {
+          if (step.driver.kind === 'initializer') { step.candidates = [step.stmt]; delete step.stmt; step.driver.kind = 'none'; }
+          step.reasons.push({ code: 'writeNotFound' });
+        }
+        step.trust = trustOf(step);
         return step;
       }
-      if (!live.length) {
-        // Only stimulus: the testbench (tracing stops here by default).
-        const c = cands.find((x) => x.d.type === 'proc') || cands[0];
-        const d = c.d, cm = c.m;
-        step.driver = { kind: 'initial', procKind: d.p.kind, loc: locOf(cm, d.p.loc) };
-        if (cm !== m) { step.driver.writer = cm.path; }
-        const writes = [];
-        collectWrites(d.p.body, c.name, writes);
-        // The write in effect at t (its #delays summed), else the body's last write.
-        const at = d.p.kind === 'Initial' ? writeAt(d.p.body, c.name, step.since, t) : null;
-        const shownWrite = at || writes[writes.length - 1];
-        step.stmt = shownWrite ? { src: shownWrite.src, loc: locOf(cm, shownWrite.loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
-        // Unchanged since 0 and no write at 0: the declaration's initializer.
-        if (!at && Number(step.since) === 0 && sig.init && d.p.kind === 'Initial') { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
-        step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(cm, s.loc) }));
-        step.root = 'testbench';
-        step.trust = 'approximate';
-        step.reasons.push({ code: 'testbench' });
-        return step;
-      }
-      if (live.length > 1) { step.reasons.push({ code: 'multiDriven', count: live.length }); }
+      // Only stimulus: the testbench (tracing stops here by default).
+      if (!live.length) { return stimulusStep(step, cands, m, name, sig, t); }
+      const multi = live.length > 1 ? { code: 'multiDriven', count: live.length } : null;
+      if (multi) { step.reasons.push(multi); }
       // Each live driver is tried; the one whose prediction agrees with the dump is the active one.
-      let best = null;
+      // With several that agree, which one made the value is not known (multiDriven, consistent > 1:
+      // approximate). A driver predicting all z (a tri-state driver that is off) adds nothing to a
+      // resolved net, so it doesn't count.
+      let best = null, agree = 0;
       for (const c of live) {
         const r = await runDriver(c.m, c.d, c.name, sig, t, now, step.since, o);
         if (c.m !== m) { r.driver.writer = c.m.path; }
+        if (rank(r) >= 3 && !/^z+$/.test(r.predicted || '')) { agree++; }
         if (!best || rank(r) > rank(best)) { best = r; }
-        if (rank(r) >= 3) { break; }
+        if (rank(r) >= 3 && !multi) { break; }
+      }
+      if (multi) { multi.consistent = agree; }
+      // The instance's own drivers can't explain the value (inconsistent, or no write): another
+      // instance's write into it can (a testbench's force or $deposit, a hierarchical write). Its
+      // statement is shown, approximate ('force'), with the own driver's answer as a candidate.
+      if (rank(best) <= 1 && cands.every((c) => c.m === m)) {
+        const outs = await outsideDrivers(m, name);
+        const outLive = outs.filter((c) => c.d.type !== 'proc' || !isStimulus(c.d.p));
+        let out = null;
+        for (const c of outLive) {
+          const r = await runDriver(c.m, c.d, c.name, sig, t, now, step.since, o);
+          r.driver.writer = c.m.path;
+          if (rank(r) >= 2 && (!out || rank(r) > rank(out))) { out = r; }
+        }
+        const own = best.stmt ? [{ src: best.stmt.src, loc: best.stmt.loc }] : [];
+        if (out) {
+          Object.assign(step, out, { reasons: step.reasons.concat(out.reasons || [], [{ code: 'force' }]) });
+          step.candidates = own;
+          step.trust = trustOf(step);
+          return step;
+        }
+        if (outs.length) {
+          const r = stimulusStep(step, outs, m, name, sig, t);
+          r.reasons.push({ code: 'force' });
+          r.candidates = own.concat(r.candidates || []).slice(0, 32);
+          return r;
+        }
       }
       Object.assign(step, best, { reasons: step.reasons.concat(best.reasons || []) });
+      // Its process held the value since the start and never wrote it (a flop whose enable never
+      // came): the value is the one it started with, not the process's doing (the process is a
+      // candidate).
+      if (best.wrote === false && Number(step.since) === 0 && now !== undefined && await startValue(m, sig, now, 0)) {
+        const held = step.stmt ? [{ src: step.stmt.src, loc: step.stmt.loc }] : [];
+        delete step.activation; delete step.decisions; delete step.stmt;
+        step.driver = { kind: sig.init ? 'initializer' : 'none' };
+        if (sig.init) { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
+        step.candidates = held;
+        step.reasons = step.reasons.filter((r) => r.code !== 'noWrite');
+      }
       step.trust = trustOf(step);
+      return step;
+    }
+
+    // A testbench's statements write the signal (only stimulus, or another instance's force or
+    // $deposit): the write in effect at t, approximate.
+    function stimulusStep(step, cands, m, name, sig, t) {
+      const c = cands.find((x) => x.d.type === 'proc') || cands[0];
+      const d = c.d, cm = c.m;
+      step.driver = { kind: 'initial', procKind: d.p.kind, loc: locOf(cm, d.p.loc) };
+      if (cm !== m) { step.driver.writer = cm.path; }
+      const writes = [];
+      collectWrites(d.p.body, c.name, writes);
+      // The write in effect at t (its #delays summed), else the body's last write.
+      const at = d.p.kind === 'Initial' ? writeAt(d.p.body, c.name, step.since, t) : null;
+      const shownWrite = at || writes[writes.length - 1];
+      step.stmt = shownWrite ? { src: shownWrite.src, loc: locOf(cm, shownWrite.loc) } : { src: d.p.body.src, loc: locOf(cm, d.p.loc) };
+      // Unchanged since 0 and no write at 0: the declaration's initializer.
+      if (!at && Number(step.since) === 0 && sig.init && d.p.kind === 'Initial') { step.stmt = { src: sig.init.src || `${name} = ${sig.init.text}`, loc: locOf(m, sig.init.loc) }; }
+      step.candidates = writes.slice(0, 32).map((s) => ({ src: s.src, loc: locOf(cm, s.loc) }));
+      step.root = 'testbench';
+      step.trust = 'approximate';
+      step.reasons.push({ code: 'testbench' });
       return step;
     }
 
@@ -660,7 +803,7 @@
 
     function trustOf(step) {
       if (step.consistent === false) { return 'inconsistent'; }
-      const approximate = step.reasons.some((r) => ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown'].includes(r.code));
+      const approximate = step.reasons.some((r) => (r.code === 'multiDriven' && r.consistent > 1) || ['opaque', 'limits', 'evaluator', 'statement', 'delay', 'lvalue', 'budget', 'notDumped', 'testbench', 'xprop', 'race', 'targetNotDumped', 'noActivation', 'sinceUnknown', 'force', 'writeNotFound'].includes(r.code));
       if (approximate) { return 'approximate'; }
       return step.computed ? 'computed' : 'exact';
     }
@@ -715,18 +858,19 @@
       if (!s) { return; }
       switch (s.k) {
         case 'seq': s.s.forEach((x) => collectWrites(x, name, out)); return;
-        case 'asgn': if (writesTo(s.lhs, name)) { out.push(s); } return;
+        case 'asgn': if (writesTo(s.lhs, name) || opaqueWrites(s, name)) { out.push(s); } return;
         case 'timed': collectWrites(s.stmt, name, out); return;
         case 'if': collectWrites(s.t, name, out); collectWrites(s.f, name, out); return;
         case 'case': s.items.forEach((it) => collectWrites(it.s, name, out)); collectWrites(s.dflt, name, out); return;
-        default:
+        default: if (opaqueWrites(s, name)) { out.push(...opaqueSites(s, name)); }
       }
     }
 
     function driverSummary(m, d) {
       if (d.type === 'assign') { return { kind: 'assign', src: d.a.src, loc: locOf(m, d.a.loc) }; }
       if (d.type === 'proc') { return { kind: 'proc', procKind: d.p.kind, src: d.p.body.src, loc: locOf(m, d.p.loc) }; }
-      if (d.type === 'portIn') { return { kind: 'portIn', port: d.port.name, instance: m.path, src: connText(d.port.conn), loc: locOf(m, d.port.loc) }; }
+      // (an input port's connection is the parent's text, evaluated there: `from`)
+      if (d.type === 'portIn') { return { kind: 'portIn', port: d.port.name, instance: m.path, from: m.parent, src: connText(d.port.conn), loc: locOf(m, d.port.loc) }; }
       return { kind: 'portOut', port: d.port.name, instance: d.child.path, src: connText(d.port.conn), loc: locOf(m, d.port.loc) };
     }
 
@@ -737,6 +881,18 @@
     // The bits of the target a write covers, compared with the dump: undefined when not comparable.
     function consistentWith(rec, now, sig) {
       if (!now || !rec || !rec.value) { return undefined; }
+      if (rec.after && rec.after.length) {
+        // The chosen write's bits with the later writes laid over them, against the dump's same bits.
+        const lo = rec.lsb || 0, hi = Math.min(now.w, lo + (rec.width || now.w));
+        if (lo >= hi) { return undefined; }
+        let v = fit(rec.value, hi - lo);
+        for (const a of rec.after) {
+          if (!a.value) { return undefined; }
+          const alo = a.lsb || 0, aw = a.width || now.w, from = Math.max(lo, alo), to = Math.min(hi, alo + aw);
+          if (from < to) { v = insert(v, from - lo, slice(fit(a.value, aw), from - alo, to - from)); }
+        }
+        return same(v, slice(now, lo, hi - lo));
+      }
       if (rec.width >= now.w && rec.lsb === 0) { return same(fit(rec.value, now.w), now); }
       if (rec.lsb + rec.width > now.w) { return undefined; }
       return same(slice(now, rec.lsb, rec.width), rec.value);
@@ -764,7 +920,7 @@
         if (d.a.delay) { r.reasons.push({ code: 'delay', src: d.a.src }); }
         const delayed = !!d.a.delay;
         const rec = recFor(ctx, d.a.lhs, name, ev.value, w);
-        r.stmt = { src: d.a.src, loc: locOf(m, d.a.loc), rhs: d.a.rhs.src, rhsLoc: locOf(m, d.a.rhs.loc) };
+        r.stmt = { src: d.a.src, loc: locOf(m, d.a.loc), rhs: d.a.rhs.src || leafText(d.a.rhs), rhsLoc: locOf(m, d.a.rhs.loc) };
         r.sample = t;
         r.predicted = rec ? shown(rec.value) : null;
         r.bits = rec ? { lsb: rec.lsb, width: rec.width } : null;
@@ -772,6 +928,7 @@
         // A delayed assignment's value at t is its right side's at t - d: not comparable at t.
         if (delayed && r.consistent === false) { r.consistent = undefined; }
         r.fanin = faninOf(m, d.a.rhs, ev.reads, t, 'data', []);
+        if (r.fanin.limited) { r.reasons.push({ code: 'limits', why: 'temps' }); }
         notDumped(r, ctx);
         if (r.consistent === false) { explainMismatch(r, ctx); }
         return r;
@@ -860,7 +1017,22 @@
         // (x since the start, or no change) the last clock edge at or before t.
         let te = null;
         const xFromStart = now && hasX(now) && (since === 0 || since === null);
-        if (since !== null && since !== undefined && !xFromStart) {
+        // An x value may have been written again (x to x is no change): the value in effect came
+        // from the last edge that wrote it, which can have another cause than the first x (a CPU
+        // core's ALU result: an idle cycle's 'bx, later a jump's x operand). That edge, when its
+        // run writes the same value.
+        if (now && hasX(now) && !xFromStart && since && ck.clock) {
+          const tl = await dump.prevEdge(ck.clock.path, t, ck.clock.edge);
+          if (tl !== null && tl > since) {
+            const tv = await fetch([ck.clock.path], tl);
+            const lc = await runProc(m, p, tl - 1, new Map([[ck.clock.path, tv.get(ck.clock.path)]]), options.xprop === 'on' ? 'xprop' : 'optimistic');
+            const lw = pickWrite(lc, targetPath, s, now);
+            if (lw && consistentWith(lw, now, sig) === true) { te = tl; trigger = ck.clock; }
+          }
+        }
+        if (te !== null) {
+          // The last edge (above).
+        } else if (since !== null && since !== undefined && !xFromStart) {
           for (const ev of ck.all) {
             if (await dump.prevEdge(ev.path, since, ev.edge) === since) { te = since; trigger = ev; break; }
           }
@@ -879,13 +1051,23 @@
         if (trigger) { const tv = await fetch([trigger.path], te); extra.set(trigger.path, tv.get(trigger.path)); }
       }
       r.sample = sample;
-      let ctx = await runProc(m, p, sample, extra, options.xprop === 'on' ? 'xprop' : 'optimistic');
-      let pick = pickWrite(ctx, targetPath, s);
+      const mode = options.xprop === 'on' ? 'xprop' : 'optimistic';
+      let ctx = await runProc(m, p, sample, extra, mode);
+      let pick = pickWrite(ctx, targetPath, s, now);
       let consistent = pick ? consistentWith(pick, now, sig) : undefined;
+      // A comb procedure's value in effect was made by its run when the value last changed; a later
+      // run that took other branches can give the same value by another statement (the default,
+      // once an override's condition fell). The statement that made it, when that run explains the
+      // value. (An x value is left to the run at t: x again is no change, and its cause is now's.)
+      if (!edge && pick && consistent === true && ctx.decisions.length && !hasX(now) && since !== null && since !== undefined && since < t) {
+        const at = await runProc(m, p, since, extra, mode);
+        const ap = pickWrite(at, targetPath, s, now);
+        if (ap && ap.stmt !== pick.stmt && consistentWith(ap, now, sig) === true) { ctx = at; pick = ap; sample = since; r.sample = since; }
+      }
       // X-propagation: an x condition on the path and a dump that disagrees: try merged branches.
       if (options.xprop === 'auto' && consistent === false && (ctx.decisions.some((d) => d.xCond) || ctx.sawXIndex)) {
         const merged = await runProc(m, p, sample, extra, 'xprop');
-        const mp = pickWrite(merged, targetPath, s);
+        const mp = pickWrite(merged, targetPath, s, now);
         if (mp && consistentWith(mp, now, sig) === true) {
           ctx = merged; pick = mp; consistent = true;
           r.reasons.push({ code: 'xprop' });
@@ -894,14 +1076,14 @@
       // A same-time race: inputs changed at the edge itself; the post-edge values may explain it.
       if (edge && consistent === false && r.activation) {
         const late = await runProc(m, p, r.activation.time, extra, ctx.mode);
-        const lp = pickWrite(late, targetPath, s);
+        const lp = pickWrite(late, targetPath, s, now);
         if (lp && consistentWith(lp, now, sig) === true) { r.reasons.push({ code: 'race', time: r.activation.time }); ctx = late; pick = lp; consistent = true; }
       }
       // A comb procedure that didn't write the target on its path holds it (a latch): the
       // activation is when it last changed.
       if (!pick && !edge && since !== null && since !== undefined && since !== t) {
         const held = await runProc(m, p, since, extra, ctx.mode);
-        const hp = pickWrite(held, targetPath, s);
+        const hp = pickWrite(held, targetPath, s, now);
         if (hp) { r.reasons.push({ code: 'held', time: since }); ctx = held; pick = hp; consistent = consistentWith(hp, now, sig); r.sample = since; }
       }
       ctx.reasons.forEach((x) => r.reasons.push(x));
@@ -911,13 +1093,40 @@
         const tp = r.activation.trigger.path;
         r.fanin.push({ role: 'clock', path: tp, name: relOf(m, tp), value: shown(extra.get(tp)), time: r.activation.time, dumped: extra.get(tp) !== undefined });
       }
-      // The conditions on the way to the write (or to nowhere: everything decided).
-      for (const dd of (pick ? pick.decisions : ctx.decisions)) {
+      // The conditions on the way to the write (or to nowhere: everything decided), and those of a
+      // later if or case that could have written the signal again but didn't (y = 'bx, then a
+      // case (1'b1) whose items all failed: the items are why y stayed x). A case's items count up
+      // to the one taken (all of them when none was).
+      const before = pick ? pick.decisions : ctx.decisions;
+      const sgw = signalOf(m, name);
+      const wname = sgw && sgw.element ? sgw.element.array : name;
+      const sameRun = pick && before.every((d, i) => ctx.decisions[i] === d);
+      const after = sameRun ? ctx.decisions.slice(before.length).filter((dd) => (dd.kind === 'if' || dd.kind === 'case') && stmtWrites(dd.stmt, wname)) : [];
+      const condCtx = { m, vals: ctx.vals, locals: new Map(), blocking: new Map() };
+      for (const dd of before.concat(after)) {
         if (dd.kind !== 'if' && dd.kind !== 'case') { continue; }
         const e = dd.kind === 'if' ? dd.stmt.c : dd.stmt.e;
-        faninOf(m, e, readsOf(e, { m, vals: ctx.vals, locals: new Map(), blocking: new Map() }), r.sample, 'control', r.fanin);
+        faninOf(m, e, readsOf(e, condCtx), r.sample, 'control', r.fanin);
+        if (dd.kind === 'case') {
+          const upto = typeof dd.taken === 'number' ? dd.taken + 1 : dd.stmt.items.length;
+          dd.stmt.items.slice(0, upto).forEach((it) => (it.m || []).forEach((x) => faninOf(m, x, readsOf(x, condCtx), r.sample, 'control', r.fanin)));
+        }
       }
       if (!pick) {
+        // Written by a statement that isn't re-executed: that statement, its value unpredicted.
+        const sg = signalOf(m, name);
+        const base = sg && sg.element ? sg.element.array : name;
+        const ow = ctx.opaque.find((o) => o.name === base || o.name === name);
+        if (ow) {
+          // One line of it writes the signal: that line (still not re-executed, so approximate);
+          // several: the statement, with those lines as candidates.
+          const sites = ow.at || [];
+          r.stmt = sites.length === 1 ? { src: sites[0].src || ow.stmt.src, loc: locOf(m, sites[0].loc) } : { src: ow.stmt.src, loc: locOf(m, ow.stmt.loc || p.loc) };
+          if (sites.length > 1) { r.candidates = sites.slice(0, 32).map((a) => ({ src: a.src || ow.stmt.src, loc: locOf(m, a.loc) })); }
+          if (!r.reasons.some((x) => x.code === 'statement' || x.code === 'lvalue')) { r.reasons.push({ code: 'statement', why: ow.stmt.why, src: ow.stmt.src }); }
+          notDumped(r, ctx);
+          return r;
+        }
         r.wrote = false;
         r.stmt = { src: p.body.src, loc: locOf(m, p.loc) };
         r.reasons.push({ code: 'noWrite' });
@@ -932,6 +1141,7 @@
         r.stmt = { src: pick.stmt.src, loc: locOf(m, pick.stmt.loc), rhs: pick.stmt.rhs.src, rhsLoc: locOf(m, pick.stmt.rhs.loc), nb: !!pick.stmt.nb };
         const reads = readsOf(pick.stmt.rhs, pick.ctx, pick.lhs && pick.lhs.concat ? pick.lhs.width : pick.width);
         faninOf(m, pick.stmt.rhs, reads, r.sample, 'data', r.fanin);
+        if (r.fanin.limited) { r.reasons.push({ code: 'limits', why: 'temps' }); }
         if (pick.lhs && pick.lhs.elem) { faninOf(m, pick.lhs.elem, readsOf(pick.lhs.elem, pick.ctx), r.sample, 'index', r.fanin); }
         if (reads.some((x) => x.src === 'local' || x.src === 'blocking')) { r.computed = true; }
       }
@@ -951,14 +1161,137 @@
     }
 
     // The write that produced the target: the last one in the run that covers it.
-    function pickWrite(ctx, targetPath, s) {
+    // The write that made the value in effect: the last one, unless the value has x bits that a
+    // later partial write covered (s <= s0; s.chk <= f(s0.pkt) with s0.pkt x): then the write
+    // that made the most of the x bits (the later one on a tie), with the later writes it was
+    // overlaid by (`after`).
+    function pickWrite(ctx, targetPath, s, now) {
       const recs = ctx.writes.get(targetPath);
-      if (recs && recs.length) { return recs[recs.length - 1]; }
-      return null;
+      if (!recs || !recs.length) { return null; }
+      const last = recs[recs.length - 1];
+      if (!now || recs.length < 2 || !hasX(now)) { return last; }
+      const bits = shown(now), w = bits.length;
+      const isX = (k) => k >= 0 && k < w && /[xz]/.test(bits[w - 1 - k]);
+      const covered = new Set();
+      let best = -1, most = 0;
+      for (let i = recs.length - 1; i >= 0; i--) {
+        const r = recs[i], lo = r.lsb || 0, hi = Math.min(w, lo + (r.width || w));
+        let n = 0;
+        for (let k = lo; k < hi; k++) { if (!covered.has(k)) { if (isX(k)) { n++; } covered.add(k); } }
+        if (n > most) { most = n; best = i; }
+      }
+      return best < 0 || best === recs.length - 1 ? last : Object.assign({}, recs[best], { after: recs.slice(best + 1) });
     }
 
     return { active, model, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
   }
 
-  root.cmuxTrace = Object.freeze({ createEngine, MODEL_VERSION });
+  // ---- Trace X to Root ----
+  // From a value with x or z bits, the fan-in that brought the x, step by step, to where it was
+  // made. Each step follows the fan-in with x or z (data, condition or index; never the clock, a
+  // blocking temporary (the engine's fan-in has already gone through it to what it read) or an
+  // undumped signal) whose own x arrived earliest (the smallest `since`). It stops at:
+  //   noXInput   no input has x: the statement makes it ('bx, a default, an x index...)
+  //   uninit     never written since the start, or nothing but a declaration drives it
+  //   testbench  the testbench's stimulus sets it          input   a top-level input
+  //   force      a force or deposit from outside the instance
+  //   loop       the x would go round to a signal already in the chain
+  //   budget     maxSteps steps (no root)                  failed  a step could not be traced
+  //   cancelled  cancelled() said so (no root)             noX     the start has no x or z
+  //
+  //   xChain({ path, time }, { step(path, time) -> Promise<step>, probe?(path, time) -> Promise<step>,
+  //            onStep?(entry, index), cancelled?() -> bool, maxSteps?, maxProbes? })
+  //     -> { steps: [{ step, signal, time, value, since, trust, why }], end: { code, signal? },
+  //          root (index, -1 without one), approximate }
+  // `step` traces a step of the chain (the page confirms it with Verdi), `probe` a candidate
+  // (default: step). `why` says why a step follows the one before: start, only (the only input
+  // with x) or earliest (of `count` inputs with x); `limited` when more than maxProbes had x.
+  const X_CHAIN_STEPS = 30;
+  const X_CHAIN_PROBES = 16;
+  const xBits = (v) => v !== null && v !== undefined && /[xz]/i.test(String(v));
+  function xStop(st) {
+    const reasons = st.reasons || [];
+    const kind = st.driver ? st.driver.kind : 'none';
+    if (reasons.some((r) => r.code === 'force')) { return 'force'; }
+    if (st.root === 'testbench') { return 'testbench'; }
+    if (kind === 'topInput') { return 'input'; }
+    if (kind === 'none' || kind === 'undriven' || kind === 'initializer') { return 'uninit'; }
+    if (Number(st.since) === 0 && reasons.some((r) => r.code === 'noWrite' || r.code === 'initialValue')) { return 'uninit'; }
+    return null;
+  }
+  async function xChain(start, config) {
+    const c = config || {};
+    const step = c.step, probe = c.probe || c.step;
+    const cancelled = c.cancelled || (() => false);
+    const maxSteps = Number(c.maxSteps) >= 1 ? Math.floor(Number(c.maxSteps)) : X_CHAIN_STEPS;
+    const maxProbes = Number(c.maxProbes) >= 1 ? Math.floor(Number(c.maxProbes)) : X_CHAIN_PROBES;
+    const out = { steps: [], end: null, root: -1, approximate: false };
+    const finish = (code, extra) => {
+      out.end = Object.assign({ code }, extra || {});
+      if (!['budget', 'failed', 'cancelled', 'noX'].includes(code) && out.steps.length) { out.root = out.steps.length - 1; }
+      out.approximate = out.steps.some((e) => e.trust === 'approximate' || e.trust === 'inconsistent');
+      return out;
+    };
+    const add = (st, why) => {
+      const e = { step: st, signal: st.signal, time: st.time, value: st.value, since: st.since, trust: st.trust, why };
+      out.steps.push(e);
+      if (c.onStep) { c.onStep(e, out.steps.length - 1); }
+    };
+    let cur;
+    try { cur = await step(start.path, start.time); } catch (error) { cur = null; }
+    if (cancelled()) { return finish('cancelled'); }
+    if (!cur || cur.error) { if (cur) { add(cur, { code: 'start' }); } return finish('failed'); }
+    add(cur, { code: 'start' });
+    if (!xBits(cur.value)) { return finish('noX'); }
+    const seen = new Set([cur.signal]);
+    for (;;) {
+      const stop = xStop(cur);
+      if (stop) { return finish(stop); }
+      if (out.steps.length >= maxSteps) { return finish('budget'); }
+      const cands = (cur.fanin || []).filter((f) => typeof f.path === 'string' && f.path && f.role !== 'clock' && f.dumped !== false && !f.blocking && !f.local && xBits(f.value));
+      if (!cands.length) { return finish('noXInput'); }
+      const probed = [];
+      for (const f of cands.slice(0, maxProbes)) {
+        let st;
+        try { st = await probe(f.path, f.time); } catch (error) { st = null; }
+        if (cancelled()) { return finish('cancelled'); }
+        if (!st || st.error) { continue; }
+        const since = st.since === null || st.since === undefined ? Infinity : Number(st.since);
+        probed.push({ f, st, since });
+      }
+      // Earliest x first; on a tie a signal not yet on the chain first, then the fan-in's order (a stable sort).
+      probed.sort((p, q) => (p.since - q.since) || (seen.has(p.f.path) - seen.has(q.f.path)));
+      if (!probed.length) { return finish('failed'); }
+      let best = null, next = null;
+      for (const cand of probed) {
+        if (seen.has(cand.f.path)) {
+          // Back to a signal of the chain. x since the start all the way round (an unreset
+          // cnt <= cnt + 1) is uninitialised storage; otherwise the x goes round a loop.
+          const from = out.steps.findIndex((e) => e.signal === cand.f.path);
+          if (from >= 0 && out.steps.slice(from).every((e) => Number(e.since) === 0)) { return finish('uninit', { signal: cand.f.path }); }
+          return finish('loop', { signal: cand.f.path });
+        }
+        let st = cand.st;
+        if (probe !== step) {
+          try { st = await step(cand.f.path, cand.f.time); } catch (error) { st = null; }
+          if (cancelled()) { return finish('cancelled'); }
+          if (!st || st.error) { return finish('failed'); }
+        }
+        // The step can disagree with its probe (Verdi's answer, an edge off by one): a value with
+        // no x is not where the x came from; try the next candidate.
+        if (!xBits(st.value)) { continue; }
+        best = cand;
+        next = st;
+        break;
+      }
+      if (!best) { return finish('failed'); }
+      const why = cands.length === 1 ? { code: 'only', role: best.f.role } : { code: 'earliest', role: best.f.role, count: cands.length };
+      if (cands.length > maxProbes) { why.limited = true; }
+      seen.add(next.signal);
+      add(next, why);
+      cur = next;
+    }
+  }
+
+  root.cmuxTrace = Object.freeze({ createEngine, xChain, MODEL_VERSION });
 })(typeof window !== 'undefined' ? window : globalThis);

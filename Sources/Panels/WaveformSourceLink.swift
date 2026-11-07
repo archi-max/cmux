@@ -1064,6 +1064,7 @@ enum WaveformSourceLink {
         WaveformEnumLink.waveformReset(waveform)
         WaveformEnumLink.waveformReloading()
         WaveformTraceVerdi.stop(for: waveform)
+        WaveformTrace.waveformReloading(waveform)
         Self.waveformValuesChanged(in: waveform.workspaceId)
     }
 

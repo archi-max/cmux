@@ -17,11 +17,16 @@
 #
 # Exit codes cmux maps to messages: 20 no CMake 3.20+, 21 no C++20 compiler, 22 no Python 3,
 # 23 a download failed, 24 a download's checksum is wrong, 25 configure failed, 26 compile
-# failed, 27 the built program does not run, 28 installing failed. Progress goes to stderr.
+# failed, 27 the built program does not run, 28 installing failed. Progress goes to stderr, with
+# machine-read lines for cmux's progress panel: "cmux-sv-model-build: stage <fetch|configure|compile|
+# install>" and, while compiling, "cmux-sv-model-build: progress <percent>" from cmake's "[ NN%]"
+# (Makefiles) or "[N/M]" (Ninja) lines.
 set -u
 SRC=${1:?source folder}
 DEST=${2:?install folder}
 say() { printf 'cmux-sv-model-build: %s\n' "$*" >&2; }
+stage() { printf 'cmux-sv-model-build: stage %s\n' "$1" >&2; }
+SV_MODEL_PROGRESS_AWK='BEGIN { last = -1 } { p = -1; if (match($0, /^\[ *[0-9]+%\]/)) { s = substr($0, 2, RLENGTH - 3); gsub(/ /, "", s); p = s + 0 } else if (match($0, /^\[[0-9]+\/[0-9]+\]/)) { split(substr($0, 2, RLENGTH - 2), a, "/"); if (a[2] > 0) p = int(a[1] * 100 / a[2]) } if (p >= 0 && p != last) { printf "cmux-sv-model-build: progress %d\n", p; fflush(); last = p } }'
 
 SLANG_VERSION=12.1
 SLANG_URL=https://github.com/MikePopoloski/slang/archive/refs/tags/v12.1.tar.gz
@@ -86,6 +91,7 @@ if [ -n "${CMUX_SLANG_DIR:-}" ]; then
   say "using the installed slang at $CMUX_SLANG_DIR"
   set -- -Dslang_DIR="$CMUX_SLANG_DIR"
 else
+  stage fetch
   say "fetching slang $SLANG_VERSION"
   fetch slang "$SLANG_URL" "$SLANG_SHA"
   fetch fmt "$FMT_URL" "$FMT_SHA"
@@ -98,18 +104,25 @@ fi
 
 # ---- build ----
 mkdir -p "$WORK/src" && cp "$SRC/CMakeLists.txt" "$SRC/sv_model.cpp" "$WORK/src/" || exit 25
+stage configure
 say "configuring"
 "$CMAKE" -S "$WORK/src" -B "$WORK/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="$CXX" \
   -DPython_EXECUTABLE="$PY" -DPython3_EXECUTABLE="$PY" "$@" > "$WORK/configure.log" 2>&1 \
   || { tail -20 "$WORK/configure.log" >&2; say "configure failed"; exit 25; }
+stage compile
 say "compiling (a few minutes, once)"
-nice -n 10 "$CMAKE" --build "$WORK/build" --target cmux-sv-model -j "${CMUX_SV_MODEL_JOBS:-4}" > "$WORK/build.log" 2>&1 \
+# The build's output goes to build.log; its percent lines go on to stderr (the pipe loses the
+# build's exit code, so it is kept in build.rc).
+{ nice -n 10 "$CMAKE" --build "$WORK/build" --target cmux-sv-model -j "${CMUX_SV_MODEL_JOBS:-4}" 2>&1; echo $? > "$WORK/build.rc"; } \
+  | tee "$WORK/build.log" | awk "$SV_MODEL_PROGRESS_AWK" >&2
+[ "$(cat "$WORK/build.rc" 2>/dev/null)" = 0 ] \
   || { grep -E 'error|Error' "$WORK/build.log" | head -20 >&2; tail -5 "$WORK/build.log" >&2; say "compile failed"; exit 26; }
 BIN="$WORK/build/cmux-sv-model"
 reply=$(printf '{"id":1,"cmd":"version"}\n' | "$BIN" 2>/dev/null | sed -n 2p)
 case "$reply" in *'"ok":true'*) ;; *) say "the built cmux-sv-model does not run: $reply"; exit 27 ;; esac
 
 # ---- install ----
+stage install
 mkdir -p "$DEST" || exit 28
 cp "$BIN" "$DEST/cmux-sv-model.new" && mv -f "$DEST/cmux-sv-model.new" "$DEST/cmux-sv-model" \
   && cp "$SRC/sv-model.sh" "$DEST/sv-model.sh" || { say "installing failed"; exit 28; }

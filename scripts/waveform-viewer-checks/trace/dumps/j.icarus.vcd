@@ -1,0 +1,137 @@
+$date
+	Fri Nov  6 18:18:15 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module tb_j $end
+$var wire 8 ! y [7:0] $end
+$var wire 8 " q [7:0] $end
+$var reg 8 # a [7:0] $end
+$var reg 8 $ b [7:0] $end
+$var reg 1 % clk $end
+$var reg 1 & go $end
+$var reg 2 ' zsel [1:0] $end
+$scope module dut $end
+$var wire 8 ( a [7:0] $end
+$var wire 8 ) b [7:0] $end
+$var wire 1 % clk $end
+$var wire 1 & go $end
+$var wire 2 * zsel [1:0] $end
+$var wire 8 + wz [7:0] $end
+$var wire 1 , is_xor $end
+$var wire 1 - is_add $end
+$var reg 8 . a2 [7:0] $end
+$var reg 4 / cnt [3:0] $end
+$var reg 8 0 dq [7:0] $end
+$var reg 2 1 op [1:0] $end
+$var reg 16 2 p0 [15:0] $end
+$var reg 16 3 p1 [15:0] $end
+$var reg 8 4 q [7:0] $end
+$var reg 8 5 st [7:0] $end
+$var reg 8 6 tmp [7:0] $end
+$var reg 16 7 w16 [15:0] $end
+$var reg 8 8 y [7:0] $end
+$var reg 8 9 zq [7:0] $end
+$scope begin $unm_blk_6 $end
+$var reg 8 : t2 [7:0] $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+$end
+#0
+$dumpvars
+bx :
+bx 9
+bx 8
+bx 7
+bx 6
+bx 5
+bx 4
+bx 3
+bx 2
+bx 1
+bx 0
+bx /
+bx .
+x-
+x,
+b0 +
+b0 *
+b0 )
+b0 (
+b0 '
+0&
+0%
+b0 $
+b0 #
+bx "
+bx !
+$end
+#2000
+b0xxxx0001 7
+bx0001 5
+b100010 $
+b100010 )
+bx0001 #
+bx0001 (
+#5000
+b100010 "
+b100010 4
+b0 9
+bx000100100010 2
+bx0000 3
+bx 6
+1%
+#10000
+0%
+#12000
+b1 '
+b1 *
+b1 +
+1&
+#15000
+bx000100100000 3
+bx 9
+1-
+0,
+b1 1
+bx0001 "
+bx0001 4
+bx 6
+1%
+#20000
+0%
+#22000
+bx0011 5
+b0xxxx0011 7
+b100101 !
+b100101 8
+b10 '
+b10 *
+b0 +
+0&
+b11 #
+b11 (
+#25000
+b100010 "
+b100010 4
+b1100100010 2
+bx000100100000 3
+bx 6
+1%
+#30000
+0%
+#35000
+b1100100000 3
+bx 6
+1%
+#40000
+0%
+#42000

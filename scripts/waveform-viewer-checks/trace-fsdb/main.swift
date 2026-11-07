@@ -13,7 +13,8 @@
 // TRACE_FSDB_V2=1 runs the helpers as cmux does by default (waveform.fsdbLoading auto: helper v2,
 // <assetRoot>/fsdb-helper-v2, else v1); TRACE_FSDB_HOME=<dir> installs them under <dir> on the host
 // instead of the user's home, with v2's store cache in <dir>/index (so a test never replaces or
-// fills the helpers' in use). Default: helper v1.
+// fills the helpers' in use). Default: helper v1. TRACE_FSDB_HELPER_ENV="FSDB_WORKERS=2 ..." sets more of the
+// helper's environment on the host.
 // TRACE_FSDB_START=<signal path> traces that signal (at <time>) and its fan-in instead of every
 // signal of <instance>; its step is the first step printed.
 // TRACE_FSDB_ROWS=<path>,<path>... instead runs Trace Driver from each signal's waveform row (the
@@ -38,6 +39,8 @@ let modelFile = URL(fileURLWithPath: args[5])
 let instance = args[6]
 let time = Int(args[7]) ?? 0
 let out = URL(fileURLWithPath: args[8])
+/// When the harness started: TRACE_FSDB_XCHAIN reports the time to the first step from here.
+let processStart = Date()
 nonisolated(unsafe) var failures = 0
 
 func shellQuoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -81,10 +84,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     window.setFrameOrigin(NSPoint(x: -30000, y: -30000))
     window.alphaValue = 0
     window.ignoresMouseEvents = true
+    // Ordered in (behind everything, never key): WebKit holds back a page whose window was never
+    // ordered in, so a cold open that takes longer (a fresh helper install) never says initialized.
+    window.orderBack(nil)
     let env = ProcessInfo.processInfo.environment
     // The helper's store cache too (FSDB_INDEX_DIR; by default a folder under /tmp shared with the
     // helpers in use), so a test starts cold when the folder is new and never fills theirs.
-    let home = env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " FSDB_INDEX_DIR=" + shellQuoted($0 + "/index") + " " } ?? ""
+    // TRACE_FSDB_HELPER_ENV="NAME=value ...": more of the helper's environment (FSDB_WORKERS, FSDB_WORKER_RSS_MB).
+    let extraEnv = (env["TRACE_FSDB_HELPER_ENV"] ?? "").split(separator: " ").filter { $0.contains("=") }.map { shellQuoted(String($0)) + " " }.joined()
+    let home = (env["TRACE_FSDB_HOME"].map { "HOME=" + shellQuoted($0) + " FSDB_INDEX_DIR=" + shellQuoted($0 + "/index") + " " } ?? "") + extraEnv
     let installs = env["TRACE_FSDB_V2"] == "1"
       ? WaveformFSDBHelper.installs(v2Root: assetRoot.appendingPathComponent("fsdb-helper-v2", isDirectory: true), v1Root: helperRoot, loading: .auto)
       : [WaveformFSDBHelper.Install(protocolVersion: 1, resourceRoot: helperRoot)]
@@ -223,6 +231,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   func run() async {
+    if ProcessInfo.processInfo.environment["TRACE_FSDB_XCHAIN"] == "1" { await xchain(); return }
     if let rows = ProcessInfo.processInfo.environment["TRACE_FSDB_ROWS"], !rows.isEmpty { await traceRows(rows.split(separator: ",").map(String.init)); return }
     guard let model = instances[instance] as? [String: Any], let signals = model["signals"] as? [String: Any] else {
       expect(false, "instance \(instance) is in the model")
@@ -395,6 +404,46 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         expect(r?["error"] is NSNull && r?["missing"] == nil, "Trace Driver (\(how)) from the row of \(path) traces it: \(String(describing: r))")
       }
     }
+    finish()
+  }
+
+  /// TRACE_FSDB_XCHAIN=1: follow the X backwards from (TRACE_FSDB_START or the instance, time), the
+  /// way an engineer does it: at each step trace every X fan-in (not the clock, nor a blocking temp:
+  /// its write's reads are listed instead), take the one whose X
+  /// began earliest (its `since`), and go on from it. It stops when the step has no X fan-in (the X is
+  /// made here), at the testbench, at a signal with no driver, at a repeat, or after 30 steps.
+  /// The X chain: the page's Trace X to Root (cmuxWaveform.trace.xRoot, the code that ships) from
+  /// the start signal at the time, its steps printed with their times.
+  func xchain() async {
+    let maxLen = Int(ProcessInfo.processInfo.environment["TRACE_FSDB_XCHAIN_MAX"] ?? "") ?? 30
+    let path = ProcessInfo.processInfo.environment["TRACE_FSDB_START"].flatMap { $0.isEmpty ? nil : $0 } ?? instance
+    let started = Date().timeIntervalSince(processStart)
+    let t0 = Date()
+    let chain = await call("cmuxWaveform.traceXChainSteps = argument.max; return await cmuxWaveform.trace.xRoot(argument.q)",
+                           ["argument": ["max": maxLen, "q": ["designPath": path, "designPrefix": "", "dumpPrefix": "", "time": time]]]) as? [String: Any]
+    let totalMs = Date().timeIntervalSince(t0) * 1000
+    func loc(_ st: [String: Any]) -> String {
+      let l = (st["stmt"] as? [String: Any])?["loc"] as? [String: Any]
+      return "\((l?["file"] as? String ?? "").split(separator: "/").last ?? ""):\(l?["line"] ?? "")"
+    }
+    let steps = chain?["steps"] as? [[String: Any]] ?? []
+    for (i, e) in steps.enumerated() {
+      let st = e["step"] as? [String: Any] ?? [:]
+      let kind = (st["driver"] as? [String: Any])?["kind"] as? String ?? "none"
+      let why = (e["why"] as? [String: Any])?["code"] as? String ?? "?"
+      print(String(format: "[xchain] %2d %7.0f ms  %@ @%@ = %@  %@ %@ since %@ [%@] (%@)", i + 1, (e["ms"] as? NSNumber)?.doubleValue ?? -1, e["signal"] as? String ?? "?",
+                   "\(e["time"] ?? "?")", String((e["value"] as? String ?? "?").prefix(24)), kind, loc(st), "\(e["since"] ?? "null")", e["trust"] as? String ?? "?", why))
+      let fan = (st["fanin"] as? [[String: Any]] ?? []).map { f -> String in
+        let name = (f["path"] as? String).map { String($0.split(separator: ".").last ?? "") } ?? (f["name"] as? String ?? "?")
+        return "\(name)=\(String((f["value"] as? String ?? "?").prefix(12)))\(f["blocking"] as? Bool == true ? "(blocking)" : "")\(f["local"] as? Bool == true ? "(local)" : "")/\(f["role"] as? String ?? "")"
+      }
+      print("[xchain fanin] \(fan.joined(separator: " "))")
+    }
+    let end = (chain?["end"] as? [String: Any])?["code"] as? String ?? "traceFailed"
+    let firstAt = (steps.first?["at"] as? NSNumber).map { started + $0.doubleValue / 1000 } ?? -1
+    print(String(format: "[xchain end] %@ after %d steps, root %@, %@, first step on screen %.1f s after start, %.1f s tracing", end, steps.count,
+                 "\(chain?["root"] ?? -1)", chain?["approximate"] as? Bool == true ? "approximate" : "exact", firstAt, totalMs / 1000))
+    expect(!steps.isEmpty, "the X chain has a step")
     finish()
   }
 

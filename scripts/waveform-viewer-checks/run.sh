@@ -52,6 +52,7 @@
 #   ./run.sh machine-mutants             mutants of the replay rules (machine/mutants.js) each fail machine-core
 #   ./run.sh trace                       driver tracing's engine (cmux-trace.js): active drivers on the
 #                                        trace fixtures' models and VCS/Icarus dumps, and the replay oracle
+#   ./run.sh verdi-launch                the Verdi launcher ends its session when nothing asks (a client that slept)
 #   ./run.sh trace-ui                    driver tracing's page (cmux-trace-ui.js): Trace Driver from a
 #                                        row and a path, the panel, fan-in clicks, Back/Forward, the row
 #                                        menu, errors; the harness answers as cmux from trace/models
@@ -61,6 +62,18 @@
 #   ./run.sh trace-fsdb <ssh-host> <remote.fsdb> <model.json> <instance> <time>
 #                                        driver tracing on a remote FSDB through the helper: every signal
 #                                        of <instance> at <time> and two levels of fan-in, with timings
+#   ./run.sh trace-kdb <ssh-host> <remote dump.fsdb or simv.daidir> <slang model.json>
+#                                        the KDB design model (Verdi's Python NPI on the host, a seat held
+#                                        for the export only) against cmux-sv-model's: instances, signals,
+#                                        widths, ranges, arrays, written signals and port aliases;
+#                                        a second export comes from the host cache, without a seat
+#   ./run.sh trace-kdb-self-test         trace-kdb's comparison against its mutations, offline
+#   ./run.sh trace-kdb-exporter          npi-model.py's reading of a KDB folder without Verdi: the compile's
+#                                        parameter overrides (vcs_rebuild and its -f files) and compile time
+#   ./run.sh trace-kdb-launcher <ssh-host>
+#                                        npi-model.sh's seat rules with a stand-in Verdi and exporter (no
+#                                        seat): a denied or timed-out export is not tried again for the
+#                                        same KDB, a new KDB is; the host's cache answers
 #   ./run.sh sv-model [cmux-sv-model]    driver tracing's design model sidecar: built with its build.sh
 #                                        (into ~/.cache/cmux/sv-model-check, once) unless a binary is
 #                                        given; its models of the trace fixtures equal trace/models
@@ -282,6 +295,10 @@ case "${1:-}" in
     check '^{"id":4,"ok":false,"error":"noInstance"' 'writers of an unknown instance'
     [ "$fails" = 0 ] && echo "SV MODEL CHECKS PASSED" || { echo "SV MODEL CHECKS FAILED: $fails"; exit 1; }
     ;;
+  verdi-launch)
+    # verdi-trace.sh's session lifetime against a stand-in verdi (no host, Verdi or licence needed).
+    "$HERE/verdi-launch/check.sh" "$ASSETS/verdi-trace/verdi-trace.sh"
+    ;;
   trace-ui)
     swiftc -O "$HERE/trace-ui/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
       "$ROOT/Sources/Panels/WaveformFSDBHelper.swift" -o "$OUT/trace-ui"
@@ -299,6 +316,66 @@ case "${1:-}" in
       "$L/HierarchyPathMapping.swift" "$OUT/slang-target.swift" -o "$OUT/trace-fsdb"
     "$OUT/trace-fsdb" "$ASSETS" "$ASSETS/fsdb-helper" "$@" "$OUT/trace-fsdb.png" | grep --line-buffered -v '^\[log\]' | tee "$OUT/trace-fsdb.log"
     grep -q '^TRACE FSDB CHECKS PASSED' "$OUT/trace-fsdb.log"
+    ;;
+  trace-kdb)
+    shift
+    if [ $# -lt 3 ]; then echo "trace-kdb: needs <ssh-host> <remote dump.fsdb or simv.daidir> <slang model.json>"; exit 2; fi
+    # The KDB design model (npi-model.py through npi-model.sh, one export holding a Verdi seat for
+    # seconds) against cmux-sv-model's of the same design (trace-kdb/compare.py), and compare.py's
+    # self-test on the pair. Exported twice into a cache of the check's own: the second is the cache's
+    # (no seat; the first's load_design must not have changed the key), and a read-only copy of the
+    # daidir exports too (TRACE_KDB_SKIP_READONLY=1: not). The remote scratch folder is removed however
+    # the check ends.
+    V="$ROOT/Resources/vaporview/verdi-trace"
+    KDB_HOST=$1
+    S=$(ssh "$KDB_HOST" 'umask 077; mktemp -d /tmp/cmux-trace-kdb.XXXXXX') || exit 1
+    kdb_cleanup() { ssh "$KDB_HOST" "rm -rf '$S'" || true; [ -n "${KEEP_OUT:-}" ] || rm -rf "$OUT"; }
+    trap kdb_cleanup EXIT
+    scp -q "$V/npi-model.sh" "$V/npi-model.py" "$KDB_HOST:$S/"
+    for run in 1 2; do
+      ssh "$KDB_HOST" "mkdir -p '$S/w$run' && cp '$S/npi-model.sh' '$S/npi-model.py' '$S/w$run/' && CMUX_KDB_CACHE='$S/cache' bash -l '$S/w$run/npi-model.sh' '$S/w$run' '$2' --print" > "$OUT/trace-kdb.$run" || true
+      head -1 "$OUT/trace-kdb.$run" | tee "$OUT/trace-kdb.export$run"
+      if ! grep -q '"ok": *true' "$OUT/trace-kdb.export$run"; then
+        echo "FAIL export $run: $(head -c 400 "$OUT/trace-kdb.export$run")"
+        echo "TRACE KDB CHECKS FAILED"
+        exit 1
+      fi
+    done
+    # A daidir the user can't write to (another user's, a read-only share): a copy, read-only, exports too.
+    if [ -z "${TRACE_KDB_SKIP_READONLY:-}" ]; then
+      ssh "$KDB_HOST" "D=\$(ls -d '$(dirname "$2")'/*.daidir 2>/dev/null | head -1); [ -d \"\$D/kdb.elab++\" ] || D='$2'; cp -r \"\$D\" '$S/ro.daidir' && chmod -R a-w '$S/ro.daidir' && mkdir -p '$S/w3' && cp '$S/npi-model.sh' '$S/npi-model.py' '$S/w3/' && CMUX_KDB_CACHE='$S/cache3' bash -l '$S/w3/npi-model.sh' '$S/w3' '$S/ro.daidir'; chmod -R u+w '$S/ro.daidir'" > "$OUT/trace-kdb.3" || true
+      head -1 "$OUT/trace-kdb.3" | sed 's/^/read-only daidir /'
+      if ! grep -q '"ok": *true' "$OUT/trace-kdb.3"; then
+        echo "FAIL a read-only daidir: $(head -c 400 "$OUT/trace-kdb.3")"
+        echo "TRACE KDB CHECKS FAILED"
+        exit 1
+      fi
+    fi
+    sed -n 2p "$OUT/trace-kdb.1" > "$OUT/trace-kdb.json"
+    sed -n 2p "$OUT/trace-kdb.2" > "$OUT/trace-kdb.cached.json"
+    python3 "$HERE/trace-kdb/compare.py" "$OUT/trace-kdb.json" "$3" "$(cat "$OUT/trace-kdb.export1")" \
+      "$OUT/trace-kdb.cached.json" "$(cat "$OUT/trace-kdb.export2")" | tee "$OUT/trace-kdb.log"
+    python3 "$HERE/trace-kdb/compare.py" --self-test "$OUT/trace-kdb.json" "$3" | tee -a "$OUT/trace-kdb.log"
+    grep -q '^TRACE KDB CHECKS PASSED' "$OUT/trace-kdb.log" && grep -q '^TRACE KDB SELF-TEST PASSED' "$OUT/trace-kdb.log"
+    ;;
+  trace-kdb-exporter)
+    # trace-kdb/exporter.py on the Mac: npi-model.py's reading of the compile's overrides and time (no Verdi).
+    python3 "$HERE/trace-kdb/exporter.py" "$ROOT/Resources/vaporview/verdi-trace/npi-model.py" | tee "$OUT/trace-kdb-exporter.log"
+    grep -q '^TRACE KDB EXPORTER CHECKS PASSED' "$OUT/trace-kdb-exporter.log"
+    ;;
+  trace-kdb-launcher)
+    if [ $# -lt 2 ]; then echo "trace-kdb-launcher: needs <ssh-host>"; exit 2; fi
+    # trace-kdb/launcher.sh on the host, in a scratch folder of its own (removed however it ends).
+    S=$(ssh "$2" 'umask 077; mktemp -d /tmp/cmux-trace-kdb-launcher.XXXXXX') || exit 1
+    scp -q "$ROOT/Resources/vaporview/verdi-trace/npi-model.sh" "$HERE/trace-kdb/launcher.sh" "$2:$S/" || { ssh "$2" "rm -rf '$S'"; exit 1; }
+    ssh "$2" "bash '$S/launcher.sh' '$S/t' '$S/npi-model.sh'; rm -rf '$S'" | tee "$OUT/trace-kdb-launcher.log"
+    grep -q '^TRACE KDB LAUNCHER CHECKS PASSED' "$OUT/trace-kdb-launcher.log"
+    ;;
+  trace-kdb-self-test)
+    # compare.py's self-test offline (no host, no seat): it passes on a saved export and its slang
+    # model (trace-kdb/fixture), and fails on each of its mutations of the export.
+    python3 "$HERE/trace-kdb/compare.py" --self-test "$HERE/trace-kdb/fixture/kdb.json" "$HERE/trace-kdb/fixture/slang.json" | tee "$OUT/trace-kdb-self-test.log"
+    grep -q '^TRACE KDB SELF-TEST PASSED' "$OUT/trace-kdb-self-test.log"
     ;;
   trace-smoke)
     mkdir -p "$OUT/smoke/models" "$OUT/smoke/dumps" "$OUT/smoke/designs"

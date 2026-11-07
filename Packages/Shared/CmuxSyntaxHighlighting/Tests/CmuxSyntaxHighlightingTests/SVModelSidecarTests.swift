@@ -221,6 +221,72 @@ import Testing
         #expect(statuses.all == [.connecting, .building, .connecting])
     }
 
+    @Test func buildProgressLinesAreParsed() {
+        typealias P = SVModelSidecar.BuildProgress
+        #expect(SVModelSidecar.buildProgress(fromLine: "cmux-sv-model-build: stage fetch") == P(stage: .fetch))
+        #expect(SVModelSidecar.buildProgress(fromLine: "cmux-sv-model-build: stage configure") == P(stage: .configure))
+        #expect(SVModelSidecar.buildProgress(fromLine: "cmux-sv-model-build: stage compile") == P(stage: .compile, percent: 0))
+        #expect(SVModelSidecar.buildProgress(fromLine: "cmux-sv-model-build: progress 42") == P(stage: .compile, percent: 42))
+        #expect(SVModelSidecar.buildProgress(fromLine: "cmux-sv-model-build: progress 100\r") == P(stage: .compile, percent: 100))
+        #expect(SVModelSidecar.buildProgress(fromLine: "cmux-sv-model-build: stage install") == P(stage: .install))
+        for line in ["cmux-sv-model-build: configuring", "cmux-sv-model-build: progress 101", "cmux-sv-model-build: progress x",
+                     "cmux-sv-model-build: stage sideways", "[ 42%] Building CXX object", "", "progress 3"] {
+            #expect(SVModelSidecar.buildProgress(fromLine: line) == nil, "\(line)")
+        }
+    }
+
+    @Test func anInstallReportsItsStagesAsBuildShPrintsThem() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("svm-progress-\(UUID().uuidString)")
+        let source = dir.appendingPathComponent("src", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(repeating: 0x41, count: 3000).write(to: source.appendingPathComponent("sv_model.cpp"))
+        try Data("x".utf8).write(to: source.appendingPathComponent("build.sh"))
+        let marker = dir.appendingPathComponent("installed").path
+        let say = { (text: String) in "printf 'cmux-sv-model-build: \(text)\\n' >&2; " }
+        let install = "cat > /dev/null; " + say("fetching slang 12.1") + say("stage fetch") + say("stage configure") + say("stage compile")
+            + say("progress 10") + "echo noise >&2; " + say("progress 55") + say("progress 100") + say("stage install") + "touch '\(marker)'"
+        let sidecar = SVModelSidecar(
+            runner: { command in .init(executable: "/bin/sh", arguments: ["-c", command]) },
+            launchCommand: "[ -f '\(marker)' ] || exit 87\n" + Self.fakeScript,
+            installCommand: install,
+            installSource: source
+        )
+        defer { sidecar.stop() }
+        let log = ProgressLog()
+        sidecar.onBuildProgress = { log.append($0) }
+        #expect(try await sidecar.request(["cmd": "hi"])["echo"] as? String == "hi")
+        let seen = log.all
+        #expect(seen.map(\.stage) == [.upload, .fetch, .configure, .compile, .compile, .compile, .compile, .install], "\(seen)")
+        #expect(seen.compactMap(\.percent) == [0, 10, 55, 100])
+        // The upload says how much it sends: the source folder's files.
+        #expect((seen.first?.bytes ?? 0) >= 3001)
+    }
+
+    @Test func buildShPrintsItsStagesAndCompilePercent() throws {
+        // The bundled build.sh says each stage and the compile's percent on stderr, in the form
+        // buildProgress(fromLine:) reads, from cmake's `[ NN%]` (Makefiles) or `[N/M]` (Ninja) lines.
+        let here = URL(fileURLWithPath: #filePath)
+        let script = try String(contentsOf: here.deletingLastPathComponent().appendingPathComponent("../../../../../Resources/vaporview/sv-model/build.sh").standardizedFileURL, encoding: .utf8)
+        for stage in ["fetch", "configure", "compile", "install"] {
+            #expect(script.contains("stage \(stage)"), "\(stage)")
+        }
+        let filter = try #require(script.components(separatedBy: "\n").first { $0.contains("SV_MODEL_PROGRESS_AWK=") })
+        let awk = String(filter.split(separator: "=", maxSplits: 1)[1]).trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/awk")
+        process.arguments = [awk]
+        let input = Pipe(), output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        try process.run()
+        input.fileHandleForWriting.write(Data("[  0%] Building CXX object fmt.o\n[  1%] Building CXX object a.o\n[  1%] Building b.o\nwarning: x\n[ 37%] Linking\n[3/8] Building c.o\n[100%] Built target cmux-sv-model\n".utf8))
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        let lines = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n").map(String.init)
+        #expect(lines == ["cmux-sv-model-build: progress 0", "cmux-sv-model-build: progress 1", "cmux-sv-model-build: progress 37", "cmux-sv-model-build: progress 100"], "\(lines)")
+    }
+
     @Test func aFailedInstallReportsItsExitCode() async throws {
         let sidecar = SVModelSidecar(
             runner: { command in .init(executable: "/bin/sh", arguments: ["-c", command]) },
@@ -254,6 +320,13 @@ import Testing
         let model = try await sidecar.request(["cmd": "instance", "path": "tb_c.dut.u_src"])
         #expect((model["model"] as? [String: Any])?["module"] as? String == "c_src")
     }
+}
+
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [SVModelSidecar.BuildProgress] = []
+    func append(_ progress: SVModelSidecar.BuildProgress) { lock.withLock { items.append(progress) } }
+    var all: [SVModelSidecar.BuildProgress] { lock.withLock { items } }
 }
 
 private final class StatusLog: @unchecked Sendable {

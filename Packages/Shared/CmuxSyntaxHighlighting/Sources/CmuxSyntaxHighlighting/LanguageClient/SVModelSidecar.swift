@@ -98,7 +98,12 @@ public enum SVModelLoad {
 /// The launch command exits 87 when the build for this version is not installed; the install
 /// command then runs (with the sidecar sources as a tar on its stdin) and the launch is retried.
 /// A sidecar that exits is started again by the next request, and the last `load` is replayed
-/// into it first.
+/// into it first. Each load's reply (asked for or replayed) makes the loaded design: one with
+/// another `fingerprint` than the design before it, or none, or from a sidecar whose ready line
+/// says another version or build (`model`, `build`: a cmux update rebuilt it), is a new
+/// `designGeneration`, and
+/// every reply says the generation it was answered in (`Reply.design`), so answers of two
+/// designs are never taken for one (SVDesignSession).
 public final class SVModelSidecar: @unchecked Sendable {
     public struct Command: Sendable {
         public let executable: String
@@ -116,15 +121,38 @@ public final class SVModelSidecar: @unchecked Sendable {
     /// A reply object (a JSON object from the sidecar, read-only once made).
     public struct Reply: @unchecked Sendable {
         public let object: [String: Any]
+        /// The design generation the sidecar answered in (0: before any load).
+        public let design: Int
 
         public subscript(key: String) -> Any? { object[key] }
 
-        public init(object: [String: Any]) { self.object = object }
+        public init(object: [String: Any], design: Int = 0) {
+            self.object = object
+            self.design = design
+        }
     }
 
     public enum Status: Sendable, Equatable {
         case connecting
         case building
+    }
+
+    /// Where a first-time build is: the upload of the sources (`bytes`), then build.sh's own
+    /// stages (its `cmux-sv-model-build: stage …` lines), the compile with its `percent`.
+    public struct BuildProgress: Sendable, Equatable {
+        public enum Stage: String, Sendable {
+            case upload, fetch, configure, compile, install
+        }
+
+        public var stage: Stage
+        public var percent: Int?
+        public var bytes: Int?
+
+        public init(stage: Stage, percent: Int? = nil, bytes: Int? = nil) {
+            self.stage = stage
+            self.percent = percent
+            self.bytes = bytes
+        }
     }
 
     public enum Failure: Error, Sendable, Equatable {
@@ -153,6 +181,7 @@ public final class SVModelSidecar: @unchecked Sendable {
     private let installSource: URL?
     private let lock = NSLock()
     private var statusHandler: (@Sendable (Status) -> Void)?
+    private var progressHandler: (@Sendable (BuildProgress) -> Void)?
     private var startTask: Task<Void, any Error>?
     private var process: Process?
     private var input: FileHandle?
@@ -167,6 +196,11 @@ public final class SVModelSidecar: @unchecked Sendable {
     private var readyLine: Reply?
     private var lastLoad: [String: any Sendable]?
     private var loadGeneration = 0
+    /// The ids of the load requests under way (asked for or replayed).
+    private var loadIds: Set<Int> = []
+    private var designGenerationValue = 0
+    private var designFingerprintValue: String?
+    private var lastLoadReplyValue: Reply?
     private let writeQueue = DispatchQueue(label: "com.cmuxterm.sv-model.write")
 
     /// `installSource`: the folder sent as a tar on the install command's stdin.
@@ -180,6 +214,14 @@ public final class SVModelSidecar: @unchecked Sendable {
     /// The running process's ready line (what it said about itself), once it has started.
     public var lastReady: Reply? { lock.withLock { readyLine } }
 
+    /// The generation of the design loaded now: bumped by a load (asked for or replayed after a
+    /// restart) whose fingerprint differs from the design's before it or is missing, and by a
+    /// load that fails (the sidecar then holds none). 0: nothing loaded yet.
+    public var designGeneration: Int { lock.withLock { designGenerationValue } }
+
+    /// The last load's reply (asked for or replayed), with its generation.
+    public var lastLoadReply: Reply? { lock.withLock { lastLoadReplyValue } }
+
     public var onStatus: (@Sendable (Status) -> Void)? {
         get { lock.withLock { statusHandler } }
         set { lock.withLock { statusHandler = newValue } }
@@ -187,6 +229,47 @@ public final class SVModelSidecar: @unchecked Sendable {
 
     private func report(_ status: Status) {
         lock.withLock { statusHandler }?(status)
+    }
+
+    /// Called as a first-time build goes (on a background queue).
+    public var onBuildProgress: (@Sendable (BuildProgress) -> Void)? {
+        get { lock.withLock { progressHandler } }
+        set { lock.withLock { progressHandler = newValue } }
+    }
+
+    private func report(_ progress: BuildProgress) {
+        lock.withLock { progressHandler }?(progress)
+    }
+
+    /// One of build.sh's progress lines (`cmux-sv-model-build: stage configure`,
+    /// `cmux-sv-model-build: progress 42`), else nil.
+    public static func buildProgress(fromLine line: String) -> BuildProgress? {
+        let prefix = "cmux-sv-model-build: "
+        guard line.hasPrefix(prefix) else { return nil }
+        let words = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
+        guard words.count == 2 else { return nil }
+        switch words[0] {
+        case "stage":
+            guard let stage = BuildProgress.Stage(rawValue: String(words[1])), stage != .upload else { return nil }
+            return BuildProgress(stage: stage, percent: stage == .compile ? 0 : nil)
+        case "progress":
+            guard words[1].allSatisfy(\.isNumber), let percent = Int(words[1]), (0...100).contains(percent) else { return nil }
+            return BuildProgress(stage: .compile, percent: percent)
+        default:
+            return nil
+        }
+    }
+
+    /// The bytes of the files under `folder` (what the install sends as a tar, near enough).
+    static func size(of folder: URL) -> Int {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else { return 0 }
+        var total = 0
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if values?.isRegularFile == true { total += values?.fileSize ?? 0 }
+        }
+        return total
     }
 
     /// The shell commands for the bundled sidecar folder `source` installed under
@@ -236,6 +319,7 @@ public final class SVModelSidecar: @unchecked Sendable {
                 return
             }
             pending[id] = continuation
+            if request["cmd"] as? String == "load" { loadIds.insert(id) }
             lock.unlock()
             line.append(0x0A)
             let message = line
@@ -417,11 +501,23 @@ public final class SVModelSidecar: @unchecked Sendable {
             }
             return
         }
-        let continuation = lock.withLock { pending.removeValue(forKey: id) }
-        if object["ok"] as? Bool == false {
+        // Stamped here, in the order the sidecar answered: a reply after a load's is that design's.
+        let ok = object["ok"] as? Bool != false
+        let (continuation, design): (CheckedContinuation<Reply, any Error>?, Int) = lock.withLock {
+            if loadIds.remove(id) != nil {
+                // The sources read and the sidecar that read them (its ready line's version).
+                let version = ((readyLine?["model"]).map { "\($0)" } ?? "") + "/" + (readyLine?["build"] as? String ?? "")
+                let fingerprint = ok ? (object["fingerprint"] as? String).map { $0 + "|" + version } : nil
+                if fingerprint == nil || fingerprint != designFingerprintValue { designGenerationValue += 1 }
+                designFingerprintValue = fingerprint
+                lastLoadReplyValue = Reply(object: object, design: designGenerationValue)
+            }
+            return (pending.removeValue(forKey: id), designGenerationValue)
+        }
+        if !ok {
             continuation?.resume(throwing: Failure.request(code: object["error"] as? String ?? "", message: object["message"] as? String ?? ""))
         } else {
-            continuation?.resume(returning: Reply(object: object))
+            continuation?.resume(returning: Reply(object: object, design: design))
         }
     }
 
@@ -489,6 +585,10 @@ public final class SVModelSidecar: @unchecked Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = stderr
         let log = SVModelInstallLog()
+        report(BuildProgress(stage: .upload, bytes: installSource.map(Self.size(of:)) ?? 0))
+        log.onLine = { [weak self] line in
+            if let progress = Self.buildProgress(fromLine: line) { self?.report(progress) }
+        }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty { handle.readabilityHandler = nil } else { log.append(data) }
@@ -566,13 +666,25 @@ public final class SVModelSidecar: @unchecked Sendable {
 private final class SVModelInstallLog: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
+    private var partial = Data()
     private var didTimeOut = false
+    /// Each whole line of the log as it arrives (build.sh's progress lines among them).
+    var onLine: (@Sendable (String) -> Void)?
 
     func append(_ data: Data) {
-        lock.withLock {
+        let lines: [String] = lock.withLock {
             buffer.append(data)
             if buffer.count > 64 * 1024 { buffer = buffer.suffix(32 * 1024) }
+            partial.append(data)
+            var out: [String] = []
+            while let newline = partial.firstIndex(of: 0x0A) {
+                out.append(String(decoding: partial[partial.startIndex..<newline], as: UTF8.self))
+                partial = Data(partial[(newline + 1)...])
+            }
+            if partial.count > 4096 { partial = Data() }
+            return out
         }
+        if let onLine { lines.forEach(onLine) }
     }
 
     var data: Data { lock.withLock { buffer } }

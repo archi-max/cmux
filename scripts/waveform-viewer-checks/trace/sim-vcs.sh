@@ -17,7 +17,7 @@ if ! command -v vcs >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
 fi
 command -v vcs >/dev/null 2>&1 || { echo "sim-vcs: vcs is not on PATH: set VCS_HOME, or CMUX_VERDI_SETUP (a command that puts vcs and verdi on PATH)" >&2; exit 2; }
 mkdir -p out
-for d in ${DESIGNS:-a b c e f g h}; do
+for d in ${DESIGNS:-a b c e f g h i j}; do
   src=$(ls designs/${d}_*.sv)
   for variant in plain flowctrl tmerge course; do
     case $variant in

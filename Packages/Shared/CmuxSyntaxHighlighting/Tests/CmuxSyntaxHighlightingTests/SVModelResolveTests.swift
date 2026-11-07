@@ -27,16 +27,8 @@ import Testing
             return (best, best.count < path.count ? String(path.dropFirst(best.count + 1)) : "")
         }
 
-        func roots() -> [String: [HierarchyNode]] {
-            var roots: [String: [HierarchyNode]] = [:]
-            for top in tops {
-                var kids = models.keys.filter { $0.hasPrefix(top + ".") && !$0.dropFirst(top.count + 1).contains(".") }
-                    .sorted().map { HierarchyNode(name: String($0.dropFirst(top.count + 1)), isScope: true) }
-                kids += ((models[top]?["signals"] as? [String: Any]) ?? [:]).keys.sorted().map { HierarchyNode(name: $0, isScope: false) }
-                roots[top] = kids
-            }
-            return roots
-        }
+        /// The design's instances, as the sidecar's `instances` lists them (sorted).
+        var instances: [String] { models.keys.sorted() }
     }
 
     /// The dump's hierarchy: each scope path's children.
@@ -49,8 +41,9 @@ import Testing
             loadMessages: loadMessages,
             lookup: { design.lookup($0) },
             model: { design.models[$0] },
-            designRoots: { design.roots() },
-            dumpChildren: { dump[HierarchyPathMapping.join($0)] }
+            designRoots: { await SVModelResolve.designRoots(tops: design.tops, instances: design.instances, model: { design.models[$0] }) },
+            dumpChildren: { dump[HierarchyPathMapping.join($0)] },
+            instances: { design.instances }
         )
     }
 
@@ -170,6 +163,283 @@ import Testing
             == .signal(designPath: "soc.dfp_read", designPrefix: "soc", dumpPrefix: "tb.dut"))
         #expect(try await resolve("tb.dut.mmio_rdata", design: design, dump: dump)
             == .signal(designPath: "soc.mmio_rdata", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    // Inference beyond the design's tops (x-root review M3).
+
+    static let gen = FakeDesign(models: [
+        "soc": signals(["clk": bit, "g_blk.x": word32, "g_blk.y": bit]),
+        "soc.g[0].u_sub": signals(["d": word32]),
+        "soc.g[1].u_sub": signals(["d": word32]),
+    ], tops: ["soc"])
+
+    @Test func aGenerateBlocksSignalUnderARenamedTopIsInferred() async throws {
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true)],
+            "tb.dut": [HierarchyNode(name: "clk", isScope: false, width: 1), HierarchyNode(name: "g_blk", isScope: true),
+                       HierarchyNode(name: "g[0]", isScope: true), HierarchyNode(name: "g[1]", isScope: true)],
+            "tb.dut.g_blk": [HierarchyNode(name: "x", isScope: false, width: 32), HierarchyNode(name: "y", isScope: false, width: 1)],
+            "tb.dut.g[0]": [HierarchyNode(name: "u_sub", isScope: true)],
+        ]
+        #expect(try await resolve("tb.dut.g_blk.x", design: Self.gen, dump: dump)
+            == .signal(designPath: "soc.g_blk.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+        #expect(try await resolve("tb.dut.g[0].u_sub.d", design: Self.gen, dump: dump)
+            == .signal(designPath: "soc.g[0].u_sub.d", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func aDumpScopeNamedForADeeperInstanceIsInferred() async throws {
+        // The dump's testbench names the design instance `dut`; the design's is `u_dut`.
+        let design = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]),
+            "tb.u_dut": Self.signals(["clk": Self.bit]),
+            "tb.u_dut.u_alu": Self.signals(["x": Self.word32]),
+            "tb.u_dut.u_reg": Self.signals(["q": Self.word32]),
+        ], tops: ["tb"])
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+            "tb.dut": [HierarchyNode(name: "u_alu", isScope: true), HierarchyNode(name: "u_reg", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+            "tb.dut.u_alu": [HierarchyNode(name: "x", isScope: false, width: 32)],
+        ]
+        #expect(try await resolve("tb.dut.u_alu.x", design: design, dump: dump)
+            == .signal(designPath: "tb.u_dut.u_alu.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+    }
+
+    /// Past the root cap (more than 512 scoped instances), the true DUT (soc.u_sub.u_dut, at a depth
+    /// the cap drops) would win; a look-alike kept at a shallower depth (soc.u_look, two of its
+    /// three scopes) must not win alone: the row is not in the design (a tie it can't settle).
+    @Test func aRootDroppedByTheCapThatCouldTieMakesTheWinnerAmbiguous() async throws {
+        var models: [String: [String: Any]] = [
+            "soc": Self.signals(["clk": Self.bit]),
+            "soc.u_look": Self.signals(["clk": Self.bit]),
+            "soc.u_sub": Self.signals(["clk": Self.bit]),
+            "soc.u_sub.u_dut": Self.signals(["clk": Self.bit]),
+        ]
+        for sub in ["u_a", "u_b"] { models["soc.u_look.\(sub)"] = Self.signals(["x": Self.bit]) }
+        for sub in ["u_a", "u_b", "u_c"] { models["soc.u_sub.u_dut.\(sub)"] = Self.signals(["x": Self.bit]) }
+        for i in 0..<600 {
+            models["soc.fill.f\(i)"] = Self.signals(["clk": Self.bit])
+            models["soc.fill.f\(i).u_p"] = Self.signals(["y": Self.bit])
+            models["soc.fill.f\(i).u_q"] = Self.signals(["y": Self.bit])
+        }
+        models["soc.fill"] = Self.signals(["clk": Self.bit])
+        let design = FakeDesign(models: models, tops: ["soc"])
+        let dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true)],
+            "tb.dut": ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) },
+            "tb.dut.u_a": [HierarchyNode(name: "x", isScope: false, width: 1)],
+            "tb.dut.u_b": [HierarchyNode(name: "x", isScope: false, width: 1)],
+            "tb.dut.u_c": [HierarchyNode(name: "x", isScope: false, width: 1)],
+        ]
+        let got = try await resolve("tb.dut.u_a.x", design: design, dump: dump)
+        #expect(got == .notInDesign, "\(got)")
+    }
+
+    /// Two identical cores (`u_core0`, `u_core1`, each with `u_a`/`u_b`/`u_c`) below `root`, dumped below `tb.dut`.
+    static func twoCores(below root: String, models: [String: [String: Any]], tops: [String], dumpTb: [HierarchyNode]) -> (FakeDesign, FakeDump) {
+        var models = models
+        var dump: FakeDump = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": dumpTb,
+            "tb.dut": [HierarchyNode(name: "u_core0", isScope: true), HierarchyNode(name: "u_core1", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+        ]
+        for core in ["u_core0", "u_core1"] {
+            models["\(root).\(core)"] = signals(["clk": bit])
+            dump["tb.dut.\(core)"] = ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) }
+            for sub in ["u_a", "u_b", "u_c"] {
+                models["\(root).\(core).\(sub)"] = signals(["x": bit])
+                dump["tb.dut.\(core).\(sub)"] = [HierarchyNode(name: "x", isScope: false, width: 1)]
+            }
+        }
+        return (FakeDesign(models: models, tops: tops), dump)
+    }
+
+    @Test func aRowInTheSecondOfTwoIdenticalCoresMapsToItUnderARenamedTop() async throws {
+        let (design, dump) = Self.twoCores(below: "soc", models: ["soc": Self.signals(["clk": Self.bit])], tops: ["soc"],
+                                           dumpTb: [HierarchyNode(name: "dut", isScope: true)])
+        #expect(try await resolve("tb.dut.u_core1.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "soc.u_core1.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func aRowInTheSecondOfTwoIdenticalCoresMapsToItUnderADeeperInstance() async throws {
+        let (design, dump) = Self.twoCores(
+            below: "tb.u_dut", models: ["tb": Self.signals(["clk": Self.bit]), "tb.u_dut": Self.signals(["clk": Self.bit])], tops: ["tb"],
+            dumpTb: [HierarchyNode(name: "dut", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)])
+        #expect(try await resolve("tb.dut.u_core1.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "tb.u_dut.u_core1.u_a.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+    }
+
+    static func scopes(_ names: [String]) -> [HierarchyNode] { names.map { HierarchyNode(name: $0, isScope: true) } }
+    static func bits(_ names: [String]) -> [HierarchyNode] { names.map { HierarchyNode(name: $0, isScope: false, width: 1) } }
+
+    /// Rules that map the row to one design path agree: a top and its own child instance tying is no tie.
+    @Test func aTopAndItsChildInstanceScoringAlikeMapTheRow() async throws {
+        let design = FakeDesign(models: [
+            "soc": Self.signals(["clk": Self.bit, "rst": Self.bit]), "soc.u_mem": Self.signals(["d": Self.bit]),
+            "soc.u_core": Self.signals(["clk": Self.bit]), "soc.u_core.u_a": Self.signals(["x": Self.bit]),
+            "soc.u_core.u_b": Self.signals(["x": Self.bit]), "soc.u_core.u_c": Self.signals(["x": Self.bit]),
+        ], tops: ["soc"])
+        let dump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]),
+            "tb.dut": Self.scopes(["u_core", "u_mem"]) + Self.bits(["clk", "rst"]),
+            "tb.dut.u_core": Self.scopes(["u_a", "u_b", "u_c"]), "tb.dut.u_core.u_a": Self.bits(["x"]),
+        ]
+        #expect(try await resolve("tb.dut.u_core.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "soc.u_core.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    @Test func aTestbenchTopAndItsDutScoringAlikeMapTheRow() async throws {
+        let design = FakeDesign(models: [
+            "tb_soc": Self.signals(["clk": Self.bit, "rst": Self.bit]), "tb_soc.dut": Self.signals(["clk": Self.bit]),
+            "tb_soc.dut.u_a": Self.signals(["x": Self.bit]), "tb_soc.dut.u_b": Self.signals(["x": Self.bit]),
+            "glbl": Self.signals(["GSR": Self.bit]),
+        ], tops: ["glbl", "tb_soc"])
+        let dump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk", "rst"]),
+            "tb.dut": Self.scopes(["u_a", "u_b"]) + Self.bits(["clk"]), "tb.dut.u_a": Self.bits(["x"]),
+        ]
+        #expect(try await resolve("tb.dut.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "tb_soc.dut.u_a.x", designPrefix: "tb_soc", dumpPrefix: "tb"))
+    }
+
+    /// `soc` (dumped as `tb.dut`) with `cores` identical cores (`u_a`..`u_d`) and a `u_dma` whose children share
+    /// `shared` of a core's names (`u_a`, ...; the rest are its own).
+    static func coresAndDma(cores: Int, shared: Int) -> (FakeDesign, FakeDump) {
+        let coreKids = ["u_a", "u_b", "u_c", "u_d"]
+        let dmaKids = Array(coreKids.prefix(shared)) + ["u_z", "u_y", "u_w", "u_v"].prefix(4 - shared)
+        var models: [String: [String: Any]] = ["soc": signals(["clk": bit]), "soc.u_dma": signals(["clk": bit])]
+        var dump: FakeDump = ["": scopes(["tb"]), "tb": scopes(["dut"])]
+        let coreNames = (0..<cores).map { "u_core\($0)" }
+        dump["tb.dut"] = scopes(coreNames + ["u_dma"]) + bits(["clk"])
+        for core in coreNames {
+            models["soc.\(core)"] = signals(["clk": bit])
+            dump["tb.dut.\(core)"] = scopes(coreKids)
+            for kid in coreKids { models["soc.\(core).\(kid)"] = signals(["x": bit]); dump["tb.dut.\(core).\(kid)"] = bits(["x"]) }
+        }
+        dump["tb.dut.u_dma"] = scopes(dmaKids)
+        for kid in dmaKids { models["soc.u_dma.\(kid)"] = signals(["x": bit]); dump["tb.dut.u_dma.\(kid)"] = bits(["x"]) }
+        return (FakeDesign(models: models, tops: ["soc"]), dump)
+    }
+
+    /// Probe D: the cores tie at their own scope, and the lone u_dma scoring lower there is another module.
+    @Test func aNarrowerRuleBelowATieIsNotTaken() async throws {
+        var (design, dump) = Self.coresAndDma(cores: 2, shared: 3)
+        dump["tb.dut"] = Self.scopes(["u_core0", "u_core1"]) + Self.bits(["clk"])
+        #expect(try await resolve("tb.dut.u_core1.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "soc.u_core1.u_a.x", designPrefix: "soc", dumpPrefix: "tb.dut"))
+    }
+
+    /// Whatever the overlap between instances' children, a row maps to its own instance by the top's rule,
+    /// never to another instance's signal of the same name.
+    @Test func aRowNeverMapsToAnotherInstance() async throws {
+        for cores in 1...3 {
+            for shared in 0...4 {
+                for dumpDma in [true, false] {
+                    var (design, dump) = Self.coresAndDma(cores: cores, shared: shared)
+                    if !dumpDma { dump["tb.dut"] = dump["tb.dut"]!.filter { $0.name != "u_dma" } }
+                    let rows = dump.keys.filter { $0.hasPrefix("tb.dut.") && dump[$0]!.allSatisfy { !$0.isScope } }.sorted()
+                        .filter { dumpDma || !$0.hasPrefix("tb.dut.u_dma") }
+                    for row in rows {
+                        let got = try await resolve("\(row).x", design: design, dump: dump)
+                        let own = "soc" + "\(row).x".dropFirst("tb.dut".count)
+                        // The top's rule (soc = tb.dut) is there in every case, so the row is found.
+                        #expect(got == .signal(designPath: own, designPrefix: "soc", dumpPrefix: "tb.dut"),
+                                "cores \(cores), shared \(shared), dma dumped \(dumpDma): \(row).x -> \(got)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// An extra top (a module nothing instantiates, which slang makes a top) sharing clk and rst with a renamed DUT:
+    /// the DUT's own signals and scopes map to the DUT, not to the extra top.
+    @Test func aRenamedInstancesSignalsAreNotAnExtraTops() async throws {
+        let design = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]),
+            "tb.u_dut": Self.signals(["clk": Self.bit, "rst": Self.bit, "x": Self.bit]),
+            "tb.u_dut.u_a": Self.signals(["x": Self.bit]), "tb.u_dut.u_b": Self.signals(["x": Self.bit]),
+            "other": Self.signals(["clk": Self.bit, "rst": Self.bit]),
+            "other.u_c": Self.signals(["x": Self.bit]), "other.u_d": Self.signals(["x": Self.bit]),
+        ], tops: ["other", "tb"])
+        let dump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk"]),
+            "tb.dut": Self.scopes(["u_a", "u_b"]) + Self.bits(["clk", "rst", "x"]),
+            "tb.dut.u_a": Self.bits(["x"]), "tb.dut.u_b": Self.bits(["x"]),
+        ]
+        for name in ["rst", "clk", "x"] {
+            #expect(try await resolve("tb.dut.\(name)", design: design, dump: dump)
+                == .signal(designPath: "tb.u_dut.\(name)", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+        }
+        #expect(try await resolve("tb.dut.u_a.x", design: design, dump: dump)
+            == .signal(designPath: "tb.u_dut.u_a.x", designPrefix: "tb.u_dut", dumpPrefix: "tb.dut"))
+    }
+
+    /// An extra top whose names equal the renamed DUT's (or a leaf instance's) is no evidence against it, but the
+    /// row is below `tb`, a scope the design has as it is with a renamed child: inference stays inside `tb`.
+    @Test func aRowBelowAScopeTheDesignHasStaysInIt() async throws {
+        // The DUT's own level is the extra top's (u_fifo and q), its one scope too few for a root of its own.
+        let twin = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]),
+            "tb.u_dut": Self.signals(["q": Self.bit]), "tb.u_dut.u_fifo": Self.signals(["x": Self.bit]),
+            "other": Self.signals(["q": Self.bit]), "other.u_fifo": Self.signals(["x": Self.bit]),
+        ], tops: ["other", "tb"])
+        let twinDump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk"]),
+            "tb.dut": Self.scopes(["u_fifo"]) + Self.bits(["q"]), "tb.dut.u_fifo": Self.bits(["x"]),
+        ]
+        // A leaf instance with the extra top's signals (clk and d).
+        let leaf = FakeDesign(models: [
+            "tb": Self.signals(["clk": Self.bit]), "tb.u_dut": Self.signals(["d": Self.bit]),
+            "tb.u_dut.g_a[0].u_a": Self.signals(["clk": Self.bit, "d": Self.bit]),
+            "other": Self.signals(["clk": Self.bit, "d": Self.bit]),
+        ], tops: ["other", "tb"])
+        let leafDump: FakeDump = [
+            "": Self.scopes(["tb"]), "tb": Self.scopes(["dut"]) + Self.bits(["clk"]),
+            "tb.dut": Self.scopes(["g_a[0]"]) + Self.bits(["d"]), "tb.dut.g_a[0]": Self.scopes(["u_a"]),
+            "tb.dut.g_a[0].u_a": Self.bits(["clk", "d"]),
+        ]
+        for (row, design, dump) in [("tb.dut.q", twin, twinDump), ("tb.dut.u_fifo.x", twin, twinDump), ("tb.dut.g_a[0].u_a.d", leaf, leafDump)] {
+            let got = try await resolve(row, design: design, dump: dump)
+            if case .signal(let designPath, _, _) = got { #expect(designPath.hasPrefix("tb."), "\(row) -> \(designPath)") }
+        }
+    }
+
+    /// The review's probe E: the design has a top named like the dump's testbench (`top`, with scopes of
+    /// its own, nothing to do with the dump's), and the DUT `soc` is a top of its own; the dump's
+    /// top.dut is soc. The scope the design has as it is (`top`) holds nothing named like what is
+    /// below the dump's top.dut, so it is no anchor: the row maps to soc.
+    static let probeE = FakeDesign(models: [
+        "top": signals(["clk": bit]), "top.u_x": signals(["a": bit]), "top.u_y": signals(["a": bit]),
+        "soc": signals(["clk": bit]), "soc.u_a": signals(["x": bit]), "soc.u_b": signals(["x": bit]),
+    ], tops: ["soc", "top"])
+    static let probeEDump: FakeDump = [
+        "": scopes(["top"]), "top": scopes(["dut"]) + bits(["clk"]),
+        "top.dut": scopes(["u_a", "u_b"]) + bits(["clk"]), "top.dut.u_a": bits(["x"]), "top.dut.u_b": bits(["x"]),
+    ]
+
+    @Test func aTopNamedLikeTheDumpsTestbenchIsNoAnchor() async throws {
+        #expect(try await resolve("top.dut.u_a.x", design: Self.probeE, dump: Self.probeEDump)
+                == .signal(designPath: "soc.u_a.x", designPrefix: "soc", dumpPrefix: "top.dut"))
+        #expect(try await resolve("top.dut.clk", design: Self.probeE, dump: Self.probeEDump)
+                == .signal(designPath: "soc.clk", designPrefix: "soc", dumpPrefix: "top.dut"))
+        // The design's own top's signal stays its own.
+        #expect(try await resolve("top.clk", design: Self.probeE, dump: Self.probeEDump)
+                == .signal(designPath: "top.clk", designPrefix: "", dumpPrefix: ""))
+    }
+
+    @Test func designRootsListScopesOnceAndInstancesBelowTheTops() async {
+        let roots = await SVModelResolve.designRoots(tops: Self.gen.tops, instances: Self.gen.instances, model: { Self.gen.models[$0] })
+        #expect(roots["soc"] == [
+            HierarchyNode(name: "g[0]", isScope: true), HierarchyNode(name: "g[1]", isScope: true), HierarchyNode(name: "g_blk", isScope: true),
+            HierarchyNode(name: "clk", isScope: false),
+        ])
+        // An instance below the tops is a root by its scopes, and only with two at least.
+        #expect(roots["soc.g[0].u_sub"] == nil)
+        let deep = await SVModelResolve.designRoots(tops: ["tb"], instances: ["tb", "tb.u_dut", "tb.u_dut.u_alu", "tb.u_dut.u_reg", "tb.u_dut.u_alu.u_add"], model: { _ in nil })
+        #expect(deep["tb.u_dut"] == [HierarchyNode(name: "u_alu", isScope: true), HierarchyNode(name: "u_reg", isScope: true)])
+        #expect(deep["tb.u_dut.u_alu"] == nil)
     }
 
     @Test func wordIndexesAreTheEnginesDigits() {

@@ -36,6 +36,19 @@ import Testing
         #expect(VerdiTraceLaunch.retryDelay(failures: 0) == 0)
     }
 
+    // MARK: Background prefetch
+
+    @Test func aBackgroundPrefetchFailsSoonerAndLeavesTheSessionAlone() {
+        // One Verdi session per dump: the page prefetches at most this many requests at once.
+        #expect(VerdiTraceLaunch.poolSize == 1)
+        // A prefetch gives up well before a click's request, and its failure (a timeout among
+        // them) doesn't make the next clicks go without Verdi.
+        #expect(VerdiTraceLaunch.requestTimeout(background: false) == 120)
+        #expect(VerdiTraceLaunch.requestTimeout(background: true) < VerdiTraceLaunch.requestTimeout(background: false) / 4)
+        #expect(VerdiTraceLaunch.failureMarksSession(background: false))
+        #expect(!VerdiTraceLaunch.failureMarksSession(background: true))
+    }
+
     // MARK: A start that did not finish
 
     @Test func aLicenceWaitSaysSoNotTheShellsNoise() {
