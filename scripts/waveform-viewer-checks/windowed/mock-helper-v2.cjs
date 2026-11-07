@@ -1,4 +1,4 @@
-// Mock protocol-v2 FSDB helper for run.sh windowed (cmux's WINDOWING.md protocol, the
+// Mock protocol-v2 FSDB helper for run.sh windowed (protocol 2, the
 // replies helper-v2 gives): NDJSON requests on stdin, replies on fd 3 as one JSON line
 // plus `binLength` raw bytes, an artificial round trip per request. Generated dumps only
 // (`synth:`, see makeSynth); it never reads a real file. Besides the protocol it answers
@@ -69,7 +69,7 @@ class Sig {
   upper(t) { let lo = 0, hi = this.n; const a = this.times; while (lo < hi) { const m = (lo + hi) >>> 1; if (a[m] <= t) { lo = m + 1; } else { hi = m; } } return lo; }
 }
 
-// The protocol's normalized change stream (WINDOWING.md): several changes at one time
+// The protocol's normalized change stream: several changes at one time
 // collapse to the last value at that time; then a change to the value already in effect is
 // dropped; before the first change the value is all 'x', so a first change to all-x is
 // dropped too. Every answer (window, counts, valueAt, edge, search) uses this one stream.

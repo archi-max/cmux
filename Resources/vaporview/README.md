@@ -9,6 +9,9 @@ without VS Code.
 - License: GNU General Public License v3.0 (`LICENSE`, copied from upstream)
 - Author: Lloyd Ramseyer (GitHub `Lramseyer`) and the VaporView contributors
 
+This file records how each bundled file was built. For what cmux changed and added, feature by
+feature, see [docs/vaporview/README.md](../../docs/vaporview/README.md).
+
 ## How these files were built
 
 From a clean checkout of the commit above, with Rust (`wasm32-unknown-unknown`),
@@ -171,8 +174,8 @@ keybindings, netlist view, settings, sessions and terminal links).
   open file (where upstream's calls would dereference null), and hands its
   buffer to Node without a copy. `third_party/` holds the node-addon-api 8.6.0 and
   node-api-headers 1.9.0 headers (MIT) the build needs.
-- `fsdb-helper-v2/` (new): the windowed viewer's helper (protocol 2 in
-  cmux's WINDOWING.md), uploaded and built on the host like `fsdb-helper/`.
+- `fsdb-helper-v2/` (new): the windowed viewer's helper (protocol 2, described in
+  `fsdb-helper-v2/README.md`), uploaded and built on the host like `fsdb-helper/`.
   `helper.js` coordinates a pool of `worker.js` processes (four), each with the
   file open and its signals in the addon's compact store, and answers
   `window`, `valueAt`, `edge`, `search`, `searchText`, `count`, `cancel` and

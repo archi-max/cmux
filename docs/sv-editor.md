@@ -48,9 +48,12 @@ To see everything this branch adds on top of cmux, use the GitHub compare view `
 | cmux add-ons that run in the page: debugger, machine state, FSM, enums, expressions, RISC-V disassembler, sequence search | `Resources/vaporview/cmux-*.js` |
 | How each bundled file was built, and the modifications | `Resources/vaporview/README.md` |
 
+For a feature-by-feature guide to cmux's VaporView changes, with screenshots and the files involved, see
+[docs/vaporview/README.md](vaporview/README.md).
+
 ### FSDB on a remote host
 
-FSDB is read on the remote host by `Resources/vaporview/fsdb-helper-v2/`. This is a small Node helper with VaporView's FSDB reader addon, compiled on the host against that host's own Verdi install. cmux uploads it over SSH and streams only the windows of data the viewer needs. Synopsys libraries are never bundled or redistributed. See `fsdb-helper-v2/NOTICE`.
+FSDB is read on the remote host by `Resources/vaporview/fsdb-helper-v2/`. This is a small Node helper with VaporView's FSDB reader addon, compiled on the host against that host's own Verdi install. cmux uploads it over SSH and streams only the windows of data the viewer needs. Synopsys libraries are never bundled or redistributed. See `fsdb-helper-v2/NOTICE`, and [its README](../Resources/vaporview/fsdb-helper-v2/README.md) for the design.
 
 Packed arrays (`logic [1:0][31:0] dfp_addr`) are usually written to an FSDB as one flat vector, and the netlist shows them that way. To get their elements as separate signals, run the simulation with the environment variable `FSDB_PACKED_MODE=0` and turn on packed multi-dimensional array dumping (the `+packedmda` option of `$fsdbDumpvars`, or `+fsdb+packedmda` on the simulator's command line). The netlist then shows each array as a node holding its elements, `dfp_addr[1]` and `dfp_addr[0]`, nested by dimension. A dump without that variable stays flat, even with packed array dumping on. Either way, **Split ▸ By Declared Dimensions** (or Into N Parts, By Width, Bits) splits a flat bus in the viewer.
 

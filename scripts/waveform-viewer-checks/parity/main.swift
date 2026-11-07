@@ -1901,6 +1901,130 @@ extension Harness {
         H.findItem = findItem;
         await sleep(800);
         R.lateRows = tr();
+        // A reload's restore whose lookups never settle (an SSH host gone
+        // quiet) holds an Add All and a pick by name only for the hold limit;
+        // then they run (verify-parity-fu H1).
+        const holdCap = C.holdLimitMs, settleCap = C.settleTimeoutMs;
+        C.holdLimitMs = 1500; C.settleTimeoutMs = 1000;
+        let never = null;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          H.findItem = () => new Promise(() => {});
+          restoreState(m);
+          await sleep(100);
+          never = link.addScope({ path: ['top', 'core'] });
+          await link.addSignal(['top', 'clk']);
+        };
+        const neverStart = Date.now();
+        window.cmuxWaveform.reload({});
+        while (!never && Date.now() - neverStart < 10000) { await sleep(50); }
+        R.neverScope = JSON.stringify(never ? await Promise.race([never, sleep(6000).then(() => 'pending')]) : 'no restore');
+        R.neverMs = Date.now() - neverStart;
+        await sleep(400);
+        R.neverRows = tr();
+        H.findItem = findItem;
+        // The limit counts from when the lookup started: an Add All alone in
+        // such a restore waits the hold limit in all, not its settle wait and
+        // then the hold limit again.
+        C.holdLimitMs = 3000; C.settleTimeoutMs = 2000;
+        let alone = null, aloneStart = 0;
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          aloneStart = Date.now();
+          H.findItem = () => new Promise(() => {});
+          restoreState(m);
+          await sleep(100);
+          alone = link.addScope({ path: ['top', 'core'] });
+        };
+        const aloneT0 = Date.now();
+        window.cmuxWaveform.reload({});
+        while (!alone && Date.now() - aloneT0 < 10000) { await sleep(50); }
+        R.aloneScope = JSON.stringify(alone ? await Promise.race([alone, sleep(9000).then(() => 'pending')]) : 'no restore');
+        R.aloneMs = Date.now() - aloneStart;
+        await sleep(400);
+        R.aloneRows = tr();
+        H.findItem = findItem;
+        const at = async (t0, ms) => { while (performance.now() - t0 < ms) { await sleep(25); } };
+        // A lookup that answers only when released, so no step depends on where
+        // timers land: an off-screen page runs them on about 1 s ticks.
+        const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
+        // A lookup that answers after the limit: the add it held ran at the
+        // limit, its late view still lands (it replaces that row), and it
+        // doesn't leave later adds held (the count it was dropped from stays
+        // right).
+        C.holdLimitMs = 1500; C.settleTimeoutMs = settleCap;
+        removeAll(clk);
+        await sleep(600);
+        R.lateBeforeRows = tr();
+        let lateT0 = 0;
+        const lateGate = gate();
+        C.restoreState = async (m) => {
+          C.restoreState = restoreState;
+          lateT0 = performance.now();
+          H.findItem = async (...a) => { await lateGate.p; return findItem(...a); };
+          restoreState(m);
+        };
+        window.cmuxWaveform.reload({});
+        const lateW = performance.now();
+        while (!lateT0 && performance.now() - lateW < 10000) { await sleep(25); }
+        await at(lateT0, 100);
+        await link.addSignal(['top', 'clk']);
+        // The held pick runs at the limit while the restore's lookup is still
+        // unanswered (it is answered only below).
+        await until(() => tr().split(',').includes('top.clk'), C.holdLimitMs + 4000);
+        R.lateLimitMs = Math.round(performance.now() - lateT0);
+        R.lateLimitRows = tr();
+        // Then the lookup answers: the late view lands (the restore looks up
+        // its rows, then its selected signal).
+        lateGate.open();
+        R.lateLanded = !!(await until(() => tr() === R.lateBeforeRows, 9000));
+        R.lateViewRows = tr();
+        H.findItem = findItem;
+        await link.addSignal(['top', 'clk']);
+        await sleep(600);
+        R.afterLateRows = tr();
+        // A restore stuck from t0, then a session file loaded at t0+2.5 s (its
+        // lookup answers when released, or never), then a pick by name: at
+        // the restore's limit (t0+3 s) only the restore stops being counted,
+        // so the pick waits for the file's view (or for the file's own limit).
+        // The file is released at t0+4.2 s: at least a timer tick after the
+        // restore's limit and before the file's (t0+5.5 s or later), wherever
+        // the ticks of an off-screen page fall.
+        C.holdLimitMs = 3000;
+        const overlap = async (answers) => {
+          let t0 = 0;
+          let stuck = true;
+          const fileGate = gate();
+          C.restoreState = async (m) => {
+            C.restoreState = restoreState;
+            t0 = performance.now();
+            H.findItem = (...a) => (stuck || !answers ? new Promise(() => {}) : fileGate.p.then(() => findItem(...a)));
+            restoreState(m);
+          };
+          window.cmuxWaveform.reload({});
+          const w = performance.now();
+          while (!t0 && performance.now() - w < 10000) { await sleep(25); }
+          await at(t0, 2500);
+          stuck = false;
+          C.applySessionFile({ text: JSON.stringify({ displayedSignals: [{ dataType: 'netlist-variable', name: 'top.clk' }] }),
+            path: '/work/sim/overlap.json' });
+          await at(t0, 2600);
+          await link.addSignal(['top', 'core', 'acc']);
+          await at(t0, C.holdLimitMs + 1200);
+          const mid = tr();
+          fileGate.open();
+          const both = () => { const rows = tr().split(','); return rows.includes('top.clk') && rows.includes('top.core.acc'); };
+          // The file's view, then the held pick; without an answer, the file's
+          // own limit releases the pick (the restore's view never lands).
+          await until(answers ? both : () => tr().split(',').includes('top.core.acc'), C.holdLimitMs + 4000);
+          await sleep(300);
+          const end = tr();
+          H.findItem = findItem;
+          return [mid, end];
+        };
+        [R.fileMidRows, R.fileEndRows] = await overlap(true);
+        [R.youngMidRows, R.youngEndRows] = await overlap(false);
+        C.holdLimitMs = holdCap; C.settleTimeoutMs = settleCap;
         """) { r in
           let s = { (k: String) in r[k] as? String ?? "nil" }
           check(r["undoScopeClk"] as? Int == 1, "Add All during an Undo that restores top.clk leaves it once: \(s("undoScopeRows"))")
@@ -1915,6 +2039,22 @@ extension Harness {
                 "and adds after the reload aren't held: \(s("afterStuck")) -> \(s("afterStuckRows"))")
           check(s("lateBefore") == "top.clk,top.core.acc" && s("lateScope").contains(#""added":0"#) && s("lateRows") == "top.clk,top.core.acc",
                 "an old load's Undo settling during the restore doesn't release the restore's held add: \(s("lateBefore")) -> \(s("lateScope")) -> \(s("lateRows"))")
+          let neverMs = r["neverMs"] as? Int ?? -1
+          check(s("neverScope").contains(#""added":1"#) && neverMs < 6000 && s("neverRows").contains("top.core.acc") && s("neverRows").contains("top.clk"),
+                "a restore whose lookups never settle holds Add All and a pick by name only for the hold limit: \(s("neverScope")) after \(neverMs) ms -> \(s("neverRows"))")
+          let aloneMs = r["aloneMs"] as? Int ?? -1
+          check(s("aloneScope").contains(#""added":1"#) && aloneMs >= 2500 && aloneMs < 4200 && s("aloneRows").contains("top.core.acc"),
+                "the hold limit counts from the lookup's start, not after Add All's settle wait: \(s("aloneScope")) after \(aloneMs) ms (limit 3000, settle 2000) -> \(s("aloneRows"))")
+          let lateLimitMs = r["lateLimitMs"] as? Int ?? -1
+          check(!s("lateBeforeRows").contains("top.clk") && s("lateLimitRows").contains("top.clk") && lateLimitMs >= 1450
+                  && s("lateViewRows") == s("lateBeforeRows")
+                  && r["lateLanded"] as? Bool == true && s("afterLateRows").contains("top.clk"),
+                "a lookup that answers after the limit: its held pick ran at the limit, its late view still lands, and a later pick isn't held: "
+                  + "\(s("lateBeforeRows")) -> \(s("lateLimitRows")) after \(lateLimitMs) ms (limit 1500) -> \(s("lateViewRows")) -> \(s("afterLateRows"))")
+          check(!s("fileMidRows").contains("top.core.acc") && s("fileEndRows").contains("top.clk") && s("fileEndRows").contains("top.core.acc"),
+                "at a stuck restore's limit, a pick held for a later session file waits for the file's view: \(s("fileMidRows")) -> \(s("fileEndRows"))")
+          check(!s("youngMidRows").contains("top.core.acc") && s("youngEndRows").contains("top.core.acc"),
+                "a younger lookup still running at the oldest's limit keeps the hold until its own limit: \(s("youngMidRows")) -> \(s("youngEndRows"))")
           self.phaseAR()
         }
       }

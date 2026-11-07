@@ -362,8 +362,7 @@ static inline uint8_t packLow(uint64_t w) {
   return (uint8_t)(((w & 0x0101010101010101ull) * 0x0102040810204080ull) >> 56);
 }
 
-// The normalized change stream every answer uses (WINDOWING.md, "Change
-// normalization"): changes at one time collapse to the last one, a change to
+// The normalized change stream every answer uses: changes at one time collapse to the last one, a change to
 // the value already in effect is dropped, and with initialX the value before
 // the first change is all x (so a first change to all x is dropped too).
 // In place; also drops the x/z plane if nothing left in it is x or z.
@@ -1361,7 +1360,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
   return out;
 }
 
-// ---- diagnostics: reader cost with a view window (measurements for WINDOWING.md) ----
+// ---- diagnostics: reader cost with a view window (measurements) ----
 // readerProbe(id, s, e, seeks, useWindow) -> {loadMs, walkMs, seekMs, count, walked, first, last,
 //   atS: {t, value}, bits}: optionally set the reader's view window to [s, e], load the
 //   signal, walk every loaded change, then `seeks` gotoXTag+getVC at evenly spaced times
