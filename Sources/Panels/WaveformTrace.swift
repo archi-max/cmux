@@ -30,6 +30,11 @@ enum WaveformTrace {
         let hostIdentity: String
         var load: Task<SVModelSidecar.Reply, any Error>?
         var hierarchy: (tops: [String], instances: [String])?
+        /// slang's messages from loading the design (its errors first), for a row below a module it left out.
+        var loadMessages: [String] = []
+        /// Instance models resolve asked for (the sidecar builds each anew), at most `maxModels`.
+        var models: [String: [String: Any]] = [:]
+        static let maxModels = 16
 
         init(key: String, sidecar: SVModelSidecar, args: [String], root: String, hostIdentity: String) {
             self.key = key
@@ -147,6 +152,7 @@ enum WaveformTrace {
             guard let tops = reply["tops"] as? [String], !tops.isEmpty else {
                 throw Failure(message: loadFailedMessage(reply))
             }
+            design.loadMessages = reply["messages"] as? [String] ?? []
         } catch let error as Failure {
             design.load = nil
             throw error
@@ -204,45 +210,59 @@ enum WaveformTrace {
         guard let editor = WaveformSourceLink.linkedEditor(for: waveform) else { throw Failure(message: noEditorMessage) }
         let design = try await design(for: editor, waveform: waveform)
         let key = await WaveformSourceLink.mappingKey(rootKey: editor.linkRootKey, waveform: waveform)
-        var mapping = key.map(WaveformSourceLink.mapping(forKey:)) ?? HierarchyPathMapping()
-        let dump = HierarchyPathMapping.join(dumpPath)
-        var designPath = mapping.designPath(forDumpPath: dump)
-        if await !isSignal(designPath, in: design) {
-            let roots = try await designRoots(of: design)
-            if let rule = await HierarchyPrefixInference.designRule(
-                forDumpPath: dump,
-                designRoots: roots,
-                dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) }
-            ) {
-                mapping.addInferredRule(designPrefix: rule.designPrefix, dumpPrefix: rule.dumpPrefix)
-                designPath = mapping.designPath(forDumpPath: dump)
-            }
-            guard await isSignal(designPath, in: design) else {
-                throw Failure(message: String(
-                    format: String(
-                        localized: "waveformTrace.notInDesign",
-                        defaultValue: "%@ was not found in the design. If the dump names the design differently, edit View > Waveform Path Mapping…"
-                    ),
-                    dump
-                ))
-            }
+        let mapping = key.map(WaveformSourceLink.mapping(forKey:)) ?? HierarchyPathMapping()
+        let outcome = try await SVModelResolve.resolve(
+            dumpPath: dumpPath,
+            mapping: mapping,
+            lookup: { path in await lookup(path, in: design) },
+            model: { path in await instanceModel(path, in: design) },
+            designRoots: { try await designRoots(of: design) },
+            dumpChildren: { path in await WaveformSourceLink.dumpChildren(path, in: waveform) }
+        )
+        switch outcome {
+        case .signal(let designPath, let designPrefix, let dumpPrefix):
+            return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix]
+        case .notElaborated(let instance):
+            throw Failure(message: notElaboratedMessage(instance, messages: design.loadMessages))
+        case .notInDesign:
+            throw Failure(message: String(
+                format: String(
+                    localized: "waveformTrace.notInDesign",
+                    defaultValue: "%@ was not found in the design. If the dump names the design differently, edit View > Waveform Path Mapping…"
+                ),
+                HierarchyPathMapping.join(dumpPath)
+            ))
         }
-        return result(designPath: designPath, dumpPath: dumpPath)
     }
 
-    private static func result(designPath: String, dumpPath: [String]) -> [String: Any] {
-        let prefixes = SVModelLoad.prefixes(dumpPath: dumpPath, designPath: HierarchyPathMapping.segments(designPath))
-        return ["designPath": designPath, "designPrefix": prefixes.designPrefix, "dumpPrefix": prefixes.dumpPrefix]
-    }
-
-    /// Whether the design has a signal (or a memory word) at `path`: the sidecar's lookup names the
-    /// rest below the deepest instance for any path, so the instance model decides.
-    private static func isSignal(_ path: String, in design: Design) async -> Bool {
+    /// The sidecar's `lookup`: the deepest instance of the design on `path` and the rest below it.
+    private static func lookup(_ path: String, in design: Design) async -> (instance: String, name: String)? {
         guard let found = try? await design.sidecar.request(["cmd": "lookup", "path": path]),
-              let instance = found["instance"] as? String, let name = found["name"] as? String, !name.isEmpty,
-              let model = try? await design.sidecar.request(["cmd": "instance", "path": instance])["model"] as? [String: Any]
-        else { return false }
-        return SVModelLoad.isSignal(name, inModel: model)
+              let instance = found["instance"] as? String, let name = found["name"] as? String else { return nil }
+        return (instance, name)
+    }
+
+    /// An instance's model, kept per design (a top's is large; resolve asks for it on every click).
+    private static func instanceModel(_ path: String, in design: Design) async -> [String: Any]? {
+        if let known = design.models[path] { return known }
+        guard let model = try? await design.sidecar.request(["cmd": "instance", "path": path])["model"] as? [String: Any] else { return nil }
+        if design.models.count >= Design.maxModels { design.models.removeAll() }
+        design.models[path] = model
+        return model
+    }
+
+    /// The row's instance is missing from the design model: which one, slang's first error, and
+    /// where the design driver tracing loads is chosen.
+    private static func notElaboratedMessage(_ instance: String, messages: [String]) -> String {
+        let text = String(
+            format: String(
+                localized: "waveformTrace.notElaborated",
+                defaultValue: "%@ is not in the design model: slang could not elaborate it. Check the editor’s slang profile (.f build file) or top level, which driver tracing loads."
+            ),
+            instance
+        )
+        guard let first = messages.first, !first.isEmpty else { return text }
+        return text + "\n\n" + first
     }
 
     /// Each design top and its children (child instances, then its signals), for inference.
@@ -260,8 +280,7 @@ enum WaveformTrace {
             var children = hierarchy.instances
                 .filter { $0.hasPrefix(top + ".") && !$0.dropFirst(top.count + 1).contains(".") }
                 .map { HierarchyNode(name: String($0.dropFirst(top.count + 1)), isScope: true) }
-            if let model = try? await design.sidecar.request(["cmd": "instance", "path": top])["model"] as? [String: Any],
-               let signals = model["signals"] as? [String: Any] {
+            if let model = await instanceModel(top, in: design), let signals = model["signals"] as? [String: Any] {
                 children += signals.keys.sorted().map { HierarchyNode(name: $0, isScope: false) }
             }
             roots[top] = children

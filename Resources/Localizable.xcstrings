@@ -719566,6 +719566,65 @@
           }
         }
       }
+    },
+    "waveformTrace.notElaborated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not in the design model: slang could not elaborate it. Check the editor’s slang profile (.f build file) or top level, which driver tracing loads."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "‏%@ غير موجود في نموذج التصميم: تعذّر على slang تفصيله. تحقّق من ملف تعريف slang في المحرر (ملف البناء ‎.f) أو المستوى الأعلى، الذي يحمّله تتبّع المشغّل."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ ist nicht im Designmodell: slang konnte es nicht elaborieren. Prüfe das slang-Profil des Editors (.f-Builddatei) oder die oberste Ebene, die die Treiberverfolgung lädt."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está en el modelo del diseño: slang no pudo elaborarlo. Revisa el perfil de slang del editor (archivo de compilación .f) o el nivel superior, que es lo que carga el rastreo de drivers."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ n’est pas dans le modèle de conception : slang n’a pas pu l’élaborer. Vérifiez le profil slang de l’éditeur (fichier de build .f) ou le niveau supérieur, que charge le traçage des pilotes."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ は設計モデルにありません: slang がエラボレートできませんでした。ドライバ追跡が読み込む、エディタの slang プロファイル (.f ビルドファイル) またはトップレベルを確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@이(가) 설계 모델에 없습니다: slang이 이를 엘라보레이션하지 못했습니다. 드라이버 추적이 불러오는 편집기의 slang 프로필(.f 빌드 파일) 또는 최상위를 확인하세요."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在设计模型中：slang 无法展开它。请检查编辑器的 slang 配置（.f 构建文件）或顶层，驱动追踪加载的正是它。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 不在設計模型中：slang 無法展開它。請檢查編輯器的 slang 設定檔（.f 建置檔）或頂層，驅動追蹤載入的正是它。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
