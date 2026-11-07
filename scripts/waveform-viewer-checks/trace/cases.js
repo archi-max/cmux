@@ -672,6 +672,32 @@ function runTraceChecks() {
       } catch (error) { bad.push('error ' + String(error && error.message || error)); }
       if (bad.length) { results.failures++; out.push(`FAIL loads n tb_n.bus.data beside 600 unrelated instances: ${bad.join('; ')}`); } else { out.push('ok   loads n tb_n.bus.data beside 600 unrelated instances: the interface reads listed, the walk not capped'); }
     }
+    // An opaque statement's text: `x <=` is an assignment only where a statement starts; inside a
+    // condition it is a comparison, a read (`if (pick <= 2'(t))` lists pick).
+    {
+      results.cases++;
+      const bad = [];
+      try {
+        const loc = [0, 3, 3, 3, 60];
+        const sig = (w) => ({ width: w, kind: 'var', msb: w - 1, lsb: 0, loc });
+        const opaque = (src) => ({ k: 'opaque', why: 'ForLoop', src, loc });
+        const inst = { version: 1, path: 'tb_o', module: 'tb_o', loc, ports: [], params: {}, signals: { pick: sig(2), pop: sig(4), valid: sig(4), q: sig(1), d: sig(1), c: sig(1) },
+          assigns: [], children: [], files: ['o.sv'],
+          procs: [
+            { id: 0, kind: 'AlwaysComb', events: [], body: opaque("for (int t = 0; t < 4; t++) if (pick <= 2'(t)) pop[t] = valid[t];"), loc },
+            { id: 1, kind: 'AlwaysFF', events: [], body: opaque('for (int t = 0; t < 4; t++) begin q <= d; if (c) q <= 1\'b0; end'), loc },
+          ] };
+        const all = { instances: { tb_o: inst } };
+        const models = { instance: async (p) => all.instances[p], writers: async () => [], lookup: async (p) => (p.startsWith('tb_o.') ? { instance: 'tb_o', name: p.slice(5) } : null) };
+        const none = { values: async () => new Map(), lastChange: async () => null, prevEdge: async () => null };
+        const eng = cmuxTrace.createEngine({ models, dump: none });
+        const count = async (s) => ((await eng.loads(s)).entries || []).length;
+        const got = { pick: await count('tb_o.pick'), q: await count('tb_o.q'), d: await count('tb_o.d'), c: await count('tb_o.c'), pop: await count('tb_o.pop') };
+        const want = { pick: 1, q: 0, d: 1, c: 1, pop: 0 };
+        if (JSON.stringify(got) !== JSON.stringify(want)) { bad.push(`opaque reads ${JSON.stringify(got)} != ${JSON.stringify(want)}`); }
+      } catch (error) { bad.push('error ' + String(error && error.message || error)); }
+      if (bad.length) { results.failures++; out.push(`FAIL loads in opaque text, <= as a comparison: ${bad.join('; ')}`); } else { out.push('ok   loads in opaque text: <= inside a condition is a read, at a statement start an assignment'); }
+    }
     for (const c of NEXT_CASES) {
       results.cases++;
       const what = `nextOf ${c.d} ${c.sig} @${c.t} :${c.line}${c.back ? ' (no nextChange)' : ''}`;
