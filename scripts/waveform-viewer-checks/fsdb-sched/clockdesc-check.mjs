@@ -162,6 +162,22 @@ for (let c = 0; c < CASES; c++) {
     }
   }
 }
+// A clock that stops early, scanned in many segments (review L2): each segment that starts in the
+// stopped stretch opened an interval of its own, touching the last one with no records, and every
+// one counted toward the 1% deviation limit (16-30 on a real dump). Touching intervals are merged:
+// one interval for the stop, the answers unchanged.
+{
+  const P = 10, H = 5, R0 = 5, T = 100000, m = [];
+  for (let t = R0; t <= 2000; t += P) { m.push([t, '1'], [t + H, '0']); }
+  const norm = [[0, '0'], ...m];
+  const d = { period: P, high: H, firstRise: R0, lo: 0, verifiedEnd: T, changes: 0, edges: 0, records: 0, intervals: [], open: null };
+  for (let a = 0; a < T + 1; a += 997) { cd.merge(d, scan(norm, a, Math.min(T + 1, a + 997), P, H, R0), a); }
+  if (d.open) { d.open[1] = T + 1; d.open = null; }
+  const all = []; cd.changes(d, 0, T, (t, v) => all.push([t, v]));
+  const ok = JSON.stringify(all) === JSON.stringify(norm) && cd.valueAt(d, 50000) === '0' && cd.edge(d, 3000, -1, 'any', 0) === 2000 && cd.edge(d, 3000, 1, 'any', 0) === null;
+  check(ok && d.intervals.length <= 1, `a clock stopped over 98 of 101 segments (997 time units each): ${d.intervals.length} intervals (want 1), answers ${ok ? 'exact' : 'differ'}`);
+  if (ok && d.intervals.length <= 1) { console.log(`a stopped clock over 101 segments (997 each): ${d.intervals.length} interval`); }
+}
 console.log(`${CASES} rows, ${windows} windows (byte for byte, ${bucketed} bucketed), ${compared} times x (1 value + 2 dirs x (6 edge kinds + ${PATTERNS.length} patterns))`);
 if (fails) { console.log(`CLOCKDESC CHECKS FAILED: ${fails}`); process.exit(1); }
 console.log('CLOCKDESC CHECKS PASSED');
