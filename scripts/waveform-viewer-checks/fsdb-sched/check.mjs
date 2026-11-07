@@ -390,6 +390,25 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 23. A ranged cold read (the visible window, nothing stored) of several primaries pays the
+// reader floor once per call, so the primaries of one request go to one worker in one call and
+// the secondaries (whose cost scales with the window) are spread over the other free workers.
+// 8 primaries (300 ms floor) + 3 secondaries of 400 ms over the window, four workers: spread
+// round-robin, three workers each paid a floor and a secondary (~700 ms).
+{
+  const ps = [1, 2, 3, 4, 5, 6, 7, 8], ss = [9, 10, 11];
+  const h = await start(4, { ...Object.fromEntries(ps.map((id) => [id, 100])), 9: 4000, 10: 4000, 11: 4000 },
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: JSON.stringify(ps), STUB_FLOOR_MS: '300' });
+  await kindsOf(h);
+  const near = { signals: [...ps, ...ss].map((signalId) => ({ signalId, width: 1 })), t0: 0, t1: 100000, buckets: 1024 };  // 10% of the dump
+  const r = await h.send('window', near).reply;
+  const sg = (r.result && r.result.signals) || [];
+  check(!r.error && sg.length === 11 && sg.every((s) => s.ranged) && r.at < 550,
+    `a ranged read of 8 primaries + 3 secondaries: ${Math.round(r.at)} ms, ${sg.filter((s) => s.ranged).length} ranged (primaries in one call: ~400; spread: ~700)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
