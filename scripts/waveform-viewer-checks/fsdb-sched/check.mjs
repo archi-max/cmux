@@ -437,11 +437,11 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
 }
 
 // 25. Aliases (a port rebuilt on every load that equals a stored net): the app names candidate
-// pairs (aliasHints). A pair whose sampled windows match is used at once: the rebuilt signal is
-// answered from the stored one (alias: its id). The whole streams are then compared in the
-// background: equal -> verified (kept for the next open), different -> dropped, and the next
-// reply with rows says so (aliasDropped) so the page asks again. Sampled windows that differ:
-// never used.
+// pairs (aliasHints). Sampled windows that differ: dropped at once. A pair whose samples match
+// has its whole streams compared in the background, and until that verdict the rebuilt signal
+// answers its own data (an unverified pair never serves another signal's data). Equal ->
+// verified (kept for the next open) and used: the rebuilt signal is answered from the stored
+// one (alias: its id); different -> dropped, nothing to report since it was never used.
 {
   const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER: '[4]', STUB_DIFFER_FULL: '[3]' };
   const costs = { 1: 50, 2: 3000, 3: 3000, 4: 3000 };
@@ -454,15 +454,19 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   let st = null;
   for (let k = 0; k < 100; k++) { st = await al(h); if (st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id))) { break; } await wait(30); }
   check(st && has(st.bad, 4) && [2, 3].every((id) => has(st.on, id) || has(st.verified, id)), `... sampled windows decide: ${JSON.stringify(st)}`);
-  const r = await h.send('window', win([2])).reply;
-  const s0 = r.result && r.result.signals[0];
-  check(!r.error && s0 && s0.signalId === 2 && s0.alias === 1 && r.at < 1000, `a rebuilt signal with a matching alias is answered from the stored one: ${r.error || JSON.stringify(s0)} in ${Math.round(r.at)} ms (its own load: ~3 s)`);
+  const early = await h.send('window', win([2, 3])).reply;
+  const unverified = !st || !(has(st.verified, 2) || has(st.verified, 3));
+  check(!early.error && early.result.signals.every((x) => !x.alias && !x.error) && early.at < 1000,
+    `before the verdict, rebuilt rows answer their own data (ranged), not the stored one's: ${early.error || JSON.stringify(early.result.signals.map((x) => x.alias || 'own'))} in ${Math.round(early.at)} ms${unverified ? '' : ' (already verified: weak)'}`);
   const r4 = await h.send('window', win([4])).reply;
-  check(!r4.error && !r4.result.signals[0].alias, `... one whose windows differ is not: ${r4.error || JSON.stringify(r4.result.signals[0])}`);
+  check(!r4.error && !r4.result.signals[0].alias, `... one whose windows differ is never used: ${r4.error || JSON.stringify(r4.result.signals[0])}`);
   for (let k = 0; k < 300; k++) { st = await al(h); if (!st || (has(st.verified, 2) && has(st.bad, 3))) { break; } await wait(50); }
   check(st && has(st.verified, 2) && has(st.bad, 3), `... the whole streams verify one and drop the other: ${JSON.stringify(st)}`);
+  const r = await h.send('window', win([2])).reply;
+  const s0 = r.result && r.result.signals[0];
+  check(!r.error && s0 && s0.signalId === 2 && s0.alias === 1, `a verified pair is answered from the stored one: ${r.error || JSON.stringify(s0)}`);
   const r3 = await h.send('window', win([3])).reply;
-  check(!r3.error && r3.result && JSON.stringify(r3.result.aliasDropped) === '[3]' && !r3.result.signals[0].alias, `... the next reply with rows reports the drop: ${r3.error || JSON.stringify(r3.result)}`);
+  check(!r3.error && r3.result && !r3.result.aliasDropped && !r3.result.signals[0].alias, `... the dropped one answers its own, with no drop to report (never used): ${r3.error || JSON.stringify(r3.result)}`);
   h.close();
   const h2 = await start(4, costs, env);
   await kindsOf(h2);
@@ -494,6 +498,31 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   check(!b.error && b.result.accepted === 1, `... and a later hint is taken again: ${b.error || JSON.stringify(b.result)}`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 26b. A free during the background comparison (H1): the rebuilt row's load is dropped, and the
+// pair must not stay half-checked and in use; the row answers its own data from then on, and a
+// later hint checks the pair again. Also `free {}` (every row) during the comparison.
+{
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const has = (list, id) => !!list && list.some(([x]) => x === id);
+  for (const how of ['row', 'all']) {
+    const h = await start(4, { 1: 50, 3: 3000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DIFFER_FULL: '[3]' });
+    await kindsOf(h);
+    await h.send('aliasHints', { pairs: [[3, 1]] }).reply;
+    let st = null;
+    for (let k = 0; k < 100; k++) { st = await al(h); if (st && (has(st.on, 3) || has(st.bad, 3))) { break; } await wait(20); }
+    await h.send('free', how === 'row' ? { signalIds: [3] } : {}).reply;
+    await wait(3500);  // past the rebuilt row's whole load (3 s) had it gone on
+    st = await al(h);
+    const r = await h.send('window', win([3])).reply;
+    check(!r.error && !r.result.signals[0].alias && !(st && (has(st.on, 3) || has(st.verified, 3))),
+      `free (${how}) during the comparison: the row answers its own data, the pair isn't left in use: ${r.error || JSON.stringify(r.result.signals[0].alias || 'own')} ${JSON.stringify(st)}`);
+    const b = await h.send('aliasHints', { pairs: [[3, 1]] }).reply;
+    check(!b.error && b.result.accepted === 1, `... and a later hint is taken again (${how}): ${b.error || JSON.stringify(b.result)}`);
+    h.close();
+    fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  }
 }
 
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
