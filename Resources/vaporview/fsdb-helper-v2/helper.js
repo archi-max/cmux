@@ -62,11 +62,12 @@
 //     Numeric formats (hex/bin/dec/sdec) are refused: they are value searches (`search`).
 //   cancel {id}                    -> the target's reply becomes {id, cancelled: true};
 //     queued parts are dropped, running ones finish and are discarded (background
-//     ones are told to stop). If `id` isn't running, one {id, cancelled: false} line.
+//     ones are told to stop). A whole load (jobs) it waited for goes on in the background. If `id` isn't running, one {id, cancelled: false} line.
 //     cancel {id, target} always replies under its own id {cancelled, dropped, running}.
 //     Clients must ignore lines for ids they no longer have pending.
 //   stats {}                       -> {workers: [{worker, pid, loaded, bytesCached, limit, queue, background, busy, rss}],
-//                                      coordinatorRss, recycled, splitting, derived, index, searching}
+//                                      coordinatorRss, recycled, splitting, derived, index, searching,
+//                                      loads: [{signalId, waiting, pieces, running, done}], coldWalks}
 //   free {signalIds?}, close {}    -> {}
 //   signals {signalIds, widths, maxChanges?} -> v1 whole-signal reply (reader traversal, not the
 //     store). maxChanges (count first): a signal with more changes is {signalId, width, count,
