@@ -1,5 +1,5 @@
 $date
-	Sat Nov  7 01:51:47 2026
+	Sat Nov  7 05:37:53 2026
 $end
 $version
 	Icarus Verilog
@@ -16,20 +16,23 @@ $var reg 8 % b [7:0] $end
 $var reg 1 & clk $end
 $var reg 32 ' epoch_iters [31:0] $end
 $var reg 1 ( go $end
-$var reg 1 ) rst_n $end
-$var reg 1 * sel $end
-$var reg 32 + iters [31:0] $end
-$var reg 32 , settle [31:0] $end
+$var reg 4 ) mode4 [3:0] $end
+$var reg 1 * rst_n $end
+$var reg 1 + sel $end
+$var reg 32 , iters [31:0] $end
+$var reg 32 - mode2 [31:0] $end
+$var reg 32 . settle [31:0] $end
 $scope module dut $end
-$var wire 8 - a [7:0] $end
-$var wire 8 . b [7:0] $end
+$var wire 8 / a [7:0] $end
+$var wire 8 0 b [7:0] $end
 $var wire 1 & clk $end
 $var wire 1 ( go $end
-$var wire 1 ) rst_n $end
-$var wire 1 * sel $end
+$var wire 1 * rst_n $end
+$var wire 1 + sel $end
 $var reg 1 # c $end
-$var reg 8 / r [7:0] $end
-$var reg 8 0 y [7:0] $end
+$var reg 8 1 k [7:0] $end
+$var reg 8 2 r [7:0] $end
+$var reg 8 3 y [7:0] $end
 $upscope $end
 $upscope $end
 $enddefinitions $end
@@ -38,14 +41,17 @@ $dumpall
 $end
 #0
 $dumpvars
-bx 0
-bx /
-b100010 .
-b10001 -
-b0 ,
-b100 +
-1*
-0)
+bx 3
+bx 2
+bx 1
+b100010 0
+b10001 /
+b0 .
+b0 -
+b100 ,
+1+
+0*
+b0 )
 x(
 b100 '
 0&
@@ -60,7 +66,7 @@ $end
 0(
 #5000
 b0 "
-b0 /
+b0 2
 1&
 #10000
 0&
@@ -71,39 +77,39 @@ b0 /
 #25000
 1&
 #26000
-1)
+1*
 #30000
 0&
 #35000
 b1 "
-b1 /
-b1 ,
+b1 2
+b1 .
 b110011 !
-b110011 0
+b110011 3
 1&
 b110011 %
-b110011 .
+b110011 0
 #40000
 0&
 #45000
 b10 "
-b10 /
-b10 ,
+b10 2
+b10 .
 1&
-0*
+0+
 b110011 $
-b110011 -
+b110011 /
 #50000
 0&
 #55000
 b11 "
-b11 /
-b11 ,
+b11 2
+b11 .
 1&
 #60000
 0&
 #65000
 b100 "
-b100 /
-b100 ,
+b100 2
+b100 .
 1&

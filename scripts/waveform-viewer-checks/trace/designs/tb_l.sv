@@ -32,4 +32,10 @@ module tb_l;
 
   always @(posedge clk)
     if (rst_n) settle++;
+
+  // A1: a 4-state value written 0 at t=0, and a 2-state one nothing writes (0 from the start).
+  logic [3:0] mode4;
+  int unsigned mode2;
+  initial mode4 = 4'b0;
+  always @(posedge clk) if (mode2 != 0) $display("mode2 %0d", mode2);  // (read, so a simulator keeps it)
 endmodule

@@ -254,6 +254,15 @@ const TRACE_CASES = [
   // c = 0 by the override while in reset (2), then by the default (26): the override, as Verdi
   // names picorv32's clear_prefetched_high_word at t=0. (Both write 1'b0: the line tells them apart.)
   { d: 'l', sig: 'tb_l.dut.c', t: 40000, kind: 'proc', file: 'l_oracle.sv', line: 24, since: 2000, value: '0', trust: 'exact' },
+  // A1: a value nothing in the model writes is the start value only as the type starts: x for a
+  // 4-state type, 0 for a 2-state one ('hidden': the initial block that wrote mode4 = 0 left out).
+  { d: 'l', sig: 'tb_l.mode4', t: 40000, kind: 'initial', stmt: "mode4 = 4'b0;", trust: 'approximate' },
+  { d: 'l', sig: 'tb_l.mode4', t: 40000, dumps: ['hidden'], value: '0000', trust: 'approximate', reasons: ['writeNotFound'] },
+  { d: 'l', sig: 'tb_l.mode2', t: 40000, dumps: ['hidden'], value: '00000000000000000000000000000000', trust: 'exact', noReasons: ['writeNotFound'] },
+  // B1: two writers that both explain the value: which one made it is not known.
+  { d: 'l', sig: 'tb_l.dut.y', t: 50000, dumps: ['two'], kind: 'proc', value: '00110011', trust: 'approximate', reasons: ['multiDriven'] },
+  // F: a flop that never took a value is its start value (x since 0), not its block.
+  { d: 'l', sig: 'tb_l.dut.k', t: 40000, kind: 'none', since: 0, value: 'xxxxxxxx', trust: 'exact' },
 
 ];
 
@@ -292,7 +301,12 @@ function runTraceChecks() {
     const all = JSON.parse(traceFiles.models[modelName]);
     // 'stale': the Icarus dump with the model an older sidecar gave for that testbench.
     if (variant === 'stale' || variant === 'nowrites') { staleModel(all, variant === 'stale'); }
-    const vcd = traceVcd(traceFiles.dumps[`${d}.${variant === 'stale' || variant === 'nowrites' ? 'icarus' : variant}`]);
+    // 'hidden': the testbench's initial blocks left out of the model (a write the model doesn't show).
+    if (variant === 'hidden') { for (const m of Object.values(all.instances)) { m.procs = m.procs.filter((p) => p.kind !== 'Initial'); } }
+    // 'two': the DUT's first always @* listed twice (two writers that both explain the value).
+    if (variant === 'two') { const m = all.instances['tb_l.dut']; m.procs.splice(1, 0, JSON.parse(JSON.stringify(m.procs[0]))); }
+    const onIcarus = ['stale', 'nowrites', 'hidden', 'two'].includes(variant);
+    const vcd = traceVcd(traceFiles.dumps[`${d}.${onIcarus ? 'icarus' : variant}`]);
     const models = {
       instance: async (p) => all.instances[p],
       // What cmux-sv-model's `writers` answers: the instances that write into `p` from outside it.
@@ -394,7 +408,11 @@ function runTraceChecks() {
             for (const [t] of s.changes) {
               const step = await engine.active(p, t);
               tally.steps++;
-              if (step.driver && step.driver.kind === 'none') { tally.noDriver = (tally.noDriver || 0) + 1; if (tally.noDriver <= 3) { out.push(`ORACLE ${d}.${variant} ${p} @${t}: no driver`); } }
+              // Held since 0 at the value it started with (x, or 0 for a 2-state type), with no write
+              // missing: nothing drove it yet, which is no missing driver.
+              const held = Number(step.since) === 0 && !(step.reasons || []).some((r) => r.code === 'writeNotFound');
+              if (step.driver && step.driver.kind === 'none' && held) { tally.startValue = (tally.startValue || 0) + 1; }
+              if (step.driver && step.driver.kind === 'none' && !held) { tally.noDriver = (tally.noDriver || 0) + 1; if (tally.noDriver <= 3) { out.push(`ORACLE ${d}.${variant} ${p} @${t}: no driver`); } }
               tally[step.trust] = (tally[step.trust] || 0) + 1;
               // Inconsistent with no reason the engine can name: a modelling bug.
               if (step.trust === 'inconsistent' && (step.reasons || []).some((r) => r.code === 'mismatch')) {

@@ -27,4 +27,9 @@ module l_dut (
   always_ff @(posedge clk)
     if (!rst_n) r <= '0;
     else r <= r + 8'd1;
+
+  // F: a flop that never takes a value (a is never ff): x from the start, not its block's doing.
+  logic [7:0] k;
+  always_ff @(posedge clk)
+    if (a == 8'hff) k <= b;
 endmodule
