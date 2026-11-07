@@ -52,7 +52,7 @@ import Testing
     /// tb > u_fifo (fifo), as slang has it; the KDB's chain is the same unless a test says otherwise.
     func resolve(slang: [String: [String: Any]], kdb: KDBDesignModel,
                  sourceTimes: [String: Int64]? = [KDBAgreementTests.file: KDBAgreementTests.compiled - 10],
-                 sameFiles: Bool = false, checked: ((Set<String>) -> Void)? = nil) async throws -> SVModelResolve.Outcome {
+                 sameFiles: Bool = true, checked: ((Set<String>) -> Void)? = nil) async throws -> SVModelResolve.Outcome {
         func lookup(_ path: String) -> (instance: String, name: String)? {
             let instance = slang.keys.filter { path.hasPrefix($0 + ".") }.max { $0.count < $1.count }
             return instance.map { ($0, String(path.dropFirst($0.count + 1))) }
@@ -129,24 +129,56 @@ import Testing
     }
 
     /// The same file name in another folder is another file when slang and the KDB read one file
-    /// system (slang picked the other copy); across hosts only the name can be compared (Refs #9 L2).
-    @Test func aWriteInAnotherCopyOfTheFileDiffersOnOneFileSystem() async throws {
+    /// system (slang picked the other copy). Across hosts the editor's copy is another file whose
+    /// name only can be compared, so nothing is exact there (Refs #9 L2, re-check).
+    @Test func theEditorsCopyOnAnotherHostIsNotChecked() async throws {
         let otherCopy = Self.compiledDesign { $0["files"] = ["/work/rtl_v2/soc.sv"] }
         #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: true) == Self.approximate([.writes(signal: "q")]))
-        #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: false) == Self.mapped)
+        #expect(try await resolve(slang: Self.slangDesign, kdb: otherCopy, sameFiles: false) == Self.approximate([.notChecked(.copy)]))
+        #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(), sameFiles: false) == Self.approximate([.notChecked(.copy)]))
         #expect(try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(), sameFiles: true) == Self.mapped)
     }
 
-    /// The instances a row's agreement covered (slang's paths of its chain, from the matched level
-    /// down), so a later step in another instance is not taken as checked (Refs #9 F3).
-    @Test func theChainsInstancesAreTheOnesChecked() async throws {
+    /// What a row's agreement compared in full and found the same, so a later step elsewhere is
+    /// not taken as checked: each chain level (slang's path) whose parameters and ports agree, and
+    /// `level.signal` for each of its signals whose shape and write lines agree (Refs #9 F3).
+    @Test func theChainsInstancesAndSignalsAreTheOnesChecked() async throws {
         var checked: Set<String>?
         _ = try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign()) { checked = $0 }
-        #expect(checked == ["tb", "tb.u_fifo"])
-        // Approximate too: the same instances were compared.
+        #expect(checked == ["tb", "tb.d", "tb.q", "tb.u_fifo", "tb.u_fifo.d", "tb.u_fifo.q"])
+        // The row's own signal differs: approximate, and the signal is not checked.
         checked = nil
         _ = try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(width: 16)) { checked = $0 }
-        #expect(checked == ["tb", "tb.u_fifo"])
+        #expect(checked == ["tb", "tb.d", "tb.q", "tb.u_fifo", "tb.u_fifo.d"])
+    }
+
+    /// Another signal of the row's instance whose writes differ: the row stays exact, that signal
+    /// is not checked (a step tracing it is approximate).
+    @Test func anotherSignalsWritesLeaveItUnchecked() async throws {
+        var checked: Set<String>?
+        let outcome = try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(writes: ["q": 20, "d": 30])) { checked = $0 }
+        #expect(outcome == Self.mapped)
+        #expect(checked == ["tb", "tb.d", "tb.q", "tb.u_fifo", "tb.u_fifo.q"])
+    }
+
+    /// The parent's ports (the side a step through the row's input port lands on) are compared too.
+    @Test func theParentsPortsAreChecked() async throws {
+        let parentPorts = Self.kdb([
+            "tb": Self.compiledModel("tb", "tb", parent: nil, writes: [:], ports: [["name": "go", "dir": "In", "width": 1]], children: [("tb.u_fifo", "fifo")]),
+            "tb.u_fifo": Self.compiledModel("tb.u_fifo", "fifo", parent: "tb", params: ["DEPTH": 8, "W": 8]),
+        ])
+        var checked: Set<String>?
+        let outcome = try await resolve(slang: Self.slangDesign, kdb: parentPorts) { checked = $0 }
+        #expect(outcome == Self.mapped)
+        #expect(checked == ["tb.d", "tb.q", "tb.u_fifo", "tb.u_fifo.d", "tb.u_fifo.q"])
+    }
+
+    /// Parameters that can't be compared (an override) leave every level unchecked; the signals
+    /// compared still count.
+    @Test func uncomparedParametersLeaveTheLevelsUnchecked() async throws {
+        var checked: Set<String>?
+        _ = try await resolve(slang: Self.slangDesign, kdb: Self.compiledDesign(overrides: ["-pvalue+tb.u_fifo.DEPTH=32"])) { checked = $0 }
+        #expect(checked == ["tb.d", "tb.q", "tb.u_fifo.d", "tb.u_fifo.q"])
     }
 
     /// An export whose KDB had no files to date it (compiled 0) has no compile time (Refs #9 L3).
@@ -242,7 +274,8 @@ import Testing
                 dumpChildren: { _ in nil },
                 kdb: kdb,
                 instances: { try await session.hierarchy(generation: g).instances },
-                sourceTimes: { (try? await session.sourceTimes(generation: g)) ?? nil }
+                sourceTimes: { (try? await session.sourceTimes(generation: g)) ?? nil },
+                kdbSameFiles: true
             )
         }
         var coverage = KDBCoverage()

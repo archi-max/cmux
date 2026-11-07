@@ -1774,7 +1774,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   }
 
   /// Issue #9 F3: with a KDB model, cmux compared only the traced row's instance chain (resolve's
-  /// kdbChecked); a step in another instance is approximate and says it was not checked. No
+  /// kdbChecked: the levels whose parameters and ports agree, and `level.signal` for each signal
+  /// whose shape and writes agree); a step in another instance, or of a signal not in it, is
+  /// approximate and says it was not checked. No
   /// kdbChecked (no KDB model): no such reason. An empty one (the editor's trace, not resolved
   /// with the KDB): every step.
   func kdbCheckedChecks() async {
@@ -1782,9 +1784,15 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     func codes(_ step: [String: Any]?) -> [String] { (step?["reasons"] as? [[String: Any]] ?? []).compactMap { $0["code"] as? String } }
     let row = "driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })"
     resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#1",
-                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink"]]
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.q"]]
     let inside = await trace(row)
-    expect(inside != nil && !codes(inside).contains("kdbNotChecked"), "kdb checked: the row's own instance is checked: \(codes(inside))")
+    expect(inside != nil && !codes(inside).contains("kdbNotChecked"), "kdb checked: the row's own instance and signal are checked: \(codes(inside))")
+    // The instance agreed, but not this signal (another signal's writes were compared, not q's).
+    resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#1b",
+                     "kdbChecked": ["tb_c", "tb_c.dut", "tb_c.dut.u_mid", "tb_c.dut.u_mid.u_sink", "tb_c.dut.u_mid.u_sink.d"]]
+    let signalOutside = await trace(row)
+    expect(signalOutside?["trust"] as? String == "approximate" && codes(signalOutside).contains("kdbNotChecked"),
+           "kdb checked: a signal not compared is approximate though its instance agreed: \(String(describing: signalOutside?["trust"])) \(codes(signalOutside))")
     resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink.q", "designPrefix": "", "dumpPrefix": "", "designId": "c#2", "kdbChecked": ["tb_c"]]
     let outside = await trace(row)
     let text = await panelText()
