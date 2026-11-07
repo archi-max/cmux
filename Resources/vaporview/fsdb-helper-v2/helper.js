@@ -1039,6 +1039,7 @@ const isCold = (id) => !derived.has(id) && !workerFor(id).state.cached.includes(
 // nothing, so any worker will do: a debugger's 200-signal step). Resolves with
 // results in ids order.
 const COLD_SPREAD = Number(process.env.FSDB_COLD_SPREAD ?? 16);  // 0: never split
+const COLD_PRIM_GROUP = 64;  // stored signals per ranged cold call (one reader floor each)
 function coldTask(req, op, ids, extra, spread = false) {
   const groups = new Map();
   if (spread === 'even' && COLD_SPREAD > 0 && ids.length >= 2 * COLD_SPREAD) {
@@ -1048,13 +1049,18 @@ function coldTask(req, op, ids, extra, spread = false) {
   } else if (spread === true) {
     // Ranged walks keep nothing either: over the workers with nothing to do (in parallel), else
     // the least busy one, not the signals' owners, which may be in the middle of a load piece.
+    // Stored (primary) signals pay the reader's floor once per call whatever the range, so they
+    // go together, up to COLD_PRIM_GROUP per call; rebuilt ones cost by the range and are spread
+    // over the other free workers (all of them if the primaries took the only one).
     const free = workers.filter((w) => w.ready && !w.busy && !w.queue.length && !w.recycle);
-    const pool = free.length ? free.slice(0, ids.length) : [leastBusy()];
-    ids.forEach((id, k) => {
-      const w = pool[k % pool.length];
-      if (!groups.has(w)) { groups.set(w, []); }
-      groups.get(w).push(id);
-    });
+    const add = (w, id) => { if (!groups.has(w)) { groups.set(w, []); } groups.get(w).push(id); };
+    const prim = ids.filter((id) => kindOf(id) === 'p'), rest = ids.filter((id) => kindOf(id) !== 'p');
+    const pg = [];
+    for (let k = 0; k < prim.length; k += COLD_PRIM_GROUP) { pg.push(prim.slice(k, k + COLD_PRIM_GROUP)); }
+    const pool = free.length ? free.slice(0, pg.length + rest.length) : [leastBusy()];
+    pg.forEach((g, k) => { for (const id of g) { add(pool[k % pool.length], id); } });
+    const others = pool.length > pg.length ? pool.slice(pg.length) : pool;
+    rest.forEach((id, k) => add(others[k % others.length], id));
   } else {
     for (const id of ids) {
       const w = leastBusy();
