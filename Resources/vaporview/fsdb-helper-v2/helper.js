@@ -581,7 +581,8 @@ function runTask(w, task, front) {
 //   1/128 pieces. Then about PIECE_MS of work, from a fit of the job's pieces to ms = floor +
 //   rate * length: some signals cost ~110 ms per load whatever the range (big reader blocks),
 //   so a piece cheaper than PIECE_MS is followed by one 4x longer, and a job whose floor is
-//   over PIECE_MS / 2 takes the rest in one piece.
+//   over PIECE_MS / 2 takes the rest in one piece, but no piece is longer than 2 * PIECE_MS at
+//   the plain rate of the job's longest piece.
 // - Cancelling every request of a job keeps it going in the background (asking again finds it
 //   done or further along). A job over the store cap is stopped as soon as its pieces say so.
 //   A signal the reader can't read fails once and is remembered (bgFailed), not loaded again.
@@ -644,6 +645,10 @@ function nextPiece(j) {
       len = PIECE_MS * L.len / Math.max(1e-3, L.ms);
       if (L.ms <= PIECE_MS) { len = Math.max(len, 4 * L.len); }  // tells a per-load floor from a per-time cost
     }
+    // Never more than 2 * PIECE_MS at the longest piece's plain rate (an upper bound on the
+    // cost): a worker's first load of a signal costs ~150-200 ms extra, which the fit can take
+    // for a floor, and one piece must never hold a worker for seconds.
+    len = Math.min(len, 2 * PIECE_MS * L.len / Math.max(1e-3, L.ms));
     len = Math.max(Math.ceil(j.end / MIN_PARTS), Math.floor(len));
   }
   if (left - len < len / 2) { len = left; }  // no tiny tail
