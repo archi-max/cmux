@@ -1330,10 +1330,16 @@ function hotFail(fp, why) {
   if (DEBUG) { process.stderr.write(`[helper] warm set of ${fp.split(',').length}: ${why}, again in ${Math.round(f.until - performance.now())} ms\n`); }
 }
 // The RSS of each pid, read from outside the process (Linux /proc; elsewhere ps). -> Map pid -> bytes
+// statm counts pages; the page size is the host's (getconf PAGESIZE, once; 4 KiB if unknown).
+let pageBytes = 0;
+function pageSize() {
+  if (!pageBytes) { try { pageBytes = Number(require('node:child_process').execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8' }).trim()) || 4096; } catch (e) { pageBytes = 4096; } }
+  return pageBytes;
+}
 function procRss(pids) {
   const out = new Map();
   if (process.platform === 'linux') {
-    for (const pid of pids) { try { out.set(pid, Number(fs.readFileSync(`/proc/${pid}/statm`, 'utf8').split(' ')[1]) * 4096); } catch (e) { /* gone */ } }
+    for (const pid of pids) { try { out.set(pid, Number(fs.readFileSync(`/proc/${pid}/statm`, 'utf8').split(' ')[1]) * pageSize()); } catch (e) { /* gone */ } }
     return out;
   }
   try {
