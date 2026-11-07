@@ -353,6 +353,30 @@ import Testing
         #expect(monitor == nil)
     }
 
+    @Test func rootsTyingForTheSameDumpScopeAreNoRule() async {
+        let core = ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) }
+        let dump: HierarchyPrefixInference.Children = { path in
+            switch HierarchyPathMapping.join(path) {
+            case "tb": return [.init(name: "u_core1", isScope: true)]
+            case "tb.u_core1": return core
+            case "tb.u_core1.u_a": return [.init(name: "x", isScope: false, width: 1)]
+            default: return nil
+            }
+        }
+        // Two copies of one module match alike: neither is the dump's.
+        let tie = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_core1.u_a.x", designRoots: ["soc.u_core0": core, "soc.u_core1": core], dumpChildren: dump)
+        #expect(tie == nil)
+        // A weaker match that is alone wins over a tie.
+        let wider = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_core1.u_a.x",
+            designRoots: ["soc.u_core0": core, "soc.u_core1": core, "soc": [.init(name: "u_core0", isScope: true), .init(name: "u_core1", isScope: true)]],
+            dumpChildren: { path in
+                HierarchyPathMapping.join(path) == "tb" ? [.init(name: "u_core0", isScope: true), .init(name: "u_core1", isScope: true)] : await dump(path)
+            })
+        #expect(wider == .init(designPrefix: "soc", dumpPrefix: "tb", isInferred: true))
+    }
+
     @Test func assignmentTargets() {
         func target(_ line: String, _ name: String) -> Bool {
             let column = (line as NSString).range(of: name).location
