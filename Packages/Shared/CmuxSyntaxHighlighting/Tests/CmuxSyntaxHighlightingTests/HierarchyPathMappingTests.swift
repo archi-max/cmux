@@ -353,7 +353,7 @@ import Testing
         #expect(monitor == nil)
     }
 
-    @Test func rootsTyingForTheSameDumpScopeAreNoRule() async {
+    @Test func rootsTyingWithDifferentDesignPathsAreAmbiguousOrFirst() async {
         let core = ["u_a", "u_b", "u_c"].map { HierarchyNode(name: $0, isScope: true) }
         let dump: HierarchyPrefixInference.Children = { path in
             switch HierarchyPathMapping.join(path) {
@@ -363,17 +363,21 @@ import Testing
             default: return nil
             }
         }
-        // Two copies of one module match alike: neither is the dump's.
+        // Two copies of one module match alike: neither is the dump's (ambiguous), or the first by name.
         let tie = await HierarchyPrefixInference.designRule(
-            forDumpPath: "tb.u_core1.u_a.x", designRoots: ["soc.u_core0": core, "soc.u_core1": core], dumpChildren: dump)
+            forDumpPath: "tb.u_core1.u_a.x", designRoots: ["soc.u_core0": core, "soc.u_core1": core], dumpChildren: dump, ties: .ambiguous)
         #expect(tie == nil)
+        let first = await HierarchyPrefixInference.designRule(
+            forDumpPath: "tb.u_core1.u_a.x", designRoots: ["soc.u_core0": core, "soc.u_core1": core], dumpChildren: dump)
+        #expect(first == .init(designPrefix: "soc.u_core0", dumpPrefix: "tb.u_core1", isInferred: true))
         // A weaker match that is alone wins over a tie.
         let wider = await HierarchyPrefixInference.designRule(
             forDumpPath: "tb.u_core1.u_a.x",
             designRoots: ["soc.u_core0": core, "soc.u_core1": core, "soc": [.init(name: "u_core0", isScope: true), .init(name: "u_core1", isScope: true)]],
             dumpChildren: { path in
                 HierarchyPathMapping.join(path) == "tb" ? [.init(name: "u_core0", isScope: true), .init(name: "u_core1", isScope: true)] : await dump(path)
-            })
+            },
+            ties: .ambiguous)
         #expect(wider == .init(designPrefix: "soc", dumpPrefix: "tb", isInferred: true))
     }
 
