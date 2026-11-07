@@ -744,7 +744,7 @@ function finishJob(j, w) {
     setImmediate(() => kickPool(false));  // (pieces held back by the RAM cap)
     if (j.epoch !== epoch) { return; }
     // freed while it was being joined: drop what it stored
-    if (j.dropped) { if (!m.error) { runTask(owner, { op: 'free', signalIds: [j.id] }).catch(() => {}); } return; }
+    if (j.dropped) { if (!m.error) { runTask(owner, { op: 'free', signalIds: [j.id] }).catch(() => {}); } j.reject(new Error('freed')); return; }
     if (m.error) { failJob(j, m.error); return; }
     endJob(j);
     // The requests waiting for it ask the owner next (promise callbacks, before setImmediate):
