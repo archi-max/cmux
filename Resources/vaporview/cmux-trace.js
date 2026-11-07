@@ -20,6 +20,8 @@
 //         start), null: not dumped
 //     dump.prevEdge(path, time, 'PosEdge' | 'NegEdge' | 'BothEdges') -> Promise<number | null>
 //         the last such edge at or before time
+//     dump.nextChange(path, time) -> Promise<number | null>   (optional) the first change at or
+//         after time, null: none (or not dumped). Without it, nextOf answers null.
 //     options.xprop: 'auto' (default) | 'on' | 'off'   X-propagation (VCS -xprop): an if or case on
 //         an x condition merges its branches. 'auto' re-runs a step that way when the dump
 //         disagrees with the x-optimistic run and agrees with the merged one.
@@ -1476,7 +1478,17 @@
       return { status: 'propagated', time: at, follow: f, reasons, trust: consistent === false ? 'inconsistent' : consistent === true && !approx ? 'exact' : 'approximate' };
     }
 
-    return { active, model, loads, loadsAt, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
+    // Follow forward: where a load entry's target goes next, its first change at or after t
+    // ({ path, time | null, direction: 'forward' }), when the dump can search forward; null when it
+    // can't or the entry has no dumped target (the caller keeps the entry's backward follow).
+    async function nextOf(e, t) {
+      if (!e || typeof dump.nextChange !== 'function') { return null; }
+      const target = (e.targets || []).find((x) => x && !isLocal(x));
+      if (!target) { return null; }
+      const at = await dump.nextChange(target, t);
+      return { path: target, time: at === null || at === undefined ? null : Number(at), direction: 'forward' };
+    }
+    return { active, model, loads, loadsAt, nextOf, driversOf: async (path) => { const w = await models.lookup(path); const m = await model(w.instance); return driversOf(m, w.name).map((d) => driverSummary(m, d)); } };
   }
 
   // ---- Trace X to Root ----
