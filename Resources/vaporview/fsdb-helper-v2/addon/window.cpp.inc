@@ -1235,11 +1235,13 @@ Napi::Value cacheAdopt(const Napi::CallbackInfo &info) {
   return o;
 }
 
-// searchScan(ids[], t, dir, pattern, bound) -> [{signalId, t | null, scanned} | {signalId, error}]
+// searchScan(ids[], t, dir, pattern, bound, kind?, start?) -> [{signalId, t | null, scanned} | {signalId, error}]
 // searchAll on signals that aren't stored: load them (one batched reader load),
 // scan the reader's changes from t in direction dir for the first change whose
 // value matches `pattern` (as cacheSearch), and stop early past `bound`
 // (dir 1: time > bound, dir -1: time < bound). Nothing is kept.
+// kind >= 0: the first edge of that kind instead (cacheEdge's kinds and rules, `start` the
+// dump's start): edge and value search on a signal too big for the store, by ranged reads.
 Napi::Value searchScan(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 5) || !CHECK_ARRAY(env, info[0]) || !CHECK_STRING(env, info[3])) return env.Undefined();
@@ -1248,6 +1250,8 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
   const int dir = info[2].As<Napi::Number>().Int32Value() < 0 ? -1 : 1;
   const std::string pat0 = info[3].As<Napi::String>().Utf8Value();
   const uint64_t bound = argTime(info[4]);
+  const int kind0 = info.Length() > 5 && info[5].IsNumber() ? info[5].As<Napi::Number>().Int32Value() : -1;
+  const uint64_t start = info.Length() > 6 && info[6].IsNumber() ? argTime(info[6]) : 0;
   std::vector<fsdbVarIdcode> list;
   for (uint32_t i = 0; i < ids.Length(); i++) list.push_back((fsdbVarIdcode)argI64(ids.Get(i)));
   // Load a few at a time: a reader load can't be interrupted, so small
@@ -1291,6 +1295,11 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
       o.Set("error", Napi::String::New(env, bits ? "unsupported encoding" : "reader reports 0 bits (alias?)"));
       h->ffrFree(); scope.unload(id); continue;
     }
+    if (kind0 >= 3 && bits != 1) {
+      o.Set("error", Napi::String::New(env, "edge: posedge, negedge and edge need a 1-bit signal"));
+      h->ffrFree(); scope.unload(id); continue;
+    }
+    const int kind = kind0 >= 0 && kind0 < 3 && bits != 1 ? 0 : kind0;
     const std::string p = patternBits(pat0, bits);
     std::vector<uint32_t> care;
     std::vector<uint8_t> want;
@@ -1303,6 +1312,19 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
     auto match = [&](const uint8_t *vc) {
       for (size_t j = 0; j < care.size(); j++) if ((vc[care[j]] & 3) != want[j]) return false;
       return true;
+    };
+    // The change at ct from value `was` to `now` (normalized, so they differ): a hit? (bit types
+    // 0 1 2=x 3=z, as cacheEdge's bit2)
+    auto hitOf = [&](const std::vector<uint8_t> &was, const std::vector<uint8_t> &now, uint64_t ct) -> bool {
+      if (kind < 0) return match(now.data());
+      if (kind == 0) return true;
+      const int b = now[0];
+      if (kind <= 2) return b == (kind == 1 ? 1 : 0);
+      if (ct <= start) return false;  // (the dump's first value is no edge)
+      const int a = was[0];
+      const bool pos = (a == 0 && b != 0) || (a >= 2 && b == 1);
+      const bool neg = (a == 1 && b != 1) || (a >= 2 && b == 0);
+      return kind == 3 ? pos : kind == 4 ? neg : pos || neg;
     };
     // The reader's raw changes, read as the normalized stream (normalizeStore):
     // per time only the last change counts, and only if it differs from the
@@ -1332,7 +1354,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
           if (have && tt != ct) {  // ct's group is complete
             if (ct > t) {
               if (ct > bound) { have = false; break; }
-              if (cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+              if (cur != prev) { scanned++; if (hitOf(prev, cur, ct)) { found = (double)ct; have = false; break; } }
             }
             prev.swap(cur);
           }
@@ -1341,7 +1363,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
           have = true;
           more = FSDB_RC_SUCCESS == h->ffrGotoNextVC();
         }
-        if (!stopped && have && ct > t && ct <= bound && cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+        if (!stopped && have && ct > t && ct <= bound && cur != prev) { scanned++; if (hitOf(prev, cur, ct)) found = (double)ct; }
       } else if (dir < 0 && onT) {
         // Start at the very last change <= t (the reader may land on the first of a time's changes).
         while (FSDB_RC_SUCCESS == h->ffrGotoNextVC()) {
@@ -1360,7 +1382,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
             grab(prev);  // the value in effect before ct
             if (have) {
               if (ct < bound) { have = false; break; }
-              if (cur != prev) { scanned++; if (match(cur.data())) { found = (double)ct; have = false; break; } }
+              if (cur != prev) { scanned++; if (hitOf(prev, cur, ct)) { found = (double)ct; have = false; break; } }
             }
             cur.swap(prev);
             ct = tt;
@@ -1370,7 +1392,7 @@ Napi::Value searchScan(const Napi::CallbackInfo &info) {
         }
         if (!stopped && have && ct >= bound) {  // the earliest group: before it, all x
           std::fill(prev.begin(), prev.end(), 2);
-          if (cur != prev) { scanned++; if (match(cur.data())) found = (double)ct; }
+          if (cur != prev) { scanned++; if (hitOf(prev, cur, ct)) found = (double)ct; }
         }
       }
     }

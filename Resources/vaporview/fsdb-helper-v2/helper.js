@@ -1665,6 +1665,52 @@ async function coldNear(req, ids, t) {
   return out;
 }
 
+// Edge and value search of a signal the store can't hold (a 10 GB dump's clock: 75 M changes,
+// 755 MB against a 244 MB store): the reader's changes from t over spans that grow x8 (as
+// coldNear), up to the first hit or the dump's end. Too big: its whole load failed so, or
+// fsdbdebug's change count says it would (no load started to find out).
+function tooBig(id) {
+  if (derived.has(id)) { return false; }
+  if (bgFailed.has(id) && /larger than/.test(bgFailed.get(id))) { return true; }
+  const n = kinds.primaries && kinds.primaries.get(id), bits = widthOf.get(id) || 1;
+  return !!n && n * (8 + 2 * Math.ceil(bits / 8)) > storeCap();
+}
+function taskOn(req, w, task) {
+  return new Promise((resolve, reject) => {
+    const tk = enqueue(w, { ...task, req });
+    (req.parts || (req.parts = [])).push({ w, task: tk });
+    tk.done = (m) => { req.workerMs = (req.workerMs || 0) + (m.ms || 0); if (m.error) { reject(new Error(m.error)); } else { resolve(m.result); } };
+  });
+}
+async function rangedFind(req, id, t, dir, extra) {
+  const T = Math.max(1, timeEnd || 1), lo = timeStart || 0;
+  let span = Math.max(1, Math.ceil(T / (kindOf(id) === 'p' ? 256 : 4096)));
+  req.ranged = 0;
+  for (;;) {
+    if (req.cancelled) { throw new Error('cancelled'); }
+    const bound = dir > 0 ? Math.min(T, t + span) : Math.max(lo, t - span);
+    const r = await taskOn(req, leastBusy(), { op: 'rangedFind', signalId: id, t, dir, bound, start: timeStart, ...extra });
+    req.ranged++;
+    if (r.t !== null && r.t !== undefined) { return { t: r.t, ranged: req.ranged }; }
+    if (dir > 0 ? bound >= T : bound <= lo) { return { t: null, ranged: req.ranged }; }
+    span *= 8;
+  }
+}
+// The store's answer (op), or growing ranged reads for a signal too big for the store.
+async function findStoredOrRanged(req, op, id, extra, rangedExtra) {
+  if (!storedWhole(id) && tooBig(id)) { return rangedFind(req, id, extra.t, extra.dir, rangedExtra); }
+  try {
+    const sp = prep(req, [id]); if (sp) { await sp; }
+    return await single(req, op, id, extra);
+  } catch (e) {
+    if (/larger than/.test(String(e && e.message)) && !derived.has(id) && !storedWhole(id)) {
+      if (!bgFailed.has(id)) { bgFailed.set(id, e.message); }
+      return rangedFind(req, id, extra.t, extra.dir, rangedExtra);
+    }
+    throw e;
+  }
+}
+
 // Background whole walks (after a ranged first draw): a job nobody waits for, so it runs in
 // pieces only when no interactive work is queued (see jobs above).
 const bgFailed = new Map();  // signalId -> error: loads that failed for good (over the store cap, unreadable); not retried until a reopen
@@ -2627,15 +2673,17 @@ const handlers = {
     const t = checkTime('t', req.t);
     // (checked before the signal is loaded; the worker checks again, and the width)
     if (req.kind !== undefined && req.kind !== null && !EDGE_KINDS.has(req.kind)) { throw new Error(`edge: unknown kind ${JSON.stringify(req.kind)}`); }
-    const sp = prep(req, checkIds([req.signalId])); if (sp) { await sp; }
-    return single(req, 'edge', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, kind: req.kind, start: timeStart });
+    checkIds([req.signalId]);
+    const dir = req.dir < 0 ? -1 : 1;
+    return findStoredOrRanged(req, 'edge', req.signalId, { t, dir, kind: req.kind, start: timeStart }, { kind: req.kind ?? 'any' });
   },
   async search(req) {
     const t = checkTime('t', req.t);
     if (typeof req.value !== 'string' || !/^[01xXzZ?]*$/.test(req.value)) { throw new Error(`bad search value ${req.value}`); }
-    const sp = prep(req, checkIds([req.signalId])); if (sp) { await sp; }
+    checkIds([req.signalId]);
     // wildcard: '?' -> strict pattern: only ? matches anything, x and z are literal.
-    return single(req, 'search', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, value: (strictWildcard(req) ? '!' : '') + req.value });
+    const value = (strictWildcard(req) ? '!' : '') + req.value;
+    return findStoredOrRanged(req, 'search', req.signalId, { t, dir: req.dir < 0 ? -1 : 1, value }, { pattern: value });
   },
 
   // searchText {signalId, t, dir, inclusive?, format, pattern, caseSensitive?, alias?, budgetMs?}: the first
