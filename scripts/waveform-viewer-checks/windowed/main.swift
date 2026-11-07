@@ -1211,7 +1211,12 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let a = await val(3, t), alias = await truth(2, t), own = await truth(3, t)
     expect(shown && a != nil && a == alias && alias != own, "a row answered from its alias shows the alias's data: \(a ?? "nil") (alias \(alias ?? "nil"), own \(own ?? "nil"))")
     _ = await mock(["cmd": "aliasControl", "drop": [3]])
+    // The drop rides on the helper's next reply to the page. These rows are small and loaded
+    // whole, so a pan asks nothing: add a row the page doesn't have, whose load is that reply.
     _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 10000, endTime: 210000 }); return null")
+    _ = await call("return await cmuxWaveform.link.addSignal(['tb', 'rst'])")
+    let delivered = await waitFor(5000) { ((await self.mock(["cmd": "aliasControl"]))["dropped"] as? [Any])?.isEmpty == true }
+    expect(delivered, "the mock put aliasDropped on a reply to the page")
     let fixed = await waitFor(5000) { await val(3, t) == own }
     let dropped = await wc("w.getStats().aliasDropped ?? w.stats.aliasDropped") as? Int ?? -1
     expect(fixed && dropped == 1, "after aliasDropped the row is asked for again and shows its own data: \(await val(3, t) ?? "nil") (own \(own ?? "nil")), drops \(dropped)")
