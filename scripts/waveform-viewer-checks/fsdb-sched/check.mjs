@@ -1058,6 +1058,25 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     check(most <= 2, `ready + building + retiring warm readers stay within 2 processes: at most ${most}`);
     check(total > 0, `stats.warm.totalRss accounts their memory: ${Math.round(total / 1e6)} MB`);
   }
+  // (c2) One reader budget, cold workers included (Refs #6, review): a set rebuild started its new
+  // reader before retiring the old one, so 1 worker + old + new = 3 readers of a 10 GB dump. At the
+  // budget (FSDB_READERS, default workers + FSDB_WARM_READERS = 2 here) the old reader goes first
+  // (its rows are read cold meanwhile), and sets are still replaced.
+  {
+    const log = path.join(tmp, 'warm37c2.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, STUB_WARM_MB_PER_SIG: '2', FSDB_WARM_RECENT_MS: '500', FSDB_WARM_SIGNALS: '8' });
+    const t0 = performance.now(); let k = 0, most = 0, bad = 0;
+    const poll = setInterval(() => { most = Math.max(most, kids(h)); }, 20);
+    while (performance.now() - t0 < 8000) {
+      const ids = Math.floor((performance.now() - t0) / 1500) % 2 ? all.slice(8) : all.slice(0, 8);
+      const rs = await ask(h, ids, (k++ % 50) * 10000); bad += rs.filter((r) => r.error || r.result.signals[0].error).length;
+      await wait(100);
+    }
+    clearInterval(poll);
+    const n = navs(log).length;
+    h.close();
+    check(most <= 2 && n >= 3 && bad === 0, `readers, cold worker included, stay within the budget of 2 through set rebuilds: at most ${most}; ${n} warm starts; ${bad} rows unanswered`);
+  }
   // (d) A native call that grows past twice the cap and can't yield (300 MB, blocked 15 s): the
   // coordinator's watchdog kills the reader from outside, rows are read cold, and the same cohort
   // is not started again at once (smaller ones are, each once: here each blocks again).
