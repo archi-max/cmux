@@ -158,9 +158,10 @@ extension SVModelResolve {
             // below it) those with the same child instance below.
             var candidates: Set<String> = known.contains(prefix) ? [prefix] : []
             var sameBelow: Set<String> = []
-            if suffix.isEmpty {
-                candidates.formUnion(tops)
-            } else {
+            // Every top too: one of the scope's module lacking the row's child could stand for it as well
+            // (`--top` twice), so the scope's rows get one answer.
+            candidates.formUnion(tops)
+            if !suffix.isEmpty {
                 sameBelow = Set(slang.compactMap { $0.hasSuffix("." + suffix) ? String($0.dropLast(suffix.count + 1)) : nil }.filter { known.contains($0) })
                 let child = below(chain[level + 1], prefix)
                 candidates.formUnion(sameBelow)

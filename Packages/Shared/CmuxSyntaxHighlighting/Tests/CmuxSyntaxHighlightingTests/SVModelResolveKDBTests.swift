@@ -319,7 +319,8 @@ import Testing
 
     /// `--top` twice again, each top lacking a different part: soc has u_a and u_b but no u_a.u_core,
     /// soc_copy has u_a.u_core but no u_b. Either could stand for the dump's tb.dut, so every row of
-    /// it gets the same answer; u_b.z is not taken to soc alone (the reviewer's u2b).
+    /// it is decided alike: by the inferred rule (tb.dut is soc, which has the dump's u_b), not u_b.z
+    /// alone evaluated against the KDB through soc (the reviewer's u2b). soc has no u_a.u_core.
     @Test func twoTopsEachLackingAPartGiveTheDumpsInstanceOneAnswer() async throws {
         let design = Design(models: [
             "soc": Self.inst("soc", ["clk"]), "soc.u_a": Self.inst("a", ["y"]), "soc.u_b": Self.inst("b", ["z"]),
@@ -336,9 +337,10 @@ import Testing
         ]
         let kdb = Self.kdb([("tb", "tb", nil, [], [:]), ("tb.dut", "soc", "tb", ["clk"], [:]), ("tb.dut.u_a", "a", "tb.dut", ["y"], [:]),
                             ("tb.dut.u_b", "b", "tb.dut", ["z"], [:]), ("tb.dut.u_a.u_core", "core", "tb.dut.u_a", ["x"], ["x": 3])])
-        for row in ["tb.dut.u_a.u_core.x", "tb.dut.u_a.y", "tb.dut.u_b.z", "tb.dut.clk"] {
+        #expect(try await resolve("tb.dut.u_a.u_core.x", design: design, dump: dump, kdb: kdb) == .notInDesign)
+        for (row, rest) in [("tb.dut.u_a.y", "u_a.y"), ("tb.dut.u_b.z", "u_b.z"), ("tb.dut.clk", "clk")] {
             let got = try await resolve(row, design: design, dump: dump, kdb: kdb)
-            #expect(got == .notInDesign, "\(row): \(got)")
+            #expect(got == .signal(designPath: "soc." + rest, designPrefix: "soc", dumpPrefix: "tb.dut"), "\(row): \(got)")
         }
     }
 
