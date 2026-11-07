@@ -773,6 +773,19 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fixed.close();
 }
 
+// The dump's start time (the reader's min tag) is in open's metadata, so the page's dumpStart()
+// is not 0 for a dump that starts later (Refs #1).
+{
+  for (const [start, want] of [['100', 100], [undefined, 0]]) {
+    const h = helper(1, { STUB_COSTS: '{}', ...(start ? { STUB_TIME_START: start } : {}) });
+    await h.ready;
+    const o = await h.send('open', { file: dump }).reply;
+    h.close();
+    const m = o.result && o.result.metadata;
+    check(!o.error && m && m.timeStart === want && m.timeEnd > want, `open's metadata has timeStart ${want}: ${JSON.stringify(m && { timeStart: m.timeStart, timeEnd: m.timeEnd })}`);
+  }
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `FSDB SCHED CHECKS FAILED: ${fails}` : 'FSDB SCHED CHECKS PASSED');
 process.exit(fails ? 1 : 0);
