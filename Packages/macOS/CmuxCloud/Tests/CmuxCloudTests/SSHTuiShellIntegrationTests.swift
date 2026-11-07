@@ -277,10 +277,75 @@ struct SSHTuiShellIntegrationTests {
                 var parent = sandbox.installDirectory
                 for _ in 0..<levels { parent = (parent as NSString).deletingLastPathComponent }
                 try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: parent)
-                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n")
+                // The user's group is not a private one here, whatever this machine's is.
+                let path = try sandbox.fakeGroupDatabase(nil)
+                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho \"env=[${ENV-unset}] zdotdir=[${ZDOTDIR-unset}]\"\n",
+                                                       extraEnvironment: ["PATH": path])
                 #expect(result.reportedDirectories.isEmpty, "\(name) \(parent): \(result.stdout.debugDescription)")
                 #expect(result.stdout.contains("env=[unset] zdotdir=[unset]"), "\(name) \(parent): \(result.stdout)")
             }
+        }
+    }
+
+    /// Ubuntu and Debian give each user a private group and a login umask of
+    /// 002, so the `mkdir -p ~/.local/bin` of the cmux-tui install leaves
+    /// `~/.local` group-writable. A group whose only member is the user grants
+    /// nobody else anything (Debian's OpenSSH StrictModes accepts it too).
+    @Test("A parent writable only by the user's private group still gets the hook")
+    func privateGroupWritableParentIsUsed() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        let user = NSUserName()
+        for (shell, name) in shells {
+            for (group, used) in [("\(user):x:\(getgid()):", true), ("\(user):x:\(getgid()):\(user)", true),
+                                  ("\(user):x:\(getgid()):\(user),someone", false), ("shared:x:\(getgid()):", false)] {
+                let sandbox = try ShellSandbox(shell: shell, name: name)
+                let target = try sandbox.makeDirectory("t")
+                let path = try sandbox.fakeGroupDatabase(group)
+                _ = try sandbox.runLoginShell(input: "true\n", extraEnvironment: ["PATH": path], umask: "002")
+                try sandbox.giveInstallChainTheUsersGroup()
+                for levels in [1, 5] {
+                    var parent = sandbox.installDirectory
+                    for _ in 0..<levels { parent = (parent as NSString).deletingLastPathComponent }
+                    try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: parent)
+                }
+                let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n",
+                                                       extraEnvironment: ["PATH": path], umask: "002")
+                #expect(result.stdout.contains("marker-done"), "\(name) \(group): \(result.stderr)")
+                if used {
+                    #expect(result.reportedDirectories.last == target, "\(name) \(group): \(result.stdout.debugDescription)")
+                } else {
+                    #expect(result.reportedDirectories.isEmpty, "\(name) \(group): \(result.stdout.debugDescription)")
+                }
+            }
+        }
+    }
+
+    /// Two terminals that start together both install. GNU find exits 1 when
+    /// an entry it listed is gone by the time it looks at it, as another
+    /// installer's temporary file is once renamed. The fake find does that for
+    /// every walk of a directory's contents, so only a check that looks at the
+    /// files it relies on, and not at what else is in the directory, passes.
+    @Test("Another installer's temporary files in the install directory do not stop the hook")
+    func concurrentInstallerDoesNotStopTheHook() throws {
+        var shells: [(String, String)] = [("/bin/zsh", "zsh")]
+        if let bash = Self.gnuBash { shells.append((bash, "bash")) }
+        for (shell, name) in shells {
+            let sandbox = try ShellSandbox(shell: shell, name: name)
+            let target = try sandbox.makeDirectory("t")
+            _ = try sandbox.runLoginShell(input: "true\n")
+            let path = try sandbox.fakeGroupDatabase(nil)
+            try sandbox.writeExecutable(sandbox.fakeBin + "/find", """
+                #!/bin/sh
+                for a in "$@"; do [ "$a" = -prune ] && exec /usr/bin/find "$@"; done
+                /usr/bin/find "$@"
+                echo "find: '$1/shell/bash-env.4242': No such file or directory" >&2
+                exit 1
+
+                """)
+            let result = try sandbox.runLoginShell(input: "cd '\(target)'\necho marker-done\n", extraEnvironment: ["PATH": path])
+            #expect(result.stdout.contains("marker-done"), "\(name): \(result.stderr)")
+            #expect(result.reportedDirectories.last == target, "\(name): \(result.stdout.debugDescription)")
         }
     }
 
@@ -375,6 +440,35 @@ private final class ShellSandbox {
     /// The host `cmux` install directory under this HOME.
     var installDirectory: String {
         home + "/" + Self.connection().hostOpenCommand.installDirectory.replacingOccurrences(of: "$HOME/", with: "")
+    }
+
+    /// Commands that stand in for the host's, first on PATH.
+    var fakeBin: String { root + "/fakebin" }
+
+    /// A `getent` that answers `group <gid>` with `line` (`name:x:gid:members`),
+    /// or finds no group for nil. Returns the PATH that uses it.
+    func fakeGroupDatabase(_ line: String?) throws -> String {
+        try FileManager.default.createDirectory(atPath: fakeBin, withIntermediateDirectories: true)
+        let answer = line.map { "[ \"$1\" = group ] && [ \"$2\" = \(getgid()) ] && { echo '\($0)'; exit 0; }\n" } ?? ""
+        try writeExecutable(fakeBin + "/getent", "#!/bin/sh\n\(answer)exit 2\n")
+        return fakeBin + ":/usr/bin:/bin"
+    }
+
+    /// New directories take their parent's group on macOS; make the install,
+    /// its files and each parent up to HOME the user's primary group.
+    func giveInstallChainTheUsersGroup() throws {
+        var paths = [home]
+        var parent = installDirectory
+        while parent != home {
+            paths.append(parent)
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        if let walk = FileManager.default.enumerator(atPath: installDirectory) {
+            for case let relative as String in walk { paths.append(installDirectory + "/" + relative) }
+        }
+        for path in paths where chown(path, uid_t.max, getgid()) != 0 {
+            throw POSIXError(.EPERM)
+        }
     }
 
     func mode(_ path: String) throws -> Int {

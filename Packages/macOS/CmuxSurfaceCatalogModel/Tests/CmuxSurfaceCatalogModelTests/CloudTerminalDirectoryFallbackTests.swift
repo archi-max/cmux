@@ -44,6 +44,39 @@ import Testing
         #expect(driver.show([terminal("t1", title: "vim notes", cols: 100)]).isEmpty)
     }
 
+    /// The daemon publishes no graph event when a terminal's title changes; the title
+    /// reaches the Mac only through the terminal's own output, so that is what asks again.
+    @Test func aTitleTheTerminalSetAsksAgainWithoutAGraphEvent() throws {
+        let driver = Driver()
+        let first = try #require(driver.title("u@h:~"))
+        _ = driver.finish(first, .directory("/home/u"))
+        driver.now += 10
+        let probe = try #require(driver.fallback.terminalTitleChanged("u@h: /etc", terminalID: "t1", now: driver.now))
+        #expect(probe.terminalID == "t1")
+        #expect(driver.finish(probe, .directory("/etc")).directoryChanged)
+        #expect(driver.fallback.directory(forTerminal: "t1") == "/etc")
+        // The same title again, or the graph's stale copy, asks nothing.
+        driver.now += 10
+        #expect(driver.fallback.terminalTitleChanged("u@h: /etc", terminalID: "t1", now: driver.now) == nil)
+        #expect(driver.title("u@h:~") == nil)
+    }
+
+    @Test func aTerminalTitleIsIgnoredWhenNotShownOrReporting() throws {
+        let driver = Driver()
+        #expect(driver.fallback.terminalTitleChanged("x", terminalID: "t1", now: 1) == nil)
+        let first = try #require(driver.title("a"))
+        // During a query, a new title queues the one rerun.
+        #expect(driver.fallback.terminalTitleChanged("b", terminalID: "t1", now: driver.now) == nil)
+        #expect(driver.finish(first, .directory("/home/u")).next != nil)
+        // A terminal that reports its own directory is not asked.
+        let reporting = Driver()
+        let probe = try #require(reporting.title("a"))
+        _ = reporting.finish(probe, .directory("/home/u"))
+        #expect(reporting.title("a", cwd: "/srv") == nil)
+        reporting.now += 10
+        #expect(reporting.fallback.terminalTitleChanged("c", terminalID: "t1", now: reporting.now) == nil)
+    }
+
     @Test func titleChangesDuringAQueryQueueOneRerun() throws {
         let driver = Driver()
         let probe = try #require(driver.title("a"))

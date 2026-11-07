@@ -101,6 +101,12 @@ public struct CloudTerminalDirectoryFallback: Sendable {
         return probes
     }
 
+    /// Records a title the terminal itself set (OSC 0/2), as the Mac's own view of the
+    /// terminal shows it, at monotonic time `now`. Returns the query to start, if any.
+    public mutating func terminalTitleChanged(_ title: String, terminalID: String, now: TimeInterval) -> Probe? {
+        nil
+    }
+
     /// Records a query's answer at monotonic time `now`. `directoryChanged` says whether
     /// `directory(forTerminal:)` changed; `next` is the one query queued while this one ran.
     public mutating func finish(_ probe: Probe, answer: Answer, now: TimeInterval) -> (directoryChanged: Bool, next: Probe?) {
