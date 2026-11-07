@@ -279,14 +279,13 @@ async function start(workers, costs, env = {}) {
 
 // 18. Piece files live in RAM (/dev/shm) where no worker's RSS guard sees them: their total is
 // capped (FSDB_SHM_CAP), above it only the started load with the least work left gets more
-// pieces until its join deletes them. With a 1-byte cap (every load after another) all 12
-// loads still answer, and the files never hold more than about two loads (one joining, the
-// next one filling) plus a piece per worker. (A guard: the stub's own ordering already keeps
-// the uncapped peak near that, 280-370 KB; the cap matters on a real dump, see status.)
+// pieces until its join deletes them. 48 loads at once: every one started its first piece
+// first, so uncapped their pieces peaked at ~730 KB; under a 1-byte cap (each load after
+// another) they all answer, and the files hold about two loads plus a piece per worker.
 {
-  const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const ids = Array.from({ length: 48 }, (_, k) => k + 1);
   const h = await start(4, Object.fromEntries(ids.map((id) => [id, 400])),
-    { STUB_COUNTS: JSON.stringify(Object.fromEntries(ids.map((id) => [id, 20000]))), FSDB_SHM_CAP: '1' });
+    { STUB_SIGNALS: '48', STUB_COUNTS: JSON.stringify(Object.fromEntries(ids.map((id) => [id, 20000]))), FSDB_SHM_CAP: '1' });
   const root = fs.existsSync('/dev/shm') ? '/dev/shm' : '/tmp';
   const mine = fs.readdirSync(root).filter((n) => n.startsWith('fsdb-helper-v2-')).map((n) => path.join(root, n))
     .find((d) => { try { return fs.readFileSync(path.join(d, 'pid'), 'utf8').trim() === String(h.pid); } catch (e) { return false; } });
@@ -301,8 +300,8 @@ async function start(workers, costs, env = {}) {
   })();
   const rs = await Promise.all(ids.map((id) => h.send('window', win([id])).reply));
   polling = false;
-  check(!!mine && rs.every((r) => !r.error), `12 loads of 200 KB of pieces each answer: ${rs.map((r) => r.error || 'ok')}`);
-  check(peak > 0 && peak < 450000, `... piece files peak at ${Math.round(peak / 1000)} KB under a 1-byte cap (two loads + a piece per worker: < 450)`);
+  check(!!mine && rs.every((r) => !r.error), `48 loads of 200 KB of pieces each answer: ${rs.filter((r) => r.error).length} errors`);
+  check(peak > 0 && peak < 560000, `... piece files peak at ${Math.round(peak / 1000)} KB under a 1-byte cap (two loads + a piece per worker: < 560; uncapped ~730)`);
   h.close();
 }
 
