@@ -924,6 +924,22 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
     check(n <= 4, `an oversized warm cohort is shrunk, not rebuilt as is: ${n} reader starts in 9 s (one per check before)${n > 4 ? `; loads of ${JSON.stringify(seq)}, backoff ${JSON.stringify(st && st.backoff)}` : ''}`);
     check(n === lateNav && st && st.ready.length > 0, `... and then left alone: ${n - lateNav} starts in the last 3 s, ready set of ${st && st.ready.length}`);
   }
+  // (a2) A set smaller than the pan (4 of 16 rows) is not rebuilt partway through a pan: its rows'
+  // requests arrive one by one (here 25 ms apart), and a check between them saw the first few of
+  // the new pan as the most recent (want [3,2,1,16] against a ready [16,15,14,13]; 37a's 5 starts).
+  {
+    const log = path.join(tmp, 'warm37a2.log'); fs.rmSync(log, { force: true });
+    const h = await start(1, {}, { ...base, STUB_WARM_LOG: log, FSDB_WARM_SIGNALS: '4' });
+    const t0 = performance.now(); let k = 0;
+    while (performance.now() - t0 < 6000) {
+      const t = (k++ % 50) * 10000, rs = [];
+      for (const id of all) { rs.push(h.send('window', near([id], t)).reply); await wait(25); }
+      await Promise.all(rs); await wait(250);
+    }
+    const sets = navs(log).length, st = (await h.send('stats').reply).result.warm;
+    h.close();
+    check(sets <= 2, `a warm set of 4 isn't rebuilt partway through each 16-row pan: ${sets} reader starts in 6 s, ready ${JSON.stringify(st && st.ready)}`);
+  }
   // (b) A warm reader whose init fails is not restarted at once, over and over: its cohort backs off.
   {
     const log = path.join(tmp, 'warm37b.log'); fs.rmSync(log, { force: true });
