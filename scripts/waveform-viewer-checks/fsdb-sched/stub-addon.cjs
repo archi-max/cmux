@@ -1,14 +1,19 @@
 // run.sh fsdb-sched: a stand-in for fsdb-helper-v2's FSDB reader addon (no FSDB, no reader
 // library). Signals 1..N are 1-bit vars of one scope `tb`; loading signal k takes
 // STUB_COSTS[k] ms (default 10), as a reader load of a real dump costs 1 ms to 10 s per
-// signal. A time slice (split walk) costs a quarter. Only what the helper's open, window,
-// count, stats and split paths call is here.
+// signal. A time slice (split walk) or a view-window load costs its share of the dump's time
+// range (plus STUB_SLICE_MS); signals in STUB_BAD can't be read (as the reader's unsupported
+// encodings). Only what the helper's open, window, count, stats and split paths call is here.
 'use strict';
 const fs = require('node:fs');
 const COSTS = JSON.parse(process.env.STUB_COSTS || '{}');
 const N = Number(process.env.STUB_SIGNALS || 16);
 const TIME_END = 1000000;
 const cost = (id) => Number(COSTS[id] ?? 10);
+const BAD = new Set(JSON.parse(process.env.STUB_BAD || '[]'));
+const SLICE_MS = Number(process.env.STUB_SLICE_MS || 0);
+const share = (id, s, e) => SLICE_MS + cost(id) * Math.max(0, Math.min(Number(e), TIME_END) - Number(s)) / TIME_END;
+const win1 = (id) => { const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30; return { signalId: id, exact: true, count: 1, records: rec, counts: null }; };
 const sleep = (ms) => { if (ms > 0) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } };
 const store = new Map();  // signalId -> true
 let limit = 0;
@@ -27,6 +32,7 @@ module.exports = {
     return ids.map((id) => {
       if (store.has(id)) { return { ...entry(id), cached: true, loadMs: 0, walkMs: 0 }; }
       sleep(cost(id));
+      if (BAD.has(id)) { return { signalId: id, error: 'unsupported encoding' }; }
       store.set(id, true);
       return { ...entry(id), cached: false, loadMs: cost(id), walkMs: 0 };
     });
@@ -39,6 +45,13 @@ module.exports = {
     const rec = Buffer.alloc(9); rec.writeBigUInt64LE(0n, 0); rec[8] = 0x30;  // the value at t0: '0'
     return { exact: true, count: 1, records: rec, counts: null, total: 2 };
   },
-  cacheWalkSlice(id, s, e, path) { sleep(cost(id) / 4); fs.writeFileSync(path, 'x'); return { count: 1, xz: false, loadMs: cost(id) / 4, walkMs: 0 }; },
+  cacheWindowCold(ids, t0, t1) { return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
+  cacheWalkSlice(id, s, e, path) {
+    const ms = share(id, s, e);
+    sleep(ms);
+    if (BAD.has(id)) { throw new Error('unsupported encoding'); }
+    fs.writeFileSync(path, 'x');
+    return { count: 1, xz: false, loadMs: ms, walkMs: 0 };
+  },
   cacheAdopt(id) { store.set(id, true); return { count: 2, bytes: 16 }; },
 };
