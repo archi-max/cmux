@@ -1282,6 +1282,9 @@ function coldTask(req, op, ids, extra, spread = false) {
     task.done = (m) => {
       req.workerMs = Math.max(req.workerMs || 0, m.ms);
       if (op === 'windowCold' && gids.length === 1 && !m.error && m.result[0] && !m.result[0].error) { hotColdCost(gids[0], extra, m.ms); }
+      // (batched: an even share each, for rows with no read of their own; a share is a lower
+      // bound, so it errs toward reading them cold)
+      else if (op === 'windowCold' && gids.length > 1 && !m.error) { gids.forEach((id, k) => { const c = hot.cold.get(id); if ((!c || c.share) && m.result[k] && !m.result[k].error) { hotColdCost(id, extra, m.ms / gids.length, true); } }); }
       if (m.error) { reject(new Error(m.error)); } else { resolve(gids.map((id, k) => [id, m.result[k]])); }
     };
   }))).then((parts) => { const by = new Map(parts.flat()); return ids.map((id) => by.get(id)); });
@@ -1323,8 +1326,13 @@ const HOT_BACKOFF_MS = Number(process.env.FSDB_WARM_BACKOFF_MS || 5000);
 // one pan's rows arrive one by one, and partway through, its first rows look the most recent.
 // A stream that never settles is judged after HOT_SETTLE_MAX_MS anyway.
 const HOT_SETTLE_MS = 150, HOT_SETTLE_MAX_MS = 2000;
+// Unknowns are tried one at a time (review M2 round 2): a set's warm call loads all of it, so a
+// row's own cost is the call's growth over the set without it (the reader before, same span
+// within 2x), over HOT_TRIAL_N calls. It stays if it adds at most max(HOT_TRIAL_SLACK_MS,
+// HOT_TRIAL_FRAC of the call without it) and the call with it isn't slower than its own cold read.
+const HOT_TRIAL_N = 3, HOT_TRIAL_SLACK_MS = 10, HOT_TRIAL_FRAC = 0.25;
 const HOT_WATCH_MS = Number(process.env.FSDB_WARM_WATCH_MS || 500);
-const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
+const hot = { readers: [], building: null, retiring: [], asked: new Map(), timer: null, timerAt: 0, backoffTimer: null, lastNote: 0, unsettled: 0, trial: null, calls: new Map(), cold: new Map(), watch: null, limit: HOT_MAX, fails: new Map(), totalRss: 0, peakRss: 0 };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotKey = (ids) => [...ids].sort((a, b) => a - b).join(',');
 const hotProcs = () => [...hot.readers, ...(hot.building || []), ...hot.retiring].filter((r) => r.state !== 'dead');
 function hotFail(fp, why) {
@@ -1391,7 +1399,7 @@ function hotStop() {
   hot.limit = HOT_MAX; hot.fails.clear(); hot.totalRss = 0; hot.peakRss = 0;
   if (hot.timer) { clearTimeout(hot.timer); hot.timer = null; }
   if (hot.backoffTimer) { clearTimeout(hot.backoffTimer); hot.backoffTimer = null; }
-  hot.cold.clear(); hot.lastNote = 0; hot.unsettled = 0;
+  hot.cold.clear(); hot.calls.clear(); hot.lastNote = 0; hot.unsettled = 0; hot.trial = null;
 }
 function hotKill(r) {
   r.state = 'dead';
@@ -1412,7 +1420,7 @@ function hotCall(r, msg) {
 }
 function hotSpawn(ids) {
   const proc = fork(path.join(__dirname, 'worker.js'), [], { stdio: ['ignore', 2, 2, 'ipc'], serialization: 'advanced' });
-  const r = { proc, ids: new Set(ids), fp: hotKey(ids), state: 'starting', pending: new Map(), tid: 1, epoch, rss: 0, base: 0, ready: null };
+  const r = { proc, ids: new Set(ids), fp: hotKey(ids), state: 'starting', pending: new Map(), tid: 1, epoch, rss: 0, base: 0, ready: null, trial: null, baseCalls: null, marg: [] };
   if (!hot.watch) { hot.watch = setInterval(hotWatch, HOT_WATCH_MS); hot.watch.unref(); }
   r.ready = new Promise((resolve) => { r.onReady = resolve; });
   proc.on('message', (m) => {
@@ -1440,7 +1448,17 @@ function hotWanted() {
   const recent = [...hot.asked].filter(([id]) => !storedWhole(id) && !bgFailed.has(id)).sort((a, b) => b[1] - a[1]).map(([id]) => id);
   if (kinds.state !== 'ready') { return recent.slice(0, max); }
   const prim = recent.filter((id) => kindOf(id) === 'p').slice(0, max);
-  const unk = recent.filter((id) => kindOf(id) === 'u' && !kinds.warmSlow.has(id)).slice(0, Math.max(0, Math.min(HOT_UNKNOWN, max - prim.length)));
+  const room = Math.max(0, Math.min(HOT_UNKNOWN, max - prim.length));
+  const cand = recent.filter((id) => kindOf(id) === 'u' && !kinds.warmSlow.has(id));
+  const unk = cand.filter((id) => kinds.warmProven.has(id)).slice(0, room);
+  // (one not yet judged, on trial, once the set without it has a baseline of HOT_TRIAL_N calls,
+  // from any reader of that set this session; and while its trial reader is up)
+  const trial = unk.length < room ? cand.find((id) => !kinds.warmProven.has(id)) : undefined;
+  hot.trial = null;
+  if (trial !== undefined) {
+    const base = hotKey([...prim, ...unk]);
+    if (!prim.length && !unk.length || HOT_READERS > 1 || (hot.calls.get(base) || []).length >= HOT_TRIAL_N || hotReady().some((r) => r.trial === trial)) { unk.push(trial); hot.trial = trial; }
+  }
   return [...prim, ...unk];
 }
 // The next hotCheck, in ms (an earlier one already scheduled stands). A set's backoff has its own
@@ -1469,8 +1487,11 @@ function hotCheck() {
   // (its baseline over the cap) is replaced by a smaller one (hot.limit, set by hotBuild).
   const grown = cur.filter((r) => r.rss > HOT_RSS && r.rss > r.base + Math.max(64e6, r.base / 4));
   const oversized = cur.some((r) => r.base > HOT_RSS) && hotKey(want) !== hotKey(cur.flatMap((r) => [...r.ids]));
-  const slow = cur.some((r) => [...r.ids].some((id) => kinds.warmSlow.has(id)));
-  if (cur.length && !grown.length && !oversized && !slow && outside * 4 < want.length) { hot.unsettled = 0; return; }
+  // (a row measured slow, an unknown left unjudged by an earlier set, or the next one on trial)
+  const stray = (id) => kinds.state === 'ready' && kindOf(id) === 'u' && !kinds.warmProven.has(id) && !want.includes(id);
+  const slow = cur.some((r) => [...r.ids].some((id) => kinds.warmSlow.has(id) || stray(id)));
+  const trialing = hot.trial !== null && !cur.some((r) => r.ids.has(hot.trial));
+  if (cur.length && !grown.length && !oversized && !slow && !trialing && outside * 4 < want.length) { hot.unsettled = 0; return; }
   const fp = hotKey(want), f = hot.fails.get(fp), now = performance.now();
   // (only recency against a ready set: wait for the requests to settle, at most HOT_SETTLE_MAX_MS)
   if (cur.length && !grown.length && !oversized && !slow && now - (hot.lastNote || 0) < HOT_SETTLE_MS) {
@@ -1506,6 +1527,14 @@ async function hotBuild(ids) {
   const ep = epoch, file = openFile;
   const rs = hotParts(ids, HOT_READERS).map((part) => hotSpawn(part));
   hot.building = rs;
+  // The row on trial is judged against the calls of the ready reader of the set without it
+  // ('none': alone in its set, or a set split over readers: the whole call against its cold read).
+  const unj = kinds.state === 'ready' ? ids.filter((id) => kindOf(id) === 'u' && !kinds.warmProven.has(id) && !kinds.warmSlow.has(id)) : [];
+  if (unj.length === 1) {
+    const without = ids.filter((id) => id !== unj[0]);
+    const b = hot.calls.get(hotKey(without));
+    for (const r of rs) { if (r.ids.has(unj[0])) { r.trial = unj[0]; r.baseCalls = !without.length || HOT_READERS > 1 ? 'none' : b ? b.slice() : null; } }
+  }
   const one = async (r) => {
     await r.ready;
     const o = await hotCall(r, { op: 'hotOpen', file, rssCapMB: HOT_RSS / 1e6 });
@@ -1559,30 +1588,47 @@ function hotWindowBatched(r, ids, range, op = 'hotWindow') {
     if (!r.busy && !r.pumpSoon) { r.pumpSoon = true; setTimeout(() => { r.pumpSoon = false; hotPump(r); }, HOT_GATHER_MS); }
   });
 }
-// Unknowns (#7) are judged one by one against their own cold cost (review M2/L7): a warm call
-// loads the whole set, so a row it would have read faster cold (a rebuilt one adds its rebuild
-// to every call; a tiny one's cold read is cheaper than any call) leaves the set (warmSlow, with
-// the numbers as its provenance); one the call beat is warmProven, and only those go to the warm
-// reader for point reads (valueAt, prev). The cold cost is the row's last cold ranged read alone
-// (hot.cold), scaled to this span, and only within 2x of it; a row with none isn't judged.
+// Unknowns (#7) are judged one at a time, by what each adds (review M2 round 2; L7): a warm call
+// loads its whole set, so a row's cost there is the call's growth over the set without it (the
+// reader before: r.baseCalls, the nearest span within 2x, scaled), over HOT_TRIAL_N calls. A row
+// that adds more than max(HOT_TRIAL_SLACK_MS, HOT_TRIAL_FRAC x the call without it) slows every
+// row of its set (a rebuilt one adds its rebuild to each call), and a row whose call is slower than
+// its own cold read (hot.cold, scaled; a tiny one) is better read cold: both are warmSlow, with the
+// numbers as provenance, and leave the set. The others are warmProven, and only those go to the
+// warm reader for point reads (valueAt, prev). Alone in its set, only the cold read is compared.
+const median = (xs) => { const v = [...xs].sort((a, b) => a - b); return v[Math.floor(v.length / 2)]; };
+const near2x = (list, frac) => {
+  let best = null;
+  for (const x of list) { const d = Math.abs(Math.log(frac / x.frac)); if (d <= Math.log(2) && (!best || d < best.d)) { best = { d, x }; } }
+  return best && best.x.ms * frac / best.x.frac;
+};
 function hotJudge(r, range, ms) {
   const T = Math.max(1, timeEnd || 1), frac = (range.t1 - range.t0) / T;
   if (!(frac > 0)) { return; }
-  let marked = false;
-  for (const id of r.ids) {
-    if (kindOf(id) !== 'u' || kinds.warmSlow.has(id)) { continue; }
-    const c = hot.cold.get(id);
-    if (!c || frac > 2 * c.frac || frac < c.frac / 2) { continue; }
-    const est = c.ms * frac / c.frac;
-    if (ms > est) { kinds.warmSlow.set(id, `measured: a warm call of its set took ${Math.round(ms)} ms, its own cold read ~${Math.round(est)} ms`); kinds.warmProven.delete(id); marked = true; }
-    else { kinds.warmProven.add(id); }
-  }
-  if (marked) { hotSoon(0); }
+  // (each set's warm calls, kept by set for the session: a later trial's baseline)
+  const key = hotKey(r.ids);
+  if (!hot.calls.has(key)) { if (hot.calls.size >= 32) { hot.calls.delete(hot.calls.keys().next().value); } hot.calls.set(key, []); }
+  const L = hot.calls.get(key); L.push({ frac, ms }); if (L.length > 32) { L.shift(); }
+  const id = r.trial;
+  if (id === null || kinds.warmSlow.has(id) || kinds.warmProven.has(id) || !r.ids.has(id)) { return; }
+  const W = r.baseCalls === 'none' ? 0 : Array.isArray(r.baseCalls) ? near2x(r.baseCalls, frac) : null;
+  if (W === null) { return; }  // (no call of the set without it over a span like this one)
+  const c = hot.cold.get(id);
+  r.marg.push({ m: ms - W, ms, W, c: c ? near2x([c], frac) : null });
+  if (r.marg.length < HOT_TRIAL_N) { return; }
+  const m = median(r.marg.map((x) => x.m)), w = median(r.marg.map((x) => x.W)), all = median(r.marg.map((x) => x.ms));
+  const cs = r.marg.map((x) => x.c).filter((x) => x !== null), cold = cs.length ? median(cs) : null;
+  if (r.baseCalls === 'none' && cold === null) { return; }  // (alone: nothing to compare yet)
+  const adds = r.baseCalls !== 'none' && m > Math.max(HOT_TRIAL_SLACK_MS, HOT_TRIAL_FRAC * w);
+  if (adds) { kinds.warmSlow.set(id, `measured: adds ~${Math.round(m)} ms to each warm call of its set (~${Math.round(w)} ms without it)`); }
+  else if (cold !== null && all > cold) { kinds.warmSlow.set(id, `measured: a warm call of its set took ~${Math.round(all)} ms, its own cold read ~${Math.round(cold)} ms`); }
+  else { kinds.warmProven.add(id); }
+  hotSoon(0);
 }
 // A cold ranged read of one row alone: its cost, for hotJudge.
-function hotColdCost(id, range, ms) {
+function hotColdCost(id, range, ms, share = false) {
   const T = Math.max(1, timeEnd || 1), frac = (range.t1 - range.t0) / T;
-  if (frac > 0 && ms > 0) { hot.cold.set(id, { frac, ms }); }
+  if (frac > 0 && ms > 0) { hot.cold.set(id, { frac, ms, share }); }
 }
 async function hotPump(r) {
   if (r.busy || !r.queue || !r.queue.length) { return; }
