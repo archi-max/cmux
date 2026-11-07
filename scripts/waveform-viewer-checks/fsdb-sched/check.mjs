@@ -912,8 +912,66 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   h.close();
   check(JSON.stringify(got) === '[1,2,3,4,6]' && JSON.stringify(slow) === '[5,7]',
     `unknowns judged by their marginal warm cost: set ${JSON.stringify(got)} (want [1,2,3,4,6]), warmSlow ${JSON.stringify(s.kinds.warmSlow)} (want 5, 7)`);
-  check(lat[Math.floor(lat.length / 2)] < 60, `... and the primaries' warm answers come back near primaries-only: p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms`);
+  check(lat[Math.floor(lat.length / 2)] < 25, `... and the primaries' warm answers come back near primaries-only (~10 ms, within max(10%, 10 ms) and some jitter): p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms`);
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 38c. The marginal judgment holds up to what the real addon does (review M2 round 2, addendum 2):
+// (A) proven unknowns compound: three rows each adding 24 ms to a 109 ms call are each under a
+//     quarter of it, but together they slow the primaries by 66%. What the proven unknowns add
+//     together is held to the same bound.
+// (B) a fresh reader's first calls are slower (on big 108 -> 85 -> 80 ms): a row that adds
+//     nothing must not be judged on them.
+// (C) a zoom-in during a trial: a span-scaled baseline is off by the call floor, so a row that
+//     adds nothing is judged on a baseline of the same span only, and is still judged (not tried
+//     forever) when its trial started at another span.
+{
+  const near = (list, t0, span = 10000) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + span, buckets: 1024 });
+  const run = async (env, unknowns, plan) => {
+    const sizes = { 1: 100, 2: 100, 3: 100, 4: 100 };
+    unknowns.forEach((id) => { sizes[id] = 10000; });
+    const h = await start(4, sizes, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '300', FSDB_WARM: '1', FSDB_BG_LOAD: '0', FSDB_WARM_UNKNOWN: '3', ...env });
+    for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+    const lat = [];
+    for (const [k, step] of plan.entries()) {
+      const t = performance.now();
+      const st = (await h.send('stats').reply).result;
+      const { ids, span } = step(st);
+      const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000, span)).reply);
+      await Promise.all(rs.slice(0, 4));
+      lat.push(performance.now() - t);
+      await Promise.all(rs);
+      await wait(60);
+    }
+    const s = (await h.send('stats').reply).result;
+    h.close();
+    fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+    const p50 = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+    return { s, slow: (s.kinds.warmSlow || []).map((x) => x.id).sort((a, b) => a - b), proven: [...(s.kinds.warmProven || [])].sort((a, b) => a - b), p50Last: p50(lat.slice(-8)) };
+  };
+  const P = [1, 2, 3, 4];
+  // (A)
+  {
+    const r = await run({ STUB_WARM_MS: '109', STUB_WARM_SIG_COST: '{"5":24,"6":24,"7":24}' }, [5, 6, 7], Array.from({ length: 70 }, () => () => ({ ids: [...P, 5, 6, 7] })));
+    check(r.proven.length <= 1 && r.slow.length + r.proven.length === 3 && r.p50Last < 109 * 1.25 + 10,
+      `(A) three unknowns of +24 ms on a 109 ms call don't all stay: proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}; primaries' p50 ${Math.round(r.p50Last)} ms (P only 109; all three ~181)`);
+  }
+  // (B) P alone for 40 pans (its reader long settled), then the free row 6 joins.
+  {
+    const r = await run({ STUB_WARM_MS: '10', STUB_WARM_WARMUP: '[60,30]' }, [6], Array.from({ length: 70 }, (_, k) => () => ({ ids: k < 40 ? P : [...P, 6] })));
+    check(JSON.stringify(r.proven) === '[6]' && !r.slow.length,
+      `(B) a row that adds nothing isn't judged on its reader's slower first calls: proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}`);
+  }
+  // (C) P alone at one span, then 6 joins; once its trial reader is up, the view zooms in 2x.
+  {
+    let zoomed = false;
+    const r = await run({ STUB_WARM_MS: '40' }, [6], Array.from({ length: 90 }, (_, k) => (st) => {
+      if (k >= 40 && st.warm && st.warm.ready && st.warm.ready.includes(6)) { zoomed = true; }
+      return { ids: k < 40 ? P : [...P, 6], span: zoomed ? 5000 : 10000 };
+    }));
+    check(zoomed && JSON.stringify(r.proven) === '[6]' && !r.slow.length,
+      `(C) a zoom-in during its trial doesn't mark a free row slow, and it is still judged: zoomed ${zoomed}, proven ${JSON.stringify(r.proven)}, slow ${JSON.stringify(r.s.kinds.warmSlow)}`);
+  }
 }
 
 // 41. One set's backoff must not hold up another set's warm-up (Refs #5, review M1): a set whose

@@ -32,7 +32,7 @@ const CHANGE_AT = JSON.parse(process.env.STUB_CHANGE_AT || '{}');
 // documents that it must not happen. STUB_WARM_LOG gets a line per warm call.
 const COLD_MS = Number(process.env.STUB_COLD_MS || 0);
 const WARM_LOAD_MS = Number(process.env.STUB_WARM_LOAD_MS || 0), WARM_MS = Number(process.env.STUB_WARM_MS || 0);
-let navOnce = false, warmSet = null, warmFirst = false;
+let navOnce = false, warmSet = null, warmFirst = false, warmN = 0;
 const held = [];  // memory a warm reader keeps (STUB_WARM_MB_PER_SIG, STUB_WARM_BLOCK)
 const warmLog = (o) => { if (process.env.STUB_WARM_LOG) { fs.appendFileSync(process.env.STUB_WARM_LOG, JSON.stringify({ pid: process.pid, ...o }) + '\n'); } };
 const changeOf = (id) => (CHANGE_AT[id] === undefined ? null : Number(CHANGE_AT[id]));
@@ -152,6 +152,9 @@ module.exports = {
     // STUB_WARM_SIG_COST {id: ms}: a row that costs that much more per warm window (one rebuilt per window)
     const sigCost = JSON.parse(process.env.STUB_WARM_SIG_COST || '{}');
     sleep(ids.reduce((a, id) => a + (sigCost[id] || 0), 0));
+    // STUB_WARM_WARMUP [ms, ...]: a reader's windows after its first (load) one are slower by that
+    // much each (on big a fresh reader's calls went 108 -> 85 -> 80 ms before settling)
+    if (warmFirst) { sleep(Number(JSON.parse(process.env.STUB_WARM_WARMUP || '[]')[warmN++] || 0)); }
     sleep(WARM_MS + Number(process.env.STUB_WARM_SIG_MS || 0) * ids.length + (warmFirst ? 0 : WARM_LOAD_MS)); warmFirst = true;  // (the first window is the reader's first load; STUB_WARM_SIG_MS: the walk, per signal)
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: WARM_MS, walkMs: 0 }));
   },
