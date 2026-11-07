@@ -614,6 +614,40 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 35. trace-X's fan-in point reads (valueAt, valueAt {prev}) of rows in a ready warm set go to
+// the warm worker (a short cycle) instead of a cold read per call (the reader floor), with the
+// same answers; rows outside the set are read cold.
+{
+  const log = path.join(tmp, 'warm35.log');
+  fs.rmSync(log, { force: true });
+  const ids = [1, 2, 3, 4];
+  const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,5]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '10', STUB_WARM_LOG: log, FSDB_WARM: '1', FSDB_BG_LOAD: '0',
+    STUB_CHANGE_AT: JSON.stringify({ 1: 400000, 2: 10, 3: 900000, 4: 500000, 5: 450000 }) };
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const ask = async (h, prev, list = [...ids, 5]) => h.send('valueAt', { signalIds: list, t: 600000, ...(prev ? { prev: true } : {}) }).reply;
+  const same = (a, b) => JSON.stringify({ v: a.values, p: a.prev }) === JSON.stringify({ v: b.values, p: b.prev });
+  const cold = await start(4, {}, { ...env, FSDB_WARM: '0' });
+  await kindsOf(cold);
+  const c1 = await ask(cold, true), c0 = await ask(cold, false);
+  cold.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+  const h = await start(4, {}, env);
+  await kindsOf(h);
+  let st = null;
+  for (let k = 0; k < 100; k++) { await h.send('window', near(ids, 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && ids.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
+  const w1 = await ask(h, true), w0 = await ask(h, false);
+  const t1 = performance.now(); const wp = await ask(h, true, ids); const ms1 = performance.now() - t1;  // (3 widening rounds)
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'near');
+  // (valueAt without prev: the stub's cold point read always answers '0', so a warm one is
+  // compared with the value its prev read gives; the real-dump check compares both)
+  check(!w1.error && !c1.error && same(w1.result, c1.result) && !w0.error && !c0.error && JSON.stringify(w0.result.values.slice(0, 4)) === JSON.stringify(w1.result.values.slice(0, 4)) && !wp.error,
+    `fan-in reads on the warm worker answer as cold ones: prev ${JSON.stringify(w1.result && w1.result.prev)} vs ${JSON.stringify(c1.result && c1.result.prev)}`);
+  check(calls.length > 0 && calls.every((c) => !c.ids.includes(5)) && ms1 < 250,
+    `... rows of the set go to it (${calls.length} warm point reads, row 5 never), valueAt prev of the set's rows in ${Math.round(ms1)} ms (cold: 3 rounds of a 300 ms floor)`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 27. Warm workers (the reader's navDB-once mode: navigation kept, but every signal must be in
 // the process's first load): the rows being viewed get a warm worker in the background, and
 // ranged reads of them then cost a short warm cycle instead of a cold read each. A row outside
