@@ -1500,6 +1500,13 @@ function hotNote(ids) {
 }
 function hotCheck() {
   if (!HOT || !openFile || hot.building) { return; }
+  // A set size halved for heavy rows grows back once the ready readers' memory per row says a
+  // bigger set fits under 80% of the cap (review low): light rows viewed later aren't held to it.
+  if (hot.limit < HOT_MAX) {
+    const per = Math.max(0, ...hotReady().filter((r) => r.base > 0 && r.ids.size).map((r) => r.base / r.ids.size));
+    const fit = per > 0 ? Math.floor(0.8 * HOT_RSS / per) : 0;
+    if (fit > hot.limit) { hot.limit = Math.min(HOT_MAX, fit); }
+  }
   const want = hotWanted();
   if (!want.length) { return; }
   const cur = hotReady();
@@ -1530,7 +1537,7 @@ function hotCheck() {
   for (const x of [...hot.retiring]) { if (!x.pending.size) { hotKill(x); } }
   const need = Math.min(HOT_READERS, want.length);
   if (workers.length + hotProcs().length + need > readerBudget() && !hot.retiring.length && hot.readers.length) {
-    const old = hot.readers; hot.readers = []; hot.replacing = true;
+    const old = hot.readers.filter((x) => x.state !== 'dead'); hot.readers = []; hot.replacing = true;
     for (const x of old) { x.state = 'retiring'; hot.retiring.push(x); if (!x.pending.size) { hotKill(x); } }
   }
   // (a killed reader counts until it has exited: its memory is only freed then)
@@ -1599,7 +1606,7 @@ async function hotBuild(ids) {
     // meanwhile; a set of one that is still over waits out its backoff).
     if (ok.some((r) => r.base > HOT_RSS)) { hotFail(fp, `baseline ${Math.round(Math.max(...ok.map((r) => r.base)) / 1e6)} MB over the cap`); hot.limit = Math.max(1, Math.floor(ids.length / 2)); }
     else if (ok.length === rs.length) { hot.fails.delete(fp); }
-    const old = hot.readers;
+    const old = hot.readers.filter((x) => x.state !== 'dead');  // (one the watchdog killed stays dead)
     hot.readers = ok;
     for (const x of old) { x.state = 'retiring'; hot.retiring.push(x); setTimeout(() => hotKill(x), 5000); }
   } finally {
