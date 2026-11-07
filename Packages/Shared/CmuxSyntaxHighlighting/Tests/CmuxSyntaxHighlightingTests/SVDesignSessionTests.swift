@@ -14,11 +14,13 @@ import Testing
     /// read at each load; `stale` says changed when `fp` differs from what was loaded, or once
     /// after `<dir>/touched` appears (a save that left the text as it was). Instance replies name
     /// the design they came from; each request is logged to `<dir>/log`. The ready line's model
-    /// version is `<dir>/model` (1 without it), read at each start.
+    /// version is `<dir>/model` (1 without it) and its build `<dir>/build` (none without it), read at
+    /// each start.
     static func script(_ dir: URL) -> String {
         """
         D='\(dir.path)'
-        printf '{"id":0,"ready":true,"model":%s}\\n' "$(cat "$D/model" 2>/dev/null || echo 1)"
+        if [ -f "$D/build" ]; then printf '{"id":0,"ready":true,"model":%s,"build":"%s"}\\n' "$(cat "$D/model" 2>/dev/null || echo 1)" "$(cat "$D/build")"
+        else printf '{"id":0,"ready":true,"model":%s}\\n' "$(cat "$D/model" 2>/dev/null || echo 1)"; fi
         loaded=
         while IFS= read -r line; do
           id=$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9]*\\).*/\\1/p')
@@ -60,6 +62,7 @@ import Testing
         }
 
         func set(_ fingerprint: String) throws { try Data(fingerprint.utf8).write(to: dir.appendingPathComponent("fp")) }
+        func setBuild(_ build: String) throws { try Data(build.utf8).write(to: dir.appendingPathComponent("build")) }
         func setModel(_ version: Int) throws { try Data(String(version).utf8).write(to: dir.appendingPathComponent("model")) }
         func touch() throws { try Data().write(to: dir.appendingPathComponent("touched")) }
         func asked(_ cmd: String) -> Int {
@@ -125,6 +128,58 @@ import Testing
         await fake.restart()
         #expect(try await fake.session.lookup("tb.q", generation: h)?.name == "A")
         #expect(fake.session.generation == h)
+    }
+
+    /// Another build of the sidecar (its install folder, named by the hash of its sources: a cmux
+    /// update) is another design even when its model version stayed the same (Refs #8 N1).
+    @Test func aRestartOfAnotherSidecarBuildIsANewDesign() async throws {
+        let fake = try Fake("A")
+        try fake.setBuild("aaaa-arm64")
+        let g = try await fake.session.load().generation
+        try fake.setBuild("bbbb-arm64")
+        await fake.restart()
+        await #expect(throws: SVDesignSession.Failure.designChanged) {
+            _ = try await fake.session.lookup("tb.q", generation: g)
+        }
+        let h = fake.session.generation
+        #expect(h > g)
+        await fake.restart()
+        #expect(try await fake.session.lookup("tb.q", generation: h)?.name == "A")
+        #expect(fake.session.generation == h)
+    }
+
+    /// The installed launcher names its build (the install folder) to the sidecar, which says it in
+    /// its ready line (Refs #8 N1).
+    @Test func theLauncherNamesItsBuild() throws {
+        let launcher = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources/vaporview/sv-model/sv-model.sh")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("svbuild-\(UUID().uuidString)/0123abcd-arm64")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir.deletingLastPathComponent()) }
+        try FileManager.default.copyItem(at: launcher, to: dir.appendingPathComponent("sv-model.sh"))
+        let stub = dir.appendingPathComponent("cmux-sv-model")
+        try Data("#!/bin/sh\nprintf '%s' \"$CMUX_SV_MODEL_BUILD\"\n".utf8).write(to: stub)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [dir.appendingPathComponent("sv-model.sh").path]
+        let out = Pipe()
+        process.standardOutput = out
+        try process.run()
+        process.waitUntilExit()
+        #expect(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "0123abcd-arm64")
+    }
+
+    /// The real sidecar says its build in its ready line, and a model version past #9's params (2).
+    @Test func realSidecarSaysItsBuild() async throws {
+        guard let bin = ProcessInfo.processInfo.environment["CMUX_SV_MODEL_BIN"] else { return }
+        let sidecar = SVModelSidecar(runner: { .init(executable: "/bin/sh", arguments: ["-c", $0]) },
+                                     launchCommand: "CMUX_SV_MODEL_BUILD=feed-x86_64 exec '\(bin)'", installCommand: nil)
+        defer { sidecar.stop() }
+        _ = try? await sidecar.request(["cmd": "stale"])
+        #expect(sidecar.lastReady?["build"] as? String == "feed-x86_64")
+        #expect((sidecar.lastReady?["model"] as? NSNumber)?.intValue == 2)
     }
 
     @Test func aRestartOntoEditedSourcesIsANewDesign() async throws {
