@@ -367,25 +367,36 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
 
   /// TRACE_FSDB_ROWS: Trace Driver from each signal's row menu, at <time>.
   func traceRows(_ paths: [String]) async {
+    // Three ways in, as the app has them: the path the row menu builds, the row menu's own item,
+    // and the selected row (cmux's Trace Driver at Marker, Ctrl+T, sends no path: the page takes
+    // the viewer's selected row through link.selectedSignal()).
     for path in paths {
-      let before = resolved.count
-      let r = await call("""
-        const h = cmuxWaveform.host, t = cmuxWaveform.trace;
-        const v = await h.findLinkItem(path.split('.'), true);
-        if (!v) { return { missing: true }; }
-        await cmuxWaveform.link.addSignal(path);
-        const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
-        if (!items.length) { return { noItem: true, row: h.pathOf(v) }; }
-        cmuxWaveform.link.setMarker && cmuxWaveform.link.setMarker(time);
-        await t.driver({ path: h.pathOf(v), time });
-        await t.settled();
-        const st = t.state().step;
-        return { row: h.pathOf(v), error: st ? st.error || null : 'no step', name: st ? st.name : null, value: st ? st.value : null, kind: st && st.driver ? st.driver.kind : null };
-        """, ["path": path, "time": time]) as? [String: Any]
-      let asked = resolved.count > before ? resolved[before].joined(separator: ".") : "(none)"
-      print("[row] \(path): resolve \(asked); \(String(describing: r))")
-      expect(asked == path, "Trace Driver from the row of \(path) resolves that signal (\(asked))")
-      expect(r?["error"] is NSNull && r?["missing"] == nil, "Trace Driver from the row of \(path) traces it: \(String(describing: r))")
+      for how in ["path", "menu", "selected"] {
+        let before = resolved.count
+        let r = await call("""
+          const h = cmuxWaveform.host, t = cmuxWaveform.trace, link = cmuxWaveform.link;
+          const v = await h.findLinkItem(path.split('.'), true);
+          if (!v) { return { missing: true }; }
+          await link.addSignal(path);
+          await link.selectSignal(path);
+          for (let i = 0; i < 100 && link.selectedSignal() === null; i++) { await new Promise((r) => setTimeout(r, 50)); }
+          const selected = link.selectedSignal();
+          const items = window.cmuxTraceUI.rowMenuItems({ webviewSection: 'signal', netlistId: v.netlistId });
+          if (!items.length) { return { noItem: true, row: h.pathOf(v) }; }
+          link.setMarker && link.setMarker(time);
+          if (how === 'path') { await t.driver({ path: h.pathOf(v), time }); }
+          else if (how === 'menu') { await items[0].run(); }
+          else { await t.driver({ path: null, time }); }
+          await t.settled();
+          const st = t.state().step;
+          return { row: h.pathOf(v), name: v.name, selected: selected ? selected.join('.') : null, error: st ? st.error || null : 'no step',
+            stepName: st ? st.name : null, value: st ? st.value : null, kind: st && st.driver ? st.driver.kind : null };
+          """, ["path": path, "time": time, "how": how]) as? [String: Any]
+        let asked = resolved.count > before ? resolved[before].joined(separator: ".") : "(none)"
+        print("[row \(how)] \(path): resolve \(asked); \(String(describing: r))")
+        expect(asked == path, "Trace Driver (\(how)) from the row of \(path) resolves that signal (\(asked))")
+        expect(r?["error"] is NSNull && r?["missing"] == nil, "Trace Driver (\(how)) from the row of \(path) traces it: \(String(describing: r))")
+      }
     }
     finish()
   }
