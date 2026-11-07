@@ -299,7 +299,7 @@ function windowQuery({ signals, t0, t1, buckets }) {
       }
     }
     let packed = packRecords(recs, s.width, !!s.kind);
-    const whole = exact && t0 === 0 && count >= s.n;
+    const whole = exact && t0 === 0 && count >= s.n && buckets === Math.ceil(s.n / 2) + 1; // the page's whole load, not a tile
     if (s.torn || (s.tornWhole && whole)) { const raw = zlib.inflateRawSync(packed); packed = zlib.deflateRawSync(raw.subarray(0, raw.length - 2), { level: 1 }); }
     let mn = s.min, mx = s.max;
     if (s.coldRange && !known && (t1 - t0) <= 0.25 * dump.metadata.timeEnd) { mn = undefined; mx = undefined; }
