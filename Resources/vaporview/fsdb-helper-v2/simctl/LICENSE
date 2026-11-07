@@ -1,4 +1,5 @@
-MIT License: applies to simctl_vpi.c and the libsimctl.so built from it, and to simctl_stub.c
+MIT License: applies to simctl_vpi.c, simctl_forksave.c (included by it) and the libsimctl.so built
+from them, to simctl_saver.sv (the fork-save top a design is built with), and to simctl_stub.c
 and the libsimctl_stub.so built from it (installed in ~/.cache/cmux/simctl). It does not apply to
 sim-worker.js or the rest of the FSDB helper, which are GPL-3.0-or-later.
 

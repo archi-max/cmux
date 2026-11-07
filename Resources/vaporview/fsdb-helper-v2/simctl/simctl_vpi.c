@@ -32,6 +32,7 @@
  *                           the controller writes `K` and then `run` there, and serving resumes at the next time
  *                           step + 1 time unit (the stop takes effect only once the simulation moves on)
  *      K id                 resume token (see P)
+ *      V id file            fork-save: a file save in a forked copy; the simulation goes on (simctl_forksave.c)
  *      Q id                 finish
  *
  * Tokens are separated by single spaces and lines by \n; the controller never sends a token with whitespace or
@@ -68,6 +69,8 @@
 #endif
 
 static int in_fd = -1, out_fd = -1;
+static int fs_child, fs_alive;     /* fork-save (simctl_forksave.c): in a save child; saves out */
+static void fs_reap(void);
 static pid_t own_group = 0;           /* the simulator's process group, when it was started as its leader */
 
 /* The controller is gone: end every process of the simulation's group (the parked original after a restore,
@@ -346,7 +349,7 @@ static void sched_ro(void) {
   if (h) vpi_release_handle(h);
   ro_pending = 1;
 }
-static PLI_INT32 vc_rtn(p_cb_data d) {
+static PLI_INT32 vc_rtn(p_cb_data d) { if (fs_child) return 0;
   int id = (int)(intptr_t)d->user_data;
   if (!watches[id].dirty) {
     watches[id].dirty = 1;
@@ -373,7 +376,7 @@ static uint64_t poll_dt = 1000000;
 static int running; static long run_id = -1, stop_id = -1;
 static int finished;
 
-static PLI_INT32 cond_rtn(p_cb_data d) { (void)d; cond_dirty = 1; sched_ro(); return 0; }
+static PLI_INT32 cond_rtn(p_cb_data d) { (void)d; if (fs_child) return 0; cond_dirty = 1; sched_ro(); return 0; }
 static void clear_conds(void) {
   for (int i = 0; i < nconds; i++) { if (cond_cbs[i]) vpi_remove_cb(cond_cbs[i]); free(conds[i].val); }
   free(conds); free(cond_or); free(cond_cbs); conds = NULL; cond_or = NULL; cond_cbs = NULL; nconds = 0; cond_dirty = 0;
@@ -398,12 +401,17 @@ static void stop_run(const char *why) {
   need_serve = 1;
   sched_ro();
 }
-static PLI_INT32 end_rtn(p_cb_data d) { (void)d; if (end_cb) vpi_release_handle(end_cb); end_cb = NULL; stop_run("done"); return 0; }
+static PLI_INT32 end_rtn(p_cb_data d) { if (fs_child) return 0; (void)d; if (end_cb) vpi_release_handle(end_cb); end_cb = NULL; stop_run("done"); return 0; }
 
 /* input buffer shared by the serve loop and the poll callback */
 static char *inb; static size_t inlen, incap;
 static int fill(int block) {
   if (!block) { struct pollfd p = { in_fd, POLLIN, 0 }; if (poll(&p, 1, 0) <= 0) return 0; }
+  else while (fs_alive) {   /* waiting for a request while saves are out: report their ends meanwhile */
+    struct pollfd p = { in_fd, POLLIN, 0 };
+    if (poll(&p, 1, 200) != 0) break;
+    fs_reap();
+  }
   if (incap - inlen < 65536) { incap = incap ? incap * 2 : 1 << 20; inb = realloc(inb, incap); }
   ssize_t k;
   do k = read(in_fd, inb + inlen, incap - inlen); while (k < 0 && errno == EINTR);
@@ -418,7 +426,7 @@ static vpiHandle after(uint64_t dt, PLI_INT32 (*rtn)(p_cb_data)) {
   return vpi_register_cb(&cb);
 }
 static int is_quick(char op);
-static PLI_INT32 poll_rtn(p_cb_data d) {
+static PLI_INT32 poll_rtn(p_cb_data d) { if (fs_child) return 0; if (fs_alive) fs_reap();
   (void)d;
   if (poll_cb) { vpi_release_handle(poll_cb); poll_cb = NULL; }   /* fired: its handle is ours to free */
   if (!running) return 0;
@@ -465,7 +473,7 @@ static void reply_write(long id, int si) {
   bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"value\":\"", id, (unsigned long long)now());
   bgrow(&ob, s->width); getbin(s, ob.p + ob.n); ob.n += s->width; bstr(&ob, "\"}"); send_ob();
 }
-static PLI_INT32 write_rtn(p_cb_data d) {
+static PLI_INT32 write_rtn(p_cb_data d) { if (fs_child) return 0;
   (void)d;
   for (int i = 0; i < nwq; i++) {
     apply_write(&wq[i]); free(wq[i].val);
@@ -484,7 +492,7 @@ static PLI_INT32 write_rtn(p_cb_data d) {
  * Why a delay of 1 and not cbNextSimTime: next-sim-time callbacks fire only when there is a next event, so with
  * no scheduled activity left (a quiet design while parked) they would never fire and the library would never
  * serve again. The 1-unit steps last only from P until the controller's K, a short window. */
-static PLI_INT32 resume_rtn(p_cb_data d) {
+static PLI_INT32 resume_rtn(p_cb_data d) { if (fs_child) return 0;
   (void)d;
   if (fill(0) < 0) { lost_controller(); return 0; }
   char *p = inb, *e = inb + inlen;
@@ -581,9 +589,11 @@ static void emit_all(void) {
 /* Requests that only look (time, read, list, watches) or change what is watched: served by the loop, and also
  * during a run at its poll points (see poll_rtn), at that time's ReadOnlySynch, without ending the run. A read's
  * reply carries the time it observed; a new watch's first record (its value then) is where its coverage starts. */
-static int is_quick(char op) { return op == 'T' || op == 'G' || op == 'W' || op == 'X' || op == 'I' || op == 'N'; }
+#include "simctl_forksave.c"
+static int is_quick(char op) { return op == 'T' || op == 'G' || op == 'W' || op == 'X' || op == 'I' || op == 'N' || op == 'V'; }
 static void quick_op(char op, long id, char **tok, int nt, uint64_t t) {
   switch (op) {
+    case 'V': forksave(id, nt >= 3 ? tok[2] : NULL, t); break;
     case 'T': bfmt(&ob, "{\"id\":%ld,\"t\":%llu}", id, (unsigned long long)t); send_ob(); break;
     case 'G': {
       bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"values\":[", id, (unsigned long long)t);
@@ -685,7 +695,7 @@ static void serve(int ctx) {
     char op = tok[0][0]; long id = strtol(tok[1], NULL, 10);
     uint64_t t = now();
     switch (op) {
-    case 'T': case 'G': case 'W': case 'X': case 'I': case 'N': quick_op(op, id, tok, nt, t); break;
+    case 'T': case 'G': case 'W': case 'X': case 'I': case 'N': case 'V': quick_op(op, id, tok, nt, t); break;
     case 'K': break;   /* a resume token that arrived while serving: nothing to do */
     case 'S': bfmt(&ob, "{\"id\":%ld,\"t\":%llu,\"idle\":true}", id, (unsigned long long)t); send_ob(); break;
     case 'R': case 'U': {
@@ -769,7 +779,7 @@ static void serve(int ctx) {
   }
 }
 
-static PLI_INT32 ro_rtn(p_cb_data d) {
+static PLI_INT32 ro_rtn(p_cb_data d) { if (fs_child) return 0; if (fs_alive) fs_reap();
   (void)d;
   ro_pending = 0; in_ro = 1;
   flush_dirty();
@@ -779,15 +789,15 @@ static PLI_INT32 ro_rtn(p_cb_data d) {
   in_ro = 0;
   return 0;
 }
-static PLI_INT32 serve_calltf(PLI_BYTE8 *ud) { (void)ud; need_serve = 0; snprintf(serve_reason, sizeof serve_reason, "resume"); serve(CTX_SYSTF); return 0; }
-static PLI_INT32 start_rtn(p_cb_data d) {
+static PLI_INT32 serve_calltf(PLI_BYTE8 *ud) { (void)ud; if (fs_child) return 0; need_serve = 0; snprintf(serve_reason, sizeof serve_reason, "resume"); serve(CTX_SYSTF); return 0; }
+static PLI_INT32 start_rtn(p_cb_data d) { if (fs_child) return 0;
   (void)d;
   snprintf(serve_reason, sizeof serve_reason, "start");
   need_serve = 1; sched_ro();
   bfmt(&ob, "{\"ev\":\"ready\",\"t\":%llu,\"precision\":%d}", (unsigned long long)now(), vpi_get(vpiTimePrecision, NULL)); send_ob();
   return 0;
 }
-static PLI_INT32 end_sim_rtn(p_cb_data d) {
+static PLI_INT32 end_sim_rtn(p_cb_data d) { if (fs_child) return 0;
   (void)d;
   finished = 1;
   flush_dirty(); send_recs();
