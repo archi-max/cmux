@@ -5,7 +5,8 @@
 // reads. The first n BitVector variables under <scope> (or PARITY_IDS=a,b,c) are viewed at 0.5
 // until the warm set is ready, then read at windows of frac (default 0.01) of the dump at six
 // positions plus the first again; every warm answer must equal the cold one change for change
-// (count and records). Exit 1 on any difference or when nothing was answered warm.
+// (count and records), and valueAt / valueAt {prev} of all rows at six times must equal the cold
+// answers. Exit 1 on any difference or when nothing was answered warm.
 import { spawn } from 'node:child_process';
 
 const [launcher, file, scope, nStr, fracStr] = process.argv.slice(2);
@@ -94,7 +95,28 @@ for (const at of [0.05, 0.2, 0.35, 0.62, 0.8, 0.93, 0.05]) {
     console.log(`DIFF ${s.path} at ${at}: warm ${x.warm ? 'yes' : 'no'} count ${x.count} vs ${z.count}`);
   }
 }
+// trace-X's fan-in point reads: valueAt and valueAt {prev} at change times and around them
+let pSame = 0, pDiffer = 0;
+const pLat = [], cLat = [];
+for (const at of [0.051, 0.2, 0.35, 0.62, 0.8, 0.93]) {
+  const t = Math.floor(T * at);
+  for (const prev of [false, true]) {
+    await warm.send('window', W(at - 0.001));  // (the rows stay the ones being viewed)
+    const q = { signalIds: sigs.map((s) => s.signalId), t, ...(prev ? { prev: true } : {}) };
+    const s0 = performance.now();
+    const a = await warm.send('valueAt', q);
+    if (prev) { pLat.push(performance.now() - s0); }
+    const s1 = performance.now();
+    const b = await cold.send('valueAt', q);
+    if (prev) { cLat.push(performance.now() - s1); }
+    const eq = !a.error && !b.error && JSON.stringify(a.result.values) === JSON.stringify(b.result.values) && JSON.stringify(a.result.prev || null) === JSON.stringify(b.result.prev || null);
+    if (eq) { pSame++; } else { pDiffer++; console.log(`DIFF valueAt${prev ? ' prev' : ''} at ${t}: ${JSON.stringify(a.error || a.result).slice(0, 300)} vs ${JSON.stringify(b.error || b.result).slice(0, 300)}`); }
+  }
+}
+pLat.sort((x, y) => x - y); cLat.sort((x, y) => x - y);
+differ += pDiffer;
 lat.sort((x, y) => x - y);
-console.log(JSON.stringify({ signals: sigs.length, warmSet: st ? st.ready.length : 0, compared: same + differ, warmServed, same, differ, warmWindowMs: { p50: Math.round(lat[3]), max: Math.round(lat[6]) } }));
+console.log(JSON.stringify({ signals: sigs.length, warmSet: st ? st.ready.length : 0, compared: same + differ - pDiffer, warmServed, same, differ, warmWindowMs: { p50: Math.round(lat[3]), max: Math.round(lat[6]) },
+  pointReads: { same: pSame, differ: pDiffer, prevMs: { p50: Math.round(pLat[3]), max: Math.round(pLat[5]) }, coldPrevMs: { p50: Math.round(cLat[3]), max: Math.round(cLat[5]) } } }));
 warm.close(); cold.close();
 setTimeout(() => process.exit(differ || !warmServed ? 1 : 0), 300);

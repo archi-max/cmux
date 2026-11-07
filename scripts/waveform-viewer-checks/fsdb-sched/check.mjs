@@ -622,7 +622,7 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(log, { force: true });
   const ids = [1, 2, 3, 4];
   const env = { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4,5]', STUB_FLOOR_MS: '300', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '10', STUB_WARM_LOG: log, FSDB_WARM: '1', FSDB_BG_LOAD: '0',
-    STUB_CHANGE_AT: JSON.stringify({ 1: 400000, 2: 10, 3: 900000, 4: 500000, 5: 450000 }) };
+    STUB_CHANGE_AT: JSON.stringify({ 1: 598000, 2: 597000, 3: 900000, 4: 599500, 5: 450000 }) };  // (3: after t, so none)
   const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
   const ask = async (h, prev, list = [...ids, 5]) => h.send('valueAt', { signalIds: list, t: 600000, ...(prev ? { prev: true } : {}) }).reply;
   const same = (a, b) => JSON.stringify({ v: a.values, p: a.prev }) === JSON.stringify({ v: b.values, p: b.prev });
@@ -636,14 +636,14 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   let st = null;
   for (let k = 0; k < 100; k++) { await h.send('window', near(ids, 0)).reply; st = (await h.send('stats').reply).result.warm; if (st && ids.every((id) => st.ready.includes(id)) && !st.building) { break; } await wait(50); }
   const w1 = await ask(h, true), w0 = await ask(h, false);
-  const t1 = performance.now(); const wp = await ask(h, true, ids); const ms1 = performance.now() - t1;  // (3 widening rounds)
+  const t1 = performance.now(); const wp = await ask(h, true, [1, 2, 4]); const ms1 = performance.now() - t1;  // (found in the first, narrow round; wider rounds read cold)
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.op === 'near');
   // (valueAt without prev: the stub's cold point read always answers '0', so a warm one is
   // compared with the value its prev read gives; the real-dump check compares both)
   check(!w1.error && !c1.error && same(w1.result, c1.result) && !w0.error && !c0.error && JSON.stringify(w0.result.values.slice(0, 4)) === JSON.stringify(w1.result.values.slice(0, 4)) && !wp.error,
     `fan-in reads on the warm worker answer as cold ones: prev ${JSON.stringify(w1.result && w1.result.prev)} vs ${JSON.stringify(c1.result && c1.result.prev)}`);
   check(calls.length > 0 && calls.every((c) => !c.ids.includes(5)) && ms1 < 250,
-    `... rows of the set go to it (${calls.length} warm point reads, row 5 never), valueAt prev of the set's rows in ${Math.round(ms1)} ms (cold: 3 rounds of a 300 ms floor)`);
+    `... rows of the set go to it (${calls.length} warm point reads, row 5 never), valueAt prev of the set's rows in ${Math.round(ms1)} ms (cold: a 300 ms floor per round)`);
   h.close();
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }

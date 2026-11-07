@@ -1355,9 +1355,9 @@ async function hotBuild(ids) {
 // for each row in its own request, all at once: requests that reach a reader together (within
 // HOT_GATHER_MS of each other, or while it is busy) go to it as one call per window.
 const HOT_GATHER_MS = 3;
-function hotWindowBatched(r, ids, range) {
+function hotWindowBatched(r, ids, range, op = 'hotWindow') {
   return new Promise((resolve) => {
-    (r.queue || (r.queue = [])).push({ ids, range, key: JSON.stringify(range), resolve });
+    (r.queue || (r.queue = [])).push({ ids, range, op, key: op + JSON.stringify(range), resolve });
     if (!r.busy && !r.pumpSoon) { r.pumpSoon = true; setTimeout(() => { r.pumpSoon = false; hotPump(r); }, HOT_GATHER_MS); }
   });
 }
@@ -1368,7 +1368,7 @@ async function hotPump(r) {
   for (const q of r.queue.splice(0)) { if (!groups.has(q.key)) { groups.set(q.key, []); } groups.get(q.key).push(q); }
   for (const qs of groups.values()) {
     const ids = [...new Set(qs.flatMap((q) => q.ids))];
-    const a = await hotCall(r, { op: 'hotWindow', signalIds: ids, ...qs[0].range });
+    const a = await hotCall(r, { op: qs[0].op, signalIds: ids, ...qs[0].range });
     for (const q of qs) {
       if (a.error) { q.resolve({ error: a.error }); continue; }
       const want = new Set(q.ids);
@@ -1399,6 +1399,28 @@ async function rangedRead(req, ids, range) {
   return ids.map((id) => by.get(id));
 }
 
+// A cold point read (coldNear: value at t, last real change in [t - span, t]) with the signals
+// of the ready warm set read on it (trace-X's fan-in rows are mostly the rows being viewed) and
+// the rest cold, in parallel; a failed warm read falls back to cold. -> results in ids order
+// Only narrow reads (span <= 1% of the dump): a warm call loads its whole set over the span,
+// so a widening round over a quarter of the dump cost ~4x a cold call of the rows still searching.
+async function nearRead(req, ids, extra) {
+  hotNote(ids);
+  const r = (extra.span || 0) <= (timeEnd || 0) * 0.01 ? hot.readers.find((x) => x.state === 'ready') : null;
+  const inSet = r ? [...new Set(ids.filter((id) => r.ids.has(id)))] : [];
+  const rest = ids.filter((id) => !inSet.includes(id));
+  const [a, b] = await Promise.all([
+    inSet.length ? hotWindowBatched(r, inSet, extra, 'hotNear') : null,
+    rest.length ? coldTask(req, 'coldNear', rest, extra, true) : []]);
+  const by = new Map(rest.map((id, k) => [id, b[k]]));
+  if (inSet.length) {
+    if (a.error) { (await coldTask(req, 'coldNear', inSet, extra, true)).forEach((x, k) => by.set(inSet[k], x)); } else {
+      for (const x of a.result) { by.set(x.signalId, x); }
+    }
+  }
+  return ids.map((id) => by.get(id));
+}
+
 // valueAt {prev: true} of signals that aren't stored: view windows [t - span, t] that grow x8
 // until each signal's last real change is in one or the window reaches 0 (then it has none:
 // null). Stored (primary) signals pay a floor per call, so they start wide (1/256 of the dump)
@@ -1409,7 +1431,7 @@ async function coldNear(req, ids, t) {
   const T = Math.max(1, timeEnd || 1);
   const round = async (todo, span) => {
     while (todo.length && !req.cancelled) {
-      const rs = await coldTask(req, 'coldNear', todo, { t, span }, true);
+      const rs = await nearRead(req, todo, { t, span });
       const next = [];
       todo.forEach((id, k) => {
         const r = rs[k];
@@ -2368,9 +2390,16 @@ const handlers = {
       const byId = new Map([...warmIds.map((id, k) => [id, wv[k]]), ...cv]);
       return { values: ids.map((id) => byId.get(id).value), prev: ids.map((id) => byId.get(id).prev), cold: cold.size };
     }
-    const [wv, cv] = await Promise.all([
+    // (cold rows in a ready warm set are read on it: a point read there is the value at t)
+    const hr = hot.readers.find((x) => x.state === 'ready');
+    const coldList = [...cold], onWarm = hr ? coldList.filter((id) => hr.ids.has(id)) : [], offWarm = coldList.filter((id) => !onWarm.includes(id));
+    if (HOT) { hotNote(coldList); }
+    const [wv, cw, co] = await Promise.all([
       warmIds.length ? scatter(req, 'valueAt', warmIds, { t }, (m) => m.result) : [],
-      cold.size ? coldTask(req, 'coldValueAt', [...cold], { t }, 'even') : []]);
+      onWarm.length ? nearRead(req, onWarm, { t, span: 0 }) : [],
+      offWarm.length ? coldTask(req, 'coldValueAt', offWarm, { t }, 'even') : []]);
+    const coldBy = new Map([...onWarm.map((id, k) => [id, cw[k] && !cw[k].error ? cw[k].value : null]), ...offWarm.map((id, k) => [id, co[k]])]);
+    const cv = coldList.map((id) => coldBy.get(id));
     const byId = new Map([...warmIds.map((id, k) => [id, wv[k]]), ...[...cold].map((id, k) => [id, cv[k]])]);
     return { values: ids.map((id) => byId.get(id)), cold: cold.size };
   },
