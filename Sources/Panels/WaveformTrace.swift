@@ -539,6 +539,21 @@ enum WaveformTrace {
         return true
     }
 
+    /// Ctrl+L and View > Trace Loads: the readers of the focused viewer's selected row at its
+    /// marker, or of the signal at the caret of a SystemVerilog editor next to a viewer. False
+    /// (the key goes on) otherwise.
+    static func performLoadsFromShortcut(window: NSWindow?) -> Bool {
+        if let waveform = WaveformSourceLink.focusedWaveformPanel(in: window) {
+            guard !waveform.nativeViewSessions.waveform.isEditableElementFocused else { return false }
+            Task { @MainActor in
+                _ = await waveform.nativeViewSessions.waveform.callTrace("loads", argument: ["path": NSNull(), "time": NSNull()])
+            }
+            return true
+        }
+        guard let features = AppDelegate.shared?.shortcutFocusedSavingTextView(in: window)?.languageFeatures else { return false }
+        return features.traceLoadsUnderCaret()
+    }
+
     /// Traces the viewer's selected row at its marker (the page asks for the design path).
     static func traceSelectedSignal(in waveform: FilePreviewPanel) {
         Task { @MainActor in
@@ -546,9 +561,11 @@ enum WaveformTrace {
         }
     }
 
-    /// The editor's Trace Driver: the signal at `position`, in the instance the user picks, at the
-    /// viewer's marker. Returns a message for the user when it could not, nil when the page traces.
+    /// The editor's Trace Driver (or, with `loads`, Trace Loads): the signal at `position`, in the
+    /// instance the user picks, at the viewer's marker. Returns a message for the user when it
+    /// could not, nil when the page traces.
     static func traceFromEditor(
+        loads: Bool = false,
         session: LanguageServerSession,
         documentURI: URL,
         position: LSPPosition,
@@ -620,18 +637,20 @@ enum WaveformTrace {
         editor.closeLinkProgress()
         // The build's done (queued behind its progress calls) before the trace, as the page expects.
         await buildSends[built.key]?.value
-        _ = await waveform.nativeViewSessions.waveform.callTrace("driverOfDesign", argument: argument)
+        _ = await waveform.nativeViewSessions.waveform.callTrace(loads ? "loadsOfDesign" : "driverOfDesign", argument: argument)
         return nil
     }
 
-    /// The editor's context menu item.
-    static func editorMenuItem(target: AnyObject, action: Selector) -> NSMenuItem {
+    /// The editor's context menu item (`loads`: Trace Loads).
+    static func editorMenuItem(target: AnyObject, action: Selector, loads: Bool = false) -> NSMenuItem {
         let item = NSMenuItem(
-            title: String(localized: "filePreview.language.traceDriver", defaultValue: "Trace Driver at Marker"),
+            title: loads
+                ? String(localized: "filePreview.language.traceLoads", defaultValue: "Trace Loads at Marker")
+                : String(localized: "filePreview.language.traceDriver", defaultValue: "Trace Driver at Marker"),
             action: action,
             keyEquivalent: ""
         )
-        let shortcut = KeyboardShortcutSettings.shortcut(for: .traceWaveformDriver)
+        let shortcut = KeyboardShortcutSettings.shortcut(for: loads ? .traceWaveformLoads : .traceWaveformDriver)
         if let key = shortcut.menuItemKeyEquivalent {
             item.keyEquivalent = key
             item.keyEquivalentModifierMask = shortcut.modifierFlags

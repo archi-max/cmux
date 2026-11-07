@@ -619,6 +619,8 @@ final class FilePreviewLanguageFeatures: NSObject {
             // Driver tracing (WaveformTrace).
             menu.insertItem(WaveformTrace.editorMenuItem(target: self, action: #selector(traceDriverFromMenu(_:))), at: separatorIndex)
             separatorIndex += 1
+            menu.insertItem(WaveformTrace.editorMenuItem(target: self, action: #selector(traceLoadsFromMenu(_:)), loads: true), at: separatorIndex)
+            separatorIndex += 1
             if let instances = instanceMenu(at: contextMenuCharacterIndex) {
                 menu.insertItem(instances, at: separatorIndex)
                 separatorIndex += 1
@@ -750,6 +752,19 @@ final class FilePreviewLanguageFeatures: NSObject {
         return true
     }
 
+    @objc private func traceLoadsFromMenu(_ sender: Any?) {
+        guard let textView else { return }
+        addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location, traceLoads: true)
+    }
+
+    /// Lists the readers of the signal at the caret at the waveform's marker (WaveformTrace). False when there is no waveform.
+    @discardableResult
+    func traceLoadsUnderCaret() -> Bool {
+        guard canAddToWaveform, let textView else { return false }
+        addSignalToWaveform(at: textView.selectedRange().location, traceLoads: true)
+        return true
+    }
+
     @objc private func addScopeToWaveformFromMenu(_ sender: Any?) {
         guard let textView else { return }
         addSignalToWaveform(at: contextMenuCharacterIndex ?? textView.selectedRange().location, wholeScope: true)
@@ -778,8 +793,9 @@ final class FilePreviewLanguageFeatures: NSObject {
     }
 
     /// `wholeScope`: the instance's signals rather than the one signal. `trace`: trace the
-    /// signal's driver at the marker instead of adding it (WaveformTrace).
-    private func addSignalToWaveform(at index: Int, wholeScope: Bool = false, trace: Bool = false) {
+    /// signal's driver at the marker instead of adding it (WaveformTrace); `traceLoads`: list its
+    /// readers at the marker.
+    private func addSignalToWaveform(at index: Int, wholeScope: Bool = false, trace: Bool = false, traceLoads: Bool = false) {
         guard let textView else { return }
         guard let session, let documentURI, let storage = textView.textStorage,
               let identifier = FilePreviewLanguageIdentifier.range(containing: index, in: storage.string as NSString)
@@ -806,8 +822,9 @@ final class FilePreviewLanguageFeatures: NSObject {
             let progress: @MainActor @Sendable (String) -> Void = { [weak self] note in
                 self?.showLinkMessage(note, at: identifier.location, isProgress: true)
             }
-            let message = trace
+            let message = trace || traceLoads
                 ? await WaveformTrace.traceFromEditor(
+                    loads: traceLoads,
                     session: session,
                     documentURI: documentURI,
                     position: position,

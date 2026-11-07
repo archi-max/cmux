@@ -786,6 +786,16 @@ final class SavingTextView: NSTextView, FilePreviewAutomaticScrollSuppressing {
                 { [weak self] in _ = self?.languageFeatures?.traceDriverUnderCaret() }
             ))
         }
+        let traceLoads = KeyboardShortcutSettings.shortcut(for: .traceWaveformLoads)
+        if languageFeatures?.canAddToWaveform == true, !traceLoads.isUnbound {
+            candidates.append((
+                traceLoads,
+                { [weak self] event in
+                    self?.previewFontZoomShortcutWhenClauseAllows(action: .traceWaveformLoads, event: event) ?? false
+                },
+                { [weak self] in _ = self?.languageFeatures?.traceLoadsUnderCaret() }
+            ))
+        }
         for (action, canGo) in [
             (KeyboardShortcutSettings.Action.navigateSourceBack, languageFeatures?.canNavigateBack == true),
             (.navigateSourceForward, languageFeatures?.canNavigateForward == true),

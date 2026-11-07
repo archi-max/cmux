@@ -195,6 +195,7 @@ Values for `shortcuts.bindings.<action>`:
 - `shortcuts.bindings.revealWaveformSignalInSource`
 - `shortcuts.bindings.traceWaveformDriver`
 - `shortcuts.bindings.traceWaveformXRoot`
+- `shortcuts.bindings.traceWaveformLoads`
 - `shortcuts.bindings.navigateSourceBack`
 - `shortcuts.bindings.navigateSourceForward`
 - `shortcuts.bindings.stepWaveformCycleForward`
