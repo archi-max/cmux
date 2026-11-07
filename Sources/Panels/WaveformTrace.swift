@@ -52,6 +52,17 @@ enum WaveformTrace {
     private static var designs: [String: Design] = [:]
     /// When each design's first-time sidecar build started (ms since 1970, the page's clock), while it builds.
     private static var buildStarts: [String: Double] = [:]
+    /// The viewers waiting for each design's build: every one gets its progress, done and failed.
+    private static var buildWaiters: [String: NSHashTable<FilePreviewPanel>] = [:]
+    /// Each build's last stage (with its percent or size), for a viewer that joins it.
+    private static var buildStates: [String: [String: Any]] = [:]
+    /// Builds whose sidecar is installed and now loads the design: a failure from here on is the
+    /// design's (slang's), not the build's.
+    private static var buildsInstalled: Set<String> = []
+    /// Each design's progress calls in order, one after the other.
+    private static var buildSends: [String: Task<Void, Never>] = [:]
+    /// The dump path of a trace from the editor that waits for a build, per viewer (its Retry).
+    private static let buildEntries = NSMapTable<FilePreviewPanel, NSArray>.weakToStrongObjects()
     /// The design each viewer last traced in, for the page's model requests.
     private static let activeDesigns = NSMapTable<FilePreviewPanel, Design>.weakToStrongObjects()
     /// Sidecars kept at most: each holds an elaborated design in memory.
@@ -64,7 +75,8 @@ enum WaveformTrace {
     }
 
     /// The loaded design `editor`'s slang-server compiles. Starts (and on first use builds) the sidecar.
-    static func design(for editor: FilePreviewLanguageFeatures, waveform: FilePreviewPanel?) async throws -> Design {
+    /// `entry`: the dump path of the editor's trace that waits, for the build panel's Retry.
+    static func design(for editor: FilePreviewLanguageFeatures, waveform: FilePreviewPanel?, entry: [String]? = nil) async throws -> Design {
         guard let session = editor.linkSession?.session else { throw Failure(message: noEditorMessage) }
         let root = editor.linkRootPath ?? (editor.filePath as NSString).deletingLastPathComponent
         let state = await SlangCompilationActions.currentState(of: session)
@@ -110,24 +122,39 @@ enum WaveformTrace {
             }
             let sidecar = SVModelSidecar(runner: runner, launchCommand: commands.launch, installCommand: commands.install, installSource: source)
             design = Design(key: key, sidecar: sidecar, args: args, root: root, hostIdentity: editor.linkHostIdentity)
-            if designs.count >= maxDesigns, let oldest = designs.keys.sorted().first {
-                designs.removeValue(forKey: oldest)?.sidecar.stop()
+            if designs.count >= maxDesigns, let oldest = designs.keys.sorted().first, let evicted = designs.removeValue(forKey: oldest) {
+                forget(evicted)
             }
             designs[key] = design
         }
         if let waveform { activeDesigns.setObject(design, forKey: waveform) }
         let host = editor.linkRemoteRoute?.configuration.destination
+        if let waveform {
+            let waiters = buildWaiters[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+            waiters.add(waveform)
+            buildWaiters[key] = waiters
+            if let entry { buildEntries.setObject(entry as NSArray, forKey: waveform) } else { buildEntries.removeObject(forKey: waveform) }
+            // A trace that joins a build under way (another viewer's, or from the editor, where
+            // the page is not asked first): its viewer shows the build and points at it.
+            if buildStarts[key] != nil {
+                sendBuildProgress(key: key, host: host, buildStates[key] ?? ["stage": "upload"], to: [waveform], focus: true)
+            }
+        }
+        // The handlers are the design's, not one viewer's: progress goes to every viewer waiting.
         design.sidecar.onStatus = { status in
             Task { @MainActor in
                 switch status {
                 case .building:
                     buildStarts[key] = Date().timeIntervalSince1970 * 1000
-                    if let waveform {
-                        _ = await waveform.nativeViewSessions.waveform.callTrace("status", argument: buildingMessage(host: host))
+                    buildsInstalled.remove(key)
+                    for waiter in buildWaiters[key]?.allObjects ?? [] {
+                        _ = await waiter.nativeViewSessions.waveform.callTrace("status", argument: buildingMessage(host: host))
                     }
                 case .connecting:
                     // After the install: the sidecar starts again and loads the design.
-                    buildProgress("load", key: key, host: host, waveform: waveform)
+                    guard buildStarts[key] != nil else { return }
+                    buildsInstalled.insert(key)
+                    buildProgress("load", key: key, host: host)
                 }
             }
         }
@@ -136,19 +163,23 @@ enum WaveformTrace {
                 var extra: [String: Any] = [:]
                 if let percent = report.percent { extra["percent"] = percent }
                 if let bytes = report.bytes { extra["sourceBytes"] = bytes }
-                buildProgress(report.stage.rawValue, key: key, host: host, waveform: waveform, extra)
+                buildProgress(report.stage.rawValue, key: key, host: host, extra)
             }
         }
         let load = design.load ?? Task { @MainActor in
             try await design.sidecar.request(["cmd": "load", "args": design.args, "cwd": design.root])
         }
         design.load = load
+        defer {
+            // Done waiting: a viewer gets no more of this design's progress unless it asks again.
+            if let waveform, buildStarts[key] == nil {
+                buildWaiters[key]?.remove(waveform)
+                buildEntries.removeObject(forKey: waveform)
+            }
+        }
         do {
             let reply = try await load.value
-            if buildStarts[key] != nil {
-                buildProgress("done", key: key, host: host, waveform: waveform)
-                buildStarts[key] = nil
-            }
+            if buildStarts[key] != nil { endBuild("done", key: key, host: host) }
             guard let tops = reply["tops"] as? [String], !tops.isEmpty else {
                 throw Failure(message: loadFailedMessage(reply))
             }
@@ -158,7 +189,11 @@ enum WaveformTrace {
             throw error
         } catch {
             design.load = nil
-            if buildStarts[key] != nil {
+            if buildStarts[key] != nil, buildsInstalled.contains(key) {
+                // Built and installed; loading the design failed (slang, a timeout): the build panel
+                // ends and the trace says why, as for a design model that was there already.
+                endBuild("done", key: key, host: host)
+            } else if buildStarts[key] != nil {
                 // The build failed: the panel shows why with the log's last lines and Retry, which
                 // starts over with a new sidecar.
                 let detail: String
@@ -170,22 +205,63 @@ enum WaveformTrace {
                     detail = ""
                     message = sidecarMessage(error, host: host)
                 }
-                buildProgress("failed", key: key, host: host, waveform: waveform, ["message": message, "log": detail])
-                buildStarts[key] = nil
+                endBuild("failed", key: key, host: host, ["message": message, "log": detail])
                 if designs[key] === design { designs.removeValue(forKey: key) }
-                design.sidecar.stop()
+                forget(design)
             }
             throw Failure(message: sidecarMessage(error, host: host))
         }
         return design
     }
 
-    /// The first-time build's progress, for the page's build panel (cmux-trace-ui.js progress()).
-    private static func buildProgress(_ stage: String, key: String, host: String?, waveform: FilePreviewPanel?, _ extra: [String: Any] = [:]) {
-        guard let waveform, let startedAt = buildStarts[key] else { return }
-        var argument: [String: Any] = ["stage": stage, "startedAt": startedAt, "host": host ?? NSNull()]
-        argument.merge(extra) { _, new in new }
-        Task { @MainActor in _ = await waveform.nativeViewSessions.waveform.callTrace("progress", argument: argument) }
+    /// Stops a design dropped from `designs`, and lets its viewers' next model request say so
+    /// (their next trace makes a new one) instead of asking a stopped sidecar.
+    private static func forget(_ design: Design) {
+        design.sidecar.stop()
+        for waveform in activeDesigns.keyEnumerator().allObjects.compactMap({ $0 as? FilePreviewPanel })
+        where activeDesigns.object(forKey: waveform) === design {
+            activeDesigns.removeObject(forKey: waveform)
+        }
+    }
+
+    /// A stage of the first-time build, for every viewer waiting (cmux-trace-ui.js progress()).
+    private static func buildProgress(_ stage: String, key: String, host: String?, _ extra: [String: Any] = [:]) {
+        guard buildStarts[key] != nil else { return }
+        var state: [String: Any] = ["stage": stage]
+        state.merge(extra) { _, new in new }
+        buildStates[key] = state
+        sendBuildProgress(key: key, host: host, state, to: buildWaiters[key]?.allObjects ?? [], focus: false)
+    }
+
+    /// The build's end (`done` or `failed`) for every viewer waiting; the build is over.
+    private static func endBuild(_ stage: String, key: String, host: String?, _ extra: [String: Any] = [:]) {
+        var state: [String: Any] = ["stage": stage]
+        state.merge(extra) { _, new in new }
+        sendBuildProgress(key: key, host: host, state, to: buildWaiters[key]?.allObjects ?? [], focus: false)
+        buildStarts[key] = nil
+        buildStates[key] = nil
+        buildsInstalled.remove(key)
+        buildWaiters[key] = nil
+    }
+
+    /// Sends a build state to viewers, after the design's earlier progress calls (in order).
+    private static func sendBuildProgress(key: String, host: String?, _ state: [String: Any], to waveforms: [FilePreviewPanel], focus: Bool) {
+        guard let startedAt = buildStarts[key], !waveforms.isEmpty else { return }
+        let calls: [(FilePreviewPanel, [String: Any])] = waveforms.map { waveform in
+            var argument = state
+            argument["startedAt"] = startedAt
+            argument["host"] = host ?? NSNull()
+            if focus { argument["focus"] = true }
+            if let entry = buildEntries.object(forKey: waveform) { argument["entry"] = ["dumpPath": entry, "time": NSNull()] }
+            return (waveform, argument)
+        }
+        let previous = buildSends[key]
+        buildSends[key] = Task { @MainActor in
+            await previous?.value
+            for (waveform, argument) in calls {
+                _ = await waveform.nativeViewSessions.waveform.callTrace("progress", argument: argument)
+            }
+        }
     }
 
     /// The `"build"` (and `"buildRelativePaths"`) of the folder's local server.json, then its
@@ -376,7 +452,7 @@ enum WaveformTrace {
             )
         }
         do {
-            _ = try await design(for: editor, waveform: waveform)
+            _ = try await design(for: editor, waveform: waveform, entry: dumpPath)
         } catch let error as Failure {
             return error.message
         } catch {
@@ -466,14 +542,22 @@ enum WaveformTrace {
         }
     }
 
-    /// The bundled doc on what the first-time build makes (trace-design-model.md), in a markdown
-    /// pane of the waveform's workspace.
+    /// The bundled doc on what the first-time build makes (trace-design-model.md), beside the
+    /// waveform (its tab again when it is open). It is opened from a copy in the caches folder:
+    /// the markdown pane can save, and the app bundle is not the place for that.
     private static func openBuildDoc(near waveform: FilePreviewPanel) {
-        guard let url = Bundle.main.resourceURL?.appendingPathComponent("vaporview/trace-design-model.md"),
-              FileManager.default.fileExists(atPath: url.path),
-              let workspace = AppDelegate.shared?.workspaceContainingPanel(panelId: waveform.id, preferredWorkspaceId: waveform.workspaceId)?.workspace,
-              let paneId = workspace.paneId(forPanelId: waveform.id) else { return }
-        _ = workspace.newMarkdownSurface(inPane: paneId, filePath: url.path, focus: true)
+        guard let source = Bundle.main.resourceURL?.appendingPathComponent("vaporview/trace-design-model.md"),
+              let data = FileManager.default.contents(atPath: source.path),
+              let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+              let workspace = AppDelegate.shared?.workspaceContainingPanel(panelId: waveform.id, preferredWorkspaceId: waveform.workspaceId)?.workspace
+        else { return }
+        let folder = caches.appendingPathComponent("cmux", isDirectory: true)
+        let copy = folder.appendingPathComponent("trace-design-model.md")
+        if FileManager.default.contents(atPath: copy.path) != data {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            guard (try? data.write(to: copy, options: .atomic)) != nil else { return }
+        }
+        _ = workspace.openOrFocusMarkdownSplit(from: waveform.id, filePath: copy.path)
     }
 
     private static func reply(_ page: FilePreviewWaveformSession, id: Int, result: Any) {

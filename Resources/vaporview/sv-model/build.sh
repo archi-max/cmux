@@ -26,7 +26,7 @@ SRC=${1:?source folder}
 DEST=${2:?install folder}
 say() { printf 'cmux-sv-model-build: %s\n' "$*" >&2; }
 stage() { printf 'cmux-sv-model-build: stage %s\n' "$1" >&2; }
-SV_MODEL_PROGRESS_AWK='{ p = -1; if (match($0, /^\[ *[0-9]+%\]/)) { s = substr($0, 2, RLENGTH - 3); gsub(/ /, "", s); p = s + 0 } else if (match($0, /^\[[0-9]+\/[0-9]+\]/)) { split(substr($0, 2, RLENGTH - 2), a, "/"); if (a[2] > 0) p = int(a[1] * 100 / a[2]) } if (p >= 0 && p != last) { printf "cmux-sv-model-build: progress %d\n", p; fflush(); last = p } }'
+SV_MODEL_PROGRESS_AWK='BEGIN { last = -1 } { p = -1; if (match($0, /^\[ *[0-9]+%\]/)) { s = substr($0, 2, RLENGTH - 3); gsub(/ /, "", s); p = s + 0 } else if (match($0, /^\[[0-9]+\/[0-9]+\]/)) { split(substr($0, 2, RLENGTH - 2), a, "/"); if (a[2] > 0) p = int(a[1] * 100 / a[2]) } if (p >= 0 && p != last) { printf "cmux-sv-model-build: progress %d\n", p; fflush(); last = p } }'
 
 SLANG_VERSION=12.1
 SLANG_URL=https://github.com/MikePopoloski/slang/archive/refs/tags/v12.1.tar.gz

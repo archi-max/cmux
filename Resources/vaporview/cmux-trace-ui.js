@@ -12,10 +12,12 @@
 //   driverOfDesign({ designPath, designPrefix, dumpPrefix, time })   from the editor (cmux mapped it)
 //   reply({ id, ok, result, error, message })   cmux's answer to a request the page posted
 //   status(text)                  progress while cmux prepares the design model (a first build)
-//   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log? })   the first-time
-//                                 design model build: stage upload | fetch | configure | compile |
-//                                 install | load | done | failed. While it builds the panel shows
-//                                 it, and another trace asks nothing new (it points at the panel).
+//   progress({ stage, host, startedAt, percent?, sourceBytes?, message?, log?, focus?, entry? })
+//                                 the first-time design model build: stage upload | fetch |
+//                                 configure | compile | install | load | done | failed. While it
+//                                 builds the panel shows it, and another trace asks nothing new (it
+//                                 points at the panel; focus: cmux says a trace from the editor
+//                                 waits). entry { dumpPath, time? }: that trace, for Retry.
 //   back() | forward() | close() | state()
 //   settled()                     resolves (to state()) once the Verdi checks under way are done
 //   xRoot({ path, time } | { designPath, designPrefix, dumpPrefix, time })   Trace X to Root: the
@@ -427,7 +429,9 @@
     try {
       mapped = await request('resolve', { dumpPath: path });
     } catch (error) {
-      if (build && build.failed) { renderBuild(); } else { showError(error.message || s.traceFailed); }
+      // A failed build shows itself. A build still shown is over all the same: its done or failed
+      // may have gone to another viewer of the design.
+      if (build && build.failed) { renderBuild(); } else { if (building()) { endBuild(); } showError(error.message || s.traceFailed); }
       return null;
     }
     return Object.assign({ time }, mapped);
@@ -1151,6 +1155,11 @@
       build = { startedAt: startedAt !== null ? startedAt : Date.now(), stage: 'upload', percent: null, sourceBytes: null };
     }
     build.host = q.host === undefined ? build.host : q.host;
+    // A trace from the editor that waits for this build: Retry traces its signal.
+    if (q.entry && Array.isArray(q.entry.dumpPath) && q.entry.dumpPath.length) {
+      const entry = { path: q.entry.dumpPath.map(String), time: Number.isFinite(Number(q.entry.time)) && q.entry.time !== null ? Number(q.entry.time) : null };
+      lastEntry = () => driver(entry);
+    }
     if (stage === 'failed') {
       stopTicking();
       build.failed = { message: String(q.message || ''), log: String(q.log || '') };
@@ -1168,7 +1177,8 @@
     } else {
       return false;
     }
-    renderBuild();
+    // focus: a new trace waits for this build (from the editor, where the page is not asked).
+    if (q.focus) { focusBuild(); } else { renderBuild(); }
     return true;
   }
   function focusBuild() {
@@ -1178,7 +1188,8 @@
     void p.offsetWidth;
     p.classList.add('pulse');
     setTimeout(() => p.classList.remove('pulse'), 1200);
-    p.focus();
+    if (!p.hasAttribute('tabindex')) { p.tabIndex = -1; }
+    p.focus({ preventScroll: true });
   }
   function buildInfoLink() {
     const a = el('a', 'buildinfo', S().traceBuildWhat || '');

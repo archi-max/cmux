@@ -1291,7 +1291,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(1300)
     let calm = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
     let now = Date().timeIntervalSince1970 * 1000
-    await progress("{ stage: 'configure', host: 'build-host', startedAt: \(now), focus: true, entry: { dumpPath: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'] } }")
+    await progress("{ stage: 'configure', host: 'build-host', startedAt: \(now), focus: true, entry: { dumpPath: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 } }")
     let focused = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
     text = await panelText()
     expect(calm == false && focused == true && text.contains("Building the design model on build-host"),
