@@ -1334,6 +1334,35 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   }
 }
 
+// 43b. A ready clock descriptor answers edge and search (clockdesc.js; FSDB_CLOCK_DESC=1 only),
+// exactly as the reader does without it: every edge kind and search value, both directions, at
+// times on, next to and between the grid's edges and past the end. (clockdesc-check.mjs compares
+// it with the store's answers on random gated/x/z/glitchy rows.)
+{
+  const env = { FSDB_CACHE_MB: '1', STUB_COUNTS: JSON.stringify({ 5: 1e6 }), STUB_CLOCK: JSON.stringify({ 5: 1000 }) };
+  const qs = [];
+  for (const t of [0, 1, 250, 499, 500, 501, 750, 999, 1000, 1001, 123456, 500000, 999499, 999500, 999999, 1000000]) {
+    for (const dir of [1, -1]) {
+      for (const kind of ['any', 'rise', 'fall', 'posedge', 'negedge', 'edge']) { qs.push(['edge', { signalId: 5, t, dir, kind }]); }
+      for (const value of ['1', '0', 'x', '?']) { qs.push(['search', { signalId: 5, t, dir, value }]); }
+    }
+  }
+  const ask = async (h) => { const out = []; for (const [cmd, a] of qs) { const r = await h.send(cmd, a).reply; out.push(r.error ? { error: r.error } : { t: r.result.t }); } return out; };  // (the time only: `ranged` is how)
+  const ref = await start(1, {}, env);
+  const want = await ask(ref);
+  ref.close();
+  const h = await start(1, {}, { ...env, FSDB_CLOCK_DESC: '1' });
+  await h.send('clockVerify', { signalId: 5 }).reply;
+  let info;
+  for (let k = 0; k < 400; k++) { info = (await h.send('clockInfo', { signalId: 5 }).reply).result; if (info.state !== 'verifying') { break; } await wait(50); }
+  const got = await ask(h);
+  const st = (await h.send('stats').reply).result;
+  h.close();
+  const diff = qs.map((q, k) => [q, want[k], got[k]]).filter(([, a, b]) => JSON.stringify(a) !== JSON.stringify(b));
+  check(info.state === 'ready' && !diff.length && st.clock && st.clock.served >= qs.length - 8,
+    `a ready descriptor answers ${qs.length} edge/search queries as the reader does: ${info.state}, ${diff.length} differ ${JSON.stringify(diff.slice(0, 3))}, ${st.clock ? st.clock.served : 'no'} from the descriptor`);
+}
+
 // 42. Edge and value search on a signal larger than the worker store (a 10 GB dump's clock: 75 M
 // changes, 755 MB, against a 244 MB store gave "signal larger than 244 MB"): answered from
 // ranged reads that grow from t until the first hit, never a whole load's cap error. Signal 5 is

@@ -429,6 +429,8 @@ case "${1:-}" in
     # fsdb-helper-v2's helper.js and worker.js on a stand-in addon (stub-addon.cjs); no FSDB needed.
     node "$HERE/fsdb-sched/check.mjs" "$ASSETS/fsdb-helper-v2" | tee "$OUT/fsdb-sched.log"
     grep -q '^FSDB SCHED CHECKS PASSED' "$OUT/fsdb-sched.log"
+    node "$HERE/fsdb-sched/clockdesc-check.mjs" "$ASSETS/fsdb-helper-v2" | tee "$OUT/clockdesc.log"
+    grep -q '^CLOCKDESC CHECKS PASSED' "$OUT/clockdesc.log"
     ;;
   split)
     swiftc -O "$HERE/split/main.swift" "$ROOT/Sources/Panels/WaveformViewerSchemeHandler.swift" \
