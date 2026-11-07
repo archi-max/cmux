@@ -317,6 +317,31 @@ import Testing
         }
     }
 
+    /// `--top` twice again, each top lacking a different part: soc has u_a and u_b but no u_a.u_core,
+    /// soc_copy has u_a.u_core but no u_b. Either could stand for the dump's tb.dut, so every row of
+    /// it gets the same answer; u_b.z is not taken to soc alone (the reviewer's u2b).
+    @Test func twoTopsEachLackingAPartGiveTheDumpsInstanceOneAnswer() async throws {
+        let design = Design(models: [
+            "soc": Self.inst("soc", ["clk"]), "soc.u_a": Self.inst("a", ["y"]), "soc.u_b": Self.inst("b", ["z"]),
+            "soc_copy": Self.inst("soc", ["clk"]), "soc_copy.u_a": Self.inst("a", ["y"]),
+            "soc_copy.u_a.u_core": Self.inst("core", ["x"]),
+        ], tops: ["soc", "soc_copy"])
+        let dump: [String: [HierarchyNode]] = [
+            "": [HierarchyNode(name: "tb", isScope: true)],
+            "tb": [HierarchyNode(name: "dut", isScope: true)],
+            "tb.dut": [HierarchyNode(name: "u_a", isScope: true), HierarchyNode(name: "u_b", isScope: true), HierarchyNode(name: "clk", isScope: false, width: 1)],
+            "tb.dut.u_a": [HierarchyNode(name: "u_core", isScope: true), HierarchyNode(name: "y", isScope: false, width: 1)],
+            "tb.dut.u_b": [HierarchyNode(name: "z", isScope: false, width: 1)],
+            "tb.dut.u_a.u_core": [HierarchyNode(name: "x", isScope: false, width: 1)],
+        ]
+        let kdb = Self.kdb([("tb", "tb", nil, [], [:]), ("tb.dut", "soc", "tb", ["clk"], [:]), ("tb.dut.u_a", "a", "tb.dut", ["y"], [:]),
+                            ("tb.dut.u_b", "b", "tb.dut", ["z"], [:]), ("tb.dut.u_a.u_core", "core", "tb.dut.u_a", ["x"], ["x": 3])])
+        for row in ["tb.dut.u_a.u_core.x", "tb.dut.u_a.y", "tb.dut.u_b.z", "tb.dut.clk"] {
+            let got = try await resolve(row, design: design, dump: dump, kdb: kdb)
+            #expect(got == .notInDesign, "\(row): \(got)")
+        }
+    }
+
     /// slang's tb.u_dut is another module; a spare sibling of the right one is no stand-in for
     /// anything below it.
     @Test func belowAnotherModuleNothingIsEvaluated() async throws {
