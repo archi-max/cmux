@@ -141,34 +141,41 @@ public enum SSHTuiShellIntegration {
         }.joined()
     }
 
+    /// Shell functions `cmux_ssh_private <file>`: true when the file and each
+    /// parent up to HOME pass the check below. The launch uses them for the
+    /// sourced files, the prelude for the host `cmux` it puts on PATH.
+    static let privateCheckCode = #"""
+    # The shell sources or runs the file, so nobody else may be able to rewrite or
+    # swap it: the file and each parent up to HOME is the user's, not a
+    # symlink, with no group or other write. Group write is never trusted:
+    # on Linux the group bits are the ACL mask, so they would let named ACL
+    # entries write. Only that chain is looked at: another terminal
+    # installing at the same moment renames temporary files beside it, and
+    # a walk that lists one before it is renamed fails.
+    cmux_ssh_unsafe() {
+      find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
+    }
+    cmux_ssh_private() {
+      [ -r "$1" ] && cmux_ssh_uid=$(id -u) || return 1
+      [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
+      cmux_ssh_parent=$1
+      while [ "$cmux_ssh_parent" != "$HOME" ]; do
+        case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
+        cmux_ssh_parent=${cmux_ssh_parent%/*}
+        # HOME itself may be a symlink; check what it points to.
+        if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
+        [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
+      done
+    }
+    """#
+
     /// Shell code that starts the login shell through the installed files,
     /// found under `installDirectory`, or falls through when it cannot.
     static func launchCode(installDirectory: String) -> String {
         #"""
         cmux_ssh_dir="\#(installDirectory)"
         cmux_ssh_shell=${SHELL:-/bin/sh}
-        # The shell sources the file, so nobody else may be able to rewrite or
-        # swap it: the file and each parent up to HOME is the user's, not a
-        # symlink, with no group or other write. Group write is never trusted:
-        # on Linux the group bits are the ACL mask, so they would let named ACL
-        # entries write. Only that chain is looked at: another terminal
-        # installing at the same moment renames temporary files beside it, and
-        # a walk that lists one before it is renamed fails.
-        cmux_ssh_unsafe() {
-          find "$1" -prune \( -type l -o -perm -020 -o -perm -002 -o ! -user "$cmux_ssh_uid" \) -print 2>/dev/null || echo error
-        }
-        cmux_ssh_private() {
-          [ -r "$1" ] && cmux_ssh_uid=$(id -u) || return 1
-          [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
-          cmux_ssh_parent=$1
-          while [ "$cmux_ssh_parent" != "$HOME" ]; do
-            case $cmux_ssh_parent in "$HOME"/?*) ;; *) return 1 ;; esac
-            cmux_ssh_parent=${cmux_ssh_parent%/*}
-            # HOME itself may be a symlink; check what it points to.
-            if [ "$cmux_ssh_parent" = "$HOME" ]; then set -- "$HOME/."; else set -- "$cmux_ssh_parent"; fi
-            [ -z "$(cmux_ssh_unsafe "$1")" ] || return 1
-          done
-        }
+        \#(privateCheckCode)
         case ${cmux_ssh_shell##*/} in
           bash)
             # bash expands ENV before reading it, so a path it would change
