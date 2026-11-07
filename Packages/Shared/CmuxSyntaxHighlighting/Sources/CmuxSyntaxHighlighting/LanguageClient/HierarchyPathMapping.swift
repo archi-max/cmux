@@ -369,11 +369,10 @@ public enum HierarchyPrefixInference {
             }
             return match.score
         }
-        // Each unscored root that could match the row: its score (or, past the cap's budget, the most it could
-        // score), and where it maps it. Unscored roots holding the row's name are few, so they are scored
-        // exactly, up to `maxScoredRoots` of them; a root sharing one name with the dump scope then can't tie.
+        // Each unscored root that could match the row: its score, and where it maps it. Only the unscored
+        // roots holding the row's name are scored (one set intersection each, against this dump scope), so a
+        // root sharing one name with the dump scope can't tie.
         var couldTie: [(score: Int, designPath: String)] = []
-        var exactlyScored = 0
         // Each score's rules, in the order found (shorter dump prefixes first), with the design path each maps the row to.
         var byScore: [Int: [(rule: HierarchyPathMapping.Rule, designPath: String)]] = [:]
         for length in 1..<path.count {
@@ -392,15 +391,9 @@ public enum HierarchyPrefixInference {
                 }
             }
             if !unscored.isEmpty {
-                let dumpScopes = kids.filter(\.isScope).count
                 for candidate in (unscored[name] ?? []) + (designName == name ? [] : unscored[designName] ?? []) {
-                    let mapped = HierarchyPathMapping.join(HierarchyPathMapping.segments(candidate.root) + path[length...])
-                    if exactlyScored < maxScoredRoots {
-                        exactlyScored += 1
-                        if let score = scoreOf(kids, candidate.children) { couldTie.append((score, mapped)) }
-                    } else {
-                        let scopes = Set(candidate.children.filter(\.isScope).map(\.name)).count
-                        couldTie.append((2 * min(scopes, dumpScopes), mapped))
+                    if let score = scoreOf(kids, candidate.children) {
+                        couldTie.append((score, HierarchyPathMapping.join(HierarchyPathMapping.segments(candidate.root) + path[length...])))
                     }
                 }
             }
