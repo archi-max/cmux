@@ -1767,6 +1767,20 @@ Napi::Value warmLoad(const Napi::CallbackInfo &info) {
 }
 
 // warmWindow(ids[], t0, t1, buckets) -> as cacheWindowCold, for ids of the first load only.
+// A warm load that leaves the process over the hard bound (cacheSetBounds, set by a warm reader's
+// open) is undone before anything is walked, as on the cold path (#5): each id answers an error.
+static bool warmOverBound(Napi::Env env, const std::vector<fsdbVarIdcode> &ids, Napi::Array &out) {
+  if (!g_rssHard || processRss() <= g_rssHard) return false;
+  fsdb_obj->ffrUnloadSignals();
+  for (size_t k = 0; k < ids.size(); k++) {
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("signalId", Napi::Number::New(env, (double)ids[k]));
+    o.Set("error", Napi::String::New(env, "warm reader memory limit (reader load over " + std::to_string(g_rssHard >> 20) + " MB)"));
+    out.Set((uint32_t)k, o);
+  }
+  return true;
+}
+
 Napi::Value warmWindow(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
   if (!CHECK_LENGTH(env, info, 4) || !CHECK_ARRAY(env, info[0])) return env.Undefined();
@@ -1788,6 +1802,7 @@ Napi::Value warmWindow(const Napi::CallbackInfo &info) {
   const auto tl = clk::now();
   fsdb_obj->ffrLoadSignals();  // the whole set (its list is fixed)
   const double loadMs = msSince(tl);
+  if (warmOverBound(env, ids, out)) return out;
   try {
     for (size_t k = 0; k < ids.size(); k++) {
       auto tw = clk::now();
@@ -1826,6 +1841,7 @@ Napi::Value warmNear(const Napi::CallbackInfo &info) {
   Napi::Array out = Napi::Array::New(env);
   readerWindow(lo > 0 ? lo - 1 : 0, t);
   fsdb_obj->ffrLoadSignals();  // the whole set (its list is fixed)
+  if (warmOverBound(env, ids, out)) return out;
   try {
     for (size_t k = 0; k < ids.size(); k++) {
       Napi::Object o = nearOf(env, ids[k], t, lo);
