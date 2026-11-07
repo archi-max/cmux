@@ -12,7 +12,9 @@
 //   top.tm   (time, 64 bits, 1 byte per bit) 100@0 250@10: listed as Real as well
 // With a second argument "big", instead: top.big (string) switching every 5 units between
 // 2000 x U+20AC (6000 bytes) and "", 10000 changes from 0 (long repeated text).
-// Usage: mkvalues out.fsdb [big]
+// With "long", instead: top.big and top.big2 (strings), every change long text, switching every
+// 5 units between 2000 x U+20AC and 6000 x 'b' (6000 bytes each), 10000 changes from 0.
+// Usage: mkvalues out.fsdb [big | long]
 #undef NOVAS_FSDB
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +29,8 @@ static byte_T P[32], tm[64];
 static void setn(unsigned v) { for (int i = 0; i < 32; i++) n[i] = ((v >> (31 - i)) & 1) ? FSDB_BT_VCD_1 : FSDB_BT_VCD_0; }
 static void setBits(byte_T *b, int w, unsigned long long v) { for (int i = 0; i < w; i++) b[i] = ((v >> (w - 1 - i)) & 1) ? FSDB_BT_VCD_1 : FSDB_BT_VCD_0; }
 
-static int bigFixture(const char *out) {
+static int bigFixture(const char *out, bool allLong) {
+  static int strHdl2;
   ffwObject *o = ffw_Open((char *)out, FSDB_FT_VERILOG);
   if (!o) { fprintf(stderr, "open failed\n"); return 1; }
   ffw_CreateTreeByHandleScheme(o);
@@ -35,21 +38,28 @@ static int bigFixture(const char *out) {
   ffw_BeginTree(o);
   ffw_CreateScope(o, FSDB_ST_VCD_MODULE, (char *)"top");
   if (!ffwCreateStrVarByVarHdl(o, (char *)"big", &strHdl)) { fprintf(stderr, "no string var\n"); return 1; }
+  if (allLong && !ffwCreateStrVarByVarHdl(o, (char *)"big2", &strHdl2)) { fprintf(stderr, "no string var\n"); return 1; }
   ffw_EndTree(o);
   static char longStr[6001];
   for (int i = 0; i < 2000; i++) memcpy(longStr + 3 * i, "\xe2\x82\xac", 3);
   longStr[6000] = 0;
+  static char bStr[6001];
+  memset(bStr, 'b', 6000);
+  bStr[6000] = 0;
   str_T ret;
   for (int k = 0; k < 10000; k++) {
     ffw_CreateXCoorByHnL(o, 0, 5 * k);
-    ffwCreateStrValByVarHdl(o, &strHdl, (str_T)(k % 2 ? "" : longStr), &ret);
+    str_T v = (str_T)(k % 2 ? (allLong ? bStr : "") : longStr);
+    ffwCreateStrValByVarHdl(o, &strHdl, v, &ret);
+    if (allLong) ffwCreateStrValByVarHdl(o, &strHdl2, v, &ret);
   }
   ffw_Close(o);
   return 0;
 }
 
 int main(int argc, char **argv) {
-  if (argc > 2 && !strcmp(argv[2], "big")) return bigFixture(argv[1]);
+  if (argc > 2 && !strcmp(argv[2], "big")) return bigFixture(argv[1], false);
+  if (argc > 2 && !strcmp(argv[2], "long")) return bigFixture(argv[1], true);
   ffwObject *o = ffw_Open(argc > 1 ? argv[1] : (char *)"values.fsdb", FSDB_FT_VERILOG);
   if (!o) { fprintf(stderr, "open failed\n"); return 1; }
   ffw_CreateTreeByHandleScheme(o);

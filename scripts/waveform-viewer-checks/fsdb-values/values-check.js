@@ -7,13 +7,15 @@
 // (no defaults: both or neither). A second fixture (big.fsdb: long repeated text) checks that
 // text windows are bounded. One worker per helper, one helper at a time (host memory).
 // cap.fsdb is the fixture again under another name, so nothing of it is in the store cache.
-// Usage: node values-check.js <installed helper dir> <fixture.fsdb> <big.fsdb> <cap.fsdb>
+// long.fsdb (two strings, every change 6000 bytes) checks that a window of the page's usual
+// size (2 to 3 tiles of 1024 buckets) and a whole load fit the text budget by cutting shorter.
+// Usage: node values-check.js <installed helper dir> <fixture.fsdb> <big.fsdb> <cap.fsdb> <long.fsdb>
 'use strict';
 const { spawn } = require('node:child_process');
 const zlib = require('node:zlib');
 const path = require('node:path');
 
-const [dir, fixture, bigFixture, capFixture] = process.argv.slice(2);
+const [dir, fixture, bigFixture, capFixture, longFixture] = process.argv.slice(2);
 let fails = 0, passes = 0;
 const check = (ok, what) => { if (ok) { passes++; console.log('ok   ' + what); } else { fails++; console.log('FAIL ' + what); } };
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -227,11 +229,56 @@ async function main() {
     const sent = d2.recs.reduce((a, x) => a + 12 + Buffer.byteLength(x[1]), 0);
     check(!d2.h.error && !d2.h.exact && sent < 16e6 && d2.h.textMean > 2000 && d2.h.textMean < 2100,
       `a decimated window of it is bounded and says the mean text per change: ${JSON.stringify({ exact: d2.h.exact, sent, textMean: d2.h.textMean })}`);
-    const ex = decodeWindow(await b.req('window', { signals: [{ signalId: bid, width: 1 }], t0: 0, t1: 50000, buckets: 6000 }))[0];
-    check(/text/.test(ex.h.error || '') && ex.h.permanent === undefined && ex.recs.length === 0,
-      `an exact window over the per-reply text budget is refused (retryable), not built: ${JSON.stringify(ex.h)}`);
   }
   await b.stop();
+
+  // A 1 MB text budget: the cut scales down to fit the records a window carries, and a window
+  // that can't fit even at the shortest cut is refused (retryable), not built.
+  const sentOf = (d) => d.recs.reduce((a, x) => a + 12 + Buffer.byteLength(x[1]), 0);
+  const cutOk = (d, max) => d.recs.every((x) => x[1] === '' || (x[1].endsWith('\u2026') && Buffer.byteLength(x[1]) <= max));
+  const sb = startHelper(['--text-budget-mb', '1']);
+  await sb.ready;
+  const so = await sb.req('open', { file: bigFixture });
+  check(!so.m.error, 'a helper with a 1 MB text budget opens the long-text fixture: ' + (so.m.error || 'ok'));
+  if (!so.m.error) {
+    const sk = await varsOf(sb, { idx: so.m.result.top[0].scopeOffsetIdx, path: so.m.result.top[0].name });
+    const sid = (sk.vars || []).find((x) => x.name === 'big').signalId;
+    const d1 = decodeWindow(await sb.req('window', { signals: [{ signalId: sid, width: 1 }], t0: 0, t1: 50000, buckets: 1024 }))[0];
+    const longest = Math.max(0, ...d1.recs.map((x) => Buffer.byteLength(x[1])));
+    check(!d1.h.error && sentOf(d1) <= (1 << 20) && cutOk(d1, 1024) && longest > 256,
+      `under a 1 MB budget a 1024-bucket window fits by cutting each value shorter: ${JSON.stringify({ err: d1.h.error, sent: sentOf(d1), longest })}`);
+    const ex = decodeWindow(await sb.req('window', { signals: [{ signalId: sid, width: 1 }], t0: 0, t1: 50000, buckets: 6000 }))[0];
+    check(/budget/.test(ex.h.error || '') && ex.h.permanent === undefined && ex.recs.length === 0,
+      `a window that can't fit its budget even at the shortest cut is refused (retryable), not built: ${JSON.stringify(ex.h)}`);
+  }
+  await sb.stop();
+
+  // Every change long text, default budget: the page's 2 to 3 tile requests, a whole load, and
+  // two such strings in one request all fit (16 MB per reply), cut shorter where needed.
+  if (longFixture) {
+    const L = startHelper();
+    await L.ready;
+    const lo = await L.req('open', { file: longFixture });
+    check(!lo.m.error, 'the helper opens the all-long-text fixture: ' + (lo.m.error || 'ok'));
+    if (!lo.m.error) {
+      const lk = await varsOf(L, { idx: lo.m.result.top[0].scopeOffsetIdx, path: lo.m.result.top[0].name });
+      const lid = (n) => (lk.vars || []).find((x) => x.name === n).signalId;
+      const MiB16 = 16 << 20;
+      for (const B of [1024, 2048, 3072]) {
+        const d = decodeWindow(await L.req('window', { signals: [{ signalId: lid('big'), width: 1 }], t0: 0, t1: 50000, buckets: B }))[0];
+        check(!d.h.error && !d.h.exact && d.recs.length === 2 * B + 1 && sentOf(d) <= MiB16 && cutOk(d, 4099),
+          `a ${B}-bucket window of long text fits the reply budget: ${JSON.stringify({ err: d.h.error, n: d.recs.length, sent: sentOf(d) })}`);
+      }
+      const whole = decodeWindow(await L.req('window', { signals: [{ signalId: lid('big'), width: 1 }], t0: 0, t1: 49996, buckets: 5001 }))[0];
+      check(!whole.h.error && whole.h.exact && whole.recs.length === 10000 && sentOf(whole) <= MiB16 && cutOk(whole, 4099),
+        `a whole load of it (exact, 10000 changes) fits, cut shorter: ${JSON.stringify({ err: whole.h.error, n: whole.recs.length, sent: sentOf(whole) })}`);
+      const both = decodeWindow(await L.req('window', { signals: [{ signalId: lid('big'), width: 1 }, { signalId: lid('big2'), width: 1 }], t0: 0, t1: 50000, buckets: 3072 }));
+      const sum = both.reduce((a, d) => a + sentOf(d), 0);
+      check(both.length === 2 && both.every((d) => !d.h.error && d.recs.length === 6145) && sum <= MiB16,
+        `two long-text strings in one 3072-bucket request share the reply budget: ${JSON.stringify({ errs: both.map((d) => d.h.error), sum })}`);
+    }
+    await L.stop();
+  }
 
   const dump = process.env.FSDB_VALUES_DUMP, expect = process.env.FSDB_VALUES_EXPECT;
   if (dump && expect) {

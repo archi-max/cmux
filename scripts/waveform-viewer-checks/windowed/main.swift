@@ -1102,8 +1102,8 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// text=1 dump: tb.dut.msg (string, a word every 2000 ps, 500k changes: windowed),
   /// level (real, 1000 changes: loaded whole), bad (a permanent error), flaky (a transient one).
   func textValueChecks() async {
-    let msgId = 4, levelId = 5, badId = 6, flakyId = 7, bannerId = 8, tornId = 9, swingId = 10
-    for name in ["msg", "level", "bad", "flaky", "banner", "torn", "swing"] {
+    let msgId = 4, levelId = 5, badId = 6, flakyId = 7, bannerId = 8, tornId = 9, swingId = 10, coldlvlId = 11, tornWholeId = 12
+    for name in ["msg", "level", "bad", "flaky", "banner", "torn", "swing", "tornwhole"] {
       let added = await call("return await cmuxWaveform.link.addSignal(['tb','dut','\(name)'])")
       if added as? Bool != true { print("[add]", name, String(describing: added)) }
     }
@@ -1191,8 +1191,32 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(1500)
     _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 900000000, endTime: 1000000000 }); return null")
     await sleep(1500)
-    let swing = await wc("(() => { const s = w.signals.get(\(swingId)); return s ? [s.min, s.max] : []; })()") as? [Double] ?? []
+    // (the row's min/max: what the analog renderer reads)
+    let rowRange = { (id: Int) async -> [Double] in await self.wc("(() => { const it = w.rowsOf(\(id))[0]; return it ? [it.min, it.max] : []; })()") as? [Double] ?? [] }
+    let swing = await rowRange(swingId)
     expect(swing.count == 2 && swing[0] <= -109 && swing[1] >= 9, "a real row's scale keeps the widest range seen while panning: \(swing)")
+    // A real row first drawn from a ranged window (no min/max) takes the range of later windows.
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 100000000, endTime: 150000000 }); return null")
+    await sleep(1500)
+    let addedCold = await call("return await cmuxWaveform.link.addSignal(['tb','dut','coldlvl'])")
+    await sleep(2500)
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 600000000, endTime: 650000000 }); return null")
+    await sleep(1500)
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 0, endTime: 1000000000 }); return null")
+    var cold: [Double] = []
+    let coldOk = await waitFor(10000) { cold = await rowRange(coldlvlId); return cold.count == 2 && cold[0] == -50 && cold[1] == 0 }
+    expect(addedCold as? Bool == true && coldOk, "a real row first drawn from a ranged window takes the range of later windows: row \(cold)")
+    // A whole load whose reply is torn is tried a bounded number of times, then the row stays windowed.
+    var tw = ""
+    let settled = await waitFor(45000) {
+      tw = await self.wc("(() => { const s = w.signals.get(\(tornWholeId)); return s ? s.hybrid + ',' + w.isWindowed(\(tornWholeId)) : 'none'; })()") as? String ?? "?"
+      return tw == "windowed,true"
+    }
+    let tornLoads = stat(await textStats(), "tornWholeLoads")
+    await sleep(3000)
+    let tornLoads2 = stat(await textStats(), "tornWholeLoads")
+    expect(settled && tornLoads >= 1 && tornLoads <= 3 && tornLoads2 == tornLoads,
+           "a torn whole load is retried a bounded number of times, then the row stays windowed: \(tw), whole loads \(tornLoads) -> \(tornLoads2)")
   }
 
   func jsString(_ s: String) -> String {
