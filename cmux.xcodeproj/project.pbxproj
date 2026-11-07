@@ -3768,6 +3768,8 @@
 		80A2EF607480B2B41D8EFD59 /* SSHFileSearchOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */; };
 		6B2A61D6577E14A98C26C0A9 /* SSHFileSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */; };
 		8410A0020000000000000002 /* SSHForegroundAuthenticationMarkerCleanupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8410A0010000000000000001 /* SSHForegroundAuthenticationMarkerCleanupTests.swift */; };
+		1BA7B3557FA3197A9F324988 /* SSHMasterPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDEA09E750B9F7111BA7B355 /* SSHMasterPool.swift */; };
+		1B1E58F343FF4B82C9AFAE94 /* SSHMasterPoolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9886B5DA1CBA749EBAD267BA /* SSHMasterPoolTests.swift */; };
 		797800050000000000000001 /* SSHPersistentPTYRetryLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 797800050000000000000002 /* SSHPersistentPTYRetryLifecycleTests.swift */; };
 		A87500010000000000000001 /* SSHPTYAttachNoProgressRetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A87500010000000000000002 /* SSHPTYAttachNoProgressRetryTests.swift */; };
 		C12813000000000000000311 /* SSHPTYAttachParkedSessionCLITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12813000000000000000302 /* SSHPTYAttachParkedSessionCLITests.swift */; };
@@ -8496,6 +8498,8 @@
 		38029B68D3ED4B17F49283CA /* SSHFileSearchOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHFileSearchOutput.swift; sourceTree = "<group>"; };
 		A53A08382F7B953EE1FDA2A8 /* SSHFileSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHFileSearchTests.swift"; sourceTree = "<group>"; };
 		8410A0010000000000000001 /* SSHForegroundAuthenticationMarkerCleanupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHForegroundAuthenticationMarkerCleanupTests.swift; sourceTree = "<group>"; };
+		EDEA09E750B9F7111BA7B355 /* SSHMasterPool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHMasterPool.swift; sourceTree = "<group>"; };
+		9886B5DA1CBA749EBAD267BA /* SSHMasterPoolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SSHMasterPoolTests.swift"; sourceTree = "<group>"; };
 		797800050000000000000002 /* SSHPersistentPTYRetryLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPersistentPTYRetryLifecycleTests.swift; sourceTree = "<group>"; };
 		A87500010000000000000002 /* SSHPTYAttachNoProgressRetryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPTYAttachNoProgressRetryTests.swift; sourceTree = "<group>"; };
 		C12813000000000000000302 /* SSHPTYAttachParkedSessionCLITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHPTYAttachParkedSessionCLITests.swift; sourceTree = "<group>"; };
@@ -12394,6 +12398,7 @@
 				CFSR00000000000000000007 /* RemoteFileExplorerProvider.swift */,
 				CFSR00000000000000000008 /* FileExplorerStore+RemoteRoots.swift */,
 				FEAC00000000000000000002 /* SSHFileExplorerMutationCommand.swift */,
+				EDEA09E750B9F7111BA7B355 /* SSHMasterPool.swift */,
 				FEAC00000000000000000004 /* FileExplorerError+Mutation.swift */,
 				CFSR00000000000000000009 /* FileExplorerSearchController+Cloud.swift */,
 				CFSR00000000000000000010 /* FileExplorerSearchController+Lifecycle.swift */,
@@ -14482,6 +14487,7 @@
 				1EEE52EB3393FFE44CAC4C3E /* FileExplorerRefreshTests.swift */,
 				1D3A6A247025BAA0B617BEDF /* RemoteCappedDownloadTests.swift */,
 				77CE04B80A47CAD98D931FE9 /* RemoteCappedDownloadCallSiteTests.swift */,
+				9886B5DA1CBA749EBAD267BA /* SSHMasterPoolTests.swift */,
 			);
 			path = cmuxTests;
 			sourceTree = "<group>";
@@ -17381,6 +17387,7 @@
 				1398DEF891FA5C0F6C16CDE7 /* SSHFileExplorerProvider+CappedDownload.swift in Sources */,
 				D458923DF733893F135A8968 /* SSHFileSearchCommand.swift in Sources */,
 				80A2EF607480B2B41D8EFD59 /* SSHFileSearchOutput.swift in Sources */,
+				1BA7B3557FA3197A9F324988 /* SSHMasterPool.swift in Sources */,
 					E30780000000000000000012 /* SSHPTYAttachStartupCommandBuilder.swift in Sources */,
 				CDB2B1522264561D4D10279E /* SSHRemoteShellScript.swift in Sources */,
 				C5CEF76F24FA34BD48C15272 /* SSHTuiAgentStatusProjector.swift in Sources */,
@@ -19674,6 +19681,7 @@
 				FEAC00000000000000000005 /* SSHFileExplorerMutationCommandTests.swift in Sources */,
 				6B2A61D6577E14A98C26C0A9 /* SSHFileSearchTests.swift in Sources */,
 				8410A0020000000000000002 /* SSHForegroundAuthenticationMarkerCleanupTests.swift in Sources */,
+				1B1E58F343FF4B82C9AFAE94 /* SSHMasterPoolTests.swift in Sources */,
 				797800050000000000000001 /* SSHPersistentPTYRetryLifecycleTests.swift in Sources */,
 				A87500010000000000000001 /* SSHPTYAttachNoProgressRetryTests.swift in Sources */,
 				C12813000000000000000311 /* SSHPTYAttachParkedSessionCLITests.swift in Sources */,

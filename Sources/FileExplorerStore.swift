@@ -324,6 +324,26 @@ struct SSHFileExplorerConnection: Hashable, Sendable {
     let sshOptions: [String]
 }
 
+extension SSHMasterPool {
+    /// Runs `body` with `connection` on a lent session of its one-off master
+    /// (or its own connection), as ``withSession(destination:port:identityFile:sshOptions:isolation:_:)``.
+    func withSession<T>(
+        _ connection: SSHFileExplorerConnection,
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: (SSHFileExplorerConnection) async throws -> T
+    ) async throws -> T {
+        try await withSession(
+            destination: connection.destination, port: connection.port,
+            identityFile: connection.identityFile, sshOptions: connection.sshOptions
+        ) { options in
+            try await body(SSHFileExplorerConnection(
+                destination: connection.destination, port: connection.port,
+                identityFile: connection.identityFile, sshOptions: options
+            ))
+        }
+    }
+}
+
 /// A remote file's modification time and size, recorded when a preview is
 /// downloaded so a save can tell whether someone else changed the file since.
 struct SSHRemoteFileStamp: Equatable, Sendable {
@@ -1083,19 +1103,18 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         let raw = localURL.deletingLastPathComponent()
             .appendingPathComponent(".probe-" + UUID().uuidString, isDirectory: false)
         defer { try? FileManager.default.removeItem(at: raw) }
-        let commandProcess = SSHDownloadCommandProcess(
-            connection: connection,
-            command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
-            outputURL: raw
-        )
-        let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    continuation.resume(with: Result { try commandProcess.run() })
-                }
-            }
-        } onCancel: {
-            commandProcess.terminate()
+        let result = try await SSHMasterPool.shared.withSession(connection) { leased in
+            let commandProcess = SSHDownloadCommandProcess(
+                connection: leased,
+                command: RemoteFileProbe.command(candidates: candidates, maxBytes: maxBytes),
+                outputURL: raw
+            )
+            return try await Self.runChild(
+                // Capped or not, it is a download (a capped preview can be
+                // 32 MiB): ended when bytes stop coming, not at a total.
+                limit: Self.downloadHoldLimit(writingTo: raw),
+                run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+            )
         }
         guard let header = try RemoteFileProbe.outcome(status: result.terminationStatus, raw: raw, to: localURL) else {
             throw FileExplorerError.sshCommandFailed(result.stderr)
@@ -1109,19 +1128,15 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         to localURL: URL
     ) async throws {
         let outputURL = localURL
-        let commandProcess = SSHDownloadCommandProcess(
-            connection: connection,
-            command: command,
-            outputURL: outputURL
-        )
-        let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    continuation.resume(with: Result { try commandProcess.run() })
-                }
-            }
-        } onCancel: {
-            commandProcess.terminate()
+        let result = try await SSHMasterPool.shared.withSession(connection) { leased in
+            let commandProcess = SSHDownloadCommandProcess(
+                connection: leased,
+                command: command,
+                outputURL: outputURL
+            )
+            return try await Self.runChild(
+                limit: Self.downloadHoldLimit(writingTo: outputURL), run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+            )
         }
         guard result.terminationStatus == 0 else {
             try? FileManager.default.removeItem(at: outputURL)
@@ -1260,19 +1275,12 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
         connection: SSHFileExplorerConnection
     ) async throws -> SSHRemoteFileStamp {
         let command = SSHFileExplorerMutationCommand.writeFile(path: path, expectedStamp: expectedStamp).command
-        let timeout = Self.writeFileTimeout
-        let result = try await withThrowingTaskGroup(of: SSHCommandResult.self) { group in
-            group.addTask {
-                try await Self.runSSHProcess(connection: connection, command: command, input: contents)
-            }
-            group.addTask {
-                // A genuine transfer deadline; cancelling the upload terminates ssh.
-                try await Task.sleep(for: timeout)
-                throw FileExplorerError.sshCommandFailed("timed out")
-            }
-            defer { group.cancelAll() }
-            return try await group.next()!
-        }
+        // A genuine transfer deadline, counted from when the pool lends the
+        // session (a wait in its queue isn't the transfer's); running out
+        // terminates ssh.
+        let result = try await Self.runSSHProcess(
+            connection: connection, command: command, input: contents, limit: .total(Self.writeFileTimeout)
+        )
         switch result.terminationStatus {
         case 0:
             guard let stamp = SSHRemoteFileStamp(statOutput: result.stdout) else {
@@ -1290,6 +1298,68 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     }
 
     private static let writeFileTimeout: Duration = .seconds(20)
+
+    /// How long an ssh child may hold its lent session on the one-off master.
+    private enum HoldLimit: Sendable {
+        /// At most this long in all (a listing stuck on a dead mount, say).
+        case total(Duration)
+        /// Until `progress` (bytes written so far) stops growing for this
+        /// long: a slow large download still finishes.
+        case stalled(Duration, progress: @Sendable () -> UInt64)
+    }
+
+    /// One-off commands; a write, a search and Go to File end sooner.
+    private static let commandHoldLimit = HoldLimit.total(.seconds(60))
+    private static let downloadStallLimit: Duration = .seconds(60)
+
+    /// A download's hold limit: no new bytes at `url` for a minute.
+    private nonisolated static func downloadHoldLimit(writingTo url: URL) -> HoldLimit {
+        .stalled(downloadStallLimit) {
+            ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        }
+    }
+
+    /// Runs an ssh child off Swift's cooperative executor, terminating it when
+    /// the caller is cancelled or `limit` runs out, so it can't hold its
+    /// session on the one-off master for ever.
+    private nonisolated static func runChild(
+        limit: HoldLimit,
+        run: @escaping @Sendable () throws -> SSHCommandResult,
+        terminate: @escaping @Sendable () -> Void
+    ) async throws -> SSHCommandResult {
+        try await withThrowingTaskGroup(of: SSHCommandResult.self) { group in
+            group.addTask {
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            continuation.resume(with: Result { try run() })
+                        }
+                    }
+                } onCancel: {
+                    terminate()
+                }
+            }
+            group.addTask {
+                switch limit {
+                case .total(let duration):
+                    try await Task.sleep(for: duration)
+                case .stalled(let stall, let progress):
+                    var last = progress()
+                    var lastChange = ContinuousClock.now
+                    while ContinuousClock.now - lastChange < stall {
+                        try await Task.sleep(for: .seconds(5))
+                        let now = progress()
+                        if now != last { last = now; lastChange = ContinuousClock.now }
+                    }
+                }
+                throw FileExplorerError.sshCommandFailed("timed out")
+            }
+            // Leaving the group cancels the other task and waits for it, so
+            // the child has exited before the session goes back.
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
 
     private struct SSHCommandResult: Sendable {
         let stdout: String
@@ -1501,17 +1571,14 @@ final class ProcessSSHFileExplorerTransport: SSHFileExplorerTransport {
     private static func runSSHProcess(
         connection: SSHFileExplorerConnection,
         command: String,
-        input: Data? = nil
+        input: Data? = nil,
+        limit: HoldLimit = commandHoldLimit
     ) async throws -> SSHCommandResult {
-        let commandProcess = SSHCommandProcess(connection: connection, command: command, input: input)
-        let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    continuation.resume(with: Result { try commandProcess.run() })
-                }
-            }
-        } onCancel: {
-            commandProcess.terminate()
+        let result = try await SSHMasterPool.shared.withSession(connection) { leased in
+            let commandProcess = SSHCommandProcess(connection: leased, command: command, input: input)
+            return try await runChild(
+                limit: limit, run: { try commandProcess.run() }, terminate: { commandProcess.terminate() }
+            )
         }
         return result
     }
@@ -1644,10 +1711,19 @@ final class SSHFileChannelRegistry: @unchecked Sendable {
             .joined(separator: "\u{0}") + "\u{0}" + connection.sshOptions.joined(separator: "\u{1f}")
     }
 
+    /// The channel runs for minutes at a time: a long-lived run, so it opens
+    /// a connection of its own (`ControlPath=none`) rather than hold one of a
+    /// shared master's sessions uncounted. Where that can't log in (a host
+    /// that takes only the terminal's sign-in) the channel stays down and
+    /// reads use the per-exec path, which the pool lends sessions for.
     private static func launch(_ connection: SSHFileExplorerConnection) -> SSHFileChannel.Launch {
-        { command in
+        let own = SSHFileExplorerConnection(
+            destination: connection.destination, port: connection.port, identityFile: connection.identityFile,
+            sshOptions: SSHMasterPool.replacingControlPath(in: connection.sshOptions, with: "none")
+        )
+        return { command in
             (URL(fileURLWithPath: "/usr/bin/ssh"),
-             ProcessSSHFileExplorerTransport.sshArguments(connection: connection, command: command))
+             ProcessSSHFileExplorerTransport.sshArguments(connection: own, command: command))
         }
     }
 }
@@ -1898,12 +1974,22 @@ final class FileExplorerStore: ObservableObject {
             return
         }
         let connection = (provider as? SSHFileExplorerProvider)?.connection
+        if connection != nil, gitStatusRunsInFlight > 0 {
+            // Each remote run holds a lent SSH session (up to its time limit,
+            // on a hung mount): one at a time, and the latest ask runs when it
+            // ends. The bump above already drops the running one's result.
+            gitStatusRerunQueued = true
+            return
+        }
         gitStatusRunsInFlight += 1
         Task { [weak self] in
             let status = await Task.detached(priority: .utility) {
                 if let connection {
-                    return source.fetchStatusSSH(directory: path, destination: connection.destination,
-                        port: connection.port, identityFile: connection.identityFile, sshOptions: connection.sshOptions)
+                    // On a session the app's one-off master lends.
+                    return (try? await SSHMasterPool.shared.withSession(connection) { leased in
+                        source.fetchStatusSSH(directory: path, destination: leased.destination,
+                            port: leased.port, identityFile: leased.identityFile, sshOptions: leased.sshOptions)
+                    }) ?? [:]
                 }
                 return source.fetchStatus(directory: path)
             }.value

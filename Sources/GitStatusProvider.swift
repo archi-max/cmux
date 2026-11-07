@@ -10,15 +10,20 @@ struct GitStatusProvider: Sendable {
     private let gitExecutableURL: URL
     private let sshExecutableURL: URL
     private let environment: [String: String]
+    /// How long a remote `git status` may run (and hold its lent SSH
+    /// session): one stuck on a hung mount is ended then.
+    private let sshTimeout: TimeInterval
 
     init(
         gitExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/git"),
         sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        sshTimeout: TimeInterval = 60
     ) {
         self.gitExecutableURL = gitExecutableURL
         self.sshExecutableURL = sshExecutableURL
         self.environment = environment
+        self.sshTimeout = sshTimeout
     }
 
     func fetchStatus(directory: String) -> [String: GitFileStatus] {
@@ -215,9 +220,13 @@ struct GitStatusProvider: Sendable {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            // Ending ssh closes the pipe, so the read below returns.
+            let timer = DispatchWorkItem { if process.isRunning { process.terminate() } }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + sshTimeout, execute: timer)
             let data = pipe.fileHandleForReading.readDataToEndOfFileOrEmpty()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
+            timer.cancel()
+            guard process.terminationStatus == 0, process.terminationReason == .exit else { return nil }
             return String(data: data, encoding: .utf8)
         } catch {
             return nil

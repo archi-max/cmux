@@ -28,15 +28,27 @@ enum WaveformTrace {
         let args: [String]
         let root: String
         let hostIdentity: String
+        /// A remote sidecar's SSH session, held while it may run: on a host
+        /// that takes only the terminal's sign-in, one of the carrier's
+        /// long-lived sessions (``WorkspaceRemoteConfiguration/longLivedSession(pool:)``).
+        let session: LongLivedSSHSession?
         var load: Task<SVModelSidecar.Reply, any Error>?
         var hierarchy: (tops: [String], instances: [String])?
 
-        init(key: String, sidecar: SVModelSidecar, args: [String], root: String, hostIdentity: String) {
+        init(key: String, sidecar: SVModelSidecar, args: [String], root: String, hostIdentity: String,
+             session: LongLivedSSHSession? = nil) {
             self.key = key
             self.sidecar = sidecar
             self.args = args
             self.root = root
             self.hostIdentity = hostIdentity
+            self.session = session
+        }
+
+        /// Stops the sidecar and gives its session back.
+        func stop() {
+            sidecar.stop()
+            session?.release()
         }
     }
 
@@ -49,6 +61,12 @@ enum WaveformTrace {
     private static let activeDesigns = NSMapTable<FilePreviewPanel, Design>.weakToStrongObjects()
     /// Sidecars kept at most: each holds an elaborated design in memory.
     private static let maxDesigns = 4
+
+    /// At ``maxDesigns``, stops one design (and gives back its SSH session).
+    private static func evictOldestDesign() {
+        guard designs.count >= maxDesigns, let oldest = designs.keys.sorted().first else { return }
+        designs.removeValue(forKey: oldest)?.stop()
+    }
 
     static func bundledSource(bundle: Bundle = .main) -> URL? {
         guard let url = bundle.resourceURL?.appendingPathComponent("vaporview/sv-model", isDirectory: true),
@@ -86,9 +104,25 @@ enum WaveformTrace {
             }
             let commands = SVModelSidecar.commands(source: source)
             let runner: SVModelSidecar.Runner
+            var session: LongLivedSSHSession?
             if let remote = editor.linkRemoteRoute {
                 let configuration = remote.configuration
-                let options = configuration.fileOperationSSHOptions
+                // The sidecar runs as long as its design is kept: a
+                // long-lived run, never on a one-off master's session. Make
+                // room first, so a design past the limit doesn't wait for a
+                // session the oldest one holds.
+                evictOldestDesign()
+                let held: LongLivedSSHSession
+                do { held = try await configuration.longLivedSession() } catch {
+                    throw Failure(message: error.localizedDescription)
+                }
+                // Another trace may have started this design meanwhile.
+                if designs[key] != nil {
+                    held.release()
+                    return try await WaveformTrace.design(for: editor, waveform: waveform)
+                }
+                session = held
+                let options = held.sshOptions
                 runner = { command in
                     .init(executable: "/usr/bin/ssh", arguments: configuration.batchSSHCommandArguments(
                         command: "sh -c '\(command)'",
@@ -102,10 +136,9 @@ enum WaveformTrace {
                 }
             }
             let sidecar = SVModelSidecar(runner: runner, launchCommand: commands.launch, installCommand: commands.install, installSource: source)
-            design = Design(key: key, sidecar: sidecar, args: args, root: root, hostIdentity: editor.linkHostIdentity)
-            if designs.count >= maxDesigns, let oldest = designs.keys.sorted().first {
-                designs.removeValue(forKey: oldest)?.sidecar.stop()
-            }
+            design = Design(key: key, sidecar: sidecar, args: args, root: root, hostIdentity: editor.linkHostIdentity,
+                            session: session)
+            evictOldestDesign()
             designs[key] = design
         }
         if let waveform { activeDesigns.setObject(design, forKey: waveform) }

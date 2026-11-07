@@ -225,7 +225,8 @@ final class SSHTuiWorkspaceCoordinator {
         let links = SSHTuiLinkManager(connection: connection, clientURL: clientURL, paths: paths,
                                      isEnabled: { ManagedRemoteConnectionsPolicy.isEnabled },
                                      agentHookProviders: { SSHTuiConnection.agentHookProviders(defaults: .standard) },
-                                     carrierRoutes: .shared)
+                                     carrierRoutes: .shared,
+                                     masterPool: .shared)
         let provider = CmuxTuiSurfaceProvider(
             summary: .ssh(connection), links: links, catalog: catalog,
             sshClipboardWriteTrustStore: sshClipboardWriteTrustStore
