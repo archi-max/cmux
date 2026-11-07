@@ -1027,9 +1027,153 @@
     return step;
   }
 
+  // ---- load trace (who reads a signal) ----
+  // loads({ path, time, offset }) from a waveform row, loadsOfDesign({ designPath, designPrefix,
+  // dumpPrefix, time, designId, offset }) from the editor or an agent: the readers of the signal
+  // (cmuxTrace's loadsAt) at the time, a page at a time, as a history step (Back returns to it).
+  // Past LOADS_SUMMARY_OVER readers the panel shows their count first (List shows them); the
+  // answer lists the page anyway. followLoad({ index, jump }): the reader's follow (the change
+  // its read caused) traced the same way; its row is added and selected, the marker stays unless
+  // jump is true (the panel offers to move it). Readers outside the KDB's checked instances (or
+  // with the KDB differing, or still exporting) are marked as driver steps are.
+  const LOADS_PAGE = 64;
+  const LOADS_SUMMARY_OVER = 64;
+  const loadsPage = () => (Number(waveform.traceLoadsPage) > 0 ? Number(waveform.traceLoadsPage) : LOADS_PAGE);
+  const summaryOver = () => (Number(waveform.traceLoadsSummaryOver) > 0 ? Number(waveform.traceLoadsSummaryOver) : LOADS_SUMMARY_OVER);
+  async function loads(query) {
+    if (heldByBuild()) { return null; }
+    const q0 = query || {};
+    lastEntry = () => loads(query);
+    stopChain();
+    const q = await resolved(q0);
+    if (!q) { return null; }
+    if (q.compiledOnly) { showError(S().traceLoadsCompiledOnly || S().traceFailed); return null; }
+    return loadsOf(Object.assign({}, q, { offset: q0.offset }));
+  }
+  function loadsFromEditor(query) {
+    if (build && build.failed) { build = null; }
+    const design = query && query.design !== undefined && query.design !== null ? String(query.design) : null;
+    if (building() && (build.design === null || design === null || build.design === design)) { endBuild(); }
+    if (heldByBuild()) { return null; }
+    lastEntry = () => loadsFromEditor(query);
+    return loadsOf(query);
+  }
+  async function loadsOf(query) {
+    const time = designQuery(query);
+    if (time === null) { return null; }
+    stopChain();
+    history.steps = history.steps.slice(0, history.at + 1);
+    return loadStep(String(query.designPath), time, Number(query.offset) || 0, true, {});
+  }
+  // A reader whose instance (or, for a port connection, its target's) the KDB did not check, or
+  // with the KDB differing: approximate; while the KDB export runs, it says slang's design was used.
+  function loadMark(s, e) {
+    const a = e.active || (e.active = { status: 'notEvaluated', reasons: [] });
+    a.reasons = a.reasons || [];
+    if (s.kdbPending) { a.reasons.push({ code: 'kdbPending' }); }
+    const instOf = (p) => String(p).split('.').slice(0, -1).join('.');
+    const touched = [e.instance].concat(e.kind === 'portIn' || e.kind === 'portOut' ? (e.targets || []).filter((t) => !String(t).startsWith('$local:')).map(instOf) : []);
+    if (s.kdbChecked && touched.some((p) => !p || !s.kdbChecked.has(p))) { a.reasons.push({ code: 'kdbNotChecked' }); if (a.trust === 'exact' || a.trust === 'computed') { a.trust = 'approximate'; } }
+    if (s.kdbDiffers) { a.reasons.push({ code: 'kdbDiffers', why: s.kdbDiffers }); if (a.trust === 'exact' || a.trust === 'computed') { a.trust = 'approximate'; } }
+    return e;
+  }
+  async function loadStep(designPath, time, offset, push, extra) {
+    const s = S();
+    const run = ++running;
+    showBusy(format(s.traceLoadsRunning || s.traceRunning, designPath, number(time)));
+    const ours = session;
+    stepStarted(ours);
+    let view;
+    try {
+      view = await session.engine.loadsAt(designPath, time, { offset, limit: loadsPage() });
+      if (!view.error) { view.value = (await dump.values([designPath], time)).get(designPath); }
+    } catch (error) {
+      host.log(error);
+      if (run === running) { showError(error.message || s.traceFailed); }
+      return null;
+    } finally { stepEnded(ours); }
+    if (run !== running) { return null; }
+    view.loads = true;
+    view.dumpPath = toDump(designPath);
+    view.offset = offset;
+    view.listed = !!extra.listed || !(view.total > summaryOver());
+    if (extra.gotoTime !== undefined) { view.gotoTime = extra.gotoTime; }
+    (view.entries || []).forEach((e) => loadMark(ours, e));
+    if (push) { history.steps.push(view); history.at = history.steps.length - 1; } else { history.steps[history.at] = view; }
+    render();
+    host.toNative({ type: 'trace', event: 'loads', signal: view.signal, time: view.time, total: view.total });
+    return plain(view);
+  }
+  async function followLoad(query) {
+    const q = query || {};
+    const view = history.steps[history.at];
+    if (!view || !view.loads) { return null; }
+    const e = (view.entries || [])[Number(q.index)];
+    const f = e && e.active && e.active.follow;
+    if (!f) { return null; }
+    try { await waveform.link.addSignal(dumpSegments(toDump(f.path))); } catch (error) { host.log(error); }
+    if (q.jump === true) { waveform.link.setMarker(f.time); }
+    history.steps = history.steps.slice(0, history.at + 1);
+    return loadStep(f.path, f.time, 0, true, { gotoTime: f.time });
+  }
+  async function addTargets(e) {
+    for (const t of e.targets || []) {
+      if (String(t).startsWith('$local:')) { continue; }
+      try { await waveform.link.addSignal(dumpSegments(toDump(t))); } catch (error) { host.log(error); }
+    }
+  }
+  function renderLoads(st) {
+    const s = S();
+    const p = head(format(s.traceLoadsTitle, st.signal, valueText(st.value), number(st.time)));
+    const body = el('div', 'body');
+    if (st.error) { body.append(el('div', '', s['traceError_' + st.error] || st.error)); p.append(body); return; }
+    if (st.gotoTime !== undefined) { body.append(button(format(s.traceLoadsGoto, number(st.gotoTime)), '', () => waveform.link.setMarker(st.gotoTime))); }
+    if (!st.total) {
+      body.append(el('div', 'muted', s.traceLoadsNone));
+    } else if (!st.listed) {
+      body.append(el('div', '', format(st.instances === 1 ? s.traceLoadsSummaryOne : s.traceLoadsSummary, number(st.total), number(st.instances))));
+      body.append(button(s.traceLoadsList, '', () => { st.listed = true; render(); }));
+    } else {
+      const nav = el('div', 'muted');
+      nav.append(el('span', '', format(s.traceLoadsPage, number(st.offset + 1), number(st.offset + st.entries.length), number(st.total)) + ' '));
+      const pageSize = loadsPage();
+      if (st.offset > 0) { nav.append(button(s.traceLoadsPrev, '', () => loadStep(st.signal, st.time, Math.max(0, st.offset - pageSize), false, { listed: true, gotoTime: st.gotoTime }))); }
+      if (st.next !== null && st.next !== undefined) { nav.append(button(s.traceLoadsNext, '', () => loadStep(st.signal, st.time, st.next, false, { listed: true, gotoTime: st.gotoTime }))); }
+      body.append(nav);
+      const table = el('table');
+      st.entries.forEach((e, i) => {
+        const tr = el('tr', 'load');
+        const a = e.active || {};
+        const code = el('td', 'code', e.src);
+        const at = el('td');
+        if (e.loc) { const l = el('a', '', where(e.loc)); l.title = s.traceOpen || ''; l.addEventListener('click', () => open(e.loc)); at.append(l); }
+        const what = el('td', 'muted', (s['traceLoadsRole_' + e.role] || e.role) + ' · ' + (s['traceLoadsStatus_' + a.status] || a.status || ''));
+        const trust = el('td');
+        if (a.trust) { const b = el('span', 'badge ' + a.trust, s['traceTrust_' + a.trust] || a.trust); b.title = (a.reasons || []).map(reasonText).join('\n'); trust.append(b); }
+        const actions = el('td');
+        actions.append(button('+', s.traceLoadsAdd, () => addTargets(e)));
+        if (a.follow) { actions.append(button(s.traceLoadsFollow, format(s.traceStepTitle, a.follow.path, '', number(a.follow.time)), () => followLoad({ index: i }))); }
+        tr.append(code, at, what, trust, actions);
+        table.append(tr);
+      });
+      body.append(table);
+    }
+    if (st.limits) {
+      const lim = el('div', 'muted', s.traceLoadsLimits || '');
+      if (st.limits.opaque) { lim.textContent += ' ' + format(s.traceLoadsOpaque, number(st.limits.opaque)); }
+      body.append(lim);
+    }
+    p.append(body);
+  }
+
   function back() { stopChain(); if (history.at > 0) { history.at--; render(); post(); } return state(); }
   function forward() { stopChain(); if (history.at < history.steps.length - 1) { history.at++; render(); post(); } return state(); }
-  function post() { const st = history.steps[history.at]; if (st) { host.toNative({ type: 'trace', event: 'step', step: plain(st) }); } }
+  function post() {
+    const st = history.steps[history.at];
+    if (!st) { return; }
+    if (st.loads) { host.toNative({ type: 'trace', event: 'loads', signal: st.signal, time: st.time, total: st.total }); return; }
+    host.toNative({ type: 'trace', event: 'step', step: plain(st) });
+  }
   function close() {
     running++;
     stopChain();
@@ -1237,6 +1381,7 @@
     const st = history.steps[history.at];
     busy = false;
     if (!st) { if (panel) { panel.hidden = true; } return; }
+    if (st.loads) { renderLoads(st); return; }
     const s = S();
     const p = head(format(s.traceStepTitle, st.signal, valueText(st.value), number(st.time)));
     const body = el('div', 'body');
@@ -1384,7 +1529,8 @@
     if (!v) { return []; }
     const path = host.pathOf(v);
     return [{ label: S().traceDriverMenu || '', keybinding: S().traceDriverKey || '', run: () => driver({ path }) },
-      { label: S().traceXRootMenu || '', keybinding: S().traceXRootKey || '', run: () => xRoot({ path }) }];
+      { label: S().traceXRootMenu || '', keybinding: S().traceXRootKey || '', run: () => xRoot({ path }) },
+      { label: S().traceLoadsMenu || '', keybinding: '', run: () => loads({ path }) }];
   }
 
   // A reload drops the session (its variables and changes are the old file's).
@@ -1562,7 +1708,7 @@
     p.append(body);
   }
 
-  const api = Object.freeze({ driver, driverOfDesign: fromEditor, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged, aliasHints });
+  const api = Object.freeze({ driver, driverOfDesign: fromEditor, loads, loadsOfDesign: loadsFromEditor, followLoad, xRoot, reply, status, progress, back, forward, close, state, settled, backendChanged, aliasHints });
   Object.defineProperty(waveform, 'trace', { value: api, writable: false, configurable: false, enumerable: true });
   // prevEdge: the dump provider's, for the checks (the session of the last trace; null without one).
   window.cmuxTraceUI = { rowMenuItems };

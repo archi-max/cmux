@@ -1320,7 +1320,7 @@
       const all = await collectLoads(path);
       if (all.error) { return all; }
       const { entries, total, next } = pageOf(all.entries, opts);
-      return { signal: path, total, entries, next, limits: all.limits };
+      return { signal: path, total, instances: all.instances, entries, next, limits: all.limits };
     }
     function pageOf(list, opts) {
       const o = opts || {};
@@ -1356,7 +1356,7 @@
         }
       }
       out.sort(byPlace);
-      return { entries: out, limits };
+      return { entries: out, limits, instances: new Set(out.map((e) => e.instance)).size };
     }
 
     // Load trace at a time: loads' page, each entry with `active`, judged at the reader's last
@@ -1394,7 +1394,7 @@
         if (e.maybe && out.active.trust === 'exact') { out.active.trust = 'approximate'; out.active.reasons = (out.active.reasons || []).concat([{ code: 'maybe' }]); }
         entries.push(out);
       }
-      return { signal: path, time: t, since, total: page.total, entries, next: page.next, limits: all.limits };
+      return { signal: path, time: t, since, total: page.total, instances: all.instances, entries, next: page.next, limits: all.limits };
     }
     // Whether target changed at exactly `at` (with the read), and the follow for it.
     async function changedAt(target, at) {
