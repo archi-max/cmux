@@ -26,6 +26,7 @@ public enum SVModelResolve {
     public static func resolve(
         dumpPath: [String],
         mapping: HierarchyPathMapping,
+        loadMessages: [String] = [],
         lookup: Lookup,
         model: Model,
         designRoots: () async throws -> [String: [HierarchyNode]],
@@ -80,6 +81,11 @@ public enum SVModelResolve {
     private static func result(designPath: String, dumpPath: [String]) -> Outcome {
         let prefixes = SVModelLoad.prefixes(dumpPath: dumpPath, designPath: HierarchyPathMapping.segments(designPath))
         return .signal(designPath: designPath, designPrefix: prefixes.designPrefix, dumpPrefix: prefixes.dumpPrefix)
+    }
+
+    /// The load error to show with `.notElaborated`.
+    public static func loadDetail(_ messages: [String]) -> String? {
+        messages.first
     }
 
     /// `name`'s trailing `[msb:lsb]`: the name before it and the bits it spans.
