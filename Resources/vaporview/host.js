@@ -795,8 +795,17 @@
   }
 
   async function valuesAtTime(time, paths) {
-    if (dataReady() && backend.valuesAtTime) { return backend.valuesAtTime(time, paths); }
-    return [];
+    if (!(dataReady() && backend.valuesAtTime)) { return []; }
+    const results = await backend.valuesAtTime(time, paths);
+    // live simulation: live rows answer from the simulation; value null where there is no exact answer
+    const sim = window.cmuxWaveform.sim;
+    if (!sim || !sim.liveValue || !Array.isArray(results) || !hostApi.findLinkItem) { return results; }
+    for (const r of results) {
+      const v = r && r.instancePath ? await hostApi.findLinkItem(r.instancePath, true) : null;
+      const lv = v ? sim.liveValue(v.signalId, Number(time)) : undefined;
+      if (lv !== undefined) { r.value = lv; }
+    }
+    return results;
   }
 
   // While a load opens its file (or after a reload or open closed it), only
@@ -1136,7 +1145,11 @@
       // A windowed viewer keeps only windows of a shown signal: those are read
       // like unshown ones (one valueAt), unless the signal was loaded whole.
       const windowed = !!(asked.windowed && asked.windowed());
+      const sim = window.cmuxWaveform.sim;
       for (const v of vars) {
+        // live simulation: a live row answers from the simulation, or not at all (missing coverage)
+        const lv = sim && sim.liveValue ? sim.liveValue(v.signalId, time) : undefined;
+        if (lv !== undefined) { if (lv !== null) { out.set(v.netlistId, lv); } continue; }
         const drawn = shown.has(v.netlistId) ? drawnChanges.get(v.signalId) : undefined;
         if (drawn) {
           const value = valueIn(drawn, time);

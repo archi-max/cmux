@@ -2,12 +2,15 @@
 //
 // Reruns the simulator that wrote the open dump, through cmux's FSDB helper (fsdb-helper-v2/sim.js;
 // cmux pins the run to the dump's own folder), and shows its value changes as they happen: the rows
-// on screen are watched (a row scrolled into view is watched from then, x before), their data is the
+// on screen are watched (a row scrolled into view is watched from then, missing before), their data is the
 // simulation's, and the time range grows with the simulation, the view following the right edge.
 // Ending live mode reloads the dump. A reload, another file or closing the viewer ends the simulation.
 //
+// Time without a record of a live row (before its watch, after an unwatch, changes the helper dropped, history
+// the viewer evicted) is missing coverage: drawn apart from x, and no query answers there (liveValue).
 // window.cmuxWaveform.sim:
 //   open()  run(cycles)  step()  until(expr, maxCycles)  stop()  close()   (promises)
+//   liveValue(signalId, t)  a live row's value, null without an exact answer, undefined if not live
 //   state()    {phase: 'off' | 'idle' | 'opening' | 'ready', running, t, period, stopped, error}
 //   watched()  the hierarchical names being watched
 // host.js calls configure(config) on each open or reload and backendClosed() when the dump closes.
@@ -135,6 +138,12 @@
       const L = live();
       const res = r.result;
       let tMax = typeof res.t === 'number' ? res.t : st.t;
+      // Changes the helper had to drop (its buffer was full): missing from there until the signal's next record.
+      for (const g of res.gaps || []) {
+        const p = bySim.get(g.simSignal);
+        const w = p ? watches.get(p) : null;
+        if (w && L && L.missing) { L.missing(w.signalId, g.from); w.got = true; }
+      }
       let off = 0;
       for (const s of res.signals || []) {
         const p = bySim.get(s.simSignal);
@@ -180,6 +189,12 @@
 
   const api = {
     state: () => ({ ...st }),
+    // A live row's value at t for queries (host.js valuesAt): undefined when the signal isn't live (the dump
+    // answers), null where there is no exact answer (missing coverage, past the simulation's time).
+    liveValue(signalId, t) {
+      const L = st.phase === 'ready' ? live() : null;
+      return L && L.valueAt ? L.valueAt(signalId, Number(t)) : undefined;
+    },
     watched: () => [...watches.keys()],
     async open() {
       if (!enabled()) { throw new Error('live simulation is off'); }
