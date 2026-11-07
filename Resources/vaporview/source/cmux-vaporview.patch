@@ -1,9 +1,9 @@
 diff --git a/CHANGES.md b/CHANGES.md
 new file mode 100644
-index 0000000..5bb1829
+index 0000000..ffa9712
 --- /dev/null
 +++ b/CHANGES.md
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,279 @@
 +# instr-format branch: RISC-V value format and value aliases
 +
 +Base: VaporView 59107c6 (GPL-3.0, https://github.com/Lramseyer/vaporview). Everything
@@ -252,6 +252,37 @@ index 0000000..5bb1829
 +signal's elements and their elements in one batch, one undo step. The context's
 +`cmuxDeclared` is true on a netlist variable (a dump signal the design declares) and false on
 +a slice.
++
++## FSDB strings and reals; permanent per-signal errors (windowed)
++
++In `src/webview/window_cache.ts`. The FSDB helper v2 now reads SystemVerilog string and real
++variables. A window of one says `text: true`, and its records are `[u64 delta][u32 byte
++length][UTF-8 text]` instead of one character per bit; `parseRecords` decodes them into the
++same `[time, text]` changes the VCD (wellen) path gives those rows, so they draw, show values
++and search with the string format unchanged. A value search in the string format asks the
++helper's `searchText` with `format: 'string'` (a case-insensitive regex over the text, the
++format's own rule), else scans exact chunks as before.
++
++A per-signal window error the helper marks `permanent: true` (an encoding the reader can't
++give, a 0-bit alias) is shown at once as `unreadable: <reason>` and the
++signal is not asked again; only other errors back off and say `(retrying)`.
++`placeholderLabel` is the row's placeholder text (cmux's `run.sh windowed` reads it).
++
++Follow-ups from review:
++- A reply that ends mid-record (torn) fails its window (retried) instead of drawing short;
++  `parseRecords` returns null for it, on every caller.
++- A string's window headers say `textMean` (mean text bytes per change, as windows send it).
++  The whole-load estimate counts it, and a string row waits for it before deciding, so few
++  changes of long text stay windowed.
++- A real row's scale is the widest min/max the helper has sent; a ranged answer sends none.
++- "Next rising/falling edge" on a string row is its next change (and prefetch asks only that).
++- A real row takes the helper's range whenever it changes, the first one included, so a row first
++  drawn from a ranged answer (no min/max) doesn't keep the 0..1 defaults.
++- A whole load whose reply is torn is tried TORN_LOAD_TRIES (2) times, then the signal stays
++  windowed, instead of retrying every 30 s for good.
++- A window header with `cut: true` (the helper cut a value to fit its reply budget) keeps the
++  signal windowed: a whole load with cut text would become the row's local data, which the marker
++  value and the page's own value search read.
 diff --git a/packages/vaporview-api/types.ts b/packages/vaporview-api/types.ts
 index 5db3ef6..bbd3275 100644
 --- a/packages/vaporview-api/types.ts
@@ -2888,10 +2919,10 @@ index eb7df64..48520a0 100644
          const valueIs9State = varItem.valueFormat.is9State;
 diff --git a/src/webview/window_cache.ts b/src/webview/window_cache.ts
 new file mode 100644
-index 0000000..22e4a44
+index 0000000..6d86a08
 --- /dev/null
 +++ b/src/webview/window_cache.ts
-@@ -0,0 +1,1917 @@
+@@ -0,0 +1,1995 @@
 +// Windowed waveform loading (protocol v2) for the VaporView webview.
 +//
 +// cmux addition, not part of upstream VaporView. Off unless the host sends
@@ -2962,6 +2993,7 @@ index 0000000..22e4a44
 +const HYBRID_LOADS       = 2;                 // whole loads in flight at once
 +const COUNT_BATCH        = 32;                // signals per count request
 +const MAX_HOST_BUCKETS   = 4194304;          // the helper clamps `buckets` to this
++const TORN_LOAD_TRIES    = 2;     // cmux: whole loads with a torn reply before a signal stays windowed
 +const SCAN_BUCKETS       = 32768; // formatted value search: exact chunks of up to 65536 changes
 +const TEXT_BUDGET_MS     = 5000;  // searchText: helper time per request; an unfinished one is resumed
 +const TEXT_MAX_PATTERN   = 4096;  // searchText's limit; longer searches use the page scan
@@ -2974,7 +3006,9 @@ index 0000000..22e4a44
 +// Estimated webview bytes per change of a whole-loaded signal: the [time, value] array, its
 +// number and string, and the upstream formatted-value cache. Fitted to the measured RSS
 +// growth (about 300 B per change for 1- to 5-bit signals, more for 32-bit ones).
-+const hybridBytesFor = (count: number, width: number) => count * (256 + 8 * width);
++// cmux: a string's text adds its UTF-16 copy per change (textMean: the helper's mean text
++// bytes per change), so few changes of long text aren't taken for a small signal.
++const hybridBytesFor = (count: number, width: number, textMean = 0) => count * (256 + 8 * width + 2 * textMean);
 +const pushStat = (arr: number[], v: number) => { arr.push(v); if (arr.length > STATS_KEEP) {arr.splice(0, arr.length - STATS_KEEP / 2);} };
 +
 +interface Tile { level: number; index: number; t0: number; t1: number; key: string; priority: number; }
@@ -3008,6 +3042,12 @@ index 0000000..22e4a44
 +  fails     = 0;
 +  failUntil = 0;
 +  failMsg   = '';
++  permanent = false; // cmux: the helper said this error won't go away (unsupported value encoding, 0-bit alias): shown once, never asked again
++  text      = false; // cmux: a string or real signal (its windows say `text: true`)
++  textMean: number | null = null; // cmux: a string's mean text bytes per change (window headers)
++  cut       = false; // cmux: a window cut a value to fit (header cut: true): never loaded whole, so search and values use the helper's whole text
++  rangeSeen = false; // cmux: min/max hold a range the helper sent (widened, never narrowed)
++  tornLoads = 0;     // cmux: whole loads whose reply was torn (after TORN_LOAD_TRIES: stays windowed)
 +  timeouts  = 0;     // window requests that timed out in a row: back off only (a slow helper isn't a failing one)
 +  slowUntil = 0;
 +  painted   = new Set<string>(); // window keys the last render drew from (kept by evict)
@@ -3060,9 +3100,29 @@ index 0000000..22e4a44
 +}
 +
 +// Records are [u64 LE delta time][width ASCII chars]; the first delta is from 0.
-+function parseRecords(raw: Uint8Array, width: number): ValueChange[] {
++// cmux: a string or real signal's window says `text: true`; its records are
++// [u64 LE delta][u32 LE byte length][UTF-8 text], the text being the value as the viewer
++// shows a VCD's strings and reals (formatString), so they draw and search unchanged.
++const utf8 = new TextDecoder('utf-8');
++// A reply that ends mid-record (torn) gives null: the caller fails it (retried), rather than
++// drawing it short with the last value stretched to the window's end.
++function parseRecords(raw: Uint8Array, width: number, text = false): ValueChange[] | null {
++  if (text) {
++    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
++    const out: ValueChange[] = [];
++    let t = 0, o = 0;
++    while (o + 12 <= raw.length) {
++      t += dv.getUint32(o, true) + dv.getUint32(o + 4, true) * 4294967296;
++      const len = dv.getUint32(o + 8, true);
++      if (o + 12 + len > raw.length) {break;}
++      out.push([t, utf8.decode(raw.subarray(o + 12, o + 12 + len))]);
++      o += 12 + len;
++    }
++    return o === raw.length ? out : null;
++  }
 +  const rec = 8 + width;
-+  const n   = Math.floor(raw.length / rec);
++  if (raw.length % rec !== 0) {return null;}
++  const n   = raw.length / rec;
 +  const dv  = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
 +  const s   = latin1.decode(raw); // one string, values are substrings of it
 +  const out: ValueChange[] = new Array(n);
@@ -3221,7 +3281,19 @@ index 0000000..22e4a44
 +  // A window request for this signal failed: back off (0.5 s, 1 s, 2 s ... at most a minute).
 +  // It is also asked for alone from now on, so a slow or failing signal can't delay the
 +  // replies for the others in its batch.
-+  private fail(s: SignalWindows, msg: string) {
++  private fail(s: SignalWindows, msg: string, permanent = false) {
++    if (s.permanent) {return;}
++    if (permanent) {
++      // Shown at once and for good: no backoff, no retry, no "(retrying)".
++      s.permanent = true;
++      s.fails = Math.max(s.fails, FAIL_SHOW_AFTER);
++      s.solo = true;
++      s.failMsg = msg;
++      s.failUntil = Infinity;
++      vscodeWrapper.outputLog('window: signal ' + s.signalId + ' unreadable: ' + msg + ' (permanent)');
++      this.scheduleRedraw();
++      return;
++    }
 +    s.fails++;
 +    s.solo = true;
 +    s.failMsg = msg;
@@ -3235,6 +3307,14 @@ index 0000000..22e4a44
 +  }
 +
 +  private unreadable(s: SignalWindows) {return s.fails >= FAIL_SHOW_AFTER;}
++
++  // The text drawn where a row has no data. Unreadable: the host keeps failing for this
++  // signal; a transient failure is retried with backoff ("(retrying)"), a permanent one
++  // (the helper's `permanent: true`) is not.
++  placeholderLabel(s: SignalWindows): string {
++    if (this.unreadable(s)) {return 'unreadable: ' + s.failMsg + (s.permanent ? '' : ' (retrying)');}
++    return s.timeouts > 0 ? 'loading (helper is slow)' : '';
++  }
 +
 +  // A window request timed out: the helper is slow (busy, cold walks), not failing. Wait
 +  // longer before asking again (1 s doubling to a minute), but don't send the signal alone
@@ -3530,7 +3610,10 @@ index 0000000..22e4a44
 +
 +  private decideCount(s: SignalWindows, count: number) {
 +    if (s.hybrid !== 'unknown' && s.hybrid !== 'asking') {return;}
-+    const est = hybridBytesFor(count, s.width);
++    // A string's text size is known from its window headers; until then, ask again later.
++    if (s.cut) {s.hybrid = 'windowed'; return;} // a whole load would hold cut text
++    if (s.textMean === null && this.rowsOf(s.signalId).some((it) => it.encoding === 'String')) {this.hybridLater(s); return;}
++    const est = hybridBytesFor(count, s.width, s.textMean ?? 0);
 +    if (count > this.hybridMaxChanges || est > this.hybridMaxBytes || this.hybridBytes + est > this.hybridBudget) {
 +      s.hybrid = 'windowed';
 +      return;
@@ -3612,8 +3695,14 @@ index 0000000..22e4a44
 +      if (d.h.error) {final(); return;}
 +      if (d.err !== null || d.raw === null) {this.hybridLater(s, 'known'); return;}
 +      if (!d.h.exact) {final(); return;}
-+      const records = parseRecords(d.raw, s.width);
-+      if (records.length === 0 || records[0][0] !== 0) {this.hybridLater(s, 'known'); return;}
++      // Cut text (over the reply budget) would become the row's local data, which the marker
++      // value and the page's own value search read: stay windowed, using the helper's whole text.
++      if (d.h.cut) {s.cut = true; final(); return;}
++      const records = parseRecords(d.raw, s.width, !!d.h.text);
++      // A torn reply won't heal on its own (a helper bug or a cut stream): try again a bounded
++      // number of times, then stay windowed.
++      if (records === null && ++s.tornLoads >= TORN_LOAD_TRIES) {final(); return;}
++      if (records === null || records.length === 0 || records[0][0] !== 0) {this.hybridLater(s, 'known'); return;}
 +      const est = s.hybridEst;
 +      this.unpend(s);
 +      this.promote(s, records, d.h.min ?? 0, d.h.max ?? 1, est);
@@ -3844,9 +3933,13 @@ index 0000000..22e4a44
 +      if (!s || !f.signals.includes(h.signalId)) {return;}
 +      answered.add(s.signalId);
 +      if (s.hybrid === 'local') {return;} // loaded whole meanwhile (hybrid): windows not needed
++      if (h.text) {s.text = true;}
++      if (typeof h.textMean === 'number') {s.textMean = h.textMean;}
++      if (h.cut) {s.cut = true;}
 +      if (this.hybrid && typeof h.total === 'number') {this.decideCount(s, h.total);} // the helper knows its whole count
-+      if (err !== null || raw === null) {this.fail(s, err || 'no data'); return;}
-+      const all = parseRecords(raw, s.width);
++      if (err !== null || raw === null) {this.fail(s, err || 'no data', !!h.permanent); return;}
++      const all = parseRecords(raw, s.width, !!h.text);
++      if (all === null) {this.fail(s, 'torn window reply'); return;}
 +      // The first record must be the value at the request's t0 (L4).
 +      if (all.length === 0 || all[0][0] !== f.tiles[0].t0) {this.fail(s, 'window does not start with the value at t0'); return;}
 +      if (s.windows.size === 0) {firstWindow.push(s);}
@@ -3865,8 +3958,17 @@ index 0000000..22e4a44
 +        s.bytes += w.bytes;
 +        stored++;
 +      });
-+      s.fails = 0; s.failUntil = 0; s.failMsg = ''; s.solo = false; s.timeouts = 0; s.slowUntil = 0;
-+      s.min = h.min ?? 0; s.max = h.max ?? 1;
++      s.fails = 0; s.failUntil = 0; s.failMsg = ''; s.solo = false; s.timeouts = 0; s.slowUntil = 0; s.permanent = false;
++      // A real's scale: the widest range the helper has sent (a ranged answer sends none).
++      // The rows take it whenever it changes, the first range included: a row first drawn from
++      // a ranged answer (no min/max) was given the 0..1 defaults by onFirstWindow.
++      if (typeof h.min === 'number' && typeof h.max === 'number') {
++        const mn = s.rangeSeen ? Math.min(s.min, h.min) : h.min;
++        const mx = s.rangeSeen ? Math.max(s.max, h.max) : h.max;
++        const changed = !s.rangeSeen || mn !== s.min || mx !== s.max;
++        s.min = mn; s.max = mx; s.rangeSeen = true;
++        if (changed) {this.rowsOf(s.signalId).forEach((item) => {if (item.encoding === "Real") {item.min = s.min; item.max = s.max;}});}
++      }
 +      this.evict(s);
 +    });
 +    // A signal the reply left out would otherwise be asked for again at once, forever (H2).
@@ -3956,8 +4058,7 @@ index 0000000..22e4a44
 +    const segs = this.segments(s, L, R);
 +    let drewData = false;
 +    s.painted.clear();
-+    // Unreadable: the host keeps failing for this signal; it is retried with backoff.
-+    const label = this.unreadable(s) ? 'unreadable: ' + s.failMsg + ' (retrying)' : s.timeouts > 0 ? 'loading (helper is slow)' : '';
++    const label = this.placeholderLabel(s);
 +
 +    for (let i = 0; i < segs.length; i++) {
 +      const sg = segs[i];
@@ -4502,7 +4603,7 @@ index 0000000..22e4a44
 +        if (!(item instanceof NetlistVariable) || !this.isWindowed(item.signalId) || seen.has(item.signalId!) || seen.size >= PREFETCH_ROWS) {return;}
 +        seen.add(item.signalId!);
 +        const s = this.signals.get(item.signalId!)!;
-+        const kinds: ('any' | 'rise' | 'fall')[] = s.width === 1 ? ['any', this.lastEdgeKind] : ['any'];
++        const kinds: ('any' | 'rise' | 'fall')[] = s.width === 1 && !s.text ? ['any', this.lastEdgeKind] : ['any']; // cmux: strings/reals have no rise/fall
 +        kinds.forEach((kind) => {
 +          this.prefetchChain(s, {cmd: 'edge', kind}, 1, start, PREFETCH_AHEAD, epoch);
 +          this.prefetchChain(s, {cmd: 'edge', kind}, -1, start, PREFETCH_BACK, epoch);
@@ -4525,9 +4626,11 @@ index 0000000..22e4a44
 +          return item ? item.getNextEdge(start, direction, edge) : null;
 +        }
 +        const s = this.signals.get(item.signalId!)!;
-+        const local = this.localEdge(s, start, direction, pred);
++        // cmux: a string or real row has no rising or falling edge: its next change instead.
++        const rowKind = s.text || item.encoding === 'String' ? 'any' : kind;
++        const local = this.localEdge(s, start, direction, rowKind === 'any' ? null : pred);
 +        if (local !== undefined) {return local;}
-+        return this.hostNav(s, {cmd: 'edge', kind}, direction, start, false, false);
++        return this.hostNav(s, {cmd: 'edge', kind: rowKind}, direction, start, false, false);
 +      }));
 +      const found = times.filter((t): t is number => t !== null && t !== undefined);
 +      if (found.length === 0 || gen !== this.generation) {return;}
@@ -4599,6 +4702,7 @@ index 0000000..22e4a44
 +    const ok = (p: string | undefined): p is string => typeof p === 'string' && p.length > 0 && p.length <= TEXT_MAX_PATTERN;
 +    if (TEXT_FORMATS.has(formatId)) {return ok(parsed) ? {format: formatId, pattern: parsed} : null;}
 +    if (formatId === 'ascii') {return ok(raw) ? {format: 'ascii', pattern: raw} : null;}
++    if (formatId === 'string') {return ok(parsed) ? {format: 'string', pattern: parsed} : null;} // cmux: string/real rows
 +    if (formatId.startsWith('alias:')) {
 +      const table = formatId.slice('alias:'.length);
 +      const source = aliasSearchSource(table);
@@ -4678,7 +4782,8 @@ index 0000000..22e4a44
 +        span = Math.max(1, Math.floor((t1 - t0) * (SCAN_BUCKETS * 1.6) / Math.max(1, count)));
 +        continue;
 +      }
-+      const recs = parseRecords(d.raw, s.width);
++      const recs = parseRecords(d.raw, s.width, !!d.h.text);
++      if (recs === null) {throw new Error('value search: torn window reply');}
 +      if (recs.length === 0 || recs[0][0] !== t0) {throw new Error('value search: window does not start at t0');}
 +      this.keepScanWindow(s, t0, t1, d.h, recs);
 +      if (dir > 0) {
@@ -4749,7 +4854,11 @@ index 0000000..22e4a44
 +        if (err !== null || raw === null) {vscodeWrapper.outputLog('WaveDrom: ' + h.signalId + ' left out: ' + err); return;}
 +        const width = widthOf.get(h.signalId);
 +        if (width === undefined) {return;}
-+        if (h.exact) {exact.set(h.signalId, parseRecords(raw, width));}
++        if (h.exact) {
++          const recs = parseRecords(raw, width, !!h.text);
++          if (recs === null) {vscodeWrapper.outputLog('WaveDrom: ' + h.signalId + ' left out: torn window reply'); return;}
++          exact.set(h.signalId, recs);
++        }
 +        else {dense.push({id: h.signalId, counts: counts!, count: Number(h.count) || 0});}
 +      });
 +      return dense;

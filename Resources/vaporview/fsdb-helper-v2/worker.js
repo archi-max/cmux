@@ -88,7 +88,7 @@ function load(ids, evict = true) {
   if (rest.length) {
     for (const r of addon.cacheLoad(rest, false)) {
       info.set(r.signalId, r);
-      if (!r.error && !r.cached) { walkedNow.push(r.signalId); }
+      if (!r.error && !r.cached && !r.kind) { walkedNow.push(r.signalId); }  // (string/real stores aren't persisted)
     }
   }
   if (evict) { addon.cacheEvict(ids); }
@@ -142,6 +142,14 @@ function readVarTree() {
   return { vars, ms: +(performance.now() - t0).toFixed(1) };
 }
 
+// String and real signals: their records are text ([u64 delta][u32 length][bytes]), and a
+// real's window says the signal's min and max (the viewer's analog scale), as wellen's do;
+// not a ranged (cold slice) window, whose range is only the slice's. A string's says the
+// mean text bytes per change as windows send it (textMean: the viewer's whole-load estimate).
+const textHead = (w, ranged = false) => (w.text ? { text: true, kind: w.kind,
+  ...(w.kind === 'real' && !ranged ? { min: w.min, max: w.max } : {}),
+  ...(typeof w.textMean === 'number' ? { textMean: +w.textMean.toFixed(1) } : {}), ...(w.cut ? { cut: true } : {}) } : {});
+
 const ops = {
   open({ file, cacheBytes }) {
     sizesKey = '';  // the coordinator dropped its copy: send them with this reply
@@ -157,14 +165,15 @@ const ops = {
   },
 
   // -> [{signalId, exact, count, records (deflated), counts?, cached, loadMs, walkMs} | {signalId, error}]
-  window({ signalIds, t0, t1, buckets }) {
+  window({ signalIds, t0, t1, buckets, textBudget }) {
     const info = ensure(signalIds);  // throws DERIVED_EVICTED for an evicted derived signal
     return signalIds.map((signalId) => {
       const l = info.get(signalId);
       if (l.error) { return { signalId, error: l.error }; }
-      const w = addon.cacheWindow(signalId, t0, t1, buckets);
+      const w = addon.cacheWindow(signalId, t0, t1, buckets, textBudget);
+      if (w.error) { return { signalId, error: w.error }; }  // over its text reply budget
       return { signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
-        counts: w.counts || null, cached: l.cached, loadMs: l.loadMs, walkMs: l.walkMs, total: w.total, ...(l.fromFile ? { file: true } : {}) };
+        counts: w.counts || null, cached: l.cached, loadMs: l.loadMs, walkMs: l.walkMs, total: w.total, ...(l.fromFile ? { file: true } : {}), ...textHead(w) };
     });
   },
 
@@ -181,10 +190,10 @@ const ops = {
 
   // A short range of signals that aren't stored: load and walk only [t0 - 1, t1]
   // into a scratch store (same answer as the whole signal; nothing kept).
-  windowCold({ signalIds, t0, t1, buckets }) {
-    return addon.cacheWindowCold(signalIds, t0, t1, buckets).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
+  windowCold({ signalIds, t0, t1, buckets, textBudget }) {
+    return addon.cacheWindowCold(signalIds, t0, t1, buckets, textBudget).map((w) => (w.error ? { signalId: w.signalId, error: w.error }
       : { signalId: w.signalId, exact: w.exact, count: w.count, records: zlib.deflateRawSync(w.records, { level: 1 }),
-        counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs }));
+        counts: w.counts || null, cached: false, ranged: true, loadMs: w.loadMs, walkMs: w.walkMs, ...textHead(w, true) }));
   },
 
   // Background whole walk after a ranged first draw: yields to interactive work.

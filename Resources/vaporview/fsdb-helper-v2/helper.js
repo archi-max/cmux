@@ -25,7 +25,23 @@
 //     a real reopen (a new epoch, as below).
 //   children {scopeOffsetIdx, scopePath} -> {scopes, vars}
 //   window {signals: [{signalId, width}], t0, t1, buckets, deflateCounts?}
-//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?} | {signalId, error}]}
+//     -> {signals: [{signalId, exact, count, bytes, bucketBytes, cached, walkMs, split?, ranged?, file?, total?, text?, kind?, min?, max?, textMean?, cut?}
+//                   | {signalId, error, permanent?}]}
+//     (permanent: the error won't go away for this file (an encoding the reader can't give, a
+//     0-bit alias); the viewer shows it once and stops asking. Over the store cap is not
+//     permanent: a zoomed-in (ranged) window of that signal still loads.)
+//     (text: a string or real signal (kind 'string' | 'real'): its records are
+//     [u64 LE delta][u32 LE byte length][UTF-8 text] instead, the text the viewer shows for a
+//     VCD's strings and reals (reals as Rust/wellen print them: shortest digits, no exponent);
+//     "x" before the first change. A window carries at most 4 KB of each value, cut at a
+//     character boundary and ended with U+2026 (valueAt and searchText use the whole text).
+//     A reply's string records stay within 16 MB (--text-budget-mb, FSDB_TEXT_BUDGET_MB),
+//     shared by its strings (each at least a quarter of it): the cut shrinks, down to 256 bytes, so
+//     the window fits; one that can't is a retryable error (a narrower window fits). Reals also
+//     carry the signal's min and max (of 0 and every finite value, as wellen), but not on a
+//     ranged answer (a slice's range). cut: true when a value in the window was cut (the
+//     viewer then keeps the signal windowed instead of loading it whole). Strings carry
+//     textMean, the mean bytes of text per change as windows send it. Edges: every change; search (bit patterns) refuses them.)
 //     (total: the signal's whole normalized change count, when it came from the store;
 //     absent for ranged answers. Same number as `count`'s.)
 //     (ranged: a cold signal over a range <= FSDB_COLD_RANGE (0.25) of the file was answered
@@ -59,6 +75,8 @@
 //     as search (inclusive: >= t / <= t), but the value is formatted the way the viewer formats
 //     it (format riscv*, alias, ascii; text.js) and the pattern is matched against the text.
 //     Numeric formats (hex/bin/dec/sdec) are refused: they are value searches (`search`).
+//     format 'string' (string and real signals, the viewer's string format): the pattern is a
+//     case-insensitive regex over the value's text (upstream's rule); an invalid one matches nothing.
 //   cancel {id}                    -> the target's reply becomes {id, cancelled: true};
 //     queued parts are dropped, running ones finish and are discarded (background
 //     ones are told to stop). If `id` isn't running, one {id, cancelled: false} line.
@@ -454,6 +472,34 @@ function broadcast(op, extra) {
 
 // ---- split walks ----
 const widthOf = new Map();  // signalId -> bits, learned from children and window requests
+// Signals never split-walked: strings and reals (their stores aren't bit planes, so slices
+// can't be handed over) and events (a slice join would drop repeated occurrences).
+const noSplit = new Set();
+// Strings, reals and events are never split. The reader lists parameters and time vars as Real
+// too, but most are bit vectors (1 byte per bit), so only type real is taken for a real here.
+// Strings are also counted for the text reply budget (stringIds).
+const stringIds = new Set();
+const learnKind = (signalId, encoding, type) => {
+  if (encoding === 'String' || (encoding === 'Real' && type === 'real') || type === 'event') { noSplit.add(signalId); }
+  if (encoding === 'String') { stringIds.add(signalId); }
+};
+// A window reply's string records stay within TEXT_BUDGET in all (16 MB): each string in the
+// request gets an equal share (at least a quarter of it), and the addon cuts each value
+// shorter (4 KB down to 256 bytes) to fit its share; a window that can't fit even then is a
+// retryable error. Reals' texts are short and aren't counted.
+const TEXT_BUDGET = Math.max(1, arg('--text-budget-mb', 'FSDB_TEXT_BUDGET_MB', 16)) * 1048576;
+const textShare = (ids) => {
+  const n = new Set(ids.filter((id) => stringIds.has(id))).size;
+  return Math.floor(Math.max(TEXT_BUDGET / 4, TEXT_BUDGET / Math.max(1, n)));
+};
+// Per-signal errors that will not go away for this file (an encoding the reader can't give,
+// a 0-bit alias, over the store cap): the coordinator doesn't walk them again, and window
+// headers mark those in PAGE_PERMANENT `permanent: true`, so the viewer shows them once
+// instead of retrying.
+const PERMANENT = /unsupported|0 bits|larger than|not a bit signal|are not split/;
+// What the page is told is permanent: not "larger than" (over the store cap), since a
+// zoomed-in range of that signal still loads through the ranged cold path.
+const PAGE_PERMANENT = /unsupported|0 bits|not a bit signal|are not split/;
 const splitting = new Map();  // signalId -> Promise<{ms, slices}>
 let timeEnd = 0;
 
@@ -475,6 +521,7 @@ function splitWalks(req, ids) {
   const waits = [];
   const coldIds = ids.filter((id) => !splitting.has(id) && !workerFor(id).state.cached.includes(id));
   for (const id of ids) {
+    if (noSplit.has(id) && !splitting.has(id)) { continue; }
     if (splitting.has(id)) {
       const q = splitting.get(id);
       q.sp.reqs.add(req); (req.splits || (req.splits = [])).push(q.sp);
@@ -600,6 +647,7 @@ let index = null;  // {byPath, byId, list: [{path, signalId, width, msb, lsb, en
 // SystemVerilog strings (FSDB varType 63, 2 bytes per bit) are listed as width-1 BitVectors of type
 // 'unknown_var_type'; the reader can't give them as bit vectors, so they're never search or
 // warm-up candidates (they made every search containing them incomplete).
+// (Older reader trees listed SystemVerilog strings as width-1 BitVectors of type 'unknown_var_type'.)
 const bitVector = (v) => v.encoding === 'BitVector' && v.type !== 'unknown_var_type';
 function getIndex() {
   if (index) { return index; }
@@ -614,6 +662,7 @@ function getIndex() {
       if (!byPath.has(v.path)) { byPath.set(v.path, v); }
       if (!byId.has(signalId)) { byId.set(signalId, v); }
       widthOf.set(signalId, width);
+      learnKind(signalId, encoding, type);
     }, () => {}, () => {}, () => {}, () => {});
     let start = 0, rem = 1, guard = 256;
     while (rem > 0 && guard-- > 0) {
@@ -631,6 +680,7 @@ function getIndex() {
 // Expression reference -> {signalId, width, msb, lsb, path, sel}. A path may
 // carry its own index brackets (pc_rdata[0]); the longest bracket prefix that
 // names a variable wins and the rest are selects. A unique suffix also works.
+// Expressions work on bit vectors: a string or real operand is an error, not 64 bits of a double.
 const fmtSel = ([m, l]) => (m === l ? `[${m}]` : `[${m}:${l}]`);
 function resolveRef(r) {
   const idx = getIndex();
@@ -1391,6 +1441,7 @@ const handlers = {
     epoch++;
     splitting.clear();
     widthOf.clear();
+    noSplit.clear(); stringIds.clear();
     index = null;
     derived.clear(); derivedByKey.clear(); derivedByName.clear();
     if (activeSearch) {  // ends with its terminal line {id, cancelled: true, reason: 'reopened'} (verify F1)
@@ -1448,7 +1499,7 @@ const handlers = {
     // The reader's arrays come as scopes holding their elements (tree.js).
     const tree = readScopeTree(addon, scopePath, scopeOffsetIdx,
       (name, type, encoding, varPath, netlistId, signalId, width, msb, lsb) =>
-        { widthOf.set(signalId, width); return { name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }; });
+        { widthOf.set(signalId, width); learnKind(signalId, encoding, type); return { name: stripRange(name, width, msb, lsb), type, encoding, netlistId, signalId, width, msb, lsb }; });
     return { scopes: scopes.filter((s) => !s.name.startsWith('$')).concat(tree.scopes), vars: tree.vars };
   },
 
@@ -1471,22 +1522,30 @@ const handlers = {
     // load below reports it for that signal only.
     if (sp) { try { await sp; } catch (e) { if (req.cancelled || /reopened|closed/.test(String(e && e.message))) { throw e; } } }
     if (req.cancelled) { return {}; }
+    const textBudget = textShare(ids);
     const [warmRes, coldRes] = await Promise.all([
-      warmIds.length ? scatter(req, 'window', warmIds, { t0, t1, buckets }, (m) => m.result) : [],
-      cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets }, true) : []]);
+      warmIds.length ? scatter(req, 'window', warmIds, { t0, t1, buckets, textBudget }, (m) => m.result) : [],
+      cold.size ? coldTask(req, 'windowCold', [...cold], { t0, t1, buckets, textBudget }, true) : []]);
     const byId = new Map([...warmRes, ...coldRes].map((r) => [r.signalId, r]));
     for (const r of coldRes) { if (!r.error) { scheduleBgLoad(r.signalId); } }
     const res = ids.map((id) => byId.get(id));
     const head = [], bins = [];
     for (const r of res) {
-      if (r.error) { head.push({ signalId: r.signalId, error: r.error, bytes: 0, bucketBytes: 0 }); continue; }
+      if (r.error) {
+        if (PERMANENT.test(r.error) && r.signalId < DERIVED_BASE) { bgFailed.set(r.signalId, r.error); }
+        const permanent = PAGE_PERMANENT.test(r.error);
+        head.push({ signalId: r.signalId, error: r.error, bytes: 0, bucketBytes: 0, ...(permanent ? { permanent: true } : {}) });
+        continue;
+      }
       const rec = asBuf(r.records);
       let cnt = asBuf(r.counts);
       if (cnt && deflateCounts) { cnt = zlib.deflateRawSync(cnt, { level: 1 }); }
       const sp = req.split && req.split.get(r.signalId);
       head.push({ signalId: r.signalId, exact: r.exact, count: r.count, bytes: rec.length, bucketBytes: cnt ? cnt.length : 0,
         cached: sp ? false : r.cached, walkMs: +(sp ? sp.ms : r.loadMs + r.walkMs).toFixed(1), ...(sp ? { split: sp.slices.length } : {}),
-        ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}) });
+        ...(r.ranged ? { ranged: true } : {}), ...(r.file ? { file: true } : {}), ...(r.total !== undefined && !r.ranged ? { total: r.total } : {}),
+        ...(r.text ? { text: true, kind: r.kind } : {}), ...(r.kind === 'real' && r.min !== undefined ? { min: r.min, max: r.max } : {}),
+        ...(r.textMean !== undefined ? { textMean: r.textMean } : {}), ...(r.cut ? { cut: true } : {}) });
       bins.push(rec);
       if (cnt) { bins.push(cnt); }
     }
@@ -1625,13 +1684,13 @@ const handlers = {
       }
       // A signal whose walk already failed for good (bgFailed: over the store cap,
       // unreadable) is reported from memory, not walked again.
-      for (const id of need) { if (bgFailed.has(id) && /larger than|0 bits|unsupported|limit/.test(bgFailed.get(id))) { errors.set(id, bgFailed.get(id)); } }
+      for (const id of need) { if (bgFailed.has(id) && (PERMANENT.test(bgFailed.get(id)) || /limit/.test(bgFailed.get(id)))) { errors.set(id, bgFailed.get(id)); } }
       const real = need.filter((x) => !derived.has(x) && !errors.has(x));
       if (real.length) {
         try { const sp = prep(req, real); if (sp) { await sp; } } catch (e) { /* a failed split: the load below reports it per signal */ }
         const res = await scatter(req, 'load', real, {}, (m) => m.result);
         for (const r of res) {  // (load's results carry their ids)
-          if (r && r.error) { errors.set(r.signalId, r.error); if (/larger than|0 bits|unsupported/.test(r.error)) { bgFailed.set(r.signalId, r.error); } }
+          if (r && r.error) { errors.set(r.signalId, r.error); if (PERMANENT.test(r.error)) { bgFailed.set(r.signalId, r.error); } }
         }
       }
     }

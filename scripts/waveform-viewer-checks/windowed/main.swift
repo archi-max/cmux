@@ -14,6 +14,9 @@
 //           reply, Escape cancels, ASCII sends the typed text, and the page scan answers
 //           when the helper has no searchText or reports tooLarge; host.js changes()
 //           sends maxChanges (only it, only a finite cap)
+//   values  string and real rows from text records (windows, inline values, next edge,
+//           searchText format string); a permanent per-signal error shows once and is
+//           not asked again, a transient one says "(retrying)" and is retried
 // Usage: windowed <assetRoot> <v2HelperRoot> <v1HelperRoot> <mock.cjs> <scratch> <out.png>
 import AppKit
 import WebKit
@@ -1095,6 +1098,134 @@ final class Page: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(small == 2 && (sl["bytes"] as? Int ?? 0) > 0, "a signal under the cap still comes back whole: rst \(small ?? -1) changes, request \(sl)")
   }
 
+  /// String and real rows (helper-v2's text records) and per-signal errors. The mock's
+  /// text=1 dump: tb.dut.msg (string, a word every 2000 ps, 500k changes: windowed),
+  /// level (real, 1000 changes: loaded whole), bad (a permanent error), flaky (a transient one).
+  func textValueChecks() async {
+    let msgId = 4, levelId = 5, badId = 6, flakyId = 7, bannerId = 8, tornId = 9, swingId = 10, coldlvlId = 11, cutLongId = 12, tornWholeId = 13
+    for name in ["msg", "level", "bad", "flaky", "banner", "torn", "swing", "cutlong", "tornwhole"] {
+      let added = await call("return await cmuxWaveform.link.addSignal(['tb','dut','\(name)'])")
+      if added as? Bool != true { print("[add]", name, String(describing: added)) }
+    }
+    let drawn = await waitFor(15000) { await self.wc("w.signals.get(\(msgId)) && w.signals.get(\(msgId)).firstDrawMs !== null") as? Bool == true }
+    let msgWindowed = await wc("w.isWindowed(\(msgId))") as? Bool
+    expect(drawn && msgWindowed == true, "a string row (500k changes) draws from windows: drawn \(drawn), windowed \(String(describing: msgWindowed))")
+    let levelLocal = await waitFor(15000) { await self.wc("w.isWindowed(\(levelId)) === false") as? Bool == true }
+    expect(levelLocal, "a real row (1000 changes) is loaded whole")
+    // Zoom in so msg's windows are exact, then read values from the page's own windows.
+    let t0 = 300_000_000
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: \(t0), endTime: \(t0 + 40000) }); return null")
+    let times = (0..<10).map { t0 + $0 * 2000 + 1000 }
+    let pageVals: () async -> [String] = {
+      await self.wc("""
+        (() => { const s = w.signals.get(\(msgId)); const out = [];
+          for (const T of \(times)) { let v = null;
+            for (const win of s.windows.values()) { if (!win.exact || win.t0 > T || T >= win.t1) { continue; }
+              const r = win.data.valueChangeData; for (let k = r.length - 1; k >= 0; k--) { if (r[k][0] <= T) { v = r[k][1]; break; } } }
+            out.push(v); }
+          return out; })()
+        """) as? [String] ?? []
+    }
+    _ = await waitFor(10000) { await pageVals().count == times.count }
+    let got = await pageVals()
+    var truth: [String] = []
+    for t in times {
+      let r = try? await helper.request(json(["cmd": "valueAt", "signalIds": [msgId], "t": t]))
+      let v = r.flatMap { (try? JSONSerialization.jsonObject(with: $0.header)) as? [String: Any] }.flatMap { ($0["result"] as? [String: Any])?["values"] as? [String] }?.first
+      truth.append(v ?? "?")
+    }
+    expect(got == truth && Set(truth).count > 1, "the string row's windows hold the helper's texts: \(got) vs \(truth)")
+    let tv = times[5] + 500
+    let values = await call("return await cmuxWaveform.link.valuesAt({ time: \(tv), paths: [['tb','dut','msg'], ['tb','dut','level']] })") as? [Any] ?? []
+    let both = try? await helper.request(json(["cmd": "valueAt", "signalIds": [msgId, levelId], "t": tv]))
+    let want = both.flatMap { (try? JSONSerialization.jsonObject(with: $0.header)) as? [String: Any] }.flatMap { ($0["result"] as? [String: Any])?["values"] as? [String] } ?? []
+    expect(values.count == 2 && values.map { "\($0)" } == want && Double(want.last ?? "") != nil,
+           "inline values of a string and a real row are their texts: \(values) vs \(want)")
+    // Next change on the string row.
+    _ = await call("cmuxWaveform.link.setMarker(\(times[2])); return null")
+    _ = await call("return await cmuxWaveform.link.selectSignal(['tb','dut','msg'])")
+    await sleep(300)
+    let er = try? await helper.request(json(["cmd": "edge", "signalId": msgId, "t": times[2], "dir": 1, "kind": "any"]))
+    let wantEdge = er.flatMap { (try? JSONSerialization.jsonObject(with: $0.header)) as? [String: Any] }.flatMap { ($0["result"] as? [String: Any])?["t"] as? Int }
+    _ = await wc("(w.goToNextTransition(0, 1, []), 1)")
+    let next = await waitFor(5000) { await self.markerNow() == wantEdge }
+    expect(next && (wantEdge ?? 0) > times[2], "next edge on a string row: marker \(String(describing: await markerNow())), the helper's \(String(describing: wantEdge))")
+    // A string has no rising edge: "next rising" on it is its next change.
+    _ = await call("cmuxWaveform.link.setMarker(\(times[2])); return null")
+    await sleep(300)
+    _ = await wc("(w.goToNextTransition(0, 1, ['1']), 1)")
+    let nextRise = await waitFor(5000) { await self.markerNow() == wantEdge }
+    expect(nextRise, "next rising edge on a string row is its next change: marker \(String(describing: await markerNow())), want \(String(describing: wantEdge))")
+    // Value search in the string format: the helper's searchText (format string).
+    let s0 = await textStats()
+    let found = await valueSearch(["tb", "dut", "msg"], "needle", from: 0)
+    let s1 = await textStats()
+    let last = s1["last"] as? [String: Any] ?? [:]
+    expect(found.t == 900_000_000 && stat(s1, "calls") > stat(s0, "calls") && last["format"] as? String == "string",
+           "a string row's value search finds the far match through searchText: \(String(describing: found.t)), last \(last)")
+    // Per-signal errors: a permanent one shows once and is never asked again; a transient
+    // one says it is retrying and is retried.
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 0, endTime: 1000000000 }); return null")
+    let label = { (id: Int) async -> String in await self.wc("w.placeholderLabel(w.signals.get(\(id)))") as? String ?? "?" }
+    let shown = await waitFor(20000) { let b = await label(badId), f = await label(flakyId); return b.hasPrefix("unreadable") && f.hasPrefix("unreadable") }
+    let asks = { (id: Int) async -> Int in ((await self.textStats())["windowAsks"] as? [String: Any])?["\(id)"] as? Int ?? 0 }
+    let bad0 = await asks(badId), flaky0 = await asks(flakyId)
+    for k in 0..<4 {  // new tiles for every row
+      _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: \(k * 100_000_000), endTime: \(k * 100_000_000 + 50_000_000) }); return null")
+      await sleep(1500)
+    }
+    let bad1 = await asks(badId), flaky1 = await asks(flakyId)
+    let badLabel = await label(badId), flakyLabel = await label(flakyId)
+    expect(shown && badLabel == "unreadable: unsupported encoding (2 bytes per bit, var type 4)" && bad1 == bad0 && bad0 >= 1,
+           "a permanent error shows without (retrying) and isn't asked again: \(badLabel), asks \(bad0)->\(bad1)")
+    expect(flakyLabel == "unreadable: mock: worker restarted (retrying)" && flaky1 > flaky0,
+           "a transient error says (retrying) and is retried: \(flakyLabel), asks \(flaky0)->\(flaky1)")
+    // A torn reply (records end mid-record) fails the window and is retried; it isn't drawn short.
+    let tornLabel = await label(tornId)
+    expect(tornLabel.hasPrefix("unreadable") && tornLabel.hasSuffix("(retrying)"), "a torn text reply fails its window (retried): \(tornLabel)")
+    // Few changes but long text (the header's textMean): too big to load whole, stays windowed.
+    let bannerState = await wc("(() => { const s = w.signals.get(\(bannerId)); return s ? s.hybrid + ',' + w.isWindowed(\(bannerId)) : 'none'; })()") as? String ?? "?"
+    expect(bannerState == "windowed,true", "a string row with 1000 changes of 200 KB text stays windowed: \(bannerState)")
+    // A real's scale is the widest range its windows have said, not the last window's.
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 0, endTime: 100000000 }); return null")
+    await sleep(1500)
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 900000000, endTime: 1000000000 }); return null")
+    await sleep(1500)
+    // (the row's min/max: what the analog renderer reads)
+    let rowRange = { (id: Int) async -> [Double] in await self.wc("(() => { const it = w.rowsOf(\(id))[0]; return it ? [it.min, it.max] : []; })()") as? [Double] ?? [] }
+    let swing = await rowRange(swingId)
+    expect(swing.count == 2 && swing[0] <= -109 && swing[1] >= 9, "a real row's scale keeps the widest range seen while panning: \(swing)")
+    // A real row first drawn from a ranged window (no min/max) takes the range of later windows.
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 100000000, endTime: 150000000 }); return null")
+    await sleep(1500)
+    let addedCold = await call("return await cmuxWaveform.link.addSignal(['tb','dut','coldlvl'])")
+    await sleep(2500)
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 600000000, endTime: 650000000 }); return null")
+    await sleep(1500)
+    _ = await call("cmuxWaveform.host.toWebview({ command: 'setViewportRange', startTime: 0, endTime: 1000000000 }); return null")
+    var cold: [Double] = []
+    let coldOk = await waitFor(10000) { cold = await rowRange(coldlvlId); return cold.count == 2 && cold[0] == -50 && cold[1] == 0 }
+    expect(addedCold as? Bool == true && coldOk, "a real row first drawn from a ranged window takes the range of later windows: row \(cold)")
+    // A string whose whole load says its values were cut stays windowed (its search and values come from the helper).
+    var cl = ""
+    let clSettled = await waitFor(15000) {
+      cl = await self.wc("(() => { const s = w.signals.get(\(cutLongId)); return s ? s.hybrid + ',' + w.isWindowed(\(cutLongId)) : 'none'; })()") as? String ?? "?"
+      return cl == "windowed,true" || cl.hasPrefix("local")
+    }
+    expect(clSettled && cl == "windowed,true", "a string whose whole load says cut stays windowed, not loaded whole with cut text: \(cl)")
+    // A whole load whose reply is torn is tried a bounded number of times, then the row stays windowed.
+    var tw = ""
+    let settled = await waitFor(45000) {
+      tw = await self.wc("(() => { const s = w.signals.get(\(tornWholeId)); return s ? s.hybrid + ',' + w.isWindowed(\(tornWholeId)) : 'none'; })()") as? String ?? "?"
+      return tw == "windowed,true"
+    }
+    let tornLoads = stat(await textStats(), "tornWholeLoads")
+    await sleep(3000)
+    let tornLoads2 = stat(await textStats(), "tornWholeLoads")
+    expect(settled && tornLoads >= 1 && tornLoads <= 3 && tornLoads2 == tornLoads,
+           "a torn whole load is retried a bounded number of times, then the row stays windowed: \(tw), whole loads \(tornLoads) -> \(tornLoads2)")
+  }
+
   func jsString(_ s: String) -> String {
     String(data: try! JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)!.dropFirst().dropLast().description
   }
@@ -1247,6 +1378,11 @@ func run() async {
     expect(ok2, "loading whole page opened")
     if ok2 { await whole.wholeChecks() }
     whole.close()
+    let texts = Page(loading: .auto, dump: "synth:ms=1,buses=1,wide=0,text=1")
+    let ok5 = await texts.open(home: home)
+    expect(ok5, "a page with string and real signals opened")
+    if ok5 { await texts.textValueChecks() }
+    texts.close()
     let arrays = Page(loading: .auto, dump: "synth:ms=1,buses=1,wide=0,arrays=1")
     let ok4 = await arrays.open(home: home)
     expect(ok4, "a page with packed arrays opened")

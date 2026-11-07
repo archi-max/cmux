@@ -61,8 +61,16 @@ class Sig {
     this.width = width; this.times = times; this.n = times.length; this.valueFn = valueFn;
     this.num = opts.num || null; // (i) => u32, for width <= 32 two-state fast matching
     this.min = opts.min ?? 0; this.max = opts.max ?? 1;
+    this.kind = opts.kind || null; // 'string' | 'real': text records (helper-v2's `text: true`)
+    this.error = opts.error || null; // {message, permanent}: every window of it fails (helper-v2's per-signal error)
+    this.textMean = opts.textMean ?? null; // text: the header's mean text bytes per change (helper-v2's textMean)
+    this.torn = !!opts.torn;          // every window's records end mid-record (a torn reply)
+    this.sliceRange = !!opts.sliceRange; // real: min/max of each window's own records, not the signal's
+    this.coldRange = !!opts.coldRange; // real: no min/max on its first, ranged (cold) window, as helper-v2's ranged replies
+    this.tornWhole = !!opts.tornWhole; // only whole-dump exact windows (the page's whole load) end mid-record
+    this.cut = !!opts.cut;            // the whole load's header says cut: true (helper-v2 cut its values to fit the budget)
   }
-  value(i) { return i < 0 ? 'x'.repeat(this.width) : this.valueFn(i); }
+  value(i) { return i < 0 ? (this.kind ? 'x' : 'x'.repeat(this.width)) : this.valueFn(i); }
   // first index with time >= t
   lower(t) { let lo = 0, hi = this.n; const a = this.times; while (lo < hi) { const m = (lo + hi) >>> 1; if (a[m] < t) { lo = m + 1; } else { hi = m; } } return lo; }
   // first index with time > t
@@ -75,7 +83,7 @@ class Sig {
 // dropped too. Every answer (window, counts, valueAt, edge, search) uses this one stream.
 function normalize(sig) {
   const keep = [];
-  let prev = 'x'.repeat(sig.width);
+  let prev = sig.kind ? 'x' : 'x'.repeat(sig.width);
   for (let i = 0; i < sig.n; i++) {
     if (i + 1 < sig.n && sig.times[i + 1] === sig.times[i]) { continue; } // not the last at this time
     const v = sig.valueFn(i);
@@ -85,7 +93,8 @@ function normalize(sig) {
   if (keep.length === sig.n) { return sig; }
   const idx = Int32Array.from(keep);
   return new Sig(sig.width, Float64Array.from(keep, (i) => sig.times[i]), (j) => sig.valueFn(idx[j]),
-    { num: sig.num ? (j) => sig.num(idx[j]) : null, min: sig.min, max: sig.max });
+    { num: sig.num ? (j) => sig.num(idx[j]) : null, min: sig.min, max: sig.max, kind: sig.kind, error: sig.error,
+      textMean: sig.textMean, torn: sig.torn, sliceRange: sig.sliceRange, coldRange: sig.coldRange, tornWhole: sig.tornWhole, cut: sig.cut });
 }
 
 function hash32(a, b) {
@@ -112,10 +121,10 @@ function makeSynth(spec) {
   const timeEnd = Math.round(ms * 1e9);
   const sigs = [];
   const vars = [];
-  const addVar = (name, width, sig) => {
+  const addVar = (name, width, sig, type = width === 1 ? 'wire' : 'reg', encoding = 'BitVector') => {
     const signalId = sigs.length;
     sigs.push(normalize(sig));
-    vars.push({ name, type: width === 1 ? 'wire' : 'reg', encoding: 'BitVector', netlistId: signalId + 1, signalId,
+    vars.push({ name, type, encoding, netlistId: signalId + 1, signalId,
       width, msb: width - 1, lsb: 0 });
   };
   const periodic = (period, start = 0) => {
@@ -158,6 +167,39 @@ function makeSynth(spec) {
     const word = (i) => (i === 0 ? 0x12345537 : i === far ? 0xdeadc0b7 : i === asc ? 0x636d7578 : INSN_WORDS[hash32(11, i) & 15]);
     addVar('insn', 32, new Sig(32, t, (i) => bin32(word(i), 32), { num: word }));
   }
+  // text=1: helper-v2's string and real variables, and two signals the helper can't read:
+  //   msg (string): a word every 2000 ps (500k changes, so windowed), "boot" at t=0, the one
+  //     "needle-far" at MSG_FAR of the changes
+  //   level (real): every 1e6 ps (1000 changes, loaded whole); values like -12.5 .. 37.25
+  //   bad (8-bit): every window fails with a permanent error (an encoding the reader can't give)
+  //   flaky (8-bit): every window fails with a transient error (retried)
+  //   banner (string): 1000 changes, but its headers say 200 KB of text per change (textMean),
+  //     too much to load whole
+  //   torn (string): every window reply ends mid-record
+  //   swing (real): 400k changes (windowed), 0..9 in the first half, -109..-100 in the second;
+  //     each window says only its own records' min/max (as a ranged slice would)
+  //   coldlvl (real): 400k changes (windowed), -50..-11; its first window, if ranged, has no
+  //     min/max (helper-v2 sends none on a ranged answer), later ones say -50..0
+  //   tornwhole (string): 1000 short changes (loaded whole), but the whole load's reply is torn
+  //   cutlong (string): 1000 changes, small enough to load whole, but the whole load's reply says
+  //     its values were cut (cut: true), so the page keeps it windowed (search uses the whole text)
+  if (p.text) {
+    const t = periodic(2000), far = Math.floor(t.length * MSG_FAR);
+    addVar('msg', 1, new Sig(1, t, (i) => (i === 0 ? 'boot' : i === far ? 'needle-far' : MSG_WORDS[hash32(21, i) % MSG_WORDS.length]), { kind: 'string' }), 'string', 'String');
+    const lt = periodic(1e6);
+    const lv = (i) => String(((hash32(23, i) % 200) - 50) / 4);
+    let mn = 0, mx = 0; for (let i = 0; i < lt.length; i++) { const x = Number(lv(i)); mn = Math.min(mn, x); mx = Math.max(mx, x); }
+    addVar('level', 1, new Sig(1, lt, lv, { kind: 'real', min: mn, max: mx }), 'real', 'Real');
+    addVar('bad', 8, new Sig(8, periodic(4000), (i) => bin32(i & 255, 8), { error: { message: 'unsupported encoding (2 bytes per bit, var type 4)', permanent: true } }));
+    addVar('flaky', 8, new Sig(8, periodic(4000), (i) => bin32(i & 255, 8), { error: { message: 'mock: worker restarted', permanent: false } }));
+    addVar('banner', 1, new Sig(1, periodic(1e6), (i) => 'banner ' + i, { kind: 'string', textMean: 200000 }), 'string', 'String');
+    addVar('torn', 1, new Sig(1, periodic(4000), (i) => 'w' + (i % 7), { kind: 'string', torn: true }), 'string', 'String');
+    const st = periodic(2500), half = st.length / 2;
+    addVar('swing', 1, new Sig(1, st, (i) => String(i < half ? i % 10 : -100 - (i % 10)), { kind: 'real', sliceRange: true }), 'real', 'Real');
+    addVar('coldlvl', 1, new Sig(1, periodic(2500), (i) => String(-50 + (i % 40)), { kind: 'real', min: -50, max: 0, coldRange: true }), 'real', 'Real');
+    addVar('cutlong', 1, new Sig(1, periodic(1e6), (i) => 'c' + (i % 5) + '\u2026', { kind: 'string', textMean: 2, cut: true }), 'string', 'String');
+    addVar('tornwhole', 1, new Sig(1, periodic(1e6), (i) => 't' + (i % 5), { kind: 'string', textMean: 2, tornWhole: true }), 'string', 'String');
+  }
   const own = vars.length;
   // arrays=1: packed arrays as helper-v2 reports the reader's ARRAY scopes (tree.js): a scope
   // of the reply with its elements inline, by their full names; nested for each dimension.
@@ -182,6 +224,8 @@ function makeSynth(spec) {
   };
 }
 
+const MSG_FAR = 0.9;
+const MSG_WORDS = ['fetch', 'decode', 'exec', 'mem', 'wb', 'stall', 'flush'];
 // insn's common words: addi aK,aK,j / add aK,aK,aJ / lw aK,4j(sp) (never lui, never ra).
 const INSN_FAR = 0.93, INSN_ASCII = 0.8;
 const INSN_WORDS = [];
@@ -199,7 +243,17 @@ async function openDump(file) {
 let dump = null;
 const sig = (signalId, width) => { const s = dump.getSig(signalId, width); if (!s) { throw new Error('no signal ' + signalId); } return s; };
 
-function packRecords(recs, width) {
+function packRecords(recs, width, text = false) {
+  if (text) { // helper-v2 string/real records: [u64 delta][u32 length][UTF-8 text]
+    const parts = [];
+    let prev = 0;
+    for (const [t, v] of recs) {
+      const b = Buffer.from(v, 'utf8'), h = Buffer.alloc(12);
+      h.writeBigUInt64LE(BigInt(t - prev), 0); h.writeUInt32LE(b.length, 8);
+      parts.push(h, b); prev = t;
+    }
+    return zlib.deflateRawSync(Buffer.concat(parts), { level: 1 });
+  }
   const rec = 8 + width, buf = Buffer.allocUnsafe(recs.length * rec);
   let prev = 0, off = 0;
   for (const [t, v] of recs) {
@@ -213,11 +267,17 @@ function packRecords(recs, width) {
 // Signals a window request has touched count as "stored" (helper-v2: in a worker's store or
 // its store-cache file); only their whole-dump count is known without a walk.
 const stored = new Set();
+const windowAsks = {}; // signalId -> window requests naming it (textStats.windowAsks)
 function windowQuery({ signals, t0, t1, buckets }) {
   if (buckets === 32768) { textStats.scanWindows++; } // the viewer's value-search chunks (SCAN_BUCKETS)
   const out = [], parts = [];
   for (const { signalId, width } of signals) {
     const s = sig(signalId, width);
+    windowAsks[signalId] = (windowAsks[signalId] || 0) + 1;
+    if (s.error) {
+      out.push({ signalId, error: s.error.message, bytes: 0, bucketBytes: 0, ...(s.error.permanent ? { permanent: true } : {}) });
+      continue;
+    }
     const known = stored.has(signalId);
     stored.add(signalId);
     const a = s.lower(t0), b = s.lower(t1);
@@ -242,8 +302,15 @@ function windowQuery({ signals, t0, t1, buckets }) {
         lo = hi;
       }
     }
-    const packed = packRecords(recs, s.width);
-    const head = { signalId, exact, count, bytes: packed.length, bucketBytes: counts ? counts.length : 0, min: s.min, max: s.max };
+    let packed = packRecords(recs, s.width, !!s.kind);
+    const whole = exact && t0 === 0 && count >= s.n && buckets === Math.ceil(s.n / 2) + 1; // the page's whole load, not a tile
+    if (s.torn || (s.tornWhole && whole)) { const raw = zlib.inflateRawSync(packed); packed = zlib.deflateRawSync(raw.subarray(0, raw.length - 2), { level: 1 }); }
+    let mn = s.min, mx = s.max;
+    if (s.coldRange && !known && (t1 - t0) <= 0.25 * dump.metadata.timeEnd) { mn = undefined; mx = undefined; }
+    if (s.tornWhole && whole) { textStats.tornWholeLoads = (textStats.tornWholeLoads || 0) + 1; }
+    if (s.sliceRange) { const xs = recs.map((r) => Number(r[1])).filter(Number.isFinite); mn = Math.min(...xs); mx = Math.max(...xs); }
+    const head = { signalId, exact, count, bytes: packed.length, bucketBytes: counts ? counts.length : 0, min: mn, max: mx,
+      ...(s.kind ? { text: true, kind: s.kind } : {}), ...(s.textMean !== null ? { textMean: s.textMean } : {}), ...(s.cut && whole ? { cut: true } : {}) };
     if (known) { head.total = s.n; } // whole-dump change count, once stored
     out.push(head);
     parts.push(packed); if (counts) { parts.push(counts); }
@@ -349,7 +416,7 @@ const handlers = {
     return r;
   },
   textControl(c) { Object.assign(textCtl, c); return { ...textCtl }; },
-  textStats() { return { ...textStats, signalsLast }; },
+  textStats() { return { ...textStats, signalsLast, windowAsks }; },
   async open({ file }) {
     if (stallOpen) {
       stuck = true;
@@ -373,9 +440,11 @@ const handlers = {
       return { signalId: id, count: s.n, bytes: s.n * (8 + s.width), bits: s.width, source: stored.has(id) ? 'store' : 'walked' };
     }) };
   },
-  valueAt({ signalIds, t }) { return { values: signalIds.map((id) => { const s = sig(id); return s.value(s.upper(t) - 1); }) }; },
+  valueAt({ signalIds, t }) { return { values: signalIds.map((id) => { const s = sig(id); return s.error ? null : s.value(s.upper(t) - 1); }) }; },
   edge({ signalId, t, dir, kind }) {
     const s = sig(signalId);
+    // rise/fall literally, strings and reals too (helper-v2 maps them to 'any' for text, but
+    // the page must ask 'any' itself: a string row asking 'rise' here finds nothing).
     const want = kind === 'rise' ? '1' : kind === 'fall' ? '0' : null;
     const ok = (i) => want === null || s.value(i) === want;
     if (dir >= 0) { for (let i = s.upper(t); i < s.n; i++) { if (ok(i)) { return { t: s.times[i] }; } } }
@@ -384,6 +453,7 @@ const handlers = {
   },
   search({ signalId, t, dir, value, wildcard }) {
     const s = sig(signalId);
+    if (s.kind) { throw new Error(`search: a ${s.kind} signal has no bit pattern (use searchText, format string)`); }
     const cp = compilePattern(value, s.width, wildcard);
     if (dir >= 0) { for (let i = s.upper(t); i < s.n; i++) { if (matches(s, i, cp)) { return { t: s.times[i] }; } } }
     else { for (let i = s.lower(t) - 1; i >= 0; i--) { if (matches(s, i, cp)) { return { t: s.times[i] }; } } }
