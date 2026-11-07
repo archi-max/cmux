@@ -178,11 +178,14 @@ extension SVModelResolve {
                 let walk = await chainWalk(from: start.level, at: start.at)
                 var reason = walk.reason
                 // Where slang's chain starts below a scope that is not the dump's (another testbench),
-                // it starts under the dump's own instance name (tb_soc.dut for tb.dut), else at a top
-                // (soc): a renamed instance (dut_r) is no stand-in either.
-                if reason == nil, !topSet.contains(start.at),
-                   HierarchyPathMapping.segments(start.at).last != HierarchyPathMapping.segments(chain[start.level]).last {
-                    reason = .notInSlang
+                // it starts under the dump's own instance name relative to the parent (tb_soc.dut for
+                // tb.dut), else at a top (soc): a renamed instance (dut_r) is no stand-in either.
+                // The whole name below the parent is compared (g[1].dut is no stand-in for g[0].dut).
+                if reason == nil, !topSet.contains(start.at) {
+                    let kdbParent = kdb.instance(chain[start.level])?["parent"] as? String
+                    let theirs = slangParent(start.at).map { below(start.at, $0) } ?? start.at
+                    let ours = kdbParent.map { below(chain[start.level], $0) } ?? chain[start.level]
+                    if theirs != ours { reason = .notInSlang }
                 }
                 if !entries.contains(where: { $0.level == start.level && $0.at == start.at }) { entries.append((start.level, start.at, reason, walk.paths, walk.renamed)) }
             }

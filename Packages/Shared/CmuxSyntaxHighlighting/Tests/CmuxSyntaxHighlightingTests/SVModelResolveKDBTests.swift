@@ -273,8 +273,9 @@ import Testing
 
     /// slang's testbench is another module (tbx) with only g[0].dut: the KDB's tb.g[1].dut is no
     /// stand-in for it. The whole name below the parent is compared (g[1].dut, not g[0].dut), not
-    /// its last segment (dut). With slang's own g[1], it maps there under the other top (tbx); under
-    /// slang's tb, another module at the dump's own path, nothing below is evaluated.
+    /// its last segment (dut). With slang's own g[1], it maps there: dut and below are the KDB's
+    /// modules, only the testbench's differs (red: under tb, the g[0] decoy's tie sent it to the
+    /// fallback and otherModule; under tbx, notInDesign).
     @Test func anotherTestbenchsOtherGenerateIndexIsNoStandIn() async throws {
         var compiled: [(String, String, String?, [String], [String: Int])] = [("tb", "tb", nil, ["clk"], [:])]
         for k in 0..<2 { compiled += [("tb.g[\(k)].dut", "dut", "tb", ["clk"], [:]), ("tb.g[\(k)].dut.u_core", "core", "tb.g[\(k)].dut", ["x"], ["x": 9])] }
@@ -287,11 +288,7 @@ import Testing
             models["\(top).g[1].dut"] = Self.inst("dut", ["clk"])
             models["\(top).g[1].dut.u_core"] = Self.inst("core", ["x"])
             let both = mapping(try await resolve(row, design: Design(models: models, tops: [top]), kdb: kdb))
-            if top == "tb" {
-                #expect(both == .compiledOnly(dumpPath: row, reason: .otherModule, writes: Self.writes(kdb, row)), "tb with g[1]: \(both)")
-            } else {
-                #expect(both == .signal(designPath: "tbx.g[1].dut.u_core.x", designPrefix: "tbx.g[1]", dumpPrefix: "tb.g[1]"), "tbx with g[1]: \(both)")
-            }
+            #expect(both == .signal(designPath: "\(top).g[1].dut.u_core.x", designPrefix: top == "tb" ? "" : top, dumpPrefix: top == "tb" ? "" : "tb"), "\(top) with g[1]: \(both)")
         }
     }
 
