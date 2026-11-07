@@ -85,15 +85,48 @@ if command -v flock >/dev/null 2>&1; then
   fi
 fi
 
+# CMUX_VERDI_SETUP runs in a subshell under a time cap (CMUX_VERDI_SETUP_SECONDS, default 30 s), so a
+# setup that hangs (a module system's lock) ends there, with all it started; what it exported (PATH,
+# licence variables) is read back into this shell. 0 when it finished, 1 when it was ended at the cap.
+verdi_setup() {
+  local pid waited=0 cap=$1 tree more c
+  rm -f "$W/verdi-setup.env"
+  ( eval "$CMUX_VERDI_SETUP" < /dev/null > /dev/null 2>&1
+    export -p > "$W/verdi-setup.env.part" && mv "$W/verdi-setup.env.part" "$W/verdi-setup.env" ) &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge $((cap * 10)) ]; then
+      # The whole tree, gathered before any of it is ended (so none is reparented out of reach).
+      tree="$pid "
+      while :; do
+        more=$(for c in $tree; do echo "$c"; pgrep -P "$c"; done | sort -u | tr '\n' ' ')
+        [ "$more" = "$tree" ] && break
+        tree=$more
+      done
+      kill -9 $tree 2>/dev/null
+      wait "$pid" 2>/dev/null
+      rm -f "$W/verdi-setup.env" "$W/verdi-setup.env.part"
+      return 1
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  wait "$pid" 2>/dev/null
+  return 0
+}
 # Verdi: on PATH, else in $VERDI_HOME/bin, else after CMUX_VERDI_SETUP (a command the user sets in
 # their shell startup file, e.g. their site's module load). No site default.
 if ! command -v verdi >/dev/null 2>&1 && [ -n "${VERDI_HOME:-}" ] && [ -x "$VERDI_HOME/bin/verdi" ]; then
   PATH=$VERDI_HOME/bin:$PATH
 fi
 if ! command -v verdi >/dev/null 2>&1 && [ -n "${CMUX_VERDI_SETUP:-}" ]; then
-  eval "$CMUX_VERDI_SETUP" >/dev/null 2>&1
+  SETUP_CAP=$(num "${CMUX_VERDI_SETUP_SECONDS:-}" 30)
+  verdi_setup "$SETUP_CAP" || say noVerdi "CMUX_VERDI_SETUP did not finish in $SETUP_CAP s (CMUX_VERDI_SETUP_SECONDS sets the limit)"
+  # At the top level, so its declare -x lines stay global (read-only ones are refused, harmlessly).
+  [ -s "$W/verdi-setup.env" ] && . "$W/verdi-setup.env" 2>/dev/null
+  rm -f "$W/verdi-setup.env"
 fi
-command -v verdi >/dev/null 2>&1 || say noVerdi "Verdi is not on PATH: set VERDI_HOME, or CMUX_VERDI_SETUP (a command that puts verdi on PATH), in the shell startup file"
+command -v verdi >/dev/null 2>&1 || say noVerdi "verdi is not on PATH, in VERDI_HOME/bin or after CMUX_VERDI_SETUP"
 VERDI_HOME=${VERDI_HOME:-$(cd "$(dirname "$(command -v verdi)")/.." && pwd)}
 export VERDI_HOME
 available=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null)

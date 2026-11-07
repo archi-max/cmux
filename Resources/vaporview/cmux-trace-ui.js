@@ -1187,7 +1187,12 @@
     if (e.verdi === 'checking') { text += ' · ' + s.traceVerdiChecking; }
     if (e.verdi === 'timedOut') { text += ' · ' + s.traceVerdiTimedOut; }
     if (e.verdi === 'large') { text += ' · ' + s.traceVerdiLarge; }
-    if (e.verdi === 'unavailable') { text += ' · ' + format(s['traceVerdiUnavailable_' + e.reason] || s.traceVerdiUnavailable, e.message || ''); }
+    if (e.verdi === 'unavailable') {
+      // The host's message fills a reason's (%@); with none, that bracket goes.
+      const own = s['traceVerdiUnavailable_' + e.reason];
+      const why = own && !e.message ? String(own).replace(/\s*[(（]%@[)）]/, '') : (own || s.traceVerdiUnavailable);
+      text += ' · ' + format(why, e.message || '');
+    }
     if (e.verdiNotFound) { text += ' · ' + s.traceVerdiNotFound; }
     div.append(el('span', '', text));
     if (st.via && st.via.length) { div.append(el('span', '', ' · ' + format(s.traceThroughPorts, st.via.map((h) => h.signal).join(' → ')))); }

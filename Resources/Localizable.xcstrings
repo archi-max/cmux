@@ -718334,55 +718334,55 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi not used: it is not installed on the host"
+            "value": "Verdi not used: Verdi was not found on the host (%@). Set VERDI_HOME, or CMUX_VERDI_SETUP to a command that puts verdi on PATH, in your login shell profile on the host"
           }
         },
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "لم يُستخدم Verdi: غير مثبّت على المضيف"
+            "value": "لم يُستخدم Verdi: لم يُعثر على Verdi على المضيف (%@). عيّن VERDI_HOME، أو CMUX_VERDI_SETUP بأمر يضع verdi في PATH، في ملف تعريف صدفة تسجيل الدخول على المضيف"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi nicht verwendet: auf dem Host nicht installiert"
+            "value": "Verdi nicht verwendet: Verdi wurde auf dem Host nicht gefunden (%@). Setzen Sie VERDI_HOME oder CMUX_VERDI_SETUP (einen Befehl, der verdi in den PATH bringt) im Profil Ihrer Login-Shell auf dem Host"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi no se usa: no está instalado en el host"
+            "value": "Verdi no se usa: no se encontró Verdi en el host (%@). Defina VERDI_HOME, o CMUX_VERDI_SETUP con un comando que ponga verdi en el PATH, en el perfil de su shell de inicio de sesión en el host"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi non utilisé : il n’est pas installé sur l’hôte"
+            "value": "Verdi non utilisé : Verdi est introuvable sur l’hôte (%@). Définissez VERDI_HOME, ou CMUX_VERDI_SETUP avec une commande qui met verdi dans le PATH, dans le profil de votre shell de connexion sur l’hôte"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi は使っていません: ホストにインストールされていません"
+            "value": "Verdi は使っていません: ホストで Verdi が見つかりません（%@）。ホストのログインシェルのプロファイルで VERDI_HOME、または CMUX_VERDI_SETUP（verdi を PATH に入れるコマンド）を設定してください"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "Verdi를 사용하지 않음: 호스트에 설치되어 있지 않음"
+            "value": "Verdi를 사용하지 않음: 호스트에서 Verdi를 찾을 수 없음(%@). 호스트의 로그인 셸 프로필에서 VERDI_HOME 또는 CMUX_VERDI_SETUP(verdi를 PATH에 넣는 명령)을 설정하세요"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "未使用 Verdi：主机上未安装"
+            "value": "未使用 Verdi：在主机上找不到 Verdi（%@）。请在主机的登录 shell 配置文件中设置 VERDI_HOME，或将 CMUX_VERDI_SETUP 设为把 verdi 加入 PATH 的命令"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "未使用 Verdi：主機上未安裝"
+            "value": "未使用 Verdi：在主機上找不到 Verdi（%@）。請在主機的登入 shell 設定檔中設定 VERDI_HOME，或將 CMUX_VERDI_SETUP 設為把 verdi 加入 PATH 的命令"
           }
         }
       }

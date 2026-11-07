@@ -936,7 +936,7 @@ enum WaveformTrace {
             "traceThroughPorts": String(localized: "waveformTrace.page.throughPorts", defaultValue: "through the ports of %@"),
             "traceVerdiUnavailable": String(localized: "waveformTrace.page.verdi.unavailable", defaultValue: "Verdi not used: %@"),
             "traceVerdiUnavailable_noKDB": String(localized: "waveformTrace.page.verdi.noKDB", defaultValue: "Verdi not used: no KDB next to the FSDB (compile with vcs -kdb)"),
-            "traceVerdiUnavailable_noVerdi": String(localized: "waveformTrace.page.verdi.noVerdi", defaultValue: "Verdi not used: it is not installed on the host"),
+            "traceVerdiUnavailable_noVerdi": String(localized: "waveformTrace.page.verdi.noVerdi", defaultValue: "Verdi not used: Verdi was not found on the host (%@). Set VERDI_HOME, or CMUX_VERDI_SETUP to a command that puts verdi on PATH, in your login shell profile on the host"),
             "traceVerdiUnavailable_licence": String(localized: "waveformTrace.page.verdi.licence", defaultValue: "Verdi not used: no licence seat is free (%@)"),
             "traceVerdiUnavailable_licenceQueue": String(localized: "waveformTrace.page.verdi.licenceQueue", defaultValue: "Verdi not used: Verdi licence not available"),
             "traceVerdiUnavailable_units": String(localized: "waveformTrace.page.verdi.units", defaultValue: "Verdi not used: its time unit is not the FSDB’s (%@)"),
