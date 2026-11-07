@@ -133,12 +133,14 @@ public enum KDBModelLaunch {
         return (launcher, exporter)
     }
 
-    /// The host command (no single quotes: it runs in `sh -c '…'`).
-    public static func command(launcher: Data, exporter: Data, fsdbPath: String) -> String {
+    /// The host command (no single quotes: it runs in `sh -c '…'`). `retry`: run a KDB the host
+    /// marked `tried` again (CMUX_KDB_RETRY=1, Retry KDB Export).
+    public static func command(launcher: Data, exporter: Data, fsdbPath: String, retry: Bool = false) -> String {
         let path = Data(fsdbPath.utf8).base64EncodedString()
         return "W=$(mktemp -d /tmp/cmux-kdb-model.XXXXXX) || exit 1; chmod 700 \"$W\"; trap \"rm -rf \\\"$W\\\"\" EXIT; "
             + "printf %s \(launcher.base64EncodedString()) | base64 -d > \"$W/npi-model.sh\" && "
             + "printf %s \(exporter.base64EncodedString()) | base64 -d > \"$W/npi-model.py\" && "
+            + (retry ? "CMUX_KDB_RETRY=1 " : "")
             + "bash -l \"$W/npi-model.sh\" \"$W\" \"$(printf %s \(path) | base64 -d)\" --print"
     }
 

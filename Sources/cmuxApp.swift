@@ -1271,6 +1271,7 @@ struct cmuxApp: App {
                 WaveformSourceLink.resetTopLevel()
             }
             WaveformTraceKDBToggle()
+            WaveformTraceKDBRetryButton()
             WaveformInlineValuesMenu()
             WaveformDebuggerMenu()
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {

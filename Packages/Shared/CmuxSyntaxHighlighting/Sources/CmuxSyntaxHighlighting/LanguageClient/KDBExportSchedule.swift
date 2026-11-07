@@ -10,7 +10,9 @@ import Foundation
 ///   once more when it ends (`pending` stays true; the host's cache answers an unchanged KDB).
 /// - An export that fails says so in one log line per KDB (until one gives a model), and its
 ///   KDB keeps slang's design; the host does not try that KDB again until it changes (npi-model.sh
-///   answers `tried`), so a viewer opening it later costs no seat.
+///   answers `tried`), so a viewer opening it later costs no seat. Retry KDB Export (`retry`) asks
+///   for each such KDB again with CMUX_KDB_RETRY=1 (a seat denied once, or a time cap hit under
+///   load), and a new failure is said again.
 /// - The newest `maxModels` KDBs' models are kept. A viewer (re)opening a dump drops its KDB's
 ///   model until the export answers: a reload after another simulation may come with another KDB,
 ///   and a trace in between uses slang's design, not the old compile's.
@@ -54,6 +56,20 @@ public struct KDBExportSchedule: Sendable {
             return .join
         }
         return .start
+    }
+
+    /// Retry KDB Export for this KDB: as `opened`, and its next failure is said again (the caller
+    /// asks the host with CMUX_KDB_RETRY=1, also for the run after a join).
+    public mutating func retry(_ key: String, enabled: Bool) -> Opened {
+        guard enabled else { return .off }
+        said.remove(key)
+        return opened(key, enabled: true)
+    }
+
+    /// The KDBs whose export failure was said (until one gives a model), oldest use first: what
+    /// Retry KDB Export asks for again.
+    public var failed: [String] {
+        order.filter { said.contains($0) }
     }
 
     /// Whether an export of this KDB is in flight (a trace uses slang's design until it answers).

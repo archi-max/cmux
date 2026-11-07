@@ -28,6 +28,11 @@ enum WaveformTraceKDB {
     private static var schedule = KDBExportSchedule()
     /// The viewers waiting for each in-flight export's port aliases.
     private static var waiting: [String: NSHashTable<FilePreviewPanel>] = [:]
+    /// Each KDB's viewers and host (Retry KDB Export asks again for them).
+    private static var viewers: [String: NSHashTable<FilePreviewPanel>] = [:]
+    private static var remotes: [String: FilePreviewWaveformSession.RemoteFSDB] = [:]
+    /// KDBs whose next export asks the host to run a KDB marked `tried` again (CMUX_KDB_RETRY=1).
+    private static var retrying: Set<String> = []
     /// Alias pairs sent at most per dump.
     nonisolated static let maxAliasPairs = 400_000
     /// An export that takes longer is ended (the launcher's own cap is 120 s; then the transfer).
@@ -50,6 +55,10 @@ enum WaveformTraceKDB {
     /// read the KDB before the simulation that this open follows rewrote it).
     static func waveformOpened(_ waveform: FilePreviewPanel) {
         guard let (key, remote) = key(for: waveform) else { return }
+        let all = Self.viewers[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+        all.add(waveform)
+        Self.viewers[key] = all
+        remotes[key] = remote
         let viewers = waiting[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
         viewers.add(waveform)
         switch schedule.opened(key, enabled: isEnabled) {
@@ -64,6 +73,34 @@ enum WaveformTraceKDB {
         }
     }
 
+    /// View > Retry KDB Export: each KDB whose export failed this session (a seat denied, the time
+    /// cap under load) is asked for again, with CMUX_KDB_RETRY=1 so the host runs it although it
+    /// marked it `tried`; a new failure is logged again. Beeps when there is none.
+    static func retryFailedExports() {
+        let keys = schedule.failed.filter { remotes[$0] != nil }
+        guard isEnabled, !keys.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        for key in keys {
+            guard let remote = remotes[key] else { continue }
+            switch schedule.retry(key, enabled: true) {
+            case .off:
+                return
+            case .join:
+                // The run after the one in flight asks with the retry.
+                retrying.insert(key)
+            case .start:
+                retrying.insert(key)
+                let open = viewers[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+                let waiters = waiting[key] ?? NSHashTable<FilePreviewPanel>.weakObjects()
+                for viewer in open.allObjects { waiters.add(viewer) }
+                waiting[key] = waiters
+                export(key: key, remote: remote)
+            }
+        }
+    }
+
     /// One export of the KDB `key`; run again while the schedule says it is still pending.
     private static func export(key: String, remote: FilePreviewWaveformSession.RemoteFSDB) {
         guard let scripts = bundledScripts() else {
@@ -71,7 +108,8 @@ enum WaveformTraceKDB {
             _ = schedule.finished(key, .unavailable(code: "start", message: "no bundled scripts"))
             return
         }
-        let command = KDBModelLaunch.command(launcher: scripts.launcher, exporter: scripts.exporter, fsdbPath: remote.remotePath)
+        let command = KDBModelLaunch.command(launcher: scripts.launcher, exporter: scripts.exporter, fsdbPath: remote.remotePath,
+                                             retry: retrying.remove(key) != nil)
         let arguments = remote.sshArguments("sh -c '\(command)'")
         Task { @MainActor in
             // The export and its alias pairs (a sort over every instance) off the main actor.
@@ -142,6 +180,15 @@ enum WaveformTraceKDB {
         timer.cancel()
         if Task.isCancelled { return .unavailable(code: "start", message: "") }
         return KDBModelLaunch.parse(output: output)
+    }
+}
+
+/// View > Retry KDB Export: asks again for the KDBs whose export failed (WaveformTraceKDB.retryFailedExports).
+struct WaveformTraceKDBRetryButton: View {
+    var body: some View {
+        Button(String(localized: "menu.view.waveformTraceKDBRetry", defaultValue: "Retry KDB Export")) {
+            WaveformTraceKDB.retryFailedExports()
+        }
     }
 }
 

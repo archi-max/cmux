@@ -19,7 +19,7 @@
 # {"error": "tried", "message": "<the failure's code>: <its message>"} without Verdi, until the KDB
 # changes (a new key) or CMUX_KDB_RETRY=1. Guards: the host's MemAvailable
 # (CMUX_NPI_MIN_AVAILABLE_MB, default 5120), the exporter's RSS (CMUX_NPI_RSS_MB, default 2900) and
-# time (CMUX_NPI_SECONDS, default 120).
+# time (CMUX_NPI_SECONDS, default 120); its address space and time stay bounded without this launcher.
 W=$1
 TARGET=$2
 PRINT=${3:-}
@@ -94,13 +94,19 @@ export VERDI_HOME
 available=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null)
 [ -n "$available" ] && [ "$available" -lt "$MIN_MB" ] && say memory "MemAvailable ${available} MB"
 mkdir -p "$CACHE" || say start "no cache folder $CACHE"
-( ulimit -v $(( (RSS_MB + 4096) * 1024 )); exec nice -n 10 python3 npi-model.py "$DAIDIR" "$W/model.json" ) > npi.out 2> npi.err &
+# The exporter's own bounds outlive this launcher (a kill -9 of it, or of the ssh it runs under):
+# its address space (ulimit -v) and its time (timeout: TERM a few seconds past the cap, then KILL),
+# so an orphan holds the seat and the lock no longer than that.
+LIMIT=
+command -v timeout >/dev/null 2>&1 && LIMIT="timeout -k 5 $((SECONDS_CAP + 5))"
+( ulimit -v $(( (RSS_MB + 4096) * 1024 )); exec $LIMIT nice -n 10 python3 npi-model.py "$DAIDIR" "$W/model.json" ) > npi.out 2> npi.err &
 P=$!
-trap 'kill "$P" 2>/dev/null' EXIT TERM HUP INT
+trap 'pkill -P "$P" 2>/dev/null; kill "$P" 2>/dev/null' EXIT TERM HUP INT
 peak=0
 ticks=0
 while kill -0 "$P" 2>/dev/null; do
-  rss=$(ps -o rss= -p "$P" 2>/dev/null | tr -d ' ')
+  # The exporter's RSS: under timeout it is timeout's child.
+  rss=$(ps -o rss= -p "$P" --ppid "$P" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }')
   rss=${rss:-0}
   [ "$rss" -gt "$peak" ] && peak=$rss
   if [ "$rss" -gt $((RSS_MB * 1024)) ]; then kill "$P"; fail memory "the exporter passed ${RSS_MB} MB"; fi
