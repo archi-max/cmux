@@ -5,5 +5,7 @@
 module simctl_saver;
   reg [8*1024-1:0] name;
   reg go = 0;
-  always @(go) $save(name);
+  // `reg go = 0` can wake this at time 0 (seen as "[VCS_SAVE_RESTORE] Failed to rename '' to ''"): an
+  // empty name is no request
+  always @(go) if (name != 0) $save(name);
 endmodule
