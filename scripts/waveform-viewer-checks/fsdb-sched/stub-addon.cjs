@@ -165,7 +165,7 @@ module.exports = {
     const lo = Math.max(0, t - span);
     return ids.map((id) => { const c = changeOf(id), value = c !== null && c <= t ? '1' : 'x'; return c !== null && c <= t && c >= lo ? { signalId: id, t: c, value } : { signalId: id, none: true, value }; });
   },
-  cacheWindowCold(ids, t0, t1) { if (navOnce) { throw new Error('cold read in a navDB-once reader'); } sleep(floorOf(ids) + COLD_MS * ids.length); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: ms, walkMs: 0 }; }); },
+  cacheWindowCold(ids, t0, t1) { if (navOnce) { throw new Error('cold read in a navDB-once reader'); } sleep(floorOf(ids) + COLD_MS * ids.length); return ids.map((id) => { const ms = share(id, t0, t1); sleep(ms); return BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), ...(COUNTS_[id] ? { count: Math.round(COUNTS_[id] * (Math.min(Number(t1), TIME_END) - Number(t0)) / TIME_END) } : {}), loadMs: ms, walkMs: 0 }; }); },  // (STUB_COUNTS: the changes in the span, as the reader's)
   cacheWalkSlice(id, s, e, path) {
     if (process.env.STUB_LOAD_LOG) { fs.appendFileSync(process.env.STUB_LOAD_LOG, JSON.stringify({ op: 'slice', ids: [id] }) + '\n'); }
     const ms = share(id, s, e) + floorOf([id]);

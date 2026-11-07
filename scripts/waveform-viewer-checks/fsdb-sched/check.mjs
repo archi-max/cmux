@@ -1240,6 +1240,25 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   check(none === null && sv === 100, `... none ahead is null, not an error: ${none}; x->1 at 100 is a posedge: ${sv}`);
 }
 
+// 42c. An unlisted row too big for the store (a 10 GB dump's u_cluster.clk: fsdbdebug doesn't list
+// it, so it has no count) paid one failed whole load (18.5 s on huge) before its edge search went
+// ranged. Its drawn windows tell its density: a ranged read's change count over its span, so an
+// edge search on a row whose projected size is over the store goes ranged at once.
+{
+  const llog = path.join(tmp, 'load42c.log'); fs.rmSync(llog, { force: true });
+  const h = await start(1, { 1: 100, 7: 6000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', FSDB_CACHE_MB: '1', FSDB_BG_LOAD: '0', STUB_COUNTS: JSON.stringify({ 7: 1e6 }), STUB_CLOCK: JSON.stringify({ 7: 1000 }), STUB_LOAD_LOG: llog });
+  await kindsOf(h);
+  const w = await h.send('window', { signals: [{ signalId: 7, width: 1 }], t0: 600000, t1: 610000, buckets: 1024 }).reply;
+  const t = performance.now();
+  const r = await h.send('edge', { signalId: 7, t: 600000, dir: 1, kind: 'posedge' }).reply;
+  const ms = performance.now() - t;
+  const loads = fs.existsSync(llog) ? fs.readFileSync(llog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((x) => (x.ids || []).includes(7)) : [];
+  h.close();
+  check(!w.error && !r.error && r.result.t === 600500 && !loads.length && ms < 2000,
+    `an unlisted row drawn ranged and too big for the store: edge search goes ranged at once: ${r.error || r.result.t} (want 600500) in ${Math.round(ms)} ms, whole-load attempts ${loads.length}`);
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 42b. A ranged search with no hit stays bounded (review M5): its rounds stop growing once one
 // would read more than FSDB_RANGED_CHANGES changes (the reader's load of a round is its memory),
 // and each round resumes from the last one's bound instead of reading [t, bound] again. Clock 5
