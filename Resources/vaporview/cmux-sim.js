@@ -10,6 +10,8 @@
 // the viewer evicted) is missing coverage: drawn apart from x, and no query answers there (liveValue).
 // window.cmuxWaveform.sim:
 //   open()  run(cycles)  step()  until(expr, maxCycles)  stop()  close()   (promises)
+//     cycles: periods of the clock the simulation opened with (the debugger's clock, chosen or default; with
+//     several clocks, only that one counts), a whole number >= 1; without a known period they are refused
 //   liveValue(signalId, t)  a live row's value, null without an exact answer, undefined if not live
 //   state()    {phase: 'off' | 'idle' | 'opening' | 'ready', running, t, period, stopped, error}
 //   watched()  the hierarchical names being watched
@@ -21,6 +23,7 @@
   const fmt = (s, v) => String(s).replace('%@', String(v));
   const RUN_CYCLES = 1e9;            // Run: until Stop
   const UNTIL_CYCLES = 1e7;
+  const NO_PERIOD = 'no clock period known: open the simulation with a clock (the debugger\'s), or run by time';
   const ID0 = 700000;                // request ids apart from the viewer's own
 
   let config = null;
@@ -59,10 +62,13 @@
     bar.hidden = !enabled();
     const ready = st.phase === 'ready';
     el('sim-open').hidden = ready || st.phase === 'opening';
-    for (const id of ['sim-run', 'sim-step', 'sim-until', 'sim-until-expr']) { el(id).hidden = !ready; el(id).disabled = st.running; }
+    // Cycles are periods of the clock the simulation was opened with; without one they can't run.
+    const noPeriod = ready && !(st.period > 0);
+    for (const id of ['sim-run', 'sim-step', 'sim-until', 'sim-until-expr']) { el(id).hidden = !ready; el(id).disabled = st.running || noPeriod; }
     el('sim-stop').hidden = !ready; el('sim-stop').disabled = !st.running;
     el('sim-close').hidden = !ready;
     el('sim-info').textContent = st.error ? fmt(str('simOpenFailed', 'Live simulation: %@'), st.error)
+      : noPeriod ? fmt(str('simOpenFailed', 'Live simulation: %@'), NO_PERIOD) + ' ' + fmt(str('simTime', 't=%@'), st.t)
       : ready ? fmt(str('simTime', 't=%@'), st.t) : '';
   }
   function setupControls() {
@@ -173,9 +179,16 @@
     }
   }
 
+  // A cycle count: a whole number >= 1 (0, fractions and junk are refused, not rounded to a cycle).
+  function cycleCount(n, what) {
+    const v = Number(n);
+    if (!Number.isSafeInteger(v) || v < 1) { throw new Error(`${what} must be a whole number of cycles >= 1`); }
+    return v;
+  }
   async function startRun(cmd, args) {
     if (st.phase !== 'ready') { throw new Error('no live simulation'); }
     if (st.running) { throw new Error('a run is in flight'); }
+    if (!(st.period > 0)) { throw new Error(NO_PERIOD); }
     st.running = true; st.stopped = null; st.error = null; render();
     try { await request(cmd, args); } catch (e) { st.running = false; st.error = String(e.message || e); render(); throw e; }
   }
@@ -217,9 +230,9 @@
       pollLoop(my);
       sync();
     },
-    run: (cycles) => startRun('sim.run', { cycles: Number(cycles) || 1 }),
+    run: async (cycles) => startRun('sim.run', { cycles: cycleCount(cycles, 'run') }),
     step: () => startRun('sim.run', { cycles: 1 }),
-    until: (expr, maxCycles) => startRun('sim.until', { expr: String(expr || ''), maxCycles: Number(maxCycles) || UNTIL_CYCLES }),
+    until: async (expr, maxCycles) => startRun('sim.until', { expr: String(expr || ''), maxCycles: maxCycles === undefined ? UNTIL_CYCLES : cycleCount(maxCycles, 'until') }),
     async stop() { if (st.phase === 'ready' && st.running) { await request('sim.stop'); } },
     // End live mode: the simulation ends and the dump comes back.
     async close() {

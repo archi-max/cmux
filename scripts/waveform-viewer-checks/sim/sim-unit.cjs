@@ -165,6 +165,10 @@ const widths = new Map();
   const okRead = await req('sim.read', { signals: ['tb.cnt'] });
   expect(!okRead.error && okRead.result.values[0] !== null, 'an ordinary read still works');
 
+  for (const args of [{ cycles: 0 }, { cycles: 1.5 }, { cycles: -2 }, { time: -1 }, { time: 2.5 }, {}]) {
+    const r = await req('sim.run', args);
+    expect(!!r.error, `sim.run ${JSON.stringify(args)} refused here (not rounded): ${r.error || JSON.stringify(r.result)}`);
+  }
   const bad = await req('sim.frobnicate', {});
   expect(!!bad.error, 'an unknown sim command is refused');
   const deny = await req('sim.force', { signal: 'tb.cnt', value: "'d1" });
