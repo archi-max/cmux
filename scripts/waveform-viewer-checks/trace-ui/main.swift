@@ -270,6 +270,38 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     engineAnswer = ["state": "unavailable", "reason": "noKDB", "message": ""]
     _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
     expect(await panelText().contains("no KDB next to the FSDB"), "the panel says why Verdi is not used")
+    // No Verdi on the host: cmux's own noVerdi string (WaveformTrace.swift, 9 locales) names the
+    // variables that find it, and the launcher's hint reaches the page; without a hint, no empty
+    // brackets.
+    do {
+      let resources = assetRoot.deletingLastPathComponent()
+      let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+      let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+        .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+      var appText = ""
+      if let r = traceSwift.range(of: "\"traceVerdiUnavailable_noVerdi\": String(localized: \"waveformTrace.page.verdi.noVerdi\", defaultValue: \""),
+         let end = traceSwift[r.upperBound...].range(of: "\"),") {
+        appText = String(traceSwift[r.upperBound..<end.lowerBound])
+      }
+      let locales = ((catalog["waveformTrace.page.verdi.noVerdi"] as? [String: Any])?["localizations"] as? [String: Any] ?? [:])
+        .compactMapValues { (($0 as? [String: Any])?["stringUnit"] as? [String: Any])?["value"] as? String }
+      let named = { (t: String) in t.contains("VERDI_HOME") && t.contains("CMUX_VERDI_SETUP") && t.contains("%@") && !t.lowercased().contains("module") }
+      expect(named(appText) && locales.count == 9 && locales.values.allSatisfy(named),
+             "noVerdi names VERDI_HOME and CMUX_VERDI_SETUP and shows the launcher's hint, in 9 locales: \(appText) \(locales.filter { !named($0.value) }.keys.sorted())")
+      let hint = "verdi is not on PATH, in VERDI_HOME/bin or after CMUX_VERDI_SETUP"
+      let json = String(data: try! JSONSerialization.data(withJSONObject: [appText]), encoding: .utf8)!
+      _ = await call("cmuxWaveform.strings.traceVerdiUnavailable_noVerdi = \(json)[0]; return null")
+      engineAnswer = ["state": "unavailable", "reason": "noVerdi", "message": hint]
+      _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+      let shown = await panelText()
+      engineAnswer = ["state": "unavailable", "reason": "noVerdi", "message": ""]
+      _ = await verdiStep("tb_c.dut.u_mid.u_sink.q", 60)
+      let bare = await panelText()
+      expect(!appText.isEmpty && shown.contains(hint) && shown.contains("CMUX_VERDI_SETUP") && !shown.contains("not installed"),
+             "no Verdi on the host: the launcher's hint reaches the page: \(shown.prefix(300))")
+      expect(bare.contains("VERDI_HOME") && !bare.contains("()") && !bare.contains("undefined"),
+             "no Verdi, no hint: the string alone, without empty brackets: \(bare.prefix(300))")
+    }
     engineAnswer = nil
 
     // Timing on a whole-signal (v1) FSDB helper where each signal read takes 150 ms and Verdi

@@ -2,7 +2,8 @@
 # verdi-trace.sh's session lifetime, with a stand-in `verdi` (no Verdi, licence or host needed):
 # it answers one request, and it ends when nothing has asked for CMUX_VERDI_IDLE_SECONDS (a
 # connection whose other end slept or vanished without closing never sends EOF), not before; and
-# a Verdi that ends by itself (no licence seat) is reported at once, with its message.
+# a Verdi that ends by itself (no licence seat) is reported at once, with its message. Without
+# Verdi the error names the variables to set, and a CMUX_VERDI_SETUP that hangs is ended at its cap.
 # Usage: check.sh <verdi-trace.sh>
 LAUNCHER=$1
 T=$(mktemp -d "${TMPDIR:-/tmp}/verdi-launch.XXXXXX")
@@ -53,4 +54,21 @@ E3=$(( $(date +%s) - S3 ))
 grep -q '"error":"licence","message":"Error: could not checkout license' "$T/out3" && [ "$E3" -le 3 ]
 expect $? "a Verdi without a licence seat is reported at once as licence (after $E3 s: $(tr -d '\n' < "$T/out3" | cut -c1-120))"
 kill $L3 2>/dev/null
+# 4. No verdi on PATH and nothing set: noVerdi, with the hint that names the variables to set.
+mkdir -p "$T/w4" "$T/w5"
+NOPATH=/usr/bin:/bin
+env -u VERDI_HOME -u CMUX_VERDI_SETUP -u BASH_ENV PATH=$NOPATH bash "$LAUNCHER" "$T/w4" "$T/run/d.fsdb" < /dev/null > "$T/out4" 2>/dev/null
+grep -q '"ready":false,"error":"noVerdi","message":".*VERDI_HOME.*CMUX_VERDI_SETUP' "$T/out4"
+expect $? "no verdi and nothing set: noVerdi names VERDI_HOME and CMUX_VERDI_SETUP ($(tr -d '\n' < "$T/out4" | cut -c1-160))"
+
+# 5. A CMUX_VERDI_SETUP that hangs is ended at its time cap (CMUX_VERDI_SETUP_SECONDS), with an
+# error that says so.
+S5=$(date +%s)
+env -u VERDI_HOME -u BASH_ENV PATH=$NOPATH CMUX_VERDI_SETUP='sleep 27' CMUX_VERDI_SETUP_SECONDS=2 \
+  bash "$LAUNCHER" "$T/w5" "$T/run/d.fsdb" < /dev/null > "$T/out5" 2>/dev/null
+E5=$(( $(date +%s) - S5 ))
+grep -q '"error":"noVerdi","message":"CMUX_VERDI_SETUP .*2 s.*CMUX_VERDI_SETUP_SECONDS' "$T/out5" && [ "$E5" -le 5 ] \
+  && ! pgrep -u "$(id -u)" -f '^sleep 27$' >/dev/null
+expect $? "a hung CMUX_VERDI_SETUP ends at its cap (after $E5 s: $(tr -d '\n' < "$T/out5" | cut -c1-160))"
+pkill -u "$(id -u)" -f '^sleep 27$' 2>/dev/null
 [ $failures = 0 ] && echo "VERDI LAUNCH CHECKS PASSED" || { echo "VERDI LAUNCH CHECKS FAILED: $failures"; exit 1; }

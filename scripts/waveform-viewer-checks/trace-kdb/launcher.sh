@@ -13,7 +13,7 @@
 #   the time cap and a few seconds (the exporter runs under timeout -k).
 # - Verdi comes from PATH, $VERDI_HOME/bin or CMUX_VERDI_SETUP (the user's command) only: no
 #   site default such as a `module load` of a guessed module name; without them, noVerdi says
-#   which variables to set.
+#   which variables to set. CMUX_VERDI_SETUP is ended at its time cap (CMUX_VERDI_SETUP_SECONDS).
 # - Of several KDBs next to the dump, the first by name in C order is taken, whatever the locale
 #   (as verdi-trace.sh does).
 S=$1
@@ -120,6 +120,24 @@ check "no Verdi on PATH, nothing set: noVerdi, not a guessed module" "$(plain)" 
 check "CMUX_VERDI_SETUP finds it" "$(plain CMUX_VERDI_SETUP='module load anything')" '"ok": true, "cached": false' 7
 echo seven > "$S/sim/simv.daidir/kdb.elab++/g.db"
 check "VERDI_HOME finds it" "$(plain VERDI_HOME="$S")" '"ok": true, "cached": false' 8
+# CMUX_VERDI_SETUP runs under a time cap (CMUX_VERDI_SETUP_SECONDS, default 30 s): a setup slower
+# than the cap but within it still finds Verdi (what it sets is kept); one that hangs (a module
+# system's lock) is ended at the cap, with an error that says so, and nothing of it is left running.
+echo eight > "$S/sim/simv.daidir/kdb.elab++/h.db"
+check "a CMUX_VERDI_SETUP within its time cap finds it" \
+  "$(plain CMUX_VERDI_SETUP='sleep 1; module load anything' CMUX_VERDI_SETUP_SECONDS=5)" '"ok": true, "cached": false' 9
+echo nine > "$S/sim/simv.daidir/kdb.elab++/i.db"
+started=$(date +%s)
+line=$(plain CMUX_VERDI_SETUP='sleep 23; module load anything' CMUX_VERDI_SETUP_SECONDS=2)
+took=$(( $(date +%s) - started ))
+check "a hung CMUX_VERDI_SETUP: noVerdi that names the cap" "$line" '"error":"noVerdi".*CMUX_VERDI_SETUP.*2 s.*CMUX_VERDI_SETUP_SECONDS' 9
+if [ "$took" -le 6 ] && ! pgrep -u "$(id -u)" -f '^sleep 23$' >/dev/null; then
+  echo "ok   the hung setup is ended at the cap ($took s) and nothing of it is left"
+else
+  echo "FAIL the hung setup: answered after $took s, left: $(pgrep -u "$(id -u)" -f '^sleep 23$' | tr '\n' ' ')"
+  pass=0
+  pkill -u "$(id -u)" -f '^sleep 23$' 2>/dev/null
+fi
 unset -f module
 
 # Several KDBs next to the dump: the first in C order, in any locale.
