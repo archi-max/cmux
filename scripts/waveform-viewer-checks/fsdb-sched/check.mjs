@@ -473,6 +473,29 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
+// 26. aliasHints from the app's model: pairs may name paths; pairs sent before the stored
+// signals are known wait for them (not refused); `free` of a rebuilt signal drops its alias
+// (a later hint checks it again).
+{
+  const al = async (h) => (await h.send('stats').reply).result.aliases;
+  const has = (list, id) => !!list && list.some(([x]) => x === id);
+  const h = await start(4, { 1: 50, 2: 3000, 3: 3000 }, { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1]', STUB_DEBUG_MS: '600' });
+  const a = await h.send('aliasHints', { pairs: [['tb.s2', 'tb.s1'], [3, 1]] }).reply;
+  check(!a.error && a.result.refused.length === 0 && a.result.pending === 2, `pairs sent before the stored signals are known wait: ${a.error || JSON.stringify(a.result)}`);
+  let st = null;
+  for (let k = 0; k < 100; k++) { st = await al(h); if (st && has(st.on, 2) && has(st.on, 3)) { break; } await wait(30); }
+  check(st && has(st.on, 2) && has(st.on, 3), `... and are checked once they are, paths resolved: ${JSON.stringify(st)}`);
+  await h.send('free', { signalIds: [2] }).reply;
+  st = await al(h);
+  const r = await h.send('window', win([2])).reply;
+  check(st && !has(st.on, 2) && !has(st.verified, 2) && has(st.on, 3) && !r.error && !r.result.signals[0].alias,
+    `free of a rebuilt signal drops its alias: ${JSON.stringify(st)} ${r.error || JSON.stringify(r.result.signals[0])}`);
+  const b = await h.send('aliasHints', { pairs: [[2, 1]] }).reply;
+  check(!b.error && b.result.accepted === 1, `... and a later hint is taken again: ${b.error || JSON.stringify(b.result)}`);
+  h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
 // 10. `--workers auto` (what cmux asks for) sizes the pool from the host: half its cores, at most
 // 8, and only as many as fit in its available memory minus 4 GB at ~600 MB each. Each worker
 // keeps a store share of at least 256 MB, so more workers don't shrink the largest signal that
