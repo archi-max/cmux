@@ -1268,6 +1268,41 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     await sleep(300)
     text = await panelText()
     expect(resolves() == before2 + 2 && text.contains("q <= mix"), "build: Retry traces again (asking cmux anew): \(resolves() - before2) \(text.prefix(200))")
+    // A second viewer of the same design (progress review M1): cmux's done or failed went to the
+    // other viewer, and this one's resolve fails. The panel shows why, and the next trace asks anew.
+    let before3 = resolves()
+    holdResolves = true
+    _ = await call("window.__drv = cmuxWaveform.trace.driver(\(q)); return null")
+    await waitFor("the third resolve") { resolves() == before3 + 1 }
+    await progress("{ stage: 'compile', percent: 10, host: 'build-host', startedAt: \(Date().timeIntervalSince1970 * 1000) }")
+    for held in heldResolves { answer(held.id, ok: false, error: "resolve", message: "The design model could not be compiled on build-host.") }
+    heldResolves = []
+    _ = await call("await window.__drv; return null")
+    text = await panelText()
+    expect(text.contains("could not be compiled") && !text.contains("Building"),
+           "build: a resolve failing while the page shows a build ends the build and shows the error: \(text.prefix(300))")
+    holdResolves = false
+    _ = await call("await cmuxWaveform.trace.driver(\(q)); return null")
+    expect(resolves() == before3 + 2, "build: and the next trace asks cmux anew (\(resolves() - before3) resolves)")
+    // A trace from the editor while the design model builds (progress review M2): cmux sends the
+    // build's state with focus, and the panel points at it; a failure's Retry traces the editor's
+    // signal (its dump path), not the page's last trace.
+    _ = await trace("close()")
+    await sleep(1300)
+    let calm = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    let now = Date().timeIntervalSince1970 * 1000
+    await progress("{ stage: 'configure', host: 'build-host', startedAt: \(now), focus: true, entry: { dumpPath: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'] } }")
+    let focused = await call("return document.getElementById('cmux-trace').classList.contains('pulse')") as? Bool
+    text = await panelText()
+    expect(calm == false && focused == true && text.contains("Building the design model on build-host"),
+           "build: a trace from the editor while it builds shows the build and points at it: \(String(describing: calm)) \(String(describing: focused)) \(text.prefix(200))")
+    await progress("{ stage: 'failed', host: 'build-host', startedAt: \(now), message: 'The design model could not be compiled on build-host.', log: 'error: one' }")
+    let before4 = events.count
+    _ = await call("const b = document.querySelector('#cmux-trace button.retry'); if (b) b.click(); return !!b")
+    await waitFor("the editor entry's resolve") { events.dropFirst(before4).contains { $0["event"] as? String == "resolve" } }
+    let asked = events.dropFirst(before4).first { $0["event"] as? String == "resolve" }?["dumpPath"] as? [String]
+    expect(asked == ["tb_c", "dut", "u_mid", "u_sink", "d"], "build: Retry after an editor-started build traces the editor's signal: \(String(describing: asked))")
+    _ = await call("await cmuxWaveform.trace.settled(); return null")
     // Every page string of the build panel is sent by cmux and localized.
     let resources = assetRoot.deletingLastPathComponent()
     let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
