@@ -254,6 +254,33 @@ const widths = new Map();
   expect(!ow.error && !!owSig && owSig.count === 1, `a watch's first record, in the reply's chunk, reaches the poll: ${JSON.stringify(owp.result && owp.result.signals)}`);
   await req('sim.close', {});
 
+  // Fork-save is a per-run choice, off by default: the default run has checkpoints and no forksave; a run opened
+  // with forkSave has forksave (the worker runs the simulator without its command line) and no checkpoints.
+  // Each run says which it is, and the other mode's requests are refused before they reach the worker.
+  {
+    const d0 = await req('sim.open', { dir: runDir, clock: 'tb.clk' });
+    const a0 = JSON.parse(fs.readFileSync(workerLog, 'utf8')).argv;
+    const fsD = await req('sim.forksave', { file: 'a.save' });
+    const cpD = await req('sim.checkpoint', {});
+    const pD = await req('sim.poll', { waitMs: 0 });
+    expect(!d0.error && d0.result.mode === 'ucli' && !a0.includes('--no-ucli') && pD.result && pD.result.mode === 'ucli',
+      `a run opened by default is in ucli mode: ${JSON.stringify(d0.result && d0.result.mode)}, poll ${pD.result && pD.result.mode}`);
+    expect(!!fsD.error && /forkSave/.test(fsD.error) && !cpD.error && cpD.result && cpD.result.cp === 1, `in ucli mode forksave is refused (${fsD.error}) and checkpoint works (${JSON.stringify(cpD.result || cpD.error)})`);
+    await req('sim.close', {});
+    const d1 = await req('sim.open', { dir: runDir, clock: 'tb.clk', forkSave: true });
+    const a1 = JSON.parse(fs.readFileSync(workerLog, 'utf8')).argv;
+    const fs1 = await req('sim.forksave', { file: 'a.save' });
+    const cp1 = await req('sim.checkpoint', {});
+    const rs1 = await req('sim.restore', { cp: 1 });
+    let saves = [];
+    for (let i = 0; i < 20 && !saves.length; i++) { const p = await req('sim.poll', { waitMs: 100 }); saves = (p.result && p.result.saves) || []; }
+    expect(!d1.error && d1.result.mode === 'forkSave' && a1.includes('--no-ucli'), `a run opened with forkSave is in forkSave mode, the worker started with --no-ucli: ${JSON.stringify(d1.result && d1.result.mode)}`);
+    expect(!fs1.error && fs1.result && fs1.result.pid > 0 && saves.length === 1 && saves[0].ok === true && saves[0].pid === fs1.result.pid,
+      `in forkSave mode forksave works and its end reaches the poll: ${JSON.stringify(fs1.result || fs1.error)} ${JSON.stringify(saves)}`);
+    expect(!!cp1.error && /forkSave/.test(cp1.error) && !!rs1.error && /forkSave/.test(rs1.error), `and checkpoint/restore are refused: ${cp1.error} / ${rs1.error}`);
+    await req('sim.close', {});
+  }
+
   // The helper's shutdown: closeAll, then process.exit at once. Nothing of the simulation's is left behind.
   const child = require('node:child_process').spawnSync(process.execPath, ['-e', `
     const sim = require(${JSON.stringify(path.join(helperDir, 'sim.js'))});

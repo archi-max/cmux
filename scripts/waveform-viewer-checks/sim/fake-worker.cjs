@@ -12,6 +12,7 @@ const fs = require('node:fs');
 if (process.env.FAKE_WORKER_LOG) fs.writeFileSync(process.env.FAKE_WORKER_LOG, JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }));
 const out = (o, bin) => { process.stdout.write(JSON.stringify(o) + '\n'); if (bin && bin.length) process.stdout.write(bin); };
 const PERIOD = Number(process.env.FAKE_PERIOD) || 10;
+const NO_UCLI = process.argv.includes('--no-ucli');
 const HALF = PERIOD / 2;
 let t = 0, cnt = 0, running = null;
 const BATCH_CYCLES = Number(process.env.FAKE_BATCH_CYCLES) || 0;   // >0: a batch every N cycles, all in one go
@@ -110,6 +111,16 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
       setTimeout(() => { for (const w of ids) watches.delete(w); }, UNWATCH_LAG);
       return out({ id, result: { unwatched: ids.length } });
     }
+    // the two worker modes, as sim-worker.js: --no-ucli has forksave and no checkpoints, the default the reverse
+    case 'forksave': {
+      if (!NO_UCLI) return out({ id, error: 'forksave needs a worker started with --no-ucli (with the command line the save child is stopped and the simulation ended)' });
+      const pid = 90000 + id; out({ id, result: { t, pid, forkMs: 1.2, file: '/scratch/run/' + r.file } });
+      setTimeout(() => out({ id: 0, event: 'saved', pid, file: '/scratch/run/' + r.file, t, status: 0, ok: true, bytes: 9 }), 100);
+      return;
+    }
+    case 'checkpoint': case 'restore':
+      if (NO_UCLI) return out({ id, error: `${r.cmd} needs the simulator's command line: this worker was started with --no-ucli` });
+      return out({ id, result: r.cmd === 'checkpoint' ? { cp: 1, t, requestedAt: t } : { t, watches: [] } });
     case 'quit': out({ id, result: { t, quit: true } }); out({ id: 0, event: 'exit', code: 0 }); setTimeout(() => process.exit(0), 10); return;
     default: return out({ id, error: 'unknown cmd ' + r.cmd });
   }
@@ -120,6 +131,6 @@ const REPORTED = process.env.FAKE_REPORT_PERIOD !== undefined ? Number(process.e
 // FAKE_MISSING: after ready, the simulator could not open that file (a missingInput event).
 if (process.env.FAKE_SETUP_ERROR) { out({ id: 0, event: 'setupError', message: process.env.FAKE_SETUP_ERROR }); setTimeout(() => process.exit(3), 10); }
 else setTimeout(() => {
-  out({ id: 0, event: 'ready', t: 0, precision: -12, period: REPORTED, startupMs: 1 });
+  out({ id: 0, event: 'ready', t: 0, precision: -12, period: REPORTED, startupMs: 1, ucli: !NO_UCLI });
   if (process.env.FAKE_MISSING) out({ id: 0, event: 'missingInput', file: process.env.FAKE_MISSING, message: `Cannot open file '${process.env.FAKE_MISSING}'`, hint: 'name it in cmux-replay.json' });
 }, 20);
