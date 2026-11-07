@@ -27,6 +27,8 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   var models: [String: Any] = [:]
   /// What the next resolve answers (nil: the dump path as the design path).
   var resolveError: String?
+  /// What the resolves answer instead (a row only the compiled design has: cmux's compiledOnly).
+  var resolveAnswer: [String: Any]?
   var modelRequests = 0
   /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
   var engineAnswer: [String: Any]?
@@ -1287,6 +1289,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(sinceEn.contains("clock edge") && sinceEn.contains("combinational") && sinceEn.contains("latch")
              && traceSwift.contains("defaultValue: \"\(sinceEn)\"") && (sinceEntry?.count ?? 0) == 9,
            "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
+    await compiledOnlyChecks()
     await xRootChecks()
     await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
@@ -1468,6 +1471,56 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(keys.count >= 12 && missing.isEmpty, "build: the panel's \(keys.count) strings come from cmux in 9 locales (missing: \(missing))")
   }
 
+  /// A row only the compiled design has (cmux resolved it with the dump's KDB model: slang's design
+  /// lacks its instance, or has another module there): one step, approximate, that says its drivers
+  /// come from the compiled design and its value isn't evaluated, with the KDB's write lines to
+  /// jump to and the dumped value; slang's models are not asked.
+  func compiledOnlyChecks() async {
+    _ = await trace("close()")
+    let row = "tb_c.dut.u_mid.u_sink.q"
+    resolveAnswer = ["compiledOnly": true, "dumpPath": row, "reason": "notInSlang",
+                     "writes": [["file": "/work/rtl/soc.sv", "line": 40, "kind": "nb"], ["file": "/work/rtl/soc.sv", "line": 52, "kind": "b"]]]
+    let models = modelRequests
+    let step = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    let compiled = step?["compiledOnly"] as? [String: Any]
+    expect(step?["trust"] as? String == "approximate" && compiled?["reason"] as? String == "notInSlang"
+             && (compiled?["writes"] as? [Any])?.count == 2 && step?["signal"] as? String == row,
+           "compiled only: one approximate step with the KDB's writes: \(String(describing: step))")
+    expect(step?["value"] is String, "compiled only: the dumped value is read: \(String(describing: step?["value"]))")
+    expect(modelRequests == models, "compiled only: slang's models are not asked (\(modelRequests - models))")
+    var text = await panelText()
+    expect(text.contains("Drivers come from the compiled design (KDB)") && text.contains("values aren't evaluated")
+             && text.contains("doesn't have this instance") && text.contains("soc.sv:40") && text.contains("soc.sv:52") && text.contains("approximate"),
+           "compiled only: the panel says where the drivers come from, why, and the write lines: \(text.prefix(400))")
+    let clicked = await call("const a = [...document.querySelectorAll('#cmux-trace .body a')].find((x) => x.textContent === 'soc.sv:52'); if (!a) return false; a.click(); return true") as? Bool
+    await sleep(100)
+    let open = events.last { $0["event"] as? String == "open" }?["loc"] as? [String: Any]
+    expect(clicked == true && open?["file"] as? String == "/work/rtl/soc.sv" && open?["line"] as? Int == 52,
+           "compiled only: a write line opens it: \(String(describing: open))")
+    // Another module at the instance; Trace X to Root from such a row is the same one step.
+    resolveAnswer = ["compiledOnly": true, "dumpPath": row, "reason": "otherModule", "writes": [[String: Any]]()]
+    let x = await trace("xRoot({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'q'], time: 60 })")
+    text = await panelText()
+    expect((x?["compiledOnly"] as? [String: Any])?["reason"] as? String == "otherModule" && text.contains("another module")
+             && text.contains("no statement writing it"),
+           "compiled only: Trace X to Root shows the step; another module, no writes: \(text.prefix(300))")
+    resolveAnswer = nil
+    _ = await trace("close()")
+    // Its strings come from cmux, in 9 locales.
+    let resources = assetRoot.deletingLastPathComponent()
+    let traceSwift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
+    let catalog = (try? Data(contentsOf: resources.appendingPathComponent("Localizable.xcstrings")))
+      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["strings"] as? [String: Any] ?? [:]
+    let keys = Harness.pageStrings.keys.filter { $0.hasPrefix("traceCompiled") }.sorted()
+    let missing = keys.filter { key in
+      guard let r = traceSwift.range(of: "\"\(key)\": String(localized: \""),
+            let id = traceSwift[r.upperBound...].split(separator: "\"").first,
+            let entry = (catalog[String(id)] as? [String: Any])?["localizations"] as? [String: Any] else { return true }
+      return entry.count != 9
+    }
+    expect(keys.count == 5 && missing.isEmpty, "compiled only: the panel's \(keys.count) strings come from cmux in 9 locales (missing: \(missing))")
+  }
+
   /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
   /// where it was made (designs J and K, the engine's own fixtures).
   func xRootChecks() async {
@@ -1589,6 +1642,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       if let resolveError { answer(id, ok: false, error: "resolve", message: resolveError); return }
       let path = (body["dumpPath"] as? [String] ?? []).joined(separator: ".")
       if holdResolves { heldResolves.append((id, path)); return }
+      if let resolveAnswer { answer(id, ok: true, result: resolveAnswer); return }
       answer(id, ok: true, result: ["designPath": path, "designPrefix": "", "dumpPrefix": ""])
     case "model":
       modelRequests += 1
@@ -1709,6 +1763,11 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     "traceBuildWhat": "What is being built?", "traceBuildFailedTitle": "The design model could not be built on %@",
     "traceBuildFailedTitleLocal": "The design model could not be built on this Mac", "traceBuildLog": "Last lines of the build log:",
     "traceBuildRetry": "Retry",
+    "traceCompiledOnly": "Drivers come from the compiled design (KDB); values aren't evaluated.",
+    "traceCompiledOnly_notInSlang": "Slang's design model doesn't have this instance (its module may be in a file it didn't read).",
+    "traceCompiledOnly_otherModule": "Slang's design model has another module at this instance, so its statements aren't used.",
+    "traceCompiledWrites": "Written at:",
+    "traceCompiledNoWrites": "The compiled design has no statement writing it here (it is driven through a port, or is an input).",
   ]
 
   /// How many times the page said a dump opened.
