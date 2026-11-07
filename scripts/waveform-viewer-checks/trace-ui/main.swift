@@ -1961,6 +1961,34 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     let swift = (try? String(contentsOf: resources.deletingLastPathComponent().appendingPathComponent("Sources/Panels/WaveformTrace.swift"), encoding: .utf8)) ?? ""
     expect(loadKeys.count >= 20 && loadKeys.allSatisfy { k in ((strings[k] as? [String: Any])?["localizations"] as? [String: Any])?.count == 9 && swift.contains("\"\(k)\"") },
            "the load trace strings: in WaveformTrace.swift and 9 locales: \(loadKeys.count)")
+    // The native entry points (app code: read, not built here): Ctrl+L where Trace Driver's key
+    // runs, View > Trace Loads, the editor's context menu, and the editor asking the page for
+    // loadsOfDesign (Trace Driver's own path otherwise).
+    let repo = resources.deletingLastPathComponent()
+    func src(_ rel: String) -> String { (try? String(contentsOf: repo.appendingPathComponent(rel), encoding: .utf8)) ?? "" }
+    func locs(_ key: String) -> Int { ((strings[key] as? [String: Any])?["localizations"] as? [String: Any])?.count ?? 0 }
+    let action = src("Packages/macOS/CmuxSettings/Sources/CmuxSettings/Values/ShortcutAction.swift")
+    let defaults = src("Packages/macOS/CmuxSettings/Sources/CmuxSettings/Values/ShortcutAction+Defaults.swift")
+    let appSettings = src("Sources/KeyboardShortcutSettings.swift")
+    expect(action.contains("case traceWaveformLoads") && defaults.contains("case .traceWaveformLoads: return ShortcutStroke(key: \"l\", control: true)")
+             && appSettings.contains("case .traceWaveformLoads: return StoredShortcut(key: \"l\", command: false, shift: false, option: false, control: true)"),
+           "Trace Loads is a shortcut action, Ctrl+L by default")
+    for rel in ["Sources/KeyboardShortcutActionContext.swift", "Sources/KeyboardShortcutSettingsLookup.swift", "Sources/AppDelegate+DockShortcutRouting.swift",
+                "Packages/macOS/CmuxSettings/Sources/CmuxSettings/Values/ShortcutAction+Group.swift", "web/data/cmux.schema.json",
+                "Packages/macOS/CmuxFoundation/Sources/CmuxFoundation/ConfigValidation/CmuxConfigSchema.generated.swift",
+                "skills/cmux-settings/references/shortcut-actions.md", "web/data/cmux-shortcuts.ts"] {
+      expect(src(rel).contains("traceWaveformLoads"), "Trace Loads is listed where Trace X to Root is: \(rel)")
+    }
+    expect(src("Sources/AppDelegate.swift").contains("action: .traceWaveformLoads) {\n            return WaveformTrace.performLoadsFromShortcut("),
+           "Ctrl+L runs WaveformTrace.performLoadsFromShortcut")
+    expect(src("Sources/cmuxApp.swift").contains("WaveformTrace.performLoadsFromShortcut(window:"), "View > Trace Loads")
+    expect(swift.contains("static func performLoadsFromShortcut(") && swift.contains("callTrace(\"loads\"") && swift.contains("\"loadsOfDesign\""),
+           "the viewer's row goes to the page's loads, the editor's signal to loadsOfDesign")
+    let features = src("Sources/Panels/FilePreviewLanguageFeatures.swift")
+    expect(features.contains("func traceLoadsUnderCaret()") && features.contains("#selector(traceLoadsFromMenu(_:))"),
+           "the editor has Trace Loads in its context menu and under the caret")
+    expect(locs("shortcut.traceWaveformLoads.label") == 9 && locs("filePreview.language.traceLoads") == 9,
+           "the shortcut's label and the editor's menu item in 9 locales: \(locs("shortcut.traceWaveformLoads.label")) \(locs("filePreview.language.traceLoads"))")
     _ = await trace("close()")
   }
 
