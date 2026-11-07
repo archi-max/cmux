@@ -366,11 +366,20 @@ public enum HierarchyPrefixInference {
         case .first:
             return scores.first.map { byScore[$0]![0].rule }
         case .ambiguous:
-            // The first (broadest) rule of a score whose rules all map the row to one design path.
-            return scores.lazy.compactMap { score -> HierarchyPathMapping.Rule? in
+            // The first (broadest) rule of a score whose rules all map the row to one design path. Below an
+            // ambiguous score only a broader rule (a shorter dump prefix than any tied one) may win: one at
+            // the tie's scope or deeper is one more candidate for that unresolved scope (u_dma beside u_core*).
+            var limit = Int.max
+            for score in scores {
                 let found = byScore[score]!
-                return Set(found.map(\.designPath)).count == 1 ? found[0].rule : nil
-            }.first
+                let depths = found.map { HierarchyPathMapping.segments($0.rule.dumpPrefix).count }
+                if Set(found.map(\.designPath)).count == 1 {
+                    if depths.allSatisfy({ $0 < limit }) { return found[0].rule }
+                } else {
+                    limit = min(limit, depths.min() ?? 0)
+                }
+            }
+            return nil
         }
     }
 
@@ -380,7 +389,7 @@ public enum HierarchyPrefixInference {
         /// where any instance of a module is the same.
         case first
         /// Ambiguous when they map the row to different design paths (`u_core0`/`u_core1`, copies of
-        /// one module): the next score down, else nil. Rules mapping it alike (a top and its own child
+        /// one module): the next score down with a broader rule (a shorter dump prefix), else nil. Rules mapping it alike (a top and its own child
         /// instance) agree, and the broadest wins.
         case ambiguous
     }
