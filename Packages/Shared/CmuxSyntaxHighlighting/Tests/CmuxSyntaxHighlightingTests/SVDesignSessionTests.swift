@@ -171,7 +171,8 @@ import Testing
         #expect(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "0123abcd-arm64")
     }
 
-    /// The real sidecar says its build in its ready line, and a model version past #9's params (2).
+    /// The real sidecar says its build in its ready line (its model version stays the engine's, 1:
+    /// cmux-trace.js refuses another; the build is what tells two installs apart).
     @Test func realSidecarSaysItsBuild() async throws {
         guard let bin = ProcessInfo.processInfo.environment["CMUX_SV_MODEL_BIN"] else { return }
         let sidecar = SVModelSidecar(runner: { .init(executable: "/bin/sh", arguments: ["-c", $0]) },
@@ -179,7 +180,7 @@ import Testing
         defer { sidecar.stop() }
         _ = try? await sidecar.request(["cmd": "stale"])
         #expect(sidecar.lastReady?["build"] as? String == "feed-x86_64")
-        #expect((sidecar.lastReady?["model"] as? NSNumber)?.intValue == 2)
+        #expect((sidecar.lastReady?["model"] as? NSNumber)?.intValue == 1)
     }
 
     @Test func aRestartOntoEditedSourcesIsANewDesign() async throws {

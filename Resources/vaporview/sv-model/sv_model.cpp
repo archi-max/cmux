@@ -53,6 +53,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <cstdio>
 #include <fstream>
@@ -2250,6 +2251,11 @@ int main(int argc, char** argv) {
         w.writeValue(true);
         w.writeProperty("model");
         w.writeValue(int64_t(kModelVersion));
+        // The install's build (sv-model.sh: its folder, named by the sources' hash), when started by it.
+        if (const char* build = std::getenv("CMUX_SV_MODEL_BUILD"); build && *build) {
+            w.writeProperty("build");
+            w.writeValue(std::string_view(build));
+        }
         w.endObject();
         reply(w);
     }
