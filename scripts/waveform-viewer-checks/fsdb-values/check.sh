@@ -25,13 +25,13 @@ echo "building the helper on the host"
 remote "HOME=$(q "$H"); export HOME; nice sh $(q "$RDIR/src/build.sh") $(q "$RDIR/src") $(q "$D") >$(q "$RDIR/build.log") 2>&1; echo build=\$?" | tail -1 | grep -q '^build=0$' \
   || { remote "tail -20 $(q "$RDIR/build.log")"; echo "FSDB VALUES CHECKS FAILED: build"; exit 1; }
 # The writer next to the reader the build found.
-remote "cd $(q "$RDIR/check") && . $(q "$D/helper.env") && W=\"\$VERDI_HOME/share/FsdbWriter\" && nice g++ -O1 -I\"\$W\" -o mkvalues make-values-fsdb.cpp -L\"\$W/linux64\" -lnffw -Wl,-rpath,\"\$W/linux64\" -lpthread -ldl -lz >mk.log 2>&1 && ./mkvalues values.fsdb >>mk.log 2>&1 && ./mkvalues cap.fsdb >>mk.log 2>&1 && ./mkvalues big.fsdb big >>mk.log 2>&1; echo mk=\$?" | tail -1 | grep -q '^mk=0$' \
+remote "cd $(q "$RDIR/check") && . $(q "$D/helper.env") && W=\"\$VERDI_HOME/share/FsdbWriter\" && nice g++ -O1 -I\"\$W\" -o mkvalues make-values-fsdb.cpp -L\"\$W/linux64\" -lnffw -Wl,-rpath,\"\$W/linux64\" -lpthread -ldl -lz >mk.log 2>&1 && ./mkvalues values.fsdb >>mk.log 2>&1 && ./mkvalues cap.fsdb >>mk.log 2>&1 && ./mkvalues big.fsdb big >>mk.log 2>&1 && ./mkvalues long.fsdb long >>mk.log 2>&1; echo mk=\$?" | tail -1 | grep -q '^mk=0$' \
   || { remote "tail -20 $(q "$RDIR/check/mk.log")"; echo "FSDB VALUES CHECKS FAILED: fixture"; exit 1; }
 envs=""
 if [ -n "${FSDB_VALUES_DUMP:-}" ] && [ -n "${FSDB_VALUES_EXPECT:-}" ]; then
   envs="FSDB_VALUES_DUMP=$(q "$FSDB_VALUES_DUMP") FSDB_VALUES_EXPECT=$(q "$FSDB_VALUES_EXPECT")"
 fi
-out=$(remote "HOME=$(q "$H"); export HOME; . $(q "$D/helper.env"); cd /tmp && $envs nice bash $(q "$RDIR/check/rss-guard.sh") 1500 2000 \"\$NODE\" $(q "$RDIR/check/values-check.js") $(q "$D") $(q "$RDIR/check/values.fsdb") $(q "$RDIR/check/big.fsdb") $(q "$RDIR/check/cap.fsdb")")
+out=$(remote "HOME=$(q "$H"); export HOME; . $(q "$D/helper.env"); cd /tmp && $envs nice bash $(q "$RDIR/check/rss-guard.sh") 1500 2000 \"\$NODE\" $(q "$RDIR/check/values-check.js") $(q "$D") $(q "$RDIR/check/values.fsdb") $(q "$RDIR/check/big.fsdb") $(q "$RDIR/check/cap.fsdb") $(q "$RDIR/check/long.fsdb")")
 echo "$out"
 remote "rm -rf $(q "$RDIR")"
 echo "$out" | grep -q '^FSDB VALUES CHECKS PASSED'
