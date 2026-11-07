@@ -305,6 +305,7 @@ enum WaveformTrace {
         // In one design generation throughout: a sidecar that restarts onto changed sources under
         // way makes another, and the resolve runs again in it (once), never on answers of both.
         var outcome: SVModelResolve.Outcome?
+        var checked: Set<String> = []
         var generation = design.session.generation
         // slang reads the design where the KDB is (the editor's host is the dump's): a write's file
         // compares by its full path.
@@ -312,8 +313,9 @@ enum WaveformTrace {
         let sameFiles = dumpHost != nil && dumpHost == editor.linkRemoteRoute?.configuration.destination
         for _ in 0..<2 {
             generation = design.session.generation
+            checked = []
             let resolved = try await resolve(dumpPath: dumpPath, mapping: mapping, design: design, generation: generation, waveform: waveform,
-                                             sameFiles: sameFiles)
+                                             sameFiles: sameFiles, checked: { checked = $0 })
             if design.session.generation == generation {
                 outcome = resolved
                 break
@@ -323,15 +325,18 @@ enum WaveformTrace {
         // The dump's KDB export still runs (the viewer just opened or reloaded it): slang's design
         // was used, and the steps say so; a row slang lacks may be in the compiled design.
         let kdbPending = WaveformTraceKDB.pending(for: waveform)
+        // With a KDB model: the instances its agreement covered (none when the row wasn't mapped
+        // with it); a step in another one is not checked against the compiled design.
+        let kdbChecked: Any = WaveformTraceKDB.model(for: waveform) == nil ? NSNull() : checked.sorted()
         switch outcome {
         case .signal(let designPath, let designPrefix, let dumpPrefix):
             sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation),
-                    "kdbPending": kdbPending]
+                    "kdbPending": kdbPending, "kdbChecked": kdbChecked]
         case .approximate(let designPath, let designPrefix, let dumpPrefix, let differences):
             sendSlangAliases(design: design, generation: generation, designPrefix: designPrefix, dumpPrefix: dumpPrefix, waveform: waveform)
             return ["designPath": designPath, "designPrefix": designPrefix, "dumpPrefix": dumpPrefix, "designId": design.id(generation),
-                    "kdbDiffers": kdbDiffersText(differences)]
+                    "kdbDiffers": kdbDiffersText(differences), "kdbChecked": kdbChecked]
         case .notElaborated where kdbPending, .notInDesign where kdbPending:
             throw Failure(message: String(
                 format: String(
@@ -358,7 +363,8 @@ enum WaveformTrace {
 
     /// One resolve against the design of `generation` (an answer of another one is none).
     private static func resolve(dumpPath: [String], mapping: HierarchyPathMapping, design: Design, generation: Int,
-                                waveform: FilePreviewPanel, sameFiles: Bool) async throws -> SVModelResolve.Outcome {
+                                waveform: FilePreviewPanel, sameFiles: Bool,
+                                checked: @escaping (Set<String>) -> Void) async throws -> SVModelResolve.Outcome {
         let session = design.session
         // The dump's KDB model when its export has come (never waited for): it decides what exists
         // and how the row maps to slang's design.
@@ -374,6 +380,7 @@ enum WaveformTrace {
             instances: { try await session.hierarchy(generation: generation).instances },
             sourceTimes: { (try? await session.sourceTimes(generation: generation)) ?? nil },
             kdbSameFiles: sameFiles,
+            kdbChecked: checked,
             log: { line in waveformTraceLogger.info("\(line, privacy: .public)") }
         )
     }
@@ -603,6 +610,8 @@ enum WaveformTrace {
         argument["design"] = built.key
         argument["designId"] = built.id(built.session.generation)
         argument["kdbPending"] = WaveformTraceKDB.pending(for: waveform)
+        // The editor's trace is not resolved with the dump's KDB: with a model, nothing is checked.
+        if WaveformTraceKDB.model(for: waveform) != nil { argument["kdbChecked"] = [String]() }
         editor.closeLinkProgress()
         // The build's done (queued behind its progress calls) before the trace, as the page expects.
         await buildSends[built.key]?.value
@@ -959,6 +968,7 @@ enum WaveformTrace {
             "traceReason_enginesDiffer": String(localized: "waveformTrace.reason.enginesDiffer", defaultValue: "Verdi names another statement: %@."),
             "traceReason_kdbDiffers": String(localized: "waveformTrace.reason.kdbDiffers", defaultValue: "slang’s design differs from the compiled design (KDB) here, so its statements may not be what ran: %@."),
             "traceReason_kdbPending": String(localized: "waveformTrace.reason.kdbPending", defaultValue: "The compiled design (KDB) is still loading, so this was traced with slang’s design."),
+            "traceReason_kdbNotChecked": String(localized: "waveformTrace.reason.kdbNotChecked", defaultValue: "This instance was not checked against the compiled design (KDB), so slang’s statements may not be what ran."),
         ]
     }
 }

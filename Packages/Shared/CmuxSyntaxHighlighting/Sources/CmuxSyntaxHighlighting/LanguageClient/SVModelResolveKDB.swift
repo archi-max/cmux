@@ -18,7 +18,8 @@ extension SVModelResolve {
     /// A mapped row is `.signal` (exact) only when the compiled design and slang's agree on it
     /// (KDBAgreement: parameters down its chain, its shape, ports and write lines, no source newer
     /// than the compile, by `sourceTimes`: slang's source files and their times, nil: unknown);
-    /// otherwise `.approximate` with what differs.
+    /// otherwise `.approximate` with what differs. `kdbChecked` gets slang's instance paths the
+    /// agreement covered (the row's chain from the matched level down), for a mapped row.
     public static func resolve(
         dumpPath: [String],
         mapping: HierarchyPathMapping,
@@ -31,6 +32,7 @@ extension SVModelResolve {
         instances: @escaping () async throws -> [String],
         sourceTimes: (() async -> [String: Int64]?)? = nil,
         kdbSameFiles: Bool = false,
+        kdbChecked: ((Set<String>) -> Void)? = nil,
         log: (String) -> Void = { _ in },
         isolation: isolated (any Actor)? = #isolation
     ) async throws -> Outcome {
@@ -100,15 +102,19 @@ extension SVModelResolve {
                let instanceModel = await slangModel(found.instance), SVModelLoad.isSignal(found.name, inModel: instanceModel) {
                 let mapped = result(designPath: designPath, dumpPath: rowSegments)
                 var levels: [KDBAgreement.Level] = []
+                var checked: Set<String> = []
                 var lost = false
                 for path in chain[level...] {
                     let rest = below(path, prefix)
-                    guard let compiled = kdb.instance(path), let slang = await slangModel(rest.isEmpty ? designPrefix : designPrefix + "." + rest) else {
+                    let slangPath = rest.isEmpty ? designPrefix : designPrefix + "." + rest
+                    guard let compiled = kdb.instance(path), let slang = await slangModel(slangPath) else {
                         lost = true
                         continue
                     }
                     levels.append(KDBAgreement.Level(path: path, compiled: compiled, slang: slang))
+                    checked.insert(slangPath)
                 }
+                kdbChecked?(checked)
                 let times = await sourceTimes?()
                 var differences = KDBAgreement.differences(chain: levels, signal: name, compiledAt: kdb.compiledAt, sourceTimes: times,
                                                            overrides: kdb.overrides, sameFiles: kdbSameFiles)

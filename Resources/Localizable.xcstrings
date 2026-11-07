@@ -487410,6 +487410,65 @@
         }
       }
     },
+    "waveformTrace.reason.kdbNotChecked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This instance was not checked against the compiled design (KDB), so slang’s statements may not be what ran."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このインスタンスはコンパイル済みデザイン(KDB)と照合していないため、slang のステートメントが実際に実行されたものとは限りません。"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diese Instanz wurde nicht mit dem kompilierten Design (KDB) abgeglichen, daher entsprechen slangs Anweisungen möglicherweise nicht dem, was lief."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cette instance n’a pas été vérifiée par rapport au design compilé (KDB) ; les instructions de slang ne sont donc peut-être pas celles qui ont tourné."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُتحقَّق من هذا المثيل مقابل التصميم المُصرَّف (KDB)، لذا قد لا تكون عبارات slang هي ما نُفِّذ."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta instancia no se comprobó con el diseño compilado (KDB), así que las sentencias de slang quizá no sean las que se ejecutaron."
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此實例未與已編譯的設計(KDB)核對,因此 slang 的陳述式可能不是實際執行的內容。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此实例未与已编译的设计(KDB)核对,因此 slang 的语句可能不是实际运行的内容。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 인스턴스는 컴파일된 설계(KDB)와 대조하지 않았으므로 slang의 문장이 실제로 실행된 것과 다를 수 있습니다."
+          }
+        }
+      }
+    },
     "waveformTrace.reason.kdbPending": {
       "extractionState": "manual",
       "localizations": {
