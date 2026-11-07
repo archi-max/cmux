@@ -30,6 +30,9 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   /// What the resolves answer instead (a row only the compiled design has: cmux's compiledOnly).
   var resolveAnswer: [String: Any]?
   var modelRequests = 0
+  /// The design cmux has loaded now (resolve's designId); a model request for another one is
+  /// refused as cmux refuses it (nil: any).
+  var currentDesign: String?
   /// What cmux answers the page's Verdi engine requests (nil: no Verdi for this viewer).
   var engineAnswer: [String: Any]?
   /// Per traced signal (the request's dump path), ahead of `engineAnswer`.
@@ -1357,6 +1360,7 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
              && traceSwift.contains("defaultValue: \"\(sinceEn)\"") && (sinceEntry?.count ?? 0) == 9,
            "the sinceUnknown reason fits edge, combinational and latch steps, in 9 locales: \(sinceEn)")
     await compiledOnlyChecks()
+    await designChecks()
     await xRootChecks()
     await buildChecks()
     print(failures == 0 ? "TRACE UI CHECKS PASSED" : "TRACE UI CHECKS FAILED: \(failures)")
@@ -1588,6 +1592,53 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     expect(keys.count == 5 && missing.isEmpty, "compiled only: the panel's \(keys.count) strings come from cmux in 9 locales (missing: \(missing))")
   }
 
+  /// Issue #8: the page's answers belong to the design cmux resolved them in (its designId): a
+  /// trace in another design starts a new session and asks its models anew, every model request
+  /// says which design it is for, and one cmux refuses (the design changed) is shown, not mixed.
+  func designChecks() async {
+    _ = await trace("close()")
+    let path = "['tb_c', 'dut', 'u_mid', 'u_sink', 'q']"
+    func answerIn(_ design: String, _ signal: String = "q") {
+      resolveAnswer = ["designPath": "tb_c.dut.u_mid.u_sink." + signal, "designPrefix": "", "dumpPrefix": "", "designId": design]
+      currentDesign = design
+    }
+    func asked(since k: Int) -> [[String: Any]] { Array(events[k...]).filter { $0["event"] as? String == "model" } }
+    answerIn("d#1")
+    var k = events.count
+    let first = await trace("driver({ path: \(path), time: 60 })")
+    var models = asked(since: k)
+    expect(first?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#1" },
+           "design: the step's model requests say their design: \(models.map { $0["design"] ?? "none" })")
+    k = events.count
+    _ = await trace("driver({ path: \(path), time: 60 })")
+    let again = asked(since: k).count
+    expect(again == 0, "design: the same design's models are kept (\(again) asked again: \(asked(since: k).map { "\($0["cmd"] ?? ""):\($0["path"] ?? "")" }))")
+    answerIn("d#2")
+    k = events.count
+    let second = await trace("driver({ path: \(path), time: 60 })")
+    models = asked(since: k)
+    expect(second?["signal"] as? String == "tb_c.dut.u_mid.u_sink.q" && !models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#2" },
+           "design: another design asks its models anew: \(models.count) \(models.map { $0["design"] ?? "none" })")
+    // cmux loaded the design again (an edit, a restart) while the page still traces in d#2.
+    answerIn("d#2", "d")
+    currentDesign = "d#3"
+    _ = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    let text = await panelText()
+    expect(text.contains("The design changed since this trace began"), "design: a refused model answer is shown: \(text.prefix(200))")
+    answerIn("d#3", "d")
+    let third = await trace("driver({ path: ['tb_c', 'dut', 'u_mid', 'u_sink', 'd'], time: 60 })")
+    expect(third?["signal"] as? String == "tb_c.dut.u_mid.u_sink.d", "design: the next trace works in the new design: \(String(describing: third?["signal"]))")
+    // From the editor: cmux's query names the design too.
+    currentDesign = "d#4"
+    k = events.count
+    _ = await trace("driverOfDesign({ designPath: 'tb_c.dut.u_mid.u_sink.q', designPrefix: '', dumpPrefix: '', time: 60, designId: 'd#4' })")
+    models = asked(since: k)
+    expect(!models.isEmpty && models.allSatisfy { $0["design"] as? String == "d#4" }, "design: the editor's trace asks in its design: \(models.map { $0["design"] ?? "none" })")
+    resolveAnswer = nil
+    currentDesign = nil
+    _ = await trace("close()")
+  }
+
   /// Trace X to Root: from a value with x bits, the fan-in that brought the x, step by step, to
   /// where it was made (designs J and K, the engine's own fixtures).
   func xRootChecks() async {
@@ -1713,6 +1764,10 @@ final class Harness: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
       answer(id, ok: true, result: ["designPath": path, "designPrefix": "", "dumpPrefix": ""])
     case "model":
       modelRequests += 1
+      if let currentDesign, body["design"] as? String != currentDesign {
+        answer(id, ok: false, error: "designChanged", message: "The design changed since this trace began. Trace again.")
+        return
+      }
       let path = body["path"] as? String ?? ""
       let instances = models["instances"] as? [String: Any] ?? [:]
       if body["cmd"] as? String == "instance" {
