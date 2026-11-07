@@ -1255,9 +1255,10 @@ const HOT = process.env.FSDB_WARM !== '0';
 const HOT_MAX = Number(process.env.FSDB_WARM_SIGNALS || 16);
 const HOT_RECENT_MS = Number(process.env.FSDB_WARM_RECENT_MS || 3000);
 const HOT_RSS = Number(process.env.FSDB_WARM_RSS_MB || 600) * 1e6;
-// A set is split over HOT_READERS processes (by estimated changes), read in parallel: a warm
-// call's cost is its walk, one process walked the whole set one signal after another.
-const HOT_READERS = Math.max(1, Number(process.env.FSDB_WARM_READERS || 2));
+// A set can be split over HOT_READERS processes (by estimated changes), read in parallel: a
+// warm call's cost is mostly its walk. Off by default: at 1% of a 10 GB dump, 10 rows went from
+// 201 to 184 ms with two (one heavy row's walk dominates), for a second ~250 MB process.
+const HOT_READERS = Math.max(1, Number(process.env.FSDB_WARM_READERS || 1));
 const hot = { readers: [], building: null, asked: new Map(), timer: null };  // building: [readers]; asked: id -> last ranged ask (ms)
 const hotReady = () => hot.readers.filter((r) => r.state === 'ready');
 // ids -> {parts: [[reader, ids]], rest}: the ids each ready warm reader holds, and the others
