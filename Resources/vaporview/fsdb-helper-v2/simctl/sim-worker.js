@@ -304,8 +304,19 @@ const libCall = (op, rest) => new Promise((resolve) => lib(op, 0, rest, { resolv
 
 // ---------------------------------------------------------------- memory guards
 // The simulation's processes: its process group (reparented checkpoint children included).
+// Linux reads /proc; elsewhere (macOS, where cmux's checks run the worker against a fake simulator) ps stands in
+// and the host-memory guard is off (memAvailMb Infinity).
+const HAVE_PROC = fs.existsSync('/proc/self/stat');
 function groupPids(pgid) {
   const outp = [];
+  if (!HAVE_PROC) {
+    try {
+      for (const l of require('node:child_process').execFileSync('ps', ['-A', '-o', 'pid=,pgid='], { encoding: 'latin1' }).split('\n')) {
+        const [p, g] = l.trim().split(/\s+/).map(Number); if (g === pgid) outp.push(p);
+      }
+    } catch { /* none */ }
+    return outp;
+  }
   for (const p of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(p)) continue;
     try { const st = fs.readFileSync(`/proc/${p}/stat`, 'latin1'); if (Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[2]) === pgid) outp.push(Number(p)); } catch {}
@@ -313,9 +324,13 @@ function groupPids(pgid) {
   return outp;
 }
 function pssKb(pid) {
+  if (!HAVE_PROC) return 0;
   try { const s = fs.readFileSync(`/proc/${pid}/smaps_rollup`, 'latin1'); const m = /^Pss:\s+(\d+)/m.exec(s); return m ? Number(m[1]) : 0; } catch { return 0; }
 }
-function memAvailMb() { const m = /MemAvailable:\s+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'latin1')); return m ? Number(m[1]) / 1024 : 0; }
+function memAvailMb() {
+  if (!HAVE_PROC) return Infinity;
+  const m = /MemAvailable:\s+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'latin1')); return m ? Number(m[1]) / 1024 : 0;
+}
 let lowMem = false, peakPss = 0, treePids = [], treeAt = 0;
 function memStats(fresh) {
   // walking /proc for the process tree is the expensive part: redo it every 10 s (checkpoints add processes)
@@ -323,7 +338,7 @@ function memStats(fresh) {
   const pids = treePids;
   const pss = pids.reduce((a, p) => a + pssKb(p), 0) / 1024;
   if (pss > peakPss) peakPss = pss;
-  return { pids, pssMb: +pss.toFixed(1), peakPssMb: +peakPss.toFixed(1), memAvailMb: +memAvailMb().toFixed(0) };
+  return { pids, pssMb: +pss.toFixed(1), peakPssMb: +peakPss.toFixed(1), memAvailMb: Number.isFinite(memAvailMb()) ? +memAvailMb().toFixed(0) : null };
 }
 const guard = setInterval(() => {
   if (sim.exitCode !== null) return;
@@ -333,7 +348,7 @@ const guard = setInterval(() => {
     killGroup();
     return;
   }
-  const low = s.memAvailMb < MIN_AVAIL_MB;
+  const low = s.memAvailMb !== null && s.memAvailMb < MIN_AVAIL_MB;
   if (low && !lowMem) { event('memory', { ...s, paused: true }); if (inflightRun) libIn.write(`S ${libId++}\n`); }
   if (!low && lowMem) event('memory', { ...s, paused: false });
   lowMem = low;
