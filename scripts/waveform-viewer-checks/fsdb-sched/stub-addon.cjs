@@ -106,6 +106,9 @@ module.exports = {
     // that can't yield, so only a watchdog outside the process sees it).
     if (process.env.STUB_WARM_BLOCK && !warmFirst) { const b = JSON.parse(process.env.STUB_WARM_BLOCK); held.push(Buffer.alloc(b.mb * 1048576).fill(1)); sleep(b.ms); }
     if (!warmSet || ids.some((id) => !warmSet.has(id))) { throw new Error('warmWindow: signal not in the first load'); }
+    // STUB_WARM_SIG_COST {id: ms}: a row that costs that much more per warm window (one rebuilt per window)
+    const sigCost = JSON.parse(process.env.STUB_WARM_SIG_COST || '{}');
+    sleep(ids.reduce((a, id) => a + (sigCost[id] || 0), 0));
     sleep(WARM_MS + Number(process.env.STUB_WARM_SIG_MS || 0) * ids.length + (warmFirst ? 0 : WARM_LOAD_MS)); warmFirst = true;  // (the first window is the reader's first load; STUB_WARM_SIG_MS: the walk, per signal)
     return ids.map((id) => (BAD.has(id) ? { signalId: id, error: 'unsupported encoding' } : { ...win1(id), loadMs: WARM_MS, walkMs: 0 }));
   },

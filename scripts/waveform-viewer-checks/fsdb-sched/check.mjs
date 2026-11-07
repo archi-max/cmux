@@ -680,21 +680,53 @@ const kindsOf = async (h) => { for (let t = 0; t < 100; t++) { const k = (await 
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
-// 28. ... of stored (primary) signals only, once the kinds are known: a rebuilt signal costs
-// the same rebuild per window warm or cold, and in one warm process the rebuilds would run one
-// after another instead of spread over the workers.
+// 28. ... of stored (primary) signals first, once the kinds are known. A signal fsdbdebug doesn't
+// list is unknown, not secondary (stored struct parents are listed nowhere; Refs #7): it may take a
+// spare slot, at most FSDB_WARM_UNKNOWN (2) of them. The kinds model is in stats, with provenance.
 {
   const ids = [1, 2, 3, 4, 5, 6, 7, 8];
   const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
     { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '300', STUB_WARM_MS: '15', FSDB_WARM: '1' });
-  for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  let kk = null;
+  for (let k = 0; k < 100; k++) { kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
   const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
   await Promise.all(ids.map((id) => h.send('window', near([id], 0)).reply));
   let st = null;
   for (let k = 0; k < 60; k++) { st = (await h.send('stats').reply).result.warm; if (st && st.ready && st.ready.length && !st.building) { break; } await h.send('window', near(ids, 0)).reply; await wait(50); }
-  const got = st && st.ready ? [...st.ready].sort((a, b) => a - b) : null;
-  check(JSON.stringify(got) === '[1,2,3,4]', `with the kinds known, the warm set holds the primaries only: ${JSON.stringify(got)}`);
+  const got = st && st.ready ? [...st.ready].sort((a, b) => a - b) : [];
+  const prim = got.filter((id) => id <= 4), unk = got.filter((id) => id > 4);
+  check(prim.length === 4 && unk.length === 2, `with the kinds known, the warm set holds the primaries and 2 unlisted (unknown) rows: ${JSON.stringify(got)}`);
+  const c = kk && kk.counts;
+  check(c && c.p === 4 && c.s === 0 && c.u === 12 && kk.model && /fsdbdebug/.test(kk.model.p) && /not listed/.test(kk.model.u),
+    `stats.kinds models primary / secondary / unknown with provenance: ${JSON.stringify(kk && { counts: kk.counts, model: kk.model })}`);
   h.close();
+  fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
+}
+
+// 38. An unknown row that makes its warm calls slow (rebuilt per window: here 600 ms each) leaves the
+// warm set, with that measurement as its provenance, so the primaries' pans are fast again (Refs #7).
+{
+  const ids = [1, 2, 3, 4, 5, 6];
+  const h = await start(4, Object.fromEntries(ids.map((id) => [id, 20000])),
+    { FSDB_FSDBDEBUG: DEBUG, STUB_PRIMARY: '[1,2,3,4]', STUB_COLD_MS: '150', STUB_WARM_LOAD_MS: '100', STUB_WARM_MS: '10', STUB_WARM_SIG_COST: '{"5":600,"6":600}', FSDB_WARM: '1', FSDB_BG_LOAD: '0' });
+  for (let k = 0; k < 100; k++) { const kk = (await h.send('stats').reply).result.kinds; if (kk && kk.state === 'ready') { break; } await wait(50); }
+  const near = (list, t0) => ({ signals: list.map((signalId) => ({ signalId, width: 1 })), t0, t1: t0 + 10000, buckets: 1024 });
+  const lat = [];
+  for (let k = 0; k < 30; k++) {
+    const t = performance.now();
+    const rs = ids.map((id) => h.send('window', near([id], (k % 50) * 10000)).reply);
+    await Promise.all(rs.slice(0, 4));  // the primaries' answers
+    if (k >= 22) { lat.push(performance.now() - t); }
+    await Promise.all(rs);
+    await wait(100);
+  }
+  const s = (await h.send('stats').reply).result;
+  const got = s.warm && s.warm.ready ? [...s.warm.ready].sort((a, b) => a - b) : [];
+  lat.sort((a, b) => a - b);
+  h.close();
+  check(JSON.stringify(got) === '[1,2,3,4]' && s.kinds.warmSlow && s.kinds.warmSlow.length === 2,
+    `unknown rows that slow their warm calls leave the set, measured: set ${JSON.stringify(got)}, warmSlow ${JSON.stringify(s.kinds.warmSlow)}`);
+  check(lat[Math.floor(lat.length / 2)] < 300, `... and the primaries' warm answers are fast again: p50 ${Math.round(lat[Math.floor(lat.length / 2)])} ms (1200+ while the slow rows shared their calls)`);
   fs.rmSync(path.join(tmp, 'idx'), { recursive: true, force: true });
 }
 
