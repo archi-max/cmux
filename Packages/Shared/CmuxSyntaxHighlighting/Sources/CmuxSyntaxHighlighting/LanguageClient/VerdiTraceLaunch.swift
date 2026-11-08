@@ -57,7 +57,7 @@ public enum VerdiTraceLaunch {
     public static func startFailure(detail: String, timedOut: Bool) -> (code: String, message: String) {
         if timedOut, detail.contains(slowStartMarker) { return ("slowStart", "") }
         let lines = detail.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.contains(".bashrc") && !$0.contains(".bash_profile") && !$0.contains(".profile:") }
+            .filter { !$0.isEmpty && $0 != slowStartMarker && !$0.contains(".bashrc") && !$0.contains(".bash_profile") && !$0.contains(".profile:") }
         return ("start", lines.suffix(3).joined(separator: " "))
     }
 

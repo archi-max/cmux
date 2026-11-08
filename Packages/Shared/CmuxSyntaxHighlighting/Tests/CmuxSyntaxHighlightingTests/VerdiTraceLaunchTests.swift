@@ -48,17 +48,17 @@ import Testing
     @Test func aSessionThatExitedAfterASlowStartIsNotCalledSlow() {
         // A start over CMUX_VERDI_SLOW_S that then succeeded leaves the marker in stderr; when the
         // session later exits, that is a start failure with its own lines, not a slow start.
-        let detail = "cmux-verdi: Verdi is still starting\nNovas: connection closed\n"
+        let detail = "cmux-verdi: Verdi is still starting\nverdi: connection closed\n"
         let failure = VerdiTraceLaunch.startFailure(detail: detail, timedOut: false)
         #expect(failure.code == "start")
-        #expect(failure.message.contains("Novas: connection closed"))
+        #expect(failure.message == "verdi: connection closed")
     }
 
     @Test func otherStartFailuresDropTheLoginShellsNoise() {
-        let detail = "/home/u/.bashrc: line 36: export: `x': not a valid identifier\nNovas: cannot open design\n"
+        let detail = "/home/u/.bashrc: line 36: export: `x': not a valid identifier\nverdi: cannot open design\n"
         let failure = VerdiTraceLaunch.startFailure(detail: detail, timedOut: true)
         #expect(failure.code == "start")
-        #expect(failure.message == "Novas: cannot open design")
+        #expect(failure.message == "verdi: cannot open design")
     }
 
     // MARK: The launcher
