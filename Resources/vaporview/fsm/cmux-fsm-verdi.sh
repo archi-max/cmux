@@ -1,7 +1,7 @@
 #!/bin/bash
 # cmux: the Verdi engine of the waveform viewer's state machine view. Written for cmux (GPL-3.0,
-# like cmux). It runs on the host that has the dump, with the user's own Verdi installation,
-# under the user's own licence. cmux ships no Synopsys code, headers or documentation, and
+# like cmux). It runs on the host that has the dump, with the user's own Verdi installation.
+# cmux ships no Synopsys code, headers or documentation, and
 # nothing built against Verdi: this script only calls Verdi's own tools at run time.
 #
 # Usage: cmux-fsm-verdi.sh <fsdb> <scope> <signal> [<kdb>]
@@ -11,7 +11,7 @@
 #   kdb     a VCS -kdb database (<simv>.daidir); looked for next to the dump when left out
 #
 # Prints lines starting with "cmux-fsm: " (the protocol, read by WaveformFSMEngines.swift):
-#   cmux-fsm: unavailable <reason> [detail]   reason: no-verdi | no-kdb | no-python | licence | no-fsm | failed
+#   cmux-fsm: unavailable <reason> [detail]   reason: no-verdi | no-kdb | no-python | no-fsm | failed
 #   cmux-fsm: kdb <path>
 #   cmux-fsm: instance <Verdi FSM instance name>
 #   cmux-fsm: report-begin
@@ -78,7 +78,7 @@ PY
 timeout 300 python3 find.py "$KDB" "$SCOPE" "$SIGNAL" > find.out 2> find.err
 LINE=$(grep '^cmux-fsm: ' find.out | tail -n 1)
 if [ -z "$LINE" ]; then
-  if grep -qi 'licen' find.err find.out 2>/dev/null; then say "unavailable licence"; else say "unavailable failed npi $(tail -n 1 find.err)"; fi
+  say "unavailable failed npi $(tail -n 1 find.err)"
   exit 0
 fi
 echo "$LINE"
@@ -89,11 +89,7 @@ INSTANCE=${LINE#cmux-fsm: instance }
 printf 'fsmAnalyzeFSM -instance {%s} -fsdb {%s} -output {%s}\ndebExit\n' "$INSTANCE" "$FSDB" "$W/report.txt" > run.tcl
 timeout 600 verdi -nogui -dbdir "$KDB" -ssf "$FSDB" -play run.tcl > verdi.out 2>&1 < /dev/null
 if [ ! -s report.txt ]; then
-  if grep -qiE 'licen[cs]e.*(not available|fail|denied|unable)|no such feature|checkout' verdi.out; then
-    say "unavailable licence"
-  else
-    say "unavailable failed verdi $(tail -n 1 verdi.out)"
-  fi
+  say "unavailable failed verdi $(tail -n 1 verdi.out)"
   exit 0
 fi
 say "report-begin"

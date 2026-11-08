@@ -1,7 +1,7 @@
 import Foundation
 
-/// The state machine view's engines in order: Verdi's FSM analysis (where the dump and a Verdi
-/// seat are), then Yosys's FSM extraction over the design, then the dump alone with the names
+/// The state machine view's engines in order: Verdi's FSM analysis (where the dump and Verdi
+/// are), then Yosys's FSM extraction over the design, then the dump alone with the names
 /// slang knows. The callers run the engines (over ssh or here); this decides and names.
 public enum FsmPipeline {
     /// Why an engine gave nothing, for the pane's note.

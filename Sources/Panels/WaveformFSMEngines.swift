@@ -5,7 +5,7 @@ import CmuxSyntaxHighlighting
 /// the row's machine (`requested`); this runs the engines in order (`FsmPipeline`) and shows
 /// what the first one that could found.
 /// - Verdi's FSM analysis, for an FSDB on an SSH host: `cmux-fsm-verdi.sh` runs there with the
-///   user's own Verdi and licence. cmux ships nothing built against Verdi.
+///   user's own Verdi installation. cmux ships nothing built against Verdi.
 /// - Yosys's FSM extraction over the design slang-server has open, where its sources are: here,
 ///   or on the host through `cmux-fsm-yosys.sh`. The user's own Yosys (OSS CAD Suite's has
 ///   read_slang for full SystemVerilog).
@@ -79,8 +79,7 @@ enum WaveformFSMEngines {
                 "model": result.model.pageObject(),
                 "note": note(for: result, hasDesign: lookup != nil),
             ]
-            // Not kept: a transient failure. Kept with no design open too (a Verdi run is ~20 s and a
-            // seat); opening or changing the design drops it (designChanged).
+            // Not kept: a transient failure. Kept with no design open too (a Verdi run is ~20 s); opening or changing the design drops it (designChanged).
             guard cache.finish(ticket, answer, keep: !result.hasTransientFailure) else { return }
             _ = await page.callFsm("answer", argument: answer)
         }
@@ -194,8 +193,6 @@ enum WaveformFSMEngines {
                 switch reason {
                 case "no-kdb":
                     parts.append(String(localized: "waveformFSM.verdi.noKdb", defaultValue: "Verdi: no VCS -kdb database found next to the waveform."))
-                case "licence":
-                    parts.append(String(localized: "waveformFSM.verdi.licence", defaultValue: "Verdi: no licence available."))
                 case "no-fsm":
                     parts.append(String(localized: "waveformFSM.verdi.noFsm", defaultValue: "Verdi found no state machine for this signal."))
                 case "failed":

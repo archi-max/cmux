@@ -22,7 +22,7 @@ public enum VerdiTraceLaunch {
             + "exec bash -l \"$W/verdi-trace.sh\" \"$W\" \"$(printf %s \(path) | base64 -d)\""
     }
 
-    /// The sessions cmux keeps, least recently used first (each holds a licence seat).
+    /// The sessions cmux keeps, least recently used first (each holds a Verdi process and its design).
     public struct SessionKeys: Sendable, Equatable {
         public private(set) var all: [String] = []
         public init() {}
@@ -48,13 +48,13 @@ public enum VerdiTraceLaunch {
         return min(300, 15 * pow(2, Double(min(failures, 16) - 1)))
     }
 
-    /// The launcher's line on stderr while Verdi waits for a licence seat.
-    public static let licenceQueueMarker = "cmux-verdi: waiting for a Verdi licence"
+    /// The launcher's line on stderr when Verdi is not ready after CMUX_VERDI_SLOW_S seconds.
+    public static let slowStartMarker = "cmux-verdi: Verdi is still starting"
 
-    /// What a start that did not finish (cmux gave up waiting) says: the licence queue when the
+    /// What a start that did not finish (cmux gave up waiting) says: a slow start when the
     /// launcher reported it, else the last lines of stderr without the login shell's noise.
     public static func startFailure(detail: String) -> (code: String, message: String) {
-        if detail.contains(licenceQueueMarker) { return ("licenceQueue", "") }
+        if detail.contains(slowStartMarker) { return ("slowStart", "") }
         let lines = detail.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.contains(".bashrc") && !$0.contains(".bash_profile") && !$0.contains(".profile:") }
         return ("start", lines.suffix(3).joined(separator: " "))

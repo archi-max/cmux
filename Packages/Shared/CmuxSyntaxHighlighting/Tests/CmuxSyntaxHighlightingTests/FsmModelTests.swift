@@ -62,7 +62,7 @@ private let fsmSlangServerPath = (NSHomeDirectory() as NSString).appendingPathCo
         }
         #expect(instance == "tb.u.ctl:FSM0:5:18:FSM")
         #expect(VerdiFsmReport.parse(text)?.signal == "st")
-        #expect(VerdiFsmEngine.outcome(ofOutput: "cmux-fsm: unavailable licence\n") == .unavailable(reason: "licence", detail: ""))
+        #expect(VerdiFsmEngine.outcome(ofOutput: "cmux-fsm: unavailable no-python\n") == .unavailable(reason: "no-python", detail: ""))
         #expect(VerdiFsmEngine.outcome(ofOutput: "cmux-fsm: kdb x\ncmux-fsm: unavailable no-fsm\n") == .unavailable(reason: "no-fsm", detail: ""))
         #expect(VerdiFsmEngine.outcome(ofOutput: "cmux-fsm: unavailable failed verdi Error: x y\n")
             == .unavailable(reason: "failed", detail: "verdi Error: x y"))
@@ -421,12 +421,12 @@ endmodule
         #expect(result.model.engine == .verdi && result.notes.isEmpty)
         // Verdi can't: Yosys, with the localparams' names.
         result = await FsmPipeline.run(signal: "st", context: Self.lpContext,
-                                       verdi: { .unavailable(reason: "licence", detail: "") },
+                                       verdi: { .unavailable(reason: "no-kdb", detail: "") },
                                        yosys: { _ in .success(YosysFsm.models(json: Data(FsmFixtures.yosysLp.utf8))) })
         #expect(result.model.engine == .yosys)
         // (In Yosys's state table order.)
         #expect(Set(result.model.states.map { "\($0.bits)=\($0.name ?? "")" }) == ["00=S_A", "01=S_B", "10=S_C"])
-        #expect(result.notes == [.verdi(reason: "licence", detail: "")])
+        #expect(result.notes == [.verdi(reason: "no-kdb", detail: "")])
         // A flattened run's FSM is found by its hierarchical name's last part.
         result = await FsmPipeline.run(signal: "st", context: Self.lpContext, verdi: nil,
                                        yosys: { _ in .success(YosysFsm.models(json: Data(FsmFixtures.yosysTop.utf8))) })
