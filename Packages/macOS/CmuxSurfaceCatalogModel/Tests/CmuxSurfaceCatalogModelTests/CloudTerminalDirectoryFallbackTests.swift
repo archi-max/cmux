@@ -51,7 +51,8 @@ import Testing
         let first = try #require(driver.title("u@h:~"))
         _ = driver.finish(first, .directory("/home/u"))
         driver.now += 10
-        let probe = try #require(driver.fallback.terminalTitleChanged("u@h: /etc", terminalID: "t1", now: driver.now))
+        let maybeProbe = driver.fallback.terminalTitleChanged("u@h: /etc", terminalID: "t1", now: driver.now)
+        let probe = try #require(maybeProbe)
         #expect(probe.terminalID == "t1")
         #expect(driver.finish(probe, .directory("/etc")).directoryChanged)
         #expect(driver.fallback.directory(forTerminal: "t1") == "/etc")
@@ -107,9 +108,11 @@ import Testing
         // A directory that changes resets the spacing.
         var pending = running
         while let probe = pending { pending = fallback.finish(probe, answer: .skipped, now: 100).next }
-        let a = try #require(fallback.terminalTitleChanged("a", terminalID: "t1", now: 200))
+        let maybeA = fallback.terminalTitleChanged("a", terminalID: "t1", now: 200)
+        let a = try #require(maybeA)
         _ = fallback.finish(a, answer: .directory("/x"), now: 200.1)
-        let b = try #require(fallback.terminalTitleChanged("b", terminalID: "t1", now: 200.2))
+        let maybeB = fallback.terminalTitleChanged("b", terminalID: "t1", now: 200.2)
+        let b = try #require(maybeB)
         #expect(b.delay <= Fallback.minimumProbeSpacing, "\(b.delay)")
     }
 
