@@ -713608,65 +713608,6 @@
         }
       }
     },
-    "waveformFSM.verdi.licence": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi: no licence available."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi: 使用できるライセンスがありません。"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi: Keine Lizenz verfügbar."
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi : aucune licence disponible."
-          }
-        },
-        "ar": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi: لا يتوفر ترخيص."
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi: no hay ninguna licencia disponible."
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi：沒有可用的授權。"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi：没有可用的许可证。"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi: 사용 가능한 라이선스가 없습니다."
-          }
-        }
-      }
-    },
     "waveformFSM.verdi.noFsm": {
       "extractionState": "manual",
       "localizations": {
@@ -720393,124 +720334,6 @@
         }
       }
     },
-    "waveformTrace.page.verdi.licence": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi not used: no licence seat is free (%@)"
-          }
-        },
-        "ar": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "لم يُستخدم Verdi: لا يوجد ترخيص متاح (%@)"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi nicht verwendet: keine Lizenz frei (%@)"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi no se usa: no hay ninguna licencia libre (%@)"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi non utilisé : aucune licence libre (%@)"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi は使っていません: 空いているライセンスがありません（%@）"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi를 사용하지 않음: 사용 가능한 라이선스가 없음(%@)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未使用 Verdi：没有可用的许可证（%@）"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未使用 Verdi：沒有可用的授權（%@）"
-          }
-        }
-      }
-    },
-    "waveformTrace.page.verdi.licenceQueue": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi not used: Verdi licence not available"
-          }
-        },
-        "ar": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "لم يُستخدم Verdi: ترخيص Verdi غير متاح"
-          }
-        },
-        "de": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi nicht verwendet: Verdi-Lizenz nicht verfügbar"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi no se usa: la licencia de Verdi no está disponible"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi non utilisé : licence Verdi indisponible"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi は使っていません: Verdi のライセンスを利用できません"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Verdi를 사용하지 않음: Verdi 라이선스를 사용할 수 없음"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未使用 Verdi：Verdi 许可证不可用"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "未使用 Verdi：Verdi 授權無法使用"
-          }
-        }
-      }
-    },
     "waveformTrace.page.verdi.noKDB": {
       "extractionState": "manual",
       "localizations": {
@@ -724224,6 +724047,65 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 不在設計模型中：slang 無法展開它。請檢查編輯器的 slang 設定檔（.f 建置檔）或頂層，驅動追蹤載入的正是它。"
+          }
+        }
+      }
+    },
+    "waveformTrace.page.verdi.slowStart": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi not used: it did not start in time"
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم يُستخدم Verdi: لم يبدأ في الوقت المحدد"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi nicht verwendet: es ist nicht rechtzeitig gestartet"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi no se usa: no arrancó a tiempo"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi non utilisé : il n’a pas démarré à temps"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi は使っていません: 時間内に起動しませんでした"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verdi를 사용하지 않음: 제시간에 시작되지 않음"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未使用 Verdi：未能及时启动"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未使用 Verdi：未能及時啟動"
           }
         }
       }

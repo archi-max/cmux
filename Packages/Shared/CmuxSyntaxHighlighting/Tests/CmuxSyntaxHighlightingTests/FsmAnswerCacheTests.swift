@@ -82,7 +82,6 @@ import Testing
         let model = FsmModel.observed(signal: "state", width: 3, names: [:])
         func result(_ notes: [FsmPipeline.Note]) -> FsmPipeline.Result { FsmPipeline.Result(model: model, notes: notes) }
         #expect(result([.verdi(reason: "failed", detail: "ssh")]).hasTransientFailure)
-        #expect(result([.verdi(reason: "licence", detail: "")]).hasTransientFailure)
         #expect(result([.yosys(.failed("ssh"))]).hasTransientFailure)
         #expect(!result([]).hasTransientFailure)
         #expect(!result([.verdi(reason: "no-kdb", detail: ""), .verdi(reason: "no-fsm", detail: "")]).hasTransientFailure)

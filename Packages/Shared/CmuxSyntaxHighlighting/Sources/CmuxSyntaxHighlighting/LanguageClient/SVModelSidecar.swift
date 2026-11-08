@@ -494,7 +494,7 @@ public final class SVModelSidecar: @unchecked Sendable {
             if object["ready"] as? Bool == true {
                 ready?.resume()
             } else if let code = object["error"] as? String {
-                // A session that can't start says why (a missing KDB, no licence seat).
+                // A session that can't start says why (a missing KDB, Verdi not starting).
                 ready?.resume(throwing: Failure.request(code: code, message: object["message"] as? String ?? ""))
             } else {
                 ready?.resume(throwing: Failure.exited(detail: object["message"] as? String ?? ""))

@@ -1,8 +1,8 @@
 #!/bin/bash
-# verdi-trace.sh's session lifetime, with a stand-in `verdi` (no Verdi, licence or host needed):
+# verdi-trace.sh's session lifetime, with a stand-in `verdi` (no Verdi or host needed):
 # it answers one request, and it ends when nothing has asked for CMUX_VERDI_IDLE_SECONDS (a
 # connection whose other end slept or vanished without closing never sends EOF), not before; and
-# a Verdi that ends by itself (no licence seat) is reported at once, with its message. Without
+# a Verdi that ends by itself (it could not start) is reported at once, with its message. Without
 # Verdi the error names the variables to set, and a CMUX_VERDI_SETUP that hangs is ended at its cap.
 # Usage: check.sh <verdi-trace.sh>
 LAUNCHER=$1
@@ -14,7 +14,7 @@ cat > "$T/bin/verdi" <<'FAKE'
 #!/bin/bash
 # (checks 6-7: what this run's setup exported, and the run's own compile folder)
 [ -n "${CMUX_TEST_MARKS:-}" ] && echo "${CMUX_TEST_MARK:-none}|${CMUX_VERDI_COMPILE_DIR:-}" >> "$CMUX_TEST_MARKS"
-if [ "${FAKE_MODE:-}" = licence ]; then echo "Error: could not checkout license for Verdi"; exit 1; fi
+if [ "${FAKE_MODE:-}" = nostart ]; then echo "verdi: could not start"; exit 1; fi
 printf '\n{"id":0,"ready":true,"engine":"verdi"}\n'
 while IFS= read -r line; do printf '\n{"id":1,"ok":true,"echo":"%s"}\n' "${#line}"; done
 echo ended > "$FAKE_MARK"
@@ -45,16 +45,16 @@ E2=$(( $(date +%s) - S2 ))
 [ "$E2" -ge 2 ]; expect $? "and not before it (ended after $E2 s)"
 kill $L2 2>/dev/null
 
-# 3. Verdi ends by itself (no licence seat) while stdin stays open: reported at once, as "licence".
+# 3. Verdi ends by itself (it could not start) while stdin stays open: reported at once, as "start".
 mkfifo "$T/in3"
 sleep 60 > "$T/in3" &
 S3=$(date +%s)
-PATH="$T/bin:$PATH" FAKE_MODE=licence CMUX_VERDI_IDLE_SECONDS=30 bash "$LAUNCHER" "$T/w3" "$T/run/d.fsdb" < "$T/in3" > "$T/out3" 2>/dev/null &
+PATH="$T/bin:$PATH" FAKE_MODE=nostart CMUX_VERDI_IDLE_SECONDS=30 bash "$LAUNCHER" "$T/w3" "$T/run/d.fsdb" < "$T/in3" > "$T/out3" 2>/dev/null &
 L3=$!
 for _ in $(seq 1 20); do grep -q '"ready":false' "$T/out3" 2>/dev/null && break; sleep 0.25; done
 E3=$(( $(date +%s) - S3 ))
-grep -q '"error":"licence","message":"Error: could not checkout license' "$T/out3" && [ "$E3" -le 3 ]
-expect $? "a Verdi without a licence seat is reported at once as licence (after $E3 s: $(tr -d '\n' < "$T/out3" | cut -c1-120))"
+grep -q '"error":"start","message":"verdi: could not start' "$T/out3" && [ "$E3" -le 3 ]
+expect $? "a Verdi that could not start is reported at once as start (after $E3 s: $(tr -d '\n' < "$T/out3" | cut -c1-120))"
 kill $L3 2>/dev/null
 # 4. No verdi on PATH and nothing set: noVerdi, with the hint that names the variables to set.
 mkdir -p "$T/w4" "$T/w5"

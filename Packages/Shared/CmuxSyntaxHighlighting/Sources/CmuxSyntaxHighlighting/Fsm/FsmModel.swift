@@ -265,7 +265,7 @@ public enum VerdiFsmEngine {
     public enum Outcome: Sendable, Equatable {
         /// The report text and Verdi's name of the FSM instance.
         case report(text: String, instance: String?)
-        /// `reason`: no-verdi, no-kdb, no-python, licence, no-fsm or failed.
+        /// `reason`: no-verdi, no-kdb, no-python, no-fsm or failed.
         case unavailable(reason: String, detail: String)
     }
 

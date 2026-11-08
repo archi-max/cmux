@@ -682,8 +682,8 @@ host.
 
 The waveform viewer's state machine view can use the Verdi installed on the
 dump's host: its Python NPI netlist model (FSM recognition) and nState's batch
-analysis (`fsmAnalyzeFSM`). cmux runs them at run time, under the user's own
-licence, through its own script (`Resources/vaporview/fsm/cmux-fsm-verdi.sh`,
+analysis (`fsmAnalyzeFSM`). cmux runs them at run time, with the user's own
+Verdi installation, through its own script (`Resources/vaporview/fsm/cmux-fsm-verdi.sh`,
 sent over SSH; nothing is installed). cmux ships no Verdi code, headers or
 documentation, and nothing built against Verdi.
 

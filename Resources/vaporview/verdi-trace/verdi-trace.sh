@@ -3,10 +3,12 @@
 # ships nothing of it). cmux sends this script and serve.tcl over SSH into a private scratch
 # folder and runs `bash -l verdi-trace.sh <scratch> <dump.fsdb> [<simv>.daidir]`; stdin and stdout
 # are serve.tcl's JSON lines. The KDB is the first daidir next to the FSDB (by name, in C order)
-# that holds kdb.elab++ (vcs -kdb), unless one is named. Without the FSDB, a KDB, Verdi, or a Verdi licence seat, it prints
-# {"id":0,"ready":false,"error":"noFile"|"noKDB"|"noVerdi"|"licence"|"start","message":...}.
+# that holds kdb.elab++ (vcs -kdb), unless one is named. Without the FSDB, a KDB or Verdi, or when
+# Verdi does not start, it prints
+# {"id":0,"ready":false,"error":"noFile"|"noKDB"|"noVerdi"|"start","message":...}.
 # Verdi's banner and logs stay in the scratch folder, removed when the session ends. While Verdi
-# waits for a licence seat it says "cmux-verdi: waiting for a Verdi licence" on stderr, and when
+# is not ready after CMUX_VERDI_SLOW_S seconds (default 20) it says "cmux-verdi: Verdi is still
+# starting" on stderr, and when
 # cmux's session goes (it gave up, or the viewer closed) Verdi is ended with it.
 W=$1
 FSDB=$2
@@ -43,8 +45,8 @@ end_tree() {
       kill "$LAUNCHER" 2>/dev/null
       exit 0
     fi
-    if [ -z "$said" ] && grep -qiE 'licen[cs]e is not available|waiting for .*licen[cs]e' "$W/verdi.out" 2>/dev/null; then
-      echo "cmux-verdi: waiting for a Verdi licence" >&2
+    if [ -z "$said" ] && [ "$SECONDS" -ge "${CMUX_VERDI_SLOW_S:-20}" ] && ! grep -q '^{"id":0,' "$W/verdi.out" 2>/dev/null; then
+      echo "cmux-verdi: Verdi is still starting" >&2
       said=1
     fi
     sleep 1
@@ -68,7 +70,7 @@ fi
 num() { case $1 in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
 # CMUX_VERDI_SETUP runs in a subshell under a time cap (CMUX_VERDI_SETUP_SECONDS, default 30 s), so a
 # setup that hangs (a module system's lock) ends there, with all it started; what it exported (PATH,
-# licence variables) is read back into this shell, through a file of this run's own ($SETUP_ENV,
+# the tool's environment) is read back into this shell, through a file of this run's own ($SETUP_ENV,
 # made by mktemp in $W, so runs that share $W never read each other's). The setup runs under umask
 # 077: what it writes is the user's only. 0 when it finished, 1 when it was ended at the cap, 2 when
 # the file could not be made. The tree is what pgrep finds under the subshell when the cap is
@@ -123,7 +125,7 @@ export CMUX_VERDI_COMPILE_DIR
 # cmux's requests reach serve.tcl through this relay, which also ends the session (serve.tcl ends at
 # stdin's end) once nothing has asked for CMUX_VERDI_IDLE_SECONDS (default 30 min). A connection
 # whose client slept or vanished without closing (no EOF, sshd lingering) would otherwise keep
-# Verdi, its memory and a licence seat for as long as TCP takes to notice. cmux starts the session
+# Verdi and its memory for as long as TCP takes to notice. cmux starts the session
 # again on the next trace.
 IDLE=${CMUX_VERDI_IDLE_SECONDS:-1800}
 case $IDLE in ''|*[!0-9]*) IDLE=1800 ;; esac
@@ -144,7 +146,7 @@ relay() {
       line=$line$part
       idle=$((idle + 1))
       [ "$idle" -lt "$IDLE" ] || return 0
-      # Verdi ended by itself (no licence seat, a crash): so does the relay, at once, so that the
+      # Verdi ended by itself (it could not start, a crash): so does the relay, at once, so that the
       # launcher reports why instead of holding the pipeline open until the idle limit.
       pid=$(cat "$W/verdi.pid" 2>/dev/null)
       [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || return 0
@@ -163,8 +165,5 @@ relay | {
   wait $!
 } | tee -a "$W/verdi.out" | grep --line-buffered '^{"id":'
 if ! grep -q '^{"id":0,"ready":true' "$W/verdi.out"; then
-  if grep -qi 'could not checkout.*licen[cs]e' "$W/verdi.out"; then
-    fail licence "$(grep -i 'could not checkout' "$W/verdi.out" | tail -1)"
-  fi
   fail start "$(grep -v '^ ' "$W/verdi.out" | grep -v '^$' | tail -3 | tr '\n' ' ')"
 fi

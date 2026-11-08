@@ -73,12 +73,12 @@ public struct FsmAnswerCache<Answer> {
 }
 
 extension FsmPipeline.Result {
-    /// An engine failed in a way a retry may not (ssh, a busy licence, a crash): not kept.
+    /// An engine failed in a way a retry may not (ssh, a busy host, a crash): not kept.
     /// A missing database, engine or machine is the answer until the waveform changes.
     public var hasTransientFailure: Bool {
         notes.contains { note in
             switch note {
-            case .verdi(let reason, _): return reason == "failed" || reason == "licence"
+            case .verdi(let reason, _): return reason == "failed"
             case .yosys(.failed(let detail)): return !detail.isEmpty
             case .yosys(.notFound): return false
             }

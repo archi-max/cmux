@@ -156,13 +156,13 @@ import Testing
         }
     }
 
-    /// A session that can't start (the Verdi engine's launcher without a KDB or a licence seat)
+    /// A session that can't start (the Verdi engine's launcher without a KDB)
     /// says why on its ready line and exits at once: requests get that code, not "exited".
     @Test func aRefusedReadyLineThrowsItsCode() async throws {
         for _ in 0..<5 {
-            let sidecar = Self.fake(#"printf '\n{"id":0,"ready":false,"error":"licence","message":"no seat"}\n'; exit 0"#)
+            let sidecar = Self.fake(#"printf '\n{"id":0,"ready":false,"error":"noKDB","message":"/sim"}\n'; exit 0"#)
             defer { sidecar.stop() }
-            await #expect(throws: SVModelSidecar.Failure.request(code: "licence", message: "no seat")) {
+            await #expect(throws: SVModelSidecar.Failure.request(code: "noKDB", message: "/sim")) {
                 _ = try await sidecar.request(["cmd": "info"])
             }
         }

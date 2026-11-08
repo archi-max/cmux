@@ -10,8 +10,8 @@ nonisolated private let waveformTraceVerdiLogger = Logger(subsystem: "com.cmuxte
 /// `srcActiveTrace`). The page still re-executes the statement itself (branch taken, fan-in values,
 /// trust); Verdi's answer confirms it, follows port connections to the real driver, or is shown
 /// next to it when the two differ. The session starts in the background on the first trace (it
-/// takes about 16 s on a course CPU) and the open-source engine answers meanwhile; without a KDB,
-/// Verdi or a licence seat the page keeps the open-source engine and says why.
+/// takes about 16 s on a small test CPU) and the open-source engine answers meanwhile; without a KDB
+/// or Verdi, or when Verdi does not start, the page keeps the open-source engine and says why.
 ///
 /// Nothing of Verdi is shipped: cmux sends its own two scripts (Resources/vaporview/verdi-trace)
 /// to a private scratch folder on the host and runs the host's Verdi from there.
@@ -55,7 +55,7 @@ enum WaveformTraceVerdi {
     private static var order = VerdiTraceLaunch.SessionKeys()
     /// Which session each viewer uses, to stop it when the viewer closes or loads again.
     private static let viewerSessions = NSMapTable<FilePreviewPanel, Session>.weakToStrongObjects()
-    /// Verdi sessions kept at most: each holds a licence seat and the design.
+    /// Verdi sessions kept at most: each holds a Verdi process and the design.
     private static let maxSessions = 2
     /// Starting a session: `info` once Verdi has loaded the design.
     private static let requestTimeout = VerdiTraceLaunch.requestTimeout(background: false)
@@ -96,7 +96,7 @@ enum WaveformTraceVerdi {
     }
 
     /// Starts the session (or, after a failure, asks it again): ready when Verdi answers `info`
-    /// with the FSDB's time unit. A start that failed for want of a seat or in time is retried
+    /// with the FSDB's time unit. A start that failed or timed out is retried
     /// with backoff; one the host refused (no KDB, no Verdi, other units) is not.
     private static func probe(_ session: Session, host: String) {
         session.state = .starting
@@ -112,11 +112,13 @@ enum WaveformTraceVerdi {
                     : .unavailable(code: "units", message: "\(info["fileUnit"] ?? "") / \(info["windowUnit"] ?? "")")
             } catch SVModelSidecar.Failure.request(code: let code, message: let message) {
                 session.state = .unavailable(code: code, message: message)
-                retry = code == "licence" || code == "start"
+                retry = code == "start" || code == "slowStart"
             } catch let failure as SVModelSidecar.Failure {
                 switch failure {
                 case .timedOut(let detail), .exited(let detail):
-                    let start = VerdiTraceLaunch.startFailure(detail: detail)
+                    var timedOut = false
+                    if case .timedOut = failure { timedOut = true }
+                    let start = VerdiTraceLaunch.startFailure(detail: detail, timedOut: timedOut)
                     session.state = .unavailable(code: start.code, message: start.message.isEmpty
                         ? WaveformTrace.sidecarMessage(failure, host: host) : start.message)
                     retry = true

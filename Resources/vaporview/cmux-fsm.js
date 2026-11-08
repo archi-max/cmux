@@ -1,6 +1,6 @@
 // cmux: the waveform viewer's state machine pane. cmux (native) finds a state register's machine
 // with whichever engine it has (WaveformFSMEngines.swift: Verdi's FSM analysis where the dump and
-// a Verdi seat are, Yosys's fsm passes over the design, or the dump alone with the states slang
+// Verdi are, Yosys's fsm passes over the design, or the dump alone with the states slang
 // knows) and hands the model here. The pane draws the graph, marks the state at the marker,
 // moves the marker to a transition's next occurrence, and counts entries and transitions over
 // the dump. Written for cmux (GPL-3.0, like cmux).
