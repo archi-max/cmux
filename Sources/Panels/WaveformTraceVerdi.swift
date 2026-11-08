@@ -101,7 +101,9 @@ enum WaveformTraceVerdi {
             } catch let failure as SVModelSidecar.Failure {
                 switch failure {
                 case .timedOut(let detail), .exited(let detail):
-                    let start = VerdiTraceLaunch.startFailure(detail: detail)
+                    var timedOut = false
+                    if case .timedOut = failure { timedOut = true }
+                    let start = VerdiTraceLaunch.startFailure(detail: detail, timedOut: timedOut)
                     session.state = .unavailable(code: start.code, message: start.message.isEmpty
                         ? WaveformTrace.sidecarMessage(failure, host: host) : start.message)
                     retry = true

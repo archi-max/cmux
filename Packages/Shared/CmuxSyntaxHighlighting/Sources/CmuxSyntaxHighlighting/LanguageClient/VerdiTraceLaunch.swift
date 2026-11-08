@@ -51,10 +51,11 @@ public enum VerdiTraceLaunch {
     /// The launcher's line on stderr when Verdi is not ready after CMUX_VERDI_SLOW_S seconds.
     public static let slowStartMarker = "cmux-verdi: Verdi is still starting"
 
-    /// What a start that did not finish (cmux gave up waiting) says: a slow start when the
-    /// launcher reported it, else the last lines of stderr without the login shell's noise.
-    public static func startFailure(detail: String) -> (code: String, message: String) {
-        if detail.contains(slowStartMarker) { return ("slowStart", "") }
+    /// What a start that did not finish says. When cmux gave up waiting (`timedOut`) and the
+    /// launcher reported a slow start, that is the answer. Otherwise (and always for a session that
+    /// exited) it is the last lines of stderr without the login shell's noise.
+    public static func startFailure(detail: String, timedOut: Bool) -> (code: String, message: String) {
+        if timedOut, detail.contains(slowStartMarker) { return ("slowStart", "") }
         let lines = detail.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.contains(".bashrc") && !$0.contains(".bash_profile") && !$0.contains(".profile:") }
         return ("start", lines.suffix(3).joined(separator: " "))
