@@ -1451,9 +1451,9 @@ func run() async {
     if ok4 { await arrays.arrayChecks() }
     arrays.close()
     let firsts = Page(loading: .auto, dump: "synth:ms=1,buses=6,wide=0")
-    let ok5 = await firsts.open(home: home)
-    expect(ok5, "a page for first loads opened")
-    if ok5 { await firsts.firstLoadChecks() }
+    let ok7 = await firsts.open(home: home)
+    expect(ok7, "a page for first loads opened")
+    if ok7 { await firsts.firstLoadChecks() }
     firsts.close()
     let aliased = Page(loading: .auto, dump: "synth:ms=1,buses=6,wide=0")
     let ok6 = await aliased.open(home: home)
